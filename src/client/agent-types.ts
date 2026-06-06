@@ -30,7 +30,7 @@ export interface AgentOption {
    */
   supportsSteering?: boolean;
   /**
-   * Whether the agent supports context compaction (docs/179). Gates the
+   * Whether the agent supports context compaction (docs/178). Gates the
    * `/compact` entry in the composer's `/` command menu. Optional for
    * backward-compat with older wire payloads / test fixtures.
    */

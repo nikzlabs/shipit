@@ -40,7 +40,7 @@ interface SessionState {
   isLoading: boolean;
   activity: StreamingActivity | undefined;
   /**
-   * docs/179 — transient "Compacting…" indicator. Set true on a
+   * docs/178 — transient "Compacting…" indicator. Set true on a
    * `compaction_status` with `active:true`, cleared on `active:false` (or when
    * the matching card lands). Never persisted — purely a live progress signal.
    */

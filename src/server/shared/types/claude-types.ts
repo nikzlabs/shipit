@@ -38,7 +38,7 @@ export interface ClaudeSystemInitEvent {
 }
 
 /**
- * docs/179 — the CLI's `system`/`subtype:"status"` event. It reports transient
+ * docs/178 — the CLI's `system`/`subtype:"status"` event. It reports transient
  * process status; we only act on `status:"compacting"`, which signals an
  * in-flight context compaction (the adapter maps it to
  * `agent_compaction_started`). All other statuses are ignored. NOTE: this is the
@@ -55,7 +55,7 @@ export interface ClaudeSystemStatusEvent {
 }
 
 /**
- * docs/179 — the CLI's `system`/`subtype:"compact_boundary"` event, emitted when
+ * docs/178 — the CLI's `system`/`subtype:"compact_boundary"` event, emitted when
  * a context compaction completes (the conversation prefix was replaced by a
  * summary). The adapter maps it to the persisted `agent_compacted` card.
  */
@@ -78,7 +78,7 @@ export interface ClaudeCompactBoundaryEvent {
 
 /**
  * The CLI's `system` events, discriminated by `subtype`. `init` is the
- * once-per-session handshake; `status` / `compact_boundary` carry the docs/179
+ * once-per-session handshake; `status` / `compact_boundary` carry the docs/178
  * compaction signals. A mid-stream second `init` (the CLI re-inits after a
  * compaction) is the same shape as the first — the orchestrator, not the type,
  * is responsible for not resetting session/permission state on it.

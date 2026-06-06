@@ -51,7 +51,7 @@ export interface AgentCapabilities {
   /**
    * Whether the agent backend can compact its own context — both summarizing on
    * demand (the `/compact` composer command) and emitting native compaction
-   * signals ShipIt renders inline (docs/179). Claude Code: true (the CLI's
+   * signals ShipIt renders inline (docs/178). Claude Code: true (the CLI's
    * `/compact` + `system/compact_boundary` stream events). Codex: true (the
    * app-server's `thread/compact/start` RPC + `contextCompaction` items). Gates
    * both the `/` autocomplete entry and the `agent.compact()` trigger path.
@@ -225,7 +225,7 @@ export interface AgentSteerRejectedEvent {
 }
 
 /**
- * docs/179 — a context compaction has *started*. Transient progress only: the
+ * docs/178 — a context compaction has *started*. Transient progress only: the
  * orchestrator forwards it as an emit-only "Compacting…" indicator and never
  * persists it (it has no place in the scrollback once the matching
  * {@link AgentCompactedEvent} card lands). Both CLIs may compact unsolicited
@@ -248,7 +248,7 @@ export interface AgentCompactionStartedEvent {
 }
 
 /**
- * docs/179 — a context compaction *finished*. This is transcript content (the
+ * docs/178 — a context compaction *finished*. This is transcript content (the
  * conversation history was replaced by a summary), so the orchestrator persists
  * it as an inline card via `emitChatCard`, not emit-only. Every detail field is
  * optional because Codex supplies none of them natively — the card degrades to a
@@ -327,7 +327,7 @@ export interface AgentRunParams {
    */
   useStreaming?: boolean;
   /**
-   * docs/179 — this run is a context-compaction request, not a normal prompt.
+   * docs/178 — this run is a context-compaction request, not a normal prompt.
    * The orchestrator sets this when intercepting `/compact` and no resident
    * live process exists to call `compact()` on. Adapters honor it at spawn:
    * Claude treats the `/compact` prompt as the CLI slash command (no special
@@ -532,7 +532,7 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    */
   setPermissionMode?(mode: PermissionMode | undefined): void;
   /**
-   * docs/179 — trigger a context compaction on the *resident* process. Optional,
+   * docs/178 — trigger a context compaction on the *resident* process. Optional,
    * gated by `capabilities.supportsCompaction`. Used by the `/compact`
    * interception when a live turn is in flight (a streaming Claude process or a
    * live Codex app-server with a thread): Claude injects the `/compact` slash

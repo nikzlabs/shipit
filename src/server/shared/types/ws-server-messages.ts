@@ -1182,7 +1182,7 @@ export interface WsIssueWriteUpdate {
 }
 
 /**
- * docs/179 — transient "Compacting…" progress indicator. Emit-only (NOT
+ * docs/178 — transient "Compacting…" progress indicator. Emit-only (NOT
  * persisted): it has no place in the scrollback once the matching
  * `WsCompactionCard` lands. `active:true` shows the indicator, `active:false`
  * clears it. Both CLIs may compact unsolicited mid-turn, so this can arrive
@@ -1196,7 +1196,7 @@ export interface WsCompactionStatus {
 }
 
 /**
- * docs/179 — the persisted "Context compacted" transcript card. Emitted via
+ * docs/178 — the persisted "Context compacted" transcript card. Emitted via
  * `emitChatCard` so it both broadcasts live AND records in-band with the turn,
  * surviving a reconnect, a session switch, and a full reload (the recurring
  * ephemeral-card bug class — see CLAUDE.md). Carries the shared `CompactionCard`.

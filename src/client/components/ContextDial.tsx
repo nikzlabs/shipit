@@ -27,7 +27,7 @@ function formatCost(usd: number): string {
 }
 
 /**
- * docs/179 — heuristic FALLBACK for detecting compaction: a sharp drop in
+ * docs/178 — heuristic FALLBACK for detecting compaction: a sharp drop in
  * context size between the previous and most recent turn. The authoritative
  * signal is now the backend's own `agent_compacted` event (surfaced as a
  * persisted `CompactionCard` and passed in via `authoritativeCompacted`); this
@@ -87,7 +87,7 @@ export function ContextDial({
    */
   onOpenUsageDetails,
   /**
-   * docs/179 — authoritative "a compaction just happened" signal, derived from
+   * docs/178 — authoritative "a compaction just happened" signal, derived from
    * the backend's own `agent_compacted` event (a `CompactionCard` present after
    * the last user message). When true it forces the compacted pill on; the
    * `wasCompacted` heuristic remains as a fallback when it's false.

@@ -58,7 +58,7 @@ export interface BuildAgentRunParamsArgs {
   sessionDir: string;
   permissionMode?: PermissionMode;
   /**
-   * docs/179 — this spawn is a context-compaction request (`/compact` with no
+   * docs/178 — this spawn is a context-compaction request (`/compact` with no
    * resident live process to call `compact()` on). Forwarded to the adapter so
    * Codex issues `thread/compact/start` instead of a normal turn; Claude's
    * `/compact` rides the prompt so it ignores the flag.

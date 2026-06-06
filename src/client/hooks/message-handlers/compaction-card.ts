@@ -3,7 +3,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/179 — the persisted "Context compacted" transcript card. Append a
+ * docs/178 — the persisted "Context compacted" transcript card. Append a
  * `CompactionCard` to the chat transcript and clear the transient "Compacting…"
  * indicator (the card is the terminal record).
  *

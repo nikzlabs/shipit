@@ -858,7 +858,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * docs/179 — ask the resident agent on the worker to compact its context
+   * docs/178 — ask the resident agent on the worker to compact its context
    * (`/compact`). The worker calls `agent.compact()` on the in-container adapter
    * (streaming Claude → inject `/compact`; live Codex → `thread/compact/start`).
    */

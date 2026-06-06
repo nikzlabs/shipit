@@ -5,7 +5,7 @@ import { PopoverContent } from "./ui/popover.js";
 import type { SkillInfo } from "../../server/shared/types.js";
 
 /**
- * docs/179 — a ShipIt-native `/` command (e.g. `/compact`) surfaced in the same
+ * docs/178 — a ShipIt-native `/` command (e.g. `/compact`) surfaced in the same
  * menu as skills. Unlike skills, commands are ALWAYS `/`-prefixed (they're a
  * ShipIt construct, not a per-backend CLI skill whose token is `$` for Codex).
  */
@@ -19,7 +19,7 @@ export interface SkillAutoCompleteProps {
   query: string;
   /** Available skills to search through. */
   skills: SkillInfo[];
-  /** docs/179 — ShipIt-native `/` commands (always `/`-prefixed), listed first. */
+  /** docs/178 — ShipIt-native `/` commands (always `/`-prefixed), listed first. */
   commands?: SlashCommand[];
   /**
    * Token prefix shown before each skill name — `/` for Claude, `$` for Codex.
@@ -29,7 +29,7 @@ export interface SkillAutoCompleteProps {
   tokenPrefix?: string;
   /** Called when the user selects a skill (passes the skill name). */
   onSelect: (skillName: string) => void;
-  /** docs/179 — called when the user selects a ShipIt `/` command. */
+  /** docs/178 — called when the user selects a ShipIt `/` command. */
   onCommandSelect?: (commandName: string) => void;
   /** Called when the autocomplete should be dismissed. */
   onDismiss: () => void;

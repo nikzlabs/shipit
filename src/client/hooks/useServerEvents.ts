@@ -222,7 +222,7 @@ export function useServerEvents(): void {
           // server builds may omit it; default to false so a stale wire
           // payload hides the AI Review affordance rather than showing it.
           supportsReview?: boolean;
-          // 179 — compaction support; absent on old payloads, in which case the
+          // 178 — compaction support; absent on old payloads, in which case the
           // `/compact` command entry simply won't be offered.
           supportsCompaction?: boolean;
           // 138 — permission modes the agent supports; absent on old payloads,

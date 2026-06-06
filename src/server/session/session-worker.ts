@@ -439,7 +439,7 @@ export class SessionWorker extends EventEmitter {
     );
 
     // POST /agent/compact — trigger a context compaction on the resident agent
-    // (docs/179). Claude (streaming) injects the `/compact` slash command; Codex
+    // (docs/178). Claude (streaming) injects the `/compact` slash command; Codex
     // (live thread) sends the `thread/compact/start` RPC. Adapters that don't
     // implement compact(), or have no resident process to talk to, no-op — the
     // orchestrator handles the non-resident case by spawning a `/compact` turn.

@@ -562,7 +562,7 @@ export function MessageInput({
   const skillTokenPrefix =
     agents.find((a) => a.id === activeAgentId)?.skillInvocationPrefix ?? "/";
 
-  // docs/179 — ShipIt-native `/` commands offered in the `/` menu, gated by the
+  // docs/178 — ShipIt-native `/` commands offered in the `/` menu, gated by the
   // active agent's capabilities. `/compact` only when the backend can compact.
   const slashCommands = useMemo<SlashCommand[]>(() => {
     const supportsCompaction =
@@ -977,7 +977,7 @@ function ContextDialMount({
   const turnUsage = useSessionStore((s) =>
     sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
   );
-  // docs/179 — authoritative "compacted recently" signal: a compaction card
+  // docs/178 — authoritative "compacted recently" signal: a compaction card
   // present after the last user message. Self-clearing — a new user message
   // moves the boundary past the card. Drives the dial's compacted pill, with
   // ContextDial's `wasCompacted` heuristic as the fallback.

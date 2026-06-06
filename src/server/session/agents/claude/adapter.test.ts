@@ -133,9 +133,9 @@ describe("ClaudeAdapter", () => {
     expect((events[0] as any).permissionDenials).toBeUndefined();
   });
 
-  // docs/179 — native compaction signals. Before this, the `case "system"`
+  // docs/178 — native compaction signals. Before this, the `case "system"`
   // mapped EVERY system subtype to a bogus agent_init; now it discriminates.
-  describe("compaction (docs/179)", () => {
+  describe("compaction (docs/178)", () => {
     it("maps system/status status:'compacting' to agent_compaction_started", () => {
       const inner = new FakeInnerProcess();
       const adapter = new ClaudeAdapter(inner as any);

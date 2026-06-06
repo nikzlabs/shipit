@@ -438,7 +438,7 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE repos ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0");
     db.exec("UPDATE repos SET trusted = 1");
   },
-  // docs/179 — persist "Context compacted" cards so they survive a session
+  // docs/178 — persist "Context compacted" cards so they survive a session
   // switch / full reload. Compaction signals arrive off the agent-event stream
   // (system/compact_boundary, contextCompaction items) and are recorded in-band
   // via emitChatCard; without this column the inline card renders live but

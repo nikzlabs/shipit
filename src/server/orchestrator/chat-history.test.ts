@@ -74,7 +74,7 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].toolUse![0].name).toBe("Edit");
   });
 
-  it("persists a compaction card so it survives a reload (docs/179)", () => {
+  it("persists a compaction card so it survives a reload (docs/178)", () => {
     const mgr = new ChatHistoryManager(dbManager);
     const msg: PersistedMessage = {
       role: "assistant",

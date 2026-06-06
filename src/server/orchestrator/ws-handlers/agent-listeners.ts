@@ -656,7 +656,7 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/179 — context compaction in flight. Transient progress only: forward
+    // docs/178 — context compaction in flight. Transient progress only: forward
     // an emit-only "Compacting…" indicator and stop before the message
     // accumulator (it has no place in the scrollback). Like rate-limits and
     // steer-rejected, this is not chat content. Both CLIs may compact
@@ -674,7 +674,7 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/179 — compaction finished. This IS transcript content (the history
+    // docs/178 — compaction finished. This IS transcript content (the history
     // was replaced by a summary), so persist a card via `emitChatCard` (the one
     // supported way to add a transcript card off the agent-event stream — it
     // both emits live AND records in-band with the turn so it survives a
@@ -750,7 +750,7 @@ export function wireAgentListeners(
       // the first init per turn — see the `hasLoggedAgentStart` comment
       // above for why subsequent inits (subagents, streaming turn-2)
       // must not re-log.
-      // docs/179 — the Claude CLI emits a SECOND `system/init` mid-stream after
+      // docs/178 — the Claude CLI emits a SECOND `system/init` mid-stream after
       // it compacts context (and subagents each emit their own init). Only the
       // FIRST init per wired-agent is the real process start / the turn's
       // session+permission baseline; the guarded-mode availability check below

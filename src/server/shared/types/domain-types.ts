@@ -350,7 +350,7 @@ export interface IssueWriteCard {
 }
 
 /**
- * docs/179 — a persisted "Context compacted" transcript card. Shared verbatim by
+ * docs/178 — a persisted "Context compacted" transcript card. Shared verbatim by
  * the live WS payload (`WsCompactionCard`), the persisted chat-history row
  * (`PersistedMessage.compaction`), and the client card so the three can't drift
  * (same pattern as the voice-note / bug-report / issue-write cards). Every detail

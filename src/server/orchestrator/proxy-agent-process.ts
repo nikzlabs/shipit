@@ -166,7 +166,7 @@ export class ProxyAgentProcess extends EventEmitter<{
   }
 
   /**
-   * docs/179 — fire-and-forget POST to worker /agent/compact. Failures land on
+   * docs/178 — fire-and-forget POST to worker /agent/compact. Failures land on
    * the Logs panel rather than `error`: a failed compaction shouldn't tear down
    * the turn (the context is simply not summarized), and the next user message
    * still goes through.

@@ -258,7 +258,7 @@ export interface ChatMessage {
     cardId: string;
   } & Partial<IssueWriteCardData>;
   /**
-   * docs/179 — when set, this message renders a `CompactionCard` inline ("Context
+   * docs/178 — when set, this message renders a `CompactionCard` inline ("Context
    * compacted"). Populated from `compaction_card` WS events and rehydrated from
    * persisted history (the card lives on the message itself, like `voiceNote`,
    * so no separate store seeding is needed). All detail fields are optional —
@@ -379,7 +379,7 @@ export function MessageList({
   const messages = messagesProp;
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
-  // docs/179 — transient "Compacting…" indicator (emit-only; not persisted).
+  // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
   const compacting = useSessionStore((s) => s.compacting);
 
   // Per-completed-turn Play button (docs/144). A "turn" is the run of
@@ -753,7 +753,7 @@ export function MessageList({
           );
         }
 
-        // docs/179 — "Context compacted" card. Carries no chat text of its own;
+        // docs/178 — "Context compacted" card. Carries no chat text of its own;
         // render the inline `CompactionCard` and skip the bubble path.
         if (msg.compaction) {
           return (

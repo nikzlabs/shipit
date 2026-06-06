@@ -289,7 +289,7 @@ export class CodexAdapter
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
-    // docs/179 — the app-server exposes `thread/compact/start` and emits
+    // docs/178 — the app-server exposes `thread/compact/start` and emits
     // `contextCompaction` items we map to normalized compaction signals.
     supportsCompaction: true,
     skillsDirName: ".codex",
@@ -325,7 +325,7 @@ export class CodexAdapter
   private lastTokenUsage: CodexTokenUsage | null = null;
 
   /**
-   * docs/179 — true once ShipIt has asked this app-server to compact (via
+   * docs/178 — true once ShipIt has asked this app-server to compact (via
    * `compact()` or a `compact`-flagged run). Codex emits no manual/auto field on
    * its `contextCompaction` items, so the adapter labels the normalized event by
    * correlation: `"manual"` when we requested it, `"auto"` otherwise (the CLI
@@ -335,7 +335,7 @@ export class CodexAdapter
   private compactionRequested = false;
 
   /**
-   * docs/179 — true when this run was spawned purely to compact
+   * docs/178 — true when this run was spawned purely to compact
    * (`run({ compact: true })`): we issue `thread/compact/start` instead of a
    * `turn/start`, so there is no normal turn lifecycle to end the run. The
    * `contextCompaction` `item/completed` becomes the turn terminus — we emit a
@@ -518,7 +518,7 @@ export class CodexAdapter
   }
 
   /**
-   * docs/179 — trigger a context compaction on the live app-server via the
+   * docs/178 — trigger a context compaction on the live app-server via the
    * `thread/compact/start` RPC. Only works when a process + thread are resident
    * (i.e. a turn is in flight); Codex tears its app-server down on turn
    * completion, so between turns there's nothing to talk to and the orchestrator
@@ -1011,7 +1011,7 @@ export class CodexAdapter
       }
 
       case "contextCompaction": {
-        // docs/179 — the app-server compacted the thread's context (manually via
+        // docs/178 — the app-server compacted the thread's context (manually via
         // our `thread/compact/start`, or on its own when the window filled). Map
         // it to the normalized compaction signals. Codex carries no manual/auto
         // field, so label by correlation (`compactionRequested`); token figures
@@ -1208,7 +1208,7 @@ export class CodexAdapter
 
   /** Handle turn completion — emit agent_result. */
   private handleTurnCompleted(params: Record<string, unknown>): void {
-    // docs/179 — a compact-spawn run already ended the turn from the
+    // docs/178 — a compact-spawn run already ended the turn from the
     // `contextCompaction` `item/completed` (there was no `turn/start`, so this
     // would be a spurious/duplicate completion). Skip to avoid a double
     // `agent_result`.
@@ -1372,7 +1372,7 @@ export class CodexAdapter
       tools: this.capabilities.toolNames,
     } as AgentEvent);
 
-    // docs/179 — compact-spawn run: the orchestrator intercepted `/compact`
+    // docs/178 — compact-spawn run: the orchestrator intercepted `/compact`
     // with no live app-server to call `compact()` on, so we spawned this
     // process purely to compact. Issue `thread/compact/start` on the resumed
     // thread instead of a normal `turn/start`; the `contextCompaction` items

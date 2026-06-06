@@ -21,7 +21,7 @@ type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
 /**
- * docs/179 — recognize the `/compact` composer command. Exact match only (a
+ * docs/178 — recognize the `/compact` composer command. Exact match only (a
  * trailing argument like `/compact foo` is not a recognized command and falls
  * through as a normal message). The `/` autocomplete only offers this when the
  * active agent advertises `supportsCompaction`.
@@ -97,7 +97,7 @@ export async function handleSendMessage(
   // Check auth before spawning — some CLIs hang if not authenticated.
   if (!ensureActiveAgentAuthenticated(ctx)) return;
 
-  // docs/179 — `/compact` interception. When the active agent supports
+  // docs/178 — `/compact` interception. When the active agent supports
   // compaction, route the command to the agent's compaction trigger instead of
   // sending the literal text to the model: a fresh spawn runs `run({ compact:
   // true })` (Claude → `claude -p "/compact"`; Codex → `thread/compact/start`),
@@ -129,7 +129,7 @@ export async function handleSendMessage(
     // and the user sees: "agent starts briefly, nothing happens".
     const actuallyRunning = await runnerForQueue.verifyRunningState();
     if (actuallyRunning) {
-      // docs/179 — `/compact` while a turn is in flight: trigger compaction on
+      // docs/178 — `/compact` while a turn is in flight: trigger compaction on
       // the resident live process (streaming Claude injects `/compact`; live
       // Codex sends `thread/compact/start`) rather than queuing the literal text.
       // The compaction events (started → card) flow through the active turn's

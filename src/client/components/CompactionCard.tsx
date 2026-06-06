@@ -4,7 +4,7 @@ import { formatTokenCount } from "../utils/model-info.js";
 import type { CompactionCard as CompactionCardData } from "../../server/shared/types.js";
 
 /**
- * docs/179 — inline "Context compacted" transcript card. Rendered when a chat
+ * docs/178 — inline "Context compacted" transcript card. Rendered when a chat
  * message carries a `compaction` payload (live from a `compaction_card` WS event
  * or rehydrated from persisted history).
  *

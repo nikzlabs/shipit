@@ -1234,8 +1234,8 @@ describe("CodexAdapter", () => {
     expect((turnStart!.params as any).sandboxPolicy).toEqual({ type: "dangerFullAccess" });
   });
 
-  // docs/179 — native compaction signals + trigger.
-  describe("compaction (docs/179)", () => {
+  // docs/178 — native compaction signals + trigger.
+  describe("compaction (docs/178)", () => {
     it("advertises supportsCompaction", () => {
       adapter = new CodexAdapter();
       expect(adapter.capabilities.supportsCompaction).toBe(true);

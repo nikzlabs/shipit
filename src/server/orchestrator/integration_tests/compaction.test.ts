@@ -1,5 +1,5 @@
 /**
- * Integration tests for the `/compact` interception (docs/179).
+ * Integration tests for the `/compact` interception (docs/178).
  *
  * `/compact` is an agent-agnostic ShipIt command, not a literal prompt. When the
  * active agent advertises `supportsCompaction`, the send-message handler routes
@@ -36,7 +36,7 @@ import { DatabaseManager } from "../../shared/database.js";
 
 type AnyMsg = any;
 
-describe("Integration: /compact interception (docs/179)", () => {
+describe("Integration: /compact interception (docs/178)", () => {
   let app: FastifyInstance;
   let port: number;
   let tmpDir: string;

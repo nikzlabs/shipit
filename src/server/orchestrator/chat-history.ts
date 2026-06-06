@@ -133,7 +133,7 @@ export interface PersistedMessage {
    */
   issueWrite?: IssueWriteCard;
   /**
-   * docs/179 — when set, this message renders an inline "Context compacted" card.
+   * docs/178 — when set, this message renders an inline "Context compacted" card.
    * Compaction signals arrive off the agent-event stream
    * (`system/compact_boundary`, Codex `contextCompaction` items), so
    * `buildTurnMessages` doesn't capture them on its own; the card is recorded

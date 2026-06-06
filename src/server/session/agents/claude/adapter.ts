@@ -65,7 +65,7 @@ export class ClaudeAdapter
     // MCP tool registration via mcpConfigPath, which 125 needs.
     supportsReview: true,
     supportsSteering: true,
-    // docs/179 — the CLI exposes `/compact` and emits `system/compact_boundary`
+    // docs/178 — the CLI exposes `/compact` and emits `system/compact_boundary`
     // stream events we map to normalized compaction signals.
     supportsCompaction: true,
     skillsDirName: ".claude",
@@ -125,7 +125,7 @@ export class ClaudeAdapter
       case "system":
         // The CLI's `system` events are discriminated by `subtype`. Only `init`
         // is the session handshake; `status`/`compact_boundary` carry the
-        // docs/179 compaction signals. Before docs/179 this case mapped EVERY
+        // docs/178 compaction signals. Before docs/178 this case mapped EVERY
         // system event to `agent_init` (the type only declared `subtype:"init"`),
         // so a `status`/`compact_boundary` event was silently turned into a bogus
         // init with an undefined sessionId — discriminating fixes that.
@@ -141,7 +141,7 @@ export class ClaudeAdapter
               permissionMode: raw.permissionMode,
             };
           case "status":
-            // docs/179 — the CLI reports `status:"compacting"` while it
+            // docs/178 — the CLI reports `status:"compacting"` while it
             // summarizes context. Surface it as a transient progress signal;
             // ignore every other status (e.g. the docs/138 `"default"` noise).
             if (raw.status === "compacting") {
@@ -149,7 +149,7 @@ export class ClaudeAdapter
             }
             return null;
           case "compact_boundary": {
-            // docs/179 — compaction finished. Map the CLI's `compact_metadata`
+            // docs/178 — compaction finished. Map the CLI's `compact_metadata`
             // into the normalized card fields (all best-effort / optional).
             const meta = raw.compact_metadata;
             const event: AgentEvent = { type: "agent_compacted" };
@@ -366,7 +366,7 @@ export class ClaudeAdapter
   }
 
   /**
-   * docs/179 — trigger a context compaction on the resident process by sending
+   * docs/178 — trigger a context compaction on the resident process by sending
    * the CLI's `/compact` slash command as a user message. Only meaningful on the
    * persistent streaming process (where a message can be injected mid/between
    * turn without a respawn) — the one-shot PTY path has no resident process to

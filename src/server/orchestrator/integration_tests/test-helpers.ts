@@ -632,7 +632,7 @@ export class FakeClaudeProcess extends EventEmitter {
   public killed = false;
   public interrupted = false;
   public stdinData: string[] = [];
-  /** docs/179 — captures the `compact` run-param + any `compact()` call. */
+  /** docs/178 — captures the `compact` run-param + any `compact()` call. */
   public lastCompact: boolean | undefined;
   public compactCalled = false;
   public readonly isStreaming = false;
@@ -720,7 +720,7 @@ export class FakeClaudeProcess extends EventEmitter {
     this.writeStdin(text);
   }
 
-  /** docs/179 — record a compaction trigger on the resident process. */
+  /** docs/178 — record a compaction trigger on the resident process. */
   compact() {
     this.compactCalled = true;
   }

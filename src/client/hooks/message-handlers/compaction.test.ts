@@ -35,7 +35,7 @@ beforeEach(() => {
   useSessionStore.setState({ messages: [], compacting: false });
 });
 
-describe("handleCompactionStatus (docs/179)", () => {
+describe("handleCompactionStatus (docs/178)", () => {
   it("flips the transient compacting flag", () => {
     handleCompactionStatus(ctx, status(true));
     expect(useSessionStore.getState().compacting).toBe(true);
@@ -44,7 +44,7 @@ describe("handleCompactionStatus (docs/179)", () => {
   });
 });
 
-describe("handleCompactionCard (docs/179)", () => {
+describe("handleCompactionCard (docs/178)", () => {
   it("appends an assistant message carrying the compaction card and clears the indicator", () => {
     useSessionStore.setState({ compacting: true });
     handleCompactionCard(ctx, card());

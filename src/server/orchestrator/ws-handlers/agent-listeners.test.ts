@@ -187,7 +187,7 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  it("emits a transient indicator on compaction start and persists a card on completion (docs/179)", () => {
+  it("emits a transient indicator on compaction start and persists a card on completion (docs/178)", () => {
     const agent = new FakeAgent();
     const runner = new SessionRunner({
       sessionId: "session-1",
