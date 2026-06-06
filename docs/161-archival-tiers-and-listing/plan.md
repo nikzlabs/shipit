@@ -290,6 +290,19 @@ user is waiting for. No cron, no added start latency. If sustained pressure ever
 outpaces this, promoting the pass to a real timer is a later, isolated change —
 but we start cron-free per the explicit decision.
 
+**Update (issue #1049) — the periodic timer landed.** The "later, isolated
+change" above shipped: the session-start-only trigger turned out to create a
+self-heal **feedback trap** — once the disk fills, new session starts *fail*, so
+the per-start kick never fires, so the reclaim that would free space never runs,
+and a quiet period with no starts likewise lets idle `node_modules` sit past the
+`hot → light` step. `index.ts` now also runs `kickDiskEscalation()` on a
+low-frequency `setInterval` (`DISK_ESCALATION_INTERVAL_MS`, default `3600000` =
+hourly), wired exactly like `idleEnforcementInterval` / `memoryStatsInterval`
+(gated on `!isTestMode && containerManager`, `.unref()`'d, cleared in the
+`onClose` shutdown hook). This timer is for the **escalation ladder only** — the
+failure-recovery `runDiskJanitor` sweeps stay startup-only because they don't
+accumulate steadily.
+
 ### The transitions
 
 Each row: the move, the **trigger**, the **condition**, the **guards** (all must
@@ -384,6 +397,7 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 | `IDLE_EVICT_MERGED_MS` | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
 | `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
+| `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
 | `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
 
 Container stop is governed by the existing `maxIdleContainers` cap, not a time

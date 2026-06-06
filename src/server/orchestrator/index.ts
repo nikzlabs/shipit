@@ -925,6 +925,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     highPct: parseFloat(process.env.DISK_FREE_HIGH_PCT ?? "") || undefined,
     totalBytes: diskTotalBytes,
   });
+  // issue #1048 — surface that the disk-pressure safety net is off. When
+  // neither watermark resolves (no *_BYTES / *_PCT configured, or a *_PCT
+  // was set but the host total couldn't be probed), the LRU-under-pressure
+  // descent in `escalateDiskTiers` no-ops, leaving only the age-based ladder.
+  // One line at startup makes that visible instead of silently degraded.
+  if (!isTestMode && (diskFreeLow === undefined || diskFreeHigh === undefined)) {
+    console.warn(
+      "[disk-janitor] disk-pressure eviction is DISABLED — set DISK_FREE_LOW_PCT/DISK_FREE_HIGH_PCT "
+      + "(or DISK_FREE_LOW_BYTES/DISK_FREE_HIGH_BYTES) to enable the under-pressure LRU descent. "
+      + "Age-based tier escalation still runs.",
+    );
+  }
   const kickDiskEscalation = (excludeSessionId?: string): void => {
     if (isTestMode || !containerManager) return;
     void escalateDiskTiers(
@@ -950,6 +962,34 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // the first session activation. The per-activation kicks above are the
   // primary steady-state reclaim.
   kickDiskEscalation();
+
+  // ---- Periodic disk-tier escalation (issue #1049) ----
+  // The ESCALATION ladder (and its disk-pressure LRU descent) is the one disk
+  // task that accumulates steadily — idle node_modules pile up with the clock,
+  // not with a failure earlier in the lifecycle. The other side, the startup
+  // `runDiskJanitor` failure-recovery sweeps, correctly stay startup-only (see
+  // the disk-janitor.ts module docstring) because those orphans only appear
+  // when teardown crashed, so a timer there would mostly burn cycles.
+  //
+  // Until now escalation only fired at orchestrator boot and after each session
+  // start, which created a self-heal feedback trap: once the disk fills, new
+  // session starts FAIL → the per-start kick never fires → the reclaim that
+  // would free space never runs. A quiet period with no starts also let idle
+  // node_modules sit well past the 24h `hot → light` step unreclaimed. This
+  // low-frequency timer makes both the age-based reclaim AND the disk-pressure
+  // check run even when the instance is quiet or wedged, independent of session
+  // activity. Mirrors `kickDiskEscalation`'s own `!isTestMode && containerManager`
+  // no-op guard, so in test mode the interval is never created.
+  const diskEscalationIntervalMs = parseFloat(process.env.DISK_ESCALATION_INTERVAL_MS ?? "")
+    || 3_600_000; // hourly
+  const diskEscalationInterval = (!isTestMode && containerManager)
+    ? setInterval(() => { kickDiskEscalation(); }, diskEscalationIntervalMs)
+    : null;
+  // Don't keep the event loop alive just for the periodic reclaim — match the
+  // idle-enforcement / memory-stats intervals.
+  if (diskEscalationInterval && typeof diskEscalationInterval.unref === "function") {
+    diskEscalationInterval.unref();
+  }
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
@@ -1865,6 +1905,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   app.addHook("onClose", async () => {
     if (memoryStatsInterval) clearInterval(memoryStatsInterval);
     if (idleEnforcementInterval) clearInterval(idleEnforcementInterval);
+    if (diskEscalationInterval) clearInterval(diskEscalationInterval);
     if (repoPrefetcher) repoPrefetcher.stop();
     claudeOAuthRefresherRef.ref?.stop();
     codexOAuthRefresherRef.ref?.stop();
