@@ -108,6 +108,13 @@ foreign code once. The decision persists, so it does not recur per session.
 
 ## Open questions / decisions to make
 
+> **Status (implemented).** All four questions below are resolved and built.
+> (1) agent chats while untrusted — only auto-execution is gated; (2) no-remote
+> sessions are trusted by construction; (3) the decision lives on `RepoStore` as
+> a `trusted` column keyed by `canonicalRepoKey`; (4) trust follows remote
+> identity, not content — a `shipit.yaml` rewrite does not re-prompt (documented
+> limitation). See `checklist.md` for the touchpoint-by-touchpoint status.
+
 1. **Does the agent process itself run while untrusted?** **Decided: yes (option a).**
    The agent chats normally while a repo is untrusted; only auto-execution
    (`agent.install` + compose) is gated. Rationale: cloning a repo is already an intent

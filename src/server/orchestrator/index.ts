@@ -372,7 +372,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   providerAccountManager.attachAuthManagers(authManagers);
 
   const runnerRegistry = createRunnerRegistry({
-    effectiveRunnerFactory, sessionManager, createGitManager,
+    effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,

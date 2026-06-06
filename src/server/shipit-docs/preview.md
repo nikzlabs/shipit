@@ -31,6 +31,22 @@ automatically as you edit files.
    resolve naturally, with no path prefix to account for. (Bind the server to
    `0.0.0.0`, not `127.0.0.1`, or the proxy can't reach it.)
 
+## Repository trust gate
+
+A freshly-cloned repository is **untrusted** until the user accepts it once. While
+a repo is untrusted, ShipIt still clones it and lets you browse files, read diffs,
+and chat — but it does **not** auto-run any repo-declared command: `agent.install`
+is deferred and `auto` preview services do not start. This is a security boundary
+(trust-on-first-use), so an opened repo can't run setup shell on the user's machine
+before they've vetted it.
+
+If install or the preview "isn't running" on a brand-new repo, the user simply
+hasn't trusted it yet — the Preview tab shows a restricted state with a **Trust
+this repository** button. Accepting unblocks install + previews for that remote
+(now and for every future session cloned from it). Repos scaffolded from a ShipIt
+template are trusted automatically. This is per-remote and one-time; it does not
+recur per session.
+
 ## Where to put `npm install`
 
 Put dependency-install commands in `agent.install` only. **Do not** also

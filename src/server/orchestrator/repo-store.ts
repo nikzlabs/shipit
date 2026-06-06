@@ -1,5 +1,6 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
+import { canonicalRepoKey } from "./git-utils.js";
 
 interface RepoRow {
   url: string;
@@ -7,6 +8,7 @@ interface RepoRow {
   last_used_at: string;
   status: string;
   warm_session_id: string | null;
+  trusted: number;
 }
 
 export class RepoStore {
@@ -24,6 +26,7 @@ export class RepoStore {
       status: row.status as RepoInfo["status"],
     };
     if (row.warm_session_id) info.warmSessionId = row.warm_session_id;
+    info.trusted = row.trusted === 1;
     return info;
   }
 
@@ -105,6 +108,36 @@ export class RepoStore {
   get(url: string): RepoInfo | undefined {
     const row = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(url) as RepoRow | undefined;
     return row ? this.fromRow(row) : undefined;
+  }
+
+  /**
+   * docs/178 — is this remote trusted? Matched by `canonicalRepoKey` rather
+   * than raw-URL equality so `…/o/r` vs `…/o/r.git` vs SSH/HTTPS forms of the
+   * same repo share one trust decision (RepoStore rows are keyed by the raw
+   * URL the repo was first added with). An unknown remote is untrusted.
+   */
+  isTrusted(url: string): boolean {
+    const key = canonicalRepoKey(url);
+    const rows = this.db.prepare("SELECT url, trusted FROM repos").all() as Pick<RepoRow, "url" | "trusted">[];
+    return rows.some((r) => r.trusted === 1 && canonicalRepoKey(r.url) === key);
+  }
+
+  /**
+   * docs/178 — set the trust flag for every stored row whose canonical key
+   * matches `url`. Runs in a transaction so a concurrent reader never sees a
+   * half-applied set across duplicate raw-URL rows for the same repo.
+   */
+  setTrusted(url: string, trusted: boolean): void {
+    const key = canonicalRepoKey(url);
+    const val = trusted ? 1 : 0;
+    const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+    const update = this.db.prepare("UPDATE repos SET trusted = ? WHERE url = ?");
+    const tx = this.db.transaction(() => {
+      for (const r of rows) {
+        if (canonicalRepoKey(r.url) === key) update.run(val, r.url);
+      }
+    });
+    tx();
   }
 
   /** Check if a repo URL is already tracked. */

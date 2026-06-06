@@ -27,6 +27,7 @@ import {
   addRepo,
   removeRepo,
   reorderRepos,
+  setRepoTrusted,
   createRepoWithTemplate,
   spawnChildSession,
   createHeadlessSession,
@@ -48,7 +49,7 @@ import {
   DEFAULT_MAX_SHIPIT_FIX_SESSIONS_PER_TURN,
 } from "./services/index.js";
 import { ensureBareCache } from "./repo-git.js";
-import { parseGitHubRemote } from "./git-utils.js";
+import { parseGitHubRemote, canonicalRepoKey } from "./git-utils.js";
 import type { AgentId, IssueRef } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -950,6 +951,9 @@ export async function registerSessionRoutes(
         if (result.repoUrl) {
           deps.repoStore.add(result.repoUrl);
           deps.repoStore.setReady(result.repoUrl);
+          // docs/178 — a ShipIt-scaffolded repo has no attacker-authored
+          // config, so it is trusted by construction and never prompts.
+          deps.repoStore.setTrusted(result.repoUrl, true);
           deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
           void deps.warmSessionForRepo?.(result.repoUrl);
           const warmingPromise = deps.waitForWarmSession?.(result.repoUrl);
@@ -968,6 +972,45 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create repo: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/repos/trust — grant trust to a remote (docs/178 TOFU gate).
+  // Accepting once unblocks all repo-declared auto-execution (agent.install +
+  // compose command:/build:) for the remote, now and for every future session
+  // cloned from it. Idempotent: trusting an already-trusted repo is a no-op.
+  app.post<{ Body: { url?: string } }>(
+    "/api/repos/trust",
+    async (request, reply) => {
+      try {
+        const url = request.body?.url?.trim();
+        setRepoTrusted(deps.repoStore, url);
+        // Broadcast the updated list so every connected tab clears its trust
+        // banner (the banner is driven by the repo's `trusted` flag).
+        deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
+        // Unblock the deferred setup for any already-open session of this
+        // remote: re-run its compose/install setup now that trust is granted,
+        // so the user doesn't have to restart the session to get a preview.
+        const key = canonicalRepoKey(url!);
+        for (const session of sessionManager.list()) {
+          if (session.remoteUrl && canonicalRepoKey(session.remoteUrl) === key) {
+            const runner = deps.runnerRegistry.get(session.id) as
+              | { rerunServiceSetup?: () => void }
+              | undefined;
+            runner?.rerunServiceSetup?.();
+          }
+        }
+        // Warm the now-trusted remote so the next New Session is instant — the
+        // pre-install step was a no-op while untrusted.
+        void deps.warmSessionForRepo?.(url!);
+        return { repo: deps.repoStore.get(url!) ?? null, trusted: true };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to trust repo: ${getErrorMessage(err)}` });
       }
     },
   );

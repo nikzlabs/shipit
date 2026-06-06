@@ -122,6 +122,67 @@ describe("POST /api/repos with url", () => {
   });
 });
 
+describe("POST /api/repos/trust (docs/178)", () => {
+  it("a repo added by URL is untrusted by default", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { url: "https://github.com/test/repo.git" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().repo.trusted).toBe(false);
+    expect(repoStore.isTrusted("https://github.com/test/repo.git")).toBe(false);
+  });
+
+  it("trusts a known remote", async () => {
+    const url = "https://github.com/owner/repo.git";
+    repoStore.add(url);
+    repoStore.setReady(url);
+    expect(repoStore.isTrusted(url)).toBe(false);
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos/trust",
+      payload: { url },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ trusted: true });
+    expect(repoStore.isTrusted(url)).toBe(true);
+  });
+
+  it("trusts by canonical identity regardless of URL form", async () => {
+    repoStore.add("https://github.com/owner/repo.git");
+    repoStore.setReady("https://github.com/owner/repo.git");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos/trust",
+      // suffix-less form — same canonical key as the stored `.git` form
+      payload: { url: "https://github.com/owner/repo" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(repoStore.isTrusted("https://github.com/owner/repo.git")).toBe(true);
+  });
+
+  it("returns 404 for an unknown remote", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos/trust",
+      payload: { url: "https://github.com/never/added.git" },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 400 for an empty url", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos/trust",
+      payload: { url: "" },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe("DELETE /api/repos/:url", () => {
   it("removes a repo", async () => {
     repoStore.add("https://github.com/owner/repo.git");

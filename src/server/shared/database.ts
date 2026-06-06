@@ -426,6 +426,18 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN issue_write TEXT");
   },
+  // docs/178 — per-remote trust-on-first-use gate. `trusted = 0` defers all
+  // repo-declared auto-execution (agent.install + compose command:/build:)
+  // until the user accepts once; new repos added by URL start untrusted.
+  // Existing rows are backfilled to trusted: they were added before the gate
+  // existed and have already run their setup repeatedly, so the user has
+  // effectively accepted them — flipping them to untrusted would break every
+  // current repo on upgrade. ShipIt-template repos are marked trusted at
+  // creation (no attacker-authored config), separately from this backfill.
+  (db) => {
+    db.exec("ALTER TABLE repos ADD COLUMN trusted INTEGER NOT NULL DEFAULT 0");
+    db.exec("UPDATE repos SET trusted = 1");
+  },
 ];
 
 export class DatabaseManager {

@@ -3,6 +3,7 @@ import type { SessionRunnerFactory } from "./session-runner.js";
 import { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionManager } from "./sessions.js";
+import type { RepoStore } from "./repo-store.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -36,6 +37,12 @@ import { getAgentCapabilities } from "../shared/agent-registry.js";
 export interface RunnerRegistryDeps {
   effectiveRunnerFactory: SessionRunnerFactory | undefined;
   sessionManager: SessionManager;
+  /**
+   * docs/178 — repo trust store, forwarded into `setupServiceManager` so the
+   * per-session compose/install setup defers repo-declared auto-execution for
+   * an untrusted remote.
+   */
+  repoStore: RepoStore;
   createGitManager: (dir: string) => GitManager;
   githubAuthManager: GitHubAuthManager;
   agentFactory: ((agentId: AgentId) => AgentProcess) | undefined;
@@ -211,7 +218,7 @@ export function createRunnerRegistry(
   registryDeps: RunnerRegistryDeps,
 ): SessionRunnerRegistry {
   const {
-    effectiveRunnerFactory, sessionManager, createGitManager,
+    effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
@@ -429,6 +436,7 @@ export function createRunnerRegistry(
         // Set up compose ServiceManager if the session has a compose config
         const setupDeps = {
           sessionManager,
+          repoStore,
           serviceManagers,
           composeStopPromises,
           composeWarnings,
@@ -445,6 +453,15 @@ export function createRunnerRegistry(
         // Allow re-setup when config files change (e.g. old-format migrated to new)
         if ("onComposeConfigChanged" in runner) {
           (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = () => {
+            setupServiceManager(runner, setupDeps);
+          };
+        }
+
+        // docs/178 — re-run setup when the user trusts a previously-untrusted
+        // remote. The trust endpoint invokes this so the deferred install +
+        // compose stack start for the already-open session.
+        if ("rerunServiceSetup" in runner) {
+          (runner as { rerunServiceSetup?: () => void }).rerunServiceSetup = () => {
             setupServiceManager(runner, setupDeps);
           };
         }

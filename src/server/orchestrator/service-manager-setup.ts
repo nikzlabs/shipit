@@ -3,6 +3,7 @@ import type { SessionRunnerInterface } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import { ServiceManager } from "./service-manager.js";
 import type { SessionManager } from "./sessions.js";
+import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { PlatformCredentialProvider } from "./platform-credentials.js";
@@ -237,6 +238,13 @@ export function setupServiceManager(
   runner: SessionRunnerInterface,
   deps: {
     sessionManager: SessionManager;
+    /**
+     * docs/178 — repo trust store. A repo-backed session whose remote has not
+     * been trusted defers all repo-declared auto-execution (agent.install +
+     * compose command:/build:). Required so the gate has an authority to
+     * consult; tests pass a store whose `isTrusted` returns true.
+     */
+    repoStore: RepoStore;
     serviceManagers: Map<string, ServiceManager>;
     composeStopPromises: Map<string, Promise<void>>;
     composeWarnings: Map<string, string>;
@@ -252,6 +260,7 @@ export function setupServiceManager(
 ): void {
   const {
     sessionManager,
+    repoStore,
     serviceManagers,
     composeStopPromises,
     composeWarnings,
@@ -265,6 +274,19 @@ export function setupServiceManager(
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+
+  // docs/178 — trust gate. Defer ALL repo-declared auto-execution
+  // (`agent.install` + compose `command:`/`build:`) until the user trusts the
+  // remote once. A session with no remote is authored locally by the user, so
+  // it is trusted by construction. The clone, file tree, diffs, and agent chat
+  // still work while untrusted; only foreign-code execution is gated. The
+  // trust endpoint re-invokes this setup (via `runner.rerunServiceSetup`) on
+  // acceptance, at which point install fires and the compose stack starts.
+  const remoteUrl = session?.remoteUrl;
+  if (remoteUrl && !repoStore.isTrusted(remoteUrl)) {
+    console.log(`[trust] Deferring install + compose for untrusted remote ${remoteUrl} (session ${runner.sessionId})`);
+    return;
+  }
 
   let shipitConfig;
   try {
