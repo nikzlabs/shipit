@@ -121,13 +121,17 @@ export class AutoMergeManager {
       return;
     }
 
+    // A conflict already has its own dedicated surface on the card — the
+    // "Merge conflicts" indicator + Resolve button (and, when enabled, the
+    // auto-resolve loop). Setting a sticky auto-merge error here would render a
+    // redundant second "PR has merge conflicts" line. So, like the review gate
+    // above, bail without a sticky error and re-evaluate next poll once the
+    // branch is rebased clean. Clear any stale error from a prior tick.
     if (summary.mergeable === "conflicting") {
-      mergeState.error = {
-        code: "no_branch_protection",
-        message: "PR has merge conflicts",
-        settingsUrl: summary.prUrl,
-      };
-      this.onChange(sessionId);
+      if (mergeState.error) {
+        delete mergeState.error;
+        this.onChange(sessionId);
+      }
       return;
     }
 

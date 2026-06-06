@@ -137,7 +137,11 @@ describe("AutoMergeManager.handleManaged", () => {
     expect(manager.get("s1")?.enabled).toBe(false);
   });
 
-  it("flags a conflict (does NOT merge) for a no-checks PR with conflicts", async () => {
+  // A conflict is surfaced by the card's dedicated "Merge conflicts" indicator +
+  // Resolve button, so auto-merge bails WITHOUT a sticky error (mirroring the
+  // review gate) — otherwise the card renders a redundant second
+  // "PR has merge conflicts" line. It stays enabled to retry once rebased clean.
+  it("does NOT merge a conflicting PR and sets no sticky error", async () => {
     const { manager, mergePullRequest } = makeManager();
     manager.setEnabled("s1", true);
     manager.setManaged("s1", true);
@@ -145,7 +149,22 @@ describe("AutoMergeManager.handleManaged", () => {
     await manager.handleManaged("s1", makeSummary("none", "conflicting"), "o", "r");
 
     expect(mergePullRequest).not.toHaveBeenCalled();
-    expect(manager.get("s1")?.error?.message).toBe("PR has merge conflicts");
+    expect(manager.get("s1")?.error).toBeUndefined();
+    expect(manager.get("s1")?.enabled).toBe(true);
+  });
+
+  it("clears a stale error when a conflict appears", async () => {
+    const { manager, mergePullRequest } = makeManager();
+    manager.setEnabled("s1", true);
+    manager.setManaged("s1", true);
+    // Seed a stale error from a prior failed merge attempt.
+    const state = manager.get("s1");
+    if (state) state.error = { code: "no_branch_protection", message: "stale", settingsUrl: "u" };
+
+    await manager.handleManaged("s1", makeSummary("none", "conflicting"), "o", "r");
+
+    expect(mergePullRequest).not.toHaveBeenCalled();
+    expect(manager.get("s1")?.error).toBeUndefined();
   });
 
   it("ignores PRs that are not managed+enabled", async () => {
