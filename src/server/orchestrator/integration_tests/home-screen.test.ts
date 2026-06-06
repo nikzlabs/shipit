@@ -89,6 +89,13 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     expect(body.success).toBe(true);
     expect(body.repoUrl).toBe("https://github.com/test-user/my-new-app.git");
     expect(body.sessionId).toBeTruthy();
+
+    // docs/178 — a ShipIt-scaffolded repo has no attacker-authored config, so
+    // it is trusted by construction and never shows the trust gate.
+    const list = await app.inject({ method: "GET", url: "/api/repos" });
+    const created = (list.json().repos as { url: string; trusted?: boolean }[])
+      .find((r) => r.url === body.repoUrl);
+    expect(created?.trusted).toBe(true);
   });
 
   it("returns 400 for empty repoName", async () => {

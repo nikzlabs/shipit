@@ -96,6 +96,58 @@ describe("RepoStore", () => {
     expect(store.has("https://github.com/owner/repo.git")).toBe(true);
   });
 
+  describe("trust (docs/178)", () => {
+    const URL = "https://github.com/owner/repo.git";
+
+    it("a freshly-added repo is untrusted by default", () => {
+      const repo = store.add(URL);
+      expect(repo.trusted).toBe(false);
+      expect(store.isTrusted(URL)).toBe(false);
+    });
+
+    it("setTrusted flips the flag and isTrusted reflects it", () => {
+      store.add(URL);
+      store.setTrusted(URL, true);
+      expect(store.isTrusted(URL)).toBe(true);
+      expect(store.get(URL)?.trusted).toBe(true);
+      store.setTrusted(URL, false);
+      expect(store.isTrusted(URL)).toBe(false);
+      expect(store.get(URL)?.trusted).toBe(false);
+    });
+
+    it("trust is keyed by canonical repo identity, not the raw URL", () => {
+      // Stored with the .git suffix; trusted via the suffix-less form. The
+      // .git suffix, a trailing slash, and host casing all collapse to the
+      // same canonical key. (scp-style SSH is a genuinely distinct key under
+      // canonicalRepoKey, so it is intentionally not asserted equal here.)
+      store.add(URL);
+      store.setTrusted("https://github.com/owner/repo", true);
+      expect(store.isTrusted(URL)).toBe(true);
+      expect(store.isTrusted("https://github.com/owner/repo")).toBe(true);
+      expect(store.isTrusted("https://GitHub.com/owner/repo.git/")).toBe(true);
+    });
+
+    it("trust is per-remote — trusting one does not trust another", () => {
+      const OTHER = "https://github.com/other/thing.git";
+      store.add(URL);
+      store.add(OTHER);
+      store.setTrusted(URL, true);
+      expect(store.isTrusted(URL)).toBe(true);
+      expect(store.isTrusted(OTHER)).toBe(false);
+    });
+
+    it("an unknown remote is untrusted", () => {
+      expect(store.isTrusted("https://github.com/never/added.git")).toBe(false);
+    });
+
+    it("trust persists across store instances", () => {
+      store.add(URL);
+      store.setTrusted(URL, true);
+      const store2 = new RepoStore(dbManager);
+      expect(store2.isTrusted(URL)).toBe(true);
+    });
+  });
+
   describe("setOrder", () => {
     it("orders repos by display_order when set", () => {
       store.add("https://github.com/a/repo.git");

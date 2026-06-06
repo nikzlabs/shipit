@@ -132,6 +132,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _serviceManagerListeners: (() => void)[] = [];
   /** Called when config files change and no ServiceManager exists (e.g. after migration). */
   onComposeConfigChanged?: () => void;
+  /**
+   * docs/178 — re-run `setupServiceManager` for this runner. Invoked by the
+   * trust endpoint when the user accepts a previously-untrusted remote, so the
+   * deferred `agent.install` + compose stack start for the already-open
+   * session without requiring a restart.
+   */
+  rerunServiceSetup?: () => void;
 
   /**
    * When `true`, the runner's "disposed" lifecycle hook in

@@ -168,6 +168,15 @@ export interface RepoInfo {
   status: "cloning" | "ready";
   /** Session ID of the current warm (pre-created) session, if any. */
   warmSessionId?: string;
+  /**
+   * docs/178 — per-remote trust-on-first-use gate. `false` (the default for a
+   * freshly-added remote) defers all repo-declared auto-execution
+   * (agent.install + compose command:/build:) until the user accepts once via
+   * `POST /api/repos/trust`. Clone, file tree, diffs, and agent chat still work
+   * while untrusted. ShipIt-template repos are trusted at creation. Always
+   * populated from the store; only omitted on hand-built RepoInfo literals.
+   */
+  trusted?: boolean;
 }
 
 // ---- Doc types ----
