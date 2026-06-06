@@ -189,6 +189,13 @@ export interface RunnerRegistryDeps {
    */
   onAgentAuthRequired?: (agentId: AgentId) => void;
   /**
+   * docs/179 — proactively heal an agent's OAuth source token before the
+   * dispatched/system turn spawns the CLI. Mirrors the WS-path
+   * `AppCtx.ensureAgentTokenFresh`. Plumbed through so quick/child/CI-fix turns
+   * get the same pre-spawn heal the WS path does.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
    * docs/155 Phase 2c — per-agent auth manager map. Forwarded to the
    * `AgentListenerDeps` so a system-turn that hits `auth_required` restarts
    * the failing backend's auth flow (not always Claude OAuth). Optional;
@@ -218,7 +225,7 @@ export function createRunnerRegistry(
     credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
-    nudgeClaudeOAuthRefresh, onAgentAuthRequired, runParamsPreps,
+    nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -309,6 +316,8 @@ export function createRunnerRegistry(
           if (agentFactory) return agentFactory(agentId);
           throw new Error("No agent factory available for system turn");
         },
+        // docs/179 — token healer for the runtime-401 auto-retry on system turns.
+        ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
         autoCommit: async (sessionDir, summary) => {
           const git = createGitManager(sessionDir);
           const parentHash = await git.getHeadHash();
@@ -366,7 +375,10 @@ export function createRunnerRegistry(
             await prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
-              deps: { credentialsDir, credentialStore, sessionManager },
+              deps: {
+                credentialsDir, credentialStore, sessionManager,
+                ...(ensureAgentTokenFresh ? { ensureAgentTokenFresh } : {}),
+              },
             });
           },
         } : {}),

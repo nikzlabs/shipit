@@ -68,6 +68,7 @@ export async function registerSessionRoutes(
     createGitManager,
     ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
     sseBroadcast: deps.sseBroadcast,
+    ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
   };
 
   // Single shared claim service for both the HTTP claim-session route and

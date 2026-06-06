@@ -288,6 +288,16 @@ export interface SystemTurnDeps {
    */
   prepareAgentEnv?: (sessionId: string, agentId: AgentId) => Promise<void>;
   /**
+   * docs/179 — heal the agent's OAuth source token. Used by the runtime-401
+   * auto-retry: when a turn's CLI emits `auth_required`, the executor awaits
+   * this and, if the token rotated back to usable, re-dispatches the same turn
+   * once instead of flipping the sign-in card — so a transient stale-token 401
+   * recovers invisibly. Resolves `true` when the token is usable after the
+   * call. Optional — when absent (tests / local runtime), the executor falls
+   * back to the legacy visible re-auth flow with no retry.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+  /**
    * Single shared post-turn commit helper — the same `postTurnCommit` the WS
    * path uses (auto-commit + conflict notice + workspace-locked `git add` +
    * auto-push + commit→message link). Wiring both transports to one helper is

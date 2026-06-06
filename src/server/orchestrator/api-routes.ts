@@ -71,6 +71,12 @@ export interface ApiDeps {
   githubAuthManager: GitHubAuthManager;
   credentialStore: CredentialStore;
   providerAccountManager: ProviderAccountManager;
+  /**
+   * docs/179 — proactively heal an agent's OAuth source token before AI session
+   * naming shells out to the CLI against the source credentials. A no-op for a
+   * healthy token. Optional — tests / local runtime omit it.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
   defaultAgentId: AgentId;
   workspaceDir: string;
   /**

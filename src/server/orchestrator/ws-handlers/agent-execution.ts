@@ -349,6 +349,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // system-turn wiring so the WS turn and the dispatched turn consume one shape.
   const deps: SystemTurnDeps = {
     agentFactory: (id) => ctx.agentFactory(id),
+    // docs/179 — token healer for the runtime-401 auto-retry.
+    ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
@@ -389,6 +391,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           credentialStore: ctx.credentialStore,
           sessionManager: ctx.sessionManager,
           providerAccountManager: ctx.providerAccountManager,
+          ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
       });
     },

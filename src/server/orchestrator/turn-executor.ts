@@ -58,6 +58,19 @@ export interface TurnInput {
   /** Persist the user row (transport owns the payload shape: text-only vs. +images/files). */
   persistUserMessage: (sessionId: string) => void;
   isNewSession: boolean;
+  /**
+   * docs/179 — set on the auth-retry re-dispatch (a turn re-run after a healed
+   * runtime 401). Suppresses a SECOND recovery attempt: if the retry also hits
+   * `auth_required`, the listener surfaces the sign-in card normally instead of
+   * looping. Absent on a first attempt.
+   */
+  isAuthRetry?: boolean;
+  /**
+   * docs/179 — shared "user row persisted" latch, threaded from the original
+   * attempt into the auth-retry so the user message is persisted exactly once
+   * across both. Created internally when absent.
+   */
+  persistGuard?: { done: boolean };
   /** Fallback chat title when AI naming hasn't produced one yet. */
   fallbackTitle: string;
   /** HEAD at turn start, for the "branch tip moved, no working-tree change" auto-push. */
@@ -167,6 +180,71 @@ export async function executeAgentTurn(
     resetRunnerTurnState(runner, { reviewFilePath: input.reviewFilePath ?? null });
   }
 
+  // docs/179 — persist the user row EXACTLY ONCE across the original attempt and
+  // a possible auth-retry re-dispatch. Without a shared guard, the retry would
+  // either duplicate the user bubble (resumed session: persisted synchronously
+  // below) or drop it (new session: the listener persists on `agent_init`, which
+  // never fires if auth fails first). The guard is threaded into the retry via
+  // `input.persistGuard` so both attempts share one latch.
+  const persistGuard = input.persistGuard ?? { done: false };
+  const persistUserMessageOnce = (sid: string): void => {
+    if (persistGuard.done) return;
+    persistGuard.done = true;
+    input.persistUserMessage(sid);
+  };
+
+  // docs/179 — runtime-401 auto-recovery. `willRecoverAuth` is the synchronous
+  // gate the auth_required listener calls BEFORE it kills the agent (and thus
+  // before `done` fires): it returns true only for a first-attempt turn with a
+  // healer wired, and flips `authRecoveryInProgress` so the `done` handler
+  // stands down and lets the recovery own all terminal work. `recoverAuth`
+  // then heals the OAuth token and, if it's usable again, re-dispatches THIS
+  // turn once on a fresh agent (same assembled prompt, so attachments and
+  // slash commands survive). A transient stale-token 401 thus recovers with no
+  // sign-in card and no manual re-send.
+  let authRecoveryInProgress = false;
+  const canRecoverAuth = !input.isAuthRetry && !!deps.ensureAgentTokenFresh;
+  const willRecoverAuth = (): boolean => {
+    if (!canRecoverAuth) return false;
+    authRecoveryInProgress = true;
+    return true;
+  };
+  const recoverAuth = async (): Promise<boolean> => {
+    let healed = false;
+    try {
+      healed = deps.ensureAgentTokenFresh ? await deps.ensureAgentTokenFresh(agentId) : false;
+    } catch (err) {
+      console.error("[turn] auth heal failed:", err);
+      healed = false;
+    }
+    if (!healed) {
+      // Heal genuinely failed (token revoked / rate-limited / no rotation). The
+      // `done` handler stood down for us, so run the same terminal teardown it
+      // would have, then return false so the listener surfaces the sign-in card.
+      if (runner) runner.running = false;
+      await tryDrain();
+      await runCommitAndPr();
+      emitFinishedIfIdle();
+      finishTurn();
+      return false;
+    }
+    // Healed — re-dispatch this turn once on a fresh agent. The retried turn
+    // owns drain/commit/finished, so we must NOT run them here. `isAuthRetry`
+    // prevents a second recovery (one quiet retry, then the card surfaces);
+    // the shared `persistGuard` keeps the user row at exactly one copy.
+    console.log(`[turn] auth healed for ${sessionId}; re-dispatching turn (quiet auth retry)`);
+    const freshAgent = deps.agentFactory(agentId);
+    if (runner) runner.setAgent(freshAgent);
+    await executeAgentTurn(runner, deps, freshAgent, {
+      ...input,
+      isAuthRetry: true,
+      reuseExistingAgent: false,
+      emitUserEcho: false,
+      persistGuard,
+    });
+    return true;
+  };
+
   // Surface the user message. Dispatch emits a `system_user_message` bubble (no
   // client-side optimistic bubble to dedupe against); WS skips the echo.
   if (input.emitUserEcho) {
@@ -179,9 +257,14 @@ export async function executeAgentTurn(
   // and writes error rows on auth_required / process error.
   wireAgentListeners(agent, runner, deps.listenerDeps, {
     isNewSession: input.isNewSession,
-    persistUserMessage: input.persistUserMessage,
+    persistUserMessage: persistUserMessageOnce,
     fallbackTitle: input.fallbackTitle,
     capturedSessionId: sessionId,
+    // docs/179 — auto-recovery hooks: the listener calls `willRecoverAuth`
+    // synchronously to decide whether to suppress the sign-in card, then
+    // `recoverAuth` to heal + re-dispatch. Omitted when this turn can't recover
+    // (already a retry, or no healer) so the listener keeps the legacy flow.
+    ...(canRecoverAuth ? { willRecoverAuth, recoverAuth } : {}),
     ...(input.permissionMode !== undefined ? { requestedPermissionMode: input.permissionMode } : {}),
     // Route the error-path drain through the SAME guarded `tryDrain` the
     // agent_result / done paths use, so a process that both errors AND exits
@@ -197,7 +280,7 @@ export async function executeAgentTurn(
   // For a resumed session (id already known) persist the user row synchronously
   // before the turn. New sessions defer to the listener's `isNewSession` branch.
   if (!input.isNewSession) {
-    input.persistUserMessage(sessionId);
+    persistUserMessageOnce(sessionId);
   }
 
   // --- post-turn plumbing (first-wins guards so whichever of agent_result /
@@ -351,6 +434,11 @@ export async function executeAgentTurn(
   agent.on("done", async (code: number | null) => {
     console.log("[turn] agent exited with code", code);
     deps.listenerDeps.broadcastLog("server", `Agent process exited with code ${code}`);
+    // docs/179 — this turn's auth failure is being auto-recovered: `recoverAuth`
+    // owns the agent ref, the re-dispatch, and ALL terminal work (drain / commit
+    // / finished). Stand down so we don't double-drain, emit a spurious error,
+    // or finalize a turn that's about to be retried.
+    if (authRecoveryInProgress) return;
     // Identity-guard: only clear the runner's agent ref if it still points at
     // *this* turn's agent. A later turn (started by the drain above) already
     // called `setAgent(NEW)`; clobbering to null would strand it and the SSE
