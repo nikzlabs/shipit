@@ -784,6 +784,13 @@ export interface VersionInfo {
   version: string;
   /** Full commit SHA the instance is built from, when resolvable. */
   commit?: string;
+  /**
+   * True when the on-disk checkout HEAD differs from the running image's baked
+   * commit — the signature of an interrupted/failed in-place update where the
+   * checkout advanced but the image was never rebuilt. The UI flags it so the
+   * mismatch reads as "an update didn't finish" rather than a UI glitch.
+   */
+  mismatch?: boolean;
 }
 
 /**

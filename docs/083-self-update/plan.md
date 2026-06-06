@@ -62,17 +62,53 @@ The orchestrator container is the thing being replaced. Two approaches:
 10. **Remove GitHub Actions deploy workflow** — or make it optional/secondary
 11. **Simplify README** — remove fork requirement, remove deploy key for CI, remove GitHub secrets step
 
+## Failure handling — a failed update must not leave a confusing/leaky box (issues #1047, #1050)
+
+The original `update.sh` did `git reset --hard "$REF"` to advance the checkout
+**before** `deploy.sh` rebuilt the image. If the build then failed, the checkout
+pointed at the *new* commit while the orchestrator kept running the *old* image —
+two contradictory states with no failure signal, and a plain "Just Restart"
+re-resolved the version against the advanced checkout and made the failure look
+like a success. Separately, `deploy.sh` pruned BuildKit cache / dangling images
+only *after* a successful build, so a failing build (which aborts under
+`set -euo pipefail`) leaked all its build artifacts, with no janitor backstop.
+
+The invariant now enforced: **the on-disk checkout never points ahead of the
+image the orchestrator is actually running**, and **build artifacts are reclaimed
+regardless of build outcome**.
+
+- **`update.sh`** captures `PRIOR_SHA` (the running image's commit) before
+  touching the checkout, advances the checkout, then builds. An `EXIT` trap rolls
+  the checkout back to `PRIOR_SHA` on any failure and writes a `.update-failed`
+  JSON breadcrumb; on success it drops the breadcrumb. The window where the
+  checkout is "ahead" lasts only as long as the build.
+- **`deploy.sh`** moves the prune commands into `prune_build_artifacts()` fired
+  from an `EXIT` trap, so a failed build still reclaims its cache. It also
+  pre-flights a free-disk check (`SHIPIT_MIN_FREE_GB`, default 5) and fails fast
+  with a clear "out of space" message instead of dying inside an apt step (a full
+  disk otherwise surfaces as a misleading GPG "invalid signature" error).
+- **`resolveVersion()`** now derives the displayed "Current version" from the
+  **baked `SHIPIT_BUILD_ID`** (the running image's identity) rather than re-reading
+  checkout HEAD, and sets `VersionInfo.mismatch` when the two disagree — an
+  in-process backstop so the badge stays honest even if the checkout is ahead.
+- **`checkForUpdates()`** reads `.update-failed` and returns it as
+  `UpdateStatus.lastUpdateError`; Settings → Advanced renders a "Last update
+  failed — still running <sha>" banner and a mismatch note on the version label.
+
 ## Key files
 
 | File | Purpose |
 |------|---------|
-| `src/server/orchestrator/services/updates.ts` | Check + request update logic |
+| `src/server/orchestrator/services/updates.ts` | Check + request update logic; reads `.update-failed` → `lastUpdateError` |
+| `src/server/orchestrator/build-id.ts` | `resolveVersion()`/`composeVersion()` — version anchored on baked build id, `mismatch` flag |
+| `src/server/orchestrator/release-channel.ts` | `HOST_REPO_DIR`, `UPDATE_FAILED_FILE` path constants |
 | `src/server/orchestrator/api-routes-updates.ts` | HTTP endpoints |
 | `src/server/orchestrator/api-routes.ts` | Route registration |
-| `src/client/components/Settings.tsx` | UI in Advanced tab |
-| `deployment/hetzner/update.sh` | Host-side update script |
-| `deployment/hetzner/shipit-updater.service` | Systemd oneshot service |
-| `deployment/hetzner/shipit-updater.path` | Systemd path watcher |
-| `deployment/hetzner/setup.sh` | Install systemd units |
-| `deployment/hetzner/docker-compose.yml` | Bind-mount /opt/shipit |
+| `src/client/components/Settings.tsx` | UI in Advanced tab — version label, mismatch note, failure banner |
+| `deployment/vps/update.sh` | Host-side update script — rollback-on-failure trap + failure breadcrumb |
+| `deployment/vps/deploy.sh` | Build + restart — prune-on-EXIT trap + pre-flight disk check |
+| `deployment/vps/shipit-updater.service` | Systemd oneshot service |
+| `deployment/vps/shipit-updater.path` | Systemd path watcher |
+| `deployment/vps/setup.sh` | Install systemd units |
+| `deployment/vps/docker-compose.yml` | Bind-mount /opt/shipit |
 | `deployment/README.md` | Simplified setup guide |

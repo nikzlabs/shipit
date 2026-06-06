@@ -7,11 +7,12 @@
  */
 
 import { execFile } from "node:child_process";
-import { access, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import {
   HOST_REPO_DIR,
+  UPDATE_FAILED_FILE,
   channelBranch,
   channelRef,
   readChannel,
@@ -44,6 +45,25 @@ function requireManagedUpdates(): void {
   }
 }
 
+/**
+ * Record of the most recent failed in-place update, parsed from the
+ * `.update-failed` breadcrumb that `update.sh` writes (and clears on the next
+ * attempt / on success). Present in {@link UpdateStatus.lastUpdateError} only
+ * while a failure is outstanding.
+ */
+export interface UpdateFailureRecord {
+  /** ISO timestamp of the failure. */
+  failedAt?: string;
+  /** Commit the still-running image was built from (the rolled-back checkout). */
+  runningSha?: string;
+  /** Channel ref the failed attempt targeted (e.g. `origin/main`). */
+  attemptedRef?: string;
+  /** Commit the failed attempt tried to build. */
+  attemptedSha?: string;
+  /** Exit code of the failed update run. */
+  exitCode?: number;
+}
+
 export interface UpdateStatus {
   available: boolean;
   currentCommit: string;
@@ -72,6 +92,33 @@ export interface UpdateStatus {
   releaseUrl?: string;
   /** Whether Update Now / Just Restart can be handled by a host-side watcher. */
   updateMode: UpdateMode;
+  /**
+   * Set when the previous in-place update failed and has not yet been retried
+   * successfully. The UI renders an "Update failed — still running <sha>" banner
+   * so a failed update is explicit rather than inferred from version strings.
+   */
+  lastUpdateError?: UpdateFailureRecord;
+}
+
+/**
+ * Read and parse the `.update-failed` breadcrumb, if present. Returns undefined
+ * when there's no outstanding failure or the file is unreadable/malformed — a
+ * missing or junk marker must never break a normal update check.
+ */
+async function readLastUpdateError(): Promise<UpdateFailureRecord | undefined> {
+  try {
+    const raw = await readFile(UPDATE_FAILED_FILE, "utf-8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return {
+      failedAt: typeof parsed.failedAt === "string" ? parsed.failedAt : undefined,
+      runningSha: typeof parsed.runningSha === "string" ? parsed.runningSha : undefined,
+      attemptedRef: typeof parsed.attemptedRef === "string" ? parsed.attemptedRef : undefined,
+      attemptedSha: typeof parsed.attemptedSha === "string" ? parsed.attemptedSha : undefined,
+      exitCode: typeof parsed.exitCode === "number" ? parsed.exitCode : undefined,
+    };
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -162,6 +209,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     const currentVersion = await describeRef("HEAD", channel, gitOpts);
     const latestVersion = await describeRef(targetRef, channel, gitOpts);
     const releaseUrl = await resolveReleaseUrl(latestVersion, channel, gitOpts);
+    const lastUpdateError = await readLastUpdateError();
 
     if (current === latest) {
       return {
@@ -176,6 +224,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
         isDowngrade: false,
         releaseUrl,
         updateMode: getUpdateMode(),
+        lastUpdateError,
       };
     }
 
@@ -210,6 +259,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
       isDowngrade,
       releaseUrl,
       updateMode: getUpdateMode(),
+      lastUpdateError,
     };
   } catch (err) {
     if (err instanceof ServiceError) throw err;
