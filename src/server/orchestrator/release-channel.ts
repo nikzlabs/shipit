@@ -17,6 +17,16 @@ export const HOST_REPO_DIR = "/opt/shipit";
 /** Untracked file holding the one-word channel preference. */
 export const CHANNEL_FILE = `${HOST_REPO_DIR}/.release-channel`;
 
+/**
+ * Untracked breadcrumb written by `update.sh` when an in-place update fails
+ * (the build errored and the checkout was rolled back to the running image).
+ * `checkForUpdates()` reads it to surface "Update failed — still running <sha>"
+ * instead of leaving the user to infer a failure from mismatched version
+ * strings. Removed by `update.sh` at the start of the next attempt and on
+ * success. Keep this path in sync with FAILURE_FILE in deployment/vps/update.sh.
+ */
+export const UPDATE_FAILED_FILE = `${HOST_REPO_DIR}/.update-failed`;
+
 export type ReleaseChannel = "stable" | "edge";
 
 /**

@@ -526,6 +526,49 @@ describe("Settings - Advanced tab", () => {
     expect(screen.getByTestId("settings-version")).toHaveTextContent("Stable · v1.4.0");
   });
 
+  it("flags a version mismatch (failed update left checkout ahead)", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234", mismatch: true });
+    await renderOnAdvancedTab();
+    expect(screen.getByTestId("settings-version-mismatch")).toBeInTheDocument();
+  });
+
+  it("does not flag a mismatch when versions agree", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+    await renderOnAdvancedTab();
+    expect(screen.queryByTestId("settings-version-mismatch")).not.toBeInTheDocument();
+  });
+
+  it("surfaces a 'Last update failed' banner when the check reports one", async () => {
+    useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          available: false,
+          behindBy: 0,
+          commitMessages: [],
+          currentCommit: "abc1234",
+          channel: "edge",
+          currentVersion: "main @ abc1234",
+          latestVersion: "main @ abc1234",
+          isDowngrade: false,
+          lastUpdateError: { runningSha: "abc1234def", failedAt: "2026-06-06T00:00:00Z", exitCode: 1 },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    try {
+      await renderOnAdvancedTab();
+      await userEvent.click(screen.getByTestId("settings-check-updates"));
+      await waitFor(() => {
+        const banner = screen.getByTestId("settings-update-failed");
+        expect(banner).toHaveTextContent("Last update failed");
+        expect(banner).toHaveTextContent("abc1234");
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("marks the active channel via aria-pressed", async () => {
     useUiStore.getState().setVersion({ channel: "edge", version: "main @ abc1234" });
     await renderOnAdvancedTab();
