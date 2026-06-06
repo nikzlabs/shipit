@@ -53,6 +53,13 @@ export const MAX_MERGED_SESSIONS_PER_REPO = 3;
  */
 export const IDLE_LIGHT_MS = 24 * 60 * 60 * 1000; // 24h: hot → light (drop deps)
 export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted (wipe checkout)
+/**
+ * docs/161 — merge-aware eviction. A merged PR is a much stronger "done" signal
+ * than idle age: the work shipped and the checkout re-fetches fresh on reopen,
+ * so finished sessions can be reclaimed far sooner than unmerged WIP (which
+ * stays on the gentle `IDLE_EVICT_MS` clock). 2 days after last touch.
+ */
+export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
 
 /**
  * docs/161 — true when a merged session has been *worked in* since its merge,

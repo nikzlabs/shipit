@@ -55,6 +55,16 @@ services:
       # visibility / easy per-host override.
       - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
       - DISK_JANITOR_CACHE_DAYS=30
+      # Disk-tier escalation (docs/161). The pressure valve escalates LRU
+      # sessions early when free disk runs low; the watermarks are fractions of
+      # the host's total disk size, so the same config is correct on any disk.
+      - DISK_FREE_LOW_PCT=0.10                 # escalate LRU when free disk < 10% of total
+      - DISK_FREE_HIGH_PCT=0.20                # stop once free disk crosses 20% of total
+      # Merge-aware eviction: a merged PR is a stronger "done" signal than idle
+      # age, and merged checkouts re-fetch fresh on reopen, so reclaim them 2d
+      # after last touch. DISK_IDLE_EVICT_MS left at its 14d default — unmerged
+      # WIP stays on the gentle clock.
+      - DISK_IDLE_EVICT_MERGED_MS=172800000    # merged-PR sessions: evict 2d after last touch
       - SHIPIT_MANAGED_UPDATES=true
     networks:
       - shipit
