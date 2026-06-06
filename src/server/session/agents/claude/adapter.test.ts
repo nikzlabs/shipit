@@ -220,6 +220,21 @@ describe("ClaudeAdapter", () => {
       expect(sent).toEqual(["/compact"]);
     });
 
+    it("compact(instructions) appends custom args to the slash command (docs/178 §4)", async () => {
+      const { StreamingClaudeProcess } = await import("./process.js");
+      const sent: string[] = [];
+      class FakeStreaming extends StreamingClaudeProcess {
+        override sendUserMessage(text: string): void {
+          sent.push(text);
+        }
+      }
+      const inner = new FakeStreaming();
+      const adapter = new ClaudeAdapter(inner as never);
+
+      adapter.compact("keep the API notes");
+      expect(sent).toEqual(["/compact keep the API notes"]);
+    });
+
     it("compact() is a no-op on a non-streaming inner (orchestrator spawns a turn instead)", () => {
       const inner = new FakeInnerProcess();
       const adapter = new ClaudeAdapter(inner as any);

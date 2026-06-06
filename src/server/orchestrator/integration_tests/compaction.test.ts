@@ -106,6 +106,25 @@ describe("Integration: /compact interception (docs/178)", () => {
     client.close();
   });
 
+  it("recognizes `/compact <args>` and forwards the custom instructions (docs/178 §4)", async () => {
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // First turn — leave it running.
+    client.send({ type: "send_message", text: "Hello" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("compact-session-args");
+
+    // Mid-turn `/compact` with custom-compaction instructions.
+    client.send({ type: "send_message", text: "/compact keep the API design notes" });
+
+    await drainUntil(client, (m) => m.type === "compaction_status" && m.active === true);
+    expect(claude.compactCalled).toBe(true);
+    expect(claude.lastCompactInstructions).toBe("keep the API design notes");
+
+    client.close();
+  });
+
   it("triggers agent.compact() and a transient indicator when a turn is live", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

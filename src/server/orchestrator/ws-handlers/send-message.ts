@@ -21,13 +21,19 @@ type WsSendReviewMessage = Extract<WsClientMessage, { type: "send_review_message
 type WsAnswerQuestion = Extract<WsClientMessage, { type: "answer_question" }>;
 
 /**
- * docs/178 — recognize the `/compact` composer command. Exact match only (a
- * trailing argument like `/compact foo` is not a recognized command and falls
- * through as a normal message). The `/` autocomplete only offers this when the
- * active agent advertises `supportsCompaction`.
+ * docs/178 §4 — recognize the `/compact` composer command, with optional
+ * custom-compaction args (`/compact <instructions>`, which Claude's CLI
+ * honors). Matches a leading `/compact` token only (so `/compactfoo` is not a
+ * match). Returns the trimmed instructions when present. Recognizing the arg
+ * form matters for correctness, not just Claude parity: without it a
+ * `/compact <args>` on Codex would fall through and be sent as a literal
+ * `turn/start` prompt — a no-op — instead of routing to its compaction RPC.
  */
-function isCompactCommand(text: string): boolean {
-  return text.trim() === "/compact";
+function parseCompactCommand(text: string): { match: boolean; instructions?: string } {
+  const m = /^\/compact(?:\s+([\s\S]+))?$/.exec(text.trim());
+  if (!m) return { match: false };
+  const instructions = m[1]?.trim();
+  return instructions ? { match: true, instructions } : { match: true };
 }
 
 function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
@@ -106,7 +112,8 @@ export async function handleSendMessage(
   // autocomplete never offered it anyway).
   const compactCapable =
     ctx.agentRegistry.get(ctx.getActiveAgentId())?.capabilities.supportsCompaction ?? false;
-  const isCompactRequest = isCompactCommand(msg.text) && compactCapable;
+  const compactParsed = parseCompactCommand(msg.text);
+  const isCompactRequest = compactParsed.match && compactCapable;
 
   // Validate images if provided (do this before queue check so we reject bad images immediately)
   const images: ImageAttachment[] | undefined = msg.images && msg.images.length > 0 ? msg.images : undefined;
@@ -139,7 +146,7 @@ export async function handleSendMessage(
       if (isCompactRequest) {
         const compactAgent = runnerForQueue.getAgent();
         if (compactAgent?.compact) {
-          compactAgent.compact();
+          compactAgent.compact(compactParsed.instructions);
           const compactSessionId = ctx.getActiveAppSessionId();
           if (compactSessionId) {
             runnerForQueue.emitMessage({

@@ -862,8 +862,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * (`/compact`). The worker calls `agent.compact()` on the in-container adapter
    * (streaming Claude → inject `/compact`; live Codex → `thread/compact/start`).
    */
-  async compactAgentOnWorker(): Promise<void> {
-    await workerPost(this.workerUrl, "/agent/compact");
+  async compactAgentOnWorker(instructions?: string): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
   }
 
   // --- Worker communication: terminal ---

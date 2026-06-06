@@ -375,9 +375,12 @@ export class ClaudeAdapter
    * instead and never calls this. When called on a non-streaming inner we log
    * and no-op rather than silently dropping (mirrors `sendUserMessage`).
    */
-  compact(): void {
+  compact(instructions?: string): void {
     if (this.inner instanceof StreamingClaudeProcess) {
-      this.inner.sendUserMessage("/compact");
+      // docs/178 §4 — Claude's CLI honors custom-compaction args after the
+      // slash command (`/compact <instructions>`); pass them through.
+      const trimmed = instructions?.trim();
+      this.inner.sendUserMessage(trimmed ? `/compact ${trimmed}` : "/compact");
       return;
     }
     console.warn(

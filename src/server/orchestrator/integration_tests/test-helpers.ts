@@ -635,6 +635,7 @@ export class FakeClaudeProcess extends EventEmitter {
   /** docs/178 — captures the `compact` run-param + any `compact()` call. */
   public lastCompact: boolean | undefined;
   public compactCalled = false;
+  public lastCompactInstructions: string | undefined;
   public readonly isStreaming = false;
   /**
    * docs/140 Phase 6.7 — model the STREAMING interrupt when set true: a
@@ -721,8 +722,9 @@ export class FakeClaudeProcess extends EventEmitter {
   }
 
   /** docs/178 — record a compaction trigger on the resident process. */
-  compact() {
+  compact(instructions?: string) {
     this.compactCalled = true;
+    this.lastCompactInstructions = instructions;
   }
 
   setPermissionMode(mode: string | undefined) {

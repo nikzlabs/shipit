@@ -44,7 +44,7 @@ export interface ProxyAgentRunner {
   interruptAgentOnWorker(): Promise<void>;
   killAgentOnWorker(): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
-  compactAgentOnWorker(): Promise<void>;
+  compactAgentOnWorker(instructions?: string): Promise<void>;
 }
 
 /**
@@ -171,8 +171,8 @@ export class ProxyAgentProcess extends EventEmitter<{
    * the turn (the context is simply not summarized), and the next user message
    * still goes through.
    */
-  compact(): void {
-    this.runner.compactAgentOnWorker().catch((err: unknown) => {
+  compact(instructions?: string): void {
+    this.runner.compactAgentOnWorker(instructions).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to compact agent on worker: ${msgText}`);
     });

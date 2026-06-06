@@ -527,7 +527,10 @@ export class CodexAdapter
    * `compactionRequested` so the resulting `contextCompaction` items are labeled
    * `"manual"` rather than `"auto"`.
    */
-  compact(): void {
+  compact(_instructions?: string): void {
+    // docs/178 §4 — Codex's `thread/compact/start` RPC takes only a threadId;
+    // it has no slot for custom-compaction instructions, so any `/compact <args>`
+    // text is intentionally dropped (Claude-only feature).
     if (this.proc && this.threadId) {
       this.compactionRequested = true;
       this.sendRequest("thread/compact/start", { threadId: this.threadId }).catch((err: unknown) => {

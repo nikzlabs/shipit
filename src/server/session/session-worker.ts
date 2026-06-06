@@ -443,14 +443,15 @@ export class SessionWorker extends EventEmitter {
     // (live thread) sends the `thread/compact/start` RPC. Adapters that don't
     // implement compact(), or have no resident process to talk to, no-op — the
     // orchestrator handles the non-resident case by spawning a `/compact` turn.
-    app.post("/agent/compact", async (_request, reply) => {
+    app.post<{ Body: { instructions?: string } }>("/agent/compact", async (request, reply) => {
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
       if (!this.agent.compact) {
         return reply.code(400).send({ error: "Agent does not support compaction" });
       }
-      this.agent.compact();
+      const instructions = typeof request.body?.instructions === "string" ? request.body.instructions : undefined;
+      this.agent.compact(instructions);
       return { success: true };
     });
 

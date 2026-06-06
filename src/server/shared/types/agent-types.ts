@@ -540,8 +540,13 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * When no live process is resident the orchestrator spawns a fresh compaction
    * turn via `run({ compact: true })` instead, so adapters may treat this as a
    * best-effort no-op when there's nothing to talk to.
+   *
+   * `instructions` is the optional custom-compaction text from `/compact <args>`
+   * — Claude appends it to the slash command (`/compact <args>`), which its CLI
+   * honors; Codex's `thread/compact/start` RPC has no instruction parameter, so
+   * it ignores them.
    */
-  compact?(): void;
+  compact?(instructions?: string): void;
   /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:
