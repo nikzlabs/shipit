@@ -347,6 +347,34 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const onAgentAuthRequired = (agentId: AgentId): void => {
     agentAuthRequiredHooks.get(agentId)?.();
   };
+  /**
+   * docs/179 — proactively heal an agent's OAuth source token before someone
+   * reads it (session start, AI session naming, the 401 auto-retry). Keyed by
+   * agent like {@link onAgentAuthRequired}: Claude registers the refresher's
+   * `ensureFresh` (a no-op when the token is healthy, an awaited single-flight
+   * refresh when it's within the safety margin). Codex's auth is unaffected by
+   * the rotating-refresh-token stampede, so it registers no hook and resolves
+   * to a no-op. Returns `true` when the token is usable after the call.
+   */
+  const ensureTokenFreshHooks = new Map<AgentId, (accountId?: string) => Promise<boolean>>();
+  ensureTokenFreshHooks.set("claude", async (accountId?: string): Promise<boolean> => {
+    const r = claudeOAuthRefresherRef.ref;
+    // No refresher (test / local runtime) → nothing this path can heal. Return
+    // false: the proactive callers ignore the boolean (they fail open and just
+    // proceed), while the runtime-401 auto-retry reads it as "couldn't heal" and
+    // correctly surfaces the sign-in card instead of pointlessly re-dispatching.
+    if (!r) return false;
+    try {
+      return await r.ensureFresh(accountId);
+    } catch (err) {
+      console.error("[claude-oauth-refresh] ensureFresh failed:", err);
+      return false;
+    }
+  });
+  const ensureAgentTokenFresh = async (agentId: AgentId, accountId?: string): Promise<boolean> => {
+    const hook = ensureTokenFreshHooks.get(agentId);
+    return hook ? hook(accountId) : true;
+  };
   // docs/149 — same shape as the WS handler's readSystemPrompt, hoisted to
   // app scope so the system-turn hook can read it without per-connection state.
   const readSystemPromptApp = async (): Promise<string | undefined> => {
@@ -380,6 +408,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     usageManager, authManager, authManagers, runParamsPreps,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
+    ensureAgentTokenFresh,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(credentialsDir ? { credentialsDir } : {}),
     readSystemPrompt: readSystemPromptApp,
@@ -918,6 +947,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager,
     credentialStore,
     providerAccountManager,
+    ensureAgentTokenFresh,
     defaultAgentId,
     workspaceDir,
     stateDir,
@@ -1520,6 +1550,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         getSubscriptionLimitsSnapshot: () => limitsRegistry?.getSnapshot() ?? {},
         nudgeClaudeOAuthRefresh,
         onAgentAuthRequired,
+        ensureAgentTokenFresh,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
       };

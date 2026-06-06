@@ -377,6 +377,7 @@ export async function handleSendMessage(
           createGitManager: ctx.createGitManager,
           prStatusPoller: ctx.prStatusPoller,
           sseBroadcast: ctx.sseBroadcast,
+          ...(ctx.ensureAgentTokenFresh ? { ensureAgentTokenFresh: ctx.ensureAgentTokenFresh } : {}),
         },
         {
           sessionId: effectiveSessionId,

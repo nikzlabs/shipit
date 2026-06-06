@@ -56,6 +56,18 @@ export const MCP_OAUTH_REFRESH_TIMEOUT_MS = 8_000;
 export const PUSH_AGENT_SECRETS_TIMEOUT_MS = 12_000;
 
 /**
+ * docs/179 — ceiling for the pre-spawn OAuth source-token heal. Only does real
+ * work when the source token is within the refresh safety margin (a degraded
+ * window the scheduled refresher normally prevents), so it's near-free on the
+ * healthy hot path. Bounded so a hung token endpoint can't stall the turn, and
+ * fails open: a Tier-1 (`claude auth status`) refresh usually settles well
+ * inside this, and if a slow Tier-2 fallback exceeds it the background refresh
+ * keeps running (single-flight) and the runtime-401 auto-retry awaits the same
+ * in-flight refresh, so the worst case is one quiet retry, not a dead turn.
+ */
+export const ENSURE_TOKEN_FRESH_TIMEOUT_MS = 30_000;
+
+/**
  * Race a promise against a timeout that FAILS OPEN: on timeout (or rejection)
  * we log and resolve instead of throwing, so a hung dependency can never
  * block the caller. Logs elapsed time on success too, so a slow-but-eventual
@@ -103,6 +115,14 @@ export interface SessionAgentEnvDeps {
   credentialStore: CredentialStore;
   sessionManager: SessionManager;
   providerAccountManager?: ProviderAccountManager;
+  /**
+   * docs/179 — proactively heal the agent's OAuth source token if it's within
+   * the refresh safety margin, BEFORE it's copied into the session. A no-op for
+   * a healthy token. Optional — tests / local runtime omit it (token freshness
+   * is the orchestrator's job only in containerized mode). Resolves `true` when
+   * the token is usable after the call.
+   */
+  ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
 }
 
 /**
@@ -206,6 +226,30 @@ export async function prepareSessionAgentEnvironment(
     deps.sessionManager.setAgentId(sessionId, agentId);
     if (selectedRoute) deps.sessionManager.setProviderRoute(sessionId, selectedRoute.kind, selectedRoute.id);
     deps.sessionManager.setAgentPinned(sessionId);
+  }
+
+  // Step 2a (docs/179): heal the source OAuth token if it's within the refresh
+  // safety margin BEFORE Step 2 copies it into the session. The scheduled
+  // refresher normally keeps the source fresh, but if a tick has fallen behind
+  // its margin (a run of 429 backoffs ate the lead time), a session starting in
+  // that window would otherwise sync in a dying token and 401 on its first CLI
+  // call — the "new session 401 once a day" report. `ensureAgentTokenFresh` is
+  // a no-op for a healthy token, so this is near-free on the hot path. Time-
+  // bounded + fail-open like steps 3/4: if a slow refresh can't finish in time
+  // we proceed, and the runtime-401 auto-retry awaits the same in-flight
+  // refresh. Skipped for the env-provided OAuth route (not refresher-managed).
+  if (
+    runner instanceof ContainerSessionRunner &&
+    deps.ensureAgentTokenFresh &&
+    selectedRoute?.id !== "claude-env-oauth"
+  ) {
+    const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
+    const ensureFresh = deps.ensureAgentTokenFresh;
+    await withFailOpenTimeout(
+      "token-fresh",
+      () => ensureFresh(agentId, accountId),
+      ENSURE_TOKEN_FRESH_TIMEOUT_MS,
+    );
   }
 
   // Step 2: pull the freshest source token into the session subtree. Runs

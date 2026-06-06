@@ -266,6 +266,58 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     return Promise.all(accounts.map((a) => this.runTickForAccount(a.id)));
   }
 
+  /**
+   * Best-effort "make the source token usable before someone reads it." Cheap
+   * to call on hot paths (session start, session naming): when the source
+   * token still has more than `safetyMarginMs` of life left, it returns
+   * immediately WITHOUT spawning the CLI — the common, healthy case. Only when
+   * the token is within the safety margin (or already expired) does it await an
+   * immediate single-flight refresh.
+   *
+   * This closes the gap the scheduled refresher can't cover on its own: if a
+   * scheduled tick has fallen behind its margin (a run of 429 backoffs ate the
+   * lead time), a session that starts in that window would otherwise sync in a
+   * dying token and 401 on its first CLI call. Calling this before the token is
+   * copied into the session heals the source first.
+   *
+   * Never throws — a failed refresh resolves to `false`. Returns `true` when
+   * the token is usable (present and not expired) after the call: `true` for a
+   * healthy token (no work done), `true` after a successful rotation, `false`
+   * when the token is missing or still expired (rate-limited / revoked).
+   *
+   * `accountId` omitted → every known Claude account (in production: just
+   * `claude-default`). No-op (returns `true`) outside containerized runtime,
+   * matching `refreshNow`.
+   */
+  async ensureFresh(accountId?: string): Promise<boolean> {
+    if (this.deps.runtimeMode !== "containerized") return true;
+    if (accountId) return this.ensureFreshOne(accountId);
+    const accounts = this.deps.providerAccountManager.list("claude");
+    if (accounts.length === 0) return true;
+    const results = await Promise.all(accounts.map((a) => this.ensureFreshOne(a.id)));
+    return results.every(Boolean);
+  }
+
+  private async ensureFreshOne(accountId: string): Promise<boolean> {
+    const before = this.readSourceExpiresAt(accountId);
+    // No usable source on disk — a sign-in is required; nothing this path can
+    // do. The caller falls back to whatever token (if any) is already synced.
+    if (before === NO_EXPIRY) return false;
+    const now = this.deps.now();
+    if (before - now > this.deps.safetyMarginMs) return true; // healthy; no work.
+    // Within margin or expired — heal it. `runTickForAccount` is single-flight,
+    // so a scheduled tick or a concurrent caller already refreshing is awaited
+    // rather than duplicated.
+    try {
+      await this.runTickForAccount(accountId);
+    } catch (err) {
+      // runTickForAccount swallows its own errors; this is purely defensive.
+      console.error(`[claude-oauth-refresh] ensureFresh tick for ${accountId} threw:`, err);
+    }
+    const after = this.readSourceExpiresAt(accountId);
+    return after !== NO_EXPIRY && after > this.deps.now();
+  }
+
   // ---- internal ----
 
   /**
