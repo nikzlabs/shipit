@@ -203,8 +203,13 @@ The one genuinely new capability:
 - Should Bucket 2 commands (`/model`, `/plan`) also be reachable from a
   settings panel, or only via the slash command? (Leaning: both — the
   command is the shortcut, the panel is the discoverable home.)
-- `/compact` — does ShipIt trigger the CLI's own compaction (if the
+- ~~`/compact` — does ShipIt trigger the CLI's own compaction (if the
   adapter exposes a way) or implement its own context summarization?
-  Needs an adapter-capability investigation.
+  Needs an adapter-capability investigation.~~ **Resolved — see
+  `docs/178-context-compaction`.** Both backends expose a native
+  manual-compaction trigger that works headlessly (Claude: in-band
+  `/compact` with `supportsNonInteractive`; Codex: the
+  `thread/compact/start` app-server RPC), so ShipIt proxies the CLI's
+  compaction rather than building its own summarizer.
 - `/goal` rendering: dedicated banner vs. reuse the scratchpad surface
   (`docs/106-session-scratchpad`)?
