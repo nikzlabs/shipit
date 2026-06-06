@@ -11,7 +11,7 @@ import { PermissionModeSelector } from "./PermissionModeSelector.js";
 import { ModelAgentSelector } from "./ModelAgentSelector.js";
 import { ContextDial } from "./ContextDial.js";
 import { FileAutoComplete } from "./FileAutoComplete.js";
-import { SkillAutoComplete } from "./SkillAutoComplete.js";
+import { SkillAutoComplete, type SlashCommand } from "./SkillAutoComplete.js";
 import { FileAttachmentChips } from "./FileAttachmentChips.js";
 import { FileUploadChips } from "./FileUploadChips.js";
 import { Popover, PopoverAnchor } from "./ui/popover.js";
@@ -532,7 +532,7 @@ export function MessageInput({
     // separator. The companion regex in `agent-execution.ts` is not end-anchored,
     // so it already handles `:` correctly; no change needed there.
     const slashMatch = /^\/([a-zA-Z0-9._:-]*)$/.exec(textBeforeCursor);
-    if (slashMatch && skills.length > 0) {
+    if (slashMatch && (skills.length > 0 || slashCommands.length > 0)) {
       setSkillQuery(slashMatch[1]);
       setShowSkillMenu(true);
       setShowAutoComplete(false);
@@ -561,6 +561,37 @@ export function MessageInput({
   // rather than another inline branch here. (docs/155)
   const skillTokenPrefix =
     agents.find((a) => a.id === activeAgentId)?.skillInvocationPrefix ?? "/";
+
+  // docs/178 — ShipIt-native `/` commands offered in the `/` menu, gated by the
+  // active agent's capabilities. `/compact` only when the backend can compact.
+  const slashCommands = useMemo<SlashCommand[]>(() => {
+    const supportsCompaction =
+      agents.find((a) => a.id === activeAgentId)?.supportsCompaction ?? false;
+    return supportsCompaction
+      ? [{ name: "compact", description: "Summarize the conversation to free up context" }]
+      : [];
+  }, [agents, activeAgentId]);
+
+  const handleCommandSelect = useCallback(
+    (commandName: string) => {
+      // Commands are ShipIt constructs — always `/`-prefixed (never the skill
+      // token). Insert `/<name>` at the start; no trailing space since commands
+      // take no argument, so the user can press Enter to send immediately.
+      const cursorPos = textareaRef.current?.selectionStart ?? text.length;
+      const newText = `/${commandName}${text.slice(cursorPos)}`;
+      setText(newText);
+      setShowSkillMenu(false);
+      requestAnimationFrame(() => {
+        const ta = textareaRef.current;
+        if (ta) {
+          const pos = commandName.length + 1; // "/" + name
+          ta.focus();
+          ta.setSelectionRange(pos, pos);
+        }
+      });
+    },
+    [text],
+  );
 
   const handleSkillSelect = useCallback(
     (skillName: string) => {
@@ -910,8 +941,10 @@ export function MessageInput({
         <SkillAutoComplete
           query={skillQuery}
           skills={skills}
+          commands={slashCommands}
           tokenPrefix={skillTokenPrefix}
           onSelect={handleSkillSelect}
+          onCommandSelect={handleCommandSelect}
           onDismiss={handleSkillDismiss}
         />
       )}
@@ -944,6 +977,20 @@ function ContextDialMount({
   const turnUsage = useSessionStore((s) =>
     sessionId ? s.turnUsage[sessionId] ?? EMPTY_TURN_USAGE : EMPTY_TURN_USAGE,
   );
+  // docs/178 — authoritative "compacted recently" signal: a compaction card
+  // present after the last user message. Self-clearing — a new user message
+  // moves the boundary past the card. Drives the dial's compacted pill, with
+  // ContextDial's `wasCompacted` heuristic as the fallback.
+  const authoritativeCompacted = useSessionStore((s) => {
+    let lastUserIndex = -1;
+    for (let i = s.messages.length - 1; i >= 0; i--) {
+      if (s.messages[i].role === "user") { lastUserIndex = i; break; }
+    }
+    for (let i = s.messages.length - 1; i > lastUserIndex; i--) {
+      if (s.messages[i].compaction) return true;
+    }
+    return false;
+  });
   // Authoritative session totals so the popover's "Total cost" row matches
   // the value shown in `UsageModal` rather than summing live-only turns.
   const sessionTotalCostUsd = useUiStore((s) => s.currentSessionUsage?.totalCostUsd);
@@ -958,6 +1005,7 @@ function ContextDialMount({
       cumulativeInputTokens={cumulativeInputTokens}
       cumulativeOutputTokens={cumulativeOutputTokens}
       onOpenUsageDetails={onOpenUsageDetails}
+      authoritativeCompacted={authoritativeCompacted}
     />
   );
 }

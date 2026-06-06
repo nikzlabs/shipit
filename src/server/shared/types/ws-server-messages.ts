@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, CompactionCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1181,9 +1181,37 @@ export interface WsIssueWriteUpdate {
   errorMessage?: string;
 }
 
+/**
+ * docs/178 — transient "Compacting…" progress indicator. Emit-only (NOT
+ * persisted): it has no place in the scrollback once the matching
+ * `WsCompactionCard` lands. `active:true` shows the indicator, `active:false`
+ * clears it. Both CLIs may compact unsolicited mid-turn, so this can arrive
+ * without the user having typed `/compact`.
+ */
+export interface WsCompactionStatus {
+  type: "compaction_status";
+  sessionId: string;
+  active: boolean;
+  trigger?: "manual" | "auto";
+}
+
+/**
+ * docs/178 — the persisted "Context compacted" transcript card. Emitted via
+ * `emitChatCard` so it both broadcasts live AND records in-band with the turn,
+ * surviving a reconnect, a session switch, and a full reload (the recurring
+ * ephemeral-card bug class — see CLAUDE.md). Carries the shared `CompactionCard`.
+ */
+export interface WsCompactionCard {
+  type: "compaction_card";
+  sessionId: string;
+  card: CompactionCard;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsVoiceNote
+  | WsCompactionStatus
+  | WsCompactionCard
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed

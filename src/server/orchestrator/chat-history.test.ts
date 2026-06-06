@@ -74,6 +74,37 @@ describe("ChatHistoryManager", () => {
     expect(loaded[0].toolUse![0].name).toBe("Edit");
   });
 
+  it("persists a compaction card so it survives a reload (docs/178)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const msg: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      compaction: {
+        id: "compaction-1",
+        trigger: "manual",
+        preTokens: 180_000,
+        postTokens: 42_000,
+        durationMs: 3200,
+        createdAt: "2026-06-06T00:00:00.000Z",
+      },
+    };
+
+    mgr.append("sess-1", msg);
+    const loaded = mgr.load("sess-1");
+    expect(loaded[0].compaction).toEqual(msg.compaction);
+  });
+
+  it("persists a bare compaction card (Codex supplies no detail fields)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const msg: PersistedMessage = {
+      role: "assistant",
+      text: "",
+      compaction: { id: "compaction-2", createdAt: "2026-06-06T00:00:00.000Z" },
+    };
+    mgr.append("sess-1", msg);
+    expect(mgr.load("sess-1")[0].compaction).toEqual(msg.compaction);
+  });
+
   it("persists a voice-note card so it survives a reload (docs/163)", () => {
     const mgr = new ChatHistoryManager(dbManager);
     const msg: PersistedMessage = {
@@ -186,6 +217,7 @@ describe("ChatHistoryManager", () => {
       codeRollbackHash: "c0ffee",
       voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
       bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
+      compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
       issueWrite: {
         cardId: "iw1",
         tracker: "linear",

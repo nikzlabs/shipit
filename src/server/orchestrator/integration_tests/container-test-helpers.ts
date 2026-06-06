@@ -24,6 +24,7 @@ export class FakeWorkerAgent extends EventEmitter<AgentProcessEvents> implements
     models: [] as string[],
     supportsReview: true,
     supportsSteering: false,
+    supportsCompaction: false,
     skillsDirName: ".claude",
     skillInvocationPrefix: "/",
   };

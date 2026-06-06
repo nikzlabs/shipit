@@ -10,6 +10,9 @@ import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
 import { hasAuthoredVoiceNoteThisTurn } from "../voice/voice-note-router.js";
+import { emitChatCard } from "../chat-card-persistence.js";
+import type { CompactionCard } from "../../shared/types.js";
+import crypto from "node:crypto";
 
 /**
  * Context-light dependency set for `wireAgentListeners`. Lifted out of the
@@ -653,6 +656,51 @@ export function wireAgentListeners(
       return;
     }
 
+    // docs/178 — context compaction in flight. Transient progress only: forward
+    // an emit-only "Compacting…" indicator and stop before the message
+    // accumulator (it has no place in the scrollback). Like rate-limits and
+    // steer-rejected, this is not chat content. Both CLIs may compact
+    // unsolicited mid-turn, so this can arrive with no user `/compact`.
+    if (event.type === "agent_compaction_started") {
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId) {
+        emitToViewers({
+          type: "compaction_status",
+          sessionId: turnSessionId,
+          active: true,
+          ...(event.trigger ? { trigger: event.trigger } : {}),
+        });
+      }
+      return;
+    }
+
+    // docs/178 — compaction finished. This IS transcript content (the history
+    // was replaced by a summary), so persist a card via `emitChatCard` (the one
+    // supported way to add a transcript card off the agent-event stream — it
+    // both emits live AND records in-band with the turn so it survives a
+    // reconnect, a session switch, and a full reload). Also clears the transient
+    // indicator. Return before the accumulator — the card is the record.
+    if (event.type === "agent_compacted") {
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId && runner) {
+        emitToViewers({ type: "compaction_status", sessionId: turnSessionId, active: false });
+        const card: CompactionCard = {
+          id: `compaction-${crypto.randomUUID()}`,
+          createdAt: new Date().toISOString(),
+          ...(event.trigger ? { trigger: event.trigger } : {}),
+          ...(event.preTokens !== undefined ? { preTokens: event.preTokens } : {}),
+          ...(event.postTokens !== undefined ? { postTokens: event.postTokens } : {}),
+          ...(event.durationMs !== undefined ? { durationMs: event.durationMs } : {}),
+        };
+        emitChatCard(
+          runner,
+          { type: "compaction_card", sessionId: turnSessionId, card },
+          { role: "assistant", text: "", compaction: card },
+        );
+      }
+      return;
+    }
+
     if (event.type === "agent_result" && event.error) {
       event = {
         ...event,
@@ -702,6 +750,14 @@ export function wireAgentListeners(
       // the first init per turn — see the `hasLoggedAgentStart` comment
       // above for why subsequent inits (subagents, streaming turn-2)
       // must not re-log.
+      // docs/178 — the Claude CLI emits a SECOND `system/init` mid-stream after
+      // it compacts context (and subagents each emit their own init). Only the
+      // FIRST init per wired-agent is the real process start / the turn's
+      // session+permission baseline; the guarded-mode availability check below
+      // is gated on this so a post-compaction re-init can't flip
+      // `guardedUnavailable` or re-emit a spurious downgrade notice. `pendingAgentSessionId`
+      // already resists overwrite via `??=`, so the resume key is safe too.
+      const isFirstInit = !hasLoggedAgentStart;
       if (!hasLoggedAgentStart) {
         hasLoggedAgentStart = true;
         deps.broadcastLog("server", "Agent process started");
@@ -737,7 +793,7 @@ export function wireAgentListeners(
       // event's `permissionMode` is the authoritative signal: `"auto"` means
       // the classifier engaged. We only check when this turn actually
       // requested guarded; for `auto`/`plan` the field is irrelevant.
-      if (opts.requestedPermissionMode === "guarded" && runner) {
+      if (opts.requestedPermissionMode === "guarded" && runner && isFirstInit) {
         if (event.permissionMode === "auto") {
           // Engaged. Clear any stale unavailable flag (e.g. an admin
           // re-enabled auto mode since the last failed attempt this session).

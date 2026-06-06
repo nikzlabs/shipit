@@ -350,6 +350,28 @@ export interface IssueWriteCard {
 }
 
 /**
+ * docs/178 — a persisted "Context compacted" transcript card. Shared verbatim by
+ * the live WS payload (`WsCompactionCard`), the persisted chat-history row
+ * (`PersistedMessage.compaction`), and the client card so the three can't drift
+ * (same pattern as the voice-note / bug-report / issue-write cards). Every detail
+ * field is optional because Codex supplies none of them natively — the card
+ * degrades to a bare "Context compacted" row when they're absent.
+ */
+export interface CompactionCard {
+  /** Stable id — keeps the live append + history rehydration idempotent. */
+  id: string;
+  /** `"manual"` for an explicit `/compact`, `"auto"` when the CLI self-compacted. */
+  trigger?: "manual" | "auto";
+  /** Context-window occupancy (tokens) before compaction. */
+  preTokens?: number;
+  /** Context-window occupancy (tokens) after compaction. */
+  postTokens?: number;
+  /** How long the compaction took, in ms, when the backend reports it. */
+  durationMs?: number;
+  createdAt: string;
+}
+
+/**
  * Per-tracker metadata + configuration state. Drives the sub-tab switcher and
  * the "Connect Linear" empty state. `configured` is false until the user has
  * supplied both an API token and a team binding.

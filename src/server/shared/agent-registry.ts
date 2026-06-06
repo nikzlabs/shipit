@@ -59,6 +59,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       models: CLAUDE_MODELS,
       supportsReview: true,
       supportsSteering: true,
+      supportsCompaction: true,
       skillsDirName: ".claude",
       skillInvocationPrefix: "/",
     },
@@ -94,6 +95,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       // works on both backends.
       supportsReview: true,
       supportsSteering: true,
+      supportsCompaction: true,
       skillsDirName: ".codex",
       skillInvocationPrefix: "$",
     },
