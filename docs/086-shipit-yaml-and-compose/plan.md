@@ -165,8 +165,14 @@ agent:
 | `pids` | integer | 256 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially in agent |
 
-Resource values are capped at deployment-level maximums from env vars
-(`MAX_SESSION_MEMORY_MB`, etc.). Invalid or negative values fall back to defaults.
+Resource values are capped at a deployment-level ceiling. By default that
+ceiling is host-relative (memory ~75% of host RAM with a floor at the library
+default, CPU the host core count, pids a generous fork-bomb guard) so a
+declaration is honored up to what the host can back rather than a flat number;
+operators override it with the `MAX_SESSION_MEMORY_MB` / `MAX_SESSION_CPU` /
+`MAX_SESSION_PIDS` env vars. Clamps are surfaced in the diagnostics panel.
+Invalid or negative values fall back to defaults. See `getResourceCaps()` in
+`session-container.ts`.
 
 **Install behavior:**
 - Steps run sequentially in the agent container before the compose stack starts.

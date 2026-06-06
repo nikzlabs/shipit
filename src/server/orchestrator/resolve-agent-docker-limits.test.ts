@@ -8,7 +8,7 @@
  * `capabilities:`) which the new parser no longer extracts values from.
  */
 
-import { describe, it, expect, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -17,9 +17,24 @@ import { resolveAgentDockerLimits, applyEnvCaps } from "./session-container.js";
 import { AGENT_DEFAULTS } from "../shared/shipit-config.js";
 
 const MIB = 1024 * 1024;
+const GIB = 1024 * MIB;
 const DEFAULT_MEMORY_BYTES = 1536 * MIB; // shipit-config.ts AGENT_DEFAULTS.memory
 const DEFAULT_CPU_QUOTA = Math.round(0.5 * 100_000);
 const DEFAULT_PIDS = 4096;
+
+// Pin host detection so the host-relative default ceilings (used whenever a
+// MAX_SESSION_* env var is unset) are deterministic regardless of the CI
+// runner's actual RAM / core count. Individual tests re-stub for the cases
+// that specifically exercise host-derived defaults.
+function stubHost(totalMemBytes = 64 * GIB, cores = 16): void {
+  vi.spyOn(os, "totalmem").mockReturnValue(totalMemBytes);
+  vi.spyOn(os, "cpus").mockReturnValue(
+    new Array(cores).fill({}) as ReturnType<typeof os.cpus>,
+  );
+}
+
+beforeEach(() => stubHost());
+afterEach(() => vi.restoreAllMocks());
 
 describe("resolveAgentDockerLimits", () => {
   let tmpDir: string;
@@ -152,6 +167,60 @@ describe("resolveAgentDockerLimits", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe("host-relative default ceilings (no MAX_SESSION_* env set)", () => {
+  let tmpDir: string;
+  function setup(yaml: string): string {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "agent-docker-host-"));
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), yaml);
+    return tmpDir;
+  }
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("honors a declaration within host capacity (the 6144-on-a-big-box case)", () => {
+    stubHost(16 * GIB); // ceiling = 75% of 16 GiB = 12288 MiB
+    const dir = setup("agent:\n  memory: 6144\n");
+    // No flat 4096 ceiling: the legitimate 6144 declaration boots as-is.
+    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(6144 * MIB);
+  });
+
+  it("defaults the memory ceiling to 75% of host RAM and clamps above it", () => {
+    stubHost(8 * GIB); // ceiling = 75% of 8 GiB = 6144 MiB
+    const dir = setup("agent:\n  memory: 7000\n");
+    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(6144 * MIB);
+  });
+
+  it("floors the memory ceiling at the library default on a tiny host", () => {
+    stubHost(512 * MIB); // 75% = 384 MiB, below AGENT_DEFAULTS.memory (1536)
+    const dir = setup("agent:\n  memory: 2048\n");
+    expect(resolveAgentDockerLimits(dir).memoryLimit).toBe(AGENT_DEFAULTS.memory * MIB);
+  });
+
+  it("defaults the CPU ceiling to the host core count and clamps above it", () => {
+    stubHost(64 * GIB, 4); // 4 cores
+    const dir = setup("agent:\n  memory: 1024\n  cpu: 8\n");
+    expect(resolveAgentDockerLimits(dir).cpuQuota).toBe(4 * 100_000);
+  });
+
+  it("defaults the PID ceiling to a generous fork-bomb guard and clamps above it", () => {
+    const dir = setup("agent:\n  memory: 1024\n  pids: 100000\n");
+    expect(resolveAgentDockerLimits(dir).pidsLimit).toBe(8192);
+  });
+
+  it("clamp warning names the host, not the env var, when no env cap is set", () => {
+    stubHost(4 * GIB); // ceiling = 3072 MiB
+    const result = applyEnvCaps({
+      agent: { ...AGENT_DEFAULTS, memory: 6000, install: [] },
+      hostMounts: [],
+      warnings: [],
+    });
+    expect(result.effective.memory).toBe(3072);
+    expect(result.warnings[0]).toMatch(/available host memory/);
+    expect(result.warnings[0]).not.toMatch(/MAX_SESSION_MEMORY_MB/);
   });
 });
 
