@@ -13,10 +13,10 @@ import { GitHubTokenForm } from "./GitHubTokenForm.js";
 import { SettingsTrackers } from "./SettingsTrackers.js";
 import { McpServerSettings } from "./McpServerSettings.js";
 import { SkillsTab } from "./SkillsTab.js";
+import { KeybindingSettings } from "./KeybindingSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { isValidQuickCaptureHotkey } from "../hooks/useQuickCaptureHotkey.js";
 import {
   sttProviders,
   ttsProviders,
@@ -35,7 +35,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "trackers" | "git" | "instructions" | "skills" | "mcp" | "voice" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "github" | "trackers" | "git" | "instructions" | "skills" | "mcp" | "keyboard" | "voice" | "advanced";
 
 /** Shape of the /api/updates/check and /api/updates/channel responses. */
 interface UpdateStatusResult {
@@ -145,47 +145,6 @@ function NotificationSettings() {
           </div>
           <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
         </div>
-      </div>
-    </div>
-  );
-}
-
-function ShortcutSettings() {
-  const quickCaptureHotkey = useSettingsStore((s) => s.quickCaptureHotkey);
-  const setQuickCaptureHotkey = useSettingsStore((s) => s.setQuickCaptureHotkey);
-  const [draft, setDraft] = useState(quickCaptureHotkey);
-  const valid = isValidQuickCaptureHotkey(draft);
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Shortcuts</h3>
-      <div className="space-y-2">
-        <label className="block text-sm text-(--color-text-primary)" htmlFor="quick-capture-hotkey">
-          Quick capture
-        </label>
-        <div className="flex items-center gap-2">
-          <input
-            id="quick-capture-hotkey"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            onBlur={() => {
-              if (valid) setQuickCaptureHotkey(draft.toLowerCase());
-            }}
-            className="w-48 rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-            placeholder="mod+alt+n"
-          />
-          <Button
-            variant="secondary"
-            size="sm"
-            disabled={!valid}
-            onClick={() => setQuickCaptureHotkey(draft.toLowerCase())}
-          >
-            Save
-          </Button>
-        </div>
-        {!valid && (
-          <p className="text-xs text-(--color-error)">Use a key with Ctrl/Cmd plus Alt or Shift, for example mod+alt+n.</p>
-        )}
       </div>
     </div>
   );
@@ -639,51 +598,6 @@ const CLEANUP_STATUS_LABELS: Record<string, string> = {
 const inputClass =
   "w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none";
 
-function HotkeyField({
-  id,
-  label,
-  value,
-  onSave,
-  disabled,
-  disabledHint,
-}: {
-  id: string;
-  label: string;
-  value: string;
-  onSave: (v: string) => void;
-  disabled?: boolean;
-  disabledHint?: string;
-}) {
-  const [draft, setDraft] = useState(value);
-  const valid = isValidQuickCaptureHotkey(draft);
-  return (
-    <div className="space-y-1.5">
-      <label className="block text-sm text-(--color-text-primary)" htmlFor={id}>
-        {label}
-      </label>
-      <div className="flex items-center gap-2">
-        <input
-          id={id}
-          value={draft}
-          disabled={disabled}
-          onChange={(e) => setDraft(e.target.value)}
-          onBlur={() => { if (valid && !disabled) onSave(draft.toLowerCase()); }}
-          className={`w-56 ${inputClass} ${disabled ? "opacity-50" : ""}`}
-          placeholder="ctrl+shift+space"
-        />
-        <Button variant="secondary" size="sm" disabled={!valid || disabled} onClick={() => onSave(draft.toLowerCase())}>
-          Save
-        </Button>
-      </div>
-      {disabled && disabledHint ? (
-        <p className="text-xs text-(--color-text-tertiary)">{disabledHint}</p>
-      ) : !valid ? (
-        <p className="text-xs text-(--color-error)">Use Ctrl/Cmd plus Alt or Shift, for example ctrl+shift+space.</p>
-      ) : null}
-    </div>
-  );
-}
-
 /**
  * One server-side API key for a single voice provider. The key is POSTed to
  * /api/voice/credentials and never read back — status is a boolean derived
@@ -805,10 +719,6 @@ function VoiceSettings() {
   const setSttProvider = useSettingsStore((s) => s.setSttProvider);
   const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
   const setCleanupEnabled = useSettingsStore((s) => s.setCleanupEnabled);
-  const voiceHotkeyModeA = useSettingsStore((s) => s.voiceHotkeyModeA);
-  const setVoiceHotkeyModeA = useSettingsStore((s) => s.setVoiceHotkeyModeA);
-  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
-  const setVoiceHotkeyModeB = useSettingsStore((s) => s.setVoiceHotkeyModeB);
   const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
   const setVoiceLanguage = useSettingsStore((s) => s.setVoiceLanguage);
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
@@ -1042,18 +952,17 @@ function VoiceSettings() {
           )}
         </div>
 
-        <HotkeyField
-          id="voice-hotkey-mode-a"
-          label="Mode A hotkey (mic into current input)"
-          value={voiceHotkeyModeA}
-          onSave={setVoiceHotkeyModeA}
-        />
-        <HotkeyField
-          id="voice-hotkey-mode-b"
-          label="Mode B hotkey (open quick-capture overlay with mic on)"
-          value={voiceHotkeyModeB}
-          onSave={setVoiceHotkeyModeB}
-        />
+        <p className="text-xs text-(--color-text-tertiary)">
+          Mic hotkeys (Mode A / Mode B) are configured in the{" "}
+          <button
+            type="button"
+            onClick={() => useUiStore.getState().setSettingsTab("keyboard")}
+            className="text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+          >
+            Keyboard
+          </button>{" "}
+          settings.
+        </p>
 
         <div className="space-y-1.5">
           <label className="block text-sm text-(--color-text-primary)" htmlFor="voice-language">
@@ -1364,7 +1273,7 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["github", "trackers", "git", "instructions", "skills", "mcp", "voice", "advanced"] as const;
+  const generalTabs = ["github", "trackers", "git", "instructions", "skills", "mcp", "keyboard", "voice", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
@@ -1375,6 +1284,7 @@ export function Settings({
       case "instructions": return "Instructions";
       case "skills": return "Skills";
       case "mcp": return "MCP Servers";
+      case "keyboard": return "Keyboard";
       case "voice": return "Voice";
       case "advanced": return "Advanced";
     }
@@ -1575,6 +1485,10 @@ export function Settings({
 
           <TabsContent value="mcp">
             <McpServerSettings hasActiveSession={hasActiveSession} />
+          </TabsContent>
+
+          <TabsContent value="keyboard">
+            <KeybindingSettings />
           </TabsContent>
 
           <TabsContent value="voice">
@@ -1959,10 +1873,6 @@ export function Settings({
               <div className="border-t border-(--color-border-secondary)" />
 
               <NotificationSettings />
-
-              <div className="border-t border-(--color-border-secondary)" />
-
-              <ShortcutSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

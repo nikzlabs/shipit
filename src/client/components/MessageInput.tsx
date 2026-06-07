@@ -21,6 +21,7 @@ import { MobileRecordingOverlay } from "./MobileRecordingOverlay.js";
 import { useVoiceInput } from "../voice/use-voice-input.js";
 import { spliceTranscript } from "../voice/insert-transcript.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useKeybinding } from "../keybindings/use-keybinding.js";
 import { getSavedDraftMessage, saveDraftMessage } from "../utils/local-storage.js";
 import type { PermissionMode, FileContextRef, FileTreeNode, AgentId, SkillInfo, UploadRef } from "../../server/shared/types.js";
 import type { UploadItem } from "../hooks/useFileUpload.js";
@@ -235,8 +236,8 @@ export function MessageInput({
   const cleanupEnabled = useSettingsStore((s) => s.cleanupEnabled);
   const voiceLanguage = useSettingsStore((s) => s.voiceLanguage);
   const sttProvider = useSettingsStore((s) => s.sttProvider);
-  const voiceHotkeyModeA = useSettingsStore((s) => s.voiceHotkeyModeA);
-  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
+  const voiceHotkeyModeA = useKeybinding("voice-mode-a");
+  const voiceHotkeyModeB = useKeybinding("voice-mode-b");
   const quickCaptureAutoMic = useUiStore((s) => s.quickCaptureAutoMic);
 
   const voice = useVoiceInput({

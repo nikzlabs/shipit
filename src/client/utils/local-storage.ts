@@ -144,21 +144,9 @@ export function saveSoundOnFinish(enabled: boolean): void {
   }
 }
 
-export function getSavedQuickCaptureHotkey(): string {
-  try {
-    return localStorage.getItem(QUICK_CAPTURE_HOTKEY_KEY) ?? "mod+alt+n";
-  } catch {
-    return "mod+alt+n";
-  }
-}
-
-export function saveQuickCaptureHotkey(hotkey: string): void {
-  try {
-    localStorage.setItem(QUICK_CAPTURE_HOTKEY_KEY, hotkey);
-  } catch {
-    // localStorage may be unavailable
-  }
-}
+// `QUICK_CAPTURE_HOTKEY_KEY` is retained for the docs/180 legacy migration in
+// getSavedKeybindings(); the per-key getter/setter moved into the keybindings
+// blob.
 
 // ---- Voice settings (docs/144) ----
 
@@ -174,8 +162,6 @@ const TTS_PROVIDER_KEY = "shipit-tts-provider";
 const TTS_VOICE_KEY = "shipit-tts-voice";
 const TTS_SPEED_KEY = "shipit-tts-speed";
 
-export const VOICE_HOTKEY_MODE_A_DEFAULT = "ctrl+shift+space";
-export const VOICE_HOTKEY_MODE_B_DEFAULT = "ctrl+shift+m";
 export const TTS_VOICE_DEFAULT = "alloy";
 export const TTS_SPEED_DEFAULT = 1;
 
@@ -218,10 +204,6 @@ export const getSavedSttProvider = (): string => getSavedString(STT_PROVIDER_KEY
 export const saveSttProvider = (v: string): void => saveString(STT_PROVIDER_KEY, v);
 export const getSavedCleanupEnabled = (): boolean => getSavedBool(CLEANUP_ENABLED_KEY, true);
 export const saveCleanupEnabled = (v: boolean): void => saveBool(CLEANUP_ENABLED_KEY, v);
-export const getSavedVoiceHotkeyModeA = (): string => getSavedString(VOICE_HOTKEY_MODE_A_KEY, VOICE_HOTKEY_MODE_A_DEFAULT);
-export const saveVoiceHotkeyModeA = (v: string): void => saveString(VOICE_HOTKEY_MODE_A_KEY, v);
-export const getSavedVoiceHotkeyModeB = (): string => getSavedString(VOICE_HOTKEY_MODE_B_KEY, VOICE_HOTKEY_MODE_B_DEFAULT);
-export const saveVoiceHotkeyModeB = (v: string): void => saveString(VOICE_HOTKEY_MODE_B_KEY, v);
 export const getSavedVoiceLanguage = (): string => getSavedString(VOICE_LANGUAGE_KEY, "");
 export const saveVoiceLanguage = (v: string): void => saveString(VOICE_LANGUAGE_KEY, v);
 export const getSavedVoicePlaybackEnabled = (): boolean => getSavedBool(VOICE_PLAYBACK_ENABLED_KEY, false);
@@ -250,6 +232,51 @@ export function getSavedTtsSpeed(): number {
 export function saveTtsSpeed(value: number): void {
   try {
     localStorage.setItem(TTS_SPEED_KEY, String(value));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+// ---- Keybindings (docs/180) ----
+//
+// A single JSON blob holding only the user's *overrides* (binding id → chord);
+// anything absent falls back to the registry default. On first read we migrate
+// the legacy per-key entries (quick-capture + voice mode A/B) so existing users
+// keep their custom chords when those editors moved into the Keyboard tab.
+
+const KEYBINDINGS_KEY = "shipit-keybindings";
+
+export function getSavedKeybindings(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(KEYBINDINGS_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      const out: Record<string, string> = {};
+      for (const [k, v] of Object.entries(parsed)) {
+        if (typeof v === "string" && v) out[k] = v;
+      }
+      return out;
+    }
+    // No blob yet — migrate legacy single-purpose keys if present.
+    const migrated: Record<string, string> = {};
+    const legacy: [string, string][] = [
+      [QUICK_CAPTURE_HOTKEY_KEY, "quick-capture"],
+      [VOICE_HOTKEY_MODE_A_KEY, "voice-mode-a"],
+      [VOICE_HOTKEY_MODE_B_KEY, "voice-mode-b"],
+    ];
+    for (const [legacyKey, id] of legacy) {
+      const v = localStorage.getItem(legacyKey);
+      if (v) migrated[id] = v;
+    }
+    return migrated;
+  } catch {
+    return {};
+  }
+}
+
+export function saveKeybindings(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(map));
   } catch {
     // localStorage may be unavailable
   }
