@@ -158,6 +158,26 @@ Grouping in the sidebar:
   **All Sessions** dialog (`AllSessionsDialog.tsx`, `/api/sessions/all` →
   `listAll()`), which already shows every non-warm session.
 
+> **Update — closed PRs are "resolved" too.** A closed-without-merge PR is a
+> terminal state just like a merge, so its session must also leave the Active
+> list. The grouping now keys off **`resolvedAt(s) = mergedAt ?? closedAt`** and
+> the predicates are generalized: `reopenedAfterMerge` → `reopenedAfterResolve`,
+> `isRecentlyMerged` → `isRecentlyResolved`, and the demoted group is relabeled
+> **"Recently resolved"** (it holds both merged and closed sessions; the PR
+> card's badge — purple "merged" vs red "closed" — carries the distinction).
+> The per-repo top-N view cap ranks the combined resolved set by resolve time.
+>
+> `closed_at` is stamped by the PR poller (`pr-status-poller.ts` →
+> `SessionManager.markClosed`, a no-op if already merged) when a branch's PR is
+> found closed without a merge. It is **deliberately weaker than `merged_at`**:
+> closing does **not** delete the head branch and does **not** trigger
+> merge-aware disk reclaim (`IDLE_EVICT_MERGED_MS`), because a closed PR can be
+> reopened. Reopen is handled two ways: `setPrStatus` clears `closed_at` the
+> moment the poller observes the PR open again, and—failing that—
+> `reopenedAfterResolve` floats the session back to Active on the next turn
+> (`lastUsedAt > closedAt`). Merges are not reopenable, so `merged_at` is never
+> cleared.
+
 Within-group ordering (`SessionSidebar.tsx` `repoGroups` comparator): the
 per-repo sort uses `archived || userArchived` as the **primary** key so an
 archived row never sits above a live one — live > merged > archived. Because the

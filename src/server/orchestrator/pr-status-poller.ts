@@ -1253,6 +1253,13 @@ export class PrStatusPoller {
 
     this.lastKnown.set(sessionId, summary);
     this.sessionManager.setPrStatus(sessionId, summary);
+    // Closed-without-merge is terminal like a merge: stamp `closed_at` so the
+    // session sinks out of the active sidebar into "Recently resolved". (Merge
+    // sets `merged_at` via the onMergeDetectedCb archive path below.) markClosed
+    // is a no-op if the PR already merged, so ordering vs. the merge path is safe.
+    if (prState === "closed") {
+      this.sessionManager.markClosed(sessionId);
+    }
     this.mergedSessions.add(sessionId);
     // docs/146 — release the manager's per-session state when the PR moves
     // to a terminal state (merged or closed-without-merge). Without this,

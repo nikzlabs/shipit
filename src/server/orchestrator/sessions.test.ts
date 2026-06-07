@@ -3,7 +3,7 @@ import { DatabaseManager } from "../shared/database.js";
 import {
   SessionManager,
   filterVisibleInSidebar,
-  reopenedAfterMerge,
+  reopenedAfterResolve,
   MAX_MERGED_SESSIONS_PER_REPO,
 } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -286,6 +286,45 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("markClosed / reopen", () => {
+    it("stamps closed_at and demotes the session to Recently resolved", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setRemoteUrl("sess-1", "https://github.com/o/r.git");
+
+      expect(mgr.markClosed("sess-1")).toBe(true);
+      expect(mgr.get("sess-1")?.closedAt).toBeTruthy();
+    });
+
+    it("does not downgrade an already-merged session to closed", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+
+      expect(mgr.markClosed("sess-1")).toBe(false);
+      const s = mgr.get("sess-1");
+      expect(s?.mergedAt).toBeTruthy();
+      expect(s?.closedAt).toBeFalsy();
+    });
+
+    it("clears closed_at when the PR is observed open again (reopened)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markClosed("sess-1");
+      expect(mgr.get("sess-1")?.closedAt).toBeTruthy();
+
+      // Persisting an OPEN status (poller saw the PR reopen) clears the close.
+      mgr.setPrStatus("sess-1", {
+        sessionId: "sess-1", prNumber: 7, prUrl: "u", prTitle: "t", prBody: "",
+        prState: "open", baseBranch: "main", headBranch: "shipit/x",
+        insertions: 1, deletions: 0,
+        checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown", reviewDecision: "none", autoMergeEnabled: false,
+      });
+      expect(mgr.get("sess-1")?.closedAt).toBeFalsy();
+    });
+  });
+
   describe("session deletion cascade", () => {
     it("deleteSession cascades to chat history and usage", () => {
       const sessions = new SessionManager(dbManager);
@@ -368,7 +407,7 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("docs/161: reopenedAfterMerge predicate", () => {
+  describe("docs/161: reopenedAfterResolve predicate", () => {
     function make(overrides: Partial<SessionInfo>): SessionInfo {
       return {
         id: "x",
@@ -380,21 +419,21 @@ describe("SessionManager", () => {
       };
     }
 
-    it("is false for a never-merged session", () => {
-      expect(reopenedAfterMerge(make({}))).toBe(false);
+    it("is false for a never-resolved session", () => {
+      expect(reopenedAfterResolve(make({}))).toBe(false);
     });
 
     it("is false when last activity predates the merge", () => {
       // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
       // predicate parses both via Date.parse rather than comparing lexically.
-      expect(reopenedAfterMerge(make({
+      expect(reopenedAfterResolve(make({
         mergedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-05-01T00:00:00.000Z",
       }))).toBe(false);
     });
 
     it("is true when worked in after the merge despite mixed timestamp formats", () => {
-      expect(reopenedAfterMerge(make({
+      expect(reopenedAfterResolve(make({
         mergedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-06-02T00:00:00.000Z",
       }))).toBe(true);
@@ -408,10 +447,22 @@ describe("SessionManager", () => {
       // session is wrongly treated as reopened — promoting a just-merged
       // session back above active ones in the sidebar. UTC-normalized parsing
       // keeps it correctly demoted regardless of host timezone.
-      expect(reopenedAfterMerge(make({
+      expect(reopenedAfterResolve(make({
         lastUsedAt: "2024-06-01T11:59:55.000Z",
         mergedAt: "2024-06-01 12:00:00",
       }))).toBe(false);
+    });
+
+    it("treats a closed-without-merge session the same as a merged one", () => {
+      // closed_at is the close analogue of merged_at; both demote the session.
+      expect(reopenedAfterResolve(make({
+        closedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-05-01T00:00:00.000Z",
+      }))).toBe(false);
+      expect(reopenedAfterResolve(make({
+        closedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-06-02T00:00:00.000Z",
+      }))).toBe(true);
     });
   });
 
@@ -424,6 +475,16 @@ describe("SessionManager", () => {
         lastUsedAt,
         remoteUrl,
         mergedAt,
+      };
+    }
+    function closed(id: string, closedAt: string, lastUsedAt = closedAt, remoteUrl = "https://github.com/o/r.git"): SessionInfo {
+      return {
+        id,
+        title: id,
+        createdAt: "2024-01-01T00:00:00.000Z",
+        lastUsedAt,
+        remoteUrl,
+        closedAt,
       };
     }
     function active(id: string, remoteUrl = "https://github.com/o/r.git"): SessionInfo {
@@ -475,6 +536,32 @@ describe("SessionManager", () => {
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
       // `reopened` has the oldest merge time but recent activity → never pruned.
+      expect(visible).toContain("reopened");
+    });
+
+    it("treats closed-without-merge sessions as resolved: capped and demoted like merges", () => {
+      // Closed sessions share the resolved ranking with merges; the cap applies
+      // to the combined set so the "Recently resolved" group can't grow unbounded.
+      const sessions = [
+        closed("c1", "2024-01-01 09:00:00"),
+        merged("m2", "2024-01-02 09:00:00"),
+        closed("c3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
+      // The three newest resolutions survive; the oldest (c1) drops off.
+      expect(visible).toEqual(["c3", "m2", "m4"]);
+    });
+
+    it("keeps a closed session that was reopened (worked in since the close)", () => {
+      const sessions = [
+        closed("reopened", "2024-01-01 09:00:00", "2024-12-01T00:00:00.000Z"),
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
+      // Recent activity floats it back into Active → never pruned by the cap.
       expect(visible).toContain("reopened");
     });
 
@@ -588,7 +675,7 @@ describe("SessionManager", () => {
       mgr.track(id, id);
       mgr.setRemoteUrl(id, repo);
       // merged_at is stored in SQLite datetime() format; last_used_at in ISO —
-      // exactly the format mismatch reopenedAfterMerge normalizes with Date.parse.
+      // exactly the format mismatch reopenedAfterResolve normalizes with Date.parse.
       dbManager.db
         .prepare("UPDATE sessions SET merged_at = ?, last_used_at = ? WHERE id = ?")
         .run(mergedAt, lastUsedAt, id);
@@ -606,7 +693,7 @@ describe("SessionManager", () => {
       expect(mgr.list().map((s) => s.id)).not.toContain("target");
 
       // Simulate a new turn in the merged session — track() bumps last_used_at
-      // to a time after merged_at, making reopenedAfterMerge true.
+      // to a time after merged_at, making reopenedAfterResolve true.
       dbManager.db
         .prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?")
         .run("2024-06-01T00:00:00.000Z", "target");

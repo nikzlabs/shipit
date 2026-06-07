@@ -139,6 +139,7 @@ function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?:
     })),
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
+    markClosed: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
   } as unknown as SessionManager;
 }
@@ -2133,6 +2134,9 @@ describe("PrStatusPoller — catch-up probe", () => {
 
     // Should NOT trigger archive for closed (not merged) PRs
     expect(onMergeDetected).not.toHaveBeenCalled();
+
+    // Should stamp closed_at so the session sinks into "Recently resolved".
+    expect(sessionManager.markClosed).toHaveBeenCalledWith("s1");
 
     poller.destroy();
   });

@@ -287,7 +287,7 @@ describe("SessionSidebar", () => {
 
   it("sinks an archived merged session below a non-archived merged one", () => {
     // Archived sessions in the sidebar are almost always merged (you archive
-    // after merge), so they share the demoted "Recently merged" group. Within
+    // after merge), so they share the demoted "Recently resolved" group. Within
     // that group the archived one must sink below the live-but-merged one even
     // when it merged more recently.
     const t0 = "2024-01-01T00:00:00.000Z";
@@ -374,8 +374,8 @@ describe("SessionSidebar", () => {
     expect(newerNode2.compareDocumentPosition(olderNode2) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  describe("docs/161: Active vs Recently merged grouping", () => {
-    it("renders a 'Recently merged' subheader with merged-not-reopened sessions below it", () => {
+  describe("docs/161: Active vs Recently resolved grouping", () => {
+    it("renders a 'Recently resolved' subheader with merged-not-reopened sessions below it", () => {
       const sessions = [
         baseSession({
           id: "s-active",
@@ -395,7 +395,7 @@ describe("SessionSidebar", () => {
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
 
-      const header = screen.getByText("Recently merged");
+      const header = screen.getByText("Recently resolved");
       const merged = screen.getByText("Merged work");
       const active = screen.getByText("Active work");
       // Active sits above the header; the merged session sits below it.
@@ -403,15 +403,42 @@ describe("SessionSidebar", () => {
       expect(header.compareDocumentPosition(merged) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("does not render a 'Recently merged' subheader when there are no merged sessions", () => {
+    it("sinks a closed-without-merge session under 'Recently resolved', same as a merge", () => {
+      const sessions = [
+        baseSession({
+          id: "s-active",
+          title: "Active work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-02T00:00:00.000Z",
+          lastUsedAt: "2024-01-02T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-closed",
+          title: "Closed work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          closedAt: "2024-01-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      const header = screen.getByText("Recently resolved");
+      const closed = screen.getByText("Closed work");
+      const active = screen.getByText("Active work");
+      expect(active.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(header.compareDocumentPosition(closed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("does not render a 'Recently resolved' subheader when there are no resolved sessions", () => {
       const sessions = [baseSession({ id: "s1", title: "Just active", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      expect(screen.queryByText("Recently merged")).toBeNull();
+      expect(screen.queryByText("Recently resolved")).toBeNull();
     });
 
     it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {
       // A merged session worked in since the merge rejoins Active — it must NOT
-      // sink under the 'Recently merged' header.
+      // sink under the 'Recently resolved' header.
       const sessions = [
         baseSession({
           id: "s-reopened",
@@ -423,8 +450,8 @@ describe("SessionSidebar", () => {
         }),
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      // The only session is reopened → it's Active, so no merged header appears.
-      expect(screen.queryByText("Recently merged")).toBeNull();
+      // The only session is reopened → it's Active, so no resolved header appears.
+      expect(screen.queryByText("Recently resolved")).toBeNull();
       expect(screen.getByText("Reopened merged")).toBeTruthy();
     });
   });

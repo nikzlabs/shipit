@@ -446,6 +446,17 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN compaction TEXT");
   },
+  // Closed-but-not-merged PRs are a terminal state like merged, so the session
+  // should leave the active sidebar list and join the demoted "Recently
+  // resolved" group instead of lingering at the top. `closed_at` is the close
+  // analogue of `merged_at`: set by the PR poller when a branch's PR is found
+  // closed without a merge. The sidebar's "resolved" predicate keys off
+  // `merged_at ?? closed_at`. Distinct from `merged_at` because the two are
+  // semantically different outcomes (shipped vs abandoned) and only merge
+  // triggers branch-deletion / aggressive disk reclaim.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN closed_at TEXT");
+  },
 ];
 
 export class DatabaseManager {
