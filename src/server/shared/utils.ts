@@ -15,7 +15,7 @@ export function getErrorMessage(err: unknown): string {
  *
  * `Date.parse` reads the suffix-less SQLite form as *local* time, while the ISO
  * form is read as UTC. On any non-UTC runtime — most importantly the browser,
- * where the sidebar's `reopenedAfterMerge` sort runs — that lands two values
+ * where the sidebar's `reopenedAfterResolve` sort runs — that lands two values
  * that are both UTC on different absolute instants, so comparing them is wrong
  * (in a UTC+ zone a `merged_at` ends up *earlier* than a `last_used_at` from
  * just before the merge, falsely flagging the session as reopened). CI runs in

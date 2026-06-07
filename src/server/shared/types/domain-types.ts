@@ -121,6 +121,15 @@ export interface SessionInfo {
   conversationReplay?: string;
   /** When the session's PR was merged. Sessions with mergedAt are kept alive until pruned. */
   mergedAt?: string;
+  /**
+   * When the session's PR was closed *without* being merged (abandoned/rejected).
+   * The close analogue of `mergedAt`: like a merge, it's a terminal PR state that
+   * sinks the session out of the active sidebar list into the "Recently resolved"
+   * group. Kept distinct from `mergedAt` because closing is a different outcome
+   * than merging (it does not delete the head branch or trigger merge-aware disk
+   * reclaim, and the PR card badge stays red).
+   */
+  closedAt?: string;
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
   /** Agent (provider) selected for this session. Locked in on first WS connect. */
