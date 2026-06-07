@@ -446,6 +446,20 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN compaction TEXT");
   },
+  // docs/161 — `last_branch_commit_at` records the last time a turn advanced the
+  // session BRANCH (a commit or HEAD move), stamped by postTurnCommit. The
+  // sidebar's `reopenedAfterMerge` predicate now compares THIS (not
+  // `last_used_at`) against `merged_at`, so a merged session only returns to
+  // Active on real follow-up branch work — not on any post-merge turn
+  // (answering a question / spawning a child both bump `last_used_at` without
+  // committing). Deliberately NOT backfilled: copying `last_used_at` would
+  // re-introduce the exact false "reopened" this fixes (a merged session whose
+  // only post-merge turn made no commit). Legacy merged sessions therefore start
+  // under "Recently merged" and return to Active on their next branch-advancing
+  // turn — or stay correctly demoted if the follow-up work is truly done.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN last_branch_commit_at TEXT");
+  },
 ];
 
 export class DatabaseManager {

@@ -4,8 +4,11 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
 
-/** Minimal handler context — postTurnCommit only needs git + chat history + auto-push. */
-type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager"> & {
+/** Minimal handler context — postTurnCommit only needs git + chat history + sessions + auto-push. */
+type PostTurnCtx = Pick<
+  ConnectionCtx & AppCtx,
+  "createGitManager" | "chatHistoryManager" | "sessionManager"
+> & {
   scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>, sessionId?: string) => void;
 };
 
@@ -70,10 +73,20 @@ export async function postTurnCommit(
         currentHeadHash &&
         currentHeadHash !== opts.turnStartHeadHash
       ) {
+        // The agent advanced HEAD itself (own commit / rebase) without a
+        // working-tree commit. That is still branch work, so stamp the
+        // branch-advance time — `reopenedAfterMerge` keys on it (docs/161).
+        if (opts.sessionId) ctx.sessionManager.markBranchAdvanced(opts.sessionId);
         ctx.scheduleAutoPush(git, opts.sessionId);
       }
       return null;
     }
+
+    // docs/161 — a commit landed on the branch. Stamp the branch-advance time so
+    // a post-merge turn that actually commits counts as a genuine reopen (a turn
+    // that makes NO commit never reaches here and so won't float a merged
+    // session back to Active).
+    if (opts.sessionId) ctx.sessionManager.markBranchAdvanced(opts.sessionId);
 
     opts.emit({ type: "git_committed", hash: commitHash, message: firstLine });
     // docs/171 — release carve-out: auto-push pushes the session BRANCH only and

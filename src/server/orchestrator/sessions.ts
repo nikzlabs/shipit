@@ -27,6 +27,8 @@ interface SessionRow {
   kind: string | null;
   branch_renamed: number;
   merged_at: string | null;
+  /** docs/161 — last time a turn advanced the session branch; see SessionInfo.lastBranchCommitAt. */
+  last_branch_commit_at: string | null;
   model: string | null;
   agent_id: string | null;
   /** docs/138 — set once the session has taken its first turn (agent pinned). */
@@ -62,25 +64,33 @@ export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted
 export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
 
 /**
- * docs/161 — true when a merged session has been *worked in* since its merge,
- * i.e. the user returned to it to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity, never by merely opening the session), so it
- * becomes true the instant the user sends a message in a merged session.
+ * docs/161 — true when a merged session has had real *follow-up work* since its
+ * merge, i.e. the user returned to it and advanced the branch toward a new PR.
+ * Keys on `lastBranchCommitAt` (stamped only when a turn moves HEAD), NOT on
+ * `lastUsedAt`: a turn that makes no commit — answering a question, or spawning
+ * a child session to do the work — bumps `lastUsedAt` but does not constitute
+ * reopening. Keying on branch advance was the fix for merged sessions floating
+ * back to Active after a no-op turn (and dragging their merged children with
+ * them via the parent-status grouping).
  *
- * Evaluated in JS, not SQL: `merged_at` is written by `datetime('now')`
- * ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is `toISOString()`
- * ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) > ' ' (0x20), so an
- * ISO timestamp at the same wall-clock second always sorts greater, falsely
- * marking a just-merged session as reopened. `parseTimestampMs` reconciles the
- * two formats to UTC epoch ms — a plain `Date.parse` would read the suffix-less
- * SQLite form as *local* time and mis-order the two on any non-UTC runtime.
+ * A session with no recorded branch commit after the merge (including legacy
+ * rows predating `last_branch_commit_at`) is NOT reopened — it stays under
+ * "Recently merged" until its next branch-advancing turn.
+ *
+ * Evaluated in JS, not SQL: both `merged_at` and `last_branch_commit_at` are
+ * written by `datetime('now')` ("YYYY-MM-DD HH:MM:SS"), but the predicate may
+ * also see ISO timestamps from other write paths. A lexical `>` is wrong — 'T'
+ * (0x54) > ' ' (0x20), so an ISO timestamp at the same wall-clock second always
+ * sorts greater. `parseTimestampMs` reconciles both formats to UTC epoch ms — a
+ * plain `Date.parse` would read the suffix-less SQLite form as *local* time and
+ * mis-order them on any non-UTC runtime.
  */
 export function reopenedAfterMerge(s: SessionInfo): boolean {
-  if (!s.mergedAt) return false;
+  if (!s.mergedAt || !s.lastBranchCommitAt) return false;
   const merged = parseTimestampMs(s.mergedAt);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+  const committed = parseTimestampMs(s.lastBranchCommitAt);
+  if (Number.isNaN(merged) || Number.isNaN(committed)) return false;
+  return committed > merged;
 }
 
 /**
@@ -188,6 +198,7 @@ export class SessionManager {
     if (row.kind === "ops") info.kind = "ops";
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
+    if (row.last_branch_commit_at) info.lastBranchCommitAt = row.last_branch_commit_at;
     if (row.model) info.model = row.model;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
@@ -359,6 +370,20 @@ export class SessionManager {
       "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
     ).run(id);
     return result.changes > 0;
+  }
+
+  /**
+   * docs/161 — stamp the time a turn advanced the session BRANCH. Called by
+   * `postTurnCommit` whenever HEAD moves (a real commit or the agent's own
+   * commit/rebase). `reopenedAfterMerge` compares this against `merged_at`, so a
+   * post-merge turn that does NOT advance the branch (answering a question,
+   * spawning a child) no longer floats a merged session back to Active. Uses the
+   * same `datetime('now')` format as `merged_at` so the two compare cleanly.
+   */
+  markBranchAdvanced(id: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET last_branch_commit_at = datetime('now') WHERE id = ?",
+    ).run(id);
   }
 
   /** List merged, not-user-hidden sessions, most recently merged first. */

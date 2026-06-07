@@ -409,23 +409,42 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Recently merged")).toBeNull();
     });
 
-    it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {
-      // A merged session worked in since the merge rejoins Active — it must NOT
-      // sink under the 'Recently merged' header.
+    it("keeps a reopened merged session (branch advanced after merge) in the Active group", () => {
+      // A merged session whose branch advanced since the merge rejoins Active —
+      // it must NOT sink under the 'Recently merged' header.
       const sessions = [
         baseSession({
           id: "s-reopened",
           title: "Reopened merged",
           remoteUrl: repoA.url,
           createdAt: "2024-01-01T00:00:00.000Z",
-          lastUsedAt: "2024-02-01T00:00:00.000Z", // after mergedAt → reopened
+          lastUsedAt: "2024-02-01T00:00:00.000Z",
           mergedAt: "2024-01-15T00:00:00.000Z",
+          lastBranchCommitAt: "2024-02-01T00:00:00.000Z", // after mergedAt → reopened
         }),
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
       // The only session is reopened → it's Active, so no merged header appears.
       expect(screen.queryByText("Recently merged")).toBeNull();
       expect(screen.getByText("Reopened merged")).toBeTruthy();
+    });
+
+    it("keeps a merged session under 'Recently merged' when only lastUsedAt advanced (no branch commit)", () => {
+      // docs/161 fix: a no-op post-merge turn (answering a question / spawning a
+      // child) bumps lastUsedAt but commits nothing. The session must stay demoted.
+      const sessions = [
+        baseSession({
+          id: "s-noop",
+          title: "Merged then asked",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-02-01T00:00:00.000Z", // bumped by a no-op turn after merge
+          mergedAt: "2024-01-15T00:00:00.000Z",
+          // no lastBranchCommitAt after the merge → not a genuine reopen
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.getByText("Recently merged")).toBeTruthy();
     });
   });
 

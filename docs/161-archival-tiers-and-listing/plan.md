@@ -84,14 +84,29 @@ hides a session.
 
 ## Part 1 — Listing logic (what the sidebar shows)
 
-Listing is a **pure derivation** from session metadata — no new persisted state
-beyond what already exists (`mergedAt`, `lastUsedAt`, `userArchived`,
-`parentSessionId`). Define, per session:
+Listing is a **pure derivation** from session metadata. Define, per session:
 
 ```
 reopenedAfterMerge = mergedAt != null
-                     AND parseTimestampMs(lastUsedAt) > parseTimestampMs(mergedAt)
+                     AND lastBranchCommitAt != null
+                     AND parseTimestampMs(lastBranchCommitAt) > parseTimestampMs(mergedAt)
 ```
+
+> **Refinement (docs/161 follow-up):** the predicate originally keyed on
+> `lastUsedAt`. That over-fired: *any* turn bumps `lastUsedAt`, including a turn
+> that commits nothing — answering a question, or spawning a child session to do
+> the work. Such a no-op turn floated a merged session back to Active, and (via
+> the parent-status grouping) dragged its merged children along with it. The fix
+> keys on **branch advance** instead: `lastBranchCommitAt` is a persisted column
+> (`last_branch_commit_at`, stamped by `postTurnCommit` via
+> `SessionManager.markBranchAdvanced` whenever a turn moves HEAD — a real commit
+> or the agent's own commit/rebase). A merged session now returns to Active only
+> on genuine follow-up branch work. Legacy rows (and merged sessions that never
+> committed after merge) have `lastBranchCommitAt == null` ⇒ not reopened ⇒ they
+> stay under "Recently merged" until their next branch-advancing turn. The column
+> is deliberately **not** backfilled (copying `lastUsedAt` would reproduce the
+> exact bug). This is the one piece of new persisted state beyond `mergedAt`,
+> `lastUsedAt`, `userArchived`, `parentSessionId`.
 
 **Evaluate in JS, not SQL.** `merged_at` and `last_used_at` are stored in
 *incompatible* string formats — `markMerged` writes `datetime('now')`
@@ -115,13 +130,13 @@ the comparison is timezone-independent on both server and client. Regression
 coverage: `shared/utils.test.ts` and the close-timestamp case in
 `sessions.test.ts` ("the merge follows the last turn by seconds").
 
-`lastUsedAt` is bumped at **turn start** (and end) — and **only** by turn
-activity, never by merely opening the session (see Part 2: a separate
-`lastViewedAt` drives the disk-idle clock). So `reopenedAfterMerge` becomes true
-the instant the user *sends a message* in a merged session — not when they just
-click in to look — which is the precise answer to "I went back to a merged
-session to start a follow-up PR." Listing the session for a passive view would
-strand it in Active forever.
+`lastBranchCommitAt` is stamped only when a turn **advances the branch** (see
+the refinement above), so `reopenedAfterMerge` becomes true the instant the user
+does real follow-up work in a merged session — not when they merely click in to
+look (a separate `lastViewedAt` drives the disk-idle clock), and not when they
+send a no-op message that commits nothing. This is the precise answer to "I went
+back to a merged session to start a follow-up PR." (The disk-idle clock still
+keys on `lastUsedAt`/`lastViewedAt`, unchanged — see Part 2.)
 
 Sidebar visibility predicate (replaces `WHERE archived = 0`):
 

@@ -22,26 +22,27 @@ import { parseTimestampMs } from "../../server/shared/utils.js";
 
 /**
  * docs/161 — client mirror of the server's `reopenedAfterMerge` predicate
- * (`sessions.ts`). True when a merged session has been *worked in* since its
- * merge — the user returned to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity), so it flips true the instant the user sends a
- * message in a merged session.
+ * (`sessions.ts`). True when a merged session has had real *follow-up work*
+ * since its merge — the user returned and advanced the branch toward a new PR.
+ * Keys on `lastBranchCommitAt` (stamped only when a turn moves HEAD), NOT on
+ * `lastUsedAt`: a turn that makes no commit (answering a question, or spawning a
+ * child session to do the work) bumps `lastUsedAt` but is not a reopen. Keying
+ * on branch advance keeps such a session — and its merged children, which are
+ * grouped by the parent's status — correctly under "Recently merged".
  *
- * `mergedAt` (`datetime('now')`, a UTC string with no timezone suffix) and
- * `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are format-
- * incompatible. This runs in the BROWSER, so a plain `Date.parse` reads the
- * suffix-less `mergedAt` as *local* time: in a UTC+ timezone that shifts the
- * merge instant earlier than a `lastUsedAt` recorded just before the merge,
- * falsely flagging the session as reopened and floating it back into the Active
- * group above genuinely active sessions. `parseTimestampMs` normalizes both to
- * UTC. (CI runs in UTC, so the test suite never reproduced this.)
+ * `mergedAt` and `lastBranchCommitAt` are both `datetime('now')` (UTC, no
+ * timezone suffix) but the predicate may also see ISO timestamps (`…Z`). This
+ * runs in the BROWSER, so a plain `Date.parse` would read a suffix-less value as
+ * *local* time and mis-order the two in a non-UTC timezone, falsely flagging a
+ * reopen. `parseTimestampMs` normalizes both to UTC. (CI runs in UTC, so the
+ * test suite never reproduced that.)
  */
 function reopenedAfterMerge(s: SessionInfo): boolean {
-  if (!s.mergedAt) return false;
+  if (!s.mergedAt || !s.lastBranchCommitAt) return false;
   const merged = parseTimestampMs(s.mergedAt);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+  const committed = parseTimestampMs(s.lastBranchCommitAt);
+  if (Number.isNaN(merged) || Number.isNaN(committed)) return false;
+  return committed > merged;
 }
 
 /**

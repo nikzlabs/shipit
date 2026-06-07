@@ -398,6 +398,7 @@ export function createRunnerRegistry(
             {
               createGitManager,
               chatHistoryManager,
+              sessionManager,
               scheduleAutoPush: (git) => schedulePushGit(git),
             },
             { sessionDir, sessionId, emit, turnSummary: summary, turnStartHeadHash, runner: turnRunner },

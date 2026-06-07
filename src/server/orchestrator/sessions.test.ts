@@ -384,32 +384,50 @@ describe("SessionManager", () => {
       expect(reopenedAfterMerge(make({}))).toBe(false);
     });
 
-    it("is false when last activity predates the merge", () => {
-      // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
-      // predicate parses both via Date.parse rather than comparing lexically.
+    it("is false when the branch last advanced before the merge", () => {
+      // merged_at and last_branch_commit_at use SQLite datetime() format; the
+      // predicate parses both via parseTimestampMs rather than comparing lexically.
       expect(reopenedAfterMerge(make({
         mergedAt: "2024-06-01 12:00:00",
-        lastUsedAt: "2024-05-01T00:00:00.000Z",
+        lastBranchCommitAt: "2024-05-01 00:00:00",
       }))).toBe(false);
     });
 
-    it("is true when worked in after the merge despite mixed timestamp formats", () => {
+    it("is true when the branch advanced after the merge despite mixed timestamp formats", () => {
       expect(reopenedAfterMerge(make({
         mergedAt: "2024-06-01 12:00:00",
-        lastUsedAt: "2024-06-02T00:00:00.000Z",
+        lastBranchCommitAt: "2024-06-02T00:00:00.000Z",
       }))).toBe(true);
     });
 
-    it("is false when the merge follows the last turn by seconds (the typical merge flow)", () => {
-      // Regression: the last turn lands moments before the PR merges. Both
-      // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and
-      // `last_used_at` is ISO. A naive `Date.parse` reads `merged_at` as LOCAL
-      // time, so in a UTC+ timezone it lands *before* `last_used_at` and the
-      // session is wrongly treated as reopened — promoting a just-merged
-      // session back above active ones in the sidebar. UTC-normalized parsing
-      // keeps it correctly demoted regardless of host timezone.
+    it("is false when a no-op turn bumped lastUsedAt past the merge but the branch did not advance", () => {
+      // The core docs/161 fix: answering a question or spawning a child session
+      // bumps lastUsedAt without committing. That must NOT count as a reopen, or
+      // the merged session (and its merged children) wrongly float back to Active.
       expect(reopenedAfterMerge(make({
-        lastUsedAt: "2024-06-01T11:59:55.000Z",
+        mergedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-06-05T00:00:00.000Z", // worked in after merge…
+        // …but no lastBranchCommitAt after the merge → not a genuine reopen.
+        lastBranchCommitAt: "2024-05-31 09:00:00",
+      }))).toBe(false);
+    });
+
+    it("is false for a merged session that never recorded a branch commit (legacy rows)", () => {
+      expect(reopenedAfterMerge(make({
+        mergedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-06-05T00:00:00.000Z",
+      }))).toBe(false);
+    });
+
+    it("is false when the merge follows the last branch commit by seconds (the typical merge flow)", () => {
+      // Regression: the last commit lands moments before the PR merges. Both
+      // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and a
+      // commit time may be ISO. A naive `Date.parse` reads `merged_at` as LOCAL
+      // time, so in a UTC+ timezone it lands *before* the commit and the session
+      // is wrongly treated as reopened. UTC-normalized parsing keeps it correctly
+      // demoted regardless of host timezone.
+      expect(reopenedAfterMerge(make({
+        lastBranchCommitAt: "2024-06-01T11:59:55.000Z",
         mergedAt: "2024-06-01 12:00:00",
       }))).toBe(false);
     });
@@ -468,13 +486,14 @@ describe("SessionManager", () => {
 
     it("keeps a merged session that was reopened even when it is beyond the cap", () => {
       const sessions = [
-        merged("reopened", "2024-01-01 09:00:00", "2024-12-01T00:00:00.000Z"),
+        // Oldest merge, but the branch advanced after the merge → genuine reopen.
+        { ...merged("reopened", "2024-01-01 09:00:00"), lastBranchCommitAt: "2024-12-01T00:00:00.000Z" },
         merged("m2", "2024-01-02 09:00:00"),
         merged("m3", "2024-01-03 09:00:00"),
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
-      // `reopened` has the oldest merge time but recent activity → never pruned.
+      // `reopened` has the oldest merge time but post-merge branch work → never pruned.
       expect(visible).toContain("reopened");
     });
 
@@ -594,7 +613,7 @@ describe("SessionManager", () => {
         .run(mergedAt, lastUsedAt, id);
     }
 
-    it("excludes an old merged session beyond the cap, then includes it once reopened", () => {
+    it("excludes an old merged session beyond the cap, then includes it once its branch advances", () => {
       const mgr = new SessionManager(dbManager);
       // 4 merged sessions in one repo, cap is 3. `target` has the oldest merge.
       seedMerged(mgr, "target", "2024-01-01 09:00:00", "2024-01-01 09:00:00");
@@ -605,13 +624,17 @@ describe("SessionManager", () => {
       // Before reopening: target is beyond the top-N merged cap → not listed.
       expect(mgr.list().map((s) => s.id)).not.toContain("target");
 
-      // Simulate a new turn in the merged session — track() bumps last_used_at
-      // to a time after merged_at, making reopenedAfterMerge true.
+      // docs/161 — a NO-OP turn (answering a question / spawning a child) bumps
+      // last_used_at without committing. That must NOT reopen the session.
       dbManager.db
         .prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?")
         .run("2024-06-01T00:00:00.000Z", "target");
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
 
-      // After reopening: target rejoins the active listing regardless of the cap.
+      // A turn that advances the branch (markBranchAdvanced) is a genuine reopen.
+      dbManager.db
+        .prepare("UPDATE sessions SET last_branch_commit_at = ? WHERE id = ?")
+        .run("2024-06-02 00:00:00", "target");
       expect(mgr.list().map((s) => s.id)).toContain("target");
     });
 

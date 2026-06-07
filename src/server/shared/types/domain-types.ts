@@ -121,6 +121,18 @@ export interface SessionInfo {
   conversationReplay?: string;
   /** When the session's PR was merged. Sessions with mergedAt are kept alive until pruned. */
   mergedAt?: string;
+  /**
+   * docs/161 — timestamp of the most recent turn that advanced the session
+   * BRANCH (a commit, or the agent's own commit/rebase that moved HEAD).
+   * Stamped by `postTurnCommit`. The sidebar's `reopenedAfterMerge` predicate
+   * compares THIS against `mergedAt`: a merged session returns to Active only
+   * when its branch advanced AFTER the merge — i.e. real follow-up work — not
+   * merely because a turn happened. (Answering a question or spawning a child
+   * session both bump `lastUsedAt` without committing anything, which used to
+   * float a merged session back to Active.) Undefined for sessions that have
+   * never committed and for rows predating this field.
+   */
+  lastBranchCommitAt?: string;
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
   /** Agent (provider) selected for this session. Locked in on first WS connect. */
