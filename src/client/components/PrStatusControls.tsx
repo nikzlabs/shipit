@@ -145,7 +145,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       {dropdownOpen && (
         <>
           <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)} />
-          <div className="absolute bottom-full right-0 mb-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
+          <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
             {(["squash", "merge", "rebase"] as const).map((m) => (
               <button
                 key={m}
