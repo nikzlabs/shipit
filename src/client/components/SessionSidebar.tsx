@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, ListBulletsIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, MicrophoneIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -15,6 +15,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
 import { useMediaQuery } from "../hooks/useMediaQuery.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
@@ -841,6 +842,10 @@ export function SessionSidebar({
   // docs/156 — the row-level overflow menu hover-reveals on inactive desktop
   // rows but stays always-visible on touch devices, where there's no hover.
   const isTouch = useMediaQuery("(pointer: coarse)");
+  // Desktop voice quick-session button only renders when voice input is on,
+  // mirroring how the mobile auto-mic flow is gated (avoids a redundant
+  // second lightning glyph for users who don't use voice).
+  const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
 
   const collapsedRepos = useRepoStore((s) => s.collapsedRepos);
   const toggleRepoCollapsed = useRepoStore((s) => s.toggleRepoCollapsed);
@@ -1068,6 +1073,47 @@ export function SessionSidebar({
     setDropTarget(null);
   }, []);
 
+  // Quick-session controls live in the sidebar's own toolbar (and collapsed
+  // rail) rather than the app header. The plain lightning opens the quick
+  // capture overlay; the lightning+mic variant opens it with auto-mic on and
+  // only renders when voice input is enabled. `side` lets the collapsed rail
+  // anchor its tooltips to the right.
+  const renderQuickSessionControls = (side?: "top" | "right") => (
+    <>
+      <WithTooltip label="Quick session" side={side}>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
+          className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          aria-label="Quick session"
+        >
+          <LightningIcon size={ICON_SIZE.SM} />
+        </Button>
+      </WithTooltip>
+      {voiceInputEnabled && (
+        <WithTooltip label="Voice quick session" side={side}>
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
+            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            aria-label="Voice quick session"
+          >
+            <span className="relative inline-flex h-4 w-4 items-center justify-center">
+              <LightningIcon size={ICON_SIZE.SM} />
+              <MicrophoneIcon
+                size={ICON_SIZE.XS}
+                weight="fill"
+                className="absolute -bottom-0.5 -right-1 rounded-full bg-(--color-bg-primary)"
+              />
+            </span>
+          </Button>
+        </WithTooltip>
+      )}
+    </>
+  );
+
   if (collapsed && !mobile) {
     return (
       <div className="flex flex-col w-10 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
@@ -1092,6 +1138,7 @@ export function SessionSidebar({
           <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         </Button>
         </RepoSwitcher>
+        {renderQuickSessionControls("right")}
         <div className="flex-1" />
         <WithTooltip label="New Session" side="right">
         <Button
@@ -1142,6 +1189,7 @@ export function SessionSidebar({
           </Button>
           </WithTooltip>
           <span className="flex-1" />
+          {renderQuickSessionControls()}
           <RepoSwitcher
             repos={repos}
             activeRepoUrl={useRepoStore.getState().activeRepoUrl}

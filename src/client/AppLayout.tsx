@@ -1,6 +1,5 @@
 import type { ReactNode, RefObject } from "react";
-import { GaugeIcon, GearSixIcon, GithubLogoIcon, LightningIcon, QuestionIcon } from "@phosphor-icons/react";
-import { useUiStore } from "./stores/ui-store.js";
+import { GaugeIcon, GearSixIcon, GithubLogoIcon, QuestionIcon } from "@phosphor-icons/react";
 import { useRepoStore } from "./stores/repo-store.js";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Popover, PopoverContent, PopoverTrigger } from "./components/ui/popover.js";
@@ -145,13 +144,6 @@ export function AppLayout({
             <img src="/favicon.svg" alt="" className="w-5 h-5" />
             ShipIt
           </h1>
-          {!isMobile && (
-            <WithTooltip label="Quick session">
-            <button onClick={() => useUiStore.getState().setQuickCaptureOpen(true)} className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)" aria-label="Quick session">
-              <LightningIcon size={ICON_SIZE.MD} />
-            </button>
-            </WithTooltip>
-          )}
           {isMobile && (
             <RepoSwitcher
               repos={repos}
