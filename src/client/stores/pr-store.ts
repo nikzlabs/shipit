@@ -175,6 +175,8 @@ interface PrState {
   // Merge actions
   /** Merge the PR with the given method. Returns error message on failure, null on success. */
   merge: (sessionId: string, method?: string) => Promise<string | null>;
+  /** Close the open PR without merging. Returns error message on failure, null on success. */
+  closePr: (sessionId: string) => Promise<string | null>;
   /** Toggle auto-merge on/off. */
   toggleAutoMerge: (sessionId: string, enabled: boolean) => Promise<void>;
   /** Update the preferred merge method. */
@@ -678,6 +680,39 @@ export const usePrStore = create<PrState>((set, get) => ({
       return null;
     } catch (err) {
       return err instanceof Error ? err.message : "Failed to merge pull request";
+    }
+  },
+
+  closePr: async (sessionId) => {
+    // The close route is keyed by PR number; resolve it from whichever source
+    // has it (the inline card, else the poller snapshot).
+    const prNumber =
+      get().cardBySession[sessionId]?.pr?.number ?? get().statusBySession[sessionId]?.prNumber;
+    if (!prNumber) return "No open pull request to close";
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/${prNumber}/close`, {
+        method: "POST",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+        return data.error || data.message || "Failed to close pull request";
+      }
+      // Optimistically flip the card to closed so the merge controls disappear
+      // immediately instead of waiting for the SSE poller to notice.
+      set((state) => {
+        const existing = state.cardBySession[sessionId];
+        if (!existing) return state;
+        return {
+          cardBySession: {
+            ...state.cardBySession,
+            [sessionId]: { ...existing, phase: "closed" as const },
+          },
+        };
+      });
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : "Failed to close pull request";
     }
   },
 

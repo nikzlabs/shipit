@@ -294,4 +294,69 @@ describe("pr-store", () => {
       expect(usePrStore.getState().cardBySession.s1?.issueComments ?? []).toHaveLength(0);
     });
   });
+
+  describe("closePr", () => {
+    it("posts to the close route with the card's PR number and flips the card to closed", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open"));
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ number: 1, url: "https://github.com/test/repo/pull/1" }),
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const err = await usePrStore.getState().closePr("s1");
+
+      expect(err).toBeNull();
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/1/close",
+        expect.objectContaining({ method: "POST" }),
+      );
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("closed");
+    });
+
+    it("falls back to the poller PR number when no card exists yet", async () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prNumber: 42 })]);
+      // Drop the card the poller created so only statusBySession holds the number.
+      usePrStore.setState({ cardBySession: {} });
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ number: 42, url: "u" }),
+      });
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const err = await usePrStore.getState().closePr("s1");
+
+      expect(err).toBeNull();
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/sessions/s1/pr/42/close",
+        expect.objectContaining({ method: "POST" }),
+      );
+    });
+
+    it("returns an error and leaves the phase unchanged when the request fails", async () => {
+      usePrStore.getState().updateCard("s1", makeCard("open"));
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => ({ error: "GitHub said no" }),
+      }) as typeof fetch;
+
+      const err = await usePrStore.getState().closePr("s1");
+
+      expect(err).toBe("GitHub said no");
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("open");
+    });
+
+    it("returns an error without fetching when there is no PR number to close", async () => {
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as typeof fetch;
+
+      const err = await usePrStore.getState().closePr("s1");
+
+      expect(err).toBe("No open pull request to close");
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
 });
