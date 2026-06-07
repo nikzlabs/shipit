@@ -22,36 +22,47 @@ import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
 import { parseTimestampMs } from "../../server/shared/utils.js";
 
 /**
- * docs/161 — client mirror of the server's `reopenedAfterMerge` predicate
- * (`sessions.ts`). True when a merged session has been *worked in* since its
- * merge — the user returned to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity), so it flips true the instant the user sends a
- * message in a merged session.
- *
- * `mergedAt` (`datetime('now')`, a UTC string with no timezone suffix) and
- * `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are format-
- * incompatible. This runs in the BROWSER, so a plain `Date.parse` reads the
- * suffix-less `mergedAt` as *local* time: in a UTC+ timezone that shifts the
- * merge instant earlier than a `lastUsedAt` recorded just before the merge,
- * falsely flagging the session as reopened and floating it back into the Active
- * group above genuinely active sessions. `parseTimestampMs` normalizes both to
- * UTC. (CI runs in UTC, so the test suite never reproduced this.)
+ * Client mirror of the server's `resolvedAt` (`sessions.ts`). The instant a
+ * session's PR reached a terminal state — merged or closed-without-merge. Both
+ * demote the session into the "Recently resolved" group.
  */
-function reopenedAfterMerge(s: SessionInfo): boolean {
-  if (!s.mergedAt) return false;
-  const merged = parseTimestampMs(s.mergedAt);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+function resolvedAt(s: SessionInfo): string | undefined {
+  return s.mergedAt ?? s.closedAt;
 }
 
 /**
- * docs/161 — a session that belongs in the sidebar's demoted "Recently merged"
- * group: merged and not reopened since. A reopened merged session rejoins the
- * Active group automatically.
+ * docs/161 — client mirror of the server's `reopenedAfterResolve` predicate
+ * (`sessions.ts`). True when a resolved session (merged OR closed) has been
+ * *worked in* since it resolved — the user returned to start a follow-up PR.
+ * Keys on `lastUsedAt` (bumped only by turn activity), so it flips true the
+ * instant the user sends a message in a resolved session.
+ *
+ * `mergedAt`/`closedAt` (`datetime('now')`, a UTC string with no timezone
+ * suffix) and `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are
+ * format-incompatible. This runs in the BROWSER, so a plain `Date.parse` reads
+ * the suffix-less resolve timestamp as *local* time: in a UTC+ timezone that
+ * shifts the resolve instant earlier than a `lastUsedAt` recorded just before
+ * it, falsely flagging the session as reopened and floating it back into the
+ * Active group above genuinely active sessions. `parseTimestampMs` normalizes
+ * both to UTC. (CI runs in UTC, so the test suite never reproduced this.)
  */
-function isRecentlyMerged(s: SessionInfo): boolean {
-  return !!s.mergedAt && !reopenedAfterMerge(s);
+function reopenedAfterResolve(s: SessionInfo): boolean {
+  const resolved = resolvedAt(s);
+  if (!resolved) return false;
+  const resolvedMs = parseTimestampMs(resolved);
+  const used = parseTimestampMs(s.lastUsedAt);
+  if (Number.isNaN(resolvedMs) || Number.isNaN(used)) return false;
+  return used > resolvedMs;
+}
+
+/**
+ * docs/161 — a session that belongs in the sidebar's demoted "Recently
+ * resolved" group: its PR is merged or closed-without-merge and it has not been
+ * reopened (worked in) since. A reopened resolved session rejoins the Active
+ * group automatically.
+ */
+function isRecentlyResolved(s: SessionInfo): boolean {
+  return !!resolvedAt(s) && !reopenedAfterResolve(s);
 }
 
 const SIDEBAR_MIN = 180;
@@ -754,7 +765,7 @@ function RepoGroup({
               // Render a top-level session followed by its (non-collapsed) children
               // into `target`. The brood stays together and is grouped by the
               // PARENT's status, so a parent's merge state — not each child's —
-              // decides which group (Active vs Recently merged) the whole brood
+              // decides which group (Active vs Recently resolved) the whole brood
               // lands in. This preserves the existing "children follow parent"
               // invariant.
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
@@ -791,28 +802,29 @@ function RepoGroup({
                   );
                 }
               };
-              // docs/161 — split into Active and a demoted "Recently merged" group.
-              // The session list is already sorted (active first, then merged by
-              // mergedAt desc), so iterating in order keeps each group sorted.
+              // docs/161 — split into Active and a demoted "Recently resolved"
+              // group (merged OR closed-without-merge). The session list is
+              // already sorted (active first, then resolved by resolve time
+              // desc), so iterating in order keeps each group sorted.
               const active: React.ReactElement[] = [];
-              const merged: React.ReactElement[] = [];
+              const resolved: React.ReactElement[] = [];
               for (const s of sessions) {
                 // Skip children that we render beneath their parent.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
-                pushTree(s, isRecentlyMerged(s) ? merged : active);
+                pushTree(s, isRecentlyResolved(s) ? resolved : active);
               }
               return (
                 <>
                   {active}
-                  {merged.length > 0 && (
+                  {resolved.length > 0 && (
                     <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
                       <GitMergeIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
-                        Recently merged
+                        Recently resolved
                       </span>
                     </div>
                   )}
-                  {merged}
+                  {resolved}
                 </>
               );
             })()
@@ -894,10 +906,10 @@ export function SessionSidebar({
     }
 
     // Sort sessions within each group: archived sink to the very bottom, then
-    // active first (by createdAt desc), then recently-merged (by mergedAt desc,
-    // falling back to createdAt desc). docs/161 — "active" includes a *reopened*
-    // merged session (worked in since the merge), so it bubbles back up out of
-    // the merged tail; only `isRecentlyMerged` sinks.
+    // active first (by createdAt desc), then recently-resolved (by resolve time
+    // desc, falling back to createdAt desc). docs/161 — "active" includes a
+    // *reopened* resolved session (worked in since the merge/close), so it
+    // bubbles back up out of the resolved tail; only `isRecentlyResolved` sinks.
     //
     // `archived` is the PRIMARY key so a hidden/archived session never sits
     // above a live one. Because children are bucketed under their parent in this
@@ -909,12 +921,12 @@ export function SessionSidebar({
         const aArchived = a.archived || a.userArchived ? 1 : 0;
         const bArchived = b.archived || b.userArchived ? 1 : 0;
         if (aArchived !== bArchived) return aArchived - bArchived;
-        const aMerged = isRecentlyMerged(a) ? 1 : 0;
-        const bMerged = isRecentlyMerged(b) ? 1 : 0;
-        if (aMerged !== bMerged) return aMerged - bMerged;
-        if (aMerged === 1) {
-          const aKey = a.mergedAt ?? a.createdAt ?? "";
-          const bKey = b.mergedAt ?? b.createdAt ?? "";
+        const aResolved = isRecentlyResolved(a) ? 1 : 0;
+        const bResolved = isRecentlyResolved(b) ? 1 : 0;
+        if (aResolved !== bResolved) return aResolved - bResolved;
+        if (aResolved === 1) {
+          const aKey = resolvedAt(a) ?? a.createdAt ?? "";
+          const bKey = resolvedAt(b) ?? b.createdAt ?? "";
           return bKey.localeCompare(aKey);
         }
         return (b.createdAt ?? "").localeCompare(a.createdAt ?? "");

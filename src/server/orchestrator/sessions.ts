@@ -27,6 +27,7 @@ interface SessionRow {
   kind: string | null;
   branch_renamed: number;
   merged_at: string | null;
+  closed_at: string | null;
   model: string | null;
   agent_id: string | null;
   /** docs/138 — set once the session has taken its first turn (agent pinned). */
@@ -62,25 +63,39 @@ export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted
 export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
 
 /**
- * docs/161 — true when a merged session has been *worked in* since its merge,
- * i.e. the user returned to it to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity, never by merely opening the session), so it
- * becomes true the instant the user sends a message in a merged session.
- *
- * Evaluated in JS, not SQL: `merged_at` is written by `datetime('now')`
- * ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is `toISOString()`
- * ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) > ' ' (0x20), so an
- * ISO timestamp at the same wall-clock second always sorts greater, falsely
- * marking a just-merged session as reopened. `parseTimestampMs` reconciles the
- * two formats to UTC epoch ms — a plain `Date.parse` would read the suffix-less
- * SQLite form as *local* time and mis-order the two on any non-UTC runtime.
+ * The instant a session's PR reached a terminal state — merged or
+ * closed-without-merge. Both sink the session out of the active sidebar into the
+ * demoted "Recently resolved" group; `mergedAt` wins if somehow both are set
+ * (a merge is the stronger outcome). Returns undefined for a session whose PR is
+ * still open (or that never had one).
  */
-export function reopenedAfterMerge(s: SessionInfo): boolean {
-  if (!s.mergedAt) return false;
-  const merged = parseTimestampMs(s.mergedAt);
+export function resolvedAt(s: SessionInfo): string | undefined {
+  return s.mergedAt ?? s.closedAt;
+}
+
+/**
+ * docs/161 — true when a *resolved* session (merged or closed) has been
+ * *worked in* since it resolved, i.e. the user returned to it to start a
+ * follow-up PR. Keys on `lastUsedAt` (bumped only by turn activity, never by
+ * merely opening the session), so it becomes true the instant the user sends a
+ * message in a resolved session, floating it back into the Active group.
+ *
+ * Evaluated in JS, not SQL: `merged_at`/`closed_at` are written by
+ * `datetime('now')` ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is
+ * `toISOString()` ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) >
+ * ' ' (0x20), so an ISO timestamp at the same wall-clock second always sorts
+ * greater, falsely marking a just-resolved session as reopened.
+ * `parseTimestampMs` reconciles the two formats to UTC epoch ms — a plain
+ * `Date.parse` would read the suffix-less SQLite form as *local* time and
+ * mis-order the two on any non-UTC runtime.
+ */
+export function reopenedAfterResolve(s: SessionInfo): boolean {
+  const resolved = resolvedAt(s);
+  if (!resolved) return false;
+  const resolvedMs = parseTimestampMs(resolved);
   const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+  if (Number.isNaN(resolvedMs) || Number.isNaN(used)) return false;
+  return used > resolvedMs;
 }
 
 /**
@@ -88,14 +103,16 @@ export function reopenedAfterMerge(s: SessionInfo): boolean {
  * metadata; `diskTier` is deliberately NOT consulted (a disk-evicted but recent
  * session stays listed and restores on select). Input must already exclude
  * warm sessions but MAY include user-archived ones — they are filtered out of
- * the result here, yet still count toward the per-repo merged ranking (see
- * below). A session is visible when it is NOT user-archived and is:
- *   - active (never merged), or
- *   - merged but reopened (worked in since the merge), or
- *   - among the top-N most-recently-merged for its repo (the view cap).
+ * the result here, yet still count toward the per-repo resolved ranking (see
+ * below). "Resolved" means a terminal PR state — merged OR closed-without-merge;
+ * both demote a session out of Active. A session is visible when it is NOT
+ * user-archived and is:
+ *   - active (PR still open or never had one), or
+ *   - resolved but reopened (worked in since the merge/close), or
+ *   - among the top-N most-recently-resolved for its repo (the view cap).
  * Exceeding the cap only removes it from the sidebar — zero disk consequence.
  *
- * The merged ranking deliberately INCLUDES user-archived merged sessions so an
+ * The resolved ranking deliberately INCLUDES user-archived resolved sessions so an
  * archived session keeps occupying its chronological slot. This makes manual
  * archiving feel right: archiving one of the N visible merged sessions lowers
  * the visible count to N-1 instead of promoting an older, previously-demoted
@@ -117,24 +134,25 @@ export function filterVisibleInSidebar(
   sessions: SessionInfo[],
   maxMerged = MAX_MERGED_SESSIONS_PER_REPO,
 ): SessionInfo[] {
-  // Rank merged-not-reopened sessions per repo by mergedAt desc; keep top N.
-  // Archived sessions are included in the ranking (so they hold their slot) but
-  // dropped from the output by the `!s.userArchived` guard at the end.
-  const mergedByRepo = new Map<string, SessionInfo[]>();
+  // Rank resolved-not-reopened sessions (merged OR closed) per repo by resolve
+  // time desc; keep top N. Archived sessions are included in the ranking (so
+  // they hold their slot) but dropped from the output by the `!s.userArchived`
+  // guard at the end.
+  const resolvedByRepo = new Map<string, SessionInfo[]>();
   for (const s of sessions) {
-    if (!s.mergedAt || reopenedAfterMerge(s)) continue;
+    if (!resolvedAt(s) || reopenedAfterResolve(s)) continue;
     const key = s.remoteUrl ?? "";
-    let group = mergedByRepo.get(key);
+    let group = resolvedByRepo.get(key);
     if (!group) {
       group = [];
-      mergedByRepo.set(key, group);
+      resolvedByRepo.set(key, group);
     }
     group.push(s);
   }
-  const topMergedIds = new Set<string>();
-  for (const group of mergedByRepo.values()) {
-    group.sort((a, b) => (Date.parse(b.mergedAt ?? "") || 0) - (Date.parse(a.mergedAt ?? "") || 0));
-    for (const s of group.slice(0, maxMerged)) topMergedIds.add(s.id);
+  const topResolvedIds = new Set<string>();
+  for (const group of resolvedByRepo.values()) {
+    group.sort((a, b) => (Date.parse(resolvedAt(b) ?? "") || 0) - (Date.parse(resolvedAt(a) ?? "") || 0));
+    for (const s of group.slice(0, maxMerged)) topResolvedIds.add(s.id);
   }
   // Parent/child relationships are derived from the (non-archived) sessions in
   // this same list: a live child both proves its parent has children and marks
@@ -154,7 +172,7 @@ export function filterVisibleInSidebar(
   return sessions.filter(
     (s) =>
       !s.userArchived &&
-      (!s.mergedAt || reopenedAfterMerge(s) || topMergedIds.has(s.id) || exemptFromCap(s)),
+      (!resolvedAt(s) || reopenedAfterResolve(s) || topResolvedIds.has(s.id) || exemptFromCap(s)),
   );
 }
 
@@ -188,6 +206,7 @@ export class SessionManager {
     if (row.kind === "ops") info.kind = "ops";
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
+    if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
@@ -357,6 +376,20 @@ export class SessionManager {
   markMerged(id: string): boolean {
     const result = this.db.prepare(
       "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
+    ).run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * Mark a session's PR as closed without a merge (sets closed_at timestamp).
+   * No-op if the PR already merged — a merge is the stronger terminal state and
+   * must not be downgraded to "closed". Unlike `markMerged` this does NOT delete
+   * the head branch or trigger aggressive disk reclaim: a closed PR can be
+   * reopened, so we keep the branch and the gentle idle clock.
+   */
+  markClosed(id: string): boolean {
+    const result = this.db.prepare(
+      "UPDATE sessions SET closed_at = datetime('now') WHERE id = ? AND closed_at IS NULL AND merged_at IS NULL",
     ).run(id);
     return result.changes > 0;
   }
@@ -538,6 +571,16 @@ export class SessionManager {
   setPrStatus(id: string, status: PrStatusSummary | null): void {
     const json = status === null ? null : JSON.stringify(status);
     this.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run(json, id);
+    // A previously-closed PR observed open again has been reopened: clear the
+    // terminal `closed_at` so the session immediately rejoins the Active group
+    // (it would otherwise linger in "Recently resolved" until the next turn
+    // bumped `last_used_at` past the close). Merges are not reopenable, so
+    // `merged_at` is intentionally left untouched.
+    if (status?.prState === "open") {
+      this.db.prepare(
+        "UPDATE sessions SET closed_at = NULL WHERE id = ? AND closed_at IS NOT NULL",
+      ).run(id);
+    }
   }
 
   /**
