@@ -1123,7 +1123,7 @@ describe("PrStateBadge", () => {
     expect(screen.getByTitle("PR open")).toBeInTheDocument();
   });
 
-  it("renders branch badge for closed PR", () => {
+  it("renders a distinct red closed badge for a closed PR (not the gray branch badge)", () => {
     usePrStore.setState({
       statusBySession: {
         s1: {
@@ -1147,7 +1147,11 @@ describe("PrStateBadge", () => {
 
     render(<PrStateBadge sessionId="s1" />);
 
-    expect(screen.getByTitle("PR closed")).toBeInTheDocument();
+    const badge = screen.getByTitle("PR closed");
+    expect(badge).toBeInTheDocument();
+    // Closed is red (GitHub convention), distinct from the gray branch fallback.
+    expect(badge.className).toContain("text-(--color-error)");
+    expect(badge.className).not.toContain("text-(--color-text-tertiary)");
   });
 });
 

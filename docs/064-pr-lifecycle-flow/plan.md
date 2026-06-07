@@ -168,6 +168,8 @@ Both toggles are per-session and persist until the session ends or the PR is mer
 
 The merge button has a dropdown caret for merge method (merge commit, squash, rebase). Defaults to squash (matching Desktop). Persists the user's last choice server-side (needed for auto-merge without a client connected). If CI is pending, clicking Merge enables GitHub native auto-merge. This goes beyond Desktop, which only supports squash.
 
+The same dropdown also hosts a **Close pull request** item, separated from the merge methods and styled in `--color-error` as the one destructive action. It is a two-step confirm (first click arms it → "Click again to confirm") so a misclick can't close a PR; the second click calls `closePr` in `pr-store`, which `POST`s to the existing `/api/sessions/:id/pr/:number/close` route and optimistically flips the card to the `closed` phase. This keeps closing a PR inside ShipIt rather than bouncing the user to GitHub. Closed-but-not-merged PRs get a distinct red badge (`PrStateBadge`) using GitHub's `git-pull-request-closed` Octicon — `GitPullRequestClosedIcon`, a one-off custom SVG since Phosphor has no closed-PR glyph — so a closed PR no longer looks like a plain gray branch.
+
 **6. Merged-session preview iframes are pruned.**
 
 `PreviewFrame` keeps ordinary session iframes mounted in an iframe pool so switching between active sessions does not reload the app preview. A merged PR is terminal, so `App.tsx` derives merged session IDs from `pr-store` and passes them into `PreviewFrame`; the active merged preview remains visible while the user is on that session, but once the user switches away its background iframe slot is removed from the pool.

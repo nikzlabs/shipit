@@ -6,6 +6,7 @@ import {
   InfoIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
+import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import { Button } from "./ui/button.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip.js";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
@@ -101,10 +102,15 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
+  const closePr = usePrStore((s) => s.closePr);
   const setToast = useUiStore((s) => s.setToast);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
+  // Two-step confirm for the destructive close action: the first click arms it,
+  // the second commits — cheaper than a modal and contained to the dropdown.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closing, setClosing] = useState(false);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
@@ -112,6 +118,13 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
   const title = isAgentRunning
     ? "Agent is still working; merge will be available when the turn finishes"
     : undefined;
+
+  // Reset the armed-confirm state whenever the menu closes so it never reopens
+  // pre-armed.
+  const closeDropdown = () => {
+    setDropdownOpen(false);
+    setConfirmClose(false);
+  };
 
   const handleMerge = async () => {
     if (disabled) return;
@@ -121,6 +134,24 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       setToast({ message: `Merge failed: ${error}` });
       setMerging(false);
     }
+  };
+
+  const handleClose = async () => {
+    if (closing) return;
+    if (!confirmClose) {
+      setConfirmClose(true);
+      return;
+    }
+    setClosing(true);
+    const error = await closePr(sessionId);
+    if (error) {
+      setToast({ message: `Close failed: ${error}` });
+      setClosing(false);
+      setConfirmClose(false);
+      return;
+    }
+    setClosing(false);
+    closeDropdown();
   };
 
   return (
@@ -134,7 +165,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
         {merging ? "Merging..." : label}
       </button>
       <button
-        onClick={() => setDropdownOpen(!dropdownOpen)}
+        onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
         disabled={disabled}
         title={title}
         className="h-6 px-1 text-xs font-medium bg-(--color-success) hover:opacity-90 text-(--color-text-inverse) rounded-r border-l border-black/20 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -144,18 +175,27 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       </button>
       {dropdownOpen && (
         <>
-          <div className="fixed inset-0 z-40" onClick={() => setDropdownOpen(false)} />
+          <div className="fixed inset-0 z-40" onClick={closeDropdown} />
           <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
             {(["squash", "merge", "rebase"] as const).map((m) => (
               <button
                 key={m}
-                onClick={() => { void setMergeMethod(sessionId, m); setDropdownOpen(false); }}
+                onClick={() => { void setMergeMethod(sessionId, m); closeDropdown(); }}
                 className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors text-left"
               >
                 <span className="w-3 text-(--color-success)">{m === method ? <CheckCircleIcon size={12} /> : ""}</span>
                 {MERGE_METHOD_LABELS[m]}
               </button>
             ))}
+            <div className="my-1 h-px bg-(--color-border-secondary)" />
+            <button
+              onClick={handleClose}
+              disabled={closing}
+              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
+              {closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request"}
+            </button>
           </div>
         </>
       )}

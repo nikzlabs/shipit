@@ -45,6 +45,7 @@ import {
   SealCheckIcon,
   EyeIcon,
 } from "@phosphor-icons/react";
+import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import type { GitHubDeploymentStatus, PrReviewDecision } from "../../server/shared/types.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
@@ -932,9 +933,15 @@ export function PrStateBadge({ sessionId, url, prNumber }: { sessionId: string; 
     className = `${base} bg-(--color-success-subtle) text-(--color-success) border-(--color-success-border)`;
     title = prNumber ? `PR #${prNumber}` : "PR open";
     icon = <GitPullRequestIcon size={ICON_SIZE.SM} />;
+  } else if (prState === "closed") {
+    // Closed-but-not-merged: red, mirroring GitHub's convention, so it reads as
+    // distinct from both the green open PR and a plain (PR-less) branch.
+    className = `${base} bg-(--color-error)/15 text-(--color-error) border-(--color-error)/30`;
+    title = prNumber ? `PR #${prNumber} closed` : "PR closed";
+    icon = <GitPullRequestClosedIcon size={ICON_SIZE.SM} />;
   } else {
     className = `${base} bg-(--color-bg-tertiary) text-(--color-text-tertiary) border-(--color-border-secondary)`;
-    title = prState === "closed" ? (prNumber ? `PR #${prNumber} closed` : "PR closed") : "Branch";
+    title = "Branch";
     icon = <GitBranchIcon size={ICON_SIZE.SM} />;
   }
 
