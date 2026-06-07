@@ -84,17 +84,27 @@ Use local Docker when you want to run ShipIt on your own machine. Use the VPS pa
 always-on setup.
 
 ```bash
-git clone https://github.com/nicolasalt/shipit.git
-cd shipit
-docker/local/prod.sh
+bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/local/setup.sh)
 ```
 
-This builds the orchestrator and session-worker images, then starts ShipIt at
-[http://localhost:4123](http://localhost:4123). The script follows the selected release channel
-(`stable` by default, or `edge` if you switch channels in Settings), updates the checkout to that
-channel, and rebuilds the Docker images. It refuses to overwrite uncommitted local changes. After
-the app opens, sign in to Claude Code or Codex from the in-app provider flow; credentials are stored
-in a persistent Docker volume so you only need to do this once per provider.
+This clones ShipIt to `~/.shipit`, builds the orchestrator and session-worker images, and starts
+ShipIt **detached** at [http://localhost:4123](http://localhost:4123). It works on macOS and Linux
+and sets up nothing else — no Cloudflare, Tailscale, or systemd (local binds to localhost).
+Installing a fork? Set `SHIPIT_REPO_URL=https://github.com/you/shipit.git` before the command; pick a
+different location with `SHIPIT_HOME`.
+
+- **Update later:** `~/.shipit/deployment/local/update.sh` — fetches your release channel (`stable`
+  by default, or `edge` if you switch channels in Settings), rebuilds, and restarts. It refuses to
+  overwrite uncommitted local changes.
+- **Stop:** `~/.shipit/deployment/local/stop.sh` — shuts ShipIt down and cleans up session
+  containers (add `--purge` to also drop the workspace/credentials volumes).
+
+After the app opens, sign in to Claude Code or Codex from the in-app provider flow; credentials are
+stored in a persistent Docker volume so you only need to do this once per provider.
+
+> Working on ShipIt itself? `docker/local/prod.sh` runs the prod images from your current checkout in
+> the foreground — the prod-environment counterpart of `docker/local/dev.sh` — for testing without
+> installing into `~/.shipit`.
 
 ### Run it on a VPS
 
@@ -223,7 +233,7 @@ harness:
   spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
 - **Background notifications** — tab title change and browser notification when the agent finishes
 - **Software updates** — VPS installs can update and restart from Settings → Advanced; local Docker
-  installs choose the channel there, then apply updates by re-running `docker/local/prod.sh`
+  installs choose the channel there, then apply updates by running `deployment/local/update.sh`
 
 ## Known limitations
 
