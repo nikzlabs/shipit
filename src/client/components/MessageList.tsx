@@ -552,12 +552,26 @@ export function MessageList({
     return false;
   };
 
+  // Role of the turn that just finished at this gap — drives the rewind
+  // handle's side: right after a user turn, left after an agent turn.
+  const previousRoleBefore = (gapPosition: number): "user" | "assistant" | null => {
+    for (let i = gapPosition - 1; i >= 0; i--) {
+      const previous = messages[i];
+      if (previous.notice) continue;
+      return previous.role;
+    }
+    return null;
+  };
+
   const renderRewindPoint = (gapPosition: number, currentState = false) => {
     if (!hasRewindControls || !onRewindAtGap) return null;
+    const previousRole = previousRoleBefore(gapPosition);
+    const align = previousRole === "user" ? "right" : previousRole === "assistant" ? "left" : "center";
     return (
       <RewindPoint
         gapPosition={gapPosition}
         currentState={currentState}
+        align={align}
         disabled={!currentState && isLoading}
         defaultSessionName={forkDefaultName}
         previews={getPreviewsForGap(gapPosition)}

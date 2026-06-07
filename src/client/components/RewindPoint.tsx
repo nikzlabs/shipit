@@ -24,6 +24,12 @@ interface RewindPointProps {
   currentState?: boolean;
   disabled?: boolean;
   /**
+   * Horizontal alignment of the rewind handle within the row. Mirrors the
+   * bubble of the turn that just finished: "right" after a user turn,
+   * "left" after an agent turn, "center" when the side is unknown.
+   */
+  align?: "left" | "center" | "right";
+  /**
    * Suggested title for the forked session — defaults to the parent
    * session's title so the fork inherits its name. The user can edit it
    * before confirming. The fork's branch name is derived server-side from
@@ -85,6 +91,7 @@ export function RewindPoint({
   gapPosition,
   currentState = false,
   disabled = false,
+  align = "center",
   defaultSessionName,
   previews,
   onRequestPreview,
@@ -127,24 +134,26 @@ export function RewindPoint({
   const confirmDisabled = pendingAction === "fork" && sessionName.trim().length === 0;
 
   const interactive = !disabled;
+  const justify = align === "left" ? "justify-start" : align === "right" ? "justify-end" : "justify-center";
   return (
     <div
-      className="group/rewind relative flex h-2.5 items-center justify-center"
+      className={`group/rewind relative flex h-2 -my-0.75 items-center ${justify}`}
       data-testid="rewind-point"
       data-menu-open={menuOpen}
+      data-align={align}
     >
       <DropdownMenu onOpenChange={requestPreviews}>
         <DropdownMenuTrigger asChild>
           <button
             type="button"
             disabled={disabled}
-            className={`flex h-2.5 w-8 items-center justify-center focus:outline-none ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
+            className={`flex h-full w-8 items-center justify-center focus:outline-none ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
             title={disabled ? "Wait for the current turn to finish" : currentState ? "Fork current state" : "Rewind options"}
             aria-label={currentState ? "Fork current state" : "Rewind options"}
           >
             <span
               aria-hidden="true"
-              className={`h-[3px] w-[18px] rounded-full bg-(--color-border-secondary) transition-[width,opacity] duration-150 ${
+              className={`h-0.5 w-[18px] rounded-full bg-(--color-border-secondary) transition-[width,opacity] duration-150 ${
                 interactive
                   ? "opacity-40 group-hover/rewind:w-6 group-hover/rewind:opacity-90 group-focus-within/rewind:opacity-90 group-data-[menu-open=true]/rewind:w-6 group-data-[menu-open=true]/rewind:opacity-90"
                   : "opacity-20"
