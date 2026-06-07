@@ -96,8 +96,11 @@ exists, so the bootstrap part cannot source `lib.sh`). Mirrors `deployment/vps/s
 
 ### Modified files
 
-- **`docker/local/prod.sh`** — kept working (referenced by `docs/091` and existing muscle memory),
-  reduced to delegate to the new path so there is a single build/run code path.
+- **`docker/local/prod.sh`** — repurposed (reverted to its pre-`d9ec89d19` shape): a dev-time
+  "run a prod-like environment from the current checkout" tool, the prod counterpart of `dev.sh`.
+  It is **no longer** part of the install/update path — it does not fetch, follow a channel, or
+  touch `~/.shipit`; it builds whatever is checked out and runs the prod stack in the foreground.
+  The install/update/stop responsibilities move entirely to `deployment/local/`.
 - **`src/server/orchestrator/services/updates.ts`** (`requireManagedUpdates`) — the 503 message
   repointed from "Re-run docker/local/prod.sh" to `~/.shipit/deployment/local/update.sh`.
 - **`README.md`** — "Try it locally" switches to the one-liner; "Software updates" bullet mentions
@@ -122,7 +125,7 @@ exists, so the bootstrap part cannot source `lib.sh`). Mirrors `deployment/vps/s
 | `deployment/local/lib.sh` | New shared helper (channel ref, build+up, cleanup) |
 | `deployment/vps/stop.sh` | New VPS teardown counterpart to `restart.sh` |
 | `docker/local/prod/compose.yml` | Existing compose definition reused by the new scripts |
-| `docker/local/prod.sh` | Reduced to delegate to `deployment/local/update.sh` |
+| `docker/local/prod.sh` | Repurposed as a dev-time prod-like test runner (prod counterpart of `dev.sh`); no longer in the install/update path |
 | `src/server/orchestrator/services/updates.ts` | Manual-mode 503 message repointed |
 | `README.md`, `deployment/README.md` | Local install / update / stop instructions |
 

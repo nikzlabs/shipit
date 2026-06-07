@@ -10,7 +10,7 @@
 - [ ] `deployment/vps/stop.sh` — `compose down` + `shipit-parent-session` / `shipit-stack=shipit` sweep; `--purge` for volumes
 
 ## Repointing
-- [ ] `docker/local/prod.sh` — delegate to `deployment/local/update.sh`
+- [x] `docker/local/prod.sh` — reverted to a dev-time prod-like test runner (prod counterpart of `dev.sh`); dropped the channel/update logic, removed from the install/update path
 - [ ] `src/server/orchestrator/services/updates.ts` — 503 message points at `deployment/local/update.sh`
 - [ ] `README.md` — "Try it locally" one-liner + "Software updates" bullet
 - [ ] `deployment/README.md` — "Local install" section + `SHIPIT_HOME` / `SHIPIT_REPO_URL` docs
