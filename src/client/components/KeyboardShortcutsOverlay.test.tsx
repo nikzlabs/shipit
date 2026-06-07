@@ -44,7 +44,7 @@ describe("KeyboardShortcutsOverlay", () => {
   // --- Shortcut entries ---
   it("shows toggle help overlay shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByText("Toggle this help overlay")).toBeInTheDocument();
+    expect(screen.getByText("Show keyboard shortcuts")).toBeInTheDocument();
   });
 
   it("shows new session shortcut", () => {
@@ -57,14 +57,21 @@ describe("KeyboardShortcutsOverlay", () => {
     expect(screen.getByText("Send message")).toBeInTheDocument();
   });
 
-  it("shows toggle search bar shortcut", () => {
+  it("shows chat search shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByText("Toggle chat search (when chat input is focused)")).toBeInTheDocument();
+    expect(screen.getByText("Search the chat (when chat input is focused)")).toBeInTheDocument();
   });
 
-  it("shows next search match shortcut", () => {
+  it("shows quick capture shortcut", () => {
     render(<KeyboardShortcutsOverlay onClose={vi.fn()} />);
-    expect(screen.getByText("Next search match")).toBeInTheDocument();
+    expect(screen.getByText("Quick capture")).toBeInTheDocument();
+  });
+
+  it("renders an Edit button when onEdit is provided", () => {
+    const onEdit = vi.fn();
+    render(<KeyboardShortcutsOverlay onClose={vi.fn()} onEdit={onEdit} />);
+    fireEvent.click(screen.getByText("Edit"));
+    expect(onEdit).toHaveBeenCalledOnce();
   });
 
   it("shows new line shortcut", () => {

@@ -38,6 +38,7 @@ type SettingsTab =
   | "instructions"
   | "skills"
   | "mcp"
+  | "keyboard"
   | "voice"
   | "advanced"
   | undefined;

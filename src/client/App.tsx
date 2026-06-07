@@ -13,6 +13,7 @@ import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js"
 import { useTheme } from "./hooks/useTheme.js";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
 import { useQuickCaptureHotkey } from "./hooks/useQuickCaptureHotkey.js";
+import { useKeybinding } from "./keybindings/use-keybinding.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
@@ -245,9 +246,9 @@ export default function App() {
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
-  const quickCaptureHotkey = useSettingsStore((s) => s.quickCaptureHotkey);
+  const quickCaptureHotkey = useKeybinding("quick-capture");
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
-  const voiceHotkeyModeB = useSettingsStore((s) => s.voiceHotkeyModeB);
+  const voiceHotkeyModeB = useKeybinding("voice-mode-b");
   const projectSettingsRepoUrl = useUiStore((s) => s.projectSettingsRepoUrl);
   const projectSettingsTab = useUiStore((s) => s.projectSettingsTab);
   const sidebarCollapsed = useUiStore((s) => s.sidebarCollapsed);
@@ -830,7 +831,7 @@ export default function App() {
     };
   }, [rightTab, hasPr, wsSessionId, status, send]);
 
-  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced" | "trackers") => {
+  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced" | "trackers" | "keyboard") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
@@ -1307,7 +1308,12 @@ export default function App() {
         onCancelCodexDeviceAuth={() => { apiPost("/api/codex-auth/cancel", {}).catch(() => {}); }}
         onComplete={() => { setOnboardingDismissed(true); if (gitIdentityNeeded) useGitStore.getState().setIdentityNeeded(false); }}
       />
-      {shortcutsOpen && <KeyboardShortcutsOverlay onClose={() => setShortcutsOpen(false)} />}
+      {shortcutsOpen && (
+        <KeyboardShortcutsOverlay
+          onClose={() => setShortcutsOpen(false)}
+          onEdit={() => { setShortcutsOpen(false); void handleSettingsOpen("keyboard"); }}
+        />
+      )}
       {(previewFile || (previewMode === "agent-review" && previewLoading)) && previewType && (
         <FilePreviewModal
           filePath={previewFile ?? ""}

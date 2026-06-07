@@ -3,20 +3,19 @@ import type { PermissionMode, FileContextRef, ProviderAccount } from "../../serv
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
-  getSavedQuickCaptureHotkey, saveQuickCaptureHotkey,
   getSavedVoiceInputEnabled, saveVoiceInputEnabled,
   getSavedSttProvider, saveSttProvider,
   getSavedCleanupEnabled, saveCleanupEnabled,
-  getSavedVoiceHotkeyModeA, saveVoiceHotkeyModeA,
-  getSavedVoiceHotkeyModeB, saveVoiceHotkeyModeB,
   getSavedVoiceLanguage, saveVoiceLanguage,
   getSavedVoicePlaybackEnabled, saveVoicePlaybackEnabled,
   getSavedVoiceHandsFree, saveVoiceHandsFree,
   getSavedTtsProvider, saveTtsProvider,
   getSavedTtsVoice, saveTtsVoice,
   getSavedTtsSpeed, saveTtsSpeed,
+  getSavedKeybindings, saveKeybindings,
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
+import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
 
 /**
  * In-flight `codex login --device-auth` state. Server pushes this via SSE
@@ -62,13 +61,17 @@ interface SettingsState {
   agentSystemInstructions: string;
   notifyOnFinish: boolean;
   soundOnFinish: boolean;
-  quickCaptureHotkey: string;
+  /**
+   * docs/180 — keyboard-shortcut overrides (binding id → chord). Only entries
+   * the user has customized are stored; everything else falls back to the
+   * registry default. Resolve with `getKeybinding(id)` or the `useKeybinding`
+   * hook.
+   */
+  keybindings: Record<string, string>;
   /** docs/144 — voice dictation + playback settings (non-credential; the API key is server-side only). */
   voiceInputEnabled: boolean;
   sttProvider: string;
   cleanupEnabled: boolean;
-  voiceHotkeyModeA: string;
-  voiceHotkeyModeB: string;
   voiceLanguage: string;
   voicePlaybackEnabled: boolean;
   ttsProvider: string;
@@ -106,12 +109,15 @@ interface SettingsState {
   setAgentSystemInstructions: (text: string) => void;
   setNotifyOnFinish: (enabled: boolean) => void;
   setSoundOnFinish: (enabled: boolean) => void;
-  setQuickCaptureHotkey: (hotkey: string) => void;
+  /** Resolve a binding to its chord (override or registry default). */
+  getKeybinding: (id: KeybindingId) => string;
+  /** Set a custom chord for a binding (persisted). */
+  setKeybinding: (id: KeybindingId, chord: string) => void;
+  /** Clear a binding's override, reverting to the registry default. */
+  resetKeybinding: (id: KeybindingId) => void;
   setVoiceInputEnabled: (enabled: boolean) => void;
   setSttProvider: (provider: string) => void;
   setCleanupEnabled: (enabled: boolean) => void;
-  setVoiceHotkeyModeA: (hotkey: string) => void;
-  setVoiceHotkeyModeB: (hotkey: string) => void;
   setVoiceLanguage: (language: string) => void;
   setVoicePlaybackEnabled: (enabled: boolean) => void;
   setTtsProvider: (provider: string) => void;
@@ -169,12 +175,10 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   agentSystemInstructions: "",
   notifyOnFinish: getSavedNotifyOnFinish(),
   soundOnFinish: getSavedSoundOnFinish(),
-  quickCaptureHotkey: getSavedQuickCaptureHotkey(),
+  keybindings: getSavedKeybindings(),
   voiceInputEnabled: getSavedVoiceInputEnabled(),
   sttProvider: getSavedSttProvider(),
   cleanupEnabled: getSavedCleanupEnabled(),
-  voiceHotkeyModeA: getSavedVoiceHotkeyModeA(),
-  voiceHotkeyModeB: getSavedVoiceHotkeyModeB(),
   voiceLanguage: getSavedVoiceLanguage(),
   voicePlaybackEnabled: getSavedVoicePlaybackEnabled(),
   ttsProvider: getSavedTtsProvider(),
@@ -211,9 +215,20 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
     set({ soundOnFinish: enabled });
   },
 
-  setQuickCaptureHotkey: (hotkey) => {
-    saveQuickCaptureHotkey(hotkey);
-    set({ quickCaptureHotkey: hotkey });
+  getKeybinding: (id) => get().keybindings[id] ?? getKeybindingDef(id).defaultBinding,
+
+  setKeybinding: (id, chord) => {
+    const next = { ...get().keybindings, [id]: chord };
+    saveKeybindings(next);
+    set({ keybindings: next });
+  },
+
+  resetKeybinding: (id) => {
+    const next = { ...get().keybindings };
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by keybinding id
+    delete next[id];
+    saveKeybindings(next);
+    set({ keybindings: next });
   },
 
   setVoiceInputEnabled: (enabled) => {
@@ -229,16 +244,6 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCleanupEnabled: (enabled) => {
     saveCleanupEnabled(enabled);
     set({ cleanupEnabled: enabled });
-  },
-
-  setVoiceHotkeyModeA: (hotkey) => {
-    saveVoiceHotkeyModeA(hotkey);
-    set({ voiceHotkeyModeA: hotkey });
-  },
-
-  setVoiceHotkeyModeB: (hotkey) => {
-    saveVoiceHotkeyModeB(hotkey);
-    set({ voiceHotkeyModeB: hotkey });
   },
 
   setVoiceLanguage: (language) => {
