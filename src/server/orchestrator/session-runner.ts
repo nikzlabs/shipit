@@ -689,12 +689,17 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   getAgent(): AgentProcess | null { return this.agent; }
   setAgent(a: AgentProcess | null): void {
     this.agent = a;
-    // Dropping the agent reference means the next turn either reuses a
+    // Dropping the agent reference normally means the next turn either reuses a
     // newly-set agent (which `runAgentWithMessage` re-tracks at spawn) or
-    // spawns fresh — either way the previously-applied mode is no longer
-    // authoritative. Reset so a stale value can't suppress a needed
-    // control_request on the next turn.
-    if (a === null) this._appliedPermissionMode = undefined;
+    // spawns fresh — either way a stale applied mode could suppress a needed
+    // control_request, so we reset it. EXCEPT while a persistent streaming
+    // process is still alive (`isStreamingActive`): the CLI keeps its
+    // spawn-time `--permission-mode` for life, so the applied mode is still
+    // authoritative across proxy/ref churn (e.g. a reload). Clearing it there
+    // would make the mode-change gate compare against `undefined` and never
+    // free a plan-pinned CLI ("can't exit plan mode"). A genuine process exit
+    // clears `isStreamingActive`, after which the reset runs as before.
+    if (a === null && !this._isStreamingActive) this._appliedPermissionMode = undefined;
   }
 
   get messageQueue(): QueuedMessage[] { return this._messageQueue; }

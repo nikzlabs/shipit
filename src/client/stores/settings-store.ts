@@ -13,6 +13,7 @@ import {
   getSavedTtsVoice, saveTtsVoice,
   getSavedTtsSpeed, saveTtsSpeed,
   getSavedKeybindings, saveKeybindings,
+  getSavedPermissionModeBySession, savePermissionModeBySession,
 } from "../utils/local-storage.js";
 import { isValidVoice, defaultVoiceFor, providerSpeeds } from "../../server/shared/voice-catalog.js";
 import { getKeybindingDef, type KeybindingId } from "../keybindings/registry.js";
@@ -44,7 +45,10 @@ interface SettingsState {
   /**
    * Per-session permission mode overrides. Keyed by session id. A session
    * without an entry inherits `permissionMode`. This map is what prevents
-   * plan-mode state from leaking between sessions.
+   * plan-mode state from leaking between sessions. Unlike the global default
+   * above, this IS persisted to localStorage (via `setPermissionMode`) so a
+   * page reload restores a session's true mode instead of falling back to
+   * "auto" — the silent-drift that wedged plan-pinned streaming sessions.
    */
   permissionModeBySession: Record<string, PermissionMode>;
   githubStatus: { authenticated: boolean; username?: string; avatarUrl?: string };
@@ -166,7 +170,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   hasSystemPrompt: false,
   systemPromptContent: "",
   permissionMode: "auto",
-  permissionModeBySession: {},
+  permissionModeBySession: getSavedPermissionModeBySession(),
   githubStatus: { authenticated: false },
   githubRateLimit: null,
   pendingFiles: [],
@@ -310,9 +314,16 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setPermissionMode: (sessionId, mode) => {
     if (sessionId) {
-      set((state) => ({
-        permissionModeBySession: { ...state.permissionModeBySession, [sessionId]: mode },
-      }));
+      set((state) => {
+        const next = { ...state.permissionModeBySession, [sessionId]: mode };
+        // Persist per-session overrides so a reload restores the session's true
+        // mode. Without this the chip fell back to the global "auto" default on
+        // reload, sent on the wire as `undefined`, which silently left a
+        // plan-pinned persistent streaming CLI wedged ("can't exit plan mode").
+        // The global default (the `else` branch) stays unpersisted by design.
+        savePermissionModeBySession(next);
+        return { permissionModeBySession: next };
+      });
     } else {
       set({ permissionMode: mode });
     }

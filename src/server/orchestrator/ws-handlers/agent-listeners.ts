@@ -428,6 +428,32 @@ export interface WireListenersOpts {
 }
 
 /**
+ * Map the CLI's authoritative `init.permissionMode` string back to the ShipIt
+ * `appliedPermissionMode` bookkeeping value. The mapping is the inverse of what
+ * `ClaudeAdapter.setPermissionMode` / the spawn flags use:
+ *   - `"plan"`    → `"plan"`
+ *   - `"auto"`    → `"guarded"` (the CLI's classifier-gated mode)
+ *   - `"default"` → `undefined` (ShipIt's no-flag "auto")
+ * Any other / absent value (adapters that don't surface it, e.g. Codex) returns
+ * the `"unrecognized"` sentinel so the caller leaves the bookkeeping untouched
+ * — we never want to clobber a known applied mode with a guess.
+ */
+function cliPermissionModeToApplied(
+  cliMode: string | undefined,
+): PermissionMode | undefined | "unrecognized" {
+  switch (cliMode) {
+    case "plan":
+      return "plan";
+    case "auto":
+      return "guarded";
+    case "default":
+      return undefined;
+    default:
+      return "unrecognized";
+  }
+}
+
+/**
  * Wire up common agent event listeners shared across every entry point that
  * runs an agent turn: WS `send_message` / `answer_question`, system-dispatched
  * turns (Fix CI, child sessions, the `/agent/dispatch` HTTP route), and the
@@ -811,6 +837,28 @@ export function wireAgentListeners(
             message:
               "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
           });
+        }
+      }
+
+      // Plan-mode desync fix — resync `appliedPermissionMode` from the CLI's
+      // authoritative `init.permissionMode`. A persistent streaming CLI keeps
+      // its spawn-time `--permission-mode` for life, but the orchestrator's
+      // `appliedPermissionMode` bookkeeping can drift (it's cleared on
+      // `setAgent(null)` during proxy recreation on reload, and the client chip
+      // falls back to "auto" after a reload). When it drifts to `undefined`
+      // while the CLI is still pinned to `plan`, the between-turns mode-change
+      // gate (send-message / turn-executor) compares "auto requested" against
+      // "auto applied", skips the freeing `set_permission_mode` push, and the
+      // session is permanently wedged ("can't exit plan mode"). The init event
+      // is the CLI's own report of its current mode, so trust it over local
+      // bookkeeping. Only act on a recognized CLI mode — adapters that don't
+      // surface it (Codex) leave the bookkeeping untouched. Not gated on
+      // `isFirstInit`: a post-compaction / post-`set_permission_mode` re-init
+      // also carries the real mode, and resyncing from it is always safe.
+      if (runner) {
+        const synced = cliPermissionModeToApplied(event.permissionMode);
+        if (synced !== "unrecognized") {
+          runner.appliedPermissionMode = synced;
         }
       }
     }
