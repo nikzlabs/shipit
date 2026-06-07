@@ -426,6 +426,80 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("resyncs appliedPermissionMode from init.permissionMode so a drifted streaming session can still leave plan mode (plan-desync fix)", async () => {
+    // Regression: a persistent streaming CLI keeps its spawn-time
+    // `--permission-mode plan` for life, but the orchestrator's
+    // `appliedPermissionMode` bookkeeping can drift to `undefined` (it's cleared
+    // on proxy recreation across a reload, and the client chip falls back to the
+    // "auto" default). With applied=undefined AND the user requesting auto
+    // (omitted on the wire), the mode-change gate compares "auto === auto" and
+    // skips the freeing `set_permission_mode` push — the CLI stays pinned to
+    // plan and every "Accept & Execute" lands on a still-plan CLI ("can't exit
+    // plan mode"). The init event is the CLI's authoritative report of its real
+    // mode, so the orchestrator resyncs `appliedPermissionMode` from it; the
+    // next auto request then correctly pushes set_permission_mode and leaves plan.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Turn 1: open in plan mode → streaming spawn pinned to "plan".
+    client.send({ type: "send_message", text: "Plan it", permissionMode: "plan" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("plan-desync-session");
+    expect(claude.lastPermissionMode).toBe("plan");
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    expect(runner).toBeTruthy();
+    // applied tracks the spawn mode.
+    expect(runner.appliedPermissionMode).toBe("plan");
+
+    // End turn 1 — the streaming process stays alive.
+    claude.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "plan-desync-session",
+      duration_ms: 100,
+    });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    // Simulate the drift: appliedPermissionMode cleared to undefined while the
+    // worker's streaming CLI is still pinned to plan (proxy recreation on reload).
+    runner.appliedPermissionMode = undefined;
+
+    // The CLI re-announces its real mode via a fresh init (e.g. after a
+    // compaction or a reattach). The orchestrator must resync the bookkeeping
+    // from this authoritative signal, not trust the drifted local value.
+    claude.emit("event", {
+      type: "system",
+      subtype: "init",
+      session_id: "plan-desync-session",
+      permissionMode: "plan",
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(runner.appliedPermissionMode).toBe("plan");
+
+    // Turn 2: user requests auto (chip back to "auto" → permissionMode omitted).
+    // With applied resynced to "plan", the gate fires and pushes the freeing
+    // set_permission_mode(undefined) before the next sendUserMessage.
+    client.send({ type: "send_message", text: "Now execute it" });
+
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude.stdinData.some((d) => d.includes("Now execute it"))) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("Turn 2 message never delivered")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // Exactly one push — plan → undefined (auto) — freeing the plan-pinned CLI.
+    expect(claude.permissionModeCalls).toEqual([undefined]);
+    // Same process — no respawn, no kill.
+    expect(claude.killed).toBe(false);
+
+    client.close();
+  });
+
   it("pushes setPermissionMode before a steered message that changes the mode (plan → auto, plan-approval fix)", async () => {
     // Regression: approving a plan ("Accept & Execute") sets permissionMode→auto
     // and sends "Execute the plan you just described." While live steering is on

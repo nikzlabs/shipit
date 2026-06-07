@@ -283,9 +283,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // When the orchestrator sets the agent, it's creating a new one to run.
     // For the container runner, we create a proxy that receives events via SSE.
     this._agent = a as ProxyAgentProcess | null;
-    // See SessionRunner.setAgent — dropping the ref invalidates the
+    // See SessionRunner.setAgent — dropping the ref normally invalidates the
     // previously-applied permission mode so the next turn re-applies cleanly.
-    if (a === null) this._appliedPermissionMode = undefined;
+    // BUT for a container/persistent session the worker's StreamingClaudeProcess
+    // survives proxy-agent recreation across WS reloads, so clearing the mode
+    // here would make the orchestrator "forget" the CLI is still pinned to
+    // `--permission-mode plan` — the mode-change gate then compares against
+    // `undefined` and never pushes the freeing `set_permission_mode`, wedging
+    // the session ("can't exit plan mode"). Preserve the applied mode while the
+    // streaming process is still alive (`isStreamingActive`); a genuine process
+    // exit clears the flag and the next non-reuse spawn overwrites the mode at
+    // `run()` anyway.
+    if (a === null && !this._isStreamingActive) this._appliedPermissionMode = undefined;
   }
 
   // --- Message queue ---

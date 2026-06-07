@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSettingsStore } from "./settings-store.js";
+import { getSavedPermissionModeBySession } from "../utils/local-storage.js";
 
 beforeEach(() => {
+  localStorage.clear();
   useSettingsStore.setState({
     permissionMode: "auto",
     permissionModeBySession: {},
@@ -37,12 +39,33 @@ describe("settings-store permission mode", () => {
     expect(useSettingsStore.getState().getPermissionMode("session-fresh")).toBe("plan");
   });
 
-  it("does not persist permission mode across reloads (no localStorage write)", () => {
-    // Plan mode is per-conversation transient state — nothing should be
-    // written to localStorage when toggling it.
-    useSettingsStore.getState().setPermissionMode("session-a", "plan");
+  it("does not persist the GLOBAL default across reloads", () => {
+    // The pre-session default is per-conversation transient state — toggling it
+    // (sessionId=undefined) must NOT touch the persisted per-session map.
     useSettingsStore.getState().setPermissionMode(undefined, "plan");
     expect(localStorage.getItem("vibe-permission-mode")).toBeNull();
+    expect(getSavedPermissionModeBySession()).toEqual({});
+  });
+
+  it("persists per-session mode so it survives a reload", () => {
+    // Regression (plan-mode desync): a per-session toggle must be persisted so a
+    // page reload restores the session's true mode instead of falling back to
+    // the global "auto" default — the silent drift that wedged plan-pinned
+    // streaming sessions ("can't exit plan mode").
+    useSettingsStore.getState().setPermissionMode("session-a", "plan");
+
+    // The write reached localStorage…
+    expect(getSavedPermissionModeBySession()).toEqual({ "session-a": "plan" });
+
+    // …and a "reload" (store re-hydrated from localStorage, in-memory state
+    // wiped) restores the per-session mode rather than the "auto" default.
+    useSettingsStore.setState({
+      permissionMode: "auto",
+      permissionModeBySession: getSavedPermissionModeBySession(),
+    });
+    expect(useSettingsStore.getState().getPermissionMode("session-a")).toBe("plan");
+    // A session that never set a mode still inherits the global default.
+    expect(useSettingsStore.getState().getPermissionMode("session-b")).toBe("auto");
   });
 });
 
