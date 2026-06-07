@@ -1,4 +1,4 @@
-import type { AgentId, IssuePriorityLevel } from "../../server/shared/types.js";
+import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/shared/types.js";
 import type { IssueFilters } from "../components/issues-filter.js";
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
@@ -277,6 +277,42 @@ export function getSavedKeybindings(): Record<string, string> {
 export function saveKeybindings(map: Record<string, string>): void {
   try {
     localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+const PERMISSION_MODE_BY_SESSION_KEY = "shipit-permission-mode-by-session";
+const VALID_PERMISSION_MODES: readonly PermissionMode[] = ["auto", "plan", "guarded"];
+
+/**
+ * Per-session permission-mode overrides, persisted so a page reload restores a
+ * session's true mode. Without this the chip fell back to the global "auto"
+ * default after a reload, which is sent on the wire as `undefined` and silently
+ * left a plan-pinned persistent streaming CLI wedged ("can't exit plan mode").
+ * The GLOBAL default is deliberately NOT persisted (plan is a per-conversation
+ * choice) — only the per-session map. Unknown modes are dropped defensively.
+ */
+export function getSavedPermissionModeBySession(): Record<string, PermissionMode> {
+  try {
+    const raw = localStorage.getItem(PERMISSION_MODE_BY_SESSION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const result: Record<string, PermissionMode> = {};
+    for (const [id, mode] of Object.entries(parsed)) {
+      if (typeof mode === "string" && (VALID_PERMISSION_MODES as readonly string[]).includes(mode)) {
+        result[id] = mode as PermissionMode;
+      }
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function savePermissionModeBySession(map: Record<string, PermissionMode>): void {
+  try {
+    localStorage.setItem(PERMISSION_MODE_BY_SESSION_KEY, JSON.stringify(map));
   } catch {
     // localStorage may be unavailable
   }
