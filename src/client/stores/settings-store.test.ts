@@ -46,6 +46,30 @@ describe("settings-store permission mode", () => {
   });
 });
 
+describe("settings-store keybindings (docs/180)", () => {
+  beforeEach(() => {
+    useSettingsStore.setState({ keybindings: {} });
+    localStorage.removeItem("shipit-keybindings");
+  });
+
+  it("getKeybinding falls back to the registry default", () => {
+    expect(useSettingsStore.getState().getKeybinding("new-session")).toBe("mod+shift+o");
+  });
+
+  it("setKeybinding overrides and persists", () => {
+    useSettingsStore.getState().setKeybinding("new-session", "mod+shift+k");
+    expect(useSettingsStore.getState().getKeybinding("new-session")).toBe("mod+shift+k");
+    expect(JSON.parse(localStorage.getItem("shipit-keybindings")!)).toEqual({ "new-session": "mod+shift+k" });
+  });
+
+  it("resetKeybinding reverts to the default and drops the override", () => {
+    useSettingsStore.getState().setKeybinding("new-session", "mod+shift+k");
+    useSettingsStore.getState().resetKeybinding("new-session");
+    expect(useSettingsStore.getState().getKeybinding("new-session")).toBe("mod+shift+o");
+    expect(useSettingsStore.getState().keybindings["new-session"]).toBeUndefined();
+  });
+});
+
 describe("settings-store GitHub rate-limit state", () => {
   beforeEach(() => {
     useSettingsStore.setState({ githubRateLimit: null });
