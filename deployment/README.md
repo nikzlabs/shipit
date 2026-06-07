@@ -1,4 +1,56 @@
-# Deploying ShipIt to a VPS
+# Deploying ShipIt
+
+Two install paths, deliberately aligned:
+
+- **Local** (`deployment/local/`) — run ShipIt on your own macOS or Linux machine, bound to
+  localhost. One-line install, manual updates, no access layer.
+- **VPS** (`deployment/vps/`) — an always-on Linux server with optional Cloudflare Tunnel and/or
+  Tailscale access and UI-driven self-updates.
+
+---
+
+## Local install (macOS + Linux)
+
+One command clones ShipIt to `~/.shipit`, builds the images, and starts it detached at
+`http://localhost:4123`:
+
+```bash
+bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/local/setup.sh)
+```
+
+It checks for `git` + Docker (with the Compose v2 plugin) and tells you how to install them if
+missing — it never installs Docker for you. On Linux it raises inotify watcher limits if it can get
+root/sudo; on macOS the Docker Desktop VM manages its own. No Cloudflare, Tailscale, or systemd is
+involved — local binds to localhost only.
+
+Overrides (set before the command):
+
+- `SHIPIT_REPO_URL=https://github.com/you/shipit.git` — install a fork.
+- `SHIPIT_HOME=/path/to/dir` — install somewhere other than `~/.shipit`.
+
+Day-to-day, from your checkout (default `~/.shipit`):
+
+```bash
+# Update to the latest code on your release channel, then rebuild + restart
+~/.shipit/deployment/local/update.sh
+
+# Stop ShipIt and clean up session containers (keeps your data volumes)
+~/.shipit/deployment/local/stop.sh
+# ...or also delete the workspace/credentials volumes (destructive):
+~/.shipit/deployment/local/stop.sh --purge
+```
+
+The local install runs in **manual update mode**: the channel selector in
+**Settings → Advanced → Software Updates** works, but "Update Now" defers to `update.sh` rather than
+updating in place (no host-side systemd watcher locally).
+
+> Contributing to ShipIt? `docker/local/prod.sh` builds the prod images from your *current checkout*
+> and runs them in the foreground — the prod counterpart of `docker/local/dev.sh` — for testing in a
+> prod-like environment without installing into `~/.shipit`.
+
+---
+
+## Deploying ShipIt to a VPS
 
 Self-host ShipIt on any Linux VPS with optional Cloudflare Tunnel and/or Tailscale access.
 
@@ -96,6 +148,20 @@ case "$CHANNEL" in stable) REF=origin/stable;; *) REF=origin/main;; esac
 git fetch origin --tags --prune && git reset --hard "$REF"
 bash deployment/vps/deploy.sh
 ```
+
+## Stopping ShipIt
+
+To fully shut ShipIt down and clean up its session containers and networks:
+
+```bash
+ssh root@<server-ip>
+bash /opt/shipit/deployment/vps/stop.sh
+```
+
+This stops the orchestrator and removes leftover session containers, but **preserves** the
+`workspace` and `credentials` volumes so your sessions and provider sign-ins survive. Add `--purge`
+to also delete those volumes (destructive). To bring it back up afterwards, run
+`bash /opt/shipit/deployment/vps/deploy.sh`.
 
 ## Tailscale private access
 

@@ -41,7 +41,7 @@ export function getUpdateMode(env: NodeJS.ProcessEnv = process.env): UpdateMode 
 
 function requireManagedUpdates(): void {
   if (getUpdateMode() !== "managed") {
-    throw new ServiceError(503, "Updates are applied manually for this install. Re-run docker/local/prod.sh to update or restart ShipIt.");
+    throw new ServiceError(503, "Updates are applied manually for this install. Run deployment/local/update.sh in your ShipIt checkout (e.g. ~/.shipit) to update, or deployment/local/stop.sh to shut down.");
   }
 }
 
