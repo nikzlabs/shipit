@@ -161,6 +161,24 @@ describe("markMergedAndPruneExcess — branch cleanup", () => {
     expect(result.sessions.find((s) => s.id === sessionId)?.mergedAt).toBeTruthy();
   });
 
+  it("stamps merged_at with the GitHub merge timestamp when provided (docs/181)", async () => {
+    const sessionId = trackMergedSession({ branch: "shipit/dated" });
+
+    await markMergedAndPruneExcess(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      sessionId,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      "2024-06-01T12:00:00.000Z",
+    );
+
+    expect(sessionManager.get(sessionId)?.mergedAt).toBe("2024-06-01T12:00:00.000Z");
+  });
+
   it("skips branch deletion when the session has no branch recorded", async () => {
     const sessionId = trackMergedSession({ branch: undefined });
 

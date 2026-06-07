@@ -286,6 +286,46 @@ describe("SessionManager", () => {
     });
   });
 
+  // docs/181 — `merged_at` is no longer write-once. It tracks the LATEST merge
+  // on the branch so the "Recently merged" ranking sorts by most-recent merge,
+  // and an explicit timestamp keeps re-detection idempotent.
+  describe("docs/181: markMerged keeps merged_at fresh + idempotent", () => {
+    it("stamps GitHub's merge timestamp when provided", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("s", "S");
+      mgr.markMerged("s", "2024-06-01T12:00:00.000Z");
+      expect(mgr.get("s")?.mergedAt).toBe("2024-06-01T12:00:00.000Z");
+    });
+
+    it("advances merged_at to a later merge (multi-PR session)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("s", "S");
+      mgr.markMerged("s", "2024-01-01T09:00:00.000Z"); // first PR
+      mgr.markMerged("s", "2024-06-01T12:00:00.000Z"); // follow-up PR, also merged
+      expect(mgr.get("s")?.mergedAt).toBe("2024-06-01T12:00:00.000Z");
+    });
+
+    it("is idempotent: re-detecting the same merge re-stamps the same instant (no 'now' bump)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("s", "S");
+      mgr.markMerged("s", "2024-01-01T09:00:00.000Z");
+      // Simulate a post-restart re-verify of the already-merged PR.
+      mgr.markMerged("s", "2024-01-01T09:00:00.000Z");
+      expect(mgr.get("s")?.mergedAt).toBe("2024-01-01T09:00:00.000Z");
+    });
+
+    it("falls back to datetime('now') write-once when no timestamp is supplied", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("s", "S");
+      expect(mgr.markMerged("s")).toBe(true);
+      const first = mgr.get("s")?.mergedAt;
+      expect(first).toBeTruthy();
+      // Without a timestamp the NULL guard still applies, so a second call is a no-op.
+      expect(mgr.markMerged("s")).toBe(false);
+      expect(mgr.get("s")?.mergedAt).toBe(first);
+    });
+  });
+
   describe("session deletion cascade", () => {
     it("deleteSession cascades to chat history and usage", () => {
       const sessions = new SessionManager(dbManager);
@@ -368,7 +408,11 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("docs/161: reopenedAfterMerge predicate", () => {
+  // docs/181 — `reopenedAfterMerge` now keys on the CURRENT PR state (`prState`),
+  // not a `lastUsedAt > mergedAt` timestamp comparison. A merged session is
+  // "reopened" (→ Active) only when a follow-up PR is OPEN on the branch; any
+  // other current state (merged/closed/none) demotes it to "Recently merged".
+  describe("docs/181: reopenedAfterMerge predicate", () => {
     function make(overrides: Partial<SessionInfo>): SessionInfo {
       return {
         id: "x",
@@ -382,36 +426,46 @@ describe("SessionManager", () => {
 
     it("is false for a never-merged session", () => {
       expect(reopenedAfterMerge(make({}))).toBe(false);
+      expect(reopenedAfterMerge(make({ prState: "open" }))).toBe(false);
     });
 
-    it("is false when last activity predates the merge", () => {
-      // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
-      // predicate parses both via Date.parse rather than comparing lexically.
+    it("is false when the current PR is still merged (multi-PR: first + later PR both merged, idle)", () => {
+      // The frozen-`mergedAt` bug stuck this in Active forever because a later
+      // turn pushed `lastUsedAt` past the first-merge timestamp. Now the current
+      // PR state ("merged") demotes it regardless of activity timestamps.
       expect(reopenedAfterMerge(make({
         mergedAt: "2024-06-01 12:00:00",
-        lastUsedAt: "2024-05-01T00:00:00.000Z",
+        lastUsedAt: "2024-06-02T00:00:00.000Z", // a later turn bumped this
+        prState: "merged",
       }))).toBe(false);
     });
 
-    it("is true when worked in after the merge despite mixed timestamp formats", () => {
+    it("is false when a post-merge turn opened no new PR (spawned child / one-off question)", () => {
+      // `lastUsedAt` is well after the merge (the turn happened), but no
+      // follow-up PR exists, so the session is NOT reopened.
       expect(reopenedAfterMerge(make({
         mergedAt: "2024-06-01 12:00:00",
-        lastUsedAt: "2024-06-02T00:00:00.000Z",
+        lastUsedAt: "2024-06-03T00:00:00.000Z",
+        prState: "merged",
+      }))).toBe(false);
+    });
+
+    it("is false when the current PR is closed without merge", () => {
+      expect(reopenedAfterMerge(make({
+        mergedAt: "2024-06-01 12:00:00",
+        prState: "closed",
+      }))).toBe(false);
+    });
+
+    it("is false when a merged session has no live PR snapshot", () => {
+      expect(reopenedAfterMerge(make({ mergedAt: "2024-06-01 12:00:00" }))).toBe(false);
+    });
+
+    it("is true when a merged session's current PR is OPEN again (real follow-up in flight)", () => {
+      expect(reopenedAfterMerge(make({
+        mergedAt: "2024-06-01 12:00:00",
+        prState: "open",
       }))).toBe(true);
-    });
-
-    it("is false when the merge follows the last turn by seconds (the typical merge flow)", () => {
-      // Regression: the last turn lands moments before the PR merges. Both
-      // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and
-      // `last_used_at` is ISO. A naive `Date.parse` reads `merged_at` as LOCAL
-      // time, so in a UTC+ timezone it lands *before* `last_used_at` and the
-      // session is wrongly treated as reopened — promoting a just-merged
-      // session back above active ones in the sidebar. UTC-normalized parsing
-      // keeps it correctly demoted regardless of host timezone.
-      expect(reopenedAfterMerge(make({
-        lastUsedAt: "2024-06-01T11:59:55.000Z",
-        mergedAt: "2024-06-01 12:00:00",
-      }))).toBe(false);
     });
   });
 
@@ -468,13 +522,14 @@ describe("SessionManager", () => {
 
     it("keeps a merged session that was reopened even when it is beyond the cap", () => {
       const sessions = [
-        merged("reopened", "2024-01-01 09:00:00", "2024-12-01T00:00:00.000Z"),
+        // docs/181 — reopened means the CURRENT PR is OPEN again, not recent activity.
+        { ...merged("reopened", "2024-01-01 09:00:00"), prState: "open" as const },
         merged("m2", "2024-01-02 09:00:00"),
         merged("m3", "2024-01-03 09:00:00"),
         merged("m4", "2024-01-04 09:00:00"),
       ];
       const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id);
-      // `reopened` has the oldest merge time but recent activity → never pruned.
+      // `reopened` has the oldest merge time but an open follow-up PR → never pruned.
       expect(visible).toContain("reopened");
     });
 
@@ -605,11 +660,22 @@ describe("SessionManager", () => {
       // Before reopening: target is beyond the top-N merged cap → not listed.
       expect(mgr.list().map((s) => s.id)).not.toContain("target");
 
-      // Simulate a new turn in the merged session — track() bumps last_used_at
-      // to a time after merged_at, making reopenedAfterMerge true.
+      // docs/181 — a later turn that merely bumps last_used_at must NOT reopen
+      // the session (this was the bug: it stuck merged sessions in Active).
       dbManager.db
         .prepare("UPDATE sessions SET last_used_at = ? WHERE id = ?")
         .run("2024-06-01T00:00:00.000Z", "target");
+      expect(mgr.list().map((s) => s.id)).not.toContain("target");
+
+      // Reopen for real: a follow-up PR is OPEN on the branch. fromRow reads
+      // prState from the persisted pr_status snapshot, so this drives listing.
+      mgr.setPrStatus("target", {
+        sessionId: "target", prNumber: 7, prUrl: "u", prTitle: "t", prBody: "",
+        prState: "open", baseBranch: "main", headBranch: "shipit/target",
+        insertions: 1, deletions: 0,
+        checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown", reviewDecision: "none", autoMergeEnabled: false,
+      });
 
       // After reopening: target rejoins the active listing regardless of the cap.
       expect(mgr.list().map((s) => s.id)).toContain("target");

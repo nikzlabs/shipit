@@ -121,6 +121,15 @@ export interface SessionInfo {
   conversationReplay?: string;
   /** When the session's PR was merged. Sessions with mergedAt are kept alive until pruned. */
   mergedAt?: string;
+  /**
+   * Current PR state for the session's branch, mirrored from the persisted
+   * PR-poller snapshot (`pr_status`). Drives sidebar grouping: a session that
+   * was merged but whose CURRENT PR is `open` again (a follow-up PR is in
+   * flight) is treated as reopened → Active; a merged session whose current PR
+   * is `merged`/`closed` (or has no live PR) is Recently merged. Undefined when
+   * the poller has never observed a PR for the branch. See `reopenedAfterMerge`.
+   */
+  prState?: "open" | "merged" | "closed";
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
   /** Agent (provider) selected for this session. Locked in on first WS connect. */

@@ -161,8 +161,12 @@ export class PrStatusPoller {
 
   /** Optional: runner registry for server-initiated fix prompts. */
   private runnerRegistry?: SessionRunnerRegistry;
-  /** Optional: called when a merged PR is detected — used to archive the session. */
-  private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+  /**
+   * Optional: called when a merged PR is detected — marks the session merged.
+   * `mergedAt` is GitHub's authoritative merge timestamp so the persisted
+   * `merged_at` write is idempotent across re-detections (docs/181).
+   */
+  private onMergeDetectedCb?: (sessionId: string, mergedAt?: string) => Promise<void>;
   /**
    * Optional: factory for a GitManager bound to a session's workspace dir.
    * When wired, the poller overrides GitHub's GraphQL `additions`/`deletions`
@@ -207,7 +211,7 @@ export class PrStatusPoller {
     runnerRegistry?: SessionRunnerRegistry;
     getSharedRepoDir?: (repoUrl: string) => string;
     fetchAndFixCb?: FetchAndFixCb;
-    onMergeDetectedCb?: (sessionId: string) => Promise<void>;
+    onMergeDetectedCb?: (sessionId: string, mergedAt?: string) => Promise<void>;
     /**
      * When set, the poller swaps GitHub's GraphQL additions/deletions (which
      * lag a few seconds after each push while GitHub reindexes) for the same
@@ -1264,7 +1268,9 @@ export class PrStatusPoller {
     this.sseBroadcast("pr_status", { updates: [summary] });
 
     if (isMerged && this.onMergeDetectedCb) {
-      this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
+      // Pass GitHub's merge timestamp so `merged_at` is stamped to the actual
+      // merge instant (idempotent on re-detection), not "now" (docs/181).
+      this.onMergeDetectedCb(sessionId, pr.merged_at ?? undefined).catch((err: unknown) => {
         console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
       });
     }

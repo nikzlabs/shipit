@@ -731,11 +731,12 @@ export function createPrStatusPoller(
       });
       return { outcome: "fixed" };
     },
-    onMergeDetectedCb: async (sessionId) => {
+    onMergeDetectedCb: async (sessionId, mergedAt) => {
       try {
         const result = await markMergedAndPruneExcess(
           sessionManager, runnerRegistry, getBareCacheDir, sessionId,
           pruneSessionVolumes, createRepoGit, githubAuthManager, containerManager,
+          mergedAt,
         );
         sseBroadcast("session_list", { sessions: result.sessions });
         console.log(`[pr-poller] Post-merge: marked ${sessionId} as merged`);

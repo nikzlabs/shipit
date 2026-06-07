@@ -2093,8 +2093,9 @@ describe("PrStatusPoller — catch-up probe", () => {
       updates: [expect.objectContaining({ sessionId: "s1", prState: "merged", prNumber: 99 })],
     }));
 
-    // Should trigger post-merge archive
-    expect(onMergeDetected).toHaveBeenCalledWith("s1");
+    // Should trigger post-merge archive, forwarding GitHub's merge timestamp
+    // (docs/181 — idempotent merged_at stamping).
+    expect(onMergeDetected).toHaveBeenCalledWith("s1", "2024-01-01T00:00:00Z");
 
     poller.destroy();
   });

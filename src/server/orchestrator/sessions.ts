@@ -62,25 +62,33 @@ export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted
 export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
 
 /**
- * docs/161 — true when a merged session has been *worked in* since its merge,
- * i.e. the user returned to it to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity, never by merely opening the session), so it
- * becomes true the instant the user sends a message in a merged session.
+ * docs/161 / docs/181 — true when a merged session's CURRENT PR is open again,
+ * i.e. the user returned and a follow-up PR is in flight on the same branch. A
+ * reopened session rejoins the Active group; a merged session whose latest PR
+ * is still merged/closed (or has no live PR) stays demoted to "Recently merged".
  *
- * Evaluated in JS, not SQL: `merged_at` is written by `datetime('now')`
- * ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is `toISOString()`
- * ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) > ' ' (0x20), so an
- * ISO timestamp at the same wall-clock second always sorts greater, falsely
- * marking a just-merged session as reopened. `parseTimestampMs` reconciles the
- * two formats to UTC epoch ms — a plain `Date.parse` would read the suffix-less
- * SQLite form as *local* time and mis-order the two on any non-UTC runtime.
+ * This keys on the poller-tracked PR *state* (`prState`, mirrored from the
+ * persisted `pr_status` snapshot), NOT on a `last_used_at > merged_at`
+ * timestamp comparison. The timestamp heuristic was wrong in two ways:
+ *   - `merged_at` was frozen at the FIRST merge ever detected on the branch, so
+ *     once a branch's first PR merged, *any* later turn — opening/merging a
+ *     follow-up PR, answering a one-off question, spawning a child session, a
+ *     rebase — pushed `last_used_at` permanently past the frozen `merged_at`
+ *     and stuck the session in Active forever even though its current PR was
+ *     merged and it was idle.
+ *   - it could not distinguish "user merged then kept building a follow-up"
+ *     (should be Active) from "user merged then asked a one-off question / spawned
+ *     a child" (should be Recently merged) — both bump `last_used_at`.
+ *
+ * The current PR state answers both: a genuine follow-up shows up as an OPEN PR
+ * on the branch (`prState === "open"`); a one-off post-merge turn that opens no
+ * new PR leaves `prState` at "merged"/"closed". `merged_at` is now also kept
+ * fresh (latest merge, see `markMerged`) so the "Recently merged" ranking sorts
+ * by the most recent merge rather than the first one.
  */
 export function reopenedAfterMerge(s: SessionInfo): boolean {
   if (!s.mergedAt) return false;
-  const merged = parseTimestampMs(s.mergedAt);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+  return s.prState === "open";
 }
 
 /**
@@ -133,7 +141,7 @@ export function filterVisibleInSidebar(
   }
   const topMergedIds = new Set<string>();
   for (const group of mergedByRepo.values()) {
-    group.sort((a, b) => (Date.parse(b.mergedAt ?? "") || 0) - (Date.parse(a.mergedAt ?? "") || 0));
+    group.sort((a, b) => (parseTimestampMs(b.mergedAt ?? "") || 0) - (parseTimestampMs(a.mergedAt ?? "") || 0));
     for (const s of group.slice(0, maxMerged)) topMergedIds.add(s.id);
   }
   // Parent/child relationships are derived from the (non-archived) sessions in
@@ -188,6 +196,17 @@ export class SessionManager {
     if (row.kind === "ops") info.kind = "ops";
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
+    // docs/181 — mirror the current PR state from the persisted poller snapshot
+    // so sidebar grouping reflects the CURRENT PR, not a frozen merge timestamp.
+    // Parse defensively: a corrupt/legacy snapshot must not break listing.
+    if (row.pr_status) {
+      try {
+        const state = (JSON.parse(row.pr_status) as { prState?: string }).prState;
+        if (state === "open" || state === "merged" || state === "closed") info.prState = state;
+      } catch {
+        // Corrupt/legacy JSON — leave prState undefined (treated as not-open).
+      }
+    }
     if (row.model) info.model = row.model;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
@@ -353,11 +372,23 @@ export class SessionManager {
     return true;
   }
 
-  /** Mark a session as merged (sets merged_at timestamp). */
-  markMerged(id: string): boolean {
-    const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
-    ).run(id);
+  /**
+   * Mark a session as merged (sets `merged_at`). docs/181 — `merged_at` is no
+   * longer write-once: it tracks the LATEST merge on the branch, so a session
+   * whose first PR merged and then merged a follow-up PR ranks by the most
+   * recent merge in the "Recently merged" view (it used to freeze at the first
+   * merge, sinking such sessions past the per-repo cap).
+   *
+   * Pass `mergedAt` — GitHub's authoritative `merged_at` for the PR — so the
+   * write is idempotent: re-detecting the same merge (e.g. after an orchestrator
+   * restart, when the poller re-verifies persisted merged sessions) stamps the
+   * same instant rather than bumping every merged session to "just now". Falls
+   * back to `datetime('now')` only when GitHub's timestamp is unavailable.
+   */
+  markMerged(id: string, mergedAt?: string): boolean {
+    const result = mergedAt
+      ? this.db.prepare("UPDATE sessions SET merged_at = ? WHERE id = ?").run(mergedAt, id)
+      : this.db.prepare("UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL").run(id);
     return result.changes > 0;
   }
 

@@ -600,7 +600,9 @@ describe("PrStatusPoller onMergeDetected callback", () => {
     poller.setPrTabActive(sessionId, true);
     await new Promise((r) => setTimeout(r, 100));
 
-    expect(onMergeDetected).toHaveBeenCalledWith(sessionId);
+    // docs/181 — the callback now also receives GitHub's merge timestamp so the
+    // persisted merged_at is stamped idempotently (not "now").
+    expect(onMergeDetected).toHaveBeenCalledWith(sessionId, "2026-05-19T12:00:00Z");
 
     poller.destroy();
   });

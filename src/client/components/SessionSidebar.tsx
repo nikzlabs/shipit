@@ -19,30 +19,27 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useAttentionInfo } from "../hooks/useAttentionInfo.js";
 import { useMediaQuery } from "../hooks/useMediaQuery.js";
 import type { SessionInfo, RepoInfo } from "../../server/shared/types.js";
-import { parseTimestampMs } from "../../server/shared/utils.js";
+
+/** Current PR state for a session's branch (from the pr-store snapshot). */
+type CurrentPrState = "open" | "merged" | "closed" | undefined;
 
 /**
- * docs/161 — client mirror of the server's `reopenedAfterMerge` predicate
- * (`sessions.ts`). True when a merged session has been *worked in* since its
- * merge — the user returned to start a follow-up PR. Keys on `lastUsedAt`
- * (bumped only by turn activity), so it flips true the instant the user sends a
- * message in a merged session.
+ * docs/161 / docs/181 — client mirror of the server's `reopenedAfterMerge`
+ * predicate (`sessions.ts`). True when a merged session's CURRENT PR is open
+ * again — the user returned and a follow-up PR is in flight on the same branch.
+ * A reopened session rejoins the Active group; a merged session whose latest PR
+ * is still merged/closed (or has no live PR) stays in "Recently merged".
  *
- * `mergedAt` (`datetime('now')`, a UTC string with no timezone suffix) and
- * `lastUsedAt` (`toISOString()`, UTC with a trailing `Z`) are format-
- * incompatible. This runs in the BROWSER, so a plain `Date.parse` reads the
- * suffix-less `mergedAt` as *local* time: in a UTC+ timezone that shifts the
- * merge instant earlier than a `lastUsedAt` recorded just before the merge,
- * falsely flagging the session as reopened and floating it back into the Active
- * group above genuinely active sessions. `parseTimestampMs` normalizes both to
- * UTC. (CI runs in UTC, so the test suite never reproduced this.)
+ * Keys on the poller-tracked PR *state* (from the pr-store), NOT a
+ * `lastUsedAt > mergedAt` timestamp comparison. The old heuristic stuck a
+ * session in Active forever once its first PR merged: `mergedAt` froze at that
+ * first merge, so any later turn (a follow-up PR, a one-off question, spawning a
+ * child, a rebase) pushed `lastUsedAt` permanently past it. The current PR
+ * state instead distinguishes a genuine follow-up (an OPEN PR exists) from a
+ * one-off post-merge turn that opens no new PR (`prState` stays merged/closed).
  */
-function reopenedAfterMerge(s: SessionInfo): boolean {
-  if (!s.mergedAt) return false;
-  const merged = parseTimestampMs(s.mergedAt);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(merged) || Number.isNaN(used)) return false;
-  return used > merged;
+function reopenedAfterMerge(s: SessionInfo, prState: CurrentPrState): boolean {
+  return !!s.mergedAt && prState === "open";
 }
 
 /**
@@ -50,8 +47,8 @@ function reopenedAfterMerge(s: SessionInfo): boolean {
  * group: merged and not reopened since. A reopened merged session rejoins the
  * Active group automatically.
  */
-function isRecentlyMerged(s: SessionInfo): boolean {
-  return !!s.mergedAt && !reopenedAfterMerge(s);
+function isRecentlyMerged(s: SessionInfo, prState: CurrentPrState): boolean {
+  return !!s.mergedAt && !reopenedAfterMerge(s, prState);
 }
 
 const SIDEBAR_MIN = 180;
@@ -563,6 +560,7 @@ function RepoGroup({
   onProjectSettings,
   onRemoveRepo,
   isTouch,
+  prStateOf,
   // Drag-and-drop reordering
   draggable,
   isBeingDragged,
@@ -589,6 +587,8 @@ function RepoGroup({
   onProjectSettings: () => void;
   onRemoveRepo: () => void;
   isTouch: boolean;
+  /** Current PR state for a session id, from the pr-store (docs/181). */
+  prStateOf: (sessionId: string) => CurrentPrState;
   // Drag-and-drop reordering — only enabled when there's more than one repo.
   draggable: boolean;
   /** True when this group is the source of the active drag. */
@@ -799,7 +799,7 @@ function RepoGroup({
               for (const s of sessions) {
                 // Skip children that we render beneath their parent.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
-                pushTree(s, isRecentlyMerged(s) ? merged : active);
+                pushTree(s, isRecentlyMerged(s, prStateOf(s.id)) ? merged : active);
               }
               return (
                 <>
@@ -855,6 +855,17 @@ export function SessionSidebar({
   const toggleOpsCollapsed = useRepoStore((s) => s.toggleOpsCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
+  // docs/181 — current PR state per session drives Active vs "Recently merged"
+  // grouping (and the within-group sort). Sourced from the live pr-store
+  // snapshot rather than a frozen `mergedAt` timestamp so a merged session with
+  // a follow-up OPEN PR is treated as reopened in real time, while a merged
+  // session idle with no live PR demotes correctly.
+  const prStatusBySession = usePrStore((s) => s.statusBySession);
+  const prStateOf = useCallback(
+    (sessionId: string): CurrentPrState => prStatusBySession[sessionId]?.prState,
+    [prStatusBySession],
+  );
+
   // Drag-and-drop reorder state. Lives at the sidebar level so all groups
   // share a single drag context — only one group can be "over" at a time.
   const [draggedRepoUrl, setDraggedRepoUrl] = useState<string | null>(null);
@@ -909,8 +920,8 @@ export function SessionSidebar({
         const aArchived = a.archived || a.userArchived ? 1 : 0;
         const bArchived = b.archived || b.userArchived ? 1 : 0;
         if (aArchived !== bArchived) return aArchived - bArchived;
-        const aMerged = isRecentlyMerged(a) ? 1 : 0;
-        const bMerged = isRecentlyMerged(b) ? 1 : 0;
+        const aMerged = isRecentlyMerged(a, prStateOf(a.id)) ? 1 : 0;
+        const bMerged = isRecentlyMerged(b, prStateOf(b.id)) ? 1 : 0;
         if (aMerged !== bMerged) return aMerged - bMerged;
         if (aMerged === 1) {
           const aKey = a.mergedAt ?? a.createdAt ?? "";
@@ -951,7 +962,7 @@ export function SessionSidebar({
 
     // Ops first (pinned), then server-provided repo order, then non-empty unmatched groups.
     return [...ops, ...known, ...orphan];
-  }, [repos, sessions]);
+  }, [repos, sessions, prStateOf]);
 
   const handleViewAll = useCallback((repoUrl: string) => {
     // Open AllSessionsDialog (it will default to filtering by the current repo)
@@ -1251,6 +1262,7 @@ export function SessionSidebar({
               onProjectSettings={() => handleProjectSettings(group.repo.url)}
               onRemoveRepo={() => handleRemoveRepo(group.repo.url)}
               isTouch={isTouch}
+              prStateOf={prStateOf}
               draggable={reorderEnabled}
               isBeingDragged={draggedRepoUrl === group.repo.url}
               dropIndicator={dropTarget?.url === group.repo.url ? dropTarget.position : null}

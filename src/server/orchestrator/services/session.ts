@@ -390,8 +390,11 @@ export async function markMergedAndPruneExcess(
   createRepoGit?: (dir: string) => RepoGit,
   githubAuthManager?: GitHubAuthManager,
   _containerManager?: { destroy(sessionId: string): Promise<void> } | null,
+  // docs/181 — GitHub's authoritative `merged_at` for the just-merged PR, so the
+  // timestamp write is idempotent across re-detections (e.g. post-restart).
+  mergedAt?: string,
 ): Promise<{ sessions: SessionInfo[] }> {
-  sessionManager.markMerged(sessionId);
+  sessionManager.markMerged(sessionId, mergedAt);
 
   const session = sessionManager.get(sessionId);
   if (!session?.remoteUrl) {

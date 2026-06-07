@@ -409,16 +409,34 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Recently merged")).toBeNull();
     });
 
-    it("keeps a reopened merged session (lastUsedAt > mergedAt) in the Active group", () => {
-      // A merged session worked in since the merge rejoins Active — it must NOT
+    // docs/181 — seed the pr-store with the current PR state for a session, the
+    // way the global SSE poller does. Grouping reads this, not a timestamp.
+    function seedPrState(sessionId: string, prState: "open" | "merged" | "closed") {
+      usePrStore.setState((s) => ({
+        statusBySession: {
+          ...s.statusBySession,
+          [sessionId]: {
+            sessionId, prNumber: 1, prUrl: "u", prTitle: "t", prBody: "",
+            prState, baseBranch: "main", headBranch: `shipit/${sessionId}`,
+            insertions: 0, deletions: 0,
+            checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+            mergeable: "unknown" as const, reviewDecision: "none" as const, autoMergeEnabled: false,
+          },
+        },
+      }));
+    }
+
+    it("keeps a reopened merged session (current PR open again) in the Active group", () => {
+      // A merged session with a follow-up OPEN PR rejoins Active — it must NOT
       // sink under the 'Recently merged' header.
+      seedPrState("s-reopened", "open");
       const sessions = [
         baseSession({
           id: "s-reopened",
           title: "Reopened merged",
           remoteUrl: repoA.url,
           createdAt: "2024-01-01T00:00:00.000Z",
-          lastUsedAt: "2024-02-01T00:00:00.000Z", // after mergedAt → reopened
+          lastUsedAt: "2024-02-01T00:00:00.000Z",
           mergedAt: "2024-01-15T00:00:00.000Z",
         }),
       ];
@@ -426,6 +444,27 @@ describe("SessionSidebar", () => {
       // The only session is reopened → it's Active, so no merged header appears.
       expect(screen.queryByText("Recently merged")).toBeNull();
       expect(screen.getByText("Reopened merged")).toBeTruthy();
+    });
+
+    it("demotes a merged session with a later turn but no new PR to 'Recently merged' (regression)", () => {
+      // The bug: a post-merge turn (a one-off question, a child spawn) bumped
+      // lastUsedAt past the frozen mergedAt and stuck the session in Active. The
+      // current PR is still merged (no follow-up PR), so it must be demoted.
+      seedPrState("s-merged", "merged");
+      const sessions = [
+        baseSession({
+          id: "s-merged",
+          title: "Merged then poked",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          lastUsedAt: "2024-03-01T00:00:00.000Z", // a later turn bumped this
+          mergedAt: "2024-01-15T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const header = screen.getByText("Recently merged");
+      const merged = screen.getByText("Merged then poked");
+      expect(header.compareDocumentPosition(merged) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
   });
 
