@@ -446,8 +446,8 @@ export async function handleSendMessage(
       }
     }
 
-    // If session has a workspaceDir but it was deleted, the worktree
-    // linkage (branch, shared repo) must be intact — can't recreate.
+    // If a session has a workspaceDir but its on-disk clone was deleted, we
+    // can't recreate it here (the clone holds the session's branch + commits).
     if (session?.workspaceDir) {
       try {
         await fs.access(session.workspaceDir);

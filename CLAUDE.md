@@ -128,7 +128,7 @@ src/
       api-routes-*.ts  Domain-specific HTTP routes (bootstrap, files,
                        git, github, preview, secrets, session)
       validation.ts  Input validation, error formatting
-      repo-git.ts    RepoGit — clone, fetch, worktree lifecycle, branch deletion
+      repo-git.ts    RepoGit — bare cache, per-session local-clone lifecycle, branch deletion
       repo-store.ts  RepoStore — persists repo metadata
       git-utils.ts   generateBranchPrefix(), parseGitHubRemote()
       git-config.ts  Global git config helpers
@@ -238,7 +238,7 @@ Three-layer system: browser (React SPA) → orchestrator (Fastify) → session w
 | `session-lifecycle` | Session types, creation paths, warm pool, activation, switching |
 | `session-containers` | Docker containers, runners, idle cleanup, reconnection |
 | `session-processes` | Claude CLI, preview manager, file watcher, terminal, agents |
-| `git-architecture` | GitManager, RepoGit, worktrees, credentials, auto-commit |
+| `git-architecture` | GitManager, RepoGit, bare cache, per-session clones, credentials, auto-commit |
 | `deployment-architecture` | Auto-deploy on push, GitHub Deployments API, deploy status tracking |
 | `add-endpoint` | How to add HTTP endpoints, WS messages, activity labels |
 | `testing-and-quality` | Test patterns, integration tests, quality checklist |

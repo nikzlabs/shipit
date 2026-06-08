@@ -166,9 +166,14 @@ echo "-------------------------------------------------------------------------"
 echo ""
 echo "  Previews are served at {sessionId}--{port}.${SHIPIT_HOST}. For those"
 echo "  hostnames to resolve over your tailnet, grant this node the MagicDNS"
-echo "  wildcard capability. Add this to your tailnet policy file:"
+echo "  wildcard capability by editing your tailnet policy file:"
 echo ""
-echo "      https://login.tailscale.com/admin/acls"
+echo "    1. Open  https://login.tailscale.com/admin/acls"
+echo "    2. Click the 'JSON editor' toggle at the top of the page."
+echo "    3. Add the block below as a TOP-LEVEL key inside the policy"
+echo "       object — a sibling of \"acls\"/\"groups\", not nested inside"
+echo "       them. Mind JSON commas: keys are comma-separated."
+echo "    4. Click Save."
 echo ""
 echo '      "nodeAttrs": ['
 echo '        {'
@@ -176,6 +181,9 @@ echo "          \"target\": [\"${TS_IP}\"],"
 echo '          "attr": ["dns-subdomain-resolve"]'
 echo '        }'
 echo '      ]'
+echo ""
+echo "  (In the Visual editor this same grant lives under Definitions ->"
+echo "  Node attributes, but the JSON editor is the direct way to paste it.)"
 echo ""
 echo "  (Requires Tailscale v1.96+ on this node and the devices you browse from.)"
 echo "  Until that grant is added, the app works but previews won't resolve."

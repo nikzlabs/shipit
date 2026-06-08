@@ -34,7 +34,7 @@ Key injectable dependencies:
 | Dependency | Type | Purpose |
 |------------|------|---------|
 | `createGitManager` | `(dir) => GitManager` | Per-session git operations |
-| `createRepoGit` | `(dir) => RepoGit` | Shared-repo and worktree ops |
+| `createRepoGit` | `(dir) => RepoGit` | Bare cache + per-session local-clone ops |
 | `sessionManager` | `SessionManager` | Session metadata persistence |
 | `authManager` | `AuthManager` | Claude CLI OAuth |
 | `githubAuthManager` | `GitHubAuthManager` | GitHub token + API |
@@ -130,7 +130,7 @@ Routes are registered via `registerApiRoutes()`. All routes are prefixed with `/
 | `/api/sessions/:id/deploy/setup` | `getDeploySetup` | Deploy targets + config |
 | `/api/sessions/:id/pr/status` | `getPrStatus` | PR state from GitHub |
 | `/api/sessions/:id/threads` | `listThreads` | Conversation threads |
-| `/api/sessions/:id/worktrees` | `listWorktrees` | Git worktrees |
+| `/api/sessions/:id/worktrees` | `listWorktrees` | Sibling sessions on the same repo |
 | `/api/sessions/:id/features` | `listFeatures` | Feature docs status |
 | `/api/github/repos` | `searchGitHubRepos` | Search GitHub repos |
 | `/api/settings/*` | various | Git identity, agent config |
@@ -168,7 +168,7 @@ Business logic lives in `src/server/orchestrator/services/` as pure exported fun
 
 | File | Domain |
 |------|--------|
-| `session.ts` | Session CRUD, fork, merge, worktrees |
+| `session.ts` | Session CRUD, fork, merge, sibling-session listing |
 | `git.ts` | Log, diff, remotes, branches, rollback, push, pull |
 | `github.ts` | GitHub search, PR operations, auth |
 | `deploy.ts` | Deploy config, history, target operations |
@@ -319,7 +319,7 @@ Types are shared between server and client (client imports from `../../server/sh
 | `src/server/orchestrator/service-manager.ts` | `ServiceManager` — Docker Compose lifecycle |
 | `src/server/orchestrator/compose-generator.ts` | Compose override generation, volume rewriting |
 | `src/server/shared/git.ts` | `GitManager` — per-session git |
-| `src/server/orchestrator/repo-git.ts` | `RepoGit` — shared-repo and worktree ops |
+| `src/server/orchestrator/repo-git.ts` | `RepoGit` — bare cache + per-session local-clone ops |
 | `src/client/App.tsx` | Main React component |
 | `src/client/stores/*.ts` | Zustand stores |
 | `src/client/hooks/*.ts` | Custom hooks (WebSocket, API, message handling) |

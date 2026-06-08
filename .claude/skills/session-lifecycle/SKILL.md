@@ -1,6 +1,6 @@
 ---
 name: session-lifecycle
-description: "ShipIt session lifecycle: session types (standalone, worktree, warm), creation paths, warm session pool mechanics, session activation flow, session switching. Load when working on session creation, warm pool, or activation logic."
+description: "ShipIt session lifecycle: session types (standalone, repo-backed, warm), creation paths, warm session pool mechanics, session activation flow, session switching. Load when working on session creation, warm pool, or activation logic."
 user-invocable: true
 ---
 
@@ -20,8 +20,8 @@ This skill covers session creation, warm-up, activation, switching, and graduati
 ## Session Types
 
 1. **Standalone session** — no repo, fresh git repo initialized in the session directory. Created via `POST /api/sessions`.
-2. **Worktree session** — backed by a shared repo clone. Session directory is a git worktree branching from the repo's default branch. Created via warm pool or `claim-session`.
-3. **Warm session** — a worktree session pre-created in the background (worktree + metadata, and — on `withStandby` re-warms with idle headroom — a pre-booted **standby container**). Invisible in the sidebar until the user sends their first message ("graduated"). When no standby exists, the container is created on-demand when the WebSocket connects.
+2. **Repo-backed session** — its own independent local clone cut from the per-remote bare cache (`git clone --local`, hardlinked objects), checked out on a unique branch off the default branch. Created via warm pool or `claim-session`.
+3. **Warm session** — a repo-backed session pre-created in the background (clone-from-cache + metadata, and — on `withStandby` re-warms with idle headroom — a pre-booted **standby container**). Invisible in the sidebar until the user sends their first message ("graduated"). When no standby exists, the container is created on-demand when the WebSocket connects.
 
 ## Session Creation
 
@@ -90,7 +90,7 @@ Client                          Server
 
 ### Path C: Claim Session (repo, no warm pool)
 
-Same as Path B but `claim-session` creates the worktree synchronously (~1-2s).
+Same as Path B but `claim-session` creates the session clone synchronously (~1-2s).
 If the client disconnected before work starts (`request.raw.destroyed`), the
 endpoint short-circuits to avoid creating abandoned sessions.
 
@@ -120,7 +120,7 @@ Two mechanisms prevent cascade during rapid "New Session" clicks:
 
 ### Warm-Up Sequence
 
-Warm-up always creates the worktree + metadata. It **may additionally pre-boot a
+Warm-up always creates the session clone + metadata. It **may additionally pre-boot a
 standby container** — `warmSessionForRepo(repoUrl, { withStandby: true })`. The
 standby is created (via `containerManager.createStandby`) only when `withStandby`
 is set AND there is idle-container headroom (`realCount < maxIdleContainers`).
@@ -154,9 +154,9 @@ factory falls to the fresh-create path). The claim re-warm is **fire-and-forget*
 
 On server restart, the startup sequence (deferred via `setTimeout(0)`) validates existing warm sessions and creates new ones where needed. Startup re-warms are container-less (they call `warmSessionForRepo()` without `withStandby`) — the standby/container is created on-demand when a WebSocket connects. (A stale warm session whose clone vanished does have its old standby container destroyed before re-warming, if one was tracked.)
 
-1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's worktree directory still exists on disk. If missing, destroy any tracked standby container, clear `warmSessionId`, and re-warm (worktree + metadata only).
+1. **Validate**: For each repo with a `warmSessionId` and `status: "ready"`, check that the warm session's clone directory still exists on disk. If missing, destroy any tracked standby container, clear `warmSessionId`, and re-warm (clone-from-cache + metadata only).
 
-2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (worktree + metadata only — no standby).
+2. **Re-warm**: For repos that have no warm session at all, create a fresh warm session via `warmSessionForRepo()` (clone-from-cache + metadata only — no standby).
 
 ### Graduation
 
