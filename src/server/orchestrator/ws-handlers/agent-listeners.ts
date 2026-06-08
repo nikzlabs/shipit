@@ -1290,6 +1290,18 @@ export function wireAgentListeners(
         }
       }
 
+      // docs/182 — record the turn's terminal error state definitively at
+      // completion (true when this result carries an error that wasn't a
+      // deliberate interrupt; false on a clean finish). Mirrored to the session
+      // row so it survives an orchestrator restart, and read by the
+      // child-session readiness check so `shipit session wait` resolves a
+      // distinct `error` outcome instead of a false `idle`. Writing on every
+      // completion means a child that errored then succeeded on a follow-up turn
+      // clears the flag without a separate reset.
+      const turnErrored = Boolean((event as { error?: unknown }).error) && !runner?.wasInterrupted;
+      if (runner) runner.lastTurnErrored = turnErrored;
+      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, turnErrored);
+
       // Mark turn as complete immediately — don't wait for async post-turn
       // work (git commit, PR lifecycle) in the "done" handler. This closes
       // the timing window where a reconnecting viewer sees running=true.
@@ -1452,6 +1464,11 @@ export function wireAgentListeners(
         runner.isStreamingActive = false;
       }
       runner.running = false;
+      // docs/182 — a process-level error is a terminal turn error: record it on
+      // the runner and persist it so `shipit session wait` reports `error`
+      // (exit 3) even after an orchestrator restart loses the in-memory flag.
+      runner.lastTurnErrored = true;
+      if (turnSessionId) deps.sessionManager.setLastTurnErrored(turnSessionId, true);
       // docs/163 — the errored turn has just been finalized into chat history
       // (replaceInProgress + finalize + the error row above). Clear the
       // turn-event replay buffer so a subsequent WS reconnect doesn't re-emit

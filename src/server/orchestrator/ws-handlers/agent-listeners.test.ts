@@ -39,6 +39,7 @@ function deps(): AgentListenerDeps {
   return {
     sessionManager: {
       setAgentSessionId: vi.fn(),
+      setLastTurnErrored: vi.fn(),
       setModel: vi.fn(),
       get: vi.fn(() => null),
       track: vi.fn(),

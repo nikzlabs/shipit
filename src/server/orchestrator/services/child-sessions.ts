@@ -447,10 +447,16 @@ function buildChildView(
   projections: ChildViewProjections,
 ): ChildSessionView {
   const runner = runnerRegistry.get(child.id);
+  // docs/182 — surface a distinct `error` status when the child's last completed
+  // turn errored. The runner's live flag wins while it exists; the persisted
+  // `SessionInfo.lastTurnErrored` is the fallback after an orchestrator restart
+  // rebuilt the runner (clearing its in-memory flag). A running turn always
+  // reports `running` — the error flag describes the *previous* completed turn.
+  const errored = (runner?.lastTurnErrored ?? false) || child.lastTurnErrored === true;
   const view: ChildSessionView = {
     id: child.id,
     title: child.title,
-    status: runner?.running ? "running" : "idle",
+    status: runner?.running ? "running" : errored ? "error" : "idle",
     queueLength: runner?.queueLength ?? 0,
     parentSessionId: child.parentSessionId ?? "",
     spawnedAt: child.createdAt,
@@ -650,84 +656,192 @@ export const MAX_WAIT_FOR_CHILD_IDLE_MS = 60 * 60 * 1000; // 1 hour
 /** Default `shipit session wait --timeout` when the agent omits one. */
 export const DEFAULT_WAIT_FOR_CHILD_IDLE_MS = 5 * 60 * 1000; // 5 minutes
 
+/**
+ * docs/182 — machine-readable wait outcomes. Only genuine terminal conditions
+ * end a wait: the child finished (`idle`), its last turn errored (`error`), it
+ * was torn down (`archived`), or — in the legacy single long-poll — the deadline
+ * elapsed (`timed-out`). `pending` is the segmented-poll signal "still running,
+ * poll again": the shim re-issues another segment, so transport resets cost one
+ * retried segment rather than the whole wait.
+ */
+export type WaitOutcome = "idle" | "error" | "archived" | "pending" | "timed-out";
+
 export interface WaitForChildIdleResult {
+  outcome: WaitOutcome;
+  /** Back-compat: a terminal-idle outcome (`idle` or `archived`). */
   idle: boolean;
+  /** Back-compat: the legacy single long-poll hit its deadline still running. */
   timedOut: boolean;
+  /** True when a bounded segment elapsed with the child still running. */
+  pending: boolean;
   child: ChildSessionView;
 }
 
+export interface WaitForChildIdleOptions {
+  /**
+   * Overall deadline for the legacy single long-poll (no `segmentMs`). When
+   * `segmentMs` is set, this still caps the segment length so a caller can't
+   * ask for a segment longer than the time it's willing to wait.
+   */
+  timeoutMs: number;
+  /**
+   * docs/182 — bounded server segment. When set and the child is still running
+   * after `segmentMs`, the call resolves with `outcome: "pending"` instead of
+   * holding the socket open for the full `timeoutMs`. The shim owns the overall
+   * deadline and re-issues segments until a terminal outcome or its `--timeout`.
+   * When unset, the call behaves as the legacy single long-poll (resolves
+   * `timed-out` at `timeoutMs`).
+   */
+  segmentMs?: number;
+  projections?: ChildViewProjections;
+}
+
 /**
- * Phase 3 — long-poll until the child's runner reports idle (or timeout).
- * Returns a snapshot view of the child so the agent doesn't need a separate
- * `view` call after wait. The orchestrator caps `timeoutMs` server-side; the
- * shim caps it client-side too as defense-in-depth.
+ * docs/182 — re-derive the child's terminal readiness from durable state plus a
+ * live worker probe, rather than trusting a transient in-memory event we had to
+ * be listening for. This is what makes the wait level-triggered and
+ * restart-resilient: any fresh request can compute it.
  *
- * Resolves with `timedOut: true` (no rejection) when the wait elapses —
- * the route returns 200 so the shim can decide whether to exit non-zero,
- * matching the "non-zero on timeout" contract from the plan.
+ * - `archived` — the session is gone or user-archived; nothing left to wait for.
+ * - `error`    — the runner/session records the last completed turn errored.
+ * - `idle`     — not running, no queue, last turn clean.
+ * - `running`  — still working (after reconciling a possibly-stuck flag).
+ *
+ * The worker probe (`verifyRunningState`) is the fix for vector #5: a headless
+ * child runner has no viewer, so the runner's own viewer-gated reconciler never
+ * runs. Calling it here, from the readiness check, corrects a stuck
+ * `running=true` (e.g. a dropped `agent_result` SSE event) within one segment —
+ * for an in-process runner it's a cheap no-op that returns the live flag.
  */
-export function waitForChildIdle(
+async function deriveTerminalOutcome(
   sessionManager: SessionManager,
   runnerRegistry: SessionRunnerRegistry,
   parentSessionId: string,
   childSessionId: string,
-  timeoutMs: number,
-  projections: ChildViewProjections = {},
+): Promise<"idle" | "error" | "archived" | "running"> {
+  const child = sessionManager.get(childSessionId);
+  // Session vanished or reparented mid-wait — treat as torn down (nothing to
+  // wait for) rather than stranding the caller.
+  if (child?.parentSessionId !== parentSessionId) return "archived";
+  if (child.archived || child.userArchived) return "archived";
+
+  let runner = runnerRegistry.get(childSessionId);
+  if (!isRunnerIdle(runner) && runner) {
+    // Runner believes it's running — reconcile against the worker before we
+    // conclude "still running". A stuck flag is reset in place by this call.
+    await runner.verifyRunningState();
+    runner = runnerRegistry.get(childSessionId);
+  }
+  if (isRunnerIdle(runner)) {
+    const errored = (runner?.lastTurnErrored ?? false) || child.lastTurnErrored === true;
+    return errored ? "error" : "idle";
+  }
+  return "running";
+}
+
+/**
+ * Phase 3 (docs/117) + docs/182 — resolve a child's readiness as a re-derivable
+ * function of durable state, optionally bounded to a single short segment.
+ *
+ * Returns a snapshot view of the child so the agent doesn't need a separate
+ * `view` call after wait. The in-memory `idle`/`disposed` events stay, but only
+ * as a fast-wakeup optimization — every resolution re-derives the outcome from
+ * existence + `userArchived` + a live worker probe, so an orchestrator restart
+ * (which loses the listener and the in-memory `running` flag) can no longer
+ * strand a wait.
+ *
+ * Resolves (never rejects) with a `WaitForChildIdleResult` so the route returns
+ * 200 and the shim decides the exit code from `outcome`.
+ */
+export async function waitForChildIdle(
+  sessionManager: SessionManager,
+  runnerRegistry: SessionRunnerRegistry,
+  parentSessionId: string,
+  childSessionId: string,
+  opts: WaitForChildIdleOptions,
 ): Promise<WaitForChildIdleResult> {
   // Validate up front so a stale child id fails fast (404) without arming a timer.
   assertChildOfParent(sessionManager, parentSessionId, childSessionId);
-  const cappedTimeout = Math.min(Math.max(0, timeoutMs), MAX_WAIT_FOR_CHILD_IDLE_MS);
+  const projections = opts.projections ?? {};
+  const segmented = opts.segmentMs !== undefined && opts.segmentMs > 0;
+  const waitMs = segmented
+    ? Math.min(opts.segmentMs!, Math.max(0, opts.timeoutMs))
+    : Math.min(Math.max(0, opts.timeoutMs), MAX_WAIT_FOR_CHILD_IDLE_MS);
 
-  const buildResult = (timedOut: boolean): WaitForChildIdleResult => ({
-    idle: !timedOut,
-    timedOut,
-    child: getSpawnedChild(sessionManager, runnerRegistry, parentSessionId, childSessionId, projections),
-  });
+  const buildResult = (outcome: WaitOutcome): WaitForChildIdleResult => {
+    let child: ChildSessionView;
+    try {
+      child = getSpawnedChild(sessionManager, runnerRegistry, parentSessionId, childSessionId, projections);
+    } catch {
+      // The session was deleted out from under us between the readiness derive
+      // and the snapshot. Surface a minimal placeholder so an `archived` outcome
+      // still returns 200 rather than throwing a 404 at the route.
+      child = {
+        id: childSessionId,
+        title: "",
+        status: "idle",
+        queueLength: 0,
+        parentSessionId,
+        spawnedAt: "",
+      };
+    }
+    return {
+      outcome,
+      idle: outcome === "idle" || outcome === "archived",
+      timedOut: outcome === "timed-out",
+      pending: outcome === "pending",
+      child,
+    };
+  };
+
+  const derive = (): Promise<"idle" | "error" | "archived" | "running"> =>
+    deriveTerminalOutcome(sessionManager, runnerRegistry, parentSessionId, childSessionId);
+
+  // Fast path: re-derive immediately. Covers already-idle / already-errored /
+  // already-torn-down children without arming a timer.
+  const initial = await derive();
+  if (initial !== "running") return buildResult(initial);
 
   const runner = runnerRegistry.get(childSessionId);
-  if (isRunnerIdle(runner)) {
-    return Promise.resolve(buildResult(false));
-  }
-
   return new Promise<WaitForChildIdleResult>((resolve) => {
     let settled = false;
-    const idleListener = (): void => {
-      // The runner's `idle` event fires *after* `running` is cleared and the
-      // queue is empty (see `SessionRunner.onAgentFinished`). Re-check via
-      // the predicate to defend against any future churn in the event order.
-      if (settled) return;
-      const r = runnerRegistry.get(childSessionId);
-      if (!isRunnerIdle(r)) return;
-      settled = true;
-      clearTimeout(timer);
-      runner?.off("idle", idleListener);
-      runner?.off("disposed", disposedListener);
-      resolve(buildResult(false));
-    };
-    const disposedListener = (): void => {
-      // A disposed runner means the child was archived or otherwise torn
-      // down while we were waiting. From the agent's perspective it's idle
-      // (there's nothing to wait for), so we resolve as idle rather than
-      // timing out.
+    const finish = (outcome: WaitOutcome): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      runner?.off("idle", idleListener);
-      runner?.off("disposed", disposedListener);
-      resolve(buildResult(false));
+      runner?.off("idle", onIdle);
+      runner?.off("disposed", onDisposed);
+      resolve(buildResult(outcome));
     };
+    const reDerive = (): void => {
+      if (settled) return;
+      void (async () => {
+        const o = await derive();
+        if (o !== "running") finish(o);
+      })();
+    };
+    // The runner's `idle` event is a fast-wakeup hint only — re-derive to get
+    // the authoritative outcome (idle vs error vs archived).
+    const onIdle = (): void => reDerive();
+    const onDisposed = (): void => finish("archived");
     const timer = setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      runner?.off("idle", idleListener);
-      runner?.off("disposed", disposedListener);
-      resolve(buildResult(true));
-    }, cappedTimeout);
+      // Segment (or legacy deadline) elapsed. Re-derive once more so a missed
+      // `idle` event during this segment is still caught before we report
+      // "still running".
+      void (async () => {
+        const o = await derive();
+        if (o !== "running") {
+          finish(o);
+          return;
+        }
+        finish(segmented ? "pending" : "timed-out");
+      })();
+    }, waitMs);
 
-    // Attach AFTER scheduling the timer so a race where the runner emits
-    // idle synchronously inside the attach is still observed.
-    runner?.on("idle", idleListener);
-    runner?.on("disposed", disposedListener);
+    // Attach AFTER scheduling the timer so a race where the runner emits idle
+    // synchronously inside the attach is still observed.
+    runner?.on("idle", onIdle);
+    runner?.on("disposed", onDisposed);
   });
 }
 

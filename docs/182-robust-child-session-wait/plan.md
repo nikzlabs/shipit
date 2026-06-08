@@ -246,6 +246,45 @@ persisted*).
 - Round-trip tests for any new `pending`/outcome fields, following the existing
   `shipit.test.ts` wait coverage.
 
+## Status — implemented (A–F)
+
+A–F are built; G remains a future seam. What landed:
+
+- **Durable, level-triggered readiness** — `deriveTerminalOutcome` in
+  `child-sessions.ts` recomputes the outcome from session existence +
+  `userArchived` + a live `verifyRunningState()` worker probe on every
+  resolution. The in-memory `idle`/`disposed` events are kept only as a
+  fast-wakeup; an orchestrator restart no longer strands a wait.
+- **Bounded segments + `pending`** — `waitForChildIdle` takes a
+  `WaitForChildIdleOptions` (`{ timeoutMs, segmentMs?, projections? }`). With a
+  segment it returns `outcome: "pending"` instead of holding the socket; without
+  one it keeps the legacy single long-poll (`timed-out`). The route accepts
+  `&segment=N`; the worker relay forwards it.
+- **`error` outcome (new durable state)** — added `SessionInfo.lastTurnErrored`
+  (DB column `last_turn_errored`, migration appended) and a matching runner
+  `lastTurnErrored` flag, set definitively at every turn completion in
+  `agent-listeners.ts` (true on an errored `agent_result`/process error that
+  wasn't a deliberate interrupt, false on a clean finish). The child view and
+  readiness check surface it; `wait` resolves `error` (shim exit 3).
+- **Headless reconcile (vector #5)** — the segment-driven `verifyRunningState()`
+  call in `deriveTerminalOutcome` corrects a stuck `running=true` on a viewerless
+  child within one segment. `runReconcileCheck`'s viewer gate is deliberately
+  left untouched.
+- **Resilient shim loop** — `handleSessionWait` owns the overall `--timeout` and
+  drives a per-child segment loop (`waitForChildOnce`) with capped exponential
+  backoff. Transport failures (status 0 / 502 / 503 / 504) are swallowed and
+  retried, never surfaced as an outcome; a swallowed error rides along as
+  `lastTransportError` in `--json`. Both `callBroker` and
+  `OrchestratorClient.request` gained an AbortController per-request timeout so a
+  half-open socket fails fast.
+- **Multi-child** — `wait <id...> [--any|--all]` fans out over the resilient
+  single-wait sharing one deadline (`waitAnyChild` for first-finisher).
+
+Tests: `shipit.test.ts` (shim loop / backoff / outcome mapping / multi-id with a
+virtual clock), `child-sessions-wait.test.ts` (server outcomes incl. the vector
+#5 regression), `agent-spawned-session.test.ts` (route-level error + pending),
+`sessions.test.ts` (`lastTurnErrored` round-trip).
+
 ## Out of scope
 
 - Changing *how* children are spawned or quota'd (docs/117, docs/149).

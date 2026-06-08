@@ -62,13 +62,14 @@ export function registerAgentOpsRoutes(
     suffix: string,
     body: unknown,
     reply: FastifyReply,
+    opts?: { timeoutMs?: number },
   ): Promise<unknown> {
     const client = getClient();
     if ("error" in client) {
       reply.code(500).send({ error: `agent-ops misconfigured: ${client.error}` });
       return;
     }
-    const res = await client.request(method, suffix, body);
+    const res = await client.request(method, suffix, body, opts);
     reply.code(res.status || (res.ok ? 200 : 502));
     return res.body ?? {};
   }
@@ -373,20 +374,35 @@ export function registerAgentOpsRoutes(
       ),
   );
 
-  // GET /agent-ops/session/wait/:childId[?timeout=N] — Phase 3 long-poll
+  // GET /agent-ops/session/wait/:childId[?timeout=N&segment=S] — Phase 3
+  // long-poll, made resilient in docs/182. `segment` (seconds) bounds a single
+  // server poll so the shim can run a resumable segment loop; it is forwarded
+  // verbatim. Absent a segment, the orchestrator behaves as the legacy single
+  // long-poll.
   app.get<{
     Params: { childId: string };
-    Querystring: { timeout?: string };
+    Querystring: { timeout?: string; segment?: string };
   }>(
     "/agent-ops/session/wait/:childId",
     async (request, reply) => {
-      const timeout = request.query.timeout;
-      const qs = `?wait=true${timeout ? `&timeout=${encodeURIComponent(timeout)}` : ""}`;
+      const { timeout, segment } = request.query;
+      const params = new URLSearchParams({ wait: "true" });
+      if (timeout) params.set("timeout", timeout);
+      if (segment) params.set("segment", segment);
+      // docs/182 — bound the worker→orchestrator leg of a segmented poll so a
+      // half-open socket fails fast (→ status 0, which the shim retries) instead
+      // of hanging. Budget = segment (or overall timeout) + a margin for the
+      // server's own resolve. Unbounded when neither is supplied (legacy).
+      const boundSecs = Number(segment) || Number(timeout);
+      const timeoutMs = Number.isFinite(boundSecs) && boundSecs > 0
+        ? boundSecs * 1000 + 10_000
+        : undefined;
       return relay(
         "GET",
-        `/children/${encodeURIComponent(request.params.childId)}${qs}`,
+        `/children/${encodeURIComponent(request.params.childId)}?${params.toString()}`,
         undefined,
         reply,
+        timeoutMs !== undefined ? { timeoutMs } : undefined,
       );
     },
   );
