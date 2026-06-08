@@ -1,5 +1,5 @@
 import type { ProjectTemplate } from "../shared/types.js";
-import { NODE_GITIGNORE } from "./template-gitignores.js";
+import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
 // ---------------------------------------------------------------------------
 // Backend & utility template definitions
@@ -71,7 +71,7 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(\`Server running at http://localhost:\${PORT}\`);
 });
 `,
-      ".gitignore": NODE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -151,7 +151,7 @@ console.log("Server running at http://localhost:3001");
 
 serve({ fetch: app.fetch, port: 3001, hostname: "0.0.0.0" });
 `,
-      ".gitignore": NODE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -229,7 +229,7 @@ app.get("/api/health", async () => {
 
 app.listen({ port: 3001, host: "0.0.0.0" });
 `,
-      ".gitignore": NODE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -301,7 +301,7 @@ const name = args[0] || "World";
 console.log(\`Hello, \${name}!\`);
 console.log("Edit src/index.ts to build your CLI tool.");
 `,
-      ".gitignore": NODE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
     },
   },
 ];
