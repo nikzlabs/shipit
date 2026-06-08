@@ -22,5 +22,15 @@ rolling-base logic first, then the host mount (which stays the gating risk).
 - [ ] Integrate with the warm pool so pre-install seeds/advances the base, not duplicates it
 - [ ] Set the depth-cap flatten threshold; confirm flatten-only bounds drift acceptably
 - [ ] Remove/retire the node_modules-specific `nm-store` copy store once the base supersedes it
+- [ ] **Security:** decide base sharing scope (per-repo, and per-user?) so a whole-workspace
+      base never leaks `.env` / `.npmrc` tokens / agent creds across users of a shared repo
+- [ ] Define the base capture filter (exclude `.git`, `.shipit` markers, env files?); verify
+      git/worktree (absolute gitdir pointers) behave on the overlay
+- [ ] Refcount base generations; pin a session's generation for its life; decide whether
+      archive flattens the session's merged state (base-independent) vs. persisting the upper
+- [ ] Bad-base recovery: detect a poisoned base, keep N prior generations, roll back
+- [ ] Cold-start path (build base v0 from empty); trust-gate base creation for untrusted repos
+- [ ] Verify compose bind-mounts using the overlay merged dir + `inotify` file watcher work
+- [ ] Reproducibility backstop: decide if an occasional clean rebuild is needed beyond flatten
 - [ ] Optional/future: detection-free manifest fingerprint to skip no-op installs — only if
       measurements call for it
