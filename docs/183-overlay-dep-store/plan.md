@@ -1,6 +1,6 @@
 ---
 status: planned
-description: Share dependency trees across sessions by overlay-mounting an immutable, lockfile-keyed canonical layer instead of copying node_modules per session.
+description: Share dependency trees across sessions by overlay-mounting an immutable, lockfile-keyed canonical layer instead of copying them in per session.
 ---
 
 # Overlay-mounted canonical dependency layer
@@ -10,8 +10,7 @@ description: Share dependency trees across sessions by overlay-mounting an immut
 > lockfile-keyed canonical layer mounted read-only under every session, with a
 > per-session upper layer for copy-on-write. On a cache hit, *no installer runs for any
 > ecosystem* — npm, Yarn, pnpm, pip, uv all collapse to "mount the canonical layer."
-> The orchestrator owns the mount; the worker keeps owning the install. A hardlink ladder
-> is kept only as an unprivileged fallback.
+> The orchestrator owns the mount; the worker keeps owning the install.
 >
 > The reasoning and ecosystem-by-ecosystem analysis behind this choice is in
 > [Research & analysis](#research--analysis) at the bottom.
@@ -31,6 +30,13 @@ mid-session `npm rebuild` / `patch-package` would corrupt a shared store through
 inodes.
 
 ## Proposed design
+
+> **Rename first — the store is no longer node_modules-specific.** Today's module is
+> `nm-store.ts` and the on-disk store is `/dep-cache/nm-store/<key>` — both named for
+> `node_modules`. This design also caches Python venvs (and any future ecosystem's tree),
+> so as part of the work rename the module to **`dep-store.ts`** and the store path to
+> **`/dep-cache/dep-store/<key>`**. The rest of this doc uses `dep-store` for the proposed
+> system and keeps `nm-store` only when citing today's code.
 
 ### 1. Overlay instead of copy
 
@@ -73,19 +79,38 @@ cache miss, into a writable tree — never against the mount**:
   exactly as today. On success the result is frozen into the keyed store via atomic
   rename, and *that frozen directory becomes the `lowerdir`* for future sessions.
 
-**The populate path is unchanged.** `populateStore()` already runs the install in the
-**worker** and publishes to host-backed `/dep-cache/nm-store/<key>` via temp-dir + atomic
-rename ([nm-store.ts:272-309](../../src/server/session/nm-store.ts#L272-L309)) — a
+**The populate path is unchanged** (apart from the rename). `populateStore()` already runs
+the install in the **worker** and publishes to a host-backed store dir via temp-dir +
+atomic rename ([nm-store.ts:272-309](../../src/server/session/nm-store.ts#L272-L309)) — a
 directory the orchestrator can already see. Division of labor:
 
-- **Worker** keeps owning *running the install* and publishing to `/dep-cache/nm-store/<key>`.
+- **Worker** keeps owning *running the install* and publishing to `/dep-cache/dep-store/<key>`.
 - **Orchestrator** owns *the mount* — on a future hit it points a `lowerdir` at that
   already-published directory instead of `cp`-ing it. Only consumption flips
   (`cp`/`tar` → mount); keying, atomic publish, and warm-pool pre-warm are identical.
 
-**Triggers:** (1) session start → `key = hash(lockfile + runtimeKey + installCmd)`;
-(2) hit → mount, miss → install + publish, next session hits; (3) warm pool pre-populates
-the key before the first real session; (4) lockfile/runtime change → new key → repopulate.
+**How a "lockfile/runtime change" is detected — it isn't, explicitly.** The key *is* the
+detector. At session start the worker recomputes
+`key = sha256(lockfileContent + runtimeKey + installCommand)` from the current workspace
+state (this already exists for `nm-store`):
+
+- **lockfileContent** — the bytes of the resolved lockfile(s) read from the workspace:
+  `package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` for Node, and (when extended to
+  Python) `poetry.lock` / `uv.lock` / a pinned `requirements.txt`. Any dependency change
+  is, by definition, a change to these bytes.
+- **runtimeKey** — container image digest + CPU arch + libc + interpreter major version,
+  so a tree with compiled native addons/wheels is never reused across an incompatible
+  runtime.
+
+So a changed lockfile or a rebuilt image simply hashes to a **different key**, which has
+no published layer → cache miss → repopulate. There is no diffing, no invalidation, no
+mtime check — content addressing makes "did it change?" equivalent to "does a layer for
+this key exist?". (The reverse safety net is the janitor pruning keys no session
+references.)
+
+**Triggers:** (1) session start → recompute key; (2) hit → mount, miss → install +
+publish, next session hits; (3) warm pool pre-populates the key before the first real
+session; (4) different lockfile/runtime → different key → repopulate.
 
 **Mid-session dependency changes** land in the per-session `upperdir` (copy-up) — correct
 for that session, but a live/dirty `upperdir` is **never promoted** into the shared layer.
@@ -103,17 +128,19 @@ keys differently, misses, and repopulates from a clean install.
   **same absolute path it will be mounted** (`/workspace/.venv`), since venvs hardcode
   absolute paths. ShipIt's constant `/workspace` makes this stable. The built-wheel cache
   (`PIP_CACHE_DIR`) already removes the slow native-compile step regardless.
-- **Hardlink ladder** — fallback only, for hosts/kernels without the host-mount layer (or
-  a first unprivileged prototype). Dumb-copy managers only, same-fs required, must guard
-  in-place mutation; do **not** apply to pnpm/uv.
+
+Hardlinking is **not** part of this design — it was considered and rejected as a separate
+mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
 
 ## Next steps
 
 1. Spike the orchestrator host-mount subsystem (mount/unmount lifecycle +
    janitor/archive awareness) to size the real cost — this is the gating unknown.
-2. In parallel, prototype the hardlink fallback and benchmark cache-hit time (mount vs.
-   hardlink vs. today's `cp`/`tar`) on a large repo (ShipIt itself: ~588 packages, ~24s
-   cold install).
+2. Benchmark the overlay-mount cache-hit path against today's `cp`/`tar` materialize on a
+   large repo (ShipIt itself: ~588 packages, ~24s cold install) to confirm the win is
+   worth the new subsystem.
+3. Rename `nm-store` → `dep-store` (module + store path) as a self-contained precursor,
+   since it's purely a rename and unblocks the generalized naming.
 
 ## Key files
 
