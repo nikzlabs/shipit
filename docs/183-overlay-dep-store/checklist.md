@@ -10,7 +10,8 @@ from empty under the **existing** repo trust gate. Prototype the rolling-base lo
 the host mount stays the gating risk.
 
 - [ ] Prototype the keyless rolling base on the current substrate: mount current base →
-      git fast-forward source → run real install on top → publish on exit 0 (serial)
+      git fast-forward source → run real install on top → publish on exit 0 via the
+      commit-ancestry compare-and-swap (installs run concurrently into their own uppers)
 - [ ] Measure warm-install time: `main` unchanged (warm no-op, ~marker skip) and `main`
       advanced its deps (incremental) vs. cold
 - [ ] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
@@ -23,9 +24,14 @@ the host mount stays the gating risk.
 - [ ] Scope the base per `(repo, runtime fingerprint)` so a base is never reused across
       incompatible runtimes (arch + libc + interpreter)
 - [ ] Restrict base *publish* to **default-branch, exit-0** installs; any session still
-      installs into its own upper layer (no install serialization). Exclude `--base` child
-      sessions (child-sessions.ts) and untrusted-first/on-activation installs
-      (service-manager-setup.ts) from publishing
+      installs into its own upper layer (no install serialization). Eligibility is by
+      **branch + exit-0 + ancestry**, not by which code path ran the install — so an
+      on-activation default-branch install **is** eligible (it's how trust-deferred repos
+      build v0). Exclude only **non-default-branch** sessions, e.g. `--base` children
+      (child-sessions.ts)
+- [ ] Wire the on-activation install (service-manager-setup.ts) — the idempotent backstop for
+      trust-deferred repos, pool misses, and re-created runners — to feed the base under the
+      same publish rule; keep the `.shipit/.install-done` marker so repeats are no-ops
 - [ ] Stamp each base with its source **`main` commit**; on publish advance **only if the
       candidate strictly descends the base** (`git merge-base --is-ancestor`), under a short
       per-repo lock for atomic read-compare-swap. Order by commit ancestry, not publish time;
