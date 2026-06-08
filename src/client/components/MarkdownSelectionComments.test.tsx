@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, fireEvent, cleanup, within } from "@testing-library/react";
+import { render, screen, fireEvent, cleanup, within, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { MarkdownSelectionComments, type SelectionCommentData } from "./MarkdownSelectionComments.js";
 
@@ -18,7 +19,12 @@ Testing body lives here.
 
 function makeProps(overrides?: {
   comments?: SelectionCommentData[];
-  onAddComment?: (quotedText: string, contextBefore: string, contextAfter: string, text: string) => void;
+  onAddComment?: (
+    quotedText: string,
+    contextBefore: string,
+    contextAfter: string,
+    text: string,
+  ) => { id: string } | null | undefined | Promise<{ id: string } | null | undefined>;
   onEditComment?: (commentId: string, text: string) => void;
   onDeleteComment?: (commentId: string) => void;
   content?: string;
@@ -26,10 +32,50 @@ function makeProps(overrides?: {
   return {
     content: overrides?.content ?? SAMPLE_DOC,
     comments: overrides?.comments ?? [],
-    onAddComment: overrides?.onAddComment ?? (() => {}),
+    onAddComment: overrides?.onAddComment ?? (() => undefined),
     onEditComment: overrides?.onEditComment ?? (() => {}),
     onDeleteComment: overrides?.onDeleteComment ?? (() => {}),
   };
+}
+
+function textNodeContaining(root: HTMLElement, text: string, occurrence = 0): Text {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let seen = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    if (node.data.includes(text)) {
+      if (seen === occurrence) return node;
+      seen += 1;
+    }
+  }
+  throw new Error(`Text node not found: ${text}`);
+}
+
+function selectText(root: HTMLElement, text: string, occurrence = 0): void {
+  const node = textNodeContaining(root, text, occurrence);
+  const start = node.data.indexOf(text);
+  const range = document.createRange();
+  range.setStart(node, start);
+  range.setEnd(node, start + text.length);
+  Object.defineProperty(range, "getClientRects", {
+    value: vi.fn(() => [
+      {
+        width: 24,
+        height: 16,
+        top: 10,
+        right: 34,
+        bottom: 26,
+        left: 10,
+        x: 10,
+        y: 10,
+        toJSON: () => ({}),
+      },
+    ] as unknown as DOMRectList),
+  });
+  const selection = window.getSelection();
+  selection?.removeAllRanges();
+  selection?.addRange(range);
+  fireEvent(document, new Event("selectionchange"));
 }
 
 describe("MarkdownSelectionComments", () => {
@@ -302,6 +348,64 @@ Context body.
       expect(within(firstBlock).queryByText("about albatross")).toBeNull();
       expect(within(secondBlock).getByText("about albatross")).toBeInTheDocument();
       expect(within(secondBlock).queryByText("about kestrels")).toBeNull();
+    });
+
+    it("opens the pending editor under the selected duplicate text occurrence", () => {
+      const content = "Repeat target appears first.\n\nRepeat target appears second.";
+      const { container } = render(
+        <MarkdownSelectionComments {...makeProps({ content })} />,
+      );
+
+      selectText(container, "Repeat target", 1);
+      fireEvent.mouseDown(screen.getByTitle("Comment on this selection"));
+
+      const blocks = container.querySelectorAll("[data-markdown-block-index]");
+      expect(within(blocks[0] as HTMLElement).queryByPlaceholderText(/Add a comment/)).toBeNull();
+      expect(
+        within(blocks[1] as HTMLElement).getByPlaceholderText(/Add a comment/),
+      ).toBeInTheDocument();
+    });
+
+    it("keeps a newly added duplicate-text comment pinned to the selected block after saving", async () => {
+      function Harness() {
+        const [comments, setComments] = useState<SelectionCommentData[]>([]);
+        return (
+          <MarkdownSelectionComments
+            {...makeProps({
+              content: "Repeat target appears first.\n\nRepeat target appears second.",
+              comments,
+              onAddComment: (quotedText, contextBefore, contextAfter, text) => {
+                const comment = {
+                  id: "c1",
+                  quotedText,
+                  contextBefore,
+                  contextAfter,
+                  text,
+                  source: "human" as const,
+                };
+                setComments([comment]);
+                return Promise.resolve({ id: comment.id });
+              },
+            })}
+          />
+        );
+      }
+
+      const user = userEvent.setup();
+      const { container } = render(<Harness />);
+      selectText(container, "Repeat target", 1);
+      fireEvent.mouseDown(screen.getByTitle("Comment on this selection"));
+
+      await user.type(screen.getByPlaceholderText(/Add a comment/), "second occurrence note");
+      await user.click(screen.getByText("Add"));
+
+      await waitFor(() => {
+        const blocks = container.querySelectorAll("[data-markdown-block-index]");
+        expect(within(blocks[0] as HTMLElement).queryByText("second occurrence note")).toBeNull();
+        expect(
+          within(blocks[1] as HTMLElement).getByText("second occurrence note"),
+        ).toBeInTheDocument();
+      });
     });
 
     it("anchors a comment that selects across a code-block boundary into the block whose text contains it", () => {
