@@ -107,6 +107,8 @@ The session name lives in the sidebar; the PR/conversation lives in the top bar.
 **Top bar right cluster:** dedicated `[🔍 Search]` icon + `[⋯ Overflow]`.
 **Top bar overflow:** Download chat, Recover recent rewind, **Auto-fix CI failures**, **Auto-merge when CI passes**.
 
+> **Later refinement (docs/064):** the top-bar `⋮` was split by concern. Its PR-scoped actions (auto-merge, Sync with base, Copy branch name, Close PR) became the reusable `PrActionsMenu`, shared verbatim by the card and the PR detail-panel header. The chat/session-scoped actions — **Download chat** and **Recover recent rewind** — moved to the sidebar row's `⋮` menu, shown only on the *active* session's row (they act on the current session's transcript / socket). See docs/064 → "`PrActionsMenu` — the reusable PR-scoped overflow menu".
+
 Both `Auto-fix` and `Auto-merge` are reachable whenever the session has a GitHub remote — they're stored preferences, not actions, and pre-enabling them before a PR exists is a real workflow ("I'm going to ship this; merge it when CI's green"). They don't require a PR or a CI state to toggle, but they do require a remote (without one there will never be a PR for the preferences to act on). The one preserved precondition is `currentSession.remoteUrl`, matching today's `SessionTopBar` gate at `App.tsx:1014`. See "Auto-fix / Auto-merge availability" below for the consolidation and the latent-bug fix that comes with it.
 
 Why split this way:

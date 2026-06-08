@@ -122,6 +122,10 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   // when CI failed and the auto-loop isn't actively handling it.
   const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
+  // Close lives in the merge dropdown and the header's PrActionsMenu, not here;
+  // only render the action box when one of these inline controls is present so
+  // it never collapses to an empty bordered row.
+  const hasActions = showMergeButton || showFixButton || showAutoMergeToggle || !!showConflictUi;
 
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
@@ -133,16 +137,13 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
 
       <ReviewSummary reviewDecision={reviewDecision} />
 
-      {card.phase === "open" && (
+      {hasActions && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border-primary) bg-(--color-bg-secondary)/40 p-2">
           {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
           {showFixButton && <FixCIButton sessionId={sessionId} />}
           {showAutoMergeToggle && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
-          )}
-          {!showMergeButton && !showFixButton && !showAutoMergeToggle && !isCiFailed && !showConflictUi && (
-            <span className="text-xs text-(--color-text-tertiary)">No PR actions available right now.</span>
           )}
         </div>
       )}

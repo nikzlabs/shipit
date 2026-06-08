@@ -114,7 +114,6 @@ export default function App() {
   const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
-  const rewindRecoveries = useSessionStore((s) => s.rewindRecoveries);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
   const isLoading = useSessionStore((s) => s.isLoading);
   const activity = useSessionStore((s) => s.activity);
@@ -869,18 +868,6 @@ export default function App() {
     } catch { /* ignore */ }
   }, []);
 
-  const handleDownloadChat = useCallback(() => {
-    const msgs = useSessionStore.getState().messages;
-    if (msgs.length === 0) return;
-    const blob = new Blob([JSON.stringify(msgs, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `chat-${useSessionStore.getState().sessionId ?? "unknown"}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
-    a.click();
-    URL.revokeObjectURL(url);
-  }, []);
-
   const handleOpenDoc = useCallback(
     (filePath: string, doc?: DocEntry) => {
       const sid = useSessionStore.getState().sessionId;
@@ -1184,8 +1171,6 @@ export default function App() {
   );
 
   // ── Chat panel ──
-  const currentRewindRecovery = sessionId ? rewindRecoveries[sessionId] : undefined;
-  const recoverRewindAvailable = Boolean(currentRewindRecovery && currentRewindRecovery.expiresAt > Date.now());
   const chatPanel = (
     <>
       {searchOpen && <SearchBar query={search.query} onQueryChange={search.setQuery} matches={search.matches} currentMatchIndex={search.currentMatchIndex} onNext={search.goToNext} onPrev={search.goToPrev} onClose={() => { setSearchOpen(false); search.clear(); }} />}
@@ -1202,9 +1187,6 @@ export default function App() {
           onCreatePr={handleCreatePr}
           canAutoMerge={!!currentSession?.remoteUrl}
           onSearch={() => setSearchOpen(true)}
-          onDownloadChat={handleDownloadChat}
-          recoverRewindAvailable={recoverRewindAvailable}
-          onRecoverRewind={() => { if (currentSession) window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: currentSession.id } })); }}
         />
       )}
       {!showHomeScreen && !showNewSessionView && wsSessionId && (

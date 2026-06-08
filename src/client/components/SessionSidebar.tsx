@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, MicrophoneIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, DownloadSimpleIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, MicrophoneIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -313,6 +313,30 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     }
   }, [session.id, onResume]);
 
+  // Chat/session-scoped actions, relocated here from the PR card's overflow
+  // menu (which is now PR-only). Both are limited to the *current* session: the
+  // store's `messages` are only the active session's, and a rewind restore must
+  // go over that session's socket. The rewind-restore event is bridged to the
+  // WS sender by a listener in App.tsx (`shipit:restore-rewind`).
+  const rewindRecovery = useSessionStore((s) => s.rewindRecoveries[session.id]);
+  const canRecoverRewind = isCurrent && !!rewindRecovery && rewindRecovery.expiresAt > Date.now();
+
+  const handleDownloadChat = useCallback(() => {
+    const msgs = useSessionStore.getState().messages;
+    if (msgs.length === 0) return;
+    const blob = new Blob([JSON.stringify(msgs, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `chat-${session.id}-${new Date().toISOString().slice(0, 19).replace(/:/g, "-")}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [session.id]);
+
+  const handleRecoverRewind = useCallback(() => {
+    window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: session.id } }));
+  }, [session.id]);
+
   // The overflow trigger is always visible on the active row, on touch
   // devices, and while the menu itself is open. On inactive desktop rows it
   // hover-reveals so it doesn't add visual noise to the long sidebar list.
@@ -430,6 +454,23 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                     <PhArchiveIcon size={ICON_SIZE.SM} />
                     Archive
                   </DropdownMenuItem>
+                )}
+                {/* Chat-scoped actions, only on the active session's row (see the
+                    handlers above for why they're current-only). */}
+                {isCurrent && (
+                  <>
+                    <DropdownMenuSeparator />
+                    {canRecoverRewind && (
+                      <DropdownMenuItem onSelect={handleRecoverRewind}>
+                        <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
+                        Recover recent rewind
+                      </DropdownMenuItem>
+                    )}
+                    <DropdownMenuItem onSelect={handleDownloadChat}>
+                      <DownloadSimpleIcon size={ICON_SIZE.SM} />
+                      Download chat
+                    </DropdownMenuItem>
+                  </>
                 )}
               </>
             )}
