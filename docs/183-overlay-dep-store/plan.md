@@ -6,16 +6,17 @@ description: Share dependency trees across sessions by overlay-mounting an immut
 # Overlay-mounted canonical dependency layer
 
 > **TL;DR — the proposal.** Replace the per-session **full copy** of `node_modules`
-> (today's `nm-store` `tar`/`cp -a`) with an **overlay mount**: one immutable,
-> lockfile-keyed canonical layer mounted read-only under every session, with a
-> per-session upper layer for copy-on-write. On an exact cache hit, *no installer runs for
-> any ecosystem* — npm, Yarn, pnpm, pip, uv all collapse to "mount the canonical layer." On
-> a **miss**, run the real install on top of the **nearest warm base** (CI `restore-keys`
-> style) so it does only incremental work — which also makes population detection-free for
-> arbitrary commands, monorepos, and Python. The orchestrator owns the mount; the worker
-> keeps owning the install.
+> (today's `nm-store` `tar`/`cp -a`) with an **overlay**: a **single rolling base per repo**
+> mounted read-only as the `lowerdir`, with a per-session upper layer for copy-on-write.
+> Each session always runs its **real install command on top of that warm base**, so it
+> does only incremental work — which needs **no keys and no lockfile detection**, making it
+> work for arbitrary commands, monorepos, and Python alike. Concurrency stays clean by
+> advancing the shared base through an **optimistic compare-and-swap** (parallel installs,
+> serialized publish). The orchestrator owns the mount; the worker keeps owning the install.
 >
-> The reasoning and ecosystem-by-ecosystem analysis behind this choice is in
+> A content-addressed *keyed* variant (skip install on an exact match) is kept as an
+> optional optimization / [alternative](#alternative-the-keyed-immutable-layer). The
+> reasoning and ecosystem-by-ecosystem analysis are in
 > [Research & analysis](#research--analysis) at the bottom.
 
 ## Problem
@@ -69,6 +70,15 @@ unnecessary.
 
 **Consumption** (mount the layer) and **population** (run the install) are different
 paths; only consumption changes from today.
+
+> **Routing direction (read this first).** There are two ways to route a session to a
+> base: a **content-addressed key** (skip install on an exact match) or a **keyless rolling
+> chain** (always warm-install on one base per repo). To avoid keys and lockfile detection,
+> the **keyless chain in §4 is the chosen primary design**; the keyed mechanics described in
+> the rest of this section are an *optional optimization* layered on top (and stand alone as
+> the [keyed alternative](#alternative-the-keyed-immutable-layer)). Read §3 for the
+> immutable-layer/CoW mechanics that both modes share, then §4 for how routing actually
+> works.
 
 The canonical layer is **content-addressed and immutable — never updated in place**
 (mutating a layer that live sessions mount read-only would corrupt all of them). A
@@ -170,40 +180,61 @@ its keep (see caveats). Capture the baseline **immediately after install, before
 or services start**, so session-specific mutations never pollute the shared lineage — which
 is already how the install gate is ordered today.
 
-**How it composes with content-addressing (the hybrid we'd actually build):**
+**Avoiding keys entirely: a single serialized chain per repo (the chosen direction).** To
+have *no keys and no lockfile detection*, route **every** session to **one rolling base per
+repo** and always run the real install on top of it. No `findLockfile`, no allowlist, no
+`computeStoreKey` — monorepos, nested packages, Python, and arbitrary commands all work,
+because the package manager itself reconciles the tree. Concurrency is kept clean by
+**serializing the base advance** — but *how* you serialize matters:
 
-- **Exact-match hit** (same `key`) → mount the existing immutable layer, **skip install
-  entirely** (~0, the keyed fast path). Reproducible and concurrency-safe.
-- **Miss** → restore the nearest prior layer for the repo as `lowerdir`, run the
-  (arbitrary) install on top, atomic-publish the merged tree as the new keyed layer.
+- **Don't serialize the whole install.** A multi-second lock on the first-turn critical
+  path would queue new sessions and fight the warm pool. Instead use **optimistic
+  concurrency**: every session mounts the *current* base and runs install in **parallel**;
+  publishing the merged result as the next base is a cheap **compare-and-swap** (succeeds if
+  the base hasn't advanced since you started; otherwise keep your tree locally and skip the
+  publish). The published chain stays strictly linear while installs stay parallel.
 
-Content-addressing stays for safety; the warm base just makes misses incremental instead
-of cold. **Caveats that shape the design:**
+**The honest limit of a single chain — branch divergence, not concurrency.**
+Serialization fixes *concurrent* forks, but one chain is one-dimensional while branches are
+many. When consecutive installs come from **divergent dependency states** (`main` vs a
+`feature` branch that changed deps, or a package-manager switch), each install fully
+*reconciles* the base (remove + add) instead of no-op'ing — slower, and it accumulates
+drift. This happens even with purely *sequential* sessions alternating branches, so
+serialization can't fix it. In practice branches of one repo usually share ~all deps, so
+the warm delta is tiny and the download cache covers additions — but a repo with wildly
+divergent branches will thrash on a single chain.
 
-- **Concurrency is a fork, not a chain.** Many sessions branch off the same base at once
-  (warm pool, worktrees, parallel branches), so "previous session's result becomes *the*
-  base" isn't well-defined globally. Keep the base **keyed/lineaged per repo (and per
-  lockfile)** and let the existing atomic-rename publish dedupe — don't assume a single
-  linear baseline.
-- **Overlay depth is bounded.** Stacked `lowerdir`s are limited (the mount-options string
-  must fit in a page; Docker's overlay2 historically capped at 128), so you can't chain
-  bases forever — **periodically flatten** the merged result into a fresh single base (an
-  amortized copy, ideally in the warm pool / background).
+**If thrashing (or the always-pay-install floor) bites, the fix is *not* lockfile
+detection.** You can route per-branch and skip a no-op install with a **detection-free
+content fingerprint**: hash the bytes of *every* dependency-manifest file found by a fixed
+glob across the tree (`package.json`, `*.lock`, `pnpm-lock.yaml`, `requirements*.txt`,
+`poetry.lock`, `uv.lock`, `pyproject.toml`, …) together with the runtime. This is **not**
+"pick the one lockfile" — it's a coarse fingerprint of *all* manifests, so monorepos and
+polyglot repos are included by construction, and a divergent branch simply fingerprints
+differently and gets its own lineage. It is optional and additive: ship the keyless single
+chain first; add the fingerprint only if measurements show thrashing or the warm-install
+seconds matter.
+
+**Shared caveats either way:**
+
+- **Overlay depth is bounded.** Stacked `lowerdir`s are limited (mount-options must fit in
+  a page; Docker's overlay2 historically capped at 128), so **periodically flatten** the
+  merged result into a fresh single base (an amortized copy, ideally in the warm pool).
 - **Incremental installs drift.** Re-running `install` over generations can leave
-  extraneous packages or stale `.bin` links a clean install wouldn't; schedule an
-  occasional **clean rebuild** from empty. Note `npm ci` *deletes* `node_modules` first, so
-  it gets no warm-base speedup (only the download cache) — `install` benefits, `ci` doesn't.
-- **Speed vs. generality.** Always-run-install (even warm) costs a few seconds; the keyed
-  exact-match mount costs ~0. That's why the hybrid keeps both: skip on exact match, warm
-  install on miss.
+  extraneous packages or stale `.bin` links; schedule an occasional **clean rebuild** from
+  empty. `npm ci` *deletes* `node_modules` first → no warm-base gain (only the download
+  cache); `install` / `pnpm install` / `pip install` / `uv sync` all benefit.
+- **Always-run-install has a floor.** Even a warm no-op install is a few seconds of
+  resolution; the keyless chain never reaches the keyed mode's ~0 skip. That is the price
+  of no keys — accept it, or add the optional fingerprint to skip on an exact match.
 
 ### 5. Scope per ecosystem
 
-Overlay inherits the same narrow gate as today (single allowlisted command + single
-top-level lockfile; everything else falls through to a plain install — see the lifecycle
-section). It adds **one** genuinely new per-ecosystem requirement: the gate must yield a
-**deterministic mount-target path** — the directory the lower layer is mounted at — since
-overlay mounts in place rather than copying into a fixed `node_modules`.
+The keyless chain **drops today's narrow gate** — there's no allowlist or single-lockfile
+rule, because the real install command runs verbatim on the warm base regardless of
+ecosystem or monorepo shape. The one genuinely new per-ecosystem requirement is a
+**deterministic mount-target path** — the directory the base is mounted at — since overlay
+mounts in place rather than copying into a fixed `node_modules`.
 
 - **npm, Yarn (classic / `node-modules` linker)** — primary beneficiaries (dumb-copy, no
   native dedup). Target path is trivially deterministic: `<workspace>/node_modules`, the
@@ -211,16 +242,12 @@ overlay mounts in place rather than copying into a fixed `node_modules`.
 - **pnpm, uv, conda, Yarn PnP** — overlay still helps (cache hit = mount, zero install),
   but until overlay lands the no-new-machinery floor is to share their own store **on the
   same filesystem** as the workspace so their built-in dedup isn't silently defeated.
-- **Python (pip/poetry venvs)** — extending here is **not** auto-detection; it's adding
-  pip/poetry/uv to the same command allowlist with their lockfiles
-  (`poetry.lock`/`uv.lock`/pinned `requirements.txt`) **and** pinning the target path,
-  which is the hard part: unlike `node_modules`, a venv's location varies and venvs
-  hardcode absolute paths. The workable shape is to standardize on a fixed venv path
-  (`/workspace/.venv`), build the canonical layer there, and overlay-mount it back at that
-  same path — ShipIt's constant `/workspace` keeps it stable. Anything that doesn't fit
-  the standardized shape falls through to a plain install, exactly like a Node monorepo.
-  The built-wheel cache (`PIP_CACHE_DIR`) already removes the slow native-compile step
-  regardless, so even unfast-pathed Python installs aren't starting from zero.
+- **Python (pip/poetry/uv venvs)** — the keyless chain runs the real install, so there's
+  no detection to do; the only hard part is the **target path**. Unlike `node_modules`, a
+  venv's location varies and venvs hardcode absolute paths, so standardize on a fixed venv
+  path (`/workspace/.venv`), build the base there, and overlay-mount it back at that same
+  path — ShipIt's constant `/workspace` keeps it stable. The built-wheel cache
+  (`PIP_CACHE_DIR`) already removes the slow native-compile step regardless.
 
 Hardlinking is **not** part of this design — it was considered and rejected as a separate
 mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
@@ -229,15 +256,15 @@ mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
 
 1. Spike the orchestrator host-mount subsystem (mount/unmount lifecycle +
    janitor/archive awareness) to size the real cost — this is the gating unknown.
-2. Benchmark the overlay-mount cache-hit path against today's `cp`/`tar` materialize on a
-   large repo (ShipIt itself: ~588 packages, ~24s cold install) to confirm the win is
-   worth the new subsystem.
+2. Prototype the keyless rolling base: mount the repo's current base, run the real install
+   on top, advance the base via optimistic compare-and-swap. Measure warm-install time for
+   "nothing changed", "one dep added", and "alternating divergent branches" (the thrash
+   case) vs. a cold install.
 3. Rename `nm-store` → `dep-store` (module + store path) as a self-contained precursor,
    since it's purely a rename and unblocks the generalized naming.
-4. Prototype the warm-base populate path (restore nearest layer → run install on top →
-   publish merged) and measure warm-install time for "nothing changed" and "one dep added"
-   vs. a cold install; decide the flatten cadence and clean-rebuild policy from drift
-   observed over N generations.
+4. From the measurements, set the **flatten cadence** (overlay-depth cap) and the periodic
+   **clean-rebuild** policy that bounds drift; decide whether the optional detection-free
+   manifest fingerprint is worth adding to skip no-op installs / avoid branch thrash.
 
 ## Key files
 
@@ -353,6 +380,27 @@ decisive advantage is uniformity: on a cache hit no installer runs for *any* man
 whereas hardlinking only helps the non-dedup managers while *defeating* the ones that do
 (you'd cache pnpm's linked result as a flat tree and re-link it). One read-only lowerdir
 is shared by unlimited concurrent sessions — that's what overlayfs lowerdirs are for.
+
+## Alternative: the keyed immutable layer
+
+The earlier iteration of this design routed by a **content-addressed key** —
+`sha256(lockfileName + lockfileContent + runtimeKey + tunedInstallCommand)` — and on an
+**exact match skipped the install entirely**, mounting an immutable per-key layer. Why the
+keyless rolling chain (§4) is preferred instead, and what the keyed variant still buys:
+
+- **Keyed pros:** the hit path is **~0** (a mount, no installer process) and fully
+  **reproducible** and **concurrency-safe** by construction (identical inputs → identical
+  immutable layer; the atomic-rename publish dedupes). Different branches route to
+  different layers with **no thrashing**.
+- **Keyed cons (why it's not primary):** it depends on **detecting the lockfile**, which is
+  exactly what we're trying to avoid — today's `findLockfile` only handles a *single
+  top-level* lockfile and deliberately punts **monorepos** and nested packages, and
+  `isCacheableInstall` only fast-paths a narrow command allowlist. Generalizing that
+  detection to every ecosystem/monorepo is the fragile part.
+- **Reconciliation:** the keyed *skip* can be re-added later **without** reintroducing
+  fragile detection, via the **detection-free manifest fingerprint** in §4 (hash *all*
+  manifest files by a fixed glob, not "the one lockfile"). So the keyed fast path is an
+  optional optimization on top of the keyless chain, not a competing design.
 
 ## Related docs
 
