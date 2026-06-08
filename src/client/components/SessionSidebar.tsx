@@ -341,6 +341,9 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   // devices, and while the menu itself is open. On inactive desktop rows it
   // hover-reveals so it doesn't add visual noise to the long sidebar list.
   const overflowAlwaysVisible = isCurrent || menuOpen || Boolean(isTouch);
+  const hasCurrentSessionActions = isCurrent;
+  const canInvestigateInOps = session.kind !== "ops";
+  const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
   return (
     <div
@@ -443,23 +446,17 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
                   Rename
                 </DropdownMenuItem>
-                {session.kind !== "ops" && (
-                  <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
-                    <WrenchIcon size={ICON_SIZE.SM} />
-                    Investigate in Ops session
-                  </DropdownMenuItem>
-                )}
                 {onArchive && (
                   <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>
                     <PhArchiveIcon size={ICON_SIZE.SM} />
                     Archive
                   </DropdownMenuItem>
                 )}
+                {hasSeparatedActions && <DropdownMenuSeparator />}
                 {/* Chat-scoped actions, only on the active session's row (see the
                     handlers above for why they're current-only). */}
-                {isCurrent && (
+                {hasCurrentSessionActions && (
                   <>
-                    <DropdownMenuSeparator />
                     {canRecoverRewind && (
                       <DropdownMenuItem onSelect={handleRecoverRewind}>
                         <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
@@ -471,6 +468,12 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                       Download chat
                     </DropdownMenuItem>
                   </>
+                )}
+                {canInvestigateInOps && (
+                  <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
+                    <WrenchIcon size={ICON_SIZE.SM} />
+                    Investigate in Ops session
+                  </DropdownMenuItem>
                 )}
               </>
             )}
