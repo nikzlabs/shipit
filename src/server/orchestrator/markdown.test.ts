@@ -135,7 +135,7 @@ describe("findMarkdownFiles", () => {
   it("uses frontmatter title when present", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "plan.md"),
-      "---\ntitle: My Custom Title\nstatus: done\n---\n# Plan",
+      "---\ntitle: My Custom Title\n---\n# Plan",
     );
 
     const docs = await findMarkdownFiles(tmpDir);
@@ -153,7 +153,7 @@ describe("findMarkdownFiles", () => {
     fs.mkdirSync(path.join(tmpDir, "docs", "042-cool-feature"), { recursive: true });
     fs.writeFileSync(
       path.join(tmpDir, "docs", "042-cool-feature", "plan.md"),
-      "---\nstatus: done\n---\n# Plan",
+      "# Plan",
     );
 
     const docs = await findMarkdownFiles(tmpDir);
@@ -172,7 +172,7 @@ describe("findMarkdownFiles", () => {
     it("parses a description from frontmatter", async () => {
       fs.writeFileSync(
         path.join(tmpDir, "plan.md"),
-        "---\nstatus: done\ndescription: A short summary of the feature.\n---\n# Plan",
+        "---\ndescription: A short summary of the feature.\n---\n# Plan",
       );
       const docs = await findMarkdownFiles(tmpDir);
       expect(docs[0].description).toBe("A short summary of the feature.");
@@ -188,7 +188,7 @@ describe("findMarkdownFiles", () => {
     });
 
     it("leaves description undefined when absent", async () => {
-      fs.writeFileSync(path.join(tmpDir, "plan.md"), "---\nstatus: done\n---\n# Plan");
+      fs.writeFileSync(path.join(tmpDir, "plan.md"), "---\ntitle: Plan\n---\n# Plan");
       const docs = await findMarkdownFiles(tmpDir);
       expect(docs[0].description).toBeUndefined();
     });
@@ -261,16 +261,15 @@ describe("findMarkdownFiles", () => {
       expect(docs[0].issue).toBe("octocat/hello-world#9");
     });
 
-    it("does not read status/priority frontmatter (decoupled in docs/168)", async () => {
+    it("ignores unrecognized frontmatter fields, parsing only the known ones", async () => {
       fs.writeFileSync(
         path.join(tmpDir, "feature.md"),
-        "---\nstatus: planned\npriority: high\n---\n# Feature",
+        "---\nissue: octocat/hello-world#9\nwhatever: high\n---\n# Feature",
       );
       const docs = await findMarkdownFiles(tmpDir);
       const doc = docs[0] as unknown as Record<string, unknown>;
-      expect(doc.status).toBeUndefined();
-      expect(doc.priority).toBeUndefined();
-      expect(doc.customStatus).toBeUndefined();
+      expect(doc.issue).toBe("octocat/hello-world#9");
+      expect(doc.whatever).toBeUndefined();
     });
   });
 
@@ -279,7 +278,7 @@ describe("findMarkdownFiles", () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "plan.md"),
-        "---\nstatus: in-progress\n---\n# Plan",
+        "# Plan",
       );
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "checklist.md"),
@@ -294,7 +293,7 @@ describe("findMarkdownFiles", () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "plan.md"),
-        "---\nstatus: planned\n---",
+        "# Plan",
       );
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "checklist.md"),
@@ -309,7 +308,7 @@ describe("findMarkdownFiles", () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "plan.md"),
-        "---\nstatus: in-progress\n---\n# Plan",
+        "# Plan",
       );
       const docs = await findMarkdownFiles(tmpDir);
       expect(docs[0].checklist).toBeUndefined();
@@ -331,7 +330,7 @@ describe("findMarkdownFiles", () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "002-b"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-a", "plan.md"),
-        "---\nstatus: planned\n---",
+        "# Plan",
       );
       fs.writeFileSync(
         path.join(tmpDir, "docs", "002-b", "checklist.md"),
@@ -346,7 +345,7 @@ describe("findMarkdownFiles", () => {
       fs.mkdirSync(path.join(tmpDir, "docs", "001-feature"), { recursive: true });
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "plan.md"),
-        "---\nstatus: in-progress\n---",
+        "# Plan",
       );
       fs.writeFileSync(
         path.join(tmpDir, "docs", "001-feature", "checklist.md"),

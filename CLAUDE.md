@@ -404,13 +404,11 @@ docs/
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
-Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Priority and work-status live in the issue tracker (Linear / GitHub Issues), **not** in the doc; see `docs/168-tracker-backed-priorities/`.
+Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Work tracking lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer; see `docs/168-tracker-backed-priorities/`.
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
-**There is no `status:` or `priority:` frontmatter (removed in docs/168).** The markdown scanner (`src/server/orchestrator/markdown.ts`) no longer reads them — a leftover `status:`/`priority:` line is silently ignored. The docs list groups structurally: a doc is **tracked** if it is a feature-directory `plan.md`/`checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling; within Tracked, docs whose `checklist.md` is 100% complete fold into a collapsed **Done** group, everything else stays **Active**.
-
-The recognized frontmatter fields are `issue`, `title`, and `description` — all optional. A `plan.md` with no frontmatter still appears in the list.
+The recognized frontmatter fields are `issue`, `title`, and `description` — all optional. A `plan.md` with no frontmatter still appears in the list. The docs list groups structurally: a doc is **tracked** if it is a feature-directory `plan.md`/`checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling; within Tracked, docs whose `checklist.md` is 100% complete fold into a collapsed **Done** group, everything else stays **Active**.
 
 `issue:` points at the work item that tracks the doc; the tracker is inferred from the pointer's shape. **Linear must be a full URL** (`https://linear.app/<workspace>/issue/SHI-28/...`) — a bare `SHI-28` is not accepted. **GitHub** is `owner/repo#123` or a full issue URL. ShipIt renders a jump-to-issue chip from the pointer. A doc with no `issue:` is pure reference.
 

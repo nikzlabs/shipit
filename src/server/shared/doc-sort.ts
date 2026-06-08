@@ -4,8 +4,8 @@
  * Feature docs live in `docs/NNN-feature/` directories numbered by creation
  * order, so the `NNN` prefix is a reliable proxy for "how new is this doc".
  * Ordering descending by that number floats the newest work to the top of the
- * list, where it's most likely to be wanted — docs/168 removed the explicit
- * priority/status signal, so creation-recency is the best ordering left.
+ * list, where it's most likely to be wanted — docs/168 moved work tracking out
+ * to the issue tracker, so creation-recency is the best ordering left.
  *
  * A plain `localeCompare` can't express this for two reasons:
  *
