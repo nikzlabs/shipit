@@ -1,5 +1,6 @@
 ---
 description: Inline skill/plugin discovery and install surface in ShipIt, matching the /plugin and /plugins TUIs from Claude Code and Codex.
+issue: https://linear.app/shipit-ai/issue/SHI-58
 ---
 
 # 149 — Skill Install UX

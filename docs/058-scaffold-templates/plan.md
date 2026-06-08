@@ -1,5 +1,6 @@
 ---
 description: Replace static embedded file templates with real scaffolding tool invocations so new projects get framework-canonical output without manual maintenance.
+issue: https://linear.app/shipit-ai/issue/SHI-38
 ---
 
 # 058 — Scaffold-based Templates

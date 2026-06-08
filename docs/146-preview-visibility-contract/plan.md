@@ -1,5 +1,6 @@
 ---
 description: Soft contract — ShipIt posts visibility transitions to preview iframes so cooperating apps can suspend Web Audio, RAF loops, and game ticks while hidden.
+issue: https://linear.app/shipit-ai/issue/SHI-44
 ---
 
 # Preview visibility contract

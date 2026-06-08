@@ -1,5 +1,6 @@
 ---
 description: Add @terminal to the composer autocomplete so users can attach recent terminal output as context to the next agent turn without copy-pasting.
+issue: https://linear.app/shipit-ai/issue/SHI-54
 ---
 
 # 108 — `@terminal` Composer Mention

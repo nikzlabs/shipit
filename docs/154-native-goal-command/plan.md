@@ -1,6 +1,7 @@
 ---
 title: Native goal command (CLI-backed)
 description: Expose `/goal` in chat by adapting each backend CLI's native goal feature — Codex's stable `thread/goal/*` JSON-RPC API (from 0.133.0); Claude has no programmatic surface yet. Finishable once Codex ≥0.133.0 is pinned.
+issue: https://linear.app/shipit-ai/issue/SHI-29
 ---
 
 # Native goal command (CLI-backed)

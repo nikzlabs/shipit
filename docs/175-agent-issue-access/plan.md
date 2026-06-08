@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-84
 description: Give the agent a tracker-neutral, read-only path to issues (GitHub and Linear alike) via `shipit issue view`/`list`, brokered through the existing tracker registry so tokens never enter the container.
 ---
 

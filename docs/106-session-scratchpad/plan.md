@@ -1,5 +1,6 @@
 ---
 description: Persistent, agent-readable notes file (.shipit/notes.md) scoped to each session, surfaced as a side panel and auto-attached to every agent turn.
+issue: https://linear.app/shipit-ai/issue/SHI-30
 ---
 
 # 106 — Per-Session Scratchpad

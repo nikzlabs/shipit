@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-64
 description: Gate PR merge eligibility on GitHub's review-approval status and surface that status inline on the PR card.
 ---
 

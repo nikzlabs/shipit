@@ -1,5 +1,6 @@
 ---
 description: Globally-gated MCP tool that lets the primary agent ask the other agent for a one-shot, read-only review of the current branch diff — surfaced inline through the same chat history.
+issue: https://linear.app/shipit-ai/issue/SHI-37
 ---
 
 # 144 — Cross-agent review

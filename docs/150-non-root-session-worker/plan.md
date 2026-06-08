@@ -1,6 +1,7 @@
 ---
 title: Non-root session worker runtime
 description: Run the session worker, agent CLI, terminal, install hooks, and MCP servers as an unprivileged user instead of root.
+issue: https://linear.app/shipit-ai/issue/SHI-31
 ---
 
 # 150 — Non-root Session Worker Runtime

@@ -1,5 +1,6 @@
 ---
 description: Programmatic HTTP API for driving ShipIt from outside the browser — list sessions, check agent and CI status, start a session with a prompt, send a message to an existing session. Designed for scripts, automation, and external agents.
+issue: https://linear.app/shipit-ai/issue/SHI-35
 ---
 
 # External control API

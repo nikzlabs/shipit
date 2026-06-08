@@ -1,5 +1,6 @@
 ---
 description: Share Claude's auto-memory directory across sessions of the same repo via a per-repo bind mount, while keeping per-agent credential isolation intact.
+issue: https://linear.app/shipit-ai/issue/SHI-49
 ---
 
 # Per-repo Claude memory sharing

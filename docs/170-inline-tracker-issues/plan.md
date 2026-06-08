@@ -1,6 +1,7 @@
 ---
 title: Inline tracker Issues tab
 description: A top-level, read-only, priority-sorted Issues tab inside ShipIt with one sub-tab per tracker (Linear, GitHub) and a start-session action per row — the inline "what's next" surface that replaces what docs left behind when priority moved to the tracker.
+issue: https://linear.app/shipit-ai/issue/SHI-67
 ---
 
 # Inline tracker Issues tab
@@ -248,8 +249,9 @@ Client:
    in ShipIt settings.
 2. **Issue refresh cadence** — *fetch on tab open + manual refresh button*; no
    background poller in v1.
-3. **Linear `issue:` pointer format** — *always a full Linear URL*; bare IDs are
-   not accepted, so the pointer stays unambiguous across workspaces.
+3. **Linear `issue:` pointer format** — *always a full Linear URL without the
+   title slug*; bare IDs are not accepted, so the pointer stays unambiguous
+   across workspaces.
 
 ## Implementation status (Linear: TRACKER-67; GitHub: TRACKER-80)
 

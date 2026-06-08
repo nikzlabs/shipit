@@ -1,6 +1,7 @@
 ---
 title: Tracker-backed priorities (doc decoupling)
 description: Move priority and work-status out of design-doc frontmatter into the issue tracker. Docs become reference material with an issue: pointer; the docs list groups by checklist state instead of status.
+issue: https://linear.app/shipit-ai/issue/SHI-28
 ---
 
 # Tracker-backed priorities
@@ -85,8 +86,8 @@ description: One-line summary.           # unchanged (docs/138)
 
 - **Removed:** `status`, `priority`.
 - **`issue:`** accepts a tracker-qualified pointer.
-  - **Linear: always a full URL** (e.g.
-    `https://linear.app/<workspace>/issue/TRACKER-28/...`). Bare `TRACKER-28` is *not*
+  - **Linear: always a full URL without the title slug** (e.g.
+    `https://linear.app/<workspace>/issue/TRACKER-28`). Bare `TRACKER-28` is *not*
     accepted — the full URL keeps the pointer unambiguous if a deployment ever
     wires up more than one Linear workspace.
   - **GitHub:** `owner/repo#123` or a full issue URL.

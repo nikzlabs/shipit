@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-86
 title: Agent issue writes — through the unified tracker interface, not MCP
 description: Let the agent comment on, edit, re-status, and re-assign issues across all trackers via one ShipIt-brokered Tracker write interface, with a do-then-surface provenance card. Includes the cross-tracker status/assignee mapping.
 ---
