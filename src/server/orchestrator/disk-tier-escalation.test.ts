@@ -125,6 +125,30 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
   });
 
+  it("paces age-based descents when paceMs is set", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-pace");
+    fs.mkdirSync(wsDir, { recursive: true });
+    insertSession({
+      id: "old-hot",
+      lastUsedAt: daysAgo(IDLE_LIGHT_MS / 86_400_000 + 1),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+
+    const { registry } = fakeRegistry();
+    const paceMs = 30;
+    const startedAt = Date.now();
+    const result = await escalateDiskTiers({ ...baseDeps(sm, registry), paceMs });
+    const elapsed = Date.now() - startedAt;
+
+    expect(result.toLight).toBe(1);
+    // One reclaim → one `sleep(paceMs)`. setTimeout never fires early, so this
+    // lower bound (minus a tiny scheduling epsilon) is not flaky.
+    expect(elapsed).toBeGreaterThanOrEqual(paceMs - 5);
+  });
+
   it("does NOT escalate a hot session younger than IDLE_LIGHT", async () => {
     setup();
     const sm = new SessionManager(dbManager!);

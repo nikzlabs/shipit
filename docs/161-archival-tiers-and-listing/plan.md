@@ -419,6 +419,20 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
 | `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
+| `DISK_JANITOR_PACE_MS` | pause between each destructive janitor op (volume/network rm, branch delete, cache/workspace/nm-store rm) so the fire-and-forget startup sweep drips out instead of bursting `docker` spawns + git pushes that contend with a concurrent agent start | `500` |
+| `DISK_ESCALATION_PACE_MS` | pause between each **age-based** tier descent (same anti-contention goal). **Not** applied to the disk-pressure LRU descent — when the box is critically low and starts are already failing, fast reclaim is the point | `500` |
+
+**Throttling, not deferral, is what keeps a just-restarted box responsive.** The
+startup janitor and the boot escalation pass are already fire-and-forget (never
+awaited before `app.listen()`), so nothing structurally blocks an agent on them.
+The lag was *resource contention*: a burst of `docker volume/network rm`, `git
+push --delete` (orphan-branch sweep), and `docker compose down` all firing at
+boot and saturating the Docker daemon + bare-cache git layer that agent
+container creation also needs. Deferring the sweep would only *relocate* that
+spike to a later, more disruptive mid-session moment; pacing each op flattens it
+so *when* it runs stops mattering. The disk-pressure emergency descent is
+exempt by design — it only fires when the disk is critically low and is the one
+case where fast reclaim is correct.
 
 Container stop is governed by the existing `maxIdleContainers` cap, not a time
 threshold, so there is no `IDLE_STOP` constant.

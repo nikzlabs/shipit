@@ -89,6 +89,14 @@
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
  *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
+ *   - DISK_JANITOR_PACE_MS: milliseconds to pause between each destructive
+ *     operation (volume/network removal, branch delete, cache/workspace/
+ *     nm-store rm). The startup sweep is fire-and-forget and never urgent —
+ *     every item recovers from a past failure — so we deliberately drip it out
+ *     rather than have a burst of `docker` spawns and git pushes contend with a
+ *     concurrent agent start for the Docker daemon / bare-cache git layer. This
+ *     is what keeps a just-restarted box's agents responsive WITHOUT deferring
+ *     the reclaim to a later (and more disruptive) moment. Default `500`.
  */
 
 import path from "node:path";
@@ -148,6 +156,16 @@ export interface DiskJanitorDeps {
   getBareCacheDir?: (repoUrl: string) => string;
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
+  /**
+   * Throttle: milliseconds to pause between each destructive operation
+   * (volume/network removal, branch delete, cache/workspace/nm-store rm). The
+   * startup sweep is never urgent — every item is recovering from a past
+   * failure — so we deliberately drip the reclaim out rather than hammer the
+   * Docker daemon and the bare-cache git layer that a concurrent agent start
+   * also needs. Defaults to `0` (no pause) so unit tests stay fast; production
+   * wires a gentle pace via `DISK_JANITOR_PACE_MS` in `index.ts`.
+   */
+  paceMs?: number;
 }
 
 export interface DiskJanitorResult {
@@ -185,10 +203,11 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     credentialDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
+  const paceMs = deps.paceMs ?? 0;
 
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
-      deps.sessionManager, runDocker,
+      deps.sessionManager, runDocker, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan volume sweep failed:", getMessage(err));
@@ -196,7 +215,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.orphanNetworksRemoved = await sweepOrphanSessionNetworks(
-      deps.sessionManager, runDocker,
+      deps.sessionManager, runDocker, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] orphan network sweep failed:", getMessage(err));
@@ -204,7 +223,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.workspacesRemoved = await sweepArchivedWorkspaces(
-      deps.sessionManager, deps.archivedWorkspaceDays ?? 0,
+      deps.sessionManager, deps.archivedWorkspaceDays ?? 0, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] archived-workspace sweep failed:", getMessage(err));
@@ -212,7 +231,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.cachesRemoved = await sweepOrphanedCaches(
-      deps.stateDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS,
+      deps.stateDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
@@ -220,7 +239,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.nmStoresRemoved = await sweepStaleNmStores(
-      deps.stateDir, deps.repoStore, deps.nmStoreDays ?? DEFAULT_NM_STORE_DAYS,
+      deps.stateDir, deps.repoStore, deps.nmStoreDays ?? DEFAULT_NM_STORE_DAYS, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
@@ -229,7 +248,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
-        deps.sessionManager, deps.credentialsDir,
+        deps.sessionManager, deps.credentialsDir, paceMs,
       );
     } catch (err) {
       console.warn("[disk-janitor] credential-dir sweep failed:", getMessage(err));
@@ -249,6 +268,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
         deps.githubAuthManager,
         deps.createRepoGit,
         deps.getBareCacheDir,
+        paceMs,
       );
     } catch (err) {
       console.warn("[disk-janitor] orphan-branch sweep failed:", getMessage(err));
@@ -284,6 +304,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 async function sweepOrphanCredentialDirs(
   sessionManager: SessionManager,
   credentialsDir: string,
+  paceMs: number,
 ): Promise<number> {
   const root = sessionCredentialsRoot(credentialsDir);
   let entries: string[];
@@ -302,6 +323,7 @@ async function sweepOrphanCredentialDirs(
     if (tracked.has(entry) && !archived.has(entry)) continue;
     const full = path.join(root, entry);
     try {
+      await sleep(paceMs);
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
       console.log(`[disk-janitor] removed orphan credentials dir ${full}`);
@@ -344,6 +366,7 @@ async function sweepOrphanCredentialDirs(
 async function sweepOrphanSessionVolumes(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
+  paceMs: number,
 ): Promise<number> {
   const SESSION_VOLUME_RE = /^shipit-([a-f0-9-]{12})_/;
 
@@ -383,6 +406,7 @@ async function sweepOrphanSessionVolumes(
   let removed = 0;
   for (const name of toRemove) {
     try {
+      await sleep(paceMs);
       await runDocker(["volume", "rm", name]);
       removed += 1;
     } catch {
@@ -429,6 +453,7 @@ async function sweepOrphanSessionVolumes(
 async function sweepOrphanSessionNetworks(
   sessionManager: SessionManager,
   runDocker: (args: string[]) => Promise<string>,
+  paceMs: number,
 ): Promise<number> {
   const SESSION_NETWORK_RE = /^shipit-session-([a-f0-9-]{12})/;
 
@@ -468,6 +493,7 @@ async function sweepOrphanSessionNetworks(
   let removed = 0;
   for (const name of toRemove) {
     try {
+      await sleep(paceMs);
       await runDocker(["network", "rm", name]);
       removed += 1;
     } catch {
@@ -504,6 +530,7 @@ async function sweepOrphanSessionNetworks(
 async function sweepArchivedWorkspaces(
   sessionManager: SessionManager,
   days: number,
+  paceMs: number,
 ): Promise<number> {
   if (days <= 0) return 0;
   const cutoffMs = Date.now() - days * 86_400_000;
@@ -521,6 +548,7 @@ async function sweepArchivedWorkspaces(
     try {
       const stat = await fs.stat(session.workspaceDir).catch(() => null);
       if (!stat) continue;
+      await sleep(paceMs);
       await fs.rm(session.workspaceDir, { recursive: true, force: true });
       removed += 1;
       console.log(
@@ -546,6 +574,7 @@ async function sweepOrphanedCaches(
   stateDir: string,
   repoStore: RepoStore,
   days: number,
+  paceMs: number,
 ): Promise<number> {
   const cutoffMs = Date.now() - days * 86_400_000;
   const repos = repoStore.list();
@@ -570,6 +599,7 @@ async function sweepOrphanedCaches(
       if (liveHashes.has(entry)) continue;
       const full = path.join(dir, entry);
       try {
+        await sleep(paceMs);
         await fs.rm(full, { recursive: true, force: true });
         removed += 1;
         console.log(`[disk-janitor] removed orphan cache ${full}`);
@@ -603,6 +633,7 @@ async function sweepStaleNmStores(
   stateDir: string,
   repoStore: RepoStore,
   days: number,
+  paceMs: number,
 ): Promise<number> {
   if (days <= 0) return 0;
   const cutoffMs = Date.now() - days * 86_400_000;
@@ -632,6 +663,7 @@ async function sweepStaleNmStores(
       }
       if (mtimeMs >= cutoffMs) continue;
       try {
+        await sleep(paceMs);
         await fs.rm(full, { recursive: true, force: true });
         removed += 1;
         console.log(`[disk-janitor] removed stale nm-store ${full}`);
@@ -728,6 +760,7 @@ async function sweepOrphanMergedBranches(
   githubAuthManager: GitHubAuthManager,
   createRepoGit: (dir: string) => RepoGit,
   getBareCacheDir: (repoUrl: string) => string,
+  paceMs: number,
 ): Promise<number> {
   if (!githubAuthManager.authenticated) return 0;
 
@@ -827,6 +860,7 @@ async function sweepOrphanMergedBranches(
       if (!git) break; // No cache → skip remaining branches for this repo.
 
       try {
+        await sleep(paceMs);
         await git.deleteBranch(fullName);
         removed += 1;
       } catch (err) {
@@ -1027,6 +1061,16 @@ export interface TierEscalationDeps {
   getFreeDiskBytes?: () => Promise<number | null>;
   /** Clock injection for tests. Defaults to `Date.now`. */
   now?: () => number;
+  /**
+   * Throttle: milliseconds to pause between each AGE-BASED tier descent so the
+   * steady-state reclaim of the idle node_modules tail doesn't hammer the
+   * Docker daemon a concurrent agent start needs. Deliberately NOT applied to
+   * the disk-pressure LRU descent (`applyDiskPressure`) — that path only fires
+   * when the box is critically low and new starts are already failing, so there
+   * fast is correct. Defaults to `0` (no pause) so unit tests stay fast;
+   * production wires it via `DISK_ESCALATION_PACE_MS` in `index.ts`.
+   */
+  paceMs?: number;
 }
 
 export interface TierEscalationResult {
@@ -1211,6 +1255,7 @@ export async function escalateDiskTiers(
   const idleLight = deps.idleLightMs ?? IDLE_LIGHT_MS;
   const idleEvict = deps.idleEvictMs ?? IDLE_EVICT_MS;
   const idleEvictMerged = deps.idleEvictMergedMs ?? IDLE_EVICT_MERGED_MS;
+  const paceMs = deps.paceMs ?? 0;
 
   // Candidate set: non-warm sessions still holding disk, minus the one we just
   // started. (`listAll` already excludes warm.)
@@ -1229,11 +1274,16 @@ export async function escalateDiskTiers(
     // look at isn't yanked mid-view.
     const evictThreshold = s.mergedAt ? idleEvictMerged : idleEvict;
     try {
+      // Pace only when we're about to actually act — skipped candidates
+      // (wrong tier / not idle enough) cost nothing and shouldn't drip-delay
+      // the scan. The disk-pressure descent below is intentionally un-paced.
       if (tier === "light" && age >= evictThreshold) {
+        await sleep(paceMs);
         const outcome = await reclaimToEvicted(s, deps);
         if (outcome === "evicted") result.toEvicted += 1;
         else if (outcome === "blocked-by-push") result.evictBlockedByPush += 1;
       } else if (tier === "hot" && age >= idleLight) {
+        await sleep(paceMs);
         if (await reclaimToLight(s, deps)) result.toLight += 1;
       }
     } catch (err) {
@@ -1372,6 +1422,17 @@ export function resolveDiskWatermarks(inputs: {
 
 function getMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Pacing primitive for the throttled sweeps. `ms <= 0` resolves synchronously
+ * (the test default) so unit tests never pay real wall-clock; production wires
+ * a small positive pace so the reclaim drips out instead of saturating the
+ * Docker daemon / git layer that a concurrent agent start needs.
+ */
+function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return Promise.resolve();
+  return new Promise((resolve) => { setTimeout(resolve, ms); });
 }
 
 /** Spawn `docker <args>` and collect combined stdout+stderr. */
