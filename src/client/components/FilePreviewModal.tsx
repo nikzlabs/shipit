@@ -280,8 +280,8 @@ function MarkdownViewer({
 
   const handleAdd = useCallback(
     (quotedText: string, contextBefore: string, contextAfter: string, text: string) => {
-      if (readOnly) return;
-      void addSelectionComment(sessionId, filePath, quotedText, contextBefore, contextAfter, text);
+      if (readOnly) return null;
+      return addSelectionComment(sessionId, filePath, quotedText, contextBefore, contextAfter, text);
     },
     [sessionId, filePath, addSelectionComment, readOnly],
   );
