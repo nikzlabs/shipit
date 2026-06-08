@@ -8,6 +8,7 @@ import {
 import type { ReactNode } from "react";
 import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import { Button } from "./ui/button.js";
+import { DropdownMenuItem } from "./ui/dropdown-menu.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip.js";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -99,18 +100,112 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
   rebase: "Rebase and merge",
 };
 
+/**
+ * Shared close-PR state machine, used by every place the action appears: the
+ * merge dropdown (regular, mergeable case) and the card / detail-panel overflow
+ * menus (which keep close reachable when the merge button is hidden — most
+ * importantly during merge conflicts). Owns the two-step-confirm + in-flight
+ * state and the actual `closePr` call so the destructive logic lives in exactly
+ * one place.
+ *
+ * `handleClose()` resolves to `true` only when the PR was actually closed, so a
+ * caller can dismiss its own dropdown on success. `reset()` clears the armed
+ * confirm — callers invoke it when their menu closes so it never reopens armed.
+ */
+export function useClosePr(sessionId: string) {
+  const closePr = usePrStore((s) => s.closePr);
+  const setToast = useUiStore((s) => s.setToast);
+  // First click arms the confirm, the second commits — cheaper than a modal and
+  // contained to whichever dropdown hosts the item.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  const reset = () => setConfirmClose(false);
+
+  const handleClose = async (): Promise<boolean> => {
+    if (closing) return false;
+    if (!confirmClose) {
+      setConfirmClose(true);
+      return false;
+    }
+    setClosing(true);
+    const error = await closePr(sessionId);
+    if (error) {
+      setToast({ message: `Close failed: ${error}` });
+      setClosing(false);
+      setConfirmClose(false);
+      return false;
+    }
+    setClosing(false);
+    setConfirmClose(false);
+    return true;
+  };
+
+  return { confirmClose, closing, handleClose, reset };
+}
+
+/** Shared label for the close item across its two visual treatments. */
+function closePrLabel(confirmClose: boolean, closing: boolean): string {
+  return closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request";
+}
+
+/**
+ * Close item styled for MergeButton's bespoke (non-Radix) dropdown — a plain
+ * button matching the merge-method rows above it.
+ */
+function ClosePrMenuItem({
+  confirmClose,
+  closing,
+  onClick,
+}: {
+  confirmClose: boolean;
+  closing: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={closing}
+      className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
+      {closePrLabel(confirmClose, closing)}
+    </button>
+  );
+}
+
+/**
+ * Close item for a Radix `OverflowMenu` (the card's existing ⋮ menu and the
+ * detail panel's). Reuses the `useClosePr` state passed in by the menu's owner
+ * so the owner can `reset()` the armed confirm from the menu's `onOpenChange`.
+ * First select arms the confirm and keeps the menu open (`preventDefault`); the
+ * second runs the close and lets Radix close the menu.
+ */
+export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClosePr> }) {
+  const { confirmClose, closing, handleClose } = state;
+  return (
+    <DropdownMenuItem
+      onSelect={(e) => {
+        if (!confirmClose) e.preventDefault();
+        void handleClose();
+      }}
+      disabled={closing}
+      className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
+    >
+      <GitPullRequestClosedIcon size={ICON_SIZE.SM} className="shrink-0" />
+      {closePrLabel(confirmClose, closing)}
+    </DropdownMenuItem>
+  );
+}
+
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
-  const closePr = usePrStore((s) => s.closePr);
   const setToast = useUiStore((s) => s.setToast);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
-  // Two-step confirm for the destructive close action: the first click arms it,
-  // the second commits — cheaper than a modal and contained to the dropdown.
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [closing, setClosing] = useState(false);
+  const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
@@ -123,7 +218,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
   // pre-armed.
   const closeDropdown = () => {
     setDropdownOpen(false);
-    setConfirmClose(false);
+    reset();
   };
 
   const handleMerge = async () => {
@@ -136,22 +231,8 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
     }
   };
 
-  const handleClose = async () => {
-    if (closing) return;
-    if (!confirmClose) {
-      setConfirmClose(true);
-      return;
-    }
-    setClosing(true);
-    const error = await closePr(sessionId);
-    if (error) {
-      setToast({ message: `Close failed: ${error}` });
-      setClosing(false);
-      setConfirmClose(false);
-      return;
-    }
-    setClosing(false);
-    closeDropdown();
+  const onCloseClick = async () => {
+    if (await handleClose()) closeDropdown();
   };
 
   return (
@@ -187,15 +268,17 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
                 {MERGE_METHOD_LABELS[m]}
               </button>
             ))}
+            {/* docs/064 — close lives here for the regular (mergeable) case
+                where it's most discoverable, right under the merge methods. The
+                card / detail-panel overflow menu (ClosePrDropdownItem) carries
+                the same action for the states where this whole button is hidden
+                (conflicts, failing CI, review required, auto-merge armed). */}
             <div className="my-1 h-px bg-(--color-border-secondary)" />
-            <button
-              onClick={handleClose}
-              disabled={closing}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
-              {closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request"}
-            </button>
+            <ClosePrMenuItem
+              confirmClose={confirmClose}
+              closing={closing}
+              onClick={() => void onCloseClick()}
+            />
           </div>
         </>
       )}

@@ -17,10 +17,9 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { Button } from "./ui/button.js";
-import { OverflowMenu } from "./ui/overflow-menu.js";
-import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { MarkdownContent } from "./message-markdown.js";
+import { PrActionsMenu } from "./PrActionsMenu.js";
 import {
   AutoMergeToggle,
   FixCIButton,
@@ -28,10 +27,6 @@ import {
   ResolveConflictsButton,
 } from "./PrStatusControls.js";
 import {
-  ArrowCounterClockwiseIcon,
-  ArrowsClockwiseIcon,
-  CopyIcon,
-  DownloadSimpleIcon,
   GitBranchIcon,
   GitPullRequestIcon,
   GitMergeIcon,
@@ -749,12 +744,6 @@ export interface PrLifecycleCardProps {
   canAutoMerge?: boolean;
   /** Opens the conversation search bar. */
   onSearch?: () => void;
-  /** Downloads the conversation as JSON. */
-  onDownloadChat?: () => void;
-  /** True when the session has a recently-rewound state that can still be restored. */
-  recoverRewindAvailable?: boolean;
-  /** Restore the most recent rewind. */
-  onRecoverRewind?: () => void;
 }
 
 export function PrLifecycleCard({
@@ -763,38 +752,8 @@ export function PrLifecycleCard({
   onCreatePr,
   canAutoMerge,
   onSearch,
-  onDownloadChat,
-  recoverRewindAvailable,
-  onRecoverRewind,
 }: PrLifecycleCardProps) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
-  const sessionBranch = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId)?.branch);
-  const setToast = useUiStore((s) => s.setToast);
-  const startRebase = useGitStore((s) => s.startRebase);
-  const rebaseStatus = useGitStore((s) => s.rebaseStatus);
-  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
-  // Prefer card-derived branches because they update mid-turn (e.g. branch
-  // rename on graduation), then fall back to the session record.
-  const headBranch = card?.pr?.headBranch ?? card?.headBranch ?? sessionBranch;
-  const handleCopyBranch = useCallback(() => {
-    if (!headBranch) return;
-    void navigator.clipboard.writeText(headBranch);
-    setToast({ message: "Branch name copied" });
-  }, [headBranch, setToast]);
-
-  // "Sync with <base>" rebases the branch onto the latest base and pushes,
-  // reusing the conflict-resolution flow that the push-rejected banner and the
-  // "Resolve conflicts" button already drive. Unlike those, this entry point is
-  // always available — the user no longer has to wait for a rejected push or a
-  // GitHub-reported conflict to pull in upstream changes. A clean rebase shows
-  // the spinner banner; a no-op (already current) confirms via toast.
-  const syncBaseBranch = card?.pr?.baseBranch ?? "main";
-  const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
-  const handleSyncWithBase = useCallback(() => {
-    if (isAgentRunning || useGitStore.getState().rebaseStatus !== "idle") return;
-    void startRebase(sessionId, syncBaseBranch);
-  }, [isAgentRunning, startRebase, sessionId, syncBaseBranch]);
 
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to
@@ -858,54 +817,7 @@ export function PrLifecycleCard({
             <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
           </button>
         )}
-        <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
-          {/* The Auto-merge toggle now lives inline in the open-phase card row
-              (always visible, desktop + mobile). The overflow keeps a copy only
-              for the phases that have no inline row — pre-PR (ready/creating/no
-              card), merged, closed — so auto-merge can still be armed before a
-              PR exists. Gating on `phase !== "open"` keeps it rendered exactly
-              once. */}
-          {canAutoMerge && card?.phase !== "open" && (
-            <>
-              <div className="px-2 py-1">
-                <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
-              </div>
-              <DropdownMenuSeparator />
-            </>
-          )}
-          {canAutoMerge && (
-            <DropdownMenuItem
-              onSelect={handleSyncWithBase}
-              disabled={syncDisabled}
-              title={
-                isAgentRunning
-                  ? "Wait for the agent to finish before syncing"
-                  : `Rebase onto ${syncBaseBranch} and push`
-              }
-            >
-              <ArrowsClockwiseIcon size={ICON_SIZE.SM} />
-              Sync with {syncBaseBranch}
-            </DropdownMenuItem>
-          )}
-          {headBranch && (
-            <DropdownMenuItem onSelect={handleCopyBranch} title={`Copy ${headBranch}`}>
-              <CopyIcon size={ICON_SIZE.SM} />
-              Copy branch name
-            </DropdownMenuItem>
-          )}
-          {recoverRewindAvailable && onRecoverRewind && (
-            <DropdownMenuItem onSelect={onRecoverRewind}>
-              <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
-              Recover recent rewind
-            </DropdownMenuItem>
-          )}
-          {onDownloadChat && (
-            <DropdownMenuItem onSelect={onDownloadChat}>
-              <DownloadSimpleIcon size={ICON_SIZE.SM} />
-              Download chat
-            </DropdownMenuItem>
-          )}
-        </OverflowMenu>
+        <PrActionsMenu sessionId={sessionId} />
       </div>
     </div>
   );

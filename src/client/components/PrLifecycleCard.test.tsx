@@ -133,7 +133,7 @@ describe("PrLifecycleCard", () => {
     // icon and overflow menu have a stable home pre-PR.
     render(<PrLifecycleCard sessionId="no-card" onSearch={vi.fn()} />);
     expect(screen.getByLabelText("Search conversation")).toBeInTheDocument();
-    expect(screen.getByLabelText("Session actions")).toBeInTheDocument();
+    expect(screen.getByLabelText("Pull request actions")).toBeInTheDocument();
   });
 
   it("renders ready phase with diff stats and create button", () => {
@@ -162,7 +162,7 @@ describe("PrLifecycleCard", () => {
 
     // canAutoMerge undefined → top-bar overflow should NOT show Auto-merge either.
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByText("Auto-merge")).toBeNull();
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
@@ -248,7 +248,7 @@ describe("PrLifecycleCard", () => {
     });
 
     render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
 
     const item = screen.getByRole("menuitem", { name: "Copy branch name" });
     expect(item).toBeInTheDocument();
@@ -261,13 +261,14 @@ describe("PrLifecycleCard", () => {
   it("hides the Copy branch name menu item when no branch is known", async () => {
     const user = userEvent.setup();
     render(<PrLifecycleCard sessionId="no-card" onSearch={vi.fn()} />);
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByRole("menuitem", { name: "Copy branch name" })).toBeNull();
   });
 
   describe("Sync with base overflow item", () => {
     it("rebases onto the PR's base branch when clicked", async () => {
       const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
       setCard("s1", {
         ...openPrCard,
         pr: { ...openPrCard.pr!, baseBranch: "develop" },
@@ -276,7 +277,7 @@ describe("PrLifecycleCard", () => {
       useGitStore.setState({ startRebase });
 
       render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
-      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(screen.getByLabelText("Pull request actions"));
 
       const item = screen.getByRole("menuitem", { name: "Sync with develop" });
       expect(item).toHaveAttribute("title", "Rebase onto develop and push");
@@ -292,19 +293,19 @@ describe("PrLifecycleCard", () => {
       setCard("s1", openPrCard);
       // canAutoMerge omitted → no remote → no sync affordance.
       render(<PrLifecycleCard sessionId="s1" />);
-      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(screen.getByLabelText("Pull request actions"));
       expect(screen.queryByRole("menuitem", { name: /^Sync with/ })).toBeNull();
     });
 
     it("disables the item and does not rebase while the agent is in a turn", async () => {
       const user = userEvent.setup();
       setCard("s1", openPrCard);
-      useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })], activeRunnerSessions: new Set(["s1"]) });
       const startRebase = vi.fn().mockResolvedValue(undefined);
       useGitStore.setState({ startRebase });
 
       render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
-      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(screen.getByLabelText("Pull request actions"));
 
       const item = screen.getByRole("menuitem", { name: "Sync with main" });
       expect(item).toHaveAttribute("data-disabled");
@@ -480,7 +481,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" canAutoMerge />);
 
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     // Auto-merge stays per-card; auto-fix is now an account-level setting.
     expect((await screen.findAllByText("Auto-merge")).length).toBeGreaterThan(0);
     expect(screen.queryByText("Auto-fix")).toBeNull();
@@ -534,7 +535,7 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.queryByText("Fix CI")).toBeNull();
-    fireEvent.click(screen.getByLabelText("Session actions"));
+    fireEvent.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByText("Auto-fix")).toBeNull();
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
@@ -576,9 +577,11 @@ describe("PrLifecycleCard", () => {
     // only on `canAutoMerge` (i.e. the session has a GitHub remote). No PR card
     // and no CI state are required. (Auto-fix moved to global settings.)
     const user = userEvent.setup();
-    // Deliberately no card and no PR — `canAutoMerge` is the only gate.
+    // Deliberately no card and no PR — the session having a remote is the only
+    // gate (PrActionsMenu derives `canAutoMerge` from `session.remoteUrl`).
+    useSessionStore.setState({ sessions: [makeSession({ id: "no-card" })] });
     render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(await screen.findByText("Auto-merge")).toBeInTheDocument();
     expect(screen.queryByText("Auto-fix")).toBeNull();
   });
@@ -592,7 +595,7 @@ describe("PrLifecycleCard", () => {
 
     render(<PrLifecycleCard sessionId="s1" />);
 
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(screen.queryByText("Auto-fix")).toBeNull();
     expect(screen.queryByText("Auto-merge")).toBeNull();
   });
@@ -700,7 +703,7 @@ describe("PrLifecycleCard", () => {
     // Inline copy is present before the overflow is even opened.
     expect(screen.getAllByText("Auto-merge")).toHaveLength(1);
     // Opening the overflow does NOT add a second copy in the open phase.
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(await screen.findAllByText("Auto-merge")).toHaveLength(1);
   });
 
@@ -734,9 +737,10 @@ describe("PrLifecycleCard", () => {
     const user = userEvent.setup();
     // No card → the toggle lives in the overflow (pre-PR arming), which is the
     // surface this test covers.
+    useSessionStore.setState({ sessions: [makeSession({ id: "no-card" })] });
     render(<PrLifecycleCard sessionId="no-card" canAutoMerge />);
 
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     const label = await screen.findByText("Auto-merge");
     const icon = label.closest("span")?.querySelector("svg");
     expect(icon).toHaveClass(AUTO_MERGE_ICON_CLASS);
@@ -1181,7 +1185,7 @@ describe("PrLifecycleCard — open PR details", () => {
     render(<PrLifecycleCard sessionId="s1" canAutoMerge onOpenDetails={onOpenDetails} />);
 
     // Opening the overflow menu (a button) must not switch the tab.
-    await user.click(screen.getByLabelText("Session actions"));
+    await user.click(screen.getByLabelText("Pull request actions"));
     expect(onOpenDetails).not.toHaveBeenCalled();
 
     // The auto-merge toggle now sits inline in the open-phase card row (a
