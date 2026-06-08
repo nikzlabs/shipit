@@ -477,9 +477,9 @@ export function FilePreviewModal({
 
   const handleAskReview = useCallback(() => {
     if (!sessionId || !onAskAgentReview || agentRunning) return;
-    const prompt = composeReviewMessage(filePath, draft, history);
+    const prompt = composeReviewMessage(filePath, draft);
     onAskAgentReview(prompt, filePath);
-  }, [sessionId, filePath, onAskAgentReview, agentRunning, draft, history]);
+  }, [sessionId, filePath, onAskAgentReview, agentRunning, draft]);
 
   const handleSend = useCallback(async () => {
     if (!sessionId || !onSendComments) return;
