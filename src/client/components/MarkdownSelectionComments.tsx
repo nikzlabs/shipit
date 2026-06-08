@@ -135,37 +135,55 @@ function splitIntoTopLevelBlocks(content: string): MarkdownBlock[] {
   return blocks;
 }
 
-/**
- * Locate a selection-anchored comment inside the flat text of a block. Mirrors
- * the server's `locateSelection`: prefers an occurrence bracketed by the saved
- * `contextBefore`/`contextAfter`, otherwise falls back to the first occurrence.
- * Returns `-1` if the quoted text isn't found.
- */
-function locateInBlock(
+interface IndexedMarkdownBlock extends MarkdownBlock {
+  startOffset: number;
+  endOffset: number;
+}
+
+function contextMatches(
   text: string,
+  idx: number,
+  comment: Pick<SelectionCommentData, "quotedText" | "contextBefore" | "contextAfter">,
+): boolean {
+  const before = text.slice(Math.max(0, idx - comment.contextBefore.length), idx);
+  const after = text.slice(
+    idx + comment.quotedText.length,
+    idx + comment.quotedText.length + comment.contextAfter.length,
+  );
+  return (
+    (comment.contextBefore === "" || before.endsWith(comment.contextBefore)) &&
+    (comment.contextAfter === "" || after.startsWith(comment.contextAfter))
+  );
+}
+
+/**
+ * Locate a selection-anchored comment inside the rendered markdown body.
+ * Context is captured from the whole rendered container, so matching must also
+ * happen against the whole rendered text before mapping the winning occurrence
+ * back to its top-level block. This keeps duplicate quotes in later blocks from
+ * being stolen by the first block's fallback match.
+ */
+function locateInBlocks(
+  blocks: IndexedMarkdownBlock[],
+  renderedText: string,
   comment: Pick<SelectionCommentData, "quotedText" | "contextBefore" | "contextAfter">,
 ): number {
   if (comment.quotedText === "") return -1;
   let from = 0;
-  let firstMatch = -1;
-  while (from <= text.length) {
-    const idx = text.indexOf(comment.quotedText, from);
+  let firstMatchBlock = -1;
+  while (from <= renderedText.length) {
+    const idx = renderedText.indexOf(comment.quotedText, from);
     if (idx === -1) break;
-    if (firstMatch === -1) firstMatch = idx;
-    const before = text.slice(Math.max(0, idx - comment.contextBefore.length), idx);
-    const after = text.slice(
-      idx + comment.quotedText.length,
-      idx + comment.quotedText.length + comment.contextAfter.length,
+    const blockIndex = blocks.findIndex(
+      (block) => idx >= block.startOffset && idx < block.endOffset,
     );
-    if (
-      (comment.contextBefore === "" || before.endsWith(comment.contextBefore)) &&
-      (comment.contextAfter === "" || after.startsWith(comment.contextAfter))
-    ) {
-      return idx;
+    if (firstMatchBlock === -1) firstMatchBlock = blockIndex;
+    if (blockIndex >= 0 && contextMatches(renderedText, idx, comment)) {
+      return blockIndex;
     }
     from = idx + 1;
   }
-  return firstMatch;
+  return firstMatchBlock;
 }
 
 /**
@@ -473,40 +491,44 @@ export function MarkdownSelectionComments({
 
   const fm = useMemo(() => parseFrontmatter(content), [content]);
   const blocks = useMemo(() => splitIntoTopLevelBlocks(fm.body), [fm.body]);
+  const { indexedBlocks, renderedText } = useMemo(() => {
+    let offset = 0;
+    const indexed = blocks.map((block) => {
+      const startOffset = offset;
+      offset += block.textContent.length;
+      return { ...block, startOffset, endOffset: offset };
+    });
+    return { indexedBlocks: indexed, renderedText: blocks.map((block) => block.textContent).join("") };
+  }, [blocks]);
 
-  // Assign each comment to the first block whose visible text contains its
-  // quoted text. Anything left over goes into the orphan bucket at the bottom.
+  // Assign each comment to the rendered top-level block containing its selected
+  // occurrence. Anything whose quoted text is truly missing goes into the
+  // orphan bucket at the bottom.
   const { commentsByBlock, orphaned } = useMemo(() => {
     const byBlock = new Map<number, SelectionCommentData[]>();
     const orphans: SelectionCommentData[] = [];
-    const assigned = new Set<string>();
     for (const comment of comments) {
       const localBlockIndex = localAnchors[comment.id];
       if (
         localBlockIndex !== undefined &&
         localBlockIndex >= 0 &&
-        localBlockIndex < blocks.length
+        localBlockIndex < indexedBlocks.length
       ) {
         if (!byBlock.has(localBlockIndex)) byBlock.set(localBlockIndex, []);
         byBlock.get(localBlockIndex)!.push(comment);
-        assigned.add(comment.id);
         continue;
       }
-      let matched = false;
-      for (let i = 0; i < blocks.length; i++) {
-        if (assigned.has(comment.id)) break;
-        if (locateInBlock(blocks[i].textContent, comment) >= 0) {
-          if (!byBlock.has(i)) byBlock.set(i, []);
-          byBlock.get(i)!.push(comment);
-          assigned.add(comment.id);
-          matched = true;
-          break;
-        }
+
+      const blockIndex = locateInBlocks(indexedBlocks, renderedText, comment);
+      if (blockIndex >= 0) {
+        if (!byBlock.has(blockIndex)) byBlock.set(blockIndex, []);
+        byBlock.get(blockIndex)!.push(comment);
+      } else {
+        orphans.push(comment);
       }
-      if (!matched) orphans.push(comment);
     }
     return { commentsByBlock: byBlock, orphaned: orphans };
-  }, [comments, blocks, localAnchors]);
+  }, [comments, indexedBlocks, localAnchors, renderedText]);
 
   // eslint-disable-next-line no-restricted-syntax -- prune local DOM anchors when their optimistic comments leave the active review
   useEffect(() => {
@@ -530,10 +552,10 @@ export function MarkdownSelectionComments({
   // text and markdown/rendered-text normalization cannot move a new editor.
   const pendingBlockIndex = useMemo(() => {
     if (!pendingSelection) return null;
-    return pendingSelection.blockIndex >= 0 && pendingSelection.blockIndex < blocks.length
+    return pendingSelection.blockIndex >= 0 && pendingSelection.blockIndex < indexedBlocks.length
       ? pendingSelection.blockIndex
       : null;
-  }, [pendingSelection, blocks.length]);
+  }, [pendingSelection, indexedBlocks.length]);
 
   // Floating "Comment" button positioning. Tracks the live selection inside
   // the markdown body and surfaces a tiny button near it. The selection data
