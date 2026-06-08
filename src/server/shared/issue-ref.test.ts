@@ -4,30 +4,30 @@ import { parseIssueRef } from "./issue-ref.js";
 describe("parseIssueRef", () => {
   it("parses a Linear issue URL into an uppercase identifier + native key", () => {
     const ref = parseIssueRef(
-      "https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents",
+      "https://linear.app/example/issue/TRACKER-28/decouple-priorities-from-documents",
     );
     expect(ref).toEqual({
       tracker: "linear",
-      identifier: "SHI-28",
-      issueId: "SHI-28",
-      url: "https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents",
+      identifier: "TRACKER-28",
+      issueId: "TRACKER-28",
+      url: "https://linear.app/example/issue/TRACKER-28/decouple-priorities-from-documents",
     });
   });
 
   it("parses a bare Linear key into the native key", () => {
-    // The form a doc's `issue:` pointer (or "work on SHI-28") most often holds.
-    expect(parseIssueRef("SHI-28")).toEqual({
+    // The form a doc's `issue:` pointer (or "work on TRACKER-28") most often holds.
+    expect(parseIssueRef("TRACKER-28")).toEqual({
       tracker: "linear",
-      identifier: "SHI-28",
-      issueId: "SHI-28",
+      identifier: "TRACKER-28",
+      issueId: "TRACKER-28",
     });
   });
 
   it("upper-cases a lowercase bare Linear key", () => {
-    expect(parseIssueRef("shi-28")).toEqual({
+    expect(parseIssueRef("tracker-28")).toEqual({
       tracker: "linear",
-      identifier: "SHI-28",
-      issueId: "SHI-28",
+      identifier: "TRACKER-28",
+      issueId: "TRACKER-28",
     });
   });
 

@@ -98,14 +98,14 @@ describe("findMarkdownFiles", () => {
   it("returns DocEntry with issue pointer from frontmatter", async () => {
     fs.writeFileSync(
       path.join(tmpDir, "feature.md"),
-      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# My Feature",
+      "---\nissue: https://linear.app/example/issue/TRACKER-28/decouple\n---\n# My Feature",
     );
 
     const docs = await findMarkdownFiles(tmpDir);
     expect(docs).toHaveLength(1);
     expect(docs[0]).toMatchObject({
       path: "feature.md",
-      issue: "https://linear.app/shipit-ai/issue/SHI-28/decouple",
+      issue: "https://linear.app/example/issue/TRACKER-28/decouple",
       title: "Feature",
     });
   });
@@ -212,7 +212,7 @@ describe("findMarkdownFiles", () => {
 
   describe("issue frontmatter", () => {
     it("parses a Linear issue URL pointer", async () => {
-      const url = "https://linear.app/shipit-ai/issue/SHI-29/native-goal-command";
+      const url = "https://linear.app/example/issue/TRACKER-29/native-goal-command";
       fs.writeFileSync(
         path.join(tmpDir, "feature.md"),
         `---\nissue: ${url}\n---\n# Feature`,

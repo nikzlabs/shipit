@@ -1,7 +1,7 @@
-# Checklist — Tracker-backed priorities (SHI-28)
+# Checklist — Tracker-backed priorities (TRACKER-28)
 
 > The inline Issues-tab work that used to live in this checklist's "Issues side"
-> moved to `docs/170-inline-tracker-issues` (SHI-67). This checklist now tracks
+> moved to `docs/170-inline-tracker-issues` (TRACKER-67). This checklist now tracks
 > the decoupling migration only — which has shipped.
 
 ## Decisions (settled in design)
@@ -14,7 +14,7 @@
 - [x] Overturn docs/156's rejection of the in-ShipIt issue picker — confirmed by the user; docs/156 amended to cross-reference the pull surface (now `docs/170`)
 
 ## Migration (doc side — shipped)
-- [x] Create a Linear issue per open doc, mirroring priority; wire each via `issue:`; doc 168 → SHI-28
+- [x] Create a Linear issue per open doc, mirroring priority; wire each via `issue:`; doc 168 → TRACKER-28
 - [x] `markdown.ts`: stop parsing/validating `status` & `priority`
 - [x] `markdown.ts`: parse `issue:` pointer; keep checklist aggregation
 - [x] `domain-types.ts`: drop priority/status from doc surface, add `issue`
@@ -37,5 +37,5 @@
 - [x] Integration: `docs.test.ts` returns `issue` pointer
 
 ## Follow-on (tracked elsewhere)
-- The inline Issues tab that closes the resulting §1/§2 gap — `docs/170-inline-tracker-issues` (SHI-67).
-- The inbound push trigger — `docs/156-issue-to-session` (SHI-43).
+- The inline Issues tab that closes the resulting §1/§2 gap — `docs/170-inline-tracker-issues` (TRACKER-67).
+- The inbound push trigger — `docs/156-issue-to-session` (TRACKER-43).

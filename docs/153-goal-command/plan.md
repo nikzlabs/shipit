@@ -1353,9 +1353,8 @@ Two orthogonal axes must be kept distinct:
      gate on Renovate bumps) — a separate work stream this doc
      depends on but does not drive.
   2. A goal-flow extension to that CI job is added when Axis-3 lands,
-     captured as a checklist task on
-     `docs/141-cli-version-strategy/checklist.md` to make the
-     dependency build-orderable.
+     captured as a checklist task on the CLI contract-test work stream
+     to make the dependency build-orderable.
   3. The ratcheting constant `CODEX_GOALS_RUNTIME_VERIFIED` becomes
      real once both (1) and (2) pass on the current pin.
 
@@ -1824,11 +1823,10 @@ Related plans:
   computed in the orchestrator from session-record + registry +
   agentId — gated on the presence of an active goal, *not* on live
   steering).
-- [docs/141-cli-version-strategy/plan.md](../141-cli-version-strategy/plan.md)
-  and its checklist — the contract-test scaffolding (Axis 3) that
-  `supportsGoals` resolution depends on. The Codex augmentation cannot
-  ship before Axis 3 lands; this doc consumes the
-  `CODEX_GOALS_RUNTIME_VERIFIED` constant Axis 3 will ratchet.
+- The CLI contract-test scaffolding (Axis 3) that `supportsGoals`
+  resolution depends on. The Codex augmentation cannot ship before Axis
+  3 lands; this doc consumes the `CODEX_GOALS_RUNTIME_VERIFIED`
+  constant Axis 3 will ratchet.
 - [docs/129-stop-hook-pr-enforcement/plan.md](../129-stop-hook-pr-enforcement/plan.md)
   — owns the managed auto-PR Stop hook in
   `docker/agent-hooks/managed-settings.json`. Directly relevant to the

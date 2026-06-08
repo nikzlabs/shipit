@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-84/agent-issue-access-tracker-neutral-read-path-shipit-issue-viewlist
+issue: https://linear.app/shipit-ai/issue/SHI-84
 description: Give the agent a tracker-neutral, read-only path to issues (GitHub and Linear alike) via `shipit issue view`/`list`, brokered through the existing tracker registry so tokens never enter the container.
 ---
 
@@ -25,7 +25,7 @@ to do its job should be reachable **inside** ShipIt, not fetched by the human an
 re-typed.
 
 The asymmetry is the tell: the user can already see GitHub **and** Linear issues
-inline (SHI-80, docs/170), but the agent — who does the work the issue describes —
+inline (TRACKER-80, docs/170), but the agent — who does the work the issue describes —
 can't.
 
 ## The interface must be tracker-neutral
@@ -83,7 +83,7 @@ shipit issue list [--tracker github|linear] [--state open|closed|all] [--json]
 ```
 
 - **`<pointer>`** is whatever the user or a doc's `issue:` field says —
-  `owner/repo#123`, a GitHub issue URL, `SHI-28`, or a Linear issue URL. The
+  `owner/repo#123`, a GitHub issue URL, `TRACKER-28`, or a Linear issue URL. The
   tracker is **inferred from the pointer's shape**, so the agent can pass the
   pointer verbatim. `--tracker` is an explicit override for ambiguous input.
 - Output is human-readable by default (identifier, title, status, priority,
@@ -101,23 +101,23 @@ server route) **and extending it on two points the current implementation gets
 wrong for this use case**:
 
 1. **It does not recognize a bare Linear key.** The Linear branch matches only a
-   full `https://linear.app/.../issue/SHI-28` URL (`LINEAR_URL_RE`). A bare
-   `SHI-28` — the form the agent most often holds, e.g. from a doc's `issue:`
-   pointer or the user saying "work on SHI-28" — falls through to
-   `{ tracker: "unknown" }`. Add a `[A-Za-z]+-\d+` key pattern so `SHI-28`
+   full `https://linear.app/.../issue/TRACKER-28` URL (`LINEAR_URL_RE`). A bare
+   `TRACKER-28` — the form the agent most often holds, e.g. from a doc's `issue:`
+   pointer or the user saying "work on TRACKER-28" — falls through to
+   `{ tracker: "unknown" }`. Add a `[A-Za-z]+-\d+` key pattern so `TRACKER-28`
    resolves to `tracker: "linear"`.
 2. **It exposes only a combined display `identifier`, not the id `getIssue`
    needs.** `getIssue(id)` wants the **tracker-native** id: `GitHubTracker`
    builds `/repos/{owner}/{repo}/issues/${id}` and needs the **bare number**
    (`42`), while `parseIssueRef` returns `identifier: "owner/repo#42"`; passing
    that yields `/issues/owner%2Frepo%2342` → 404. `LinearTracker.getIssue` takes
-   the **key** (`SHI-28`). So `parseIssueRef` must additionally surface a
+   the **key** (`TRACKER-28`). So `parseIssueRef` must additionally surface a
    tracker-native `issueId` field — the bare number for GitHub, the key for
    Linear — which the shim/route forwards to `getIssue`. (For GitHub the owner/
    repo are re-derived server-side from the session remote via
    `resolveGitHubContext`, so only the number needs to flow through.)
 
-Without both extensions the two cases this design centers on — `view SHI-28` and
+Without both extensions the two cases this design centers on — `view TRACKER-28` and
 `view owner/repo#42` — do not work.
 
 ### Data flow
@@ -125,22 +125,22 @@ Without both extensions the two cases this design centers on — `view SHI-28` a
 A thin vertical slice over the registry that already backs the Issues tab:
 
 ```
-Agent (Bash):  shipit issue view SHI-28
+Agent (Bash):  shipit issue view TRACKER-28
   │
   ▼  src/server/session/agent-shim/shipit.ts
-     parseIssueRef (extended) → { tracker: "linear", issueId: "SHI-28" }
+     parseIssueRef (extended) → { tracker: "linear", issueId: "TRACKER-28" }
        (a GitHub `owner/repo#42` → { tracker: "github", issueId: "42" })
-     GET localhost:9100 /agent-ops/issue/view?tracker=linear&id=SHI-28
+     GET localhost:9100 /agent-ops/issue/view?tracker=linear&id=TRACKER-28
   │
   ▼  src/server/session/agent-ops-routes.ts
      allowlisted relay, injects trusted SESSION_ID
-     → GET /api/sessions/:id/issue/view?tracker=linear&id=SHI-28
+     → GET /api/sessions/:id/issue/view?tracker=linear&id=TRACKER-28
   │
   ▼  src/server/orchestrator/api-routes-issues.ts (new route)
      resolve GitHub context from session remote (Linear ignores it)
-     → getIssueForTracker(credentialStore, "linear", "SHI-28", …)   ← new service
+     → getIssueForTracker(credentialStore, "linear", "TRACKER-28", …)   ← new service
   │
-  ▼  TrackerRegistry.get("linear").getIssue("SHI-28")               ← REUSED
+  ▼  TrackerRegistry.get("linear").getIssue("TRACKER-28")               ← REUSED
      LinearTracker (token from CredentialStore)  /  GitHubTracker (token + repo)
   │
   ▼  tracker API (token held by orchestrator; never in the container)
@@ -179,7 +179,7 @@ tracker-neutral*. `gh` stays PR-focused; `gh api`/`gh issue` stay blocked.
 **Read-only — `view` + `list` only.** The agent reads issues to do work; it does
 not triage or author them. Issue **creation** is already a deliberate human act
 routed through the bug-filing review card (docs/164); `GitHubTracker` and
-`LinearTracker` are read-only by design (write-back deferred — SHI-43 /
+`LinearTracker` are read-only by design (write-back deferred — TRACKER-43 /
 docs/156). A `REJECTED_ISSUE_SUBCOMMANDS` set enforces this at the shim, matching
 how `shipit session` rejects `delete`/`adopt`.
 
@@ -237,7 +237,7 @@ Two things this doc *does* guarantee, which that doc builds on:
 
 ## Related docs
 
-- `docs/170-inline-tracker-issues/` — SHI-80 inline Issues tab; the tracker registry + adapters this reuses.
+- `docs/170-inline-tracker-issues/` — TRACKER-80 inline Issues tab; the tracker registry + adapters this reuses.
 - `docs/168-tracker-backed-priorities/` — `issue:` pointer shape inference.
 - `docs/176-issue-content-injection-hardening/` — safe consumption of untrusted issue content (companion to this doc).
 - `docs/177-agent-issue-writes/` — extends this read interface to comment/edit through the same unified `Tracker` surface.

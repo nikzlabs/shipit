@@ -89,7 +89,7 @@ describe("MarkdownSelectionComments", () => {
 
     it("renders YAML frontmatter as a styled header and strips it from the body", () => {
       const content = `---
-issue: https://linear.app/shipit-ai/issue/SHI-28/decouple
+issue: https://linear.app/example/issue/TRACKER-28/decouple
 description: Align spawned sessions with the user path.
 ---
 
@@ -99,10 +99,10 @@ Context body.
 `;
       render(<MarkdownSelectionComments {...makeProps({ content })} />);
       // The issue pointer renders as a jump-to-issue chip linking to the tracker.
-      const chip = screen.getByText("SHI-28");
+      const chip = screen.getByText("TRACKER-28");
       expect(chip.closest("a")).toHaveAttribute(
         "href",
-        "https://linear.app/shipit-ai/issue/SHI-28/decouple",
+        "https://linear.app/example/issue/TRACKER-28/decouple",
       );
       expect(
         screen.getByText("Align spawned sessions with the user path."),

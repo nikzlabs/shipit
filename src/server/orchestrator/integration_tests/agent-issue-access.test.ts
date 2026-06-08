@@ -10,7 +10,7 @@
  *
  * The point of the test is the tracker-neutral contract: `shipit issue view`
  * produces the same shaped output whether the pointer resolves to GitHub
- * (`owner/repo#42`) or Linear (`SHI-28`).
+ * (`owner/repo#42`) or Linear (`TRACKER-28`).
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -71,8 +71,8 @@ describe("Integration: agent issue access (docs/175)", () => {
               team: {
                 issues: {
                   nodes: [
-                    { id: "o", identifier: "SHI-1", title: "Open one", url: "u1", priority: 1, priorityLabel: "Urgent", state: { name: "In Progress", type: "started" }, assignee: null },
-                    { id: "d", identifier: "SHI-2", title: "Done one", url: "u2", priority: 3, priorityLabel: "Medium", state: { name: "Done", type: "completed" }, assignee: null },
+                    { id: "o", identifier: "TRACKER-1", title: "Open one", url: "u1", priority: 1, priorityLabel: "Urgent", state: { name: "In Progress", type: "started" }, assignee: null },
+                    { id: "d", identifier: "TRACKER-2", title: "Done one", url: "u2", priority: 3, priorityLabel: "Medium", state: { name: "Done", type: "completed" }, assignee: null },
                   ],
                 },
               },
@@ -84,9 +84,9 @@ describe("Integration: agent issue access (docs/175)", () => {
             data: {
               issue: {
                 id: "abc",
-                identifier: "SHI-28",
+                identifier: "TRACKER-28",
                 title: "Decouple priorities",
-                url: "https://linear.app/shipit-ai/issue/SHI-28",
+                url: "https://linear.app/example/issue/TRACKER-28",
                 description: "The Linear body.",
                 priority: 1,
                 priorityLabel: "Urgent",
@@ -212,20 +212,20 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(issue.priority.level).toBe("high");
   });
 
-  it("view SHI-28 reads the Linear issue with the same output shape", async () => {
+  it("view TRACKER-28 reads the Linear issue with the same output shape", async () => {
     credentialStore.setLinearToken("lin_api_x");
     credentialStore.setLinearTeam(TEAM);
-    const { stdout, exitCode } = await runIssueShim(["issue", "view", "SHI-28"]);
+    const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28"]);
     expect(exitCode).toBe(0);
     // Same shaped output as GitHub — that is the tracker-neutral guarantee.
-    expect(stdout).toContain("SHI-28");
+    expect(stdout).toContain("TRACKER-28");
     expect(stdout).toContain("Decouple priorities");
     expect(stdout).toContain("priority:  Urgent");
     expect(stdout).toContain("The Linear body.");
   });
 
   it("view errors (exit 1) when Linear is unconfigured", async () => {
-    const { stderr, exitCode } = await runIssueShim(["issue", "view", "SHI-28"]);
+    const { stderr, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28"]);
     expect(exitCode).toBe(1);
     expect(stderr).toMatch(/not configured/i);
   });
@@ -244,9 +244,9 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
-    // The fake returns SHI-1 (open) + SHI-2 (completed); `closed` keeps only the
+    // The fake returns TRACKER-1 (open) + TRACKER-2 (completed); `closed` keeps only the
     // done one. `includeDone` alone would have over-returned the open issue.
-    expect(issues.map((i) => i.identifier)).toEqual(["SHI-2"]);
+    expect(issues.map((i) => i.identifier)).toEqual(["TRACKER-2"]);
   });
 
   it("list --state all keeps both open and finished issues", async () => {
@@ -257,7 +257,7 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
     expect(exitCode).toBe(0);
     const issues = JSON.parse(stdout) as { identifier: string }[];
-    expect(issues.map((i) => i.identifier).sort()).toEqual(["SHI-1", "SHI-2"]);
+    expect(issues.map((i) => i.identifier).sort()).toEqual(["TRACKER-1", "TRACKER-2"]);
   });
 
   it("GitHub list --state open returns open issues only", async () => {

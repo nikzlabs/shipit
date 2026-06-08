@@ -1,4 +1,4 @@
-# Chat quote-reply (SHI-10) — checklist
+# Chat quote-reply (TRACKER-10) — checklist
 
 - [x] `formatBlockquote` util + unit test
 - [x] `quoteReplyText` + `setQuoteReplyText` on session-store (resettable)

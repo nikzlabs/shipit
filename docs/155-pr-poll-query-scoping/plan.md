@@ -10,7 +10,7 @@ description: Shrink the PR status poll's GraphQL query so per-session cadence ac
 
 The per-session interval logic in `PrStatusPoller.perSessionInterval()` is a paper optimization. `repoInterval()` takes the **minimum** across all tracked sessions on a repo, and the GraphQL call fetches `repository.pullRequests(first: 30)` regardless of how many sessions are actually due. So on a repo with one CI-pending session and nineteen settled PRs, every 15 s tick still pulls all twenty PR nodes — same payload, same GraphQL points cost, same secondary-rate-limit pressure.
 
-In production this manifests as GitHub rate-limiting ShipIt by the end of each hour (`shipit/github-update-strategy-gnl9-q` was opened to address this).
+In production this manifests as GitHub rate-limiting ShipIt by the end of each hour.
 
 The cadence buckets (`PR_STATUS_POLL_INTERVAL_MS = 15_000`, `PR_STATUS_SLOW_INTERVAL_MS = 120_000`) and the rules that decide them (`perSessionInterval()` at `pr-status-poller.ts:245`) are correct. The query that consumes them is wrong.
 
@@ -128,7 +128,7 @@ Two composing facts made the window miss tracked PRs on a busy repo:
 - **Light coverage aliases.** `collectCoveragePrNumbers(repoKey)` returns the last-known PR number for every tracked, non-merged session; `buildPrStatusQuery` emits a `coverage${i}: pullRequest(number: N)` alias (light fields only) for each, deduped against the conversation-carrying `focused${i}` aliases. `pollRepo` folds these alias nodes into the branch-match map so a known PR can never be windowed out. **Cost-respecting:** the cost-measurements show light aliased lookups stay at ~1 point regardless of K (only the heavy conversation fields scale), so coverage is effectively free; conversation stays scoped to the focused PR.
 - **Merged/closed detection preserved.** Coverage aliases fetch by number regardless of state, but `parsePrNode` always reports `prState: "open"`. So `pollRepo` only folds an alias node into the branch map when `node.state === "OPEN"`; a known PR that has since merged/closed is left absent from the map and routes through `verifyMissingPr`, which still owns terminal-state promotion.
 
-This is complementary to PR #1007 (`shipit/refresh-pr-status-on-session-40kxk4`), which addresses the ~1–2 min GitHub creation-lag case by surfacing open PRs from the REST verify path. #1007 = creation-lag verify surfacing; this = steady-state bulk discovery. They touch different paths (REST `verifyMissingPr` vs. the GraphQL discovery query) and do not conflict.
+This is complementary to the creation-lag fix that surfaces newly-created open PRs from the REST verify path. That fix handles the ~1-2 min GitHub creation-lag case; this design handles steady-state bulk discovery. They touch different paths (REST `verifyMissingPr` vs. the GraphQL discovery query) and do not conflict.
 
 ### ~~Phase 2 — Aliased per-PR query~~ [REJECTED — see Phase 0 outcome]
 

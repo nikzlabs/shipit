@@ -286,7 +286,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(
       path.join(featureDir, "plan.md"),
-      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# Test Feature",
+      "---\nissue: https://linear.app/example/issue/TRACKER-28/decouple\n---\n# Test Feature",
     );
 
     const res = await app.inject({ method: "GET", url: "/api/sessions/s-feat2/docs" });
@@ -295,7 +295,7 @@ describe("Integration: Phase 1 GET endpoints", () => {
     const tracked = body.docs.find((d: any) => d.issue !== undefined);
     expect(tracked).toBeDefined();
     expect(tracked.path).toBe("docs/001-test-feature/plan.md");
-    expect(tracked.issue).toBe("https://linear.app/shipit-ai/issue/SHI-28/decouple");
+    expect(tracked.issue).toBe("https://linear.app/example/issue/TRACKER-28/decouple");
   });
 
   // ---- GitHub repos search ----

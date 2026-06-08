@@ -77,7 +77,7 @@ describe("Integration: Docs", () => {
     fs.mkdirSync(featureDir, { recursive: true });
     fs.writeFileSync(
       path.join(featureDir, "plan.md"),
-      "---\nissue: https://linear.app/shipit-ai/issue/SHI-28/decouple\n---\n# My Feature\n\nDescription.",
+      "---\nissue: https://linear.app/example/issue/TRACKER-28/decouple\n---\n# My Feature\n\nDescription.",
     );
 
     const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/docs` });
@@ -86,7 +86,7 @@ describe("Integration: Docs", () => {
     const tracked = docs.find((d) => d.issue !== undefined);
     expect(tracked).toMatchObject({
       path: "docs/001-my-feature/plan.md",
-      issue: "https://linear.app/shipit-ai/issue/SHI-28/decouple",
+      issue: "https://linear.app/example/issue/TRACKER-28/decouple",
       title: "My Feature",
     });
   });

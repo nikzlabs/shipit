@@ -1,4 +1,4 @@
-# SHI-64 — PR approval in merge eligibility
+# TRACKER-64 — PR approval in merge eligibility
 
 ## Types
 - [x] Add `PrReviewDecision` type to `github-types.ts`

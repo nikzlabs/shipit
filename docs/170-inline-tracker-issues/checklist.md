@@ -1,4 +1,4 @@
-# Checklist — Inline tracker Issues tab (SHI-67)
+# Checklist — Inline tracker Issues tab (TRACKER-67)
 
 ## Prerequisite (shared with docs/156)
 
@@ -15,13 +15,13 @@
 - [x] `trackers/tracker.ts` — `Tracker` interface (`listIssues`, `getIssue`, `id`, `label`)
 - [x] `trackers/registry.ts` — configured-tracker registry (drives sub-tabs)
 - [x] `trackers/github/` — GitHub Issues adapter (reuses `GitHubAuthManager`,
-      label-derived priority, drops PRs) — **shipped via SHI-80**
+      label-derived priority, drops PRs) — **shipped via TRACKER-80**
 - [x] `trackers/linear/` — Linear adapter (API token + GraphQL `listIssues`)
 - [x] `GET /api/issues?tracker=...` route, repo/workspace-scoped; now also
       accepts `?sessionId=` so the GitHub tab scopes to the active session's repo
 - [x] Repo→tracker mapping: Linear team binding in settings (`CredentialStore`);
       GitHub derived from the **active session's git remote** (`parseGitHubRemote`),
-      resolved in the route into a `GitHubTrackerContext` (SHI-80). The optional
+      resolved in the route into a `GitHubTrackerContext` (TRACKER-80). The optional
       `shipit.yaml` repo override remains a follow-up.
 - [x] In-app caller: fetched issue → `IssueRef` → `headless-sessions.create({ issueRef })`
 

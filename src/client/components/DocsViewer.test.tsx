@@ -11,7 +11,7 @@ function makeDoc(overrides?: Partial<DocEntry>): DocEntry {
   };
 }
 
-const LINEAR_URL = "https://linear.app/shipit-ai/issue/SHI-28/decouple";
+const LINEAR_URL = "https://linear.app/example/issue/TRACKER-28/decouple";
 
 describe("DocsViewer", () => {
   const defaultProps = () => ({
@@ -81,7 +81,7 @@ describe("DocsViewer", () => {
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
       ];
       render(<DocsViewer {...props} />);
-      const chip = screen.getByText("SHI-28");
+      const chip = screen.getByText("TRACKER-28");
       expect(chip).toBeInTheDocument();
       const link = chip.closest("a");
       expect(link).not.toBeNull();
@@ -367,7 +367,7 @@ describe("DocsViewer", () => {
       // Only the tracked plan renders — exactly one row, not two.
       expect(screen.getAllByText("Feature")).toHaveLength(1);
       // The plan's issue chip should still be present.
-      expect(screen.getByText("SHI-28")).toBeInTheDocument();
+      expect(screen.getByText("TRACKER-28")).toBeInTheDocument();
     });
   });
 

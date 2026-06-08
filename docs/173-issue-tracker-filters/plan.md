@@ -5,7 +5,7 @@ description: Tracker-agnostic status/priority/assignee filters (multi-select), f
 
 # Issue tracker filters & search
 
-Builds on `docs/170-inline-tracker-issues` (SHI-67), which shipped the read-only,
+Builds on `docs/170-inline-tracker-issues` (TRACKER-67), which shipped the read-only,
 priority-sorted Issues tab with a Linear sub-tab. That list has no way to narrow
 itself: as soon as a team has more than a screenful of open issues, finding "the
 auth bug I want to start a session on" means scrolling. This doc adds the three
@@ -111,7 +111,7 @@ A **filter bar** sits directly below the merged top bar (see "Top bar" below) in
 │  [🔍 Search issues…   ]  Priority ▾  Status ▾  Assignee ▾   │  ← filter bar (new)
 ├──────────────────────────────────────────────────────────┤
 │  ISSUE   TITLE                  PRIORITY  STATUS  ASSIGNEE  │  ← table header
-│  SHI-67  Inline tracker Issues… [Urgent]  In Prog.  Nik   ⟶ │
+│  TRACKER-67  Inline tracker Issues… [Urgent]  In Prog.  Nik   ⟶ │
 ```
 
 - **Search input** — a debounced (~150ms) text box, case-insensitive substring
@@ -214,7 +214,7 @@ branch:
 │ [🔍 Search issues…           ] │  ← search on its own row
 │ Priority▾  Status▾  Assignee▾  │  ← facets as a horizontally-scrollable chip row
 ├───────────────────────────────┤
-│ SHI-67 ↗            [Urgent]   │
+│ TRACKER-67 ↗            [Urgent]   │
 │ Inline tracker Issues tab…     │  (title, up to 2 lines)
 │ In Progress · 🧑 Nik           │
 │ [      🚀 Start session      ] │  (full-width)
@@ -363,11 +363,11 @@ Tests:
 
 ## Relationship to existing docs
 
-- **`docs/170-inline-tracker-issues`** (SHI-67) — the Issues tab this extends.
+- **`docs/170-inline-tracker-issues`** (TRACKER-67) — the Issues tab this extends.
   Reuses its normalized `TrackerIssue` type, its store, and its "fetch full list
   on open" model. This doc adds list ergonomics on top without touching the
   tracker abstraction.
-- **`docs/168-tracker-backed-priorities`** (SHI-28, Done) — established the
+- **`docs/168-tracker-backed-priorities`** (TRACKER-28, Done) — established the
   normalized priority enum that makes the priority facet tracker-agnostic.
 - **`docs/156-issue-to-session`** — unaffected; this is purely the pull-side
   list view.
