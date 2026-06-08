@@ -527,6 +527,44 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Recently resolved")).toBeNull();
       expect(screen.getByText("Reopened merged")).toBeTruthy();
     });
+
+    it("keeps a resolved parent with visible children in the Active group", () => {
+      const sessions = [
+        baseSession({
+          id: "s-parent",
+          title: "Parent work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-03T00:00:00.000Z",
+          lastUsedAt: "2024-01-03T00:00:00.000Z",
+          mergedAt: "2024-01-03T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-child",
+          title: "Spawned child",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-04T00:00:00.000Z",
+          lastUsedAt: "2024-01-04T00:00:00.000Z",
+          parentSessionId: "s-parent",
+        }),
+        baseSession({
+          id: "s-resolved",
+          title: "Other resolved",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-02T00:00:00.000Z",
+          lastUsedAt: "2024-01-02T00:00:00.000Z",
+          closedAt: "2024-01-02T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      const parent = screen.getByText("Parent work");
+      const child = screen.getByText("Spawned child");
+      const header = screen.getByText("Recently resolved");
+      const otherResolved = screen.getByText("Other resolved");
+      expect(parent.compareDocumentPosition(child) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(child.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(header.compareDocumentPosition(otherResolved) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
   });
 
   describe("docs/161: disk-tier badge", () => {

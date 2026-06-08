@@ -56,10 +56,10 @@ function reopenedAfterResolve(s: SessionInfo): boolean {
 }
 
 /**
- * docs/161 — a session that belongs in the sidebar's demoted "Recently
+ * docs/161 — the baseline predicate for the sidebar's demoted "Recently
  * resolved" group: its PR is merged or closed-without-merge and it has not been
- * reopened (worked in) since. A reopened resolved session rejoins the Active
- * group automatically.
+ * reopened (worked in) since. Group-local parent/child rules can still keep a
+ * resolved parent in Active when it has visible spawned children.
  */
 function isRecentlyResolved(s: SessionInfo): boolean {
   return !!resolvedAt(s) && !reopenedAfterResolve(s);
@@ -803,12 +803,12 @@ function RepoGroup({
                 list.push(s);
                 childrenByParent.set(s.parentSessionId, list);
               }
+              const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
+                isRecentlyResolved(s) && !childrenByParent.has(s.id);
               // Render a top-level session followed by its (non-collapsed) children
-              // into `target`. The brood stays together and is grouped by the
-              // PARENT's status, so a parent's merge state — not each child's —
-              // decides which group (Active vs Recently resolved) the whole brood
-              // lands in. This preserves the existing "children follow parent"
-              // invariant.
+              // into `target`. The brood stays together; a parent with visible
+              // children stays Active even after its PR resolves so spawned work
+              // is never automatically moved under "Recently resolved".
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
                 const children = childrenByParent.get(s.id);
                 const childCount = children?.length ?? 0;
@@ -852,7 +852,7 @@ function RepoGroup({
               for (const s of sessions) {
                 // Skip children that we render beneath their parent.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
-                pushTree(s, isRecentlyResolved(s) ? resolved : active);
+                pushTree(s, isRecentlyResolvedForGroup(s) ? resolved : active);
               }
               return (
                 <>
@@ -958,12 +958,18 @@ export function SessionSidebar({
     // archived primary also sinks archived children below live siblings within a
     // parent's brood.
     for (const [, group] of grouped) {
+      const parentsWithChildren = new Set<string>();
+      for (const s of group) {
+        if (s.parentSessionId) parentsWithChildren.add(s.parentSessionId);
+      }
+      const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
+        isRecentlyResolved(s) && !parentsWithChildren.has(s.id);
       group.sort((a, b) => {
         const aArchived = a.archived || a.userArchived ? 1 : 0;
         const bArchived = b.archived || b.userArchived ? 1 : 0;
         if (aArchived !== bArchived) return aArchived - bArchived;
-        const aResolved = isRecentlyResolved(a) ? 1 : 0;
-        const bResolved = isRecentlyResolved(b) ? 1 : 0;
+        const aResolved = isRecentlyResolvedForGroup(a) ? 1 : 0;
+        const bResolved = isRecentlyResolvedForGroup(b) ? 1 : 0;
         if (aResolved !== bResolved) return aResolved - bResolved;
         if (aResolved === 1) {
           const aKey = resolvedAt(a) ?? a.createdAt ?? "";
