@@ -34,7 +34,7 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
-                          [--base REF] [--agent claude|codex] [--model M]
+                          [--agent claude|codex] [--model M]
                           [--turn ID] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
@@ -371,7 +371,6 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     values: {
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
-      "-B": "base", "--base": "base",
       "--agent": "agent",
       "--model": "model",
       "--turn": "turn",
@@ -440,7 +439,6 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
 
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  if (parsed.values.base) payload.base = parsed.values.base;
   if (parsed.values.agent) payload.agent = parsed.values.agent;
   if (parsed.values.model) payload.model = parsed.values.model;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;

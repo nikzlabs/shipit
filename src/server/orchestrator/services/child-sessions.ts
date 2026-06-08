@@ -68,14 +68,17 @@ export interface SpawnChildSessionOptions {
   /** Session title. Defaults to a slug derived from `prompt`. */
   title?: string;
   /**
-   * Git ref to branch off. When omitted, the child is branched off the
-   * freshly-fetched `origin/main` (or `origin/HEAD` / `origin/master`) of
-   * the parent's repo — matching what a manual new session would do — so
-   * the child's "Changes vs main" diff doesn't inherit the parent's WIP.
+   * Git ref to hard-reset the claimed workspace onto. **Internal only** —
+   * there is no agent-facing `--base`. The sole caller that sets this is the
+   * Ops `--shipit-source` spawn path, which pins the fix session to the exact
+   * inspected build commit (`resolveShipitFixTarget().ref`). It is therefore a
+   * system-resolved ref, never user input.
    *
-   * When provided, this is passed verbatim to `git reset --hard <base>` in
-   * the child's workspace, so any value `git` accepts there is allowed
-   * (commit hash, `origin/main`, a tag, etc.).
+   * When omitted (every generic fan-out spawn), the child stays on the claim's
+   * freshly-fetched `origin/main` (or `origin/HEAD` / `origin/master`) — so a
+   * just-merged parent change (e.g. a design doc) is visible to the child by
+   * construction, and the child's "Changes vs main" diff doesn't inherit the
+   * parent's WIP.
    */
   base?: string;
   /** Optional agent id override. Defaults to the parent's selected agent. */
@@ -254,9 +257,11 @@ export async function spawnChildSession(
     throw new ServiceError(500, `Failed to read claimed branch: ${String(err)}`);
   }
 
-  // Honor an explicit `--base`. The claim placed HEAD at `origin/HEAD`; a
-  // caller-supplied base needs a hard reset to take effect. Safe because
-  // the claim's workspace has no user changes yet.
+  // Pin to an explicit `base` when one was supplied. The only caller that does
+  // so is the Ops `--shipit-source` path (the exact inspected build commit);
+  // the claim placed HEAD at `origin/HEAD`, so a hard reset is needed for the
+  // pin to take effect. Safe because the claim's workspace has no user changes
+  // yet. Generic fan-out spawns pass no `base` and stay on `origin/main`.
   if (opts.base) {
     try {
       await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);

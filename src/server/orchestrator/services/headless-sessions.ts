@@ -93,7 +93,6 @@ export interface CreateHeadlessSessionOptions {
   issueRef?: IssueRef;
   title?: string;
   branch?: string;
-  base?: string;
   agent?: AgentId;
   model?: string;
   maxActiveHeadlessSessions?: number;
@@ -183,14 +182,6 @@ export async function createHeadlessSession(
     }
   } catch (err) {
     throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);
-  }
-
-  if (opts.base) {
-    try {
-      await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
-    } catch (err) {
-      throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
-    }
   }
 
   // Workspace-side branch identity must be set before graduateSession so the
