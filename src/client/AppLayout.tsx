@@ -234,7 +234,7 @@ export function AppLayout({
                     the drawer covers the full width, so there's no backdrop gutter.
                     No slide-in animation: a full-width panel sliding from the left
                     reads as the whole screen lurching, so the drawer just appears. */}
-                <div className="relative flex h-full w-full bg-(--color-bg-primary) shadow-xl">
+                <div className="relative flex h-full w-full bg-(--color-bg-primary)">
                   <SessionSidebar
                     sessions={sessions}
                     currentSessionId={currentSessionId}
