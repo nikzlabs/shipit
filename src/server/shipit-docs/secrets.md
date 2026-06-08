@@ -87,10 +87,6 @@ store** — values the user entered in **Settings → Secrets**, keyed by the
 declared `name`. To give a service a credential, the user sets a secret of the
 same name.
 
-For the **ShipIt-in-ShipIt** inner orchestrator (which needs a Claude key and a
-GitHub token to push), set those as user secrets. Prefer a long-lived
-`ANTHROPIC_API_KEY` (which doesn't rotate) over a short-lived OAuth token.
-
 > **MCP OAuth tokens reach the agent through a separate path.** Connecting
 > Linear / Notion under Settings → MCP Servers wires the token into the
 > *agent's* MCP servers via the `$platform:<id>` placeholder (resolved from the
