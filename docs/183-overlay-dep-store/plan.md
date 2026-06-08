@@ -147,6 +147,55 @@ privileged, per-session mount subsystem (mount on activate, unmount + workdir cl
 dispose; `disk-janitor` and archive flows must learn about live mounts). If that subsystem
 is acceptable, overlay-for-all is the design and hardlink is unnecessary.
 
+## Lifecycle: how the canonical layer is built and updated
+
+**Consumption** (mount the layer) and **population** (run the install) are different
+paths, and only one of them ever touches the read-only layer.
+
+The canonical layer is **content-addressed and immutable** — it is *never updated in
+place*. Mutating a layer that live sessions mount read-only would corrupt all of them.
+When the lockfile or runtime changes you compute a **new key** and build a **new layer**;
+the old one lingers until unreferenced, then the janitor prunes it (the existing stale
+`nm-store` sweep). Immutability is what makes read-only sharing across live sessions safe.
+
+So the install runs **only on a cache miss, into a writable tree — never against the
+mount**:
+
+- **Cache hit:** orchestrator mounts the existing immutable layer read-only as `lowerdir`
+  + a fresh per-session `upperdir`. **No installer runs.**
+- **Cache miss:** the session (or a warm standby) runs the real install command into a
+  writable tree, exactly as today. On success the result is frozen into the keyed store
+  via atomic rename, and *that frozen directory becomes the `lowerdir`* for every future
+  session with the same key.
+
+**The populate path is unchanged from today.** `populateStore()` already runs the install
+in the **worker** (the container has `/dep-cache` mounted) and publishes to a host-backed
+`/dep-cache/nm-store/<key>` via temp-dir + atomic rename
+([nm-store.ts:272-309](../../src/server/session/nm-store.ts#L272-L309)) — a directory the
+orchestrator can already see. Division of labor:
+
+- **Worker still owns running the install** and publishing to `/dep-cache/nm-store/<key>`.
+- **Orchestrator owns the mount** — on a future hit it points an overlay `lowerdir` at
+  that already-published directory instead of `cp`-ing it. Only *consumption* flips
+  (`cp`/`tar` → mount); keying, atomic publish, and warm-pool pre-warm are identical.
+
+**End-to-end triggers:**
+
+1. Session starts → `key = hash(lockfile + runtimeKey + installCmd)`.
+2. Layer exists? **Hit** → mount read-only. **Miss** → real install into a writable tree
+   → atomic-publish the new immutable layer; this session uses its own just-installed
+   tree, the *next* session for that key gets the mount.
+3. Warm pool pre-runs install on a standby → populates the key ahead of the first real
+   session, which then hits.
+4. Lockfile/runtime change → new key → next session misses → new layer built; old layer
+   GC'd when no longer referenced.
+
+**Mid-session dependency changes** land in the per-session `upperdir` (copy-up) — the
+session is correct but diverges from its key. A live, possibly-dirty `upperdir` is **never
+promoted** into the shared lower layer. Promotion is lazy and lockfile-driven: the next
+session created from the *committed* new lockfile keys differently, misses, and
+repopulates from a clean install — the same trigger as today.
+
 ## Recommendation
 
 1. **Overlay as the unified mechanism for all ecosystems** — one keyed, read-only
