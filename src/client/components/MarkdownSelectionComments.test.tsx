@@ -315,6 +315,62 @@ Context body.
       expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
     });
 
+    it("disambiguates duplicate quoted text across top-level blocks by same-block context", () => {
+      const content = [
+        "Alpha section repeats the selected phrase.",
+        "",
+        "Beta section repeats the selected phrase.",
+      ].join("\n");
+      const comments: SelectionCommentData[] = [
+        {
+          id: "c1",
+          quotedText: "selected phrase",
+          contextBefore: "Beta section repeats the ",
+          contextAfter: ".",
+          text: "about the beta occurrence",
+          source: "human",
+        },
+      ];
+      const { container } = render(
+        <MarkdownSelectionComments {...makeProps({ content, comments })} />,
+      );
+      const firstBlock = within(container).getByText(/Alpha section/).parentElement!.parentElement!;
+      const secondBlock = within(container).getByText(/Beta section/).parentElement!.parentElement!;
+
+      expect(within(firstBlock).queryByText("about the beta occurrence")).toBeNull();
+      expect(within(secondBlock).getByText("about the beta occurrence")).toBeInTheDocument();
+      expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
+    });
+
+    it("disambiguates duplicate quoted text with context crossing top-level block boundaries", () => {
+      const content = [
+        "Shared token appears in the opening block.",
+        "",
+        "A bridge paragraph provides unique prior context.",
+        "",
+        "Shared token appears in the final block.",
+      ].join("\n");
+      const comments: SelectionCommentData[] = [
+        {
+          id: "c1",
+          quotedText: "Shared token",
+          contextBefore: "unique prior context.",
+          contextAfter: " appears in the final block.",
+          text: "about the final occurrence",
+          source: "human",
+        },
+      ];
+      const { container } = render(
+        <MarkdownSelectionComments {...makeProps({ content, comments })} />,
+      );
+      const openingBlock = within(container).getByText(/opening block/).parentElement!.parentElement!;
+      const finalBlock = within(container).getByText(/final block/).parentElement!.parentElement!;
+
+      expect(within(openingBlock).queryByText("about the final occurrence")).toBeNull();
+      expect(within(finalBlock).getByText("about the final occurrence")).toBeInTheDocument();
+      expect(screen.queryByText("Orphaned comments")).not.toBeInTheDocument();
+    });
+
     it("anchors comments to their own top-level block when quoted text is unique per block", () => {
       // docs/153 Phase 2: confirm the new mdast-split block boundaries route
       // each comment to the correct top-level block instead of dumping them
