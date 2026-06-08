@@ -13,11 +13,11 @@ description: Share a warm workspace baseline across sessions via one rolling ove
 > work. Because we overlay the **entire workspace** (not a dependency subdirectory) and just
 > run the install command, the design is **environment-agnostic**: no keys, no lockfile
 > detection, no need to know where deps live (`node_modules`, `.venv`, `vendor/`, …). The
-> chain stays naturally linear because the chain-feeding install always runs on the default
-> branch at session creation, and **installs are serialized through the warm pool** (the
-> single prep path every session graduates from), which advances the base one install at a
-> time — no concurrent installs, no race. The orchestrator owns the host-side mount; the
-> worker keeps owning the install.
+> chain stays linear because **only a default-branch install may advance the base, and base
+> publishes are serialized per repo** (single-writer). Any session still runs its install
+> freely into its *own* upper layer — that never races — but publishing a new base is
+> restricted and sequential, so the shared chain can't fork. The orchestrator owns the
+> host-side mount; the worker keeps owning the install.
 >
 > A content-addressed *keyed* variant (skip install on an exact match) is kept as an optional
 > [alternative](#alternative-the-keyed-immutable-layer). Reasoning and ecosystem detail are
@@ -69,29 +69,44 @@ with compiled native addons/wheels is never reused across an incompatible runtim
 
 ### 3. Lifecycle of a session
 
-Session prep happens **on a warm-pool standby**, before the user activates it — so the
-install latency is off the first-turn critical path. The warm pool advances the base
-**serially** (one install at a time per repo), so there are never concurrent installs racing
-to publish:
+Ideally prep happens **on a warm-pool standby** before activation, so install latency is off
+the first-turn critical path — but it is **not** the only install path (see the warning
+below), so the base-advance rule must hold regardless of where the install runs:
 
 1. **Mount** the repo's current base as `lowerdir` + a fresh per-session `upperdir`/workdir.
-2. **Fast-forward source** with git to the new default-branch commit (writes the source diff
-   into the upper layer via copy-up).
-3. **Run `agent.install`** on top of the warm base (writes only the dep delta).
-4. **Advance the base**: if the install exits 0, publish the merged result as the next base.
-   Because the warm pool is the single serial advancer, the published chain is trivially
-   linear — no compare-and-swap, no losers to reconcile. Activation then just hands the user
-   the already-prepared session.
+2. **Fast-forward source** with git to the session's checkout (normally the new default-branch
+   commit; writes the source diff into the upper layer via copy-up).
+3. **Run `agent.install`** on top of the base (writes only the dep delta into *this session's*
+   upper layer — this never races another session).
+4. **Maybe advance the base** — publish the merged result as the next base **only if** the
+   install exited 0 **and** the session is on the default branch, taking a **per-repo publish
+   lock** so two eligible installs can't advance concurrently. Otherwise the install result is
+   used by the session but never published. Activation hands the user the already-prepped tree.
 
-Two properties keep the single chain clean (verified against the code):
+> **Separate "runs an install" from "advances the base."** There is more than one install
+> path: the warm pool pre-installs on standbys ([warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243)),
+> **but that is skipped for untrusted remotes**, and `setupServiceManager` runs
+> `runner.runInstall(...)` again **on every activation**, guarded only by the worker marker
+> ([service-manager-setup.ts:322-329](../../src/server/orchestrator/service-manager-setup.ts#L322-L329),
+> [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663)). So the
+> warm pool is *not* the single installer. The invariant we actually rely on is narrower and
+> must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
+> (safe — no shared state); **(b)** only a **default-branch**, **exit-0** install may *publish*
+> a new base; **(c)** publishes take a **per-repo lock** (single-writer). That, not "one
+> installer," is what keeps the chain linear.
 
-- **The chain is naturally linear.** The chain-feeding install is the creation-time
-  `agent.install`, and sessions are **always cut from the default branch** (`origin/HEAD`) —
-  never an arbitrary branch or PR ([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
+Two properties keep the published chain clean:
+
+- **It advances monotonically.** Most creation paths branch from the default branch
+  (`origin/HEAD`) — manual/warm-pool/unarchive
+  ([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
   [claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
-  [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). So
-  every base advance runs on `main`'s state and moves monotonically forward (`main@t1 →
-  main@t2 → …`), with no cross-branch reconciliation.
+  [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). The
+  exception is **agent-spawned child sessions**, which may `git reset --hard` to an arbitrary
+  `--base` ref ([child-sessions.ts:70-78](../../src/server/orchestrator/services/child-sessions.ts#L70-L78)).
+  Such non-default-branch sessions run their install on the base into their own upper layer but
+  are **excluded from publishing** (rule (b)), so they never inject a historical/divergent tree
+  into the chain — which therefore stays `main@t1 → main@t2 → …`.
 - **Mid-session `npm install foo` never feeds the chain.** That's the agent's own shell
   command, landing in the session's `upperdir` — not `agent.install`. A session's divergent
   dependency work can't pollute the shared base.
@@ -132,13 +147,15 @@ periodic clean-rebuild schedule is needed.
   knowledge. Settled by §1.
 - **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
   ~0). No manifest fingerprint for now.
-- **Concurrency:** **no concurrent installs.** Installs are serialized per repo through the
-  warm pool, which advances the base one install at a time. This makes the chain trivially
-  linear and removes the compare-and-swap / loser-reconciliation problem entirely.
-- **Warm pool is the single base-advancer.** Every session graduates from a warm standby, so
-  there is no separate session-side install path — the warm pool's serial pre-install is the
-  only thing that runs the install and advances the base. (Pool-miss and unarchive paths must
-  funnel through the same serial installer — see Open Questions.)
+- **Base advancement is restricted and serialized — not "one installer."** The code has
+  multiple install paths (warm-pool pre-install, which is *skipped for untrusted remotes*;
+  and an on-activation `runInstall` guarded only by the marker), so we cannot rely on the
+  warm pool being the sole installer. Instead: any session runs install into its **own**
+  `upperdir` (no shared state, no race), and only a **default-branch, exit-0** install may
+  **publish** a new base, under a **per-repo publish lock** (single-writer). This is what
+  keeps the chain linear and removes the compare-and-swap / loser-reconciliation problem —
+  see §3 and the warning there. Agent-spawned `--base` child sessions run on the base but
+  never publish.
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
@@ -184,19 +201,20 @@ design decisions are made (see Decisions).
 2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
    absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
    source diff in the upper layer stays small (`t → t'`).
-3. **Warm-pool throughput.** The base now advances through a single **serial** installer. Does
-   that keep up with session demand, what happens on a **pool miss** (queue and wait for a
-   serial prep?), and do the **unarchive** and any direct-create paths funnel through the same
-   serial installer so nothing advances the base off-pipeline?
+3. **Per-repo publish lock contention.** Base advancement takes a per-repo single-writer lock
+   (§3). Confirm this serialization is cheap (it gates only the *publish*, not the install
+   itself, which runs into each session's own upper layer) and that a base build held by one
+   path doesn't stall others — they just skip publishing, they don't wait.
 4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
    and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
 
-*Resolved this iteration (see Decisions): concurrency (serialize via warm pool, no CAS),
-warm-pool role (single serial base-advancer), flatten (depth-cap-triggered clean reinstall,
-specific tunable cap), cold start + trust (build v0 under the existing repo trust gate),
-sharing scope (single-user), secret capture (as-is, no filter), archive/restore (re-derive on
-unarchive), bad-base (exit-0 gate).*
+*Resolved this iteration (see Decisions): concurrency (base publishes restricted to
+default-branch exit-0 installs under a per-repo lock; installs into a session's own upper
+never race — no CAS), flatten (depth-cap-triggered clean reinstall, specific tunable cap),
+cold start + trust (build v0 under the existing repo trust gate), sharing scope (single-user),
+secret capture (as-is, no filter), archive/restore (re-derive on unarchive), bad-base (exit-0
+gate).*
 
 ## Key files
 
@@ -204,8 +222,10 @@ unarchive), bad-base (exit-0 gate).*
 |---|---|
 | dep-cache dir + mount + env | [container-lifecycle.ts](../../src/server/orchestrator/container-lifecycle.ts#L83-L211), [session-dir-factory.ts](../../src/server/orchestrator/session-dir-factory.ts#L56-L66) |
 | Today's node_modules copy store (superseded) | [nm-store.ts](../../src/server/session/nm-store.ts#L218-L309) |
+| Install paths (warm-pool pre-install + on-activation) | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243), [service-manager-setup.ts](../../src/server/orchestrator/service-manager-setup.ts#L322-L329) |
 | Install gate + marker / `headChanged` skip | [session-worker.ts](../../src/server/session/session-worker.ts#L649-L707), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L204-L206) |
-| Session base = default branch | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L361-L374), [session.ts](../../src/server/orchestrator/services/session.ts#L202-L216) |
+| Default-branch creation paths | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L361-L374), [session.ts](../../src/server/orchestrator/services/session.ts#L202-L216) |
+| `--base` child sessions (non-default base) | [child-sessions.ts](../../src/server/orchestrator/services/child-sessions.ts#L70-L78) |
 | Cache cleanup | [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts#L568-L676) |
 
 ---
