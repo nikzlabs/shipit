@@ -885,6 +885,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
     const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
     const nmStoreDays = parseFloat(process.env.DISK_JANITOR_NM_STORE_DAYS ?? "14");
+    // Pace between destructive ops so the (fire-and-forget) sweep drips out
+    // instead of bursting `docker` spawns + git pushes that contend with a
+    // concurrent agent start for the Docker daemon / bare-cache git layer. This
+    // is why we DON'T defer the sweep off the boot window — throttling flattens
+    // the spike wherever it lands instead of relocating it to a later, more
+    // disruptive moment mid-session.
+    const janitorPaceMs = parseFloat(process.env.DISK_JANITOR_PACE_MS ?? "");
     // Fire-and-forget — we don't want the sweep to block first-request
     // latency, and `runDiskJanitor` swallows its own errors (see the
     // module docstring) so there's nothing to await for safety.
@@ -896,6 +903,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
       nmStoreDays: Number.isFinite(nmStoreDays) ? nmStoreDays : 14,
+      paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
       getBareCacheDir,
@@ -912,6 +920,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const idleLightMs = parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || undefined;
   const idleEvictMs = parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || undefined;
   const idleEvictMergedMs = parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || undefined;
+  // Pace between age-based tier descents for the same reason as the janitor:
+  // keep the steady-state node_modules reclaim from monopolizing the Docker
+  // daemon a concurrent agent start needs. Deliberately NOT applied to the
+  // disk-pressure LRU descent — when the box is critically low and starts are
+  // already failing, fast reclaim is the point.
+  const escalationPaceMsRaw = parseFloat(process.env.DISK_ESCALATION_PACE_MS ?? "");
+  const escalationPaceMs = Number.isFinite(escalationPaceMsRaw) ? escalationPaceMsRaw : 500;
   // Disk-pressure watermarks: explicit *_BYTES win (backward compat); otherwise
   // derive fraction-of-disk *_PCT × total host disk size (portable across host
   // disk sizes — self-hosters can't be expected to know the right byte count).
@@ -950,6 +965,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         idleLightMs,
         idleEvictMs,
         idleEvictMergedMs,
+        paceMs: escalationPaceMs,
         diskFreeLow,
         diskFreeHigh,
         getFreeDiskBytes: () => statfsFreeBytes(stateDir),

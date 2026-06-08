@@ -179,6 +179,45 @@ describe("runDiskJanitor", () => {
     expect(result.orphanVolumesRemoved).toBe(0);
   });
 
+  it("paces between destructive removals when paceMs is set (still removes all)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // Three orphan volumes (no live sessions) → three rm calls, each preceded
+    // by a `sleep(paceMs)`. We capture the wall-clock of each rm and assert the
+    // gaps are >= paceMs: setTimeout never fires *early*, so this lower bound is
+    // not flaky (scheduling jitter only ever adds delay).
+    const paceMs = 25;
+    const rmAt: number[] = [];
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") {
+        return Promise.resolve(
+          ["shipit-aaaa11112222_a", "shipit-bbbb33334444_b", "shipit-cccc55556666_c"].join("\n"),
+        );
+      }
+      if (args[0] === "volume" && args[1] === "rm") {
+        rmAt.push(Date.now());
+      }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      runDocker,
+      paceMs,
+    });
+
+    expect(result.orphanVolumesRemoved).toBe(3);
+    expect(rmAt).toHaveLength(3);
+    for (let i = 1; i < rmAt.length; i += 1) {
+      // Allow a tiny scheduling epsilon below the nominal pace.
+      expect(rmAt[i] - rmAt[i - 1]).toBeGreaterThanOrEqual(paceMs - 5);
+    }
+  });
+
   it("sweeps orphan session networks whose session is no longer tracked", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
