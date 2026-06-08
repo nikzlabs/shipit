@@ -124,55 +124,47 @@ clean-rebuild schedule unless drift measurements later prove it necessary.
 - **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
   ~0). No manifest fingerprint for now.
 - **Drift:** depth-cap flatten only (§5).
+- **Sharing scope:** single-user deployment today, so a base is effectively per-repo for the
+  one user. Cross-user sharing (and its secret-leak surface) is **deferred** until ShipIt has
+  a multi-user model.
+- **Capture filter:** capture the workspace **as-is** — no secret-filtering. Env-var secrets
+  are never written to the tree (so not captured); the only on-disk vector is an injected
+  credential file (e.g. private-registry `.npmrc`) or a committed `.env`, both of which stay
+  within the single user / are already in git. `.git` is excluded/normalized for
+  **correctness** (don't carry a session's branch refs forward), not security.
+- **Archive/restore:** **re-derive on unarchive** — persist only source/metadata; on
+  unarchive re-clone and reinstall from the current base. We never persist the per-session
+  `upperdir`, which removes the upper-layer ↔ base-generation coupling: base generations need
+  only respect **live** mounts, not archived sessions.
+- **Bad-base gate:** advance the base **only when the install exits 0**. A non-zero install
+  still serves the current session's tree but is never published as the base.
 
 ## Open questions
 
 1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
    whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
-   the privileged host-side mount + teardown ordering with `disk-janitor`/archive is unproven.
-2. **Source in the base.** The base now includes the source tree at `main@t`; each session
-   git-fast-forwards on top. Confirm git operations behave on the overlay and the source diff
-   in the upper layer stays small (it's just `t → t'`).
+   the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
+2. **Source + `.git` on the overlay.** The base includes the source tree at `main@t`; each
+   session git-fast-forwards on top. Confirm git (and worktree gitdir pointers with absolute
+   paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the source
+   diff in the upper layer stays small (`t → t'`).
 3. **CAS loser semantics.** When a session's base-advance loses the compare-and-swap, it
    keeps its merged tree locally and skips the publish — confirm correctness and the transient
    disk cost of divergent upper layers.
 4. **Warm-pool integration.** The warm pool already pre-installs on standbys; how does that
    seed / advance the rolling base rather than duplicating work?
-5. **Flatten threshold.** What depth cap triggers the flatten, and does flatten-only keep
-   drift acceptably bounded without a periodic clean rebuild?
-6. **Secrets & sharing scope (security).** A whole-workspace base captures *everything* in
-   the tree at install time — including any `.env`, `.npmrc` auth tokens, generated
-   credentials, or agent auth. If a base is shared, that material is shared with it. What is
-   the sharing scope — per-repo only, or also **per-user**? If a repo is accessible to
-   multiple users/orgs, a base built by one must not leak another's secrets. (Today's
-   `/dep-cache` is per-repo; confirm the base inherits at least that, and decide per-user.)
-7. **What's captured vs. excluded.** Should the base include `.git` (large,
-   session/branch-specific — likely **exclude** and let each session bring its own),
-   `.shipit` markers, env files, and build artifacts? Define the capture filter. Also: does
-   the `.git`/worktree machinery (gitdir pointer files with absolute paths) behave on the
-   overlay?
-8. **Upper layer ↔ base generation coupling (archive/restore).** An overlay `upperdir`
-   (whiteouts + diffs) is only valid against the **exact base generation** it was created on.
-   So a session must **pin its base generation for its whole life**, and a base can't be
-   flattened/GC'd while any session — **including an archived one awaiting unarchive** —
-   still depends on it. Needs refcounting of base generations, and a decision on whether
-   archive **flattens the session's merged state** (self-contained, base-independent) instead
-   of persisting a base-coupled upper layer.
-9. **Bad-base recovery (poisoning).** A *successful-but-broken* install (flaky postinstall,
-   partial native build) published as the base poisons every descendant session. How do we
-   detect a bad base and **roll back to a prior generation**? Keep N previous generations as
-   rollback targets?
-10. **Cold start & trust.** Who builds base *v0* when none exists (first session installs
-    from empty, publishes v0)? And do we build/serve a shared base for **untrusted** repos,
-    given install runs arbitrary `postinstall` to produce the shared artifact? (Warm-pool
-    pre-install is already trust-gated — mirror that.)
-11. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
-    and the recursive file watcher runs on it. Do bind-mounts using the overlay **merged**
-    dir as source, and `inotify` over overlay (copy-up event quirks), behave correctly?
-12. **Reproducibility.** A path-dependent rolling base can drift subtly from a clean
-    install, risking "works in my session, fails in CI." The depth-cap flatten helps; decide
-    whether an occasional clean rebuild is still warranted as a correctness backstop.
+5. **Flatten threshold & reproducibility.** What depth cap triggers the flatten, and does
+   flatten-only keep drift acceptably bounded — or is an occasional clean rebuild still a
+   warranted correctness backstop (a path-dependent base can drift from a clean install)?
+6. **Cold start.** Who builds base *v0* when none exists — first session installs from empty
+   and publishes v0? (Trust-gating mirrors the existing warm-pool pre-install gate.)
+7. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
+   and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
+   source, and `inotify` over overlay (copy-up event quirks), behave correctly?
+
+*Resolved this iteration (see Decisions): sharing scope (single-user), secret capture
+(as-is, no filter), archive/restore (re-derive on unarchive), bad-base (exit-0 gate).*
 
 ## Key files
 
