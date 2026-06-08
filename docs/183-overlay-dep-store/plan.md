@@ -14,8 +14,10 @@ description: Share a warm workspace baseline across sessions via one rolling ove
 > run the install command, the design is **environment-agnostic**: no keys, no lockfile
 > detection, no need to know where deps live (`node_modules`, `.venv`, `vendor/`, …). The
 > chain stays naturally linear because the chain-feeding install always runs on the default
-> branch at session creation. Concurrency is handled by an **optimistic compare-and-swap** on
-> the base; the orchestrator owns the host-side mount; the worker keeps owning the install.
+> branch at session creation, and **installs are serialized through the warm pool** (the
+> single prep path every session graduates from), which advances the base one install at a
+> time — no concurrent installs, no race. The orchestrator owns the host-side mount; the
+> worker keeps owning the install.
 >
 > A content-addressed *keyed* variant (skip install on an exact match) is kept as an optional
 > [alternative](#alternative-the-keyed-immutable-layer). Reasoning and ecosystem detail are
@@ -67,14 +69,19 @@ with compiled native addons/wheels is never reused across an incompatible runtim
 
 ### 3. Lifecycle of a session
 
+Session prep happens **on a warm-pool standby**, before the user activates it — so the
+install latency is off the first-turn critical path. The warm pool advances the base
+**serially** (one install at a time per repo), so there are never concurrent installs racing
+to publish:
+
 1. **Mount** the repo's current base as `lowerdir` + a fresh per-session `upperdir`/workdir.
 2. **Fast-forward source** with git to the new default-branch commit (writes the source diff
    into the upper layer via copy-up).
 3. **Run `agent.install`** on top of the warm base (writes only the dep delta).
-4. **Advance the base** by an optimistic **compare-and-swap**: publish the merged result as
-   the next base *iff* the base hasn't moved since you started; otherwise keep your tree
-   locally and skip the publish. Installs stay parallel; the published chain stays linear —
-   no multi-second lock on the first-turn critical path, no fight with the warm pool.
+4. **Advance the base**: if the install exits 0, publish the merged result as the next base.
+   Because the warm pool is the single serial advancer, the published chain is trivially
+   linear — no compare-and-swap, no losers to reconcile. Activation then just hands the user
+   the already-prepared session.
 
 Two properties keep the single chain clean (verified against the code):
 
@@ -108,10 +115,12 @@ genuinely new subsystem and the gating unknown for the whole proposal.
 
 Re-running install over generations can leave extraneous packages or stale links, and
 stacked `lowerdir`s are limited (mount-options must fit in a page; Docker overlay2
-historically capped at 128). **Decision: depth-cap flatten only** — when the overlay stack
-hits its depth limit, flatten the merged result into a fresh single base (an amortized copy,
-ideally in the warm pool), and rely on that flatten to also shed drift. No separate periodic
-clean-rebuild schedule unless drift measurements later prove it necessary.
+historically capped at 128). **Decision: depth-cap-triggered clean rebuild.** When the
+overlay stack reaches a **specific configured depth** (a tunable on the order of ~10–20,
+deliberately well below the environment's hard limit), rebuild the base from **empty** — a
+clean reinstall, not a layer collapse — so every flatten doubles as a reproducibility reset.
+This single mechanism bounds both overlay depth and incremental-install drift; no separate
+periodic clean-rebuild schedule is needed.
 
 ## Decisions (this iteration)
 
@@ -123,7 +132,21 @@ clean-rebuild schedule unless drift measurements later prove it necessary.
   knowledge. Settled by §1.
 - **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
   ~0). No manifest fingerprint for now.
-- **Drift:** depth-cap flatten only (§5).
+- **Concurrency:** **no concurrent installs.** Installs are serialized per repo through the
+  warm pool, which advances the base one install at a time. This makes the chain trivially
+  linear and removes the compare-and-swap / loser-reconciliation problem entirely.
+- **Warm pool is the single base-advancer.** Every session graduates from a warm standby, so
+  there is no separate session-side install path — the warm pool's serial pre-install is the
+  only thing that runs the install and advances the base. (Pool-miss and unarchive paths must
+  funnel through the same serial installer — see Open Questions.)
+- **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
+  rather than collapsing layers, so every flatten is also a correctness reset (no separate
+  clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
+  of ~10–20, revisited from measurement), deliberately well below the environment's hard
+  layer limit — not the max itself.
+- **Cold start & trust:** the first prep for a repo builds base **v0 from empty**, under the
+  **existing repo trust gate** (`docs/178`) — no new gate; base creation simply rides the
+  trust decision already made when the repo was added.
 - **Sharing scope:** single-user deployment today, so a base is effectively per-repo for the
   one user. Cross-user sharing (and its secret-leak surface) is **deferred** until ShipIt has
   a multi-user model.
@@ -151,30 +174,29 @@ clean-rebuild schedule unless drift measurements later prove it necessary.
 
 ## Open questions
 
+These are now mostly **empirical / feasibility** items to settle in the prototype — the
+design decisions are made (see Decisions).
+
 1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
    whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
    the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
-2. **Source + `.git` on the overlay.** The base includes the source tree at `main@t`; each
-   session git-fast-forwards on top. Confirm git (and worktree gitdir pointers with absolute
-   paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the source
-   diff in the upper layer stays small (`t → t'`).
-3. **CAS loser semantics.** When a session's base-advance loses the compare-and-swap, it
-   keeps its merged tree locally and skips the publish — confirm correctness and the transient
-   disk cost of divergent upper layers.
-4. **Warm-pool integration.** The warm pool already pre-installs on standbys; how does that
-   seed / advance the rolling base rather than duplicating work?
-5. **Flatten threshold & reproducibility.** What depth cap triggers the flatten, and does
-   flatten-only keep drift acceptably bounded — or is an occasional clean rebuild still a
-   warranted correctness backstop (a path-dependent base can drift from a clean install)?
-6. **Cold start.** Who builds base *v0* when none exists — first session installs from empty
-   and publishes v0? (Trust-gating mirrors the existing warm-pool pre-install gate.)
-7. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
+2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
+   absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
+   source diff in the upper layer stays small (`t → t'`).
+3. **Warm-pool throughput.** The base now advances through a single **serial** installer. Does
+   that keep up with session demand, what happens on a **pool miss** (queue and wait for a
+   serial prep?), and do the **unarchive** and any direct-create paths funnel through the same
+   serial installer so nothing advances the base off-pipeline?
+4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
    and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
 
-*Resolved this iteration (see Decisions): sharing scope (single-user), secret capture
-(as-is, no filter), archive/restore (re-derive on unarchive), bad-base (exit-0 gate).*
+*Resolved this iteration (see Decisions): concurrency (serialize via warm pool, no CAS),
+warm-pool role (single serial base-advancer), flatten (depth-cap-triggered clean reinstall,
+specific tunable cap), cold start + trust (build v0 under the existing repo trust gate),
+sharing scope (single-user), secret capture (as-is, no filter), archive/restore (re-derive on
+unarchive), bad-base (exit-0 gate).*
 
 ## Key files
 
