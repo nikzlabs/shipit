@@ -68,11 +68,18 @@ single property decides whether a ShipIt-side overlay/canonical-volume adds anyt
 A `node_modules` is **location-independent** (relative `require`), which is *why*
 `nm-store` can drop a cached tree into any session at any path. A virtualenv hardcodes
 absolute paths in `pyvenv.cfg`, activation scripts, and console-script shebangs, so a
-"canonical venv" can't be laid down at a different path without `--copies` + path
-rewriting (or a relocation-aware tool). This makes a venv-equivalent of `nm-store`
-materially harder than the Node one — and largely unnecessary, since pip's built-wheel
-cache already removes the slow native-compile step. Recommended Python move: share
-`PIP_CACHE_DIR` / `UV_CACHE_DIR` rather than build a canonical venv.
+"canonical venv" laid down by **copy or hardlink** at a *different* path breaks without
+`--copies` + path rewriting (or a relocation-aware tool).
+
+**Overlay sidesteps this**, which is a further argument for it over hardlink here: build
+the canonical venv at the path it will be presented (`/workspace/.venv`), capture it as a
+read-only lowerdir, and overlay-mount it back at `/workspace/.venv`. The files' baked-in
+paths match the mount point, so nothing needs rewriting — and ShipIt's constant
+`/workspace` makes that path stable across every session. Copy/hardlink can only match
+the path by physically living at it, which collides with the live workspace; overlay can
+store the layer elsewhere yet present it at the canonical path. Meanwhile pip's
+built-wheel cache (`PIP_CACHE_DIR`) already removes the slow native-compile step, so even
+without overlay the expensive part of Python installs is shareable today.
 
 ## Strategy comparison (the materialize step)
 
@@ -108,23 +115,62 @@ elsewhere — which fits ShipIt's separate-volume layout better than hardlinks d
 - `runtimeKey` discipline matters even more across ecosystems: native addons / compiled
   wheels are arch + libc + interpreter-version specific and must stay in the cache key.
 
+## Why overlay is the primary target, not hardlink
+
+Hardlink and overlay are **not co-equal options** — the choice between them is purely
+deployability vs. correctness:
+
+| | Hardlink ladder | OverlayFS |
+|---|---|---|
+| New architecture | None — swap the `nm-store` materialize ladder | Privileged mount layer + per-session mount lifecycle |
+| Privileges | Unprivileged | `mount(2)` needs `CAP_SYS_ADMIN` |
+| Works on prod today | Yes | Needs the host-mount plumbing first |
+| Teardown | `rm` the workspace | Unmount + clean workdir on disposal |
+| Cross-filesystem canonical | **No** — same fs required | **Yes** — only upper + workdir share an fs |
+| In-place mutation (`patch-package`, hand-edit) | **Corrupts the shared store** unless guarded | Copy-up isolates it — store is immune |
+| Helps store-based managers (pnpm/uv) | **No** — they already hardlink | **Yes** — cache hit becomes a mount, zero install |
+| Cache-hit cost | Create N links (large for big trees) | One mount, O(1) regardless of tree size |
+
+Overlay wins on every axis **except** the one-time cost of building the mount layer.
+Its decisive advantage: on a cache hit, **no installer runs at all** — npm, pnpm, pip,
+and uv all collapse to "mount the canonical lower layer." That uniformity is exactly
+what the hardlink path can't give, because hardlinking only helps managers that don't
+already dedup, while *defeating* the ones that do (you'd cache pnpm's linked result as a
+flat tree and re-link it). One read-only lowerdir is shared by unlimited concurrent
+sessions — that's what overlayfs lowerdirs are for.
+
+**The single blocker that decides feasibility:** who performs the mount under ShipIt's
+containment model (`docs/172-agent-containment`). Unprivileged containers + HTTP-only +
+no `docker exec` rule out mounting inside the session container. The viable route is the
+**orchestrator mounts on the host and bind-mounts the merged dir in**, owning a new
+privileged, per-session mount subsystem (mount on activate, unmount + workdir cleanup on
+dispose; `disk-janitor` and archive flows must learn about live mounts). If that subsystem
+is acceptable, overlay-for-all is the design and hardlink is unnecessary.
+
 ## Recommendation
 
-1. **npm + copy-mode Yarn** — the high-ROI target. Two candidate upgrades to the
-   `nm-store` materialize step:
-   - **B (hardlink ladder), behind a flag** — smallest change, near-instant, disk-shared;
-     guard in-place mutation (copy-up-on-write, or accept the well-tested pnpm model).
-     Requires store + workspace on the same fs.
-   - **A (overlay)** — the "right" long-term design (instant + disk-sharing + clean
-     mutation isolation), accepting the host-mount complexity.
-2. **pnpm + uv + conda + Yarn PnP** — do **not** add our own layer. Instead ensure their
-   store/cache volume is shared **and on the same filesystem as the workspace** so their
-   built-in dedup fires. This is a config/layout change, not new machinery.
-3. **Python pip/poetry** — share the built-wheel cache (high impact, cheap); skip a
-   canonical venv (relocatability cost > benefit).
+1. **Overlay as the unified mechanism for all ecosystems** — one keyed, read-only
+   canonical layer per `(lockfile + runtimeKey + installCommand)` (the existing
+   `nm-store` key), mounted read-only under every session; per-session upper layer for
+   CoW writes. Cache hit = a mount, install-free, identical for npm / Yarn / pnpm / pip /
+   uv. Gated on building the orchestrator-side host-mount subsystem above.
+2. **Hardlink ladder = fallback only** — for hosts/kernels where the host-mount layer
+   isn't available (or as a first, unprivileged prototype). Limited to dumb-copy managers
+   (npm, copy-mode Yarn), requires store + workspace on the same fs, and must guard
+   in-place mutation. Do **not** apply it to pnpm/uv (redundant with their native store).
+3. **Until overlay lands, keep sharing the caches** — the download cache (075) and, for
+   store-based managers, their own store on the **same filesystem** as the workspace so
+   their built-in dedup isn't silently defeated. This is the no-new-machinery floor.
+4. **Python** — overlay covers venvs too, with one pin: build the canonical venv at the
+   **same absolute path it will be mounted** (`/workspace/.venv`), since venvs hardcode
+   absolute paths (`pyvenv.cfg`, shebangs). ShipIt's constant `/workspace` makes this
+   workable. Meanwhile the built-wheel cache (`PIP_CACHE_DIR`) already removes the slow
+   native-compile step and needs no overlay.
 
-Next step: prototype B behind a flag and benchmark materialize time on a large repo
-(ShipIt itself: ~588 packages, ~24s cold install) against today's `cp`/`tar` ladder.
+Next step: spike the orchestrator host-mount subsystem (mount/unmount lifecycle +
+janitor/archive awareness) to size the real cost, and in parallel prototype the
+hardlink fallback to benchmark cache-hit time on a large repo (ShipIt itself: ~588
+packages, ~24s cold install) against today's `cp`/`tar` ladder.
 
 ## Key files
 
