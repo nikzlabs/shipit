@@ -1,6 +1,5 @@
 ---
 description: Remaining security hardening deferred from containerization: non-root worker runtime, network egress allowlist, read-only credential mounts, and cross-platform validation.
-issue: https://linear.app/shipit-ai/issue/SHI-45/container-hardening-and-cross-platform-validation
 ---
 
 # 067 — Container Hardening & Cross-Platform Validation

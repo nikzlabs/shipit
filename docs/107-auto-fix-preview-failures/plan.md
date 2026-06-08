@@ -1,6 +1,5 @@
 ---
 description: Detect compose service crashes and setup script failures post-turn, surface logs inline, and optionally trigger an agent fix turn automatically.
-issue: https://linear.app/shipit-ai/issue/SHI-51/auto-fix-for-preview-and-setup-script-failures
 ---
 
 # 107 — Auto-Fix for Preview & Setup Script Failures

@@ -1,6 +1,5 @@
 ---
 description: Seed script that provisions reproducible inner sessions for the ShipIt-in-ShipIt dogfood loop at dev-service boot, with a dedicated testing GitHub token.
-issue: https://linear.app/shipit-ai/issue/SHI-52/dogfood-seed-sessions
 ---
 
 # Dogfood seed sessions (reproducible inner sessions for ShipIt-in-ShipIt)

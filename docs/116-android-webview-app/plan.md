@@ -1,6 +1,5 @@
 ---
 description: Minimal Android WebView wrapper for self-hosted ShipIt with a runtime-configurable host URL, distributed as a sideload APK via GitHub Releases.
-issue: https://linear.app/shipit-ai/issue/SHI-53/android-webview-wrapper-configurable-host
 ---
 
 # 116 — Android WebView wrapper (configurable host)

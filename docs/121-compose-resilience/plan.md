@@ -1,6 +1,5 @@
 ---
 description: Fix gaps in service-manager's Docker Compose error handling that cause the preview proxy and log surfaces to drift out of sync when services hiccup.
-issue: https://linear.app/shipit-ai/issue/SHI-41/compose-resilience-services-that-recover-when-docker-hiccups
 ---
 
 # Compose resilience — services that recover when Docker hiccups

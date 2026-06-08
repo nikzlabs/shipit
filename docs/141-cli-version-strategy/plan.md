@@ -1,6 +1,5 @@
 ---
 description: Strategy for keeping the Claude/Codex CLIs current without letting unpinned auto-latest break integrations or open supply-chain risk — tested pin + auto-bump, install hardening, and an opt-in latest channel.
-issue: https://linear.app/shipit-ai/issue/SHI-61/agent-cli-version-strategy
 ---
 
 > **Implementation status:** Axis 2 (supply-chain hardening) is implemented —

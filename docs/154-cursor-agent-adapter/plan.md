@@ -1,7 +1,6 @@
 ---
 title: Cursor agent adapter
 description: Optional pinned installation of third-party agent CLIs, with Cursor Agent as the first new backend using ShipIt's AgentProcess adapter boundary.
-issue: https://linear.app/shipit-ai/issue/SHI-32/cursor-agent-adapter-and-optional-cli-installation
 ---
 
 # Cursor Agent adapter and optional CLI installation
@@ -25,8 +24,8 @@ maps Cursor's stream output into ShipIt's normalized `AgentEvent` contract.
 
 1. Add a production setup flow that lets the admin choose which agent CLIs to
    install into session containers.
-2. Install selected CLIs at manually approved versions, using the same pinned
-   manifest / lockfile strategy described in `docs/141-cli-version-strategy`.
+2. Install selected CLIs at manually approved versions, using the existing
+   pinned manifest / lockfile approach.
 3. Add Cursor as an optional `AgentId` with registry detection, auth status, and
    client selection.
 4. Implement a `CursorAdapter` that launches `cursor-agent` in headless mode and

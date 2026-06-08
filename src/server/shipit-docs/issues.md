@@ -14,7 +14,7 @@ a secret.
 
 A `<pointer>` is whatever names the issue. The tracker is inferred from its shape:
 
-- `SHI-28` or a `https://linear.app/.../issue/SHI-28` URL → Linear
+- `TRACKER-28` or a `https://linear.app/.../issue/TRACKER-28` URL → Linear
 - `owner/repo#42` or a `https://github.com/owner/repo/issues/42` URL → GitHub
 
 Pass it verbatim. For an ambiguous/unknown shape (e.g. a bare `42`), add

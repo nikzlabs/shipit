@@ -1,6 +1,5 @@
 ---
 description: Architecture for running ShipIt as a multi-tenant managed service on Kubernetes with per-tenant namespace isolation, Sysbox DinD, and resource quotas.
-issue: https://linear.app/shipit-ai/issue/SHI-39/managed-shipit-multi-tenant-hosting
 ---
 
 # 062 — Managed ShipIt (Multi-Tenant Hosting)

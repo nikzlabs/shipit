@@ -33,7 +33,7 @@ Frontmatter is optional. A doc with no frontmatter still appears in the list. Th
 
 ```markdown
 ---
-issue: https://linear.app/your-workspace/issue/SHI-28/decouple-priorities
+issue: https://linear.app/your-workspace/issue/TRACKER-28/decouple-priorities
 description: One-line summary of the feature.
 ---
 
@@ -48,10 +48,10 @@ Description of the feature...
 
 | Tracker | Accepted form | Example |
 |---------|---------------|---------|
-| Linear | **Full URL only** | `https://linear.app/your-workspace/issue/SHI-28/slug` |
+| Linear | **Full URL only** | `https://linear.app/your-workspace/issue/TRACKER-28/slug` |
 | GitHub | `owner/repo#N` or a full issue URL | `octocat/hello-world#42` |
 
-A Linear pointer **must** be a full URL — a bare `SHI-28` is not accepted, so the pointer stays unambiguous if a deployment wires up more than one Linear workspace. A doc with **no** `issue:` is pure reference: it still shows up, just without a jump-to-issue chip.
+A Linear pointer **must** be a full URL — a bare `TRACKER-28` is not accepted, so the pointer stays unambiguous if a deployment wires up more than one Linear workspace. A doc with **no** `issue:` is pure reference: it still shows up, just without a jump-to-issue chip.
 
 ### `title` and `description`
 
@@ -70,7 +70,7 @@ description: A short summary of what this feature is about.
 
 ```markdown
 ---
-issue: https://linear.app/your-workspace/issue/SHI-28/slug
+issue: https://linear.app/your-workspace/issue/TRACKER-28/slug
 description: One-line summary.
 ---
 
@@ -134,7 +134,7 @@ The `present` tool renders a mock in an ephemeral Present tab, but that artifact
 
 ## Common mistakes
 
-- **Bare Linear ID in `issue:`**: Linear pointers must be full URLs (`https://linear.app/.../issue/SHI-28/...`), not bare identifiers like `SHI-28`.
+- **Bare Linear ID in `issue:`**: Linear pointers must be full URLs (`https://linear.app/.../issue/TRACKER-28/...`), not bare identifiers like `TRACKER-28`.
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use a ` ```yaml ` fence.
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.
 - **Not a `.md` file**: Only files ending in `.md` are scanned. Other formats (`.txt`, `.rst`) won't appear in the list.

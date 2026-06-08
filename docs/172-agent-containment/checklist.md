@@ -18,12 +18,12 @@ tracker as separate issues. None implemented yet.
       credentials, that github.com still resolves via the global helper (push/pull
       unaffected), and that no plaintext token lands in `.git/config`; host scoping is
       covered by `services/github-credential.test.ts` and `agent-shim/git-credential.test.ts`.
-      (SHI-72)
-- [ ] **Gap 2-R — credential broker is caller-blind (residual after SHI-72).** Verified
+      (TRACKER-72)
+- [ ] **Gap 2-R — credential broker is caller-blind (residual after TRACKER-72).** Verified
       live 2026-06-03: `git credential fill` for `github.com` (or invoking
       `/usr/local/bin/shipit-git-credential get` directly) still returns the full `ghp_…`
       PAT to any code running in the session. The broker authorizes by host, not by caller,
-      and the agent is indistinguishable from `git`. SHI-72 closed plaintext-at-rest and
+      and the agent is indistinguishable from `git`. TRACKER-72 closed plaintext-at-rest and
       host-blindness but not on-demand extraction. Fix is defense-in-depth: short-lived
       repo-scoped tokens (GitHub App installation tokens, minutes-long TTL, minted
       per-turn) and/or out-of-process git (push/pull from the orchestrator host so the

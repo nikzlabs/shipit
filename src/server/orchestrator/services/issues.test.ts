@@ -96,14 +96,14 @@ describe("getIssueForTracker (docs/175)", () => {
         variables?: { id?: string };
       };
       expect(body.query).toContain("Issue");
-      expect(body.variables?.id).toBe("SHI-28");
+      expect(body.variables?.id).toBe("TRACKER-28");
       return jsonResponse({
         data: {
           issue: {
             id: "abc",
-            identifier: "SHI-28",
+            identifier: "TRACKER-28",
             title: "Decouple priorities",
-            url: "https://linear.app/shipit-ai/issue/SHI-28",
+            url: "https://linear.app/example/issue/TRACKER-28",
             description: "Body",
             priority: 1,
             priorityLabel: "Urgent",
@@ -117,18 +117,18 @@ describe("getIssueForTracker (docs/175)", () => {
     const { tracker, issue } = await getIssueForTracker(
       credentialStore,
       "linear",
-      "SHI-28",
+      "TRACKER-28",
       fetchImpl,
     );
     expect(tracker.id).toBe("linear");
-    expect(issue.identifier).toBe("SHI-28");
+    expect(issue.identifier).toBe("TRACKER-28");
     expect(issue.priority.level).toBe("urgent");
     expect(issue.assignee?.name).toBe("Nik");
   });
 
   it("errors when the tracker is unconfigured (Linear, no token)", async () => {
     await expect(
-      getIssueForTracker(credentialStore, "linear", "SHI-1"),
+      getIssueForTracker(credentialStore, "linear", "TRACKER-1"),
     ).rejects.toMatchObject({ statusCode: 400 });
   });
 
@@ -249,7 +249,7 @@ describe("issue write services (docs/177)", () => {
 
   it("rejects an unconfigured tracker with a ServiceError", async () => {
     await expect(
-      getIssueForTracker(store, "linear", "SHI-1"),
+      getIssueForTracker(store, "linear", "TRACKER-1"),
     ).rejects.toBeInstanceOf(ServiceError);
   });
 

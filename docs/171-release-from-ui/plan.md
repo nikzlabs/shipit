@@ -1,5 +1,4 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-71/release-from-shipit-cut-a-release-for-any-repo-from-chat
 title: Release from ShipIt — cut a software release for any repo from chat
 description: Generalize ShipIt's own release automation into a chat-initiated, agent-driven flow that cuts a versioned release for any open repo and renders the result as an inline release lifecycle card.
 ---
@@ -22,7 +21,7 @@ failure mode the product principles forbid (CLAUDE.md §1–§2).
 
 We want releasing to be a first-class thing you do **inside ShipIt, by talking to
 the agent**, for the current repo *and any other repo the user has open* — not a
-ShipIt-only internal ritual.
+project-specific maintainer ritual.
 
 ## Goals
 
@@ -48,7 +47,7 @@ ShipIt-only internal ritual.
   it triggers the repo's *own* CI (via the pushed tag) or, for the brokered path,
   calls the GitHub Releases API. Gating quality is the repo's CI's job.
 - **Not** Android / mobile artifact builds. Those are tracked separately in Linear
-  SHI-66 and are explicitly out of scope here. The Android wrapper
+  TRACKER-66 and are explicitly out of scope here. The Android wrapper
   (`android/`, `docs/116-android-webview-app/`) has its own manual Gradle build.
 - **Not** a package-registry publisher (npm publish, crates.io, Docker push) in v1.
   Those are downstream of "a release exists" and can be added later as repo CI
@@ -186,7 +185,7 @@ confirmation.** Rationale:
   human act" stance untouched.
 - (a) is the *honest* generalization of what we built for ShipIt itself: our own
   release is tag-triggered. Teaching ShipIt to drive *that* pattern for any repo
-  is the truest generalization of SHI-63.
+  is the truest generalization of TRACKER-63.
 - The cost of (a) — "repo has no release workflow" — is turned into a **feature**:
   the card detects the missing workflow and the agent offers to **scaffold** a
   `release.yml` (see Per-repo config below). That scaffolding is itself a chat-

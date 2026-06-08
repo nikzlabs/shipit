@@ -1,9 +1,8 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-64/check-pr-approval-status-before-deciding-if-it-can-be-merged
 description: Gate PR merge eligibility on GitHub's review-approval status and surface that status inline on the PR card.
 ---
 
-# PR approval status in merge eligibility (SHI-64)
+# PR approval status in merge eligibility (TRACKER-64)
 
 ## Problem
 

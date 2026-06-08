@@ -1,10 +1,8 @@
 ---
-description: Support Python web app frameworks (Streamlit, Gradio, Dash, FastAPI/Uvicorn) — fix the session image so pip/venv work, ship Python starter templates, and document the compose patterns. Linear SHI-27.
+description: Support Python web app frameworks (Streamlit, Gradio, Dash, FastAPI/Uvicorn) — fix the session image so pip/venv work, ship Python starter templates, and document the compose patterns. Linear TRACKER-27.
 ---
 
 # Python web app frameworks
-
-Linear: [SHI-27](https://linear.app/shipit-ai/issue/SHI-27/support-python-web-app-frameworks)
 
 ## Goal
 
