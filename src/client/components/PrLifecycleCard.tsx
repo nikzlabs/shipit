@@ -539,10 +539,11 @@ function OpenPhase({
             {showFixButton && (
               <FixCIButton sessionId={sessionId} />
             )}
-            {/* Always available while the PR is open — closing must work even
-                when the merge button is hidden (conflicts, failing CI, review
-                required). */}
-            <ClosePrButton sessionId={sessionId} />
+            {/* When the merge button is shown, close lives in its dropdown. When
+                it's hidden (conflicts, failing CI, review required, auto-merge
+                armed), this kebab keeps close reachable. The two are mutually
+                exclusive, so close is always available but never duplicated. */}
+            {!showMergeButton && <ClosePrButton sessionId={sessionId} />}
           </span>
         </div>
         {/* docs/175 decision #2 — durable, conditional transparency line. Shown

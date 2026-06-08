@@ -100,6 +100,70 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
   rebase: "Rebase and merge",
 };
 
+/**
+ * Shared close-PR state machine, used by both the merge dropdown (regular case)
+ * and the standalone overflow menu (when the merge button is hidden). Owns the
+ * two-step-confirm + in-flight state and the actual `closePr` call so the
+ * destructive logic lives in exactly one place.
+ *
+ * `handleClose()` resolves to `true` only when the PR was actually closed, so a
+ * caller can dismiss its own dropdown on success. `reset()` clears the armed
+ * confirm — callers invoke it when their menu closes so it never reopens armed.
+ */
+function useClosePr(sessionId: string) {
+  const closePr = usePrStore((s) => s.closePr);
+  const setToast = useUiStore((s) => s.setToast);
+  // First click arms the confirm, the second commits — cheaper than a modal and
+  // contained to whichever dropdown hosts the item.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  const reset = () => setConfirmClose(false);
+
+  const handleClose = async (): Promise<boolean> => {
+    if (closing) return false;
+    if (!confirmClose) {
+      setConfirmClose(true);
+      return false;
+    }
+    setClosing(true);
+    const error = await closePr(sessionId);
+    if (error) {
+      setToast({ message: `Close failed: ${error}` });
+      setClosing(false);
+      setConfirmClose(false);
+      return false;
+    }
+    setClosing(false);
+    setConfirmClose(false);
+    return true;
+  };
+
+  return { confirmClose, closing, handleClose, reset };
+}
+
+/** Shared "Close pull request" dropdown item rendered identically in both menus. */
+function ClosePrMenuItem({
+  confirmClose,
+  closing,
+  onClick,
+}: {
+  confirmClose: boolean;
+  closing: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={closing}
+      className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
+    >
+      <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
+      {closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request"}
+    </button>
+  );
+}
+
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
@@ -107,6 +171,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
+  const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
@@ -115,7 +180,12 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
     ? "Agent is still working; merge will be available when the turn finishes"
     : undefined;
 
-  const closeDropdown = () => setDropdownOpen(false);
+  // Reset the armed-confirm state whenever the menu closes so it never reopens
+  // pre-armed.
+  const closeDropdown = () => {
+    setDropdownOpen(false);
+    reset();
+  };
 
   const handleMerge = async () => {
     if (disabled) return;
@@ -125,6 +195,10 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       setToast({ message: `Merge failed: ${error}` });
       setMerging(false);
     }
+  };
+
+  const onCloseClick = async () => {
+    if (await handleClose()) closeDropdown();
   };
 
   return (
@@ -160,6 +234,15 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
                 {MERGE_METHOD_LABELS[m]}
               </button>
             ))}
+            {/* docs/064 — close lives here for the regular (mergeable) case where
+                it's most discoverable; the standalone ClosePrButton covers the
+                states where this whole button is hidden. */}
+            <div className="my-1 h-px bg-(--color-border-secondary)" />
+            <ClosePrMenuItem
+              confirmClose={confirmClose}
+              closing={closing}
+              onClick={() => void onCloseClick()}
+            />
           </div>
         </>
       )}
@@ -170,45 +253,28 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
 /**
  * Standalone overflow menu holding the destructive "Close pull request" action.
  *
- * Kept separate from MergeButton on purpose: MergeButton only renders when the
- * PR is mergeable (CI green, no conflicts, review satisfied), but closing a PR
- * must stay available in exactly the states where merging isn't — most notably
- * when the branch has merge conflicts. Closing is a pure GitHub API call that
- * doesn't touch the working tree, so it's offered regardless of merge-ability
- * and even while the agent is running.
+ * Complements the copy of the action inside MergeButton's dropdown. MergeButton
+ * only renders when the PR is mergeable (CI green, no conflicts, review
+ * satisfied), but closing a PR must stay available in exactly the states where
+ * merging isn't — most notably when the branch has merge conflicts. So callers
+ * render this kebab whenever the merge button is hidden; the two never appear at
+ * once, so close is always reachable and never duplicated on screen. Closing is
+ * a pure GitHub API call that doesn't touch the working tree, so it's offered
+ * regardless of merge-ability and even while the agent is running.
  */
 export function ClosePrButton({ sessionId }: { sessionId: string }) {
-  const closePr = usePrStore((s) => s.closePr);
-  const setToast = useUiStore((s) => s.setToast);
   const [dropdownOpen, setDropdownOpen] = useState(false);
-  // Two-step confirm for the destructive close action: the first click arms it,
-  // the second commits — cheaper than a modal and contained to the dropdown.
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [closing, setClosing] = useState(false);
+  const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
 
   // Reset the armed-confirm state whenever the menu closes so it never reopens
   // pre-armed.
   const closeDropdown = () => {
     setDropdownOpen(false);
-    setConfirmClose(false);
+    reset();
   };
 
-  const handleClose = async () => {
-    if (closing) return;
-    if (!confirmClose) {
-      setConfirmClose(true);
-      return;
-    }
-    setClosing(true);
-    const error = await closePr(sessionId);
-    if (error) {
-      setToast({ message: `Close failed: ${error}` });
-      setClosing(false);
-      setConfirmClose(false);
-      return;
-    }
-    setClosing(false);
-    closeDropdown();
+  const onCloseClick = async () => {
+    if (await handleClose()) closeDropdown();
   };
 
   return (
@@ -226,14 +292,11 @@ export function ClosePrButton({ sessionId }: { sessionId: string }) {
         <>
           <div className="fixed inset-0 z-40" onClick={closeDropdown} />
           <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
-            <button
-              onClick={handleClose}
-              disabled={closing}
-              className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
-              {closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request"}
-            </button>
+            <ClosePrMenuItem
+              confirmClose={confirmClose}
+              closing={closing}
+              onClick={() => void onCloseClick()}
+            />
           </div>
         </>
       )}

@@ -142,9 +142,10 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
           )}
-          {/* Always available while the PR is open — closing must work even when
-              the merge button is hidden (conflicts, failing CI, review required). */}
-          <ClosePrButton sessionId={sessionId} />
+          {/* When the merge button is shown, close lives in its dropdown; when
+              it's hidden, this kebab keeps close reachable. Mutually exclusive,
+              so close is always available but never duplicated. */}
+          {!showMergeButton && <ClosePrButton sessionId={sessionId} />}
         </div>
       )}
 

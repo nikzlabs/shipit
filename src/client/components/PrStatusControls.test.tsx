@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ClosePrButton } from "./PrStatusControls.js";
+import { ClosePrButton, MergeButton } from "./PrStatusControls.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -32,7 +32,26 @@ afterEach(() => {
   cleanup();
 });
 
-describe("ClosePrButton — close pull request", () => {
+// The two surfaces share one close-PR state machine (useClosePr) and one
+// rendered item (ClosePrMenuItem), so the confirm/re-arm/failure behavior is
+// asserted against both: the merge dropdown (regular, mergeable case) and the
+// standalone kebab (shown when the merge button is hidden, e.g. conflicts).
+const surfaces = [
+  {
+    name: "MergeButton dropdown",
+    render: () => render(<MergeButton sessionId="s1" />),
+    openMenu: (user: ReturnType<typeof userEvent.setup>) =>
+      user.click(screen.getByLabelText("Select merge method")),
+  },
+  {
+    name: "ClosePrButton kebab",
+    render: () => render(<ClosePrButton sessionId="s1" />),
+    openMenu: (user: ReturnType<typeof userEvent.setup>) =>
+      user.click(screen.getByLabelText("More pull request actions")),
+  },
+] as const;
+
+describe.each(surfaces)("close pull request via $name", ({ render: renderSurface, openMenu }) => {
   it("requires a second click to confirm before closing", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn().mockResolvedValue({
@@ -42,9 +61,9 @@ describe("ClosePrButton — close pull request", () => {
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    render(<ClosePrButton sessionId="s1" />);
+    renderSurface();
 
-    await user.click(screen.getByLabelText("More pull request actions"));
+    await openMenu(user);
     await user.click(screen.getByText("Close pull request"));
 
     // First click only arms the confirm — no request yet.
@@ -62,16 +81,16 @@ describe("ClosePrButton — close pull request", () => {
 
   it("re-arms (does not stay confirmed) after the menu is reopened", async () => {
     const user = userEvent.setup();
-    render(<ClosePrButton sessionId="s1" />);
+    renderSurface();
 
-    await user.click(screen.getByLabelText("More pull request actions"));
+    await openMenu(user);
     await user.click(screen.getByText("Close pull request"));
     expect(screen.getByText("Click again to confirm")).toBeInTheDocument();
 
     // Close the menu via the trigger, then reopen — the item is back to its
     // initial, un-armed label.
-    await user.click(screen.getByLabelText("More pull request actions"));
-    await user.click(screen.getByLabelText("More pull request actions"));
+    await openMenu(user);
+    await openMenu(user);
     expect(screen.getByText("Close pull request")).toBeInTheDocument();
     expect(screen.queryByText("Click again to confirm")).not.toBeInTheDocument();
   });
@@ -84,9 +103,9 @@ describe("ClosePrButton — close pull request", () => {
       json: async () => ({ error: "GitHub said no" }),
     }) as typeof fetch;
 
-    render(<ClosePrButton sessionId="s1" />);
+    renderSurface();
 
-    await user.click(screen.getByLabelText("More pull request actions"));
+    await openMenu(user);
     await user.click(screen.getByText("Close pull request"));
     await user.click(screen.getByText("Click again to confirm"));
 
