@@ -1,4 +1,5 @@
 import type { ProjectTemplate } from "../shared/types.js";
+import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
 // ---------------------------------------------------------------------------
 // Python web framework template definitions (docs/168)
@@ -27,37 +28,6 @@ import type { ProjectTemplate } from "../shared/types.js";
 // Bare package names (no pins) keep the starter robust against yanked/renamed
 // versions — pip resolves the latest compatible set. A user repo that wants a
 // lockfile brings its own (requirements.txt pins, uv.lock, poetry.lock).
-const PYTHON_GITIGNORE = `# Byte-compiled / optimized / DLL files
-__pycache__/
-*.py[cod]
-*$py.class
-
-# Virtual environments
-.venv/
-venv/
-env/
-
-# Distribution / packaging
-build/
-dist/
-*.egg-info/
-
-# Caches
-.pytest_cache/
-.ruff_cache/
-.mypy_cache/
-
-# Environment files
-.env
-.env.local
-
-# OS
-.DS_Store
-
-# ShipIt
-.shipit
-`;
-
 // The preview service creates its own venv with the interpreter that runs the
 // app, installs deps, then exec's the server. `test -d .venv` keeps the venv
 // across restarts; `pip install` is re-run each boot but is a fast no-op once
@@ -118,7 +88,7 @@ st.line_chart(data)
 pandas
 numpy
 `,
-      ".gitignore": PYTHON_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 8501,
@@ -159,7 +129,7 @@ def health():
       "requirements.txt": `fastapi
 uvicorn[standard]
 `,
-      ".gitignore": PYTHON_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 8000,
@@ -208,7 +178,7 @@ if __name__ == "__main__":
 `,
       "requirements.txt": `gradio
 `,
-      ".gitignore": PYTHON_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 7860,
@@ -250,7 +220,7 @@ if __name__ == "__main__":
 plotly
 pandas
 `,
-      ".gitignore": PYTHON_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": SHIPIT_YAML,
       "docker-compose.yml": pythonCompose({
         port: 8050,
