@@ -277,6 +277,30 @@ mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
    **clean-rebuild** policy that bounds drift; decide whether the optional detection-free
    manifest fingerprint is worth adding to skip no-op installs / avoid branch thrash.
 
+## Open questions
+
+1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session overlay
+   mount (mount on activate, unmount + workdir cleanup on dispose) within the containment
+   model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but the privileged
+   host-side mount + teardown ordering with `disk-janitor`/archive is unproven. Everything
+   else depends on this.
+2. **Base scoping.** Even keyless, a base must **not** be reused across incompatible
+   runtimes (native addons/wheels are arch+libc+interpreter-specific). So "one base per
+   repo" is really **one base per `(repo, runtime fingerprint)`** — confirm that's the only
+   axis needed (no lockfile in the key).
+3. **CAS loser semantics.** When a session's base-advance loses the compare-and-swap, it
+   keeps its merged tree locally and skips the publish — confirm correctness and the
+   transient disk cost of divergent upper layers.
+4. **Flatten + clean-rebuild policy.** What overlay-stack depth triggers a flatten, and how
+   often to rebuild from empty to shed incremental-install drift?
+5. **Warm-pool integration.** The warm pool already pre-installs on standbys; how does that
+   seed / advance the rolling base rather than duplicating work?
+6. **Is the always-install floor acceptable?** The existing marker + `headChanged` skip
+   already gives ~0 when `main` hasn't moved; is that enough, or is the optional manifest
+   fingerprint ever worth it?
+7. **Python target path.** Does forcing a single venv path (`/workspace/.venv`) hold across
+   pip/poetry/uv and tooling that expects other locations?
+
 ## Key files
 
 | Concern | File |
