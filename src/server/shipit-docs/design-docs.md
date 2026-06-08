@@ -2,7 +2,7 @@
 
 ShipIt has a built-in feature tracking system that reads markdown files from the `docs/` directory in your workspace. The UI displays these as a list of reference docs, and users can kick off sessions to work on them.
 
-Design docs are **reference material** — what a feature is, why, and how. Priority and work-status no longer live in the doc; they live in the issue tracker (Linear / GitHub Issues). A doc carries an optional `issue:` pointer to the work item that tracks it, and ShipIt renders a jump-to-issue chip from that pointer.
+Design docs are **reference material** — what a feature is, why, and how. Work tracking lives in the issue tracker (Linear / GitHub Issues): a doc carries an optional `issue:` pointer to the work item that tracks it, and ShipIt renders a jump-to-issue chip from that pointer.
 
 ## How it works
 
@@ -41,8 +41,6 @@ description: One-line summary of the feature.
 
 Description of the feature...
 ```
-
-> **There is no `status:` or `priority:` field.** Those were removed — work-state and priority live in the issue tracker now, not in the doc. A leftover `status:`/`priority:` line is simply ignored by the scanner, but you should drop it and add an `issue:` pointer instead.
 
 ### The `issue:` pointer
 
@@ -136,7 +134,6 @@ The `present` tool renders a mock in an ephemeral Present tab, but that artifact
 
 ## Common mistakes
 
-- **Using `status:` or `priority:`**: These fields were removed. Track work-state and priority in the issue tracker and link to it with `issue:`. A stray `status:`/`priority:` line is ignored, not honored.
 - **Bare Linear ID in `issue:`**: Linear pointers must be full URLs (`https://linear.app/.../issue/SHI-28/...`), not bare identifiers like `SHI-28`.
 - **Missing frontmatter delimiters**: The `---` lines are required. Don't use a ` ```yaml ` fence.
 - **Frontmatter not at file start**: The `---` block must be the very first thing in the file — no blank lines or content before it.

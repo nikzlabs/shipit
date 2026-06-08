@@ -129,9 +129,6 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("`issue`");
     expect(out).toContain("`title`");
     expect(out).toContain("`description`");
-    // status/priority were removed in docs/168 — the prompt must say so rather
-    // than instruct the agent to author a field the scanner ignores.
-    expect(out).toMatch(/no `status:` or `priority:` field/i);
     // Checklist drives the Active/Done grouping.
     expect(out).toContain("checklist.md");
     // Pointer to the full schema doc.

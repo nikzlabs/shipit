@@ -60,10 +60,10 @@ function ChecklistProgressBadge({
 }
 
 /**
- * Jump-to-issue chip for a doc's `issue:` pointer (docs/168). Priority and
- * work-status now live in the tracker, so the docs list links out to it rather
- * than rendering a status badge. The chip stops row-click propagation so
- * clicking it opens the tracker instead of the doc modal.
+ * Jump-to-issue chip for a doc's `issue:` pointer (docs/168). Work tracking
+ * now lives in the tracker, so the docs list links out to it rather than
+ * rendering its own badge. The chip stops row-click propagation so clicking
+ * it opens the tracker instead of the doc modal.
  */
 function IssueChip({ issue }: { issue: string }) {
   const ref = parseIssueRef(issue);
@@ -152,9 +152,9 @@ function DocRowText({ doc, onClick }: { doc: DocEntry; onClick: () => void }) {
 }
 
 /**
- * Sort tracked docs newest-first. docs/168 removed priority/status from docs,
- * so there's no longer a "what's hot" signal to sort on — priority lives in the
- * tracker now. Creation-recency is the best ordering left, and the `NNN-`
+ * Sort tracked docs newest-first. docs/168 moved work tracking out to the
+ * tracker, so there's no longer a "what's hot" signal to sort on in the doc
+ * itself. Creation-recency is the best ordering left, and the `NNN-`
  * prefix on feature directories is a reliable proxy for it, so we order
  * descending by that number (see `compareDocsByRecency`) to keep the newest
  * work at the top without scrolling.

@@ -76,9 +76,9 @@ export function isPlanPath(path: string): boolean {
  * the Tracked list, as opposed to incidental markdown (a stray `README.md`,
  * `notes.md`, etc.).
  *
- * docs/168 removed `status`/`priority` frontmatter, so tracking can no longer
- * key off a `status:` line. The replacement is purely structural and needs no
- * frontmatter: a doc is tracked if it is a feature-directory `plan.md` or
+ * docs/168 moved work tracking out to the issue tracker, so this grouping can
+ * no longer key off a frontmatter field. The replacement is purely structural
+ * and needs no frontmatter: a doc is tracked if it is a feature-directory `plan.md` or
  * `checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling
  * in the same directory. This keeps the same docs "tracked" as before (every
  * feature dir has a plan and/or checklist) without depending on the removed
