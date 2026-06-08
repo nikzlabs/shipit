@@ -64,12 +64,14 @@ base and always run the install on top of it:
   result becomes the next base.
 
 The base is scoped per **`(repo, runtime fingerprint)`** — not per lockfile. The runtime
-fingerprint (image digest + arch + libc + interpreter major) is required so a base with
-compiled native addons/wheels is never reused across an incompatible runtime; it is *not*
-lockfile detection, so it doesn't reintroduce the thing we're avoiding. That tuple is the
-unit for the current-base pointer, publish lock/CAS, depth counter, and janitor cleanup.
-After that scope is established, "per repo" in this doc is shorthand for "per repo runtime"
-unless explicitly stated otherwise.
+fingerprint must describe ABI compatibility, not just broad language families: image digest,
+arch, libc, and each relevant runtime ABI/version (for example Node's native module ABI,
+Python implementation + major.minor / ABI tag, and equivalent compiled-extension boundaries
+for other runtimes). That prevents a base with compiled native addons/wheels from being reused
+across incompatible runtimes; it is *not* lockfile detection, so it doesn't reintroduce the
+thing we're avoiding. That tuple is the unit for the current-base pointer, publish lock/CAS,
+depth counter, and janitor cleanup. After that scope is established, "per repo" in this doc is
+shorthand for "per repo runtime" unless explicitly stated otherwise.
 
 ### 3. Lifecycle of a session
 
@@ -84,10 +86,12 @@ below), so the base-advance rule must hold regardless of where the install runs:
 3. **Run `agent.install`** on top of the base (writes only the dep delta into *this session's*
    upper layer — this never races another session).
 4. **Maybe advance the base** — publish the merged result as the next base **only if** the
-   install exited 0, the session is on the default branch, **and the candidate's `main` commit
-   strictly descends the current base's commit** (see the ordering rule below). Otherwise the
-   install result is used by the session but never published. Activation hands the user the
-   already-prepped tree.
+   install exited 0, the install ran before any user/agent dependency edits, the session's
+   recorded source base is the remote default-branch commit (normal ShipIt sessions are
+   per-session branches cut from `origin/HEAD`, not literally named `main`), **and the
+   candidate's `main` commit strictly descends the current base's commit** (see the ordering
+   rule below). Otherwise the install result is used by the session but never published.
+   Activation hands the user the already-prepped tree.
 
 > **Separate "runs an install" from "advances the base."** There is more than one install
 > path: the warm pool pre-installs on standbys ([warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243)),
@@ -109,9 +113,10 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > So the warm pool is *not* the single installer. The
 > invariant we actually rely on is narrower and
 > must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
-> (safe — no shared state); **(b)** only a **default-branch**, **exit-0** install may *publish*
-> a new base; **(c)** the publish advances the base only if it moves it **forward in `main`'s
-> history** (ordering rule below). That, not "one installer," is what keeps the chain linear.
+> (safe — no shared state); **(b)** only an **exit-0**, pre-user install whose recorded source
+> base is the remote default-branch commit may *publish* a new base; **(c)** the publish advances
+> the base only if it moves it **forward in `main`'s history** (ordering rule below). That, not
+> "one installer," is what keeps the chain linear.
 
 > **Ordering rule — compare by `main` commit, never by publish time.** Each base is stamped
 > with the `main` commit it was built from (step 2). On publish, advance the base **iff the
@@ -193,16 +198,18 @@ periodic clean-rebuild schedule is needed.
   code has multiple install paths (warm-pool pre-install, *skipped for untrusted remotes*; and
   an on-activation `runInstall` guarded only by the marker), so we cannot rely on the warm pool
   being the sole installer. Instead: any session runs install into its **own** `upperdir` (no
-  shared state, no race — installs need not be serialized), and only a **default-branch,
-  exit-0** install may **publish** a new base. A publish advances the base **only if its `main`
-  commit strictly descends the current base's commit** (`git merge-base --is-ancestor`), under
-  a short per-`(repo, runtime fingerprint)` lock that makes the read-compare-swap atomic. The
-  decision is **commit ancestry, not publish/wall-clock time**, so a late-but-older install
-  can't clobber a newer base; a stale or diverged publish is simply **skipped** (no
-  reconciliation, no redo). This is a compare-and-swap keyed on commit ancestry — lighter than
-  the loser-reconciliation we ruled out. Agent-spawned `--base` child sessions run on the base
-  but never publish (§3), and their non-default checkout invalidates any inherited install
-  marker before install so they cannot skip against default-branch dependencies.
+  shared state, no race — installs need not be serialized), and only an **exit-0**, pre-user
+  install whose recorded source base is the remote default-branch commit may **publish** a new
+  base. A publish advances the base **only if its `main` commit strictly descends the current
+  base's commit** (`git merge-base --is-ancestor`), under a short per-`(repo, runtime
+  fingerprint)` lock that makes the read-compare-swap atomic. The decision is **commit ancestry,
+  not publish/wall-clock time**, so a late-but-older install can't clobber a newer base; a stale
+  or diverged publish is simply **skipped** (no reconciliation, no redo). This is a
+  compare-and-swap keyed on commit ancestry — lighter than the loser-reconciliation we ruled out.
+  Agent-spawned `--base` child sessions, sessions whose source base is not the remote default
+  commit, and sessions with user/agent dependency edits before publish run on the base but never
+  publish (§3), and their non-default checkout invalidates any inherited install marker before
+  install so they cannot skip against default-branch dependencies.
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
@@ -259,12 +266,12 @@ design decisions are made (see Decisions).
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
-upper — no serialization needed; base publishes restricted to default-branch exit-0 installs
-and advance only forward by **`main`-commit ancestry**, a compare-and-swap with no
-reconciliation), flatten (depth-cap-triggered clean reinstall, specific tunable cap), cold
-start + trust (build v0 under the existing repo trust gate), sharing scope (single-user),
-secret capture (as-is, no filter), archive/restore (re-derive on unarchive), bad-base (exit-0
-gate).*
+upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
+recorded source base is the remote default-branch commit, and advance only forward by
+**`main`-commit ancestry**, a compare-and-swap with no reconciliation), flatten
+(depth-cap-triggered clean reinstall, specific tunable cap), cold start + trust (build v0 under
+the existing repo trust gate), sharing scope (single-user), secret capture (as-is, no filter),
+archive/restore (re-derive on unarchive), bad-base (exit-0 gate).*
 
 ## Key files
 
