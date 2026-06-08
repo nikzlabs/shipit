@@ -5,6 +5,13 @@ description: Keep compose-service secrets out of the agent-readable workspace wh
 
 # 183 — Compose Service Secret Isolation
 
+> **Scope.** This doc covers isolating **user-supplied** service secrets from the agent.
+> The separate, higher-severity problem — ShipIt auto-forwarding the user's *platform*
+> identity (Claude/GitHub/MCP OAuth) into repo-declared services via `source: platform:*` —
+> is removed outright in `docs/184-remove-platform-secret-forwarding/plan.md`. After 184 the
+> motivating credentials below are user-supplied secrets, and this doc keeps them out of the
+> agent-readable workspace.
+
 ## Overview
 
 ShipIt's compose secrets pipeline intentionally separates two audiences:
@@ -21,9 +28,12 @@ secrets just by opening the generated service env file.
 This surfaced in a Codex session for the ShipIt repo: `.shipit/.env.dev` contained
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, and `GITHUB_TOKEN`. Those entries are
 declared for the `dev` compose service in this repo's `docker-compose.yml`. That service
-runs ShipIt itself inside the session for dogfooding, so it needs forwarded platform
-credentials to boot authenticated. They were not declared `agent: true` and should not be
-visible to the agent container.
+runs ShipIt itself inside the session for dogfooding, so it needs those credentials to
+boot authenticated. They were not declared `agent: true` and should not be visible to the
+agent container. (At the time they were forwarded from the user's platform identity via
+`source: platform:*`; doc 184 removes that forwarding, so post-184 they are user-supplied
+secrets — but they are still written to a service env file, so this isolation still
+applies.)
 
 ## Problem
 
@@ -47,13 +57,14 @@ x-shipit-secrets:
                     # service only, but still readable from .shipit/.env.api today
 ```
 
-The bug is especially sharp for platform-sourced secrets:
+Any service-only secret the user provides — a database URL, an API key, a third-party
+token — should not land in the agent-readable workspace unless explicitly marked
+`agent: true`.
 
-- `source: platform:claude_oauth`
-- `source: platform:github_token`
-
-Those are useful for the dogfood service, but they are high-value credentials and should
-not land in the agent-readable workspace unless explicitly marked `agent: true`.
+> The previously highest-value case here — platform-forwarded credentials
+> (`source: platform:claude_oauth` / `platform:github_token`) — is no longer in this doc's
+> scope: doc 184 stops forwarding the user's platform identity into services at all. This
+> doc concerns the secrets the user *does* deliberately supply to their services.
 
 ## Goals
 
@@ -63,8 +74,9 @@ not land in the agent-readable workspace unless explicitly marked `agent: true`.
 - Preserve the explicit `agent: true` path for values the agent actually needs.
 - Avoid breaking existing compose stacks that rely on environment variables rather than
   reading Docker secret files directly.
-- Keep the dogfood flow working: the repo's `dev` service should still receive forwarded
-  Claude/GitHub credentials.
+- Keep the dogfood flow working: the repo's `dev` service should still receive its
+  (user-supplied, per doc 184) `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` — just not from a
+  workspace-readable file.
 - Avoid adding migration machinery solely for existing leaked files. Existing
   installations can delete `.shipit/.env.<service-name>` files manually or recreate their
   sessions after the write path changes.
@@ -74,7 +86,9 @@ not land in the agent-readable workspace unless explicitly marked `agent: true`.
 - This does not fully solve malicious service-code exfiltration. A service that receives
   a secret in its process environment can log it, write it to the workspace, or send it
   over the network. This feature fixes accidental agent-side readability of service-only
-  secret files.
+  secret files. (For *platform* credentials specifically, doc 184 removes the exfiltration
+  vector by not forwarding them to services at all; the residual risk here is for the
+  user-supplied secrets the user deliberately hands to their own services.)
 - This does not change the `agent: true` threat model. Values marked `agent: true` are
   intentionally available to the agent and remain exfiltratable.
 - This does not replace the broader agent-containment work in
@@ -83,6 +97,18 @@ not land in the agent-readable workspace unless explicitly marked `agent: true`.
 ## Design
 
 ### 1. Move default service env files out of the workspace
+
+> **`<stateDir>`** is the orchestrator's resolved state directory — the on-disk root where
+> it already keeps non-workspace state (the SQLite db, `repo-cache/`, `dep-cache/`). It is
+> `process.env.SHIPIT_STATE_DIR` when set, otherwise the orchestrator's `workspaceDir`
+> (`app-di.ts`: `stateDir = deps.stateDir ?? envStateDir ?? workspaceDir`). For service-env
+> placement the relevant `stateDir` is always the **containerized** orchestrator's, where it
+> defaults to the **workspace-volume root** (the directory that contains `sessions/`).
+>
+> The `SHIPIT_STATE_DIR=/workspace/.inner-shipit` value used in dogfooding belongs to the
+> *inner* orchestrator, which runs in local mode and writes **no** service-env files at all
+> (it constructs no `ServiceManager` — `app-lifecycle.ts`, `docs/118`). So that value never
+> governs service-env placement; see "Local/dogfood mode" below.
 
 Introduce a service-env root owned by the orchestrator, separate from the session
 workspace:
@@ -107,6 +133,37 @@ The exact root is configurable:
 - Otherwise `<stateDir>/service-env` in containerized runtime.
 - Tests and legacy/local paths can still inject no root and fall back to the old
   workspace `.shipit/.env.<service-name>` behavior where needed.
+
+**Why `<stateDir>/service-env` is agent-invisible in production — and not by accident.**
+The isolation does not come from the path string "looking outside" `/workspace`; in
+production `stateDir` defaults to the workspace-volume root, so this directory resolves to
+`/workspace/service-env` on disk. It is invisible to the agent because the agent container
+mounts the workspace volume with a **subpath** of `sessions/<sessionId>/workspace`
+(`container-lifecycle.ts`, `VolumeOptions.Subpath`), so a `service-env/` directory at the
+volume root is simply outside the agent's mount even though both live on the same Docker
+volume. This subpath dependency is load-bearing and must be stated wherever the default is
+described — an implementer who assumes "any path under `stateDir` is safe" reasons correctly
+*only* because every service-env writer is a containerized orchestrator with that mount.
+
+**Local/dogfood mode does not write service-env files — so it needs no special handling
+here.** It is tempting to worry that the dogfood inner orchestrator sets
+`SHIPIT_STATE_DIR=/workspace/.inner-shipit` (`docs/118`), which is *inside* the
+inner-agent-visible checkout, and conclude that `<stateDir>/service-env` would leak there.
+It would not, because the inner orchestrator never reaches that path: in local mode ShipIt
+constructs no `ServiceManager` and runs no compose stacks (`app-lifecycle.ts` skips Docker
+and compose for local runtime; `docs/118` lists `ServiceManager` under "Not loaded in local
+mode"). The dogfood `dev` service that *does* hold the motivating credentials is a compose
+service of the **outer**, containerized orchestrator — whose `stateDir` is the
+agent-invisible volume root and whose agent is subpath-mounted. So the production fix
+already covers the motivating incident, and no per-mode override or modified
+`SHIPIT_STATE_DIR` is required.
+
+> **Forward note.** *If* a future `LocalServiceManager` (Phase 2 of `docs/118`) ever runs
+> service processes inside local mode, directory placement alone could not isolate their
+> secrets: the local-mode agent is an in-process subprocess of the orchestrator with no
+> mount namespace, so it can read any path the orchestrator can. Isolation there would have
+> to come from Docker-secrets-style delivery or from not forwarding the secret — not from
+> moving a file. Out of scope for this feature.
 
 Why this is the first fix:
 
@@ -165,17 +222,18 @@ This feature should not remove Docker-secrets mode. Instead:
 - The docs should describe Docker-secrets mode as the stronger service-file isolation
   option, not the only way to avoid workspace leaks.
 
-### 5. Dogfood compose continues to use service-only platform credentials
+### 5. Dogfood compose keeps service-only secrets out of the workspace
 
-The ShipIt repo's `dev` service should keep:
+The ShipIt repo's `dev` service declares service-only secrets:
 
 ```yaml
 x-shipit-secrets:
-  - { name: ANTHROPIC_API_KEY,    source: platform:claude_oauth }
-  - { name: ANTHROPIC_AUTH_TOKEN, source: platform:claude_oauth }
-  - { name: GITHUB_TOKEN,         source: platform:github_token }
+  - { name: ANTHROPIC_API_KEY }
+  - { name: ANTHROPIC_AUTH_TOKEN }
+  - { name: GITHUB_TOKEN }
 ```
 
+(These are user-supplied secrets after doc 184 removes `source: platform:*` forwarding.)
 Those entries should remain service-only. The fix is not to add `agent: true`; the fix is
 to stop service-only env files from being written into the workspace.
 
@@ -202,7 +260,10 @@ x-shipit-secrets
   -> compose env_file
   -> service process.env
 
-agent cannot read <stateDir>/service-env from /workspace
+agent cannot read <stateDir>/service-env: the writer is always a containerized
+orchestrator whose agent mounts only the sessions/<id>/workspace subpath, so
+service-env/ at the volume root is outside that mount (local mode writes no
+service-env files at all — see Design §1)
 ```
 
 For `agent: true` entries:
@@ -227,8 +288,8 @@ x-shipit-secrets[agent: true]
   `SHIPIT_SERVICE_ENV_DIR` or `stateDir`.
 - `src/server/shipit-docs/secrets.md` — document that service-only env files do not live
   under the workspace in containerized mode.
-- `docker-compose.yml` — no behavioral change intended; dogfood service keeps
-  service-only platform credentials.
+- `docker-compose.yml` — no behavioral change from *this* doc; dogfood service keeps its
+  service-only secrets (the `source: platform:*` removal is doc 184's change).
 
 ## Tests
 
@@ -240,8 +301,8 @@ Add focused coverage for the boundary:
   back to `.shipit/.env.<service-name>` when none are supplied.
 - `service-manager.test.ts`: service-only secrets are written outside the workspace and
   the generated override references the external env file.
-- Regression: with dogfood-style `platform:claude_oauth` / `platform:github_token`
-  declarations and no `agent: true`, `.shipit/.env.dev` is absent while the external
+- Regression: with dogfood-style service-only secrets (`ANTHROPIC_API_KEY`,
+  `GITHUB_TOKEN`) and no `agent: true`, `.shipit/.env.dev` is absent while the external
   service env file exists.
 
 ## Rollout
@@ -253,11 +314,22 @@ Add focused coverage for the boundary:
 4. Update docs to say service env files are orchestrator-private in containerized mode,
    with Docker-secrets mode available for stronger isolation.
 
-## Open Questions
+## Resolved Decisions
 
-- Should local dogfood runtime use the external service env directory too, even when the
-  state directory is intentionally configured inside the checkout for local development?
-- Should `SHIPIT_SERVICE_ENV_DIR` be required in production deployments, or should the
-  default `<stateDir>/service-env` be sufficient?
-- Should the UI surface a warning when a repo declares high-value platform credentials in
-  service env, even when they are service-only?
+- **`SHIPIT_SERVICE_ENV_DIR` is not required: the default `<stateDir>/service-env` is
+  sufficient.** Every service-env writer is a containerized orchestrator whose `stateDir`
+  defaults to the workspace-volume root, and the agent mounts only the
+  `sessions/<id>/workspace` subpath — so the default is genuinely outside the agent's mount.
+  Local/dogfood mode is *not* an exception: it constructs no `ServiceManager` and writes no
+  service-env files (Design §1), so its inside-the-checkout `SHIPIT_STATE_DIR` never governs
+  service-env placement and modifying it would change nothing. Still, make safety a checked
+  invariant rather than a per-deployment assumption: at write time, assert the resolved
+  service-env root does not resolve inside any agent workspace mount, and refuse to write
+  (rather than silently leak) if it does. The override exists only for operators who keep
+  `stateDir` somewhere the assertion would reject.
+
+- **No UI warning for platform credentials in service env — moot.** This was about
+  high-value `platform:*` credentials landing in service env. Doc 184 removes `source:
+  platform:*` forwarding entirely, so those credentials no longer reach service env by this
+  path; there is nothing left to warn about. Doc 184 instead warns when a compose file
+  still *declares* a now-unhonored `source: platform:*`, which is the useful signal.
