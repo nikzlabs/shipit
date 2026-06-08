@@ -369,6 +369,18 @@ function PresentToolChip({
   );
 }
 
+/**
+ * Format a derived per-tool duration (docs/185) for the detail modal. Sub-second
+ * shows whole milliseconds; under 10s shows one decimal; beyond that, whole
+ * seconds — enough precision to be useful without false exactness.
+ */
+export function formatToolDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  const s = ms / 1000;
+  return s < 10 ? `${s.toFixed(1)} s` : `${Math.round(s)} s`;
+}
+
 /** Full-screen modal showing the agent's tool input and the tool's output. */
 function ToolOutputModal({ toolName, input, result, onClose }: {
   toolName: string;
@@ -376,6 +388,7 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
   result: ToolResultBlock;
   onClose: () => void;
 }) {
+  const duration = typeof result.durationMs === "number" ? formatToolDuration(result.durationMs) : "";
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
     <DialogContent className="w-[min(90vw,56rem)] max-h-[80vh] flex flex-col" aria-label="Tool output">
@@ -391,7 +404,17 @@ function ToolOutputModal({ toolName, input, result, onClose }: {
       </div>
       <div className="flex-1 overflow-auto p-4">
         <ToolInput toolName={toolName} input={input} />
-        <div className="text-[11px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) mb-2">Output</div>
+        <div className="flex items-baseline gap-2 mb-2">
+          <span className="text-[11px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">Output</span>
+          {duration ? (
+            <span
+              className="text-[11px] font-mono text-(--color-text-tertiary)"
+              title="Time from the tool call to its result. For tools that wait on approval, this includes that wait."
+            >
+              {duration}
+            </span>
+          ) : null}
+        </div>
         <ToolResult tool={toolName} result={result} />
       </div>
     </DialogContent>

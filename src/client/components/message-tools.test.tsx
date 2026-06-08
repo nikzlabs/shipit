@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { ToolUseItem } from "./message-tools.js";
+import { ToolUseItem, formatToolDuration } from "./message-tools.js";
 import type { ToolUseBlock } from "./MessageList.js";
 
 afterEach(() => {
@@ -87,5 +87,53 @@ describe("ToolUseItem output modal input", () => {
     expect(screen.getAllByText("src/foo.ts").length).toBeGreaterThan(0);
     // The output section still renders below the input.
     expect(screen.getByText("Output")).toBeInTheDocument();
+  });
+
+  it("shows the derived tool duration next to Output when present (docs/185)", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "ls" })}
+        result={{ toolUseId: "t1", content: "out", durationMs: 1234 }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+    expect(screen.getByText("1.2 s")).toBeInTheDocument();
+  });
+
+  it("omits the duration when the result has none", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Bash", { command: "ls" })}
+        result={{ toolUseId: "t1", content: "out" }}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    fireEvent.click(screen.getByLabelText("Show output"));
+    expect(screen.queryByText(/\d+\s?(ms|s)$/)).not.toBeInTheDocument();
+  });
+});
+
+describe("formatToolDuration (docs/185)", () => {
+  it("renders sub-second values in whole milliseconds", () => {
+    expect(formatToolDuration(0)).toBe("0 ms");
+    expect(formatToolDuration(450)).toBe("450 ms");
+    expect(formatToolDuration(999)).toBe("999 ms");
+  });
+  it("renders under-10s values with one decimal", () => {
+    expect(formatToolDuration(1234)).toBe("1.2 s");
+    expect(formatToolDuration(9990)).toBe("10.0 s");
+  });
+  it("renders longer values as whole seconds", () => {
+    expect(formatToolDuration(12000)).toBe("12 s");
+    expect(formatToolDuration(65432)).toBe("65 s");
+  });
+  it("returns empty string for invalid input", () => {
+    expect(formatToolDuration(-5)).toBe("");
+    expect(formatToolDuration(NaN)).toBe("");
   });
 });

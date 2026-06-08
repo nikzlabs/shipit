@@ -156,7 +156,44 @@ export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
         : (b.content === null || b.content === undefined) ? ""
         : JSON.stringify(b.content),
       isError: (b.is_error as boolean) ?? false,
+      // Per-tool duration injected by `stampToolDurations` before the event is
+      // emitted/persisted. Reading it here is what carries timing into the
+      // persisted `toolResults` JSON (chat-history) with no extra plumbing.
+      ...(typeof b.duration_ms === "number" ? { durationMs: b.duration_ms } : {}),
     }));
+}
+
+/**
+ * Inject a derived `duration_ms` onto each `tool_result` content block of an
+ * agent_tool_result event, computed as `now - startTime` for the matching
+ * tool_use id. The CLI gives us no per-tool timing, so we time it ourselves at
+ * the parse boundary: tool_use starts are stamped when the block is observed
+ * (see `toolUseStartTimes` in `wireAgentListeners`), and this stamps the result
+ * when it arrives. Mutating the event content (rather than a side channel) means
+ * the single value rides BOTH paths — the live WS event the client reads and the
+ * persisted `toolResults` that `extractToolResults` builds — from one source.
+ * Returns the event unchanged (same reference) when nothing was stamped, so
+ * non-tool-result events and results without a recorded start are zero-cost.
+ */
+export function stampToolDurations(
+  event: AgentEvent,
+  startTimes: Map<string, number>,
+  now: number,
+): AgentEvent {
+  const content = (event as { content?: unknown[] }).content;
+  if (!Array.isArray(content)) return event;
+  let changed = false;
+  const stamped = content.map((b) => {
+    if (typeof b !== "object" || b === null) return b;
+    const block = b as Record<string, unknown>;
+    if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") return b;
+    if (typeof block.duration_ms === "number") return b;
+    const start = startTimes.get(block.tool_use_id);
+    if (start === undefined) return b;
+    changed = true;
+    return { ...block, duration_ms: Math.max(0, now - start) };
+  });
+  return changed ? ({ ...event, content: stamped } as AgentEvent) : event;
 }
 
 /**
@@ -576,10 +613,20 @@ export function wireAgentListeners(
   // event from a future turn naturally clears the badge back to `loaded`.
   const toolUseIdToName = new Map<string, string>();
   const crashedServersThisTurn = new Set<string>();
+  // Per-tool timing (docs/185): the CLI emits no per-tool duration, only a
+  // turn-level one. We derive it by stamping a start when each tool_use block is
+  // observed and computing the delta when its tool_result arrives
+  // (`stampToolDurations`). Surfaced in the tool-call detail modal.
+  const toolUseStartTimes = new Map<string, number>();
   const recordToolUses = (
     blocks: readonly { id: string; name: string }[],
   ) => {
-    for (const block of blocks) toolUseIdToName.set(block.id, block.name);
+    const seenAt = Date.now();
+    for (const block of blocks) {
+      toolUseIdToName.set(block.id, block.name);
+      // First observation wins — never overwrite a start with a later re-record.
+      if (!toolUseStartTimes.has(block.id)) toolUseStartTimes.set(block.id, seenAt);
+    }
   };
   const reportMcpCrashesFromResults = (results: ToolResultEntry[]) => {
     for (const result of results) {
@@ -754,6 +801,14 @@ export function wireAgentListeners(
       if (filtered.length !== content.length) {
         event = { ...event, content: filtered } as AgentEvent;
       }
+    }
+
+    // Derive per-tool execution time (docs/185) by stamping each tool_result
+    // block with `now - <tool_use start>`. Done before the emit so the live
+    // client and the persisted `toolResults` (built downstream via
+    // `extractToolResults`) share one computed value from one source.
+    if (event.type === "agent_tool_result") {
+      event = stampToolDurations(event, toolUseStartTimes, Date.now());
     }
 
     const isInternalStreamCompletion =
