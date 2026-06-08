@@ -77,6 +77,7 @@ export type AutoConflictResolveState = RemediationState;
 interface ConflictSignal {
   mergeable: PrMergeableState;
   baseBranch: string;
+  baseSha?: string;
 }
 
 export class AutoConflictResolveManager extends AutoRemediationManager<ConflictSignal> {
@@ -161,6 +162,10 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     return { mergeable: "conflicting", baseBranch };
   }
 
+  protected override signalBaseSha(signal: ConflictSignal): string | undefined {
+    return signal.baseSha;
+  }
+
   protected override onDelete(sessionId: string): void {
     this.lastKnownMergeable.delete(sessionId);
     this.baseBranchCache.delete(sessionId);
@@ -180,8 +185,14 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
     current: PrStatusSummary,
     baseBranch: string,
     headSha: string,
+    baseSha?: string,
   ): Promise<void> {
-    return this.runTransition(sessionId, { mergeable: current.mergeable, baseBranch }, headSha);
+    const signal: ConflictSignal = {
+      mergeable: current.mergeable,
+      baseBranch,
+      ...(baseSha ? { baseSha } : {}),
+    };
+    return this.runTransition(sessionId, signal, headSha);
   }
 
   // ---- Fire + terminal accounting -----------------------------------------
