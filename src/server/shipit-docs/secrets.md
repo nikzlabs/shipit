@@ -80,35 +80,22 @@ services:
         agent: true
 ```
 
-### Compose services receive only user-supplied secrets
+### Compose services receive user-supplied secrets
 
 Every value injected into a compose service comes from the **per-repo secret
-store** — values the user explicitly entered in **Settings → Secrets**, keyed
-by the declared `name`. ShipIt does **not** auto-forward the user's
-platform-managed credentials (their Claude login, GitHub token, or connected
-MCP OAuth tokens) into compose services.
+store** — values the user entered in **Settings → Secrets**, keyed by the
+declared `name`. To give a service a credential, the user sets a secret of the
+same name.
 
-A `source: platform:*` field on an `x-shipit-secrets` entry is **no longer
-honored** (removed in docs/184). Forwarding was triggered entirely by a string
-in a repo-committed compose file, so a malicious repo could auto-start a
-preview service and exfiltrate the user's real GitHub or Claude token without
-the user ever entering a credential for that repo. The field is now ignored:
-the entry resolves from `userSecrets[name]` like any other declaration, and if
-the compose file still carries `source: platform:*`, ShipIt emits a one-line
-warning in the service log telling the user to set a `name` secret in
-Settings → Secrets.
+For the **ShipIt-in-ShipIt** inner orchestrator (which needs a Claude key and a
+GitHub token to push), set those as user secrets. Prefer a long-lived
+`ANTHROPIC_API_KEY` (which doesn't rotate) over a short-lived OAuth token.
 
-If a service genuinely needs a credential (e.g. the **ShipIt-in-ShipIt**
-inner orchestrator needs a Claude key and a GitHub token to push), set it as a
-**user secret** of the same name. Prefer a long-lived `ANTHROPIC_API_KEY`
-(which doesn't rotate) over a short-lived OAuth token.
-
-> **MCP OAuth tokens for the agent are unaffected.** Connecting Linear / Notion
-> under Settings → MCP Servers still wires the token into the *agent's* MCP
-> servers via the `$platform:<id>` placeholder (resolved from the
+> **MCP OAuth tokens reach the agent through a separate path.** Connecting
+> Linear / Notion under Settings → MCP Servers wires the token into the
+> *agent's* MCP servers via the `$platform:<id>` placeholder (resolved from the
 > `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server into their
-> own agent — a separate path from compose-service secret resolution, and it is
-> not changed here.
+> own agent — distinct from compose-service secret resolution.
 
 ### Field reference
 
@@ -118,10 +105,6 @@ inner orchestrator needs a Claude key and a GitHub token to push), set it as a
 | `description` | string | Free-form description shown to the user in the secrets panel. Helps them know what to configure. |
 | `required` | boolean | If true, the orchestrator surfaces a "Configure secrets" banner when no value is set. The compose stack still attempts to start — the banner is informational, not a hard block. |
 | `agent` | boolean | Also inject this env var into the agent container. Use for connection strings the agent needs when running CLI tools (`prisma migrate`, `bun test`, codegen). **Treat any `agent: true` value as exfiltratable**: it lands in the agent container's environment, and the agent can run arbitrary shell, so a prompt injection can read and POST it anywhere (agent containers currently have unrestricted network egress — see the security note below). Avoid for true secrets — the agent doesn't usually need API keys. |
-
-> A `source:` field is **no longer honored** (docs/184) — see "Compose
-> services receive only user-supplied secrets" above. It is parsed but
-> ignored; the entry resolves from the user secret store under its `name`.
 
 Unknown fields on the object are ignored. The same secret declared by
 multiple services merges its metadata: `required` and `agent` are OR'd, the
