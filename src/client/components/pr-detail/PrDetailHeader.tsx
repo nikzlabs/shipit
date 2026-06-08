@@ -20,7 +20,6 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { usePrStore, type PrCardState } from "../../stores/pr-store.js";
 import { Banner } from "../ui/banner.js";
-import { PrActionsMenu } from "../PrActionsMenu.js";
 
 function StateBadge({ phase, url }: { phase: PrCardState["phase"]; url?: string }) {
   const base = "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border";
@@ -221,9 +220,6 @@ export function PrDetailHeader({
               <span className="text-(--color-error)">-{pr.deletions}</span>
             </span>
           </div>
-        </div>
-        <div className="shrink-0">
-          <PrActionsMenu sessionId={sessionId} />
         </div>
       </div>
     </div>

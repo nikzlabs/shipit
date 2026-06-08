@@ -31,6 +31,7 @@ import {
   MergeButton,
   ResolveConflictsButton,
 } from "../PrStatusControls.js";
+import { PrActionsMenu } from "../PrActionsMenu.js";
 
 function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") {
@@ -122,11 +123,6 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   // when CI failed and the auto-loop isn't actively handling it.
   const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
-  // Close lives in the merge dropdown and the header's PrActionsMenu, not here;
-  // only render the action box when one of these inline controls is present so
-  // it never collapses to an empty bordered row.
-  const hasActions = showMergeButton || showFixButton || showAutoMergeToggle || !!showConflictUi;
-
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
       <h3 className="text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
@@ -137,7 +133,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
 
       <ReviewSummary reviewDecision={reviewDecision} />
 
-      {hasActions && (
+      {card.phase === "open" && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border-primary) bg-(--color-bg-secondary)/40 p-2">
           {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
           {showFixButton && <FixCIButton sessionId={sessionId} />}
@@ -145,6 +141,13 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
           )}
+          {/* PR actions (Sync / Copy branch / Close) live next to the merge
+              controls — where the user looks for merge-related actions —
+              rather than tucked into the panel header. `ml-auto` keeps the ⋮
+              at the trailing edge of the action row. */}
+          <div className="ml-auto">
+            <PrActionsMenu sessionId={sessionId} />
+          </div>
         </div>
       )}
 
