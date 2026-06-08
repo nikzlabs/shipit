@@ -333,7 +333,6 @@ export function registerAgentOpsRoutes(
     Body: {
       prompt?: string;
       title?: string;
-      base?: string;
       agent?: string;
       model?: string;
     };

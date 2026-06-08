@@ -337,7 +337,7 @@ describe("shipit session create", () => {
     expect(out.stderr).toContain("--branch");
   });
 
-  it("forwards --agent, --model, --base when supplied", async () => {
+  it("forwards --agent and --model when supplied", async () => {
     const { run } = makeRunner();
     const pf = await promptFile("x");
     const out = await run(
@@ -347,7 +347,6 @@ describe("shipit session create", () => {
         "--title", "Forwarded flags",
         "--agent", "codex",
         "--model", "claude-sonnet-4-20250514",
-        "--base", "origin/main",
       ],
       {
         "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } },
@@ -357,8 +356,23 @@ describe("shipit session create", () => {
     expect(out.calls[0].body).toMatchObject({
       agent: "codex",
       model: "claude-sonnet-4-20250514",
-      base: "origin/main",
     });
+  });
+
+  it("rejects --base as an unsupported flag", async () => {
+    // The agent-facing `--base` was removed: generic fan-out children always
+    // branch off the parent repo's freshly-fetched `origin/main`, so a child
+    // can't be pinned to a stale ref that misses a just-merged parent change.
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run([
+      "session", "create",
+      "--prompt-file", pf,
+      "--title", "No base",
+      "--base", "origin/main",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--base");
   });
 
   it("--json prints the full broker response on stdout", async () => {
