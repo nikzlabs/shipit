@@ -275,17 +275,13 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 
 ## Design docs
 
-Workspace \`.md\` files (typically under \`docs/NNN-feature/plan.md\`) show up in ShipIt's feature list. When you create or update one, use YAML frontmatter with a \`status\` field. The only typed values are:
+Workspace \`.md\` files (typically under \`docs/NNN-feature/plan.md\`) show up in ShipIt's feature list. Docs are **reference material** — what a feature is, why, and how. Work-status and priority do NOT live in the doc; they live in the issue tracker (Linear / GitHub Issues). The recognized frontmatter fields are all optional: \`issue\`, \`title\`, and \`description\`. A doc with no frontmatter still appears in the list.
 
-- \`planned\` — documented but work hasn't started
-- \`in-progress\` — actively being worked on
-- \`done\` — feature is complete
-- \`paused\` — has a design but not actively planned
-- \`rejected\` — proposal considered and declined; kept for the reasoning
+\`issue:\` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Linear pointers must be a full URL (\`https://linear.app/<workspace>/issue/SHI-28/...\`) — a bare \`SHI-28\` is not accepted; GitHub is \`owner/repo#123\` or a full issue URL. \`description\` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
 
-Do NOT invent other statuses like \`proposed\`, \`design\`, \`implemented\`, \`shipped\`, \`wip\`, or \`tbd\`. Any other string still renders but as a neutral badge with no typed UI affordances (priority sorting, Archived collapse, success colouring). See /shipit-docs/design-docs.md for the full schema (priority, title, description, common mistakes).
+There is no \`status:\` or \`priority:\` field — both were removed and the scanner silently ignores them. Don't add one; link to the issue tracker with \`issue:\` instead.
 
-Track remaining work in a sibling \`checklist.md\` file next to \`plan.md\` (e.g. \`docs/NNN-feature/checklist.md\`) — not as a \`## Checklist\` section inside \`plan.md\`. Mark items complete with \`[x]\`. When you set \`status: done\`, all items in \`checklist.md\` should be checked off.
+Track remaining work in a sibling \`checklist.md\` file next to \`plan.md\` (e.g. \`docs/NNN-feature/checklist.md\`) — not as a \`## Checklist\` section inside \`plan.md\`. Mark items complete with \`[x]\`. The checklist drives the docs list's Active/Done grouping: when every item is checked, the doc folds into the collapsed Done group, so check them all off when the work is finished.
 
 ## Service logs
 
