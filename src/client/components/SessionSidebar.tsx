@@ -341,6 +341,9 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   // devices, and while the menu itself is open. On inactive desktop rows it
   // hover-reveals so it doesn't add visual noise to the long sidebar list.
   const overflowAlwaysVisible = isCurrent || menuOpen || Boolean(isTouch);
+  const hasCurrentSessionActions = isCurrent;
+  const canInvestigateInOps = session.kind !== "ops";
+  const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
   return (
     <div
@@ -449,11 +452,11 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                     Archive
                   </DropdownMenuItem>
                 )}
+                {hasSeparatedActions && <DropdownMenuSeparator />}
                 {/* Chat-scoped actions, only on the active session's row (see the
                     handlers above for why they're current-only). */}
-                {isCurrent && (
+                {hasCurrentSessionActions && (
                   <>
-                    <DropdownMenuSeparator />
                     {canRecoverRewind && (
                       <DropdownMenuItem onSelect={handleRecoverRewind}>
                         <ArrowCounterClockwiseIcon size={ICON_SIZE.SM} />
@@ -466,7 +469,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                     </DropdownMenuItem>
                   </>
                 )}
-                {session.kind !== "ops" && (
+                {canInvestigateInOps && (
                   <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
                     <WrenchIcon size={ICON_SIZE.SM} />
                     Investigate in Ops session

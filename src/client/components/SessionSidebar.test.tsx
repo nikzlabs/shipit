@@ -192,6 +192,28 @@ describe("SessionSidebar", () => {
       expect(download.compareDocumentPosition(investigate) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    it("separates Investigate in Ops session from archive actions when download is absent", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Inactive", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
+      await user.click(screen.getByLabelText("Session actions"));
+
+      expect(await screen.findByRole("separator")).toBeTruthy();
+      expect(screen.queryByText("Download chat")).toBeNull();
+      expect(screen.getByText("Investigate in Ops session")).toBeTruthy();
+    });
+
+    it("separates Download chat from archive actions when investigate is absent", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Ops", remoteUrl: repoA.url, kind: "ops" })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+
+      expect(await screen.findByRole("separator")).toBeTruthy();
+      expect(screen.getByText("Download chat")).toBeTruthy();
+      expect(screen.queryByText("Investigate in Ops session")).toBeNull();
+    });
+
     it("shows Recover recent rewind only when a non-expired recovery exists for the current session", async () => {
       const user = userEvent.setup();
       useSessionStore.setState({
