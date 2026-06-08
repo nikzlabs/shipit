@@ -443,12 +443,6 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
                   Rename
                 </DropdownMenuItem>
-                {session.kind !== "ops" && (
-                  <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
-                    <WrenchIcon size={ICON_SIZE.SM} />
-                    Investigate in Ops session
-                  </DropdownMenuItem>
-                )}
                 {onArchive && (
                   <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>
                     <PhArchiveIcon size={ICON_SIZE.SM} />
@@ -471,6 +465,12 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                       Download chat
                     </DropdownMenuItem>
                   </>
+                )}
+                {session.kind !== "ops" && (
+                  <DropdownMenuItem onSelect={() => void handleInvestigateInOps()} disabled={disabled}>
+                    <WrenchIcon size={ICON_SIZE.SM} />
+                    Investigate in Ops session
+                  </DropdownMenuItem>
                 )}
               </>
             )}
