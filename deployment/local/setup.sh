@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-line local installer for ShipIt (macOS + Linux).
+# One-line local installer for ShipIt (macOS, Linux, and Windows via WSL2).
 #
 #   bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/main/deployment/local/setup.sh)
 #

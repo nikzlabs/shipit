@@ -43,7 +43,7 @@ export async function forkSession(
   const newSessionDir = path.join(sessionsRoot, newSessionId);
   const newWorkspaceDir = path.join(newSessionDir, "workspace");
 
-  // Clone from the active session worktree (not the bare cache). The chat
+  // Clone from the active session's own clone (not the bare cache). The chat
   // history's `startPoint` SHA is from an auto-commit in this session — it
   // is guaranteed to exist here, but may be missing from the bare cache
   // (commit not yet auto-pushed, or pruned after the PR branch was deleted).

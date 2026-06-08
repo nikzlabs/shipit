@@ -14,7 +14,8 @@ export interface SessionDirDeps {
 
 /**
  * Create a factory function for creating new session directories.
- * The directory is created empty — git worktree setup happens separately.
+ * The directory is created empty — the per-session clone (RepoGit.cloneFromCache)
+ * happens separately.
  */
 export function createSessionDirFactory(
   dirDeps: SessionDirDeps,

@@ -144,7 +144,9 @@ SessionContainerManager.create(config):
   1. Build Docker mounts:
      - session dir -> /workspace (read-write)
      - credentials dir -> /credentials (read-only)
-     - shared repo dir -> same absolute path (for worktree resolution)
+     - dep-cache dir -> /dep-cache (shared per-repo dependency cache)
+     The session's clone is self-contained (its `.git/` holds hardlinked objects),
+     so only /workspace needs to be visible in the container.
   2. docker.createContainer({
        Image: "shipit-session-worker:latest",
        Cmd: ["node", "--import", "tsx", "src/server/session/session-worker.ts"],

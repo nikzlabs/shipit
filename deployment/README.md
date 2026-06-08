@@ -178,13 +178,32 @@ The script installs Tailscale if needed, authenticates the VPS, sets the node ho
 
 ShipIt previews are served on subdomains (`{sessionId}--{port}.shipit.tailnet.ts.net`). Tailscale Serve can't carry those (it binds only the node's own name), so the script instead runs a Host-preserving TCP forwarder bound to the node's tailnet IP and relies on **native MagicDNS wildcard resolution** so `*.shipit.tailnet.ts.net` resolves to the node.
 
-That wildcard is an opt-in capability you grant once. After running the script, add the `nodeAttrs` block it prints to your [tailnet policy file](https://login.tailscale.com/admin/acls):
+That wildcard is an opt-in capability you grant once. After running the script, add the `nodeAttrs`
+block it prints (with your node's tailnet IP already filled in) to your
+[tailnet policy file](https://login.tailscale.com/admin/acls):
+
+1. Open the [Access controls page](https://login.tailscale.com/admin/acls).
+2. Click the **JSON editor** toggle at the top (Tailscale defaults to the Visual editor, which has
+   no place to paste a raw block).
+3. Add `nodeAttrs` as a **top-level key** in the policy object — a sibling of `"acls"`, `"groups"`,
+   etc., **not** nested inside them. Watch the JSON commas: top-level keys are comma-separated.
+4. Click **Save**.
 
 ```json
-"nodeAttrs": [
-  { "target": ["<node-tailscale-ip>"], "attr": ["dns-subdomain-resolve"] }
-]
+{
+  "acls": [
+    // ...your existing rules...
+  ],
+  "nodeAttrs": [
+    { "target": ["<node-tailscale-ip>"], "attr": ["dns-subdomain-resolve"] }
+  ]
+}
 ```
+
+Replace `<node-tailscale-ip>` with the VPS's `100.x.y.z` tailnet IP (the script prints it pre-filled;
+a `tag:` target works too and survives the node's IP changing). The same grant is also reachable in
+the Visual editor under **Definitions → Node attributes**, but the JSON editor is the direct
+paste-it-in path.
 
 Requirements and caveats:
 
