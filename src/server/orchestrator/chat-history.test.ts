@@ -206,7 +206,7 @@ describe("ChatHistoryManager", () => {
       images: [{ data: "abc", mediaType: "image/png" }],
       files: [{ path: "a.ts", contentPreview: "x", startLine: 1, endLine: 2 }],
       isError: true,
-      toolResults: [{ toolUseId: "t1", content: "ok", isError: false }],
+      toolResults: [{ toolUseId: "t1", content: "ok", isError: false, durationMs: 1234 }],
       commitHash: "abc123",
       parentCommitHash: "def456",
       uploadPaths: ["/uploads/x.png"],

@@ -45,6 +45,13 @@ export interface ToolResultBlock {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  /**
+   * Derived per-tool execution time in ms (docs/185), computed server-side as
+   * the delta between the tool_use and its tool_result. Shown in the tool-call
+   * detail modal. Absent on older persisted messages and tools with no recorded
+   * start.
+   */
+  durationMs?: number;
 }
 
 /**

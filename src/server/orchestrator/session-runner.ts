@@ -37,6 +37,16 @@ export interface ToolResultEntry {
   toolUseId: string;
   content: string;
   isError?: boolean;
+  /**
+   * Per-tool execution time in milliseconds. The CLI never reports per-tool
+   * timing (only a turn-level `duration_ms`), so the orchestrator derives this:
+   * the wall-clock delta between observing the `tool_use` block and its matching
+   * `tool_result`. Surfaced in the tool-call detail modal. For interactive tools
+   * (AskUserQuestion / ExitPlanMode) the delta includes human approval time, so
+   * it reads as elapsed, not pure execution. Absent when no start time was seen
+   * for the tool (e.g. a result with no preceding recorded tool_use).
+   */
+  durationMs?: number;
 }
 
 /**

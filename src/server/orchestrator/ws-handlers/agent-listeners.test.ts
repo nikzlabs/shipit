@@ -1,7 +1,7 @@
 import { EventEmitter } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { SessionRunner } from "../session-runner.js";
-import { wireAgentListeners, buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { wireAgentListeners, buildTurnMessages, extractToolResults, stampToolDurations, type AgentListenerDeps } from "./agent-listeners.js";
 import type { ChatMessageGroup, RecordedChatCard } from "../session-runner.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { CredentialStore } from "../credential-store.js";
@@ -391,6 +391,63 @@ describe("wireAgentListeners", () => {
       ]);
       expect(out[2]).toMatchObject({ role: "assistant", text: "", bugReport: { cardId: "b1", phase: "draft" } });
       expect(out[2].inProgress).toBeUndefined();
+    });
+  });
+});
+
+describe("per-tool timing derivation (docs/185)", () => {
+  const toolResultEvent = (
+    blocks: { tool_use_id: string; content?: string; is_error?: boolean; duration_ms?: number }[],
+  ): AgentEvent =>
+    ({
+      type: "agent_tool_result",
+      content: blocks.map((b) => ({ type: "tool_result", ...b })),
+    }) as unknown as AgentEvent;
+
+  describe("stampToolDurations", () => {
+    it("stamps duration_ms = now - start for results with a recorded start", () => {
+      const starts = new Map<string, number>([["t1", 1000]]);
+      const out = stampToolDurations(toolResultEvent([{ tool_use_id: "t1", content: "ok" }]), starts, 1450);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.duration_ms).toBe(450);
+    });
+
+    it("leaves results without a recorded start untouched (returns same reference)", () => {
+      const starts = new Map<string, number>();
+      const event = toolResultEvent([{ tool_use_id: "unknown", content: "ok" }]);
+      const out = stampToolDurations(event, starts, 1450);
+      expect(out).toBe(event);
+    });
+
+    it("does not overwrite a duration that is already present", () => {
+      const starts = new Map<string, number>([["t1", 1000]]);
+      const out = stampToolDurations(toolResultEvent([{ tool_use_id: "t1", duration_ms: 7 }]), starts, 9999);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.duration_ms).toBe(7);
+    });
+
+    it("clamps a negative delta (clock skew) to zero", () => {
+      const starts = new Map<string, number>([["t1", 2000]]);
+      const out = stampToolDurations(toolResultEvent([{ tool_use_id: "t1" }]), starts, 1000);
+      const block = (out as unknown as { content: Record<string, unknown>[] }).content[0];
+      expect(block.duration_ms).toBe(0);
+    });
+
+    it("is a no-op for non-tool-result events", () => {
+      const event = { type: "agent_assistant", content: [{ type: "text", text: "hi" }] } as unknown as AgentEvent;
+      expect(stampToolDurations(event, new Map(), 1)).toBe(event);
+    });
+  });
+
+  describe("extractToolResults", () => {
+    it("carries a stamped duration_ms into the entry's durationMs", () => {
+      const event = toolResultEvent([{ tool_use_id: "t1", content: "ok", duration_ms: 320 }]);
+      expect(extractToolResults(event)[0]).toMatchObject({ toolUseId: "t1", content: "ok", durationMs: 320 });
+    });
+
+    it("omits durationMs when no duration was stamped", () => {
+      const entry = extractToolResults(toolResultEvent([{ tool_use_id: "t1", content: "ok" }]))[0];
+      expect(entry.durationMs).toBeUndefined();
     });
   });
 });
