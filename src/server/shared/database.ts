@@ -457,6 +457,16 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN closed_at TEXT");
   },
+  // docs/182 — persist whether the session's last completed turn errored. The
+  // child-session readiness check (`shipit session wait`) reports a distinct
+  // `error` outcome (exit 3) so a parent agent orchestrating a fleet never
+  // mistakes a failed child for a finished one. The runner's in-memory flag is
+  // lost on an orchestrator restart, so the authoritative state must survive on
+  // the session row — a brand-new long-poll re-derives the outcome from here +
+  // a live worker probe rather than a transient event it had to be listening for.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN last_turn_errored INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 export class DatabaseManager {

@@ -757,17 +757,22 @@ export async function registerSessionRoutes(
     },
   );
 
-  // GET /api/sessions/:parentId/children/:childId[?wait=true&timeout=N]
+  // GET /api/sessions/:parentId/children/:childId[?wait=true&timeout=N&segment=S]
   //
   // Without `wait` — returns the snapshot.
-  // With `wait=true` — long-polls until the child is idle (running=false &&
-  // queueLength=0) or `timeout` (in seconds, clamped to MAX_WAIT_FOR_CHILD_IDLE_MS)
-  // elapses. The response always includes the child snapshot. `timedOut: true`
-  // signals the long-poll hit its deadline; the shim maps that to a non-zero
-  // exit code.
+  // With `wait=true` — resolves the child's readiness. `timeout` (seconds,
+  // clamped to MAX_WAIT_FOR_CHILD_IDLE_MS) is the overall cap. `segment`
+  // (seconds, docs/182) bounds a single server poll: when set and the child is
+  // still running after `segment`, the route returns 200 with
+  // `{ outcome: "pending" }` ("poll again") instead of holding the socket open
+  // for the full `timeout` — so a reset costs one retried segment, not the wait.
+  // Without `segment` it behaves as the legacy single long-poll. The response
+  // always includes the child snapshot and a machine-readable `outcome`
+  // (idle / error / archived / pending / timed-out); `idle` / `timedOut` are
+  // retained for back-compat.
   app.get<{
     Params: { parentId: string; childId: string };
-    Querystring: { wait?: string; timeout?: string };
+    Querystring: { wait?: string; timeout?: string; segment?: string };
   }>(
     "/api/sessions/:parentId/children/:childId",
     async (request, reply) => {
@@ -777,15 +782,24 @@ export async function registerSessionRoutes(
           const timeoutMs = Number.isFinite(requestedTimeoutSecs) && requestedTimeoutSecs > 0
             ? Math.min(Math.floor(requestedTimeoutSecs * 1000), MAX_WAIT_FOR_CHILD_IDLE_MS)
             : DEFAULT_WAIT_FOR_CHILD_IDLE_MS;
+          const requestedSegmentSecs = Number(request.query.segment);
+          const segmentMs = Number.isFinite(requestedSegmentSecs) && requestedSegmentSecs > 0
+            ? Math.min(Math.floor(requestedSegmentSecs * 1000), MAX_WAIT_FOR_CHILD_IDLE_MS)
+            : undefined;
           const result = await waitForChildIdle(
             sessionManager,
             deps.runnerRegistry,
             request.params.parentId,
             request.params.childId,
-            timeoutMs,
-            childProjections,
+            { timeoutMs, ...(segmentMs !== undefined ? { segmentMs } : {}), projections: childProjections },
           );
-          return { child: result.child, idle: result.idle, timedOut: result.timedOut };
+          return {
+            child: result.child,
+            idle: result.idle,
+            timedOut: result.timedOut,
+            pending: result.pending,
+            outcome: result.outcome,
+          };
         }
         const child = getSpawnedChild(
           sessionManager,

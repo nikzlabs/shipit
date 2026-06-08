@@ -700,6 +700,56 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  /**
+   * docs/182 — drive the child's FakeClaudeProcess to an errored turn (a
+   * `result` with subtype `error`, then `done`) so the readiness check records
+   * the distinct `error` outcome.
+   */
+  async function spawnAndErrorChild(parentId: string): Promise<string> {
+    const before = createdClaudes.length;
+    const childId = await spawnChild(parentId);
+    const deadline = Date.now() + 2000;
+    while (createdClaudes.length === before && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    cp.emit("event", { type: "result", subtype: "error", session_id: "test-session", result: "boom" });
+    cp.emit("done", 1);
+    await new Promise((r) => setTimeout(r, 50));
+    return childId;
+  }
+
+  it("GET /children/:childId?wait=true reports outcome=error after the child's turn errors", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const childId = await spawnAndErrorChild(parentId);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${parentId}/children/${childId}?wait=true&timeout=5`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { idle: boolean; outcome: string; child: { status: string } };
+    expect(body.outcome).toBe("error");
+    expect(body.idle).toBe(false);
+    expect(body.child.status).toBe("error");
+  });
+
+  it("GET /children/:childId?wait=true&segment=1 returns outcome=pending while the child runs", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    // Leave the child running — a bounded 1s segment should return `pending`.
+    const childId = await spawnChild(parentId);
+
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${parentId}/children/${childId}?wait=true&timeout=10&segment=1`,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { idle: boolean; pending: boolean; outcome: string };
+    expect(body.outcome).toBe("pending");
+    expect(body.pending).toBe(true);
+    expect(body.idle).toBe(false);
+  });
+
   it("POST /children/:childId/archive archives an idle child the parent spawned", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const childId = await spawnAndIdleChild(parentId);

@@ -433,6 +433,17 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    * a reconnect mid-review doesn't clear it.
    */
   activeReviewFilePath: string | null;
+  /**
+   * docs/182 — true when the runner's most recent completed turn ended in an
+   * error (agent process error, or an errored `agent_result` that wasn't a
+   * deliberate interrupt). Set definitively at every turn completion (false on a
+   * clean finish), mirrored to `SessionInfo.lastTurnErrored` for restart
+   * durability. Read by the child-session readiness check so `shipit session
+   * wait` can resolve a distinct `error` outcome rather than a false `idle`.
+   * Volatile: a rebuilt runner starts `false`; the persisted session flag is the
+   * authority across an orchestrator restart.
+   */
+  lastTurnErrored: boolean;
   accumulatedText: string;
   accumulatedToolUse: ClaudeContentBlockToolUse[];
   turnSummary: string;
@@ -620,6 +631,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isRunning = false;
   private _systemTurnInProgress = false;
   private _wasInterrupted = false;
+  private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
@@ -662,6 +674,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set systemTurnInProgress(v: boolean) { this._systemTurnInProgress = v; }
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
+  get lastTurnErrored(): boolean { return this._lastTurnErrored; }
+  set lastTurnErrored(v: boolean) { this._lastTurnErrored = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }

@@ -162,6 +162,15 @@ export interface SessionInfo {
    * orchestrator does not interpret it beyond persistence.
    */
   spawnedByTurn?: string;
+  /**
+   * docs/182 — true when the session's last completed turn ended in an error
+   * (agent process error, or an `agent_result` carrying an error that wasn't a
+   * deliberate interrupt). Persisted so it survives an orchestrator restart and
+   * the child-session readiness check (`shipit session wait`) can report a
+   * distinct `error` outcome instead of a false `idle`. Cleared (set false) on
+   * the next clean turn completion.
+   */
+  lastTurnErrored?: boolean;
 }
 
 // ---- Repo types ----
