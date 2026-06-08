@@ -1,322 +1,165 @@
 ---
 status: planned
-description: Share dependency trees across sessions by overlay-mounting an immutable, lockfile-keyed canonical layer instead of copying them in per session.
+description: Share a warm workspace baseline across sessions via one rolling overlay base per repo; each session runs its real install on top, so it's ecosystem-agnostic with no keys and no lockfile detection.
 ---
 
-# Overlay-mounted canonical dependency layer
+# Overlay-mounted rolling workspace base
 
-> **TL;DR — the proposal.** Replace the per-session **full copy** of `node_modules`
-> (today's `nm-store` `tar`/`cp -a`) with an **overlay**: a **single rolling base per repo**
-> mounted read-only as the `lowerdir`, with a per-session upper layer for copy-on-write.
-> Each session always runs its **real install command on top of that warm base**, so it
-> does only incremental work — which needs **no keys and no lockfile detection**, making it
-> work for arbitrary commands, monorepos, and Python alike. Concurrency stays clean by
-> advancing the shared base through an **optimistic compare-and-swap** (parallel installs,
-> serialized publish). The orchestrator owns the mount; the worker keeps owning the install.
+> **TL;DR — the proposal.** Instead of copying `node_modules` into each session (today's
+> `nm-store` `tar`/`cp -a`), keep **one rolling overlay base per repo**: the whole-workspace
+> filesystem state right after a successful install. A new session mounts that base read-only
+> as the overlay `lowerdir`, gets a per-session upper layer for copy-on-write, fast-forwards
+> its source with git, and runs its **real install command on top** — doing only incremental
+> work. Because we overlay the **entire workspace** (not a dependency subdirectory) and just
+> run the install command, the design is **environment-agnostic**: no keys, no lockfile
+> detection, no need to know where deps live (`node_modules`, `.venv`, `vendor/`, …). The
+> chain stays naturally linear because the chain-feeding install always runs on the default
+> branch at session creation. Concurrency is handled by an **optimistic compare-and-swap** on
+> the base; the orchestrator owns the host-side mount; the worker keeps owning the install.
 >
-> A content-addressed *keyed* variant (skip install on an exact match) is kept as an
-> optional optimization / [alternative](#alternative-the-keyed-immutable-layer). The
-> reasoning and ecosystem-by-ecosystem analysis are in
-> [Research & analysis](#research--analysis) at the bottom.
+> A content-addressed *keyed* variant (skip install on an exact match) is kept as an optional
+> [alternative](#alternative-the-keyed-immutable-layer). Reasoning and ecosystem detail are
+> in [Research & analysis](#research--analysis) at the bottom.
 
 ## Problem
 
-Every session that needs dependencies pays to get `node_modules` into its workspace.
-Downloads are already shared (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md)),
-and whole `node_modules` trees are already cached and keyed by
-`sha256(lockfile + runtimeKey + installCommand)` ([148](../148-fast-npm-install/plan.md)).
-But the cached tree is laid down by a **full copy** — `tar | tar` → `cp -a`
-([nm-store.ts:218-259](../../src/server/session/nm-store.ts#L218-L259)) — which is the
-remaining per-session cost (tens of thousands of tiny file writes) and burns disk (one
-physical copy per session). It also forced an explicit rejection of hardlinking
-([nm-store.ts:203-208](../../src/server/session/nm-store.ts#L203-L208)), because a
-mid-session `npm rebuild` / `patch-package` would corrupt a shared store through shared
-inodes.
+Every session that needs dependencies pays to get them into its workspace. Downloads are
+already shared (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md)), and whole
+`node_modules` trees are cached and keyed by `sha256(lockfile + runtimeKey + installCommand)`
+([148](../148-fast-npm-install/plan.md)). But the cached tree is laid down by a **full
+copy** — `tar | tar` → `cp -a` ([nm-store.ts:218-259](../../src/server/session/nm-store.ts#L218-L259))
+— which is the remaining per-session cost (tens of thousands of tiny file writes) and burns
+disk (one physical copy per session). It also forced an explicit rejection of hardlinking
+([nm-store.ts:203-208](../../src/server/session/nm-store.ts#L203-L208)) and only works for a
+narrow allowlist of single-lockfile npm/Yarn/pnpm commands — monorepos, Python, and
+arbitrary install commands get no speedup at all.
 
 ## Proposed design
 
-> **Rename first — the store is no longer node_modules-specific.** Today's module is
-> `nm-store.ts` and the on-disk store is `/dep-cache/nm-store/<key>` — both named for
-> `node_modules`. This design also caches Python venvs (and any future ecosystem's tree),
-> so as part of the work rename the module to **`dep-store.ts`** and the store path to
-> **`/dep-cache/dep-store/<key>`**. The rest of this doc uses `dep-store` for the proposed
-> system and keeps `nm-store` only when citing today's code.
+### 1. Overlay the whole workspace, not a dependency directory
 
-### 1. Overlay instead of copy
+The base is the **entire workspace filesystem state** captured right after a successful
+install, mounted read-only as the overlay `lowerdir`; each session writes to its own
+`upperdir` (copy-on-write). The install command runs and writes wherever it likes —
+`node_modules`, `.venv`, `vendor/`, `target/`, a `.pnp.cjs`, a pnpm store inside the tree —
+and the overlay captures the whole diff generically.
 
-Mount the canonical tree as a read-only `lowerdir` with a fresh per-session `upperdir`
-for writes (copy-on-write). Materialize becomes an **O(1) mount** instead of an O(files)
-copy, disk is shared until a session writes, and in-place mutations are isolated by
-copy-up — structurally solving the very problem `nm-store` pays a full copy to avoid.
-This is ecosystem-agnostic: on a cache hit the install step disappears entirely,
-including for store-based managers like pnpm/uv that would otherwise re-link thousands of
-files.
+This is the key simplification: **we never need to know which ecosystem or where deps live.**
+There is no `findLockfile`, no command allowlist, no per-manager "mount target path." The
+only per-repo input is the `agent.install` command that already exists in `shipit.yaml`. A
+monorepo, a polyglot repo, or a custom install script are all just "run the command, capture
+the resulting tree." This supersedes the node_modules-specific `nm-store` copy store entirely.
 
-### 2. Orchestrator owns the mount
+### 2. Keyless rolling base per repo
+
+Route **every** session for a repo to the **one current base** for that repo and always run
+the install on top of it:
+
+- **Nothing changed** → the package manager's up-to-date check makes the install a near
+  no-op; the `upperdir` delta is ~empty.
+- **Something changed** → the install writes only the delta into the `upperdir`; the merged
+  result becomes the next base.
+
+The base is scoped per **`(repo, runtime fingerprint)`** — not per lockfile. The runtime
+fingerprint (image digest + arch + libc + interpreter major) is still required so a base
+with compiled native addons/wheels is never reused across an incompatible runtime; it is
+*not* lockfile detection, so it doesn't reintroduce the thing we're avoiding.
+
+### 3. Lifecycle of a session
+
+1. **Mount** the repo's current base as `lowerdir` + a fresh per-session `upperdir`/workdir.
+2. **Fast-forward source** with git to the new default-branch commit (writes the source diff
+   into the upper layer via copy-up).
+3. **Run `agent.install`** on top of the warm base (writes only the dep delta).
+4. **Advance the base** by an optimistic **compare-and-swap**: publish the merged result as
+   the next base *iff* the base hasn't moved since you started; otherwise keep your tree
+   locally and skip the publish. Installs stay parallel; the published chain stays linear —
+   no multi-second lock on the first-turn critical path, no fight with the warm pool.
+
+Two properties keep the single chain clean (verified against the code):
+
+- **The chain is naturally linear.** The chain-feeding install is the creation-time
+  `agent.install`, and sessions are **always cut from the default branch** (`origin/HEAD`) —
+  never an arbitrary branch or PR ([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
+  [claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
+  [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). So
+  every base advance runs on `main`'s state and moves monotonically forward (`main@t1 →
+  main@t2 → …`), with no cross-branch reconciliation.
+- **Mid-session `npm install foo` never feeds the chain.** That's the agent's own shell
+  command, landing in the session's `upperdir` — not `agent.install`. A session's divergent
+  dependency work can't pollute the shared base.
+
+The existing **`.shipit/.install-done` marker** — deleted when HEAD changed
+([claim-session.ts:204-206](../../src/server/orchestrator/services/claim-session.ts#L204-L206),
+checked at [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663))
+— already gives a commit-granularity skip: when `main` hasn't advanced, the install is
+skipped entirely, at ~0 cost and **without any lockfile detection**. We keep it.
+
+### 4. Orchestrator owns the host-side mount
 
 The mount can't happen inside the session container — ShipIt's containment model is
-unprivileged containers, HTTP-only, no `docker exec` (`docs/172-agent-containment`). So
-the **orchestrator mounts on the host and bind-mounts the merged dir into the session**.
-This is the one genuinely new subsystem and the gate on the whole proposal:
+unprivileged containers, HTTP-only, no `docker exec` (`docs/172-agent-containment`). So the
+**orchestrator mounts on the host and bind-mounts the merged dir into the session**: mount
+(lower + upper + workdir) on activate, unmount + clean workdir on disposal, and teach
+`disk-janitor` / archive flows about live mounts before they tear down dirs. This is the one
+genuinely new subsystem and the gating unknown for the whole proposal.
 
-- Mount (lower + upper + workdir) on session activate.
-- Unmount + clean workdir on disposal.
-- `disk-janitor` and archive flows must learn about live mounts before tearing down dirs.
+### 5. Bounding drift and overlay depth
 
-If this subsystem is acceptable, overlay-for-all is the design and hardlink is
-unnecessary.
+Re-running install over generations can leave extraneous packages or stale links, and
+stacked `lowerdir`s are limited (mount-options must fit in a page; Docker overlay2
+historically capped at 128). **Decision: depth-cap flatten only** — when the overlay stack
+hits its depth limit, flatten the merged result into a fresh single base (an amortized copy,
+ideally in the warm pool), and rely on that flatten to also shed drift. No separate periodic
+clean-rebuild schedule unless drift measurements later prove it necessary.
 
-### 3. Lifecycle: populate vs. consume
+## Decisions (this iteration)
 
-**Consumption** (mount the layer) and **population** (run the install) are different
-paths; only consumption changes from today.
-
-> **Routing direction (read this first).** There are two ways to route a session to a
-> base: a **content-addressed key** (skip install on an exact match) or a **keyless rolling
-> chain** (always warm-install on one base per repo). To avoid keys and lockfile detection,
-> the **keyless chain in §4 is the chosen primary design**; the keyed mechanics described in
-> the rest of this section are an *optional optimization* layered on top (and stand alone as
-> the [keyed alternative](#alternative-the-keyed-immutable-layer)). Read §3 for the
-> immutable-layer/CoW mechanics that both modes share, then §4 for how routing actually
-> works.
-
-The canonical layer is **content-addressed and immutable — never updated in place**
-(mutating a layer that live sessions mount read-only would corrupt all of them). A
-lockfile/runtime change produces a **new key → new layer**; the old one is GC'd once
-unreferenced (existing stale-`nm-store` sweep). The install therefore runs **only on a
-cache miss, into a writable tree — never against the mount**:
-
-- **Hit:** orchestrator mounts the existing immutable layer read-only + a fresh
-  `upperdir`. No installer runs.
-- **Miss:** the session (or a warm standby) runs the real install into a writable tree,
-  exactly as today. On success the result is frozen into the keyed store via atomic
-  rename, and *that frozen directory becomes the `lowerdir`* for future sessions.
-
-**The populate path is unchanged** (apart from the rename). `populateStore()` already runs
-the install in the **worker** and publishes to a host-backed store dir via temp-dir +
-atomic rename ([nm-store.ts:272-309](../../src/server/session/nm-store.ts#L272-L309)) — a
-directory the orchestrator can already see. Division of labor:
-
-- **Worker** keeps owning *running the install* and publishing to `/dep-cache/dep-store/<key>`.
-- **Orchestrator** owns *the mount* — on a future hit it points a `lowerdir` at that
-  already-published directory instead of `cp`-ing it. Only consumption flips
-  (`cp`/`tar` → mount); keying, atomic publish, and warm-pool pre-warm are identical.
-
-**Who handles detection, and what about arbitrary / nested / monorepo installs?** The
-**session worker** does, via the existing fast-path gate — `computeFastPath()`
-([session-worker.ts:1163](../../src/server/session/session-worker.ts#L1163)) plus helpers
-in `nm-store`. The crucial point: **there is no framework auto-detection, and there
-doesn't need to be.** The gate is deliberately narrow and bails to a plain install on
-anything ambiguous, so the cache only ever engages where the answer is unambiguous:
-
-- **Command allowlist, not framework sniffing.** `isCacheableInstall()`
-  ([nm-store.ts:123](../../src/server/session/nm-store.ts#L123)) accepts *only* a single
-  bare `npm install|i|ci`, `yarn [install]`, or `pnpm install|i`. Any shell metacharacter,
-  env prefix, extra flag, `cd`, or command chaining disqualifies it. An **arbitrary
-  install command** (a script, `make deps`, `cd packages/api && npm ci`, `pip install -e
-  .`) therefore never matches → it just runs as a normal install, uncached. The command
-  string also goes *into* the key, so two commands that build different trees can't
-  collide.
-- **Single top-level lockfile only.** `findLockfile()`
-  ([nm-store.ts:63](../../src/server/session/nm-store.ts#L63)) looks **only at the
-  workspace root** for exactly **one** of `package-lock.json` / `yarn.lock` /
-  `pnpm-lock.yaml`. A **nested** `package.json`, or a **monorepo with several lockfiles**,
-  yields zero-or-many → returns null → plain install. The code comment is explicit that
-  this monorepo case is intentionally punted, because one hoisted cache wouldn't be
-  correct.
-
-So "which framework?" is never guessed — it's read off *which single recognized lockfile
-is present* and *which exact command was typed*. Everything outside that narrow window
-falls through to today's behavior (a real install), losing the speedup but never risking a
-wrong cache.
-
-**Detection of a "change" is then implicit — the key is the detector.** For a case that
-*does* qualify, the worker computes
-`key = sha256(lockfileName + lockfileContent + runtimeKey + tunedInstallCommand)`
-([computeStoreKey, nm-store.ts:173](../../src/server/session/nm-store.ts#L173)):
-
-- **lockfileContent** — the bytes of that one root lockfile; any dependency change *is* a
-  change to these bytes.
-- **runtimeKey** — image digest + arch + libc + interpreter major
-  ([nm-store.ts:92](../../src/server/session/nm-store.ts#L92)), so a tree with compiled
-  native addons/wheels is never reused across an incompatible runtime.
-
-A changed lockfile or rebuilt image simply hashes to a **different key** with no published
-layer → miss → repopulate. No diffing, no invalidation, no mtime check — "did it change?"
-reduces to "does a layer for this key exist?" (the janitor prunes keys no session uses).
-
-**Triggers:** (1) session start → recompute key; (2) hit → mount, miss → install +
-publish, next session hits; (3) warm pool pre-populates the key before the first real
-session; (4) different lockfile/runtime → different key → repopulate.
-
-**Mid-session dependency changes** land in the per-session `upperdir` (copy-up) — correct
-for that session, but a live/dirty `upperdir` is **never promoted** into the shared layer.
-Promotion is lazy and lockfile-driven: the next session from the *committed* new lockfile
-keys differently, misses, and repopulates from a clean install.
-
-### 4. Making misses cheap *and* detection-free: populate from a warm base
-
-The miss path above ("run the real install into an empty tree") still pays a full cold
-install, and the cache only engages for the narrow allowlisted shape. A better miss path —
-the **restore-nearest** pattern from CI caching (GitHub Actions `restore-keys`, BuildKit
-`RUN --mount=type=cache`): instead of installing into an *empty* tree, mount the **nearest
-prior layer for the same repo** as the `lowerdir` and **run the install command on top of
-it**, then publish the merged result as the new keyed layer.
-
-The package managers do the rest: `npm/yarn/pnpm install`, `pip install -r`, `poetry
-install`, `uv sync` all do up-to-date checks against an existing tree, so:
-
-- **Nothing changed** → the install is a near no-op (a few seconds of resolution), the
-  `upperdir` delta is ~empty.
-- **Something changed** → the install writes only the delta into the `upperdir`; the merged
-  view becomes the next baseline.
-
-**Why this is a big deal: it dissolves the detection problem for population.** Because we
-*actually run the real install command*, the populate path no longer needs the command
-allowlist or the single-lockfile rule — an **arbitrary command, a monorepo, a nested
-package, or Python** all just work, because the package manager itself decides what to
-change. Detection (the key) is then only needed for the *consume/hit* path, where it earns
-its keep (see caveats). Capture the baseline **immediately after install, before the agent
-or services start**, so session-specific mutations never pollute the shared lineage — which
-is already how the install gate is ordered today.
-
-**Avoiding keys entirely: a single serialized chain per repo (the chosen direction).** To
-have *no keys and no lockfile detection*, route **every** session to **one rolling base per
-repo** and always run the real install on top of it. No `findLockfile`, no allowlist, no
-`computeStoreKey` — monorepos, nested packages, Python, and arbitrary commands all work,
-because the package manager itself reconciles the tree. Concurrency is kept clean by
-**serializing the base advance** — but *how* you serialize matters:
-
-- **Don't serialize the whole install.** A multi-second lock on the first-turn critical
-  path would queue new sessions and fight the warm pool. Instead use **optimistic
-  concurrency**: every session mounts the *current* base and runs install in **parallel**;
-  publishing the merged result as the next base is a cheap **compare-and-swap** (succeeds if
-  the base hasn't advanced since you started; otherwise keep your tree locally and skip the
-  publish). The published chain stays strictly linear while installs stay parallel.
-
-**Does branch divergence break the single chain? In ShipIt's model, no.** The
-base-advancing install is the **creation-time `agent.install`**, and sessions are **always
-cut from the default branch** (`origin/HEAD`) — never from an arbitrary branch or PR
-([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
-[claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
-[session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). So every
-install that feeds the chain runs on **`main`'s dependency state at creation time**, which
-advances roughly **monotonically forward**. Consecutive bases are `main@t1 → main@t2 → …`,
-each a small forward delta on the previous — exactly the linear chain the design wants, with
-no cross-branch reconciliation. Two corollaries:
-
-- **Mid-session `npm install foo` doesn't feed the chain.** That's the agent's own shell
-  command, landing in the session's `upperdir` — not the `agent.install` step. A session's
-  divergent dependency work never advances the shared base, so it can't pollute it.
-- **"Did the base move?" is already a commit check, not a lockfile check.** The existing
-  `.shipit/.install-done` marker — deleted when HEAD changed
-  ([claim-session.ts:204-206](../../src/server/orchestrator/services/claim-session.ts#L204-L206),
-  checked at [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663))
-  — already skips install when `main` HEAD hasn't advanced. So an unchanged base costs ~0
-  *without* any lockfile detection.
-
-So the thrash I worried about earlier only arises **if** ShipIt ever supports **creating a
-session from an arbitrary branch/PR** (installs would then run on divergent dep states). It
-doesn't today. If that changes — or if `main` itself churns deps heavily — the fix is *not*
-lockfile detection but an optional **detection-free content fingerprint**: hash the bytes of
-*every* dependency-manifest file found by a fixed glob (`package.json`, `*.lock`,
-`pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pyproject.toml`, …) plus
-the runtime. That's a coarse fingerprint of *all* manifests (monorepos included by
-construction), giving each divergent state its own lineage — additive, only if measurements
-ever call for it.
-
-**Shared caveats either way:**
-
-- **Overlay depth is bounded.** Stacked `lowerdir`s are limited (mount-options must fit in
-  a page; Docker's overlay2 historically capped at 128), so **periodically flatten** the
-  merged result into a fresh single base (an amortized copy, ideally in the warm pool).
-- **Incremental installs drift.** Re-running `install` over generations can leave
-  extraneous packages or stale `.bin` links; schedule an occasional **clean rebuild** from
-  empty. `npm ci` *deletes* `node_modules` first → no warm-base gain (only the download
-  cache); `install` / `pnpm install` / `pip install` / `uv sync` all benefit.
-- **Always-run-install has a floor.** Even a warm no-op install is a few seconds of
-  resolution; the keyless chain never reaches the keyed mode's ~0 skip. That is the price
-  of no keys — accept it, or add the optional fingerprint to skip on an exact match.
-
-### 5. Scope per ecosystem
-
-The keyless chain **drops today's narrow gate** — there's no allowlist or single-lockfile
-rule, because the real install command runs verbatim on the warm base regardless of
-ecosystem or monorepo shape. The one genuinely new per-ecosystem requirement is a
-**deterministic mount-target path** — the directory the base is mounted at — since overlay
-mounts in place rather than copying into a fixed `node_modules`.
-
-- **npm, Yarn (classic / `node-modules` linker)** — primary beneficiaries (dumb-copy, no
-  native dedup). Target path is trivially deterministic: `<workspace>/node_modules`, the
-  same place `materialize`/`populateStore` hardcode today.
-- **pnpm, uv, conda, Yarn PnP** — overlay still helps (cache hit = mount, zero install),
-  but until overlay lands the no-new-machinery floor is to share their own store **on the
-  same filesystem** as the workspace so their built-in dedup isn't silently defeated.
-- **Python (pip/poetry/uv venvs)** — the keyless chain runs the real install, so there's
-  no detection to do; the only hard part is the **target path**. Unlike `node_modules`, a
-  venv's location varies and venvs hardcode absolute paths, so standardize on a fixed venv
-  path (`/workspace/.venv`), build the base there, and overlay-mount it back at that same
-  path — ShipIt's constant `/workspace` keeps it stable. The built-wheel cache
-  (`PIP_CACHE_DIR`) already removes the slow native-compile step regardless.
-
-Hardlinking is **not** part of this design — it was considered and rejected as a separate
-mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
-
-## Next steps
-
-1. Spike the orchestrator host-mount subsystem (mount/unmount lifecycle +
-   janitor/archive awareness) to size the real cost — this is the gating unknown.
-2. Prototype the keyless rolling base: mount the repo's current base, run the real install
-   on top, advance the base via optimistic compare-and-swap. Measure warm-install time for
-   the two real cases — **`main` unchanged** (warm no-op; should approach the existing
-   marker skip) and **`main` advanced its deps** (incremental delta) — vs. a cold install.
-   (Cross-branch thrash isn't reachable today since sessions only branch from the default.)
-3. Rename `nm-store` → `dep-store` (module + store path) as a self-contained precursor,
-   since it's purely a rename and unblocks the generalized naming.
-4. From the measurements, set the **flatten cadence** (overlay-depth cap) and the periodic
-   **clean-rebuild** policy that bounds drift; decide whether the optional detection-free
-   manifest fingerprint is worth adding to skip no-op installs / avoid branch thrash.
+- **Sequencing:** prototype the **keyless rolling-base logic first** (on the current copy
+  substrate), then build the host-mount subsystem. *Caveat:* the host-side mount remains the
+  true gating risk — validating the chain logic first does not de-risk it, so keep it next in
+  line.
+- **Environment-agnostic:** overlay the **whole workspace**; no ecosystem/target-path
+  knowledge. Settled by §1.
+- **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
+  ~0). No manifest fingerprint for now.
+- **Drift:** depth-cap flatten only (§5).
 
 ## Open questions
 
-1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session overlay
-   mount (mount on activate, unmount + workdir cleanup on dispose) within the containment
-   model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but the privileged
-   host-side mount + teardown ordering with `disk-janitor`/archive is unproven. Everything
-   else depends on this.
-2. **Base scoping.** Even keyless, a base must **not** be reused across incompatible
-   runtimes (native addons/wheels are arch+libc+interpreter-specific). So "one base per
-   repo" is really **one base per `(repo, runtime fingerprint)`** — confirm that's the only
-   axis needed (no lockfile in the key).
+1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
+   whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
+   the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
+   the privileged host-side mount + teardown ordering with `disk-janitor`/archive is unproven.
+2. **Source in the base.** The base now includes the source tree at `main@t`; each session
+   git-fast-forwards on top. Confirm git operations behave on the overlay and the source diff
+   in the upper layer stays small (it's just `t → t'`).
 3. **CAS loser semantics.** When a session's base-advance loses the compare-and-swap, it
-   keeps its merged tree locally and skips the publish — confirm correctness and the
-   transient disk cost of divergent upper layers.
-4. **Flatten + clean-rebuild policy.** What overlay-stack depth triggers a flatten, and how
-   often to rebuild from empty to shed incremental-install drift?
-5. **Warm-pool integration.** The warm pool already pre-installs on standbys; how does that
+   keeps its merged tree locally and skips the publish — confirm correctness and the transient
+   disk cost of divergent upper layers.
+4. **Warm-pool integration.** The warm pool already pre-installs on standbys; how does that
    seed / advance the rolling base rather than duplicating work?
-6. **Is the always-install floor acceptable?** The existing marker + `headChanged` skip
-   already gives ~0 when `main` hasn't moved; is that enough, or is the optional manifest
-   fingerprint ever worth it?
-7. **Python target path.** Does forcing a single venv path (`/workspace/.venv`) hold across
-   pip/poetry/uv and tooling that expects other locations?
+5. **Flatten threshold.** What depth cap triggers the flatten, and does flatten-only keep
+   drift acceptably bounded without a periodic clean rebuild?
 
 ## Key files
 
 | Concern | File |
 |---|---|
 | dep-cache dir + mount + env | [container-lifecycle.ts](../../src/server/orchestrator/container-lifecycle.ts#L83-L211), [session-dir-factory.ts](../../src/server/orchestrator/session-dir-factory.ts#L56-L66) |
-| Materialize / populate store | [nm-store.ts](../../src/server/session/nm-store.ts#L218-L309) |
-| Fast-install gate + cacheable-command detection | [session-worker.ts](../../src/server/session/session-worker.ts#L649-L707) |
-| Warm-pool pre-install | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L173-L242) |
+| Today's node_modules copy store (superseded) | [nm-store.ts](../../src/server/session/nm-store.ts#L218-L309) |
+| Install gate + marker / `headChanged` skip | [session-worker.ts](../../src/server/session/session-worker.ts#L649-L707), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L204-L206) |
+| Session base = default branch | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L361-L374), [session.ts](../../src/server/orchestrator/services/session.ts#L202-L216) |
 | Cache cleanup | [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts#L568-L676) |
 
 ---
 
 # Research & analysis
 
-*This section is the investigation that led to the proposal above — kept for the
-reasoning, the rejected alternatives, and the per-ecosystem detail.*
+*This section is the investigation that led to the proposal above. With the **whole-workspace**
+overlay (§1) the per-ecosystem and target-path detail below is **background, not a
+requirement** — we run the install and capture the tree regardless. It's kept to explain why
+overlay beats copy/hardlink and where each manager's costs come from.*
 
 ## The one axis that decides everything
 
@@ -328,42 +171,35 @@ single property decides whether a ShipIt-side overlay/canonical-volume adds anyt
   no native dedup → a ShipIt overlay/canonical-volume is a **real win**.
 - **Store-based managers** (pnpm, uv, conda, Yarn PnP): they **already** do this →
   adding our own *hardlink* layer on top is redundant or slower. (Overlay still helps,
-  because a cache hit becomes a mount with no install at all.)
+  because a warm base makes even their install a near no-op and shares disk.)
 
 ## Node ecosystem
 
-| Manager | On-disk model | ShipIt overlay / canonical-volume value | Notes |
+| Manager | On-disk model | Overlay value | Notes |
 |---|---|---|---|
-| **npm** | Real copied `node_modules`, no dedup | **High** — primary `nm-store` target | Materialize copy is the remaining cost |
-| **Yarn classic (v1)** | Real copied `node_modules` | **High** — same as npm | Already cacheable in `nm-store` fast path |
-| **Yarn Berry, `node-modules` linker** | Real copied `node_modules` | **High** — same as npm | `nodeLinker: node-modules` |
-| **Yarn Berry, PnP** | No `node_modules`; `.pnp.cjs` + zip cache | **N/A** — nothing to materialize | Share the zip cache (already cheap) |
-| **pnpm** | Global content-addressable store + **hardlinks** into `node_modules/.pnpm` | Hardlink redundant; overlay = mount, zero install | Don't stack a hardlink store; share store on same fs |
+| **npm** | Real copied `node_modules`, no dedup | **High** | Copy is the remaining cost |
+| **Yarn classic (v1)** | Real copied `node_modules` | **High** | Same as npm |
+| **Yarn Berry, `node-modules` linker** | Real copied `node_modules` | **High** | `nodeLinker: node-modules` |
+| **Yarn Berry, PnP** | No `node_modules`; `.pnp.cjs` + zip cache | Captured by whole-workspace overlay | Nothing special to do |
+| **pnpm** | Global store + **hardlinks** into `node_modules/.pnpm` | Warm base = near no-op install | Don't stack a hardlink store |
 
 ## Python ecosystem
 
-| Tool | On-disk model | ShipIt overlay / canonical-volume value | Notes |
+| Tool | On-disk model | Overlay value | Notes |
 |---|---|---|---|
-| **pip + venv** | Copies into `site-packages`; HTTP + **built-wheel** cache (`~/.cache/pip`) | **Medium** — wheel cache already kills the expensive part | Venv relocatability wrinkle (below) |
-| **poetry** | pip/venv under the hood | **Medium** — same as pip+venv | Inherits wheel cache + venv wrinkle |
-| **uv** (Astral) | Global content-addressable cache + **hardlink/reflink** into venv | Hardlink redundant (the pnpm of Python); overlay = mount | Share `UV_CACHE_DIR` on same fs |
-| **conda** | pkgs cache + hardlinks into envs | Hardlink redundant; overlay = mount | Share pkgs cache |
+| **pip + venv** | Copies into `site-packages`; built-wheel cache | **Medium** | Wheel cache already kills the slow part |
+| **poetry** | pip/venv under the hood | **Medium** | Same as pip+venv |
+| **uv** (Astral) | Global cache + **hardlink/reflink** into venv | Warm base = near no-op | The pnpm of Python |
+| **conda** | pkgs cache + hardlinks into envs | Warm base = near no-op | — |
 
-### Python's extra wrinkle: venvs aren't relocatable
+### Python's venv wrinkle — dissolved by whole-workspace overlay
 
-A `node_modules` is **location-independent** (relative `require`), which is *why*
-`nm-store` can drop a cached tree into any session at any path. A virtualenv hardcodes
-absolute paths in `pyvenv.cfg`, activation scripts, and console-script shebangs, so a
-"canonical venv" laid down by **copy or hardlink** at a *different* path breaks without
-`--copies` + path rewriting.
-
-**Overlay sidesteps this** — a further argument for it over hardlink: build the canonical
-venv at the path it will be presented (`/workspace/.venv`), capture it as a read-only
-lowerdir, and overlay-mount it back at `/workspace/.venv`. The baked-in paths match the
-mount point, so nothing needs rewriting, and ShipIt's constant `/workspace` keeps the path
-stable across sessions. Copy/hardlink can only match the path by physically living at it,
-which collides with the live workspace; overlay stores the layer elsewhere yet presents it
-at the canonical path.
+A virtualenv hardcodes absolute paths in `pyvenv.cfg`, activation scripts, and console-script
+shebangs, so a venv laid down by **copy or hardlink** at a *different* path breaks. With the
+**whole-workspace** overlay this is a non-issue: the venv lives inside the workspace, is
+captured in the base, and is presented back at the **same** workspace-relative path. Since
+ShipIt's workspace root is constant (`/workspace`), the venv's baked-in absolute paths stay
+valid with no rewriting and no special handling.
 
 ## Strategy comparison (getting the cached tree into a session)
 
@@ -375,25 +211,21 @@ at the canonical path.
 
 ### The same-filesystem caveat
 
-Hardlinks and reflinks **cannot cross mount boundaries**. `dep-cache` is mounted as a
-separate volume/subpath from the workspace
-([container-lifecycle.ts:147-154](../../src/server/orchestrator/container-lifecycle.ts#L147-L154)).
-If workspace and store land on different filesystems, **pnpm and uv silently fall back to
-full copies** — defeating their native dedup invisibly. OverlayFS is more forgiving: only
-its upper + work dir must share a filesystem; the read-only lower layer can live elsewhere
-— fitting ShipIt's separate-volume layout better than hardlinks do.
+Hardlinks and reflinks **cannot cross mount boundaries**. OverlayFS is more forgiving: only
+its upper + work dir must share a filesystem; the read-only lower layer can live elsewhere —
+fitting ShipIt's volume layout better than hardlinks do, and avoiding the silent pnpm/uv
+fall-back-to-copy that a separate-mount store would cause.
 
 ### Overlay operational cost
 
 - Container rootfs is already overlayfs; a **nested** overlay inside an unprivileged
   container needs `CAP_SYS_ADMIN`-ish config — friction ShipIt avoids. Hence the
   host-side-mount route in the proposal.
-- Lower layer must be **immutable** (already true: `nm-store` only publishes via atomic
-  rename — [nm-store.ts:272-309](../../src/server/session/nm-store.ts#L272-L309)).
+- Lower layer must be **immutable** (the base is published, never edited in place).
 - **ext4 on the prod VPS**: reflink (`cp --reflink`) is out (ext4 has no reflink), but
   overlayfs works fine on ext4.
-- `runtimeKey` discipline matters across ecosystems: native addons / compiled wheels are
-  arch + libc + interpreter-version specific and must stay in the cache key.
+- Runtime-fingerprint discipline matters: native addons / compiled wheels are arch + libc +
+  interpreter-version specific and must scope the base.
 
 ## Why overlay, not hardlink
 
@@ -401,42 +233,40 @@ Hardlink and overlay are **not co-equal** — the choice is deployability vs. co
 
 | | Hardlink ladder | OverlayFS |
 |---|---|---|
-| New architecture | None — swap the `nm-store` materialize ladder | Privileged mount layer + per-session mount lifecycle |
+| New architecture | None — swap the materialize ladder | Privileged mount layer + per-session mount lifecycle |
 | Privileges | Unprivileged | `mount(2)` needs `CAP_SYS_ADMIN` |
 | Works on prod today | Yes | Needs the host-mount plumbing first |
 | Teardown | `rm` the workspace | Unmount + clean workdir on disposal |
 | Cross-filesystem canonical | **No** — same fs required | **Yes** — only upper + workdir share an fs |
-| In-place mutation (`patch-package`, hand-edit) | **Corrupts the shared store** unless guarded | Copy-up isolates it — store is immune |
-| Helps store-based managers (pnpm/uv) | **No** — they already hardlink | **Yes** — cache hit becomes a mount, zero install |
-| Cache-hit cost | Create N links (large for big trees) | One mount, O(1) regardless of tree size |
+| In-place mutation (`patch-package`, hand-edit) | **Corrupts the shared store** unless guarded | Copy-up isolates it — base is immune |
+| Whole-workspace (ecosystem-agnostic) | Awkward — hardlinks a tree you must enumerate | Natural — mount one tree |
+| Cache cost | Create N links (large for big trees) | One mount, O(1) regardless of tree size |
 
 Overlay wins on every axis **except** the one-time cost of building the mount layer. Its
-decisive advantage is uniformity: on a cache hit no installer runs for *any* manager,
-whereas hardlinking only helps the non-dedup managers while *defeating* the ones that do
-(you'd cache pnpm's linked result as a flat tree and re-link it). One read-only lowerdir
-is shared by unlimited concurrent sessions — that's what overlayfs lowerdirs are for.
+decisive advantage is uniformity: one read-only lowerdir is shared by unlimited concurrent
+sessions and captures the whole workspace regardless of ecosystem — that's what overlayfs
+lowerdirs are for.
 
 ## Alternative: the keyed immutable layer
 
-The earlier iteration of this design routed by a **content-addressed key** —
+An earlier iteration routed by a **content-addressed key** —
 `sha256(lockfileName + lockfileContent + runtimeKey + tunedInstallCommand)` — and on an
-**exact match skipped the install entirely**, mounting an immutable per-key layer. Why the
-keyless rolling chain (§4) is preferred instead, and what the keyed variant still buys:
+**exact match skipped the install entirely**, mounting an immutable per-key dependency layer.
+Why the keyless rolling base is preferred instead, and what the keyed variant still buys:
 
 - **Keyed pros:** the hit path is **~0** (a mount, no installer process) and fully
-  **reproducible** and **concurrency-safe** by construction (identical inputs → identical
-  immutable layer; the atomic-rename publish dedupes). Per-key routing would also avoid
-  cross-branch thrash — though that isn't a real scenario today, since sessions only branch
-  from the default (§4), so this pro is mostly theoretical for now.
-- **Keyed cons (why it's not primary):** it depends on **detecting the lockfile**, which is
-  exactly what we're trying to avoid — today's `findLockfile` only handles a *single
-  top-level* lockfile and deliberately punts **monorepos** and nested packages, and
-  `isCacheableInstall` only fast-paths a narrow command allowlist. Generalizing that
-  detection to every ecosystem/monorepo is the fragile part.
-- **Reconciliation:** the keyed *skip* can be re-added later **without** reintroducing
-  fragile detection, via the **detection-free manifest fingerprint** in §4 (hash *all*
-  manifest files by a fixed glob, not "the one lockfile"). So the keyed fast path is an
-  optional optimization on top of the keyless chain, not a competing design.
+  **reproducible** and **concurrency-safe** by construction. Per-key routing would also avoid
+  cross-branch thrash — but that isn't a real scenario today (sessions only branch from the
+  default), so this pro is mostly theoretical.
+- **Keyed cons (why it's not primary):** it depends on **detecting the lockfile** and
+  isolating the dependency directory — exactly what we're avoiding. Today's `findLockfile`
+  only handles a *single top-level* lockfile and deliberately punts **monorepos**, and
+  `isCacheableInstall` only fast-paths a narrow command allowlist. The whole-workspace keyless
+  base sidesteps all of it.
+- **Reconciliation:** a keyed *skip* can be re-added later **without** fragile detection, via
+  a **detection-free manifest fingerprint** (hash *all* manifest files by a fixed glob, not
+  "the one lockfile"). So the keyed fast path is an optional optimization on top of the
+  keyless base, not a competing design.
 
 ## Related docs
 
