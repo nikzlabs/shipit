@@ -8,9 +8,12 @@ description: Share dependency trees across sessions by overlay-mounting an immut
 > **TL;DR — the proposal.** Replace the per-session **full copy** of `node_modules`
 > (today's `nm-store` `tar`/`cp -a`) with an **overlay mount**: one immutable,
 > lockfile-keyed canonical layer mounted read-only under every session, with a
-> per-session upper layer for copy-on-write. On a cache hit, *no installer runs for any
-> ecosystem* — npm, Yarn, pnpm, pip, uv all collapse to "mount the canonical layer."
-> The orchestrator owns the mount; the worker keeps owning the install.
+> per-session upper layer for copy-on-write. On an exact cache hit, *no installer runs for
+> any ecosystem* — npm, Yarn, pnpm, pip, uv all collapse to "mount the canonical layer." On
+> a **miss**, run the real install on top of the **nearest warm base** (CI `restore-keys`
+> style) so it does only incremental work — which also makes population detection-free for
+> arbitrary commands, monorepos, and Python. The orchestrator owns the mount; the worker
+> keeps owning the install.
 >
 > The reasoning and ecosystem-by-ecosystem analysis behind this choice is in
 > [Research & analysis](#research--analysis) at the bottom.
@@ -141,7 +144,60 @@ for that session, but a live/dirty `upperdir` is **never promoted** into the sha
 Promotion is lazy and lockfile-driven: the next session from the *committed* new lockfile
 keys differently, misses, and repopulates from a clean install.
 
-### 4. Scope per ecosystem
+### 4. Making misses cheap *and* detection-free: populate from a warm base
+
+The miss path above ("run the real install into an empty tree") still pays a full cold
+install, and the cache only engages for the narrow allowlisted shape. A better miss path —
+the **restore-nearest** pattern from CI caching (GitHub Actions `restore-keys`, BuildKit
+`RUN --mount=type=cache`): instead of installing into an *empty* tree, mount the **nearest
+prior layer for the same repo** as the `lowerdir` and **run the install command on top of
+it**, then publish the merged result as the new keyed layer.
+
+The package managers do the rest: `npm/yarn/pnpm install`, `pip install -r`, `poetry
+install`, `uv sync` all do up-to-date checks against an existing tree, so:
+
+- **Nothing changed** → the install is a near no-op (a few seconds of resolution), the
+  `upperdir` delta is ~empty.
+- **Something changed** → the install writes only the delta into the `upperdir`; the merged
+  view becomes the next baseline.
+
+**Why this is a big deal: it dissolves the detection problem for population.** Because we
+*actually run the real install command*, the populate path no longer needs the command
+allowlist or the single-lockfile rule — an **arbitrary command, a monorepo, a nested
+package, or Python** all just work, because the package manager itself decides what to
+change. Detection (the key) is then only needed for the *consume/hit* path, where it earns
+its keep (see caveats). Capture the baseline **immediately after install, before the agent
+or services start**, so session-specific mutations never pollute the shared lineage — which
+is already how the install gate is ordered today.
+
+**How it composes with content-addressing (the hybrid we'd actually build):**
+
+- **Exact-match hit** (same `key`) → mount the existing immutable layer, **skip install
+  entirely** (~0, the keyed fast path). Reproducible and concurrency-safe.
+- **Miss** → restore the nearest prior layer for the repo as `lowerdir`, run the
+  (arbitrary) install on top, atomic-publish the merged tree as the new keyed layer.
+
+Content-addressing stays for safety; the warm base just makes misses incremental instead
+of cold. **Caveats that shape the design:**
+
+- **Concurrency is a fork, not a chain.** Many sessions branch off the same base at once
+  (warm pool, worktrees, parallel branches), so "previous session's result becomes *the*
+  base" isn't well-defined globally. Keep the base **keyed/lineaged per repo (and per
+  lockfile)** and let the existing atomic-rename publish dedupe — don't assume a single
+  linear baseline.
+- **Overlay depth is bounded.** Stacked `lowerdir`s are limited (the mount-options string
+  must fit in a page; Docker's overlay2 historically capped at 128), so you can't chain
+  bases forever — **periodically flatten** the merged result into a fresh single base (an
+  amortized copy, ideally in the warm pool / background).
+- **Incremental installs drift.** Re-running `install` over generations can leave
+  extraneous packages or stale `.bin` links a clean install wouldn't; schedule an
+  occasional **clean rebuild** from empty. Note `npm ci` *deletes* `node_modules` first, so
+  it gets no warm-base speedup (only the download cache) — `install` benefits, `ci` doesn't.
+- **Speed vs. generality.** Always-run-install (even warm) costs a few seconds; the keyed
+  exact-match mount costs ~0. That's why the hybrid keeps both: skip on exact match, warm
+  install on miss.
+
+### 5. Scope per ecosystem
 
 Overlay inherits the same narrow gate as today (single allowlisted command + single
 top-level lockfile; everything else falls through to a plain install — see the lifecycle
@@ -178,6 +234,10 @@ mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
    worth the new subsystem.
 3. Rename `nm-store` → `dep-store` (module + store path) as a self-contained precursor,
    since it's purely a rename and unblocks the generalized naming.
+4. Prototype the warm-base populate path (restore nearest layer → run install on top →
+   publish merged) and measure warm-install time for "nothing changed" and "one dep added"
+   vs. a cold install; decide the flatten cadence and clean-rebuild policy from drift
+   observed over N generations.
 
 ## Key files
 

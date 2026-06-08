@@ -16,6 +16,12 @@ considered and rejected.** Remaining work to move from proposal to implementatio
       confirm arbitrary/nested/monorepo installs still fall through to a plain install
 - [ ] Make the fast-path gate yield a deterministic mount-target path per manager
       (`node_modules` for Node; a standardized venv path for Python)
+- [ ] Prototype warm-base populate (restore nearest layer → run install on top → publish
+      merged); measure warm-install time for "nothing changed" / "one dep added" vs. cold
+- [ ] Decide base lineage keying (per repo + per lockfile) so concurrent sessions don't
+      fork the baseline; reuse the atomic-rename publish to dedupe
+- [ ] Decide overlay-stack flatten cadence (depth cap) and periodic clean-rebuild policy
+      to bound drift from incremental installs (note `npm ci` wipes — no warm-base gain)
 - [ ] Python: validate the "build canonical venv at /workspace/.venv, overlay back at the
       same path" approach end-to-end (pyvenv.cfg + shebangs intact)
 - [ ] Benchmark cache-hit time: overlay mount vs. today's `tar`/`cp -a` on a large repo
