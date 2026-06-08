@@ -127,11 +127,21 @@ clean-rebuild schedule unless drift measurements later prove it necessary.
 - **Sharing scope:** single-user deployment today, so a base is effectively per-repo for the
   one user. Cross-user sharing (and its secret-leak surface) is **deferred** until ShipIt has
   a multi-user model.
-- **Capture filter:** capture the workspace **as-is** — no secret-filtering. Env-var secrets
-  are never written to the tree (so not captured); the only on-disk vector is an injected
-  credential file (e.g. private-registry `.npmrc`) or a committed `.env`, both of which stay
-  within the single user / are already in git. `.git` is excluded/normalized for
-  **correctness** (don't carry a session's branch refs forward), not security.
+- **Capture filter:** capture the workspace **as-is**, with **one exclusion: `.git`** (see
+  below). No secret-filtering — env-var secrets are never written to the tree (so not
+  captured); the only on-disk vector is an injected credential file (e.g. private-registry
+  `.npmrc`) or a committed `.env`, both of which stay within the single user / are already in
+  git.
+
+  *Why exclude `.git`:* the base is captured on **some session's branch** (post-install,
+  pre-agent), so its `.git` holds that session's branch ref, `HEAD`, and reflog. If the base
+  carried `.git` forward, the next session would inherit a stale branch/`HEAD` instead of its
+  own. Each session must bring its **own** `.git` — via the normal repo-cache clone + the
+  per-session branch cut from `origin/HEAD` — which lands in the session's upper layer. So
+  `.git` is excluded from the shared base for **correctness** (not security); the base
+  contributes only the install output + checked-out source *contents*. (Worktree gitdir
+  pointer files use absolute paths — confirm they resolve under the overlay; tracked in
+  Open Questions.)
 - **Archive/restore:** **re-derive on unarchive** — persist only source/metadata; on
   unarchive re-clone and reinstall from the current base. We never persist the per-session
   `upperdir`, which removes the upper-layer ↔ base-generation coupling: base generations need
