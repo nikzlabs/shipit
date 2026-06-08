@@ -102,6 +102,12 @@ export interface VoiceInputApi {
   /** Subscribe to cleaned transcripts. Returns an unsubscribe fn. Text-only by design. */
   onTranscript: (cb: (text: string) => void) => () => void;
   dismissError: () => void;
+  /**
+   * Clear the cleanup warning. Called once the warned-about transcript has left
+   * the input (the user sent it to the agent) so the notice doesn't linger on a
+   * now-empty composer.
+   */
+  dismissCleanupWarning: () => void;
 }
 
 interface TranscribeResponse {
@@ -283,6 +289,10 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     setState((s) => (s === "error" ? "idle" : s));
   }, []);
 
+  const dismissCleanupWarning = useCallback(() => {
+    setCleanupWarning(null);
+  }, []);
+
   // Hotkey push-to-talk listeners.
   // eslint-disable-next-line no-restricted-syntax -- global PTT shortcut with cleanup
   useEffect(() => {
@@ -321,10 +331,13 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     };
   }, [enabled, finishRecording]);
 
-  // Session switch mid-recording → discard audio, insert nothing.
+  // Session switch mid-recording → discard audio, insert nothing. Also drop a
+  // lingering cleanup warning: it described the previous session's transcript
+  // and is no longer relevant on the session the user just moved to.
   // eslint-disable-next-line no-restricted-syntax -- abort capture when the active session changes
   useEffect(() => {
     abortRecording();
+    setCleanupWarning(null);
   }, [sessionId]);
 
   // Unmount cleanup.
@@ -347,5 +360,6 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
     retryTranscription,
     onTranscript,
     dismissError,
+    dismissCleanupWarning,
   };
 }

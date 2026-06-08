@@ -494,6 +494,9 @@ export function MessageInput({
     };
     onSend(payload);
     setText("");
+    // The transcript the cleanup notice referred to has now left the composer —
+    // drop the notice so it doesn't linger over an empty input.
+    voice.dismissCleanupWarning();
     if (isOverlay) {
       setLocalFiles([]);
     } else {

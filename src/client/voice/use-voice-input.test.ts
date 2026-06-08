@@ -280,6 +280,44 @@ describe("useVoiceInput", () => {
     expect(received).toEqual(["hi"]);
   });
 
+  it("clears the cleanupWarning via dismissCleanupWarning (transcript sent to agent)", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ text: "hi", rawText: "hi", cleanupErrorCode: "rate_limited" }),
+    );
+    const { result } = renderHook(() => useVoiceInput({ enabled: true, cleanup: true }));
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+    await act(async () => { vi.advanceTimersByTime(300); });
+    act(() => { result.current.stopRecording(); });
+    await flushMicrotasks();
+    expect(result.current.cleanupWarning).toMatch(/cleanup unavailable/i);
+
+    act(() => { result.current.dismissCleanupWarning(); });
+    expect(result.current.cleanupWarning).toBeNull();
+  });
+
+  it("clears the cleanupWarning when the session switches", async () => {
+    fetchMock.mockResolvedValue(
+      jsonResponse({ text: "hi", rawText: "hi", cleanupErrorCode: "rate_limited" }),
+    );
+    const { result, rerender } = renderHook(
+      (props: { sessionId: string }) =>
+        useVoiceInput({ enabled: true, cleanup: true, sessionId: props.sessionId }),
+      { initialProps: { sessionId: "s1" } },
+    );
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+    await act(async () => { vi.advanceTimersByTime(300); });
+    act(() => { result.current.stopRecording(); });
+    await flushMicrotasks();
+    expect(result.current.cleanupWarning).toMatch(/cleanup unavailable/i);
+
+    act(() => { rerender({ sessionId: "s2" }); });
+    expect(result.current.cleanupWarning).toBeNull();
+  });
+
   it("discards the recording when the session switches during getUserMedia", async () => {
     // startCapture stays pending until we release it, simulating a slow
     // getUserMedia that resolves AFTER the user switched sessions.

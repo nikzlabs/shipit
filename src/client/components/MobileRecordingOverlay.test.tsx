@@ -20,6 +20,7 @@ function makeVoice(overrides: Partial<VoiceInputApi> = {}): VoiceInputApi {
     retryTranscription: vi.fn(),
     onTranscript: vi.fn(() => () => {}),
     dismissError: vi.fn(),
+    dismissCleanupWarning: vi.fn(),
     ...overrides,
   };
 }

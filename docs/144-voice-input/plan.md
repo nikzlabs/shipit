@@ -149,7 +149,12 @@ string, dramatically longer than input, contains telltale "Here is
 the cleaned version:" preamble), the raw transcript is inserted
 instead and a small non-fatal warning appears next to the mic button
 ("Cleanup unavailable — inserted raw transcript"). The user is never
-blocked on a flaky cleanup call.
+blocked on a flaky cleanup call. The warning is transient: it clears
+when the transcript it referred to leaves the composer (the message is
+sent to the agent, via `voice.dismissCleanupWarning()` in
+`handleSubmit`) and when the active session changes (the `sessionId`
+effect in `useVoiceInput`), so it never lingers over an empty input or
+persists into an unrelated session.
 
 **User can disable.** A "Clean up transcripts with an LLM" toggle in
 Settings is on by default; turning it off goes straight from Whisper
