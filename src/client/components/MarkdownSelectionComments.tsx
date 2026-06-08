@@ -16,6 +16,8 @@ import { markdownComponents } from "./message-markdown.js";
 const CONTEXT_CHARS = 50;
 const HIGHLIGHT_NAME = "shipit-pending-comment";
 
+type AddCommentResult = { id: string } | null | undefined;
+
 export interface SelectionCommentData {
   id: string;
   quotedText: string;
@@ -237,7 +239,12 @@ function FrontmatterHeader({ fm }: { fm: ParsedFrontmatter }) {
 export interface MarkdownSelectionCommentsProps {
   content: string;
   comments: SelectionCommentData[];
-  onAddComment: (quotedText: string, contextBefore: string, contextAfter: string, text: string) => void;
+  onAddComment: (
+    quotedText: string,
+    contextBefore: string,
+    contextAfter: string,
+    text: string,
+  ) => AddCommentResult | Promise<AddCommentResult>;
   onEditComment: (commentId: string, text: string) => void;
   onDeleteComment: (commentId: string) => void;
   /**
@@ -410,6 +417,7 @@ interface PendingSelection {
   contextBefore: string;
   contextAfter: string;
   range: Range;
+  blockIndex: number;
 }
 
 /**
@@ -435,6 +443,19 @@ interface SelectionSnapshot {
   contextBefore: string;
   contextAfter: string;
   range: Range;
+  blockIndex: number;
+}
+
+function blockIndexForNode(node: Node, container: HTMLElement): number | null {
+  const element = node.nodeType === Node.ELEMENT_NODE
+    ? node as Element
+    : node.parentElement;
+  const block = element?.closest("[data-markdown-block-index]");
+  if (!block || !container.contains(block)) return null;
+  const raw = block.getAttribute("data-markdown-block-index");
+  if (raw === null) return null;
+  const index = Number.parseInt(raw, 10);
+  return Number.isFinite(index) ? index : null;
 }
 
 export function MarkdownSelectionComments({
@@ -448,6 +469,7 @@ export function MarkdownSelectionComments({
   const containerRef = useRef<HTMLDivElement>(null);
   const [snapshot, setSnapshot] = useState<SelectionSnapshot | null>(null);
   const [pendingSelection, setPendingSelection] = useState<PendingSelection | null>(null);
+  const [localAnchors, setLocalAnchors] = useState<Record<string, number>>({});
 
   const fm = useMemo(() => parseFrontmatter(content), [content]);
   const blocks = useMemo(() => splitIntoTopLevelBlocks(fm.body), [fm.body]);
@@ -459,6 +481,17 @@ export function MarkdownSelectionComments({
     const orphans: SelectionCommentData[] = [];
     const assigned = new Set<string>();
     for (const comment of comments) {
+      const localBlockIndex = localAnchors[comment.id];
+      if (
+        localBlockIndex !== undefined &&
+        localBlockIndex >= 0 &&
+        localBlockIndex < blocks.length
+      ) {
+        if (!byBlock.has(localBlockIndex)) byBlock.set(localBlockIndex, []);
+        byBlock.get(localBlockIndex)!.push(comment);
+        assigned.add(comment.id);
+        continue;
+      }
       let matched = false;
       for (let i = 0; i < blocks.length; i++) {
         if (assigned.has(comment.id)) break;
@@ -473,20 +506,34 @@ export function MarkdownSelectionComments({
       if (!matched) orphans.push(comment);
     }
     return { commentsByBlock: byBlock, orphaned: orphans };
-  }, [comments, blocks]);
+  }, [comments, blocks, localAnchors]);
 
-  // Which block the pending comment input should render under. We anchor the
-  // input to the block whose visible text contains the selection so it appears
-  // right at the selection point instead of at the bottom of the document.
-  // `-1` means the selection didn't resolve to a single block (e.g. it spans
-  // multiple top-level blocks) — those fall back to the bottom.
+  // eslint-disable-next-line no-restricted-syntax -- prune local DOM anchors when their optimistic comments leave the active review
+  useEffect(() => {
+    setLocalAnchors((current) => {
+      const commentIds = new Set(comments.map((comment) => comment.id));
+      let changed = false;
+      const next: Record<string, number> = {};
+      for (const [id, blockIndex] of Object.entries(current)) {
+        if (commentIds.has(id)) {
+          next[id] = blockIndex;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : current;
+    });
+  }, [comments]);
+
+  // Which rendered block the pending comment input should render under. This
+  // comes from the DOM selection itself instead of quote matching, so duplicate
+  // text and markdown/rendered-text normalization cannot move a new editor.
   const pendingBlockIndex = useMemo(() => {
     if (!pendingSelection) return null;
-    for (let i = 0; i < blocks.length; i++) {
-      if (locateInBlock(blocks[i].textContent, pendingSelection) >= 0) return i;
-    }
-    return -1;
-  }, [pendingSelection, blocks]);
+    return pendingSelection.blockIndex >= 0 && pendingSelection.blockIndex < blocks.length
+      ? pendingSelection.blockIndex
+      : null;
+  }, [pendingSelection, blocks.length]);
 
   // Floating "Comment" button positioning. Tracks the live selection inside
   // the markdown body and surfaces a tiny button near it. The selection data
@@ -527,6 +574,11 @@ export function MarkdownSelectionComments({
         setSnapshot(null);
         return;
       }
+      const blockIndex = blockIndexForNode(range.endContainer, container);
+      if (blockIndex === null) {
+        setSnapshot(null);
+        return;
+      }
       const fullText = container.textContent ?? "";
       const startOffset = offsetWithin(container, range.startContainer, range.startOffset);
       const endOffset = startOffset + quotedText.length;
@@ -543,6 +595,7 @@ export function MarkdownSelectionComments({
         contextBefore,
         contextAfter,
         range: range.cloneRange(),
+        blockIndex,
       });
     };
     document.addEventListener("selectionchange", handler);
@@ -558,6 +611,7 @@ export function MarkdownSelectionComments({
       contextBefore: snap.contextBefore,
       contextAfter: snap.contextAfter,
       range: snap.range,
+      blockIndex: snap.blockIndex,
     });
     setSnapshot(null);
   }, []);
@@ -631,12 +685,19 @@ export function MarkdownSelectionComments({
     <CommentInput
       quotedText={pendingSelection.quotedText}
       onSubmit={(text) => {
-        onAddComment(
+        const blockIndex = pendingSelection.blockIndex;
+        const result = onAddComment(
           pendingSelection.quotedText,
           pendingSelection.contextBefore,
           pendingSelection.contextAfter,
           text,
         );
+        void (async () => {
+          const comment = await result;
+          if (comment?.id) {
+            setLocalAnchors((current) => ({ ...current, [comment.id]: blockIndex }));
+          }
+        })();
         setPendingSelection(null);
       }}
       onCancel={() => setPendingSelection(null)}
@@ -655,7 +716,7 @@ export function MarkdownSelectionComments({
         // would have given inside a single container.
         const topMargin = idx === 0 ? "" : TOP_MARGIN_CLASS[block.topSpacing];
         return (
-          <div key={idx} className={topMargin}>
+          <div key={idx} className={topMargin} data-markdown-block-index={idx}>
             <MarkdownBlock source={block.source} />
             {blockComments.map((comment) => (
               <CommentCard
@@ -693,10 +754,6 @@ export function MarkdownSelectionComments({
         </div>
       )}
 
-      {/* Fallback: render the input at the bottom only when the selection
-          didn't resolve to a single block (e.g. it spans multiple blocks). */}
-      {pendingBlockIndex === -1 && pendingInput}
-
       {snapshot && !pendingSelection && !readOnly && (
         <button
           ref={buttonRef}
@@ -719,4 +776,3 @@ export function MarkdownSelectionComments({
     </div>
   );
 }
-
