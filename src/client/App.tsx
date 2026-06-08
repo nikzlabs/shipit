@@ -450,11 +450,7 @@ export default function App() {
         // Ensure a draft exists so the review tool has somewhere to write and
         // the server can tell "sent mid-review" from "fresh review".
         await reviewStore.load(sid, targetFile);
-        const prompt = composeReviewMessage(
-          targetFile,
-          reviewStore.getDraft(sid, targetFile),
-          reviewStore.getHistory(sid, targetFile),
-        );
+        const prompt = composeReviewMessage(targetFile, reviewStore.getDraft(sid, targetFile));
         // On /{slug}/new route — graduate: transition URL to /session/{id}, so
         // a /review sent from a fresh session doesn't leave the URL on .../new.
         if (isNewSessionRoute) {

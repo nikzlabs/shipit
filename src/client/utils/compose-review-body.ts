@@ -11,13 +11,15 @@
  *   - instructs the subagent to echo the tool result verbatim as its final
  *     assistant message so the structured findings reach the parent through
  *     the Task tool result (docs/151);
- *   - embeds the user's existing human-authored comments verbatim so the
- *     subagent builds on them instead of duplicating them.
+ *   - embeds the user's un-sent draft comments verbatim so the subagent builds
+ *     on them instead of duplicating them.
  *
  * Embedding rules (docs/151 supersedes the docs/125 rules):
  *   - draft `human` comments only, most recent first — AI comments no longer
  *     live in the draft bucket (they have their own immutable card history);
- *   - then the most recent SENT review's `human` comments only;
+ *   - already-SENT comments are NOT embedded: a sent review was its own turn
+ *     the agent already received, so re-embedding it just repeats what the
+ *     model has already seen;
  *   - hard cap of 20 comments total, each truncated to 500 chars;
  *   - on overflow, oldest entries drop first and a "N older comments omitted"
  *     note is appended so the subagent knows the embed is partial.
@@ -46,58 +48,43 @@ function truncateQuote(text: string, max = 80): string {
   return `${trimmed.slice(0, max)}…`;
 }
 
-function anchorOf(comment: ReviewComment, origin: "draft" | "sent", sentAt?: string): string {
-  const state = origin === "draft" ? "draft" : `sent${sentAt ? ` ${sentAt.slice(0, 10)}` : ""}`;
-  if (comment.kind === "line") return `line ${comment.line} (${state})`;
+function anchorOf(comment: ReviewComment): string {
+  if (comment.kind === "line") return `line ${comment.line} (draft)`;
   const quote = truncateQuote(comment.quotedText) || "(empty selection)";
-  return `«${quote}» (selection, ${state})`;
+  return `«${quote}» (selection, draft)`;
 }
 
 /**
- * Select up to MAX_EMBEDDED_COMMENTS comments to embed, applying the ranking
- * and drop rules. Returns the chosen comments (in render order) plus how many
- * were dropped by the cap.
+ * Select up to MAX_EMBEDDED_COMMENTS draft comments to embed, applying the
+ * ranking and drop rules. Returns the chosen comments (in render order) plus
+ * how many were dropped by the cap.
  *
- * Drops AI-source comments at every step: post-docs/151 the draft is human-only
- * anyway, but the filter is kept defensively (a session whose draft still
- * carries pre-migration AI rows in `sent` history wouldn't re-embed them).
+ * Only un-sent draft comments are embedded. Already-sent comments were
+ * delivered to the agent in their own review turn, so re-embedding them just
+ * repeats text the model has already seen.
+ *
+ * Drops AI-source comments defensively: post-docs/151 the draft is human-only
+ * anyway, but a session whose draft still carries pre-migration AI rows
+ * shouldn't re-embed them.
  */
-function selectComments(
-  draft: FileReview | null,
-  mostRecentSent: FileReview | null,
-): { embeds: EmbeddedComment[]; dropped: number } {
+function selectComments(draft: FileReview | null): { embeds: EmbeddedComment[]; dropped: number } {
   // Drafts first, most recent last in storage → reverse for newest-first.
   const draftHuman = draft
     ? [...draft.comments].reverse().filter((c) => c.source === "human")
     : [];
-  const sentHuman = mostRecentSent
-    ? mostRecentSent.comments.filter((c) => c.source === "human")
-    : [];
 
-  const ranked: EmbeddedComment[] = [
-    ...draftHuman.map((c) => ({
-      anchor: anchorOf(c, "draft"),
-      sourceLabel: "[user]",
-      text: truncate(c.text),
-    })),
-    ...sentHuman.map((c) => ({
-      anchor: anchorOf(c, "sent", mostRecentSent?.sentAt),
-      sourceLabel: "[user]",
-      text: truncate(c.text),
-    })),
-  ];
+  const ranked: EmbeddedComment[] = draftHuman.map((c) => ({
+    anchor: anchorOf(c),
+    sourceLabel: "[user]",
+    text: truncate(c.text),
+  }));
 
   const embeds = ranked.slice(0, MAX_EMBEDDED_COMMENTS);
   return { embeds, dropped: Math.max(0, ranked.length - embeds.length) };
 }
 
-export function composeReviewMessage(
-  filePath: string,
-  draft: FileReview | null,
-  history: FileReview[],
-): string {
-  const mostRecentSent = history.find((r) => r.status === "sent") ?? null;
-  const { embeds, dropped } = selectComments(draft, mostRecentSent);
+export function composeReviewMessage(filePath: string, draft: FileReview | null): string {
+  const { embeds, dropped } = selectComments(draft);
 
   const lines: string[] = [
     `Review ${filePath}.`,
