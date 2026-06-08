@@ -11,6 +11,9 @@
  *   - instructs the subagent to echo the tool result verbatim as its final
  *     assistant message so the structured findings reach the parent through
  *     the Task tool result (docs/151);
+ *   - explicitly tells the parent that receiving that echoed result is not the
+ *     end of the turn: material findings must be fixed before the parent
+ *     responds to the user;
  *   - embeds the user's un-sent draft comments verbatim so the subagent builds
  *     on them instead of duplicating them.
  *
@@ -115,12 +118,19 @@ export function composeReviewMessage(filePath: string, draft: FileReview | null)
     "Review standard: this is a convergence pass, not an exhaustive critique.",
     "Prefer no comment over a weak comment. Skip nits.",
     "",
-    "After the subagent submits its findings: you (the parent) apply the fixes",
-    "for material findings only — the subagent only reviews, it does not edit.",
-    "Then spawn one fresh subagent to re-review the updated file. On that",
-    "re-review, fix only blockers or regressions introduced by the changes.",
-    "Do not keep looping on lower-severity follow-up suggestions; summarize",
-    "non-blocking leftovers in chat only if they are worth the user's attention.",
+    "Parent continuation after the subagent returns:",
+    "- The subagent's verbatim tool result is input for your next step, not your",
+    "  final answer to the user.",
+    "- Do not stop after printing or summarizing the review feedback.",
+    "- Apply fixes for material findings only. The subagent only reviews; it",
+    "  does not edit.",
+    "- Then spawn one fresh subagent to re-review the updated file.",
+    "- On that re-review, fix only blockers or regressions introduced by the",
+    "  changes.",
+    "- Do not keep looping on lower-severity follow-up suggestions; summarize",
+    "  non-blocking leftovers in chat only if they are worth the user's attention.",
+    "- Your final response to the user should describe the fixes you applied and",
+    "  any verification you ran, not merely repeat the review feedback.",
   ];
 
   if (embeds.length > 0) {
