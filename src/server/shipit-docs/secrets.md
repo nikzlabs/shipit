@@ -52,7 +52,7 @@ Each name must be a valid env var identifier
 (`^[A-Za-z_][A-Za-z0-9_]*$`). Invalid names cause compose start to fail
 with a clear error.
 
-## Extended form (descriptions, required, agent, source)
+## Extended form (descriptions, required, agent)
 
 Use the object form to add metadata. Mix and match with strings in the same
 list:
@@ -78,49 +78,37 @@ services:
       # codegen, tests that need to talk to the running stack)
       - name: DATABASE_URL
         agent: true
-
-      # Resolved from a platform credential — user doesn't fill this in
-      - name: ANTHROPIC_API_KEY
-        source: platform:claude_oauth
-      - name: GITHUB_TOKEN
-        source: platform:github_token
 ```
 
-### Platform credential sources
+### Compose services receive only user-supplied secrets
 
-When `source: platform:*` is set, ShipIt resolves the value from
-orchestrator-level credentials instead of the user-saved secret store. The
-user doesn't see (or need to configure) these — they're inherited from
-the outer ShipIt session's auth state. Lookup is performed on every
-compose reconcile, so token rotation is picked up automatically.
+Every value injected into a compose service comes from the **per-repo secret
+store** — values the user explicitly entered in **Settings → Secrets**, keyed
+by the declared `name`. ShipIt does **not** auto-forward the user's
+platform-managed credentials (their Claude login, GitHub token, or connected
+MCP OAuth tokens) into compose services.
 
-| Source | Resolves to |
-|--------|-------------|
-| `platform:claude_oauth` | The orchestrator's `ANTHROPIC_API_KEY` env var, falling back to the Claude CLI's OAuth access token from `~/.claude/.credentials.json`. Returns empty if neither is configured. |
-| `platform:github_token` | The GitHub PAT the user configured via Settings → GitHub. Returns empty if no token is configured. |
-| `platform:linear_oauth` | The Linear access token from a Settings → MCP Servers → "Connect Linear" OAuth flow. Returns empty until connected. |
-| `platform:notion_oauth` | The Notion access token from a Settings → MCP Servers → "Connect Notion" OAuth flow. Returns empty until connected. |
+A `source: platform:*` field on an `x-shipit-secrets` entry is **no longer
+honored** (removed in docs/184). Forwarding was triggered entirely by a string
+in a repo-committed compose file, so a malicious repo could auto-start a
+preview service and exfiltrate the user's real GitHub or Claude token without
+the user ever entering a credential for that repo. The field is now ignored:
+the entry resolves from `userSecrets[name]` like any other declaration, and if
+the compose file still carries `source: platform:*`, ShipIt emits a one-line
+warning in the service log telling the user to set a `name` secret in
+Settings → Secrets.
 
-> **MCP OAuth providers auto-register their client.** Hosted MCP servers that
-> publish RFC 8414 metadata + an RFC 7591 registration endpoint (Notion today)
-> are connected with a single click — ShipIt discovers the provider's OAuth
-> endpoints and dynamically registers a public PKCE client on first connect, so
-> there is **no `<PROVIDER>_OAUTH_CLIENT_ID` prerequisite** for the operator.
-> Providers that don't support dynamic registration (Linear today) still need
-> the operator to set `<PROVIDER>_OAUTH_CLIENT_ID`. The connected token is
-> exposed to declared MCP servers via the `$platform:<id>` placeholder (e.g.
-> `$platform:notion_oauth`), resolved from the `MCP_PLATFORM_<ID>` env var.
+If a service genuinely needs a credential (e.g. the **ShipIt-in-ShipIt**
+inner orchestrator needs a Claude key and a GitHub token to push), set it as a
+**user secret** of the same name. Prefer a long-lived `ANTHROPIC_API_KEY`
+(which doesn't rotate) over a short-lived OAuth token.
 
-If the platform source returns empty, ShipIt falls back to the user-saved
-secret store for the same name — this means a project that declares
-`source: platform:github_token` will still pick up a manually-pasted
-`GITHUB_TOKEN` secret if no platform token is available.
-
-The flagship use case is **ShipIt-in-ShipIt** — running the orchestrator
-inside a ShipIt session so you can develop ShipIt itself. The inner
-orchestrator service needs Claude OAuth (to spawn its own agents) and a
-GitHub token (to push). Without forwarding, you'd have to copy-paste your
-personal credentials into the inner session.
+> **MCP OAuth tokens for the agent are unaffected.** Connecting Linear / Notion
+> under Settings → MCP Servers still wires the token into the *agent's* MCP
+> servers via the `$platform:<id>` placeholder (resolved from the
+> `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server into their
+> own agent — a separate path from compose-service secret resolution, and it is
+> not changed here.
 
 ### Field reference
 
@@ -130,12 +118,15 @@ personal credentials into the inner session.
 | `description` | string | Free-form description shown to the user in the secrets panel. Helps them know what to configure. |
 | `required` | boolean | If true, the orchestrator surfaces a "Configure secrets" banner when no value is set. The compose stack still attempts to start — the banner is informational, not a hard block. |
 | `agent` | boolean | Also inject this env var into the agent container. Use for connection strings the agent needs when running CLI tools (`prisma migrate`, `bun test`, codegen). **Treat any `agent: true` value as exfiltratable**: it lands in the agent container's environment, and the agent can run arbitrary shell, so a prompt injection can read and POST it anywhere (agent containers currently have unrestricted network egress — see the security note below). Avoid for true secrets — the agent doesn't usually need API keys. |
-| `source` | string | Resolve from a platform credential instead of user-configured secrets. Recognized values: `platform:claude_oauth`, `platform:github_token`, and the MCP OAuth providers `platform:linear_oauth` / `platform:notion_oauth`. Falls back to the user-saved secret if the platform source is empty. Useful for ShipIt-in-ShipIt and other meta-tooling. |
+
+> A `source:` field is **no longer honored** (docs/184) — see "Compose
+> services receive only user-supplied secrets" above. It is parsed but
+> ignored; the entry resolves from the user secret store under its `name`.
 
 Unknown fields on the object are ignored. The same secret declared by
 multiple services merges its metadata: `required` and `agent` are OR'd, the
-first non-empty `description` and `source` win, and the consumer-services
-list is the union.
+first non-empty `description` wins, and the consumer-services list is the
+union.
 
 ## How it lands in the container
 

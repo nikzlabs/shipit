@@ -3,8 +3,8 @@
  * compose stack lifecycle.
  *
  * Extracted from `service-manager.ts` so the manager doesn't need to know
- * about platform credentials, MCP loaders, env-file vs Docker-secrets
- * delivery, or sweep semantics. The manager calls `sync(parsedServices)`
+ * about MCP loaders, env-file vs Docker-secrets delivery, or sweep
+ * semantics. The manager calls `sync(parsedServices)`
  * before each `compose up` (initial start, reconcile, `refreshSecrets`),
  * subscribes to snapshot updates via the `onSnapshot` callback, and reads
  * the resulting Docker-secrets build metadata back via
@@ -23,7 +23,6 @@ import {
   type DeclaredSecret,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
-import type { PlatformCredentialProvider } from "./platform-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -82,7 +81,6 @@ export interface ServiceSecretsResolverOptions {
   workspaceDir: string;
   secretsLoader?: () => Promise<Record<string, string>>;
   mcpAgentEnvLoader?: () => Record<string, string>;
-  platformCredentials?: PlatformCredentialProvider;
   dockerSecretsConfig?: DockerSecretsConfig;
   /**
    * Called after every `sync()` pass. Receives a *defensive copy* of the
@@ -90,6 +88,14 @@ export interface ServiceSecretsResolverOptions {
    * state.
    */
   onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
+  /**
+   * docs/184 — surface a one-line notice (per service) when a compose entry
+   * still declares a now-unhonored `source: platform:*` field. Wired to the
+   * service-log broadcast so the user learns to set a user secret instead.
+   * De-duplicated per (service, name, source) for the resolver's lifetime so
+   * reconciles don't spam the log.
+   */
+  onPlatformSourceWarning?: (serviceName: string, text: string) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -101,9 +107,11 @@ export class ServiceSecretsResolver {
   private readonly workspaceDir: string;
   private secretsLoader?: () => Promise<Record<string, string>>;
   private readonly mcpAgentEnvLoader?: () => Record<string, string>;
-  private readonly platformCredentials?: PlatformCredentialProvider;
   private readonly dockerSecretsConfig?: DockerSecretsConfig;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
+  private readonly onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  /** (service, name, source) tuples already warned about — see onPlatformSourceWarning. */
+  private readonly warnedPlatformSources = new Set<string>();
 
   private declaredSecretNames: string[] = [];
   private missingSecretsByService: Record<string, string[]> = {};
@@ -121,9 +129,9 @@ export class ServiceSecretsResolver {
     this.workspaceDir = opts.workspaceDir;
     this.secretsLoader = opts.secretsLoader;
     this.mcpAgentEnvLoader = opts.mcpAgentEnvLoader;
-    this.platformCredentials = opts.platformCredentials;
     this.dockerSecretsConfig = opts.dockerSecretsConfig;
     this.onSnapshot = opts.onSnapshot;
+    this.onPlatformSourceWarning = opts.onPlatformSourceWarning;
   }
 
   /**
@@ -190,10 +198,14 @@ export class ServiceSecretsResolver {
     const resolution = resolveSecrets({
       services: parsedServices,
       userSecrets,
-      platformCredentials: this.platformCredentials,
     });
     this.declaredSecretNames = resolution.declaredNames;
     this.missingSecretsByService = resolution.missingByService;
+
+    // docs/184: warn (once per entry) when a compose file still declares a
+    // now-unhonored `source: platform:*`. The value was NOT forwarded; the
+    // user must set a user secret of the same name if the service needs it.
+    this.warnPlatformSources(resolution.platformSourceWarnings);
 
     // docs/088: merge account-level MCP secrets (`mcp__*` keys) into the
     // resolved agent-env set. This runs AFTER `resolveSecrets()` — MCP
@@ -246,6 +258,27 @@ export class ServiceSecretsResolver {
       workspaceDir: this.workspaceDir,
       body: renderAgentEnvBody(mergedAgentValues),
     });
+  }
+
+  /**
+   * docs/184 — emit a service-log notice for each compose entry that still
+   * declares a now-unhonored `source: platform:*` field. De-duplicated per
+   * (service, name, source) for the resolver's lifetime so the message isn't
+   * repeated on every reconcile / `refreshSecrets()` pass.
+   */
+  private warnPlatformSources(warnings: { service: string; name: string; source: string }[]): void {
+    if (!this.onPlatformSourceWarning) return;
+    for (const w of warnings) {
+      const key = `${w.service}\0${w.name}\0${w.source}`;
+      if (this.warnedPlatformSources.has(key)) continue;
+      this.warnedPlatformSources.add(key);
+      this.onPlatformSourceWarning(
+        w.service,
+        `service "${w.service}": secret "${w.name}" declares source: ${w.source} ` +
+          `which is no longer forwarded — set a "${w.name}" secret in ` +
+          `Settings → Secrets if the service needs it.\n`,
+      );
+    }
   }
 
   /**

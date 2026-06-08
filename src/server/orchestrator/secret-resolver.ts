@@ -14,10 +14,17 @@
  * Later phases extend this module to:
  *   - Agent container env file (`.shipit/.env.agent`) for `agent: true`
  *     entries (Phase 3)
- *   - Platform credential resolution (`source: platform:claude_oauth`, etc.)
- *     (Phase 4)
  *   - Docker secrets-based delivery instead of env files for stronger
  *     isolation (Phase 1 follow-up)
+ *
+ * Removed (docs/184): `source: platform:*` forwarding (Phase 4). Compose
+ * services no longer receive the user's platform-managed credentials (Claude
+ * OAuth / GitHub token / MCP OAuth) just because a repo-controlled compose
+ * file asked for them — that handed the user's global identity to
+ * attacker-controlled service code. A compose entry that still carries a
+ * `source: platform:*` field now resolves only from the user's own secret
+ * store under its declared `name`, and a warning is surfaced so the user
+ * knows to set one.
  *
  * The output is intentionally minimal and predictable — sorted keys, no
  * quoting (compose's env-file parser doesn't interpret quotes) — so writes
@@ -29,7 +36,6 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ComposeService } from "./compose-generator.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import type { CredentialStore } from "./credential-store.js";
 
 // ---------------------------------------------------------------------------
@@ -94,6 +100,26 @@ export interface SecretResolution {
    * services if it wants per-secret files.
    */
   perServiceValues: Record<string, Record<string, string>>;
+  /**
+   * Compose entries that still declare a now-unhonored `source: platform:*`
+   * field (docs/184). Platform-credential forwarding was removed, so these
+   * entries resolve from `userSecrets[name]` (or nothing) like any other
+   * declaration. Reported here — one entry per (service, name) — so the
+   * caller can surface a service-log warning telling the user to set a
+   * user secret of the same name. Empty when no entry carries a platform
+   * source.
+   */
+  platformSourceWarnings: PlatformSourceWarning[];
+}
+
+/** A compose entry whose `source: platform:*` field is no longer honored. */
+export interface PlatformSourceWarning {
+  /** Service that declared the entry. */
+  service: string;
+  /** Declared secret name. */
+  name: string;
+  /** The unhonored `source:` value (e.g. `platform:github_token`). */
+  source: string;
 }
 
 /**
@@ -130,16 +156,8 @@ export interface DeclaredSecret extends SecretRequirement {
 export function resolveSecrets(opts: {
   services: ComposeService[];
   userSecrets: Record<string, string>;
-  /**
-   * Optional provider for `source: platform:*` entries (Phase 4). When
-   * present, entries with a `source` field consult the provider instead of
-   * `userSecrets`. Falls back to user secrets if the source is unknown or
-   * the provider returns null/empty. Omitting the provider means
-   * platform-sourced entries are treated as missing.
-   */
-  platformCredentials?: PlatformCredentialProvider;
 }): SecretResolution {
-  const { services, userSecrets, platformCredentials } = opts;
+  const { services, userSecrets } = opts;
   const perServiceEnv: Record<string, string> = {};
   const perServiceValues: Record<string, Record<string, string>> = {};
   const missingByService: Record<string, string[]> = {};
@@ -152,6 +170,10 @@ export function resolveSecrets(opts: {
   // against the running compose stack. De-duplicated by name; first
   // non-empty value wins (same merge rule as declaredByName).
   const agentValues: Record<string, string> = {};
+  // docs/184: collect entries that still declare a now-unhonored
+  // `source: platform:*` field so the caller can warn the user to set a
+  // user secret instead.
+  const platformSourceWarnings: PlatformSourceWarning[] = [];
 
   for (const svc of services) {
     if (!svc.secrets || svc.secrets.length === 0) continue;
@@ -178,18 +200,23 @@ export function resolveSecrets(opts: {
     for (const req of unique) {
       mergeDeclared(declaredByName, req, svc.name);
 
-      // Phase 4: prefer the platform-credential provider when this entry
-      // has a `source:` field. Falls back to userSecrets if the provider
-      // returns empty / unknown source — that way a stale source doesn't
-      // silently mask a value the user did configure manually.
-      const value = resolveValue(req, userSecrets, platformCredentials);
+      // docs/184: `source: platform:*` is no longer forwarded. Flag the entry
+      // so the caller can warn, then resolve it from the user secret store
+      // under its declared `name` like any other declaration.
+      if (req.source?.startsWith("platform:")) {
+        platformSourceWarnings.push({
+          service: svc.name,
+          name: req.name,
+          source: req.source,
+        });
+      }
+      const value = resolveValue(req, userSecrets);
       if (typeof value === "string" && value.length > 0) {
         present.push({ key: req.name, value });
         // Phase 3: mirror to agent env when this entry is `agent: true`.
         // The mirror is keyed by name — if multiple services declare the
-        // same name with `agent: true`, the value is identical (same
-        // user-saved secret or platform credential), so first-write-wins
-        // is correct.
+        // same name with `agent: true`, the value is identical (the same
+        // user-saved secret), so first-write-wins is correct.
         if (req.agent && agentValues[req.name] === undefined) {
           agentValues[req.name] = value;
         }
@@ -232,6 +259,7 @@ export function resolveSecrets(opts: {
     agentEnv,
     agentValues,
     perServiceValues,
+    platformSourceWarnings,
   };
 }
 
@@ -289,29 +317,16 @@ export function collectMcpAgentEnv(
 /**
  * Resolve the effective value for a single declared requirement.
  *
- * Order of resolution:
- *   1. If the entry has a `source:` field AND a platform provider was
- *      supplied AND the provider returns a non-empty value → use that.
- *   2. Otherwise fall back to `userSecrets[name]`.
- *
- * The fallback matters: if the user configures `ANTHROPIC_API_KEY`
- * manually and the platform provider also returns a value, the platform
- * value wins (forwarded credentials follow token rotation; user values
- * may be stale). But if the platform provider returns empty (no orchestrator
- * Claude auth), we still try the user secret — better some value than
- * none.
+ * Resolution consults only the user's own secret store, keyed by the
+ * declared `name`. A `source:` field is ignored (docs/184 removed
+ * `source: platform:*` forwarding) — a compose entry that still carries one
+ * resolves from `userSecrets[name]`, or to nothing if the user hasn't set a
+ * matching secret.
  */
 function resolveValue(
   req: SecretRequirement,
   userSecrets: Record<string, string>,
-  platformCredentials?: PlatformCredentialProvider,
 ): string | undefined {
-  if (req.source && platformCredentials) {
-    const platformValue = platformCredentials.resolve(req.source);
-    if (typeof platformValue === "string" && platformValue.length > 0) {
-      return platformValue;
-    }
-  }
   const userValue = userSecrets[req.name];
   if (typeof userValue === "string" && userValue.length > 0) return userValue;
   return undefined;
@@ -464,9 +479,8 @@ export function writePerServiceEnvFiles(opts: {
  * secret on the next reconcile.
  *
  * Same name across multiple services collapses to one file (the value is
- * the same — it's the same user-saved secret or platform credential). The
- * caller (compose-generator) generates per-service `secrets:` references
- * that all point to the same file.
+ * the same — it's the same user-saved secret). The caller (compose-generator)
+ * generates per-service `secrets:` references that all point to the same file.
  *
  * Returns the list of unique secret names that were written. Caller uses
  * this to populate the top-level `secrets:` block in the compose override.
