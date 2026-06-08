@@ -12,6 +12,10 @@ considered and rejected.** Remaining work to move from proposal to implementatio
 - [ ] Verify the host-mount route stays within the containment model (docs/172)
 - [ ] Confirm `runtimeKey` covers compiled wheels (arch + libc + python version) so the
       canonical lower layer is never reused across incompatible runtimes
+- [ ] Keep the existing narrow gate (allowlisted command + single top-level lockfile);
+      confirm arbitrary/nested/monorepo installs still fall through to a plain install
+- [ ] Make the fast-path gate yield a deterministic mount-target path per manager
+      (`node_modules` for Node; a standardized venv path for Python)
 - [ ] Python: validate the "build canonical venv at /workspace/.venv, overlay back at the
       same path" approach end-to-end (pyvenv.cfg + shebangs intact)
 - [ ] Benchmark cache-hit time: overlay mount vs. today's `tar`/`cp -a` on a large repo

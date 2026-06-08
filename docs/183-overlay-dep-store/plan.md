@@ -89,24 +89,48 @@ directory the orchestrator can already see. Division of labor:
   already-published directory instead of `cp`-ing it. Only consumption flips
   (`cp`/`tar` → mount); keying, atomic publish, and warm-pool pre-warm are identical.
 
-**How a "lockfile/runtime change" is detected — it isn't, explicitly.** The key *is* the
-detector. At session start the worker recomputes
-`key = sha256(lockfileContent + runtimeKey + installCommand)` from the current workspace
-state (this already exists for `nm-store`):
+**Who handles detection, and what about arbitrary / nested / monorepo installs?** The
+**session worker** does, via the existing fast-path gate — `computeFastPath()`
+([session-worker.ts:1163](../../src/server/session/session-worker.ts#L1163)) plus helpers
+in `nm-store`. The crucial point: **there is no framework auto-detection, and there
+doesn't need to be.** The gate is deliberately narrow and bails to a plain install on
+anything ambiguous, so the cache only ever engages where the answer is unambiguous:
 
-- **lockfileContent** — the bytes of the resolved lockfile(s) read from the workspace:
-  `package-lock.json` / `yarn.lock` / `pnpm-lock.yaml` for Node, and (when extended to
-  Python) `poetry.lock` / `uv.lock` / a pinned `requirements.txt`. Any dependency change
-  is, by definition, a change to these bytes.
-- **runtimeKey** — container image digest + CPU arch + libc + interpreter major version,
-  so a tree with compiled native addons/wheels is never reused across an incompatible
-  runtime.
+- **Command allowlist, not framework sniffing.** `isCacheableInstall()`
+  ([nm-store.ts:123](../../src/server/session/nm-store.ts#L123)) accepts *only* a single
+  bare `npm install|i|ci`, `yarn [install]`, or `pnpm install|i`. Any shell metacharacter,
+  env prefix, extra flag, `cd`, or command chaining disqualifies it. An **arbitrary
+  install command** (a script, `make deps`, `cd packages/api && npm ci`, `pip install -e
+  .`) therefore never matches → it just runs as a normal install, uncached. The command
+  string also goes *into* the key, so two commands that build different trees can't
+  collide.
+- **Single top-level lockfile only.** `findLockfile()`
+  ([nm-store.ts:63](../../src/server/session/nm-store.ts#L63)) looks **only at the
+  workspace root** for exactly **one** of `package-lock.json` / `yarn.lock` /
+  `pnpm-lock.yaml`. A **nested** `package.json`, or a **monorepo with several lockfiles**,
+  yields zero-or-many → returns null → plain install. The code comment is explicit that
+  this monorepo case is intentionally punted, because one hoisted cache wouldn't be
+  correct.
 
-So a changed lockfile or a rebuilt image simply hashes to a **different key**, which has
-no published layer → cache miss → repopulate. There is no diffing, no invalidation, no
-mtime check — content addressing makes "did it change?" equivalent to "does a layer for
-this key exist?". (The reverse safety net is the janitor pruning keys no session
-references.)
+So "which framework?" is never guessed — it's read off *which single recognized lockfile
+is present* and *which exact command was typed*. Everything outside that narrow window
+falls through to today's behavior (a real install), losing the speedup but never risking a
+wrong cache.
+
+**Detection of a "change" is then implicit — the key is the detector.** For a case that
+*does* qualify, the worker computes
+`key = sha256(lockfileName + lockfileContent + runtimeKey + tunedInstallCommand)`
+([computeStoreKey, nm-store.ts:173](../../src/server/session/nm-store.ts#L173)):
+
+- **lockfileContent** — the bytes of that one root lockfile; any dependency change *is* a
+  change to these bytes.
+- **runtimeKey** — image digest + arch + libc + interpreter major
+  ([nm-store.ts:92](../../src/server/session/nm-store.ts#L92)), so a tree with compiled
+  native addons/wheels is never reused across an incompatible runtime.
+
+A changed lockfile or rebuilt image simply hashes to a **different key** with no published
+layer → miss → repopulate. No diffing, no invalidation, no mtime check — "did it change?"
+reduces to "does a layer for this key exist?" (the janitor prunes keys no session uses).
 
 **Triggers:** (1) session start → recompute key; (2) hit → mount, miss → install +
 publish, next session hits; (3) warm pool pre-populates the key before the first real
@@ -119,15 +143,28 @@ keys differently, misses, and repopulates from a clean install.
 
 ### 4. Scope per ecosystem
 
-- **npm, Yarn (classic / `node-modules` linker)** — primary beneficiaries (dumb-copy
-  managers, no native dedup).
+Overlay inherits the same narrow gate as today (single allowlisted command + single
+top-level lockfile; everything else falls through to a plain install — see the lifecycle
+section). It adds **one** genuinely new per-ecosystem requirement: the gate must yield a
+**deterministic mount-target path** — the directory the lower layer is mounted at — since
+overlay mounts in place rather than copying into a fixed `node_modules`.
+
+- **npm, Yarn (classic / `node-modules` linker)** — primary beneficiaries (dumb-copy, no
+  native dedup). Target path is trivially deterministic: `<workspace>/node_modules`, the
+  same place `materialize`/`populateStore` hardcode today.
 - **pnpm, uv, conda, Yarn PnP** — overlay still helps (cache hit = mount, zero install),
   but until overlay lands the no-new-machinery floor is to share their own store **on the
   same filesystem** as the workspace so their built-in dedup isn't silently defeated.
-- **Python venvs** — overlay covers them with one pin: build the canonical venv at the
-  **same absolute path it will be mounted** (`/workspace/.venv`), since venvs hardcode
-  absolute paths. ShipIt's constant `/workspace` makes this stable. The built-wheel cache
-  (`PIP_CACHE_DIR`) already removes the slow native-compile step regardless.
+- **Python (pip/poetry venvs)** — extending here is **not** auto-detection; it's adding
+  pip/poetry/uv to the same command allowlist with their lockfiles
+  (`poetry.lock`/`uv.lock`/pinned `requirements.txt`) **and** pinning the target path,
+  which is the hard part: unlike `node_modules`, a venv's location varies and venvs
+  hardcode absolute paths. The workable shape is to standardize on a fixed venv path
+  (`/workspace/.venv`), build the canonical layer there, and overlay-mount it back at that
+  same path — ShipIt's constant `/workspace` keeps it stable. Anything that doesn't fit
+  the standardized shape falls through to a plain install, exactly like a Node monorepo.
+  The built-wheel cache (`PIP_CACHE_DIR`) already removes the slow native-compile step
+  regardless, so even unfast-pathed Python installs aren't starting from zero.
 
 Hardlinking is **not** part of this design — it was considered and rejected as a separate
 mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
