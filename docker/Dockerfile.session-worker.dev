@@ -8,6 +8,12 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 # refused outside a venv, so a venv is the supported path.
 RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
 
+# Enable corepack so `pnpm` and `yarn` resolve on PATH. See the canonical
+# comment in Dockerfile.session-worker.prod: Node ships npm + bundled corepack,
+# but the pnpm/yarn shims aren't on PATH until `corepack enable` runs. corepack
+# reads each repo's `packageManager` field and fetches the pinned version.
+RUN corepack enable
+
 # uv (Astral) — a single static binary that resolves/installs Python deps far
 # faster than pip and reads uv.lock natively, so a repo standardized on uv "just
 # works" without the agent bootstrapping a package manager. ShipIt provides the

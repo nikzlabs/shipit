@@ -1,5 +1,5 @@
 import type { ProjectTemplate } from "../shared/types.js";
-import { VITE_GITIGNORE } from "./template-gitignores.js";
+import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
 // ---------------------------------------------------------------------------
 // Frontend template definitions
@@ -105,7 +105,7 @@ export function App() {
   );
 }
 `,
-      ".gitignore": VITE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -232,7 +232,7 @@ export function App() {
   );
 }
 `,
-      ".gitignore": VITE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -354,7 +354,7 @@ declare module "*.vue" {
   export default component;
 }
 `,
-      ".gitignore": VITE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -469,7 +469,7 @@ export default app;
   <button onclick={() => count++}>Count: {count}</button>
 </div>
 `,
-      ".gitignore": VITE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -583,7 +583,7 @@ button:hover {
   border-color: #747bff;
 }
 `,
-      ".gitignore": VITE_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -652,9 +652,7 @@ h1 {
 `,
       "main.js": `console.log("Hello from main.js");
 `,
-      ".gitignore": `.shipit
-.vite
-`,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `compose: docker-compose.yml
 `,
       "docker-compose.yml": `services:

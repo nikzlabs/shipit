@@ -1,5 +1,5 @@
 import type { ProjectTemplate } from "../shared/types.js";
-import { ASTRO_GITIGNORE, NEXTJS_GITIGNORE } from "./template-gitignores.js";
+import { UNIVERSAL_GITIGNORE } from "./template-gitignores.js";
 
 // ---------------------------------------------------------------------------
 // Full-stack template definitions
@@ -89,7 +89,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   );
 }
 `,
-      ".gitignore": NEXTJS_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install
@@ -193,7 +193,7 @@ const title = "My Astro Site";
   </body>
 </html>
 `,
-      ".gitignore": ASTRO_GITIGNORE,
+      ".gitignore": UNIVERSAL_GITIGNORE,
       "shipit.yaml": `agent:
   install:
     - npm install

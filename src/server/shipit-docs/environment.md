@@ -14,7 +14,7 @@ You are running inside a Docker container managed by ShipIt.
 
 ## Installed tools
 
-- **Node.js 24** (with npm)
+- **Node.js 24** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version)
 - **git**, **curl**
 - **python3**, **make**, **g++** (for native npm addons)
 - **Agent CLIs** — both `claude` (Claude Code) and `codex` (Codex) are installed; ShipIt invokes whichever the user selected for the session
