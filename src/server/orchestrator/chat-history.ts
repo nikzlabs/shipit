@@ -86,6 +86,9 @@ export interface PersistedMessage {
     toolUseId: string;
     content: string;
     isError?: boolean;
+    /** Derived per-tool execution time in ms (docs/185). Round-trips via the
+     * `tool_results` JSON column, so no schema migration is needed. */
+    durationMs?: number;
   }[];
   /** True while the agent turn that produced this message is still running. */
   inProgress?: boolean;

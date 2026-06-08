@@ -30,7 +30,7 @@ interface HistoryResponse {
     role: string;
     text: string;
     toolUse?: unknown[];
-    toolResults?: { toolUseId: string; content: string; isError?: boolean }[];
+    toolResults?: { toolUseId: string; content: string; isError?: boolean; durationMs?: number }[];
     images?: unknown[];
     files?: unknown[];
     isError?: boolean;

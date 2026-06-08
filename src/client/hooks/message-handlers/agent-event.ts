@@ -109,6 +109,9 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
           toolUseId: block.tool_use_id as string,
           content,
           isError: (block.is_error as boolean) ?? false,
+          // docs/185 — per-tool duration the orchestrator stamped onto the
+          // tool_result block before forwarding. Powers the detail-modal timing.
+          ...(typeof block.duration_ms === "number" ? { durationMs: block.duration_ms } : {}),
         });
       }
     }
