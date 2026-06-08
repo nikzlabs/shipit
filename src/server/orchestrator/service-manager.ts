@@ -164,6 +164,15 @@ export interface ServiceManagerOptions {
    * baseline).
    */
   dockerSecretsConfig?: DockerSecretsConfig;
+  /**
+   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE
+   * the session workspace. When set (and Docker-secrets mode is off), service
+   * env files are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the
+   * compose override references those absolute paths, keeping service-only
+   * secrets out of the agent-readable workspace. Omit for tests / non-container
+   * setups, which fall back to the legacy workspace `.shipit/.env.<svc>` path.
+   */
+  serviceEnvDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +277,7 @@ export class ServiceManager extends EventEmitter {
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
+      ...(opts.serviceEnvDir ? { serviceEnvDir: opts.serviceEnvDir } : {}),
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
       // docs/184: relay the now-unhonored `source: platform:*` notice into the
       // service's log stream so it surfaces in the same place as its output.
@@ -523,6 +533,7 @@ export class ServiceManager extends EventEmitter {
     // Generate override
     const userNamedVolumes = parseUserNamedVolumes(composePath);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
+    const serviceEnvFiles = this.secrets.getServiceEnvFiles();
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
@@ -531,6 +542,7 @@ export class ServiceManager extends EventEmitter {
       stackName: this.stackName,
       userNamedVolumes,
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
+      ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);

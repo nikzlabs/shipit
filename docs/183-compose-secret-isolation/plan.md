@@ -277,16 +277,26 @@ x-shipit-secrets[agent: true]
 
 ## Key Files
 
-- `src/server/orchestrator/secret-resolver.ts` — write service env files to a configurable
-  root outside the workspace.
-- `src/server/orchestrator/service-secrets-resolver.ts` — carry service env-file metadata
-  from secret sync to compose override generation.
-- `src/server/orchestrator/compose-generator.ts` — accept per-service env-file paths.
-- `src/server/orchestrator/service-manager.ts` — pass the env-file metadata into the
-  override on start and secret refresh.
-- `src/server/orchestrator/index.ts` — derive the default `serviceEnvDir` from
-  `SHIPIT_SERVICE_ENV_DIR` or `stateDir`.
-- `src/server/shipit-docs/secrets.md` — document that service-only env files do not live
+- `src/server/orchestrator/secret-resolver.ts` — `writeServiceEnvFilesToRoot()` writes
+  service env files to `<rootDir>/<sessionId>/.env.<svc>` outside the workspace, returns the
+  service-name → absolute-path map, and fails closed via
+  `assertServiceEnvRootOutsideWorkspace()` if the root resolves inside the agent workspace.
+  `sweepWorkspaceServiceEnvFiles()` removes any pre-183 in-workspace `.env.<svc>` leak (also
+  reused by Docker-secrets mode).
+- `src/server/orchestrator/service-secrets-resolver.ts` — `serviceEnvDir` option selects the
+  out-of-workspace write path; `getServiceEnvFiles()` carries the env-file map from secret
+  sync to compose override generation. Delivery precedence: Docker-secrets mode →
+  out-of-workspace env files (`serviceEnvDir`) → legacy in-workspace `.shipit/.env.<svc>`.
+- `src/server/orchestrator/compose-generator.ts` — `ComposeOverrideOptions.serviceEnvFiles`
+  emits absolute `env_file:` paths per service; falls back to `.shipit/.env.<svc>` when a
+  service is absent from the map (tests / legacy).
+- `src/server/orchestrator/service-manager.ts` — `serviceEnvDir` option threaded to the
+  resolver; `start()` reads `getServiceEnvFiles()` into the override opts. In env-file mode
+  the override references a stable path, so `refreshSecrets()` only rewrites file content.
+- `src/server/orchestrator/index.ts` — derives the default `serviceEnvDir` from
+  `SHIPIT_SERVICE_ENV_DIR` or `<stateDir>/service-env`, threaded through
+  `runner-registry-factory.ts` → `service-manager-setup.ts` → `ServiceManager`.
+- `src/server/shipit-docs/secrets.md` — documents that service-only env files do not live
   under the workspace in containerized mode.
 - `docker-compose.yml` — no behavioral change from *this* doc; dogfood service keeps its
   service-only secrets (the `source: platform:*` removal is doc 184's change).

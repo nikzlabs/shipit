@@ -7,6 +7,8 @@ import {
   collectMcpAgentEnv,
   renderAgentEnvBody,
   writePerServiceEnvFiles,
+  writeServiceEnvFilesToRoot,
+  sweepWorkspaceServiceEnvFiles,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
@@ -770,5 +772,142 @@ describe("writePerServiceEnvFiles", () => {
       perServiceEnv: { web: "X=1\n" },
     });
     expect(fs.existsSync(path.join(dir, ".shipit", ".env.web"))).toBe(true);
+  });
+});
+
+describe("writeServiceEnvFilesToRoot (docs/183)", () => {
+  let tmpDir: string;
+
+  function setup() {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-183-"));
+    // Workspace and external root are siblings — root is outside the workspace.
+    const workspaceDir = path.join(tmpDir, "workspace");
+    const rootDir = path.join(tmpDir, "service-env");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    return { workspaceDir, rootDir };
+  }
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("writes env files under <root>/<sessionId>/ and returns absolute paths", () => {
+    const { workspaceDir, rootDir } = setup();
+    const { serviceEnvFiles, sessionDir } = writeServiceEnvFilesToRoot({
+      rootDir,
+      sessionId: "sess1",
+      workspaceDir,
+      perServiceEnv: {
+        web: "STRIPE_KEY=sk_test\n",
+        api: "DATABASE_URL=postgres://x\n",
+      },
+    });
+
+    expect(sessionDir).toBe(path.join(rootDir, "sess1"));
+    expect(serviceEnvFiles.web).toBe(path.join(rootDir, "sess1", ".env.web"));
+    expect(serviceEnvFiles.api).toBe(path.join(rootDir, "sess1", ".env.api"));
+    expect(fs.readFileSync(serviceEnvFiles.web, "utf-8")).toContain("STRIPE_KEY=sk_test");
+    expect(fs.readFileSync(serviceEnvFiles.api, "utf-8")).toContain("DATABASE_URL=postgres://x");
+  });
+
+  it("does NOT create .shipit/.env.<service> in the workspace", () => {
+    const { workspaceDir, rootDir } = setup();
+    writeServiceEnvFilesToRoot({
+      rootDir,
+      sessionId: "sess1",
+      workspaceDir,
+      perServiceEnv: { web: "STRIPE_KEY=sk_test\n" },
+    });
+    expect(fs.existsSync(path.join(workspaceDir, ".shipit", ".env.web"))).toBe(false);
+  });
+
+  it("sweeps a pre-183 workspace .shipit/.env.<service> leak but keeps .env.agent", () => {
+    const { workspaceDir, rootDir } = setup();
+    const shipit = path.join(workspaceDir, ".shipit");
+    fs.mkdirSync(shipit, { recursive: true });
+    fs.writeFileSync(path.join(shipit, ".env.web"), "LEAKED=1\n");
+    fs.writeFileSync(path.join(shipit, ".env.agent"), "FROM_AGENT=1\n");
+
+    writeServiceEnvFilesToRoot({
+      rootDir,
+      sessionId: "sess1",
+      workspaceDir,
+      perServiceEnv: { web: "STRIPE_KEY=sk_test\n" },
+    });
+
+    // The leaked service env file is removed from the workspace…
+    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
+    // …but the agent env file is left alone (Phase 3 owns it).
+    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
+  });
+
+  it("removes stale external .env.<svc> files for services that no longer declare secrets", () => {
+    const { workspaceDir, rootDir } = setup();
+    const sessionDir = path.join(rootDir, "sess1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".env.removed"), "STALE=1\n");
+
+    writeServiceEnvFilesToRoot({
+      rootDir,
+      sessionId: "sess1",
+      workspaceDir,
+      perServiceEnv: { web: "NEW=1\n" },
+    });
+
+    expect(fs.existsSync(path.join(sessionDir, ".env.removed"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionDir, ".env.web"))).toBe(true);
+  });
+
+  it("throws when the root resolves inside the workspace (fail closed)", () => {
+    const { workspaceDir } = setup();
+    const insideRoot = path.join(workspaceDir, "service-env");
+    expect(() =>
+      writeServiceEnvFilesToRoot({
+        rootDir: insideRoot,
+        sessionId: "sess1",
+        workspaceDir,
+        perServiceEnv: { web: "X=1\n" },
+      }),
+    ).toThrow(/inside the agent workspace/);
+    // Nothing was written.
+    expect(fs.existsSync(insideRoot)).toBe(false);
+  });
+
+  it("throws when the root IS the workspace", () => {
+    const { workspaceDir } = setup();
+    expect(() =>
+      writeServiceEnvFilesToRoot({
+        rootDir: workspaceDir,
+        sessionId: "sess1",
+        workspaceDir,
+        perServiceEnv: { web: "X=1\n" },
+      }),
+    ).toThrow(/inside the agent workspace/);
+  });
+});
+
+describe("sweepWorkspaceServiceEnvFiles (docs/183)", () => {
+  let tmpDir: string;
+
+  afterEach(() => {
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("removes .env.<svc> files but preserves .env.agent; no-op when .shipit missing", () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sweep-183-"));
+    // No .shipit dir yet — must not throw.
+    expect(() => sweepWorkspaceServiceEnvFiles(tmpDir)).not.toThrow();
+
+    const shipit = path.join(tmpDir, ".shipit");
+    fs.mkdirSync(shipit);
+    fs.writeFileSync(path.join(shipit, ".env.web"), "A=1\n");
+    fs.writeFileSync(path.join(shipit, ".env.api"), "B=1\n");
+    fs.writeFileSync(path.join(shipit, ".env.agent"), "AGENT=1\n");
+
+    sweepWorkspaceServiceEnvFiles(tmpDir);
+
+    expect(fs.existsSync(path.join(shipit, ".env.web"))).toBe(false);
+    expect(fs.existsSync(path.join(shipit, ".env.api"))).toBe(false);
+    expect(fs.existsSync(path.join(shipit, ".env.agent"))).toBe(true);
   });
 });

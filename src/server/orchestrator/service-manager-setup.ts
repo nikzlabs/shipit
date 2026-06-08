@@ -251,6 +251,11 @@ export function setupServiceManager(
     containerManager: SessionContainerManager | null;
     secretStore?: SecretStore;
     dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
+    /**
+     * docs/183 — orchestrator-private root for per-service compose env files,
+     * outside the agent's workspace mount. Passed to `ServiceManager`.
+     */
+    serviceEnvDir?: string;
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
@@ -266,6 +271,7 @@ export function setupServiceManager(
     containerManager,
     secretStore,
     dockerSecretsConfig,
+    serviceEnvDir,
     broadcastLog,
     credentialStore,
   } = deps;
@@ -420,6 +426,7 @@ export function setupServiceManager(
     secretsLoader,
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+    ...(serviceEnvDir ? { serviceEnvDir } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network
