@@ -302,8 +302,8 @@ export async function registerMcpRoutes(
   //
   // The OAuth state store is per-orchestrator-process and short-lived
   // (10-minute TTL); flow values never touch disk. Token storage lives in
-  // CredentialStore.mcpOAuth and is read by `platform-credentials.ts` on
-  // every `syncSecrets()` pass.
+  // CredentialStore.mcpOAuth and is read into the agent's MCP env by
+  // `collectMcpAgentEnv()`.
   // -------------------------------------------------------------------------
 
   app.get("/api/mcp-servers/oauth/providers", async () => {

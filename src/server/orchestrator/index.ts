@@ -30,7 +30,6 @@ import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
-import { createPlatformCredentialProvider } from "./platform-credentials.js";
 import { registerApiRoutes } from "./api-routes.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -267,19 +266,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
   };
 
-  // Platform credential provider (087 Phase 4) — forwards Claude OAuth /
-  // GitHub tokens into compose services that declare `source: platform:*`
-  // entries in `x-shipit-secrets`. Built once and shared across all
-  // ServiceManagers so token rotation in AuthManager / GitHubAuthManager is
-  // picked up on the next compose reconcile without restart.
-  //
-  // docs/088 Phase 2: also resolves `platform:<mcp-oauth-id>` sources
-  // (e.g. `platform:linear_oauth`) from CredentialStore.mcpOAuth so any
-  // future compose service can opt into the same Linear/Notion token the
-  // agent uses for MCP.
-  const platformCredentials = createPlatformCredentialProvider({
-    authManager, githubAuthManager, credentialStore,
-  });
+  // docs/184: compose services no longer receive the user's platform-managed
+  // credentials (Claude OAuth / GitHub token / MCP OAuth). The
+  // `source: platform:*` forwarding path was removed because it handed the
+  // user's global identity to attacker-controlled service code on the
+  // strength of a repo-committed compose file. Compose services now get only
+  // user-supplied secrets from the secret store.
 
   // Docker-secrets isolation (087 Phase 1 follow-up) — opt-in via env vars.
   // When `SHIPIT_SECRETS_INTERNAL_DIR` is set, ServiceManager writes secret
@@ -404,7 +396,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, platformCredentials, runtimeMode, broadcastLog,
+    credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, authManager, authManagers, runParamsPreps,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,

@@ -12,7 +12,6 @@ import {
   composeSecretFilePath,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
-import { fixedPlatformCredentialProvider } from "./platform-credentials.js";
 
 describe("collectMcpAgentEnv (docs/088)", () => {
   // Stub helper covering both methods the new signature touches.
@@ -471,91 +470,31 @@ describe("writeAgentEnvFile", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 4: source: platform:* — platform credential forwarding
+// docs/184: source: platform:* is no longer forwarded
 // ---------------------------------------------------------------------------
 
-describe("resolveSecrets — Phase 4 platform credentials", () => {
-  it("forwards platform:claude_oauth into the env file", () => {
+describe("resolveSecrets — source: platform:* no longer forwarded (docs/184)", () => {
+  it("resolves a platform-sourced entry from userSecrets[name]", () => {
     const services: ComposeService[] = [
       {
         name: "orchestrator",
-        secrets: ["ANTHROPIC_API_KEY"],
+        secrets: ["GITHUB_TOKEN"],
         secretRequirements: [
-          { name: "ANTHROPIC_API_KEY", source: "platform:claude_oauth" },
+          { name: "GITHUB_TOKEN", source: "platform:github_token" },
         ],
       },
     ];
     const result = resolveSecrets({
       services,
-      userSecrets: {},
-      platformCredentials: fixedPlatformCredentialProvider({
-        "platform:claude_oauth": "sk-ant-from-platform",
-      }),
+      userSecrets: { GITHUB_TOKEN: "ghp_user_supplied" },
     });
-    expect(result.perServiceEnv.orchestrator).toContain("ANTHROPIC_API_KEY=sk-ant-from-platform");
+    // Resolves from the user secret store under the declared name, NOT from
+    // any platform credential.
+    expect(result.perServiceEnv.orchestrator).toContain("GITHUB_TOKEN=ghp_user_supplied");
     expect(result.missingByService).toEqual({});
   });
 
-  it("forwards platform:github_token into the env file", () => {
-    const services: ComposeService[] = [
-      {
-        name: "orchestrator",
-        secrets: ["GITHUB_TOKEN"],
-        secretRequirements: [
-          { name: "GITHUB_TOKEN", source: "platform:github_token" },
-        ],
-      },
-    ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: {},
-      platformCredentials: fixedPlatformCredentialProvider({
-        "platform:github_token": "ghp_from_platform",
-      }),
-    });
-    expect(result.perServiceEnv.orchestrator).toContain("GITHUB_TOKEN=ghp_from_platform");
-  });
-
-  it("falls back to userSecrets when the platform source returns empty", () => {
-    const services: ComposeService[] = [
-      {
-        name: "api",
-        secrets: ["ANTHROPIC_API_KEY"],
-        secretRequirements: [
-          { name: "ANTHROPIC_API_KEY", source: "platform:claude_oauth" },
-        ],
-      },
-    ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: { ANTHROPIC_API_KEY: "user-supplied-fallback" },
-      platformCredentials: fixedPlatformCredentialProvider({}), // returns null
-    });
-    expect(result.perServiceEnv.api).toContain("ANTHROPIC_API_KEY=user-supplied-fallback");
-  });
-
-  it("platform value wins over user-supplied value when both exist", () => {
-    const services: ComposeService[] = [
-      {
-        name: "api",
-        secrets: ["GITHUB_TOKEN"],
-        secretRequirements: [
-          { name: "GITHUB_TOKEN", source: "platform:github_token" },
-        ],
-      },
-    ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: { GITHUB_TOKEN: "user-stale-token" },
-      platformCredentials: fixedPlatformCredentialProvider({
-        "platform:github_token": "platform-fresh-token",
-      }),
-    });
-    expect(result.perServiceEnv.api).toContain("GITHUB_TOKEN=platform-fresh-token");
-    expect(result.perServiceEnv.api).not.toContain("user-stale-token");
-  });
-
-  it("treats platform-sourced entry as missing when neither source nor user has a value", () => {
+  it("treats a platform-sourced entry with no matching user secret as missing", () => {
     const services: ComposeService[] = [
       {
         name: "api",
@@ -565,34 +504,66 @@ describe("resolveSecrets — Phase 4 platform credentials", () => {
         ],
       },
     ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: {},
-      platformCredentials: fixedPlatformCredentialProvider({}),
-    });
+    const result = resolveSecrets({ services, userSecrets: {} });
+    expect(result.perServiceEnv.api).not.toContain("ANTHROPIC_API_KEY=");
     expect(result.missingByService.api).toEqual(["ANTHROPIC_API_KEY"]);
     expect(result.missingRequiredByService.api).toEqual(["ANTHROPIC_API_KEY"]);
   });
 
-  it("ignores source field when no platformCredentials provider is supplied", () => {
+  it("reports a warning (one per entry) for each unhonored platform source", () => {
     const services: ComposeService[] = [
       {
-        name: "api",
-        secrets: ["ANTHROPIC_API_KEY"],
+        name: "orchestrator",
+        secrets: ["ANTHROPIC_API_KEY", "GITHUB_TOKEN", "SENTRY_DSN"],
         secretRequirements: [
           { name: "ANTHROPIC_API_KEY", source: "platform:claude_oauth" },
+          { name: "GITHUB_TOKEN", source: "platform:github_token" },
+          { name: "SENTRY_DSN" }, // no source → no warning
         ],
       },
     ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: { ANTHROPIC_API_KEY: "user-only" },
-      // no platformCredentials
-    });
-    expect(result.perServiceEnv.api).toContain("ANTHROPIC_API_KEY=user-only");
+    const result = resolveSecrets({ services, userSecrets: {} });
+    expect(result.platformSourceWarnings).toEqual([
+      { service: "orchestrator", name: "ANTHROPIC_API_KEY", source: "platform:claude_oauth" },
+      { service: "orchestrator", name: "GITHUB_TOKEN", source: "platform:github_token" },
+    ]);
   });
 
-  it("preserves source on declared aggregate", () => {
+  it("emits no warning when no entry declares a platform source", () => {
+    const services: ComposeService[] = [
+      { name: "api", secrets: ["DATABASE_URL"] },
+    ];
+    const result = resolveSecrets({ services, userSecrets: { DATABASE_URL: "postgres://x" } });
+    expect(result.platformSourceWarnings).toEqual([]);
+  });
+
+  it("regression: a real GitHub token is never injected from platform state", () => {
+    // A hostile repo declares source: platform:github_token. With NO user
+    // secret of that name set, the service gets nothing — the user's real
+    // token is never forwarded.
+    const services: ComposeService[] = [
+      {
+        name: "evil",
+        secrets: ["GITHUB_TOKEN"],
+        secretRequirements: [
+          { name: "GITHUB_TOKEN", source: "platform:github_token" },
+        ],
+      },
+    ];
+    const noSecret = resolveSecrets({ services, userSecrets: {} });
+    expect(noSecret.perServiceEnv.evil).not.toContain("GITHUB_TOKEN=");
+    expect(noSecret.missingByService.evil).toEqual(["GITHUB_TOKEN"]);
+
+    // With a same-named user secret set, the service gets the user-supplied
+    // value instead — never a platform identity.
+    const withSecret = resolveSecrets({
+      services,
+      userSecrets: { GITHUB_TOKEN: "ghp_user_dedicated" },
+    });
+    expect(withSecret.perServiceEnv.evil).toContain("GITHUB_TOKEN=ghp_user_dedicated");
+  });
+
+  it("still preserves the source field on the declared aggregate (parsed, not honored)", () => {
     const services: ComposeService[] = [
       {
         name: "api",
@@ -602,13 +573,7 @@ describe("resolveSecrets — Phase 4 platform credentials", () => {
         ],
       },
     ];
-    const result = resolveSecrets({
-      services,
-      userSecrets: {},
-      platformCredentials: fixedPlatformCredentialProvider({
-        "platform:github_token": "ghp_x",
-      }),
-    });
+    const result = resolveSecrets({ services, userSecrets: {} });
     expect(result.declared[0].source).toBe("platform:github_token");
   });
 });
