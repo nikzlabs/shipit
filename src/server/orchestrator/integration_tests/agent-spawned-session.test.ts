@@ -46,7 +46,6 @@ import {
   TestClient,
   createTestCredentialStore,
   createTestDatabaseManager,
-  getRepoCacheDir,
   seedRepoCacheWithLocalBare,
 } from "./test-helpers.js";
 import {
@@ -986,40 +985,6 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(child?.branchRenamed).toBe(true);
     expect(child?.parentSessionId).toBe(parentId);
     expect(child?.remoteUrl).toBe(SPAWN_REPO_URL);
-  });
-
-  it("honors opts.base by resetting HEAD after the claim", { timeout: 30_000 }, async () => {
-    // Add an extra commit to the cache so we have a non-HEAD commit reachable
-    // from origin/main's history. `opts.base` must resolve in the child's
-    // clone (a copy of the cache), so the commit has to live there — pushing
-    // from the parent's workspace into a non-bare cache fails on
-    // receive.denyCurrentBranch, hence we commit directly in the cache.
-    const cacheDir = getRepoCacheDir(tmpDir, SPAWN_REPO_URL);
-    const baseSha = execSync("git rev-parse HEAD", { cwd: cacheDir, encoding: "utf8" }).trim();
-    fs.writeFileSync(path.join(cacheDir, "tip.txt"), "tip\n");
-    execSync(
-      'git add tip.txt && git -c user.email=t@t.com -c user.name=Test commit -m tip --no-gpg-sign',
-      { cwd: cacheDir },
-    );
-    execSync("git update-ref refs/remotes/origin/main HEAD", { cwd: cacheDir });
-    const tipSha = execSync("git rev-parse HEAD", { cwd: cacheDir, encoding: "utf8" }).trim();
-    expect(tipSha).not.toBe(baseSha);
-
-    const { parentId } = await claimGraduatedParent();
-    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm");
-
-    const spawnRes = await app.inject({
-      method: "POST",
-      url: `/api/sessions/${parentId}/spawn`,
-      payload: { prompt: "x", title: "Base reset", base: baseSha },
-    });
-    expect(spawnRes.statusCode).toBe(200);
-    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
-    const child = sessionManager.get(childId)!;
-
-    const childHead = execSync("git rev-parse HEAD", { cwd: child.workspaceDir!, encoding: "utf8" }).trim();
-    expect(childHead).toBe(baseSha);
-    expect(childHead).not.toBe(tipSha);
   });
 
   it("POST /spawn rejects a parent with no registered remote URL", { timeout: 15_000 }, async () => {

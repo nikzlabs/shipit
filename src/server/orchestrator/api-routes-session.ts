@@ -507,7 +507,6 @@ export async function registerSessionRoutes(
     Body: {
       prompt?: string;
       title?: string;
-      base?: string;
       agent?: AgentId;
       model?: string;
       spawnedByTurn?: string;
@@ -533,7 +532,12 @@ export async function registerSessionRoutes(
         // user can push, register the repo, and seed an incident packet —
         // all before spawnChildSession does any disk work.
         let effectivePrompt = body.prompt ?? "";
-        let sourceBase = body.base;
+        // The only `base` ShipIt honors is the Ops `--shipit-source` pin to the
+        // exact inspected build commit (set below). There is no agent-facing
+        // `--base`: generic fan-out children always branch off the parent
+        // repo's freshly-fetched `origin/main`, so a just-merged design doc is
+        // visible to the child by construction.
+        let sourceBase: string | undefined;
         let repoUrlOverride: string | undefined;
         // docs/162 — metadata for the Ops remediation card, captured here so the
         // `session_spawned` emit below can render the "ShipIt fix" variant
