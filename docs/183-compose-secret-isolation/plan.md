@@ -108,6 +108,27 @@ The exact root is configurable:
 - Tests and legacy/local paths can still inject no root and fall back to the old
   workspace `.shipit/.env.<service-name>` behavior where needed.
 
+**Why `<stateDir>/service-env` is agent-invisible in production — and not by accident.**
+The isolation does not come from the path string "looking outside" `/workspace`; in
+production `stateDir` defaults to the workspace-volume root, so this directory resolves to
+`/workspace/service-env` on disk. It is invisible to the agent because the agent container
+mounts the workspace volume with a **subpath** of `sessions/<sessionId>/workspace`
+(`container-lifecycle.ts`, `VolumeOptions.Subpath`), so a `service-env/` directory at the
+volume root is simply outside the agent's mount even though both live on the same Docker
+volume. This subpath dependency is load-bearing and must be stated wherever the default is
+described — an implementer who assumes "any path under `stateDir` is safe" will reintroduce
+the leak in any context that lacks the subpath mount (see local/dogfood mode below).
+
+**Local/dogfood mode requires an explicit external root.** In local mode the `dev` compose
+service sets `SHIPIT_STATE_DIR=/workspace/.inner-shipit` (`docker-compose.yml`,
+`docs/118`), which is *inside* the inner-agent-visible workspace tree. There is no subpath
+mount in local mode — the inner agent sees the whole checkout — so the `<stateDir>/service-env`
+fallback lands somewhere the inner agent can read and the leak persists. Since the
+motivating incident was a ShipIt-repo dogfood session, this path is in scope and must not
+fall back. For local/inner sessions, require a workspace-external `SHIPIT_SERVICE_ENV_DIR`
+(or mandate Docker-secrets mode via `SHIPIT_SECRETS_INTERNAL_DIR`); refuse to write service
+env files under a `stateDir` that lives inside the workspace.
+
 Why this is the first fix:
 
 - It preserves the current env-var semantics inside the service container.
@@ -202,7 +223,9 @@ x-shipit-secrets
   -> compose env_file
   -> service process.env
 
-agent cannot read <stateDir>/service-env from /workspace
+agent cannot read <stateDir>/service-env: in production the agent's workspace
+mount is a sessions/<id>/workspace subpath of the volume, so service-env/ at the
+volume root is outside the agent's mount (see Design §1 for the local-mode caveat)
 ```
 
 For `agent: true` entries:
@@ -255,9 +278,9 @@ Add focused coverage for the boundary:
 
 ## Open Questions
 
-- Should local dogfood runtime use the external service env directory too, even when the
-  state directory is intentionally configured inside the checkout for local development?
 - Should `SHIPIT_SERVICE_ENV_DIR` be required in production deployments, or should the
-  default `<stateDir>/service-env` be sufficient?
+  default `<stateDir>/service-env` be sufficient? (Resolved for local/dogfood mode in
+  Design §1: there it is required, because `stateDir` lives inside the agent-visible
+  workspace and there is no subpath mount to fall back on.)
 - Should the UI surface a warning when a repo declares high-value platform credentials in
   service env, even when they are service-only?
