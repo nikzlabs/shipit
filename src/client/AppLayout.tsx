@@ -140,9 +140,22 @@ export function AppLayout({
       <LocalModeBanner />
       <header className="relative flex items-center justify-between px-3 sm:px-6 py-2 sm:py-3 border-b border-(--color-border-primary)">
         <div className="flex items-center gap-2 sm:gap-4 min-w-0">
-          <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0 flex items-center gap-1.5 cursor-pointer hover:opacity-80 transition-opacity" onClick={onNavigateHome} role="link">
-            <img src="/favicon.svg" alt="" className="w-5 h-5" />
-            ShipIt
+          <h1 className="text-base sm:text-lg font-semibold tracking-tight shrink-0">
+            <a
+              href="/"
+              className="flex items-center gap-1.5 hover:opacity-80 transition-opacity"
+              onClick={(e) => {
+                // Left-click (no modifier) stays in-app via client-side routing.
+                // Middle-click / cmd+click / ctrl+click fall through to the
+                // browser, which opens href="/" in a new background tab.
+                if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+                e.preventDefault();
+                onNavigateHome();
+              }}
+            >
+              <img src="/favicon.svg" alt="" className="w-5 h-5" />
+              ShipIt
+            </a>
           </h1>
           {isMobile && (
             <RepoSwitcher
