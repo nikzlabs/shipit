@@ -39,6 +39,8 @@ interface SessionRow {
   parent_session_id: string | null;
   /** docs/117 — message-group id of the parent turn that spawned this session. */
   spawned_by_turn: string | null;
+  /** docs/182 — 1 when the session's last completed turn ended in an error. */
+  last_turn_errored: number;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -216,6 +218,7 @@ export class SessionManager {
     }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
+    if (row.last_turn_errored) info.lastTurnErrored = true;
     return info;
   }
 
@@ -524,6 +527,18 @@ export class SessionManager {
    */
   setAgentPinned(id: string): void {
     this.db.prepare("UPDATE sessions SET agent_pinned = 1 WHERE id = ?").run(id);
+  }
+
+  /**
+   * docs/182 — record whether the session's last completed turn errored. Set on
+   * every turn completion (true on agent error / errored agent_result, false on
+   * a clean finish) so `shipit session wait` can resolve a distinct `error`
+   * outcome that survives an orchestrator restart (the runner's in-memory flag
+   * does not). Persisted on the session row; read by the child-session readiness
+   * check alongside the runner's live flag.
+   */
+  setLastTurnErrored(id: string, errored: boolean): void {
+    this.db.prepare("UPDATE sessions SET last_turn_errored = ? WHERE id = ?").run(errored ? 1 : 0, id);
   }
 
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {

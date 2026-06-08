@@ -87,6 +87,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _isRunning = false;
   private _systemTurnInProgress = false;
   private _wasInterrupted = false;
+  private _lastTurnErrored = false;
   private _guardedUnavailable = false;
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
@@ -244,6 +245,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get wasInterrupted(): boolean { return this._wasInterrupted; }
   set wasInterrupted(v: boolean) { this._wasInterrupted = v; }
+  get lastTurnErrored(): boolean { return this._lastTurnErrored; }
+  set lastTurnErrored(v: boolean) { this._lastTurnErrored = v; }
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }

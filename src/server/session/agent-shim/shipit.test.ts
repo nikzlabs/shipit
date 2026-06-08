@@ -749,6 +749,199 @@ describe("shipit session wait", () => {
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("not a descendant of this parent");
   });
+
+  it("forwards a bounded segment alongside the overall timeout", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a", "--timeout", "120"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: { child: { id: "ses_a", title: "T", status: "idle" }, outcome: "idle" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("segment=");
+    expect(out.stdout).toContain("outcome:    idle");
+  });
+
+  it("maps the child-error outcome to exit code 3", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: { child: { id: "ses_a", title: "T", status: "error" }, outcome: "error" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(3);
+    expect(out.stdout).toContain("outcome:    error");
+  });
+
+  it("maps the archived outcome to exit code 0", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "wait", "ses_a"],
+      {
+        "GET /agent-ops/session/wait/ses_a": {
+          status: 200,
+          body: { child: { id: "ses_a", title: "T", status: "idle" }, outcome: "archived" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("outcome:    archived");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit session wait — resilience (docs/182)
+//
+// These exercise the segment loop, transient-retry backoff, and multi-child
+// fan-out, which need a stateful `call` (responses change between iterations)
+// and an injectable virtual clock so deadline-driven loops are deterministic.
+// ---------------------------------------------------------------------------
+
+/** Virtual clock: `sleep(ms)` advances `now()` so backoff loops terminate. */
+function virtualClock(): { now: () => number; sleep: (ms: number) => Promise<void> } {
+  let t = 0;
+  return {
+    now: () => t,
+    sleep: async (ms: number) => {
+      t += ms;
+    },
+  };
+}
+
+interface WaitMockResponse {
+  status: number;
+  body: Record<string, unknown>;
+}
+
+/**
+ * Run `shipit session wait ...` with a per-child queue of responses (shifted in
+ * order, last entry reused once exhausted) and a virtual clock so the segment /
+ * backoff loops are deterministic and fast.
+ */
+async function runWait(
+  argv: string[],
+  queues: Record<string, WaitMockResponse[]>,
+): Promise<{ stdout: string; stderr: string; exitCode: number | null; callCount: number }> {
+  let stdout = "";
+  let stderr = "";
+  let exitCode: number | null = null;
+  let callCount = 0;
+  const io: ShimIO = {
+    stdout: (t) => { stdout += t; },
+    stderr: (t) => { stderr += t; },
+    exit: (code) => { exitCode = code; throw new Error("__shim_exit__"); },
+  };
+  const clock = virtualClock();
+  const call = async (_m: string, path: string) => {
+    callCount++;
+    // /agent-ops/session/wait/<id>?...
+    const id = path.split("/agent-ops/session/wait/")[1]?.split("?")[0] ?? "";
+    const queue = queues[id] ?? [];
+    const res = queue.length > 1 ? queue.shift()! : (queue[0] ?? { status: 200, body: { outcome: "pending" } });
+    // Model the real server holding a segment open: a `pending` response only
+    // comes back after the segment elapsed, so advance the virtual clock. This
+    // bounds an otherwise-instant pending loop by the overall deadline.
+    if (res.status >= 200 && res.status < 300 && res.body.outcome === "pending") {
+      await clock.sleep(25_000);
+    }
+    return res;
+  };
+  try {
+    await runShim(argv, io, {}, call as never, { sleep: clock.sleep, now: clock.now });
+  } catch (err) {
+    if (err instanceof Error && err.message !== "__shim_exit__") throw err;
+  }
+  return { stdout, stderr, exitCode, callCount };
+}
+
+describe("shipit session wait — resilience (docs/182)", () => {
+  it("loops over pending segments until the child goes idle", async () => {
+    const out = await runWait(["session", "wait", "ses_a"], {
+      ses_a: [
+        { status: 200, body: { outcome: "pending", child: { id: "ses_a", status: "running" } } },
+        { status: 200, body: { outcome: "pending", child: { id: "ses_a", status: "running" } } },
+        { status: 200, body: { outcome: "idle", child: { id: "ses_a", title: "T", status: "idle" } } },
+      ],
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.callCount).toBe(3);
+    expect(out.stdout).toContain("outcome:    idle");
+  });
+
+  it("swallows transient transport failures and still resolves", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "--json"], {
+      ses_a: [
+        { status: 0, body: { error: "socket hang up" } },
+        { status: 502, body: { error: "bad gateway" } },
+        { status: 200, body: { outcome: "idle", child: { id: "ses_a", status: "idle" } } },
+      ],
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.callCount).toBe(3);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.outcome).toBe("idle");
+    // The swallowed transport error is surfaced as a note, not an outcome.
+    expect(parsed.lastTransportError).toBeTruthy();
+  });
+
+  it("surfaces timed-out with lastTransportError when retries consume the deadline", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "--timeout", "3", "--json"], {
+      ses_a: [{ status: 0, body: { error: "connection reset" } }],
+    });
+    expect(out.exitCode).toBe(1);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.outcome).toBe("timed-out");
+    expect(parsed.lastTransportError).toBeTruthy();
+  });
+
+  it("--any resolves on the first finisher and reports it", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "ses_b", "--any", "--json"], {
+      // ses_a never finishes within the loop; ses_b is idle on the first poll.
+      ses_a: [{ status: 200, body: { outcome: "pending", child: { id: "ses_a", status: "running" } } }],
+      ses_b: [{ status: 200, body: { outcome: "idle", child: { id: "ses_b", status: "idle" } } }],
+    });
+    expect(out.exitCode).toBe(0);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.mode).toBe("any");
+    expect(parsed.results[0].id).toBe("ses_b");
+    expect(parsed.results[0].outcome).toBe("idle");
+  });
+
+  it("--all waits for every child; any child error fails the aggregate (exit 3)", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "ses_b", "--all", "--json"], {
+      ses_a: [{ status: 200, body: { outcome: "idle", child: { id: "ses_a", status: "idle" } } }],
+      ses_b: [{ status: 200, body: { outcome: "error", child: { id: "ses_b", status: "error" } } }],
+    });
+    expect(out.exitCode).toBe(3);
+    const parsed = JSON.parse(out.stdout);
+    expect(parsed.mode).toBe("all");
+    expect(parsed.results).toHaveLength(2);
+    expect(parsed.results.map((r: { outcome: string }) => r.outcome).sort()).toEqual(["error", "idle"]);
+  });
+
+  it("--all exits 0 when every child is idle", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "ses_b", "--all"], {
+      ses_a: [{ status: 200, body: { outcome: "idle", child: { id: "ses_a", status: "idle" } } }],
+      ses_b: [{ status: 200, body: { outcome: "idle", child: { id: "ses_b", status: "idle" } } }],
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("ses_a\tidle");
+    expect(out.stdout).toContain("ses_b\tidle");
+  });
+
+  it("rejects --any and --all together", async () => {
+    const out = await runWait(["session", "wait", "ses_a", "ses_b", "--any", "--all"], {});
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("mutually exclusive");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,19 @@ describe("SessionManager", () => {
     expect(reloaded.agentPinned).toBe(true);
   });
 
+  it("docs/182: lastTurnErrored defaults to false and round-trips via setLastTurnErrored", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Maybe errors");
+    expect(mgr.get("sess-1")!.lastTurnErrored).toBeUndefined();
+
+    mgr.setLastTurnErrored("sess-1", true);
+    expect(new SessionManager(dbManager).get("sess-1")!.lastTurnErrored).toBe(true);
+
+    // A subsequent clean turn clears it.
+    mgr.setLastTurnErrored("sess-1", false);
+    expect(new SessionManager(dbManager).get("sess-1")!.lastTurnErrored).toBeUndefined();
+  });
+
   it("docs/150: persists provider route kind and id", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Route me");

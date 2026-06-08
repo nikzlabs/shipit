@@ -39,7 +39,7 @@ Supported subcommands:
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
-  shipit session wait    <id> [--timeout SECONDS] [--json]
+  shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
   shipit session archive <id> [--json]
   shipit session help
 
@@ -199,6 +199,7 @@ async function callBroker(
   path: string,
   body: unknown,
   env: ShimEnv,
+  timeoutMs?: number,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const url = `${workerBaseUrl(env)}${path}`;
   const init: RequestInit = {
@@ -208,6 +209,15 @@ async function callBroker(
   if (body !== undefined && method !== "GET") {
     init.body = JSON.stringify(body);
   }
+  // docs/182 — an AbortController-based per-request timeout so a black-holed
+  // (half-open) socket on the shim→worker leg fails fast instead of hanging
+  // until an OS-level timeout. The wait loop passes one per segment; a timed-out
+  // request surfaces as `status: 0`, which the loop classifies as transient and
+  // retries with backoff — never as a terminal outcome.
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+  timer?.unref?.();
+  if (controller) init.signal = controller.signal;
   let res: Response;
   try {
     res = await fetch(url, init);
@@ -219,6 +229,8 @@ async function callBroker(
         error: `Could not reach the ShipIt session worker at ${url}: ${message}`,
       },
     };
+  } finally {
+    if (timer) clearTimeout(timer);
   }
   let parsed: unknown;
   try {
@@ -278,6 +290,10 @@ interface RunDeps {
   env: ShimEnv;
   io: ShimIO;
   call: typeof callBroker;
+  /** Sleep helper (injectable for deterministic backoff tests). */
+  sleep: (ms: number) => Promise<void>;
+  /** Monotonic clock (injectable so deadline-driven loops are testable). */
+  now: () => number;
 }
 
 /**
@@ -300,6 +316,23 @@ const REJECTED_SESSION_SUBCOMMANDS = new Set([
  * reject obvious typos (`--timeout 99999h`) without a round-trip.
  */
 const MAX_WAIT_TIMEOUT_SECS = 60 * 60; // 1 hour
+
+/**
+ * docs/182 — resilient-wait tuning. The shim owns the overall deadline and
+ * drives a segment loop beneath it, so each network leg is short and a reset
+ * costs one retried segment rather than the whole wait.
+ */
+const WAIT_DEFAULT_OVERALL_SECS = 5 * 60; // matches the server's old default
+const WAIT_SEGMENT_SECS = 25; // bounded server segment (keepalive-friendly)
+const WAIT_INITIAL_BACKOFF_MS = 500;
+const WAIT_MAX_BACKOFF_MS = 8_000;
+/** Per-request abort budget: one segment plus margin for the server's resolve. */
+const WAIT_REQUEST_MARGIN_MS = 10_000;
+
+/** Exit codes for `shipit session wait` (docs/182 distinguishable outcomes). */
+const WAIT_EXIT_IDLE = 0;
+const WAIT_EXIT_TIMED_OUT = 1;
+const WAIT_EXIT_ERROR = 3;
 
 /**
  * Inline prompt flags the agent might reach for out of muscle memory. We
@@ -595,74 +628,328 @@ async function handleSessionMessage(args: string[], deps: RunDeps): Promise<void
   success(deps.io, lines.join("\n"));
 }
 
+/** A terminal or transport classification of one child's wait. */
+type WaitTerminal =
+  | "idle"
+  | "error"
+  | "archived"
+  | "timed-out"
+  | "not-found"
+  | "http-error";
+
+interface SingleWaitResult {
+  id: string;
+  outcome: WaitTerminal;
+  child: Record<string, unknown> | null;
+  /** The last server response body (for `--json` passthrough). */
+  body: Record<string, unknown>;
+  /** Set when transport errors were swallowed during the wait. */
+  lastTransportError?: string;
+  /** Human message for not-found / http-error outcomes. */
+  errorMessage?: string;
+}
+
+/** Transient (retry) vs terminal HTTP/transport statuses. */
+function isTransientStatus(status: number): boolean {
+  return status === 0 || status === 502 || status === 503 || status === 504;
+}
+
+/**
+ * Map a server wait response to a normalized outcome. New servers send an
+ * explicit `outcome`; legacy responses are derived from `idle` / `timedOut`.
+ * An unrecognized 2xx is treated as `pending` so the loop keeps polling
+ * (bounded by the overall deadline) rather than returning a wrong terminal.
+ */
+function normalizeServerOutcome(
+  body: Record<string, unknown>,
+): "idle" | "error" | "archived" | "pending" | "timed-out" {
+  const o = body.outcome;
+  if (o === "idle" || o === "error" || o === "archived" || o === "pending" || o === "timed-out") {
+    return o;
+  }
+  if (body.timedOut === true) return "timed-out";
+  if (body.idle === true) return "idle";
+  return "pending";
+}
+
+/**
+ * docs/182 — wait on a single child with a resumable segment loop. Each
+ * iteration issues a bounded server segment; on `pending` it re-issues, and on
+ * a transient transport failure it backs off and retries — all beneath the
+ * overall `deadline`. Only a genuine terminal condition (idle / error /
+ * archived) or the deadline (`timed-out`) ends the loop. Never throws.
+ */
+async function waitForChildOnce(
+  id: string,
+  deadline: number,
+  deps: RunDeps,
+): Promise<SingleWaitResult> {
+  let backoff = WAIT_INITIAL_BACKOFF_MS;
+  let lastTransportError: string | undefined;
+  let lastBody: Record<string, unknown> = {};
+
+  while (deps.now() < deadline) {
+    const remainingMs = deadline - deps.now();
+    const segSecs = Math.max(1, Math.min(WAIT_SEGMENT_SECS, Math.ceil(remainingMs / 1000)));
+    const overallSecs = Math.max(1, Math.ceil(remainingMs / 1000));
+    const path =
+      `/agent-ops/session/wait/${encodeURIComponent(id)}` +
+      `?timeout=${overallSecs}&segment=${segSecs}`;
+    const res = await deps.call(
+      "GET",
+      path,
+      undefined,
+      deps.env,
+      segSecs * 1000 + WAIT_REQUEST_MARGIN_MS,
+    );
+
+    if (res.status === 404) {
+      return {
+        id,
+        outcome: "not-found",
+        child: null,
+        body: res.body,
+        errorMessage: "Spawned session not found, or not a descendant of this parent.",
+        ...(lastTransportError ? { lastTransportError } : {}),
+      };
+    }
+    if (isTransientStatus(res.status)) {
+      // Transport failure is NEVER an outcome — swallow and retry with backoff.
+      lastTransportError = formatError(res, "transport error reaching the ShipIt orchestrator");
+      const sleepMs = Math.min(backoff, Math.max(0, deadline - deps.now()));
+      if (sleepMs <= 0) break;
+      await deps.sleep(sleepMs);
+      backoff = Math.min(backoff * 2, WAIT_MAX_BACKOFF_MS);
+      continue;
+    }
+    if (res.status < 200 || res.status >= 300) {
+      return {
+        id,
+        outcome: "http-error",
+        child: null,
+        body: res.body,
+        errorMessage: formatError(res, "Failed to wait on spawned session"),
+        ...(lastTransportError ? { lastTransportError } : {}),
+      };
+    }
+
+    // 2xx — reset backoff and act on the outcome.
+    backoff = WAIT_INITIAL_BACKOFF_MS;
+    lastBody = res.body;
+    const outcome = normalizeServerOutcome(res.body);
+    if (outcome === "pending") continue;
+    if (outcome === "timed-out") break; // legacy server timed out; honor the deadline below
+    return {
+      id,
+      outcome,
+      child: (res.body.child as Record<string, unknown> | null) ?? null,
+      body: res.body,
+      ...(lastTransportError ? { lastTransportError } : {}),
+    };
+  }
+
+  // Overall deadline exhausted (or a legacy server reported timed-out).
+  return {
+    id,
+    outcome: "timed-out",
+    child: (lastBody.child as Record<string, unknown> | null) ?? null,
+    body: lastBody,
+    ...(lastTransportError ? { lastTransportError } : {}),
+  };
+}
+
+/** Map a single wait outcome to its process exit code. */
+function exitCodeForWait(outcome: WaitTerminal): number {
+  switch (outcome) {
+    case "idle":
+    case "archived":
+      return WAIT_EXIT_IDLE;
+    case "error":
+      return WAIT_EXIT_ERROR;
+    case "timed-out":
+      return WAIT_EXIT_TIMED_OUT;
+    default:
+      return 1; // not-found / http-error
+  }
+}
+
+/**
+ * `shipit session wait <id...> [--timeout SECONDS] [--any|--all] [--json]`.
+ *
+ * docs/182 — resilient, level-triggered, resumable wait with distinguishable
+ * outcomes. A single call is the robust unit: the shim owns the overall deadline
+ * and absorbs transport resets beneath it, so a parent agent never has to script
+ * its own retry loop. Multiple ids fan out over the same resilient single-wait
+ * with one shared deadline (`--any` = first finisher, `--all` = every child).
+ */
 async function handleSessionWait(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--timeout": "timeout", "-T": "timeout" },
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--any": "any", "--all": "all" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit session wait: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const id = parsed.positional[0];
-  if (!id) {
+  const ids = parsed.positional;
+  if (ids.length === 0) {
     fail(deps.io, "shipit session wait: child session id is required.");
   }
+  if (parsed.booleans.has("any") && parsed.booleans.has("all")) {
+    fail(deps.io, "shipit session wait: --any and --all are mutually exclusive.");
+  }
+
   // Defense-in-depth client-side validation. The orchestrator also enforces.
-  let timeoutSecs: number | undefined;
+  let overallSecs = WAIT_DEFAULT_OVERALL_SECS;
   if (parsed.values.timeout) {
     const n = Number(parsed.values.timeout);
     if (!Number.isFinite(n) || n <= 0) {
       fail(deps.io, "shipit session wait: --timeout must be a positive number of seconds.");
     }
-    timeoutSecs = Math.min(Math.floor(n), MAX_WAIT_TIMEOUT_SECS);
+    overallSecs = Math.min(Math.floor(n), MAX_WAIT_TIMEOUT_SECS);
   }
 
-  const qs = timeoutSecs ? `?timeout=${timeoutSecs}` : "";
-  const res = await deps.call(
-    "GET",
-    `/agent-ops/session/wait/${encodeURIComponent(id)}${qs}`,
-    undefined,
-    deps.env,
-  );
-  if (res.status === 404) {
-    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
-  }
-  if (res.status < 200 || res.status >= 300) {
-    fail(deps.io, formatError(res, "Failed to wait on spawned session"), 1);
-  }
+  const json = parsed.booleans.has("json");
+  const deadline = deps.now() + overallSecs * 1000;
 
-  const child = res.body.child as Record<string, unknown> | null;
-  const timedOut = res.body.timedOut === true;
-
-  if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
-    // Non-zero on timeout so coordination scripts can detect it without
-    // parsing the JSON. Matches the plan's "non-zero exit on timeout".
-    deps.io.exit(timedOut ? 1 : 0);
+  // Single id — the common case. Preserve the legacy text/JSON shape.
+  if (ids.length === 1) {
+    const result = await waitForChildOnce(ids[0], deadline, deps);
+    renderSingleWait(result, deps, json);
     return;
   }
 
-  if (!child) {
-    fail(deps.io, "Spawned session not found.", 1);
+  // Multi id (docs/182 §F) — fan out over the resilient single-wait, sharing
+  // one overall deadline so `--timeout` bounds the whole call, not each child.
+  const mode: "any" | "all" = parsed.booleans.has("any") ? "any" : "all";
+  if (mode === "any") {
+    const winner = await waitAnyChild(ids, deadline, deps);
+    renderMultiWait([winner], ids, mode, deps, json);
+    return;
+  }
+  const results = await Promise.all(ids.map((id) => waitForChildOnce(id, deadline, deps)));
+  renderMultiWait(results, ids, mode, deps, json);
+}
+
+/**
+ * `--any` — resolve as soon as the first listed child reaches a terminal
+ * (non-timed-out) outcome; if none do before the shared deadline, resolve with
+ * the first (timed-out) result. Returns the winner so the parent can act on it
+ * and wait on the rest.
+ */
+function waitAnyChild(ids: string[], deadline: number, deps: RunDeps): Promise<SingleWaitResult> {
+  return new Promise<SingleWaitResult>((resolve) => {
+    let done = false;
+    const tasks = ids.map(async (id) => {
+      const r = await waitForChildOnce(id, deadline, deps);
+      if (!done && r.outcome !== "timed-out") {
+        done = true;
+        resolve(r);
+      }
+      return r;
+    });
+    void (async () => {
+      const all = await Promise.all(tasks);
+      if (done) return;
+      done = true;
+      resolve(all[0]);
+    })();
+  });
+}
+
+/** Render a single-child wait result (text or JSON) and exit. */
+function renderSingleWait(result: SingleWaitResult, deps: RunDeps, json: boolean): void {
+  if (result.outcome === "not-found") {
+    fail(deps.io, result.errorMessage ?? "Spawned session not found.", 1);
+  }
+  if (result.outcome === "http-error") {
+    fail(deps.io, result.errorMessage ?? "Failed to wait on spawned session.", 1);
   }
 
+  if (json) {
+    const out = {
+      ...result.body,
+      outcome: result.outcome,
+      ...(result.lastTransportError ? { lastTransportError: result.lastTransportError } : {}),
+    };
+    deps.io.stdout(`${JSON.stringify(out)}\n`);
+    deps.io.exit(exitCodeForWait(result.outcome));
+    return;
+  }
+
+  const child = result.child;
+  const idle = result.outcome === "idle" || result.outcome === "archived";
+  const timedOut = result.outcome === "timed-out";
   const lines = [
-    `${asString(child.title)} (${asString(child.id)})`,
-    `status:     ${asString(child.status) || "idle"}`,
-    `branch:     ${asString(child.branch) || "(no branch)"}`,
-    `queue:      ${asString(child.queueLength) || "0"}`,
-    `idle:       ${!timedOut}`,
+    `${asString(child?.title)} (${asString(child?.id)})`,
+    `status:     ${asString(child?.status) || "idle"}`,
+    `branch:     ${asString(child?.branch) || "(no branch)"}`,
+    `queue:      ${asString(child?.queueLength) || "0"}`,
+    `outcome:    ${result.outcome}`,
+    `idle:       ${idle}`,
     `timed-out:  ${timedOut}`,
   ];
-  if (child.latestAssistantMessage) {
+  if (result.lastTransportError) {
+    lines.push(`note:       transport retried (${result.lastTransportError})`);
+  }
+  if (child?.latestAssistantMessage) {
     lines.push("", asString(child.latestAssistantMessage));
   }
-  if (timedOut) {
-    deps.io.stdout(`${lines.join("\n")}\n`);
-    deps.io.exit(1);
+  deps.io.stdout(`${lines.join("\n")}\n`);
+  deps.io.exit(exitCodeForWait(result.outcome));
+}
+
+/**
+ * Aggregate exit code for a multi-child wait: any reaching error (3) takes
+ * precedence, then any not-found/http-error/timed-out (1), else idle (0).
+ */
+function aggregateExitCode(results: SingleWaitResult[]): number {
+  if (results.some((r) => r.outcome === "error")) return WAIT_EXIT_ERROR;
+  if (results.some((r) => exitCodeForWait(r.outcome) !== WAIT_EXIT_IDLE)) return WAIT_EXIT_TIMED_OUT;
+  return WAIT_EXIT_IDLE;
+}
+
+/** Render a multi-child wait (`--any` winner, or `--all` results) and exit. */
+function renderMultiWait(
+  results: SingleWaitResult[],
+  ids: string[],
+  mode: "any" | "all",
+  deps: RunDeps,
+  json: boolean,
+): void {
+  const exit = mode === "any" ? exitCodeForWait(results[0].outcome) : aggregateExitCode(results);
+
+  if (json) {
+    const out = {
+      mode,
+      ids,
+      results: results.map((r) => ({
+        id: r.id,
+        outcome: r.outcome,
+        child: r.child,
+        ...(r.lastTransportError ? { lastTransportError: r.lastTransportError } : {}),
+      })),
+    };
+    deps.io.stdout(`${JSON.stringify(out)}\n`);
+    deps.io.exit(exit);
     return;
   }
-  success(deps.io, lines.join("\n"));
+
+  const lines: string[] = [];
+  if (mode === "any") {
+    const w = results[0];
+    lines.push(`first-finished: ${w.id}`);
+    lines.push(`outcome:        ${w.outcome}`);
+    const remaining = ids.filter((id) => id !== w.id);
+    if (remaining.length > 0) {
+      lines.push(`still-waiting:   ${remaining.join(", ")}`);
+    }
+  } else {
+    for (const r of results) {
+      lines.push(`${r.id}\t${r.outcome}`);
+    }
+  }
+  deps.io.stdout(`${lines.join("\n")}\n`);
+  deps.io.exit(exit);
 }
 
 async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void> {
@@ -1289,8 +1576,15 @@ export async function runShim(
   io: ShimIO = defaultIO,
   env: ShimEnv = {},
   call: typeof callBroker = callBroker,
+  timing?: { sleep?: (ms: number) => Promise<void>; now?: () => number },
 ): Promise<void> {
-  const deps: RunDeps = { env, io, call };
+  const deps: RunDeps = {
+    env,
+    io,
+    call,
+    sleep: timing?.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms))),
+    now: timing?.now ?? (() => Date.now()),
+  };
 
   const args = stripNodeArgs(argv);
 

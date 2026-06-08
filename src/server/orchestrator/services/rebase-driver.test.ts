@@ -162,6 +162,7 @@ function makeStubSessionManager(): SessionManager {
   return {
     get: (sessionId: string) => ({ sessionId, agentSessionId: undefined }),
     setAgentSessionId: () => {},
+    setLastTurnErrored: () => {},
     track: () => {},
     list: () => [],
   } as unknown as SessionManager;

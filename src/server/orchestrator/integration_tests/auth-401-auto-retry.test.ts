@@ -75,6 +75,7 @@ function makeDeps(
     listenerDeps: {
       sessionManager: {
         setAgentSessionId: vi.fn(),
+        setLastTurnErrored: vi.fn(),
         get: vi.fn(),
         track: vi.fn(),
         list: vi.fn().mockReturnValue([]),

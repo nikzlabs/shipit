@@ -69,7 +69,7 @@ override the parent.
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
-| `shipit session wait <id> [--timeout SECONDS] [--json]` | Long-poll until the child is idle (`running=false && queueLength=0`) or the timeout elapses. Default 5 minutes, capped at 1 hour. Exits non-zero on timeout. |
+| `shipit session wait <id...> [--timeout SECONDS] [--any\|--all] [--json]` | Wait until the child reaches a terminal state, or the timeout elapses. **Resilient**: it polls in short segments and absorbs connection resets / orchestrator redeploys beneath you, so a single call is the robust unit — you never script your own retry loop. Default 5 minutes, capped at 1 hour. Outcomes are distinguishable by exit code: `idle`/`archived` → `0`, child **error** → `3`, timed-out → `1`. Pass multiple ids with `--any` (resolve on the first finisher) or `--all` (resolve when every child finishes); the `--timeout` is shared across all of them. See *Coordinating* below. |
 | `shipit session archive <id> [--json]` | Archive a child this parent spawned. Refuses with a clear error when the child is still running — use `shipit session wait` first. |
 | `shipit session help` | Print the subcommand reference. |
 
@@ -171,9 +171,22 @@ Migrate the API to Drizzle
 EOF
 # session-id: ses_abc
 
-# Block until the child is idle (or the timeout fires).
+# Block until the child reaches a terminal state (or the timeout fires).
 shipit session wait ses_abc --timeout 1800
-# When the wait times out, the shim exits non-zero — handle in scripts.
+# The wait is resilient: it polls in short segments and silently retries
+# through connection resets and orchestrator redeploys, so you don't need
+# to re-issue it yourself. Branch on the exit code, NOT on transport noise:
+#   exit 0 → child idle / archived (finished its turn(s), nothing queued)
+#   exit 3 → child's last turn ERRORED — do NOT treat as success
+#   exit 1 → timed out while the child was still running (or it was not found)
+# With --json the same outcome is in the `outcome` field, and a swallowed
+# transport hiccup (if any) is reported in `lastTransportError` — it is never
+# itself an outcome, so "exit 1" always means a real timeout, not a blip.
+
+# Orchestrate a fleet with one call. --any wakes you on the first finisher
+# so you can act on it, then wait on the rest; --all waits for everyone.
+shipit session wait ses_a ses_b ses_c --any --timeout 1800
+shipit session wait ses_a ses_b ses_c --all --timeout 1800
 
 # Send a follow-up prompt without the user switching sessions.
 shipit session message ses_abc -m "Also update the README to mention Drizzle"

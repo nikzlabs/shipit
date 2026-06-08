@@ -107,11 +107,22 @@ export class OrchestratorClient {
     return `${baseUrl}/api/sessions/${encodeURIComponent(this.sessionId)}${tail}`;
   }
 
-  /** Send a JSON request to a session-scoped orchestrator endpoint. */
+  /**
+   * Send a JSON request to a session-scoped orchestrator endpoint.
+   *
+   * docs/182 — `opts.timeoutMs` arms an AbortController so a black-holed
+   * (half-open) socket fails fast instead of hanging until an OS-level timeout.
+   * Used by the resilient `shipit session wait` segment loop, which bounds each
+   * server segment: a timed-out segment surfaces as `status: 0` (transient),
+   * which the shim swallows and retries rather than treating as a real outcome.
+   * Other callers omit it and keep the unbounded behavior (spawn clones can run
+   * for minutes).
+   */
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
     suffix: string,
     body?: unknown,
+    opts?: { timeoutMs?: number },
   ): Promise<OrchestratorResponse> {
     const init: RequestInit = {
       method,
@@ -123,12 +134,19 @@ export class OrchestratorClient {
     const failures: string[] = [];
     for (const baseUrl of this.baseUrls) {
       const url = this.url(baseUrl, suffix);
+      const controller = opts?.timeoutMs ? new AbortController() : undefined;
+      const timer = controller
+        ? setTimeout(() => controller.abort(), opts!.timeoutMs)
+        : undefined;
+      timer?.unref?.();
       let res: Response;
       try {
-        res = await fetch(url, init);
+        res = await fetch(url, { ...init, ...(controller ? { signal: controller.signal } : {}) });
       } catch (err) {
         failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
         continue;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
       let parsed: unknown;
       try {
