@@ -2,13 +2,17 @@
 
 ## Server: durable, level-triggered readiness
 - [ ] `waitForChildIdle` accepts a bounded `segmentMs` and returns a `pending` result when the segment elapses with the child still running
-- [ ] Readiness derives from persisted session status + worker `/agent/status`, with the in-memory `idle` event as a fast-wakeup only
+- [ ] Readiness derives from session existence + `userArchived` + a live worker `/agent/status` probe (there is NO persisted run-status field — `SessionInfo` only persists existence + `userArchived`); in-memory `idle` event is a fast-wakeup only
 - [ ] Wait result distinguishes `idle` / `error` / `archived`(disposed) / `pending` / `timed-out`
-- [ ] On each segment, probe `verifyRunningState()` when the runner still reports running
+
+## Server: `error` outcome (new state, does not exist today)
+- [ ] Record a turn-error flag when the child's `agent_result` reports failure / `agent_error` fires — on the runner and persisted on `SessionInfo` (migration) so it survives a restart
+- [ ] Expose the flag on the child view / readiness check; `waitForChildIdle` resolves with the `error` outcome when set
+- [ ] (Or: drop the `error` row and rely on `latestAssistantMessage`/PR state — decide explicitly)
 
 ## Server: headless reconcile (vector #5)
-- [ ] `runReconcileCheck` runs for viewerless runners that have a parent linkage
-- [ ] Regression test: stuck `running=true` + worker idle + zero viewers gets reconciled
+- [ ] On each segment, when the runner reports running, call `verifyRunningState()` from the readiness check (this alone fixes vector #5 for viewerless children; `runReconcileCheck`'s viewer gate is left untouched)
+- [ ] Regression test: stuck `running=true` + worker idle + zero viewers is corrected by the segment probe and the wait resolves
 
 ## Route + relay plumbing
 - [ ] `api-routes-session.ts` children wait route emits the segmented `pending`/terminal response shape; legacy `wait=true&timeout=N` still works

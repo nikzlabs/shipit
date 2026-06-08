@@ -86,15 +86,27 @@ transport hiccup is absorbed and retried beneath the agent.
 
 Make "is this child ready?" a function of **re-derivable state** that any fresh
 request can compute, rather than a transient event you must be listening for at
-the right instant:
+the right instant. Two caveats matter, because the state that exists today is
+thinner than it looks:
 
-- persisted session status from `SessionManager` (running / idle / error /
-  archived), plus
-- a live worker `/agent/status` probe to catch a stuck `running` flag.
+- **What is persisted:** `SessionManager` persists session *existence* and the
+  `userArchived` flag (`SessionInfo`, `domain-types.ts:64`/`:106`) — and nothing
+  else about run state. There is **no** persisted running/idle/error status; the
+  child view derives `status` live as `runner?.running ? "running" : "idle"`
+  (`child-sessions.ts:453`).
+- **What must be probed live:** running-vs-idle is therefore re-derived from the
+  runner and — critically — from a fresh worker `/agent/status` probe
+  (`verifyRunningState`), not from anything that survives a restart. After an
+  orchestrator restart the runner is rebuilt and its in-memory `running` flag is
+  lost, so the worker probe is the authority on whether the child is actually
+  working.
 
-The in-memory `"idle"` event stays — but only as a **fast-wakeup optimization**,
-not the source of truth. After an orchestrator restart, a brand-new long-poll
-re-derives readiness from scratch, so a restart can no longer strand a wait.
+Durable readiness is thus: *session still exists and is not `userArchived`* +
+*worker `/agent/status` reports idle* + *queue empty*. The in-memory `"idle"`
+event stays, but only as a **fast-wakeup optimization**, not the source of truth
+— a brand-new long-poll re-derives readiness from existence + `userArchived` +
+the worker probe, so an orchestrator restart can no longer strand a wait. (The
+`error` outcome in §D needs new state that does not exist yet — see there.)
 
 ### B. Bounded server segments + a shim-driven resumable loop
 
@@ -145,18 +157,37 @@ Transient network failure is deliberately **not** an outcome — it's swallowed 
 deadline, and the JSON carries a `lastTransportError` note so the parent can
 distinguish "child is slow" from "we never reached the orchestrator."
 
+**The `error` outcome requires new state that does not exist today.** The child
+view only ever reports `"running"` / `"idle"` (`child-sessions.ts:453`); neither
+`SessionInfo` nor the runner records a turn-error (only the free-text
+`turnSummary`), and `waitForChildIdle` has no error path. So this outcome is new
+work, not a read of existing state. It needs: (1) a turn-error flag set when the
+child's `agent_result` reports failure or `agent_error` fires (on the runner,
+and persisted on `SessionInfo` so it survives a restart); (2) the child view /
+readiness check exposing it; (3) `waitForChildIdle` resolving with the `error`
+outcome when set. If we choose not to build this, drop the row and let the parent
+read the child's `latestAssistantMessage` / PR state instead — but then the doc
+must not imply the parent can mechanically branch on `error`.
+
 ### E. Reconcile headless child runners (eliminate the infinite false wait)
 
-Fix vector #5 directly. Two complementary moves:
+Fix vector #5 from the **readiness check**, not from the runner's viewer-gated
+reconciler:
 
-1. On each long-poll **segment**, if the runner still reports `running`, the
-   readiness check calls `verifyRunningState()` (probe worker `/agent/status`)
-   before deciding "still running." A stuck flag is then corrected within one
-   segment instead of never.
-2. Allow `runReconcileCheck` to run for **viewerless runners that have a parent
-   linkage** (i.e. spawned children under autonomous orchestration), since
-   that's precisely the case the `_viewerCount === 0` short-circuit was excluding
-   and the case this feature needs covered.
+On each long-poll **segment**, if the runner still reports `running`, the
+readiness check calls `verifyRunningState()` (probe worker `/agent/status`;
+`session-runner.ts:603`, `container-session-runner.ts:1640`) before concluding
+"still running." That check lives in `child-sessions.ts` and already holds
+`sessionManager` + `runnerRegistry`, so it can resolve the child runner and call
+the interface method directly. A stuck `running=true` is then corrected within
+one segment instead of never.
+
+This deliberately does **not** touch `runReconcileCheck`'s `_viewerCount === 0`
+short-circuit (`container-session-runner.ts:615`). `ContainerSessionRunner` holds
+no `SessionManager` reference and no parent-linkage field — `parentSessionId`
+lives on session metadata, not on the runner — so teaching the reconciler "do I
+have a parent?" would need new plumbing for no added coverage: the segment-driven
+probe above already corrects the stuck flag for viewerless children.
 
 This is the single highest-impact change: it removes the worst-case failure
 (parent waiting the full timeout on a child that's actually done).
