@@ -318,10 +318,17 @@ Clicking it does exactly two things on the client:
    1. All draft comments, most recent first. Drafts are what the
       user is currently working on; they have the strongest claim
       on the cap.
-   2. Then comments from the **most recent sent review only**, and
-      only those with `source: "human"`. Older sent reviews are
-      never embedded. AI-source comments from prior runs are also
-      never embedded — see "Avoiding feedback loops" below.
+   2. AI-source comments are never embedded — see "Avoiding
+      feedback loops" below.
+
+   **Revision (post-docs/151): sent comments are no longer
+   embedded.** Only un-sent draft comments ride along now. A sent
+   review was its own turn the agent already received, so
+   re-embedding its comments just repeated text the model had
+   already seen — and the "Existing comments" block surfacing
+   already-sent comments read as a bug to users. The embed is
+   therefore draft-only; `composeReviewMessage` no longer takes the
+   sent-review history as input.
 
    When the cap is exceeded, **drop ordering is an open question
    and v1 picks the simplest option that ships:** oldest drafts
