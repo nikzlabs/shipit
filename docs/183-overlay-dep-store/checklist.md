@@ -2,8 +2,9 @@
 
 Design proposal. Core decisions: **overlay the whole workspace** (environment-agnostic, no
 keys / no lockfile detection); **keyless rolling base per `(repo, runtime)`**; **base publish
-restricted to default-branch exit-0 installs under a per-repo lock** (installs into a session's
-own upper never race — no CAS); keep the existing marker/`headChanged` skip; **depth-cap-triggered clean reinstall** (specific
+restricted to default-branch exit-0 installs, advancing only forward by `main`-commit
+ancestry** (installs into a session's own upper never race; publish is a commit-ancestry
+compare-and-swap, loser just skips); keep the existing marker/`headChanged` skip; **depth-cap-triggered clean reinstall** (specific
 tunable cap); **re-derive on unarchive**; **exit-0 base-advance gate**; cold start builds v0
 from empty under the **existing** repo trust gate. Prototype the rolling-base logic first;
 the host mount stays the gating risk.
@@ -21,10 +22,14 @@ the host mount stays the gating risk.
       layer stays small (`t → t'`)
 - [ ] Scope the base per `(repo, runtime fingerprint)` so a base is never reused across
       incompatible runtimes (arch + libc + interpreter)
-- [ ] Restrict base *publish* to **default-branch, exit-0** installs under a **per-repo
-      publish lock**; any session still installs into its own upper layer. Exclude `--base`
-      child sessions (child-sessions.ts) and the untrusted-first/on-activation installs
+- [ ] Restrict base *publish* to **default-branch, exit-0** installs; any session still
+      installs into its own upper layer (no install serialization). Exclude `--base` child
+      sessions (child-sessions.ts) and untrusted-first/on-activation installs
       (service-manager-setup.ts) from publishing
+- [ ] Stamp each base with its source **`main` commit**; on publish advance **only if the
+      candidate strictly descends the base** (`git merge-base --is-ancestor`), under a short
+      per-repo lock for atomic read-compare-swap. Order by commit ancestry, not publish time;
+      skip stale/diverged (force-push) publishes
 - [ ] Set a **specific** depth cap (~10–20, tunable); on hit, rebuild base from empty (clean
       reinstall = drift + reproducibility reset)
 - [ ] Exclude/normalize `.git` from the base (correctness — don't carry session branch refs

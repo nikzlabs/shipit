@@ -75,13 +75,15 @@ below), so the base-advance rule must hold regardless of where the install runs:
 
 1. **Mount** the repo's current base as `lowerdir` + a fresh per-session `upperdir`/workdir.
 2. **Fast-forward source** with git to the session's checkout (normally the new default-branch
-   commit; writes the source diff into the upper layer via copy-up).
+   commit; writes the source diff into the upper layer via copy-up). Record that **`main`
+   commit** — it stamps any base this session publishes.
 3. **Run `agent.install`** on top of the base (writes only the dep delta into *this session's*
    upper layer — this never races another session).
 4. **Maybe advance the base** — publish the merged result as the next base **only if** the
-   install exited 0 **and** the session is on the default branch, taking a **per-repo publish
-   lock** so two eligible installs can't advance concurrently. Otherwise the install result is
-   used by the session but never published. Activation hands the user the already-prepped tree.
+   install exited 0, the session is on the default branch, **and the candidate's `main` commit
+   strictly descends the current base's commit** (see the ordering rule below). Otherwise the
+   install result is used by the session but never published. Activation hands the user the
+   already-prepped tree.
 
 > **Separate "runs an install" from "advances the base."** There is more than one install
 > path: the warm pool pre-installs on standbys ([warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243)),
@@ -92,8 +94,20 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > warm pool is *not* the single installer. The invariant we actually rely on is narrower and
 > must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
 > (safe — no shared state); **(b)** only a **default-branch**, **exit-0** install may *publish*
-> a new base; **(c)** publishes take a **per-repo lock** (single-writer). That, not "one
-> installer," is what keeps the chain linear.
+> a new base; **(c)** the publish advances the base only if it moves it **forward in `main`'s
+> history** (ordering rule below). That, not "one installer," is what keeps the chain linear.
+
+> **Ordering rule — compare by `main` commit, never by publish time.** Each base is stamped
+> with the `main` commit it was built from (step 2). On publish, advance the base **iff the
+> candidate's commit strictly descends the current base's commit** —
+> `git merge-base --is-ancestor <base.commit> <candidate.commit>` true **and** the two differ.
+> Equal commit → deps already current, no-op. Behind, or diverged (e.g. a force-push rewrote
+> `main`) → **skip the publish**; the session keeps its own tree and the base waits for the
+> next genuinely-forward install. A short **per-repo lock** makes the read-compare-swap atomic;
+> the *decision* is git ancestry, **not** wall-clock or lock-acquisition order — so an
+> older-commit install that grabs the lock late can never clobber a newer base. (This is a
+> compare-and-swap keyed on commit ancestry, but the "loser" simply declines to publish — no
+> reconciliation, no redo.)
 
 Two properties keep the published chain clean:
 
@@ -147,15 +161,18 @@ periodic clean-rebuild schedule is needed.
   knowledge. Settled by §1.
 - **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
   ~0). No manifest fingerprint for now.
-- **Base advancement is restricted and serialized — not "one installer."** The code has
-  multiple install paths (warm-pool pre-install, which is *skipped for untrusted remotes*;
-  and an on-activation `runInstall` guarded only by the marker), so we cannot rely on the
-  warm pool being the sole installer. Instead: any session runs install into its **own**
-  `upperdir` (no shared state, no race), and only a **default-branch, exit-0** install may
-  **publish** a new base, under a **per-repo publish lock** (single-writer). This is what
-  keeps the chain linear and removes the compare-and-swap / loser-reconciliation problem —
-  see §3 and the warning there. Agent-spawned `--base` child sessions run on the base but
-  never publish.
+- **Base advancement is restricted and ordered by `main` commit — not "one installer."** The
+  code has multiple install paths (warm-pool pre-install, *skipped for untrusted remotes*; and
+  an on-activation `runInstall` guarded only by the marker), so we cannot rely on the warm pool
+  being the sole installer. Instead: any session runs install into its **own** `upperdir` (no
+  shared state, no race — installs need not be serialized), and only a **default-branch,
+  exit-0** install may **publish** a new base. A publish advances the base **only if its `main`
+  commit strictly descends the current base's commit** (`git merge-base --is-ancestor`), under
+  a short per-repo lock that makes the read-compare-swap atomic. The decision is **commit
+  ancestry, not publish/wall-clock time**, so a late-but-older install can't clobber a newer
+  base; a stale or diverged publish is simply **skipped** (no reconciliation, no redo). This is
+  a compare-and-swap keyed on commit ancestry — lighter than the loser-reconciliation we ruled
+  out. Agent-spawned `--base` child sessions run on the base but never publish (§3).
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
@@ -201,18 +218,21 @@ design decisions are made (see Decisions).
 2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
    absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
    source diff in the upper layer stays small (`t → t'`).
-3. **Per-repo publish lock contention.** Base advancement takes a per-repo single-writer lock
-   (§3). Confirm this serialization is cheap (it gates only the *publish*, not the install
-   itself, which runs into each session's own upper layer) and that a base build held by one
-   path doesn't stall others — they just skip publishing, they don't wait.
+3. **Publish ordering by commit ancestry.** The base advances only when a candidate's `main`
+   commit strictly descends the current base's commit (§3). Confirm the `git merge-base
+   --is-ancestor` check + short per-repo lock are cheap (they gate only the *publish*, not the
+   install, which runs into each session's own upper layer), and pick the conservative behavior
+   for **diverged history** (force-pushed `main`): skip the publish and let the next forward
+   commit re-advance.
 4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
    and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
 
-*Resolved this iteration (see Decisions): concurrency (base publishes restricted to
-default-branch exit-0 installs under a per-repo lock; installs into a session's own upper
-never race — no CAS), flatten (depth-cap-triggered clean reinstall, specific tunable cap),
-cold start + trust (build v0 under the existing repo trust gate), sharing scope (single-user),
+*Resolved this iteration (see Decisions): concurrency (installs run into each session's own
+upper — no serialization needed; base publishes restricted to default-branch exit-0 installs
+and advance only forward by **`main`-commit ancestry**, a compare-and-swap with no
+reconciliation), flatten (depth-cap-triggered clean reinstall, specific tunable cap), cold
+start + trust (build v0 under the existing repo trust gate), sharing scope (single-user),
 secret capture (as-is, no filter), archive/restore (re-derive on unarchive), bad-base (exit-0
 gate).*
 
