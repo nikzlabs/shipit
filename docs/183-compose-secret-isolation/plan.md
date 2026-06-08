@@ -98,6 +98,15 @@ token — should not land in the agent-readable workspace unless explicitly mark
 
 ### 1. Move default service env files out of the workspace
 
+> **`<stateDir>`** is the orchestrator's resolved state directory — the on-disk root where
+> it already keeps non-workspace state (the SQLite db, `repo-cache/`, `dep-cache/`). It is
+> `process.env.SHIPIT_STATE_DIR` when set, otherwise the orchestrator's `workspaceDir`
+> (`app-di.ts`: `stateDir = deps.stateDir ?? envStateDir ?? workspaceDir`). In production it
+> defaults to the **workspace-volume root** (the directory that contains `sessions/`); in
+> local/dogfood mode it is set explicitly to `/workspace/.inner-shipit` (`docs/118`). The
+> distinction matters here because where `stateDir` lives decides whether the agent can see
+> the service-env files written under it — see "Why this is agent-invisible" below.
+
 Introduce a service-env root owned by the orchestrator, separate from the session
 workspace:
 
