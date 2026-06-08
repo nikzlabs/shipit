@@ -101,11 +101,14 @@ token — should not land in the agent-readable workspace unless explicitly mark
 > **`<stateDir>`** is the orchestrator's resolved state directory — the on-disk root where
 > it already keeps non-workspace state (the SQLite db, `repo-cache/`, `dep-cache/`). It is
 > `process.env.SHIPIT_STATE_DIR` when set, otherwise the orchestrator's `workspaceDir`
-> (`app-di.ts`: `stateDir = deps.stateDir ?? envStateDir ?? workspaceDir`). In production it
-> defaults to the **workspace-volume root** (the directory that contains `sessions/`); in
-> local/dogfood mode it is set explicitly to `/workspace/.inner-shipit` (`docs/118`). The
-> distinction matters here because where `stateDir` lives decides whether the agent can see
-> the service-env files written under it — see "Why this is agent-invisible" below.
+> (`app-di.ts`: `stateDir = deps.stateDir ?? envStateDir ?? workspaceDir`). For service-env
+> placement the relevant `stateDir` is always the **containerized** orchestrator's, where it
+> defaults to the **workspace-volume root** (the directory that contains `sessions/`).
+>
+> The `SHIPIT_STATE_DIR=/workspace/.inner-shipit` value used in dogfooding belongs to the
+> *inner* orchestrator, which runs in local mode and writes **no** service-env files at all
+> (it constructs no `ServiceManager` — `app-lifecycle.ts`, `docs/118`). So that value never
+> governs service-env placement; see "Local/dogfood mode" below.
 
 Introduce a service-env root owned by the orchestrator, separate from the session
 workspace:
@@ -139,18 +142,28 @@ mounts the workspace volume with a **subpath** of `sessions/<sessionId>/workspac
 (`container-lifecycle.ts`, `VolumeOptions.Subpath`), so a `service-env/` directory at the
 volume root is simply outside the agent's mount even though both live on the same Docker
 volume. This subpath dependency is load-bearing and must be stated wherever the default is
-described — an implementer who assumes "any path under `stateDir` is safe" will reintroduce
-the leak in any context that lacks the subpath mount (see local/dogfood mode below).
+described — an implementer who assumes "any path under `stateDir` is safe" reasons correctly
+*only* because every service-env writer is a containerized orchestrator with that mount.
 
-**Local/dogfood mode requires an explicit external root.** In local mode the `dev` compose
-service sets `SHIPIT_STATE_DIR=/workspace/.inner-shipit` (`docker-compose.yml`,
-`docs/118`), which is *inside* the inner-agent-visible workspace tree. There is no subpath
-mount in local mode — the inner agent sees the whole checkout — so the `<stateDir>/service-env`
-fallback lands somewhere the inner agent can read and the leak persists. Since the
-motivating incident was a ShipIt-repo dogfood session, this path is in scope and must not
-fall back. For local/inner sessions, require a workspace-external `SHIPIT_SERVICE_ENV_DIR`
-(or mandate Docker-secrets mode via `SHIPIT_SECRETS_INTERNAL_DIR`); refuse to write service
-env files under a `stateDir` that lives inside the workspace.
+**Local/dogfood mode does not write service-env files — so it needs no special handling
+here.** It is tempting to worry that the dogfood inner orchestrator sets
+`SHIPIT_STATE_DIR=/workspace/.inner-shipit` (`docs/118`), which is *inside* the
+inner-agent-visible checkout, and conclude that `<stateDir>/service-env` would leak there.
+It would not, because the inner orchestrator never reaches that path: in local mode ShipIt
+constructs no `ServiceManager` and runs no compose stacks (`app-lifecycle.ts` skips Docker
+and compose for local runtime; `docs/118` lists `ServiceManager` under "Not loaded in local
+mode"). The dogfood `dev` service that *does* hold the motivating credentials is a compose
+service of the **outer**, containerized orchestrator — whose `stateDir` is the
+agent-invisible volume root and whose agent is subpath-mounted. So the production fix
+already covers the motivating incident, and no per-mode override or modified
+`SHIPIT_STATE_DIR` is required.
+
+> **Forward note.** *If* a future `LocalServiceManager` (Phase 2 of `docs/118`) ever runs
+> service processes inside local mode, directory placement alone could not isolate their
+> secrets: the local-mode agent is an in-process subprocess of the orchestrator with no
+> mount namespace, so it can read any path the orchestrator can. Isolation there would have
+> to come from Docker-secrets-style delivery or from not forwarding the secret — not from
+> moving a file. Out of scope for this feature.
 
 Why this is the first fix:
 
@@ -247,9 +260,10 @@ x-shipit-secrets
   -> compose env_file
   -> service process.env
 
-agent cannot read <stateDir>/service-env: in production the agent's workspace
-mount is a sessions/<id>/workspace subpath of the volume, so service-env/ at the
-volume root is outside the agent's mount (see Design §1 for the local-mode caveat)
+agent cannot read <stateDir>/service-env: the writer is always a containerized
+orchestrator whose agent mounts only the sessions/<id>/workspace subpath, so
+service-env/ at the volume root is outside that mount (local mode writes no
+service-env files at all — see Design §1)
 ```
 
 For `agent: true` entries:
@@ -302,16 +316,17 @@ Add focused coverage for the boundary:
 
 ## Resolved Decisions
 
-- **`SHIPIT_SERVICE_ENV_DIR` is not required in production; it is required in local/dogfood
-  mode.** In production `stateDir` defaults to the workspace-volume root and the agent
-  mounts only the `sessions/<id>/workspace` subpath, so the default `<stateDir>/service-env`
-  is genuinely outside the agent's mount — sufficient, no override needed. In local mode
-  `stateDir` lives inside the agent-visible checkout and there is no subpath mount, so an
-  external `SHIPIT_SERVICE_ENV_DIR` is mandatory (Design §1). Enforce both with a startup
-  assertion: the resolved service-env root must not resolve inside any agent workspace
-  mount; refuse to boot (or refuse to write service env files) otherwise, rather than
-  silently leaking. This makes "is the default safe here?" a checked invariant instead of a
-  per-deployment judgment call.
+- **`SHIPIT_SERVICE_ENV_DIR` is not required: the default `<stateDir>/service-env` is
+  sufficient.** Every service-env writer is a containerized orchestrator whose `stateDir`
+  defaults to the workspace-volume root, and the agent mounts only the
+  `sessions/<id>/workspace` subpath — so the default is genuinely outside the agent's mount.
+  Local/dogfood mode is *not* an exception: it constructs no `ServiceManager` and writes no
+  service-env files (Design §1), so its inside-the-checkout `SHIPIT_STATE_DIR` never governs
+  service-env placement and modifying it would change nothing. Still, make safety a checked
+  invariant rather than a per-deployment assumption: at write time, assert the resolved
+  service-env root does not resolve inside any agent workspace mount, and refuse to write
+  (rather than silently leak) if it does. The override exists only for operators who keep
+  `stateDir` somewhere the assertion would reject.
 
 - **No UI warning for platform credentials in service env — moot.** This was about
   high-value `platform:*` credentials landing in service env. Doc 184 removes `source:
