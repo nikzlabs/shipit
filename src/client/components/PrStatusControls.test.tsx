@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MergeButton } from "./PrStatusControls.js";
+import { ClosePrButton } from "./PrStatusControls.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -32,7 +32,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("MergeButton — close pull request", () => {
+describe("ClosePrButton — close pull request", () => {
   it("requires a second click to confirm before closing", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn().mockResolvedValue({
@@ -42,9 +42,9 @@ describe("MergeButton — close pull request", () => {
     });
     globalThis.fetch = fetchMock as typeof fetch;
 
-    render(<MergeButton sessionId="s1" />);
+    render(<ClosePrButton sessionId="s1" />);
 
-    await user.click(screen.getByLabelText("Select merge method"));
+    await user.click(screen.getByLabelText("More pull request actions"));
     await user.click(screen.getByText("Close pull request"));
 
     // First click only arms the confirm — no request yet.
@@ -62,16 +62,16 @@ describe("MergeButton — close pull request", () => {
 
   it("re-arms (does not stay confirmed) after the menu is reopened", async () => {
     const user = userEvent.setup();
-    render(<MergeButton sessionId="s1" />);
+    render(<ClosePrButton sessionId="s1" />);
 
-    await user.click(screen.getByLabelText("Select merge method"));
+    await user.click(screen.getByLabelText("More pull request actions"));
     await user.click(screen.getByText("Close pull request"));
     expect(screen.getByText("Click again to confirm")).toBeInTheDocument();
 
-    // Close the menu via the caret, then reopen — the item is back to its
+    // Close the menu via the trigger, then reopen — the item is back to its
     // initial, un-armed label.
-    await user.click(screen.getByLabelText("Select merge method"));
-    await user.click(screen.getByLabelText("Select merge method"));
+    await user.click(screen.getByLabelText("More pull request actions"));
+    await user.click(screen.getByLabelText("More pull request actions"));
     expect(screen.getByText("Close pull request")).toBeInTheDocument();
     expect(screen.queryByText("Click again to confirm")).not.toBeInTheDocument();
   });
@@ -84,9 +84,9 @@ describe("MergeButton — close pull request", () => {
       json: async () => ({ error: "GitHub said no" }),
     }) as typeof fetch;
 
-    render(<MergeButton sessionId="s1" />);
+    render(<ClosePrButton sessionId="s1" />);
 
-    await user.click(screen.getByLabelText("Select merge method"));
+    await user.click(screen.getByLabelText("More pull request actions"));
     await user.click(screen.getByText("Close pull request"));
     await user.click(screen.getByText("Click again to confirm"));
 

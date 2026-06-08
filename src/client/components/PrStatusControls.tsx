@@ -2,6 +2,7 @@ import { useState } from "react";
 import {
   CaretDownIcon,
   CheckCircleIcon,
+  DotsThreeVerticalIcon,
   GitMergeIcon,
   InfoIcon,
 } from "@phosphor-icons/react";
@@ -102,15 +103,10 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
 export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const merge = usePrStore((s) => s.merge);
   const setMergeMethod = usePrStore((s) => s.setMergeMethod);
-  const closePr = usePrStore((s) => s.closePr);
   const setToast = useUiStore((s) => s.setToast);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [merging, setMerging] = useState(false);
-  // Two-step confirm for the destructive close action: the first click arms it,
-  // the second commits — cheaper than a modal and contained to the dropdown.
-  const [confirmClose, setConfirmClose] = useState(false);
-  const [closing, setClosing] = useState(false);
 
   const method = autoMerge?.mergeMethod ?? "squash";
   const label = MERGE_METHOD_LABELS[method] ?? "Squash and merge";
@@ -119,12 +115,7 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
     ? "Agent is still working; merge will be available when the turn finishes"
     : undefined;
 
-  // Reset the armed-confirm state whenever the menu closes so it never reopens
-  // pre-armed.
-  const closeDropdown = () => {
-    setDropdownOpen(false);
-    setConfirmClose(false);
-  };
+  const closeDropdown = () => setDropdownOpen(false);
 
   const handleMerge = async () => {
     if (disabled) return;
@@ -134,24 +125,6 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
       setToast({ message: `Merge failed: ${error}` });
       setMerging(false);
     }
-  };
-
-  const handleClose = async () => {
-    if (closing) return;
-    if (!confirmClose) {
-      setConfirmClose(true);
-      return;
-    }
-    setClosing(true);
-    const error = await closePr(sessionId);
-    if (error) {
-      setToast({ message: `Close failed: ${error}` });
-      setClosing(false);
-      setConfirmClose(false);
-      return;
-    }
-    setClosing(false);
-    closeDropdown();
   };
 
   return (
@@ -187,7 +160,72 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
                 {MERGE_METHOD_LABELS[m]}
               </button>
             ))}
-            <div className="my-1 h-px bg-(--color-border-secondary)" />
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Standalone overflow menu holding the destructive "Close pull request" action.
+ *
+ * Kept separate from MergeButton on purpose: MergeButton only renders when the
+ * PR is mergeable (CI green, no conflicts, review satisfied), but closing a PR
+ * must stay available in exactly the states where merging isn't — most notably
+ * when the branch has merge conflicts. Closing is a pure GitHub API call that
+ * doesn't touch the working tree, so it's offered regardless of merge-ability
+ * and even while the agent is running.
+ */
+export function ClosePrButton({ sessionId }: { sessionId: string }) {
+  const closePr = usePrStore((s) => s.closePr);
+  const setToast = useUiStore((s) => s.setToast);
+  const [dropdownOpen, setDropdownOpen] = useState(false);
+  // Two-step confirm for the destructive close action: the first click arms it,
+  // the second commits — cheaper than a modal and contained to the dropdown.
+  const [confirmClose, setConfirmClose] = useState(false);
+  const [closing, setClosing] = useState(false);
+
+  // Reset the armed-confirm state whenever the menu closes so it never reopens
+  // pre-armed.
+  const closeDropdown = () => {
+    setDropdownOpen(false);
+    setConfirmClose(false);
+  };
+
+  const handleClose = async () => {
+    if (closing) return;
+    if (!confirmClose) {
+      setConfirmClose(true);
+      return;
+    }
+    setClosing(true);
+    const error = await closePr(sessionId);
+    if (error) {
+      setToast({ message: `Close failed: ${error}` });
+      setClosing(false);
+      setConfirmClose(false);
+      return;
+    }
+    setClosing(false);
+    closeDropdown();
+  };
+
+  return (
+    <div className="relative inline-flex">
+      <button
+        onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
+        className="h-6 px-1 inline-flex items-center justify-center text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) rounded transition-colors"
+        aria-label="More pull request actions"
+        aria-haspopup="menu"
+        aria-expanded={dropdownOpen}
+      >
+        <DotsThreeVerticalIcon size={ICON_SIZE.SM} />
+      </button>
+      {dropdownOpen && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={closeDropdown} />
+          <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
             <button
               onClick={handleClose}
               disabled={closing}

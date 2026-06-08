@@ -23,6 +23,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/t
 import { MarkdownContent } from "./message-markdown.js";
 import {
   AutoMergeToggle,
+  ClosePrButton,
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
@@ -538,6 +539,10 @@ function OpenPhase({
             {showFixButton && (
               <FixCIButton sessionId={sessionId} />
             )}
+            {/* Always available while the PR is open — closing must work even
+                when the merge button is hidden (conflicts, failing CI, review
+                required). */}
+            <ClosePrButton sessionId={sessionId} />
           </span>
         </div>
         {/* docs/175 decision #2 — durable, conditional transparency line. Shown

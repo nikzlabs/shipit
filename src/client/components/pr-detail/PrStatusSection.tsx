@@ -27,6 +27,7 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import {
   AutoMergeToggle,
+  ClosePrButton,
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
@@ -141,9 +142,9 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
           )}
-          {!showMergeButton && !showFixButton && !showAutoMergeToggle && !isCiFailed && !showConflictUi && (
-            <span className="text-xs text-(--color-text-tertiary)">No PR actions available right now.</span>
-          )}
+          {/* Always available while the PR is open — closing must work even when
+              the merge button is hidden (conflicts, failing CI, review required). */}
+          <ClosePrButton sessionId={sessionId} />
         </div>
       )}
 
