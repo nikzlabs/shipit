@@ -195,9 +195,9 @@ export interface DocEntry {
   path: string;
   /**
    * docs/168 — pointer to the issue that tracks this doc's work, taken
-   * verbatim from the frontmatter `issue:` field. Priority and work-status
-   * now live in the tracker, not the doc, so this is the doc's only link to
-   * its scheduling. A Linear pointer is always a full URL
+   * verbatim from the frontmatter `issue:` field. Work tracking lives in the
+   * tracker, not the doc, so this is the doc's only link to its scheduling.
+   * A Linear pointer is always a full URL
    * (`https://linear.app/<workspace>/issue/SHI-28/...`); a GitHub pointer is
    * `owner/repo#123` or a full issue URL. Absent on pure reference docs. The
    * tracker is inferred from the pointer's shape by the client.

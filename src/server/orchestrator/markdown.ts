@@ -20,9 +20,9 @@ function extractFrontmatter(content: string): string | undefined {
  * Parse `issue`, `title`, and `description` from frontmatter in a single
  * extraction.
  *
- * docs/168 decoupled priority and work-status from docs: they now live in the
- * issue tracker, so the doc carries only an optional `issue:` pointer to the
- * work item that tracks it. `description` is an optional single-line summary
+ * docs/168 decoupled work tracking from docs: it now lives in the issue
+ * tracker, so the doc carries only an optional `issue:` pointer to the work
+ * item that tracks it. `description` is an optional single-line summary
  * surfaced under the title in the docs panel. The pointer is stored verbatim
  * (trimmed); the client infers the tracker from its shape and renders the
  * jump-to-issue chip.

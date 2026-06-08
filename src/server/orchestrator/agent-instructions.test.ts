@@ -121,21 +121,16 @@ describe("buildAgentSystemInstructions", () => {
     expect(AGENT_SYSTEM_INSTRUCTIONS).toContain("gh pr create");
   });
 
-  it("documents the typed design-doc status values and points at the full doc", () => {
+  it("documents the design-doc frontmatter fields and points at the full doc", () => {
     const out = buildAgentSystemInstructions();
     // Section header is present so the agent can find it.
     expect(out).toContain("## Design docs");
-    // The five typed status values are all called out by name.
-    expect(out).toContain("`planned`");
-    expect(out).toContain("`in-progress`");
-    expect(out).toContain("`done`");
-    expect(out).toContain("`paused`");
-    expect(out).toContain("`rejected`");
-    // Anti-patterns: the values agents tend to invent are explicitly named so
-    // the prompt nudges them away from those strings.
-    expect(out).toContain("`proposed`");
-    expect(out).toContain("`design`");
-    expect(out).toContain("`implemented`");
+    // The recognized frontmatter fields are called out by name.
+    expect(out).toContain("`issue`");
+    expect(out).toContain("`title`");
+    expect(out).toContain("`description`");
+    // Checklist drives the Active/Done grouping.
+    expect(out).toContain("checklist.md");
     // Pointer to the full schema doc.
     expect(out).toContain("/shipit-docs/design-docs.md");
   });
