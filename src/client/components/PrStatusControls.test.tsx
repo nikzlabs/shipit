@@ -1,7 +1,8 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ClosePrButton, MergeButton } from "./PrStatusControls.js";
+import { ClosePrDropdownItem, MergeButton, useClosePr } from "./PrStatusControls.js";
+import { OverflowMenu } from "./ui/overflow-menu.js";
 import { usePrStore } from "../stores/pr-store.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -21,6 +22,21 @@ const openCard: PrCardState = {
   },
 };
 
+// Mirrors how PrLifecycleCard / PrStatusSection host the close item inside a
+// Radix OverflowMenu: the menu owner holds the useClosePr state and resets it
+// on close so a partial confirm never carries over.
+function OverflowCloseHarness({ sessionId }: { sessionId: string }) {
+  const state = useClosePr(sessionId);
+  return (
+    <OverflowMenu
+      label="More pull request actions"
+      onOpenChange={(open) => { if (!open) state.reset(); }}
+    >
+      <ClosePrDropdownItem state={state} />
+    </OverflowMenu>
+  );
+}
+
 beforeEach(() => {
   usePrStore.setState({ statusBySession: {}, cardBySession: { s1: openCard }, autoMergeBySession: {} });
   useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
@@ -32,26 +48,31 @@ afterEach(() => {
   cleanup();
 });
 
-// The two surfaces share one close-PR state machine (useClosePr) and one
-// rendered item (ClosePrMenuItem), so the confirm/re-arm/failure behavior is
-// asserted against both: the merge dropdown (regular, mergeable case) and the
-// standalone kebab (shown when the merge button is hidden, e.g. conflicts).
+// Close lives in two places, both backed by the shared useClosePr state machine:
+// the merge button's bespoke dropdown (regular, mergeable case) and a Radix
+// overflow menu (shown when the merge button is hidden, e.g. merge conflicts).
+// The confirm / re-arm / failure contract is asserted against both.
 const surfaces = [
   {
     name: "MergeButton dropdown",
     render: () => render(<MergeButton sessionId="s1" />),
-    openMenu: (user: ReturnType<typeof userEvent.setup>) =>
+    open: (user: ReturnType<typeof userEvent.setup>) =>
+      user.click(screen.getByLabelText("Select merge method")),
+    // Bespoke dropdown: clicking the caret again closes it.
+    close: (user: ReturnType<typeof userEvent.setup>) =>
       user.click(screen.getByLabelText("Select merge method")),
   },
   {
-    name: "ClosePrButton kebab",
-    render: () => render(<ClosePrButton sessionId="s1" />),
-    openMenu: (user: ReturnType<typeof userEvent.setup>) =>
+    name: "overflow menu",
+    render: () => render(<OverflowCloseHarness sessionId="s1" />),
+    open: (user: ReturnType<typeof userEvent.setup>) =>
       user.click(screen.getByLabelText("More pull request actions")),
+    // Radix menu: Escape dismisses it (firing onOpenChange(false) → reset).
+    close: (user: ReturnType<typeof userEvent.setup>) => user.keyboard("{Escape}"),
   },
 ] as const;
 
-describe.each(surfaces)("close pull request via $name", ({ render: renderSurface, openMenu }) => {
+describe.each(surfaces)("close pull request via $name", ({ render: renderSurface, open, close }) => {
   it("requires a second click to confirm before closing", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn().mockResolvedValue({
@@ -63,7 +84,7 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
 
     renderSurface();
 
-    await openMenu(user);
+    await open(user);
     await user.click(screen.getByText("Close pull request"));
 
     // First click only arms the confirm — no request yet.
@@ -83,14 +104,13 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
     const user = userEvent.setup();
     renderSurface();
 
-    await openMenu(user);
+    await open(user);
     await user.click(screen.getByText("Close pull request"));
     expect(screen.getByText("Click again to confirm")).toBeInTheDocument();
 
-    // Close the menu via the trigger, then reopen — the item is back to its
-    // initial, un-armed label.
-    await openMenu(user);
-    await openMenu(user);
+    // Dismiss the menu, then reopen — the item is back to its un-armed label.
+    await close(user);
+    await open(user);
     expect(screen.getByText("Close pull request")).toBeInTheDocument();
     expect(screen.queryByText("Click again to confirm")).not.toBeInTheDocument();
   });
@@ -105,7 +125,7 @@ describe.each(surfaces)("close pull request via $name", ({ render: renderSurface
 
     renderSurface();
 
-    await openMenu(user);
+    await open(user);
     await user.click(screen.getByText("Close pull request"));
     await user.click(screen.getByText("Click again to confirm"));
 

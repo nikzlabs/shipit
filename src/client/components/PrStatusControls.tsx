@@ -2,13 +2,13 @@ import { useState } from "react";
 import {
   CaretDownIcon,
   CheckCircleIcon,
-  DotsThreeVerticalIcon,
   GitMergeIcon,
   InfoIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
 import { Button } from "./ui/button.js";
+import { DropdownMenuItem } from "./ui/dropdown-menu.js";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "./ui/tooltip.js";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -101,16 +101,18 @@ const MERGE_METHOD_LABELS: Record<string, string> = {
 };
 
 /**
- * Shared close-PR state machine, used by both the merge dropdown (regular case)
- * and the standalone overflow menu (when the merge button is hidden). Owns the
- * two-step-confirm + in-flight state and the actual `closePr` call so the
- * destructive logic lives in exactly one place.
+ * Shared close-PR state machine, used by every place the action appears: the
+ * merge dropdown (regular, mergeable case) and the card / detail-panel overflow
+ * menus (which keep close reachable when the merge button is hidden — most
+ * importantly during merge conflicts). Owns the two-step-confirm + in-flight
+ * state and the actual `closePr` call so the destructive logic lives in exactly
+ * one place.
  *
  * `handleClose()` resolves to `true` only when the PR was actually closed, so a
  * caller can dismiss its own dropdown on success. `reset()` clears the armed
  * confirm — callers invoke it when their menu closes so it never reopens armed.
  */
-function useClosePr(sessionId: string) {
+export function useClosePr(sessionId: string) {
   const closePr = usePrStore((s) => s.closePr);
   const setToast = useUiStore((s) => s.setToast);
   // First click arms the confirm, the second commits — cheaper than a modal and
@@ -142,7 +144,15 @@ function useClosePr(sessionId: string) {
   return { confirmClose, closing, handleClose, reset };
 }
 
-/** Shared "Close pull request" dropdown item rendered identically in both menus. */
+/** Shared label for the close item across its two visual treatments. */
+function closePrLabel(confirmClose: boolean, closing: boolean): string {
+  return closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request";
+}
+
+/**
+ * Close item styled for MergeButton's bespoke (non-Radix) dropdown — a plain
+ * button matching the merge-method rows above it.
+ */
 function ClosePrMenuItem({
   confirmClose,
   closing,
@@ -159,8 +169,32 @@ function ClosePrMenuItem({
       className="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-(--color-error) hover:bg-(--color-bg-hover) transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
     >
       <span className="w-3 flex justify-center"><GitPullRequestClosedIcon size={12} /></span>
-      {closing ? "Closing..." : confirmClose ? "Click again to confirm" : "Close pull request"}
+      {closePrLabel(confirmClose, closing)}
     </button>
+  );
+}
+
+/**
+ * Close item for a Radix `OverflowMenu` (the card's existing ⋮ menu and the
+ * detail panel's). Reuses the `useClosePr` state passed in by the menu's owner
+ * so the owner can `reset()` the armed confirm from the menu's `onOpenChange`.
+ * First select arms the confirm and keeps the menu open (`preventDefault`); the
+ * second runs the close and lets Radix close the menu.
+ */
+export function ClosePrDropdownItem({ state }: { state: ReturnType<typeof useClosePr> }) {
+  const { confirmClose, closing, handleClose } = state;
+  return (
+    <DropdownMenuItem
+      onSelect={(e) => {
+        if (!confirmClose) e.preventDefault();
+        void handleClose();
+      }}
+      disabled={closing}
+      className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
+    >
+      <GitPullRequestClosedIcon size={ICON_SIZE.SM} className="shrink-0" />
+      {closePrLabel(confirmClose, closing)}
+    </DropdownMenuItem>
   );
 }
 
@@ -234,64 +268,12 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
                 {MERGE_METHOD_LABELS[m]}
               </button>
             ))}
-            {/* docs/064 — close lives here for the regular (mergeable) case where
-                it's most discoverable; the standalone ClosePrButton covers the
-                states where this whole button is hidden. */}
+            {/* docs/064 — close lives here for the regular (mergeable) case
+                where it's most discoverable, right under the merge methods. The
+                card / detail-panel overflow menu (ClosePrDropdownItem) carries
+                the same action for the states where this whole button is hidden
+                (conflicts, failing CI, review required, auto-merge armed). */}
             <div className="my-1 h-px bg-(--color-border-secondary)" />
-            <ClosePrMenuItem
-              confirmClose={confirmClose}
-              closing={closing}
-              onClick={() => void onCloseClick()}
-            />
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-/**
- * Standalone overflow menu holding the destructive "Close pull request" action.
- *
- * Complements the copy of the action inside MergeButton's dropdown. MergeButton
- * only renders when the PR is mergeable (CI green, no conflicts, review
- * satisfied), but closing a PR must stay available in exactly the states where
- * merging isn't — most notably when the branch has merge conflicts. So callers
- * render this kebab whenever the merge button is hidden; the two never appear at
- * once, so close is always reachable and never duplicated on screen. Closing is
- * a pure GitHub API call that doesn't touch the working tree, so it's offered
- * regardless of merge-ability and even while the agent is running.
- */
-export function ClosePrButton({ sessionId }: { sessionId: string }) {
-  const [dropdownOpen, setDropdownOpen] = useState(false);
-  const { confirmClose, closing, handleClose, reset } = useClosePr(sessionId);
-
-  // Reset the armed-confirm state whenever the menu closes so it never reopens
-  // pre-armed.
-  const closeDropdown = () => {
-    setDropdownOpen(false);
-    reset();
-  };
-
-  const onCloseClick = async () => {
-    if (await handleClose()) closeDropdown();
-  };
-
-  return (
-    <div className="relative inline-flex">
-      <button
-        onClick={() => (dropdownOpen ? closeDropdown() : setDropdownOpen(true))}
-        className="h-6 px-1 inline-flex items-center justify-center text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) rounded transition-colors"
-        aria-label="More pull request actions"
-        aria-haspopup="menu"
-        aria-expanded={dropdownOpen}
-      >
-        <DotsThreeVerticalIcon size={ICON_SIZE.SM} />
-      </button>
-      {dropdownOpen && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={closeDropdown} />
-          <div className="absolute top-full right-0 mt-1 bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded-md shadow-lg z-50 min-w-45">
             <ClosePrMenuItem
               confirmClose={confirmClose}
               closing={closing}

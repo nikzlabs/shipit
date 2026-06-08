@@ -27,11 +27,13 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import {
   AutoMergeToggle,
-  ClosePrButton,
+  ClosePrDropdownItem,
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
+  useClosePr,
 } from "../PrStatusControls.js";
+import { OverflowMenu } from "../ui/overflow-menu.js";
 
 function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") {
@@ -123,6 +125,11 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   // when CI failed and the auto-loop isn't actively handling it.
   const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
+  // Close lives in the merge dropdown when that button is shown; when it's
+  // hidden (conflicts, failing CI, review required, auto-merge armed) this
+  // overflow menu keeps it reachable — mirroring the inline card's ⋮ menu.
+  const closeState = useClosePr(sessionId);
+  const showCloseMenu = card.phase === "open" && !showMergeButton;
 
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
@@ -142,10 +149,14 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
           )}
-          {/* When the merge button is shown, close lives in its dropdown; when
-              it's hidden, this kebab keeps close reachable. Mutually exclusive,
-              so close is always available but never duplicated. */}
-          {!showMergeButton && <ClosePrButton sessionId={sessionId} />}
+          {showCloseMenu && (
+            <OverflowMenu
+              label="More pull request actions"
+              onOpenChange={(open) => { if (!open) closeState.reset(); }}
+            >
+              <ClosePrDropdownItem state={closeState} />
+            </OverflowMenu>
+          )}
         </div>
       )}
 

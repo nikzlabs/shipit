@@ -23,10 +23,11 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/t
 import { MarkdownContent } from "./message-markdown.js";
 import {
   AutoMergeToggle,
-  ClosePrButton,
+  ClosePrDropdownItem,
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
+  useClosePr,
 } from "./PrStatusControls.js";
 import {
   ArrowCounterClockwiseIcon,
@@ -539,11 +540,6 @@ function OpenPhase({
             {showFixButton && (
               <FixCIButton sessionId={sessionId} />
             )}
-            {/* When the merge button is shown, close lives in its dropdown. When
-                it's hidden (conflicts, failing CI, review required, auto-merge
-                armed), this kebab keeps close reachable. The two are mutually
-                exclusive, so close is always available but never duplicated. */}
-            {!showMergeButton && <ClosePrButton sessionId={sessionId} />}
           </span>
         </div>
         {/* docs/175 decision #2 — durable, conditional transparency line. Shown
@@ -802,6 +798,12 @@ export function PrLifecycleCard({
     void startRebase(sessionId, syncBaseBranch);
   }, [isAgentRunning, startRebase, sessionId, syncBaseBranch]);
 
+  // Close lives in this always-present overflow menu (in addition to the merge
+  // dropdown's copy) so it stays reachable when the merge button is hidden —
+  // most importantly during merge conflicts. The hook owns the two-step confirm;
+  // the menu's onOpenChange resets it so it never reopens armed.
+  const closeState = useClosePr(sessionId);
+
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to
   // drill into. Clicks that originate on an interactive control (button, link,
@@ -864,7 +866,15 @@ export function PrLifecycleCard({
             <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
           </button>
         )}
-        <OverflowMenu label="Session actions" triggerClassName="h-auto w-auto p-1">
+        <OverflowMenu
+          label="Session actions"
+          triggerClassName="h-auto w-auto p-1"
+          onOpenChange={(open) => {
+            // Reset the destructive close-confirm whenever the menu closes, so a
+            // partial confirmation never carries over to the next open.
+            if (!open) closeState.reset();
+          }}
+        >
           {/* The Auto-merge toggle now lives inline in the open-phase card row
               (always visible, desktop + mobile). The overflow keeps a copy only
               for the phases that have no inline row — pre-PR (ready/creating/no
@@ -910,6 +920,12 @@ export function PrLifecycleCard({
               <DownloadSimpleIcon size={ICON_SIZE.SM} />
               Download chat
             </DropdownMenuItem>
+          )}
+          {card?.phase === "open" && (
+            <>
+              <DropdownMenuSeparator />
+              <ClosePrDropdownItem state={closeState} />
+            </>
           )}
         </OverflowMenu>
       </div>
