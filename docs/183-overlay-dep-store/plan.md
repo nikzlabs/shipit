@@ -90,8 +90,19 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > **but that is skipped for untrusted remotes**, and `setupServiceManager` runs
 > `runner.runInstall(...)` again **on every activation**, guarded only by the worker marker
 > ([service-manager-setup.ts:322-329](../../src/server/orchestrator/service-manager-setup.ts#L322-L329),
-> [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663)). So the
-> warm pool is *not* the single installer. The invariant we actually rely on is narrower and
+> [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663)).
+>
+> *Why the on-activation install exists* (so it isn't mistaken for redundant): it's the
+> **guaranteed, idempotent backstop**, distinct from the best-effort warm pre-install. It is
+> the path that installs (a) **trust-deferred** repos — the untrusted-remote early-return
+> ([service-manager-setup.ts:278-289](../../src/server/orchestrator/service-manager-setup.ts#L278-L289))
+> skips both warm and on-activation install until the user accepts trust, which **re-invokes
+> this same setup** via `runner.rerunServiceSetup` ([container-session-runner.ts:136-141](../../src/server/orchestrator/container-session-runner.ts#L136-L141));
+> (b) sessions with **no completed pre-install** (pool miss, unfinished standby); and (c)
+> **re-created runners** (idle eviction, restart-agent `docs/127`, reconnect). The
+> `.shipit/.install-done` marker makes the repeat a no-op unless deps are missing or `main`
+> moved, so "every activation" is cheap. So the warm pool is *not* the single installer. The
+> invariant we actually rely on is narrower and
 > must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
 > (safe — no shared state); **(b)** only a **default-branch**, **exit-0** install may *publish*
 > a new base; **(c)** the publish advances the base only if it moves it **forward in `main`'s
