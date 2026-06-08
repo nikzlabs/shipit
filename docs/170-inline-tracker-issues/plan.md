@@ -1,17 +1,17 @@
 ---
 title: Inline tracker Issues tab
 description: A top-level, read-only, priority-sorted Issues tab inside ShipIt with one sub-tab per tracker (Linear, GitHub) and a start-session action per row — the inline "what's next" surface that replaces what docs left behind when priority moved to the tracker.
-issue: https://linear.app/shipit-ai/issue/SHI-67/inline-tracker-issues-tab-linear-github-with-start-session
+issue: https://linear.app/shipit-ai/issue/SHI-67
 ---
 
 # Inline tracker Issues tab
 
-Tracks **SHI-67 — "Inline tracker Issues tab (Linear + GitHub) with start-session."**
+Tracks **TRACKER-67 — "Inline tracker Issues tab (Linear + GitHub) with start-session."**
 
 ## Why this is a separate doc
 
 This was originally the second half of `docs/168-tracker-backed-priorities`
-(SHI-28). SHI-28 split a design doc's two jobs — *spec* vs *work item* — by
+(TRACKER-28). TRACKER-28 split a design doc's two jobs — *spec* vs *work item* — by
 moving `priority`/`status` out of doc frontmatter and into the issue tracker.
 That decoupling **shipped**. The inline surface that was supposed to ship
 *alongside* it — this Issues tab — **did not**.
@@ -23,10 +23,10 @@ must open Linear or GitHub in another tab to decide what to work on next. This
 doc owns closing that gap; `docs/168` is trimmed to own only the (completed)
 decoupling migration.
 
-Splitting at the doc *and* issue level keeps the tracker honest: SHI-28 is a
-finished migration and stays Done; SHI-67 is the unbuilt surface and tracks
+Splitting at the doc *and* issue level keeps the tracker honest: TRACKER-28 is a
+finished migration and stays Done; TRACKER-67 is the unbuilt surface and tracks
 this work. Reopening a Done issue to hang new work off it would re-conflate the
-two jobs SHI-28 just separated.
+two jobs TRACKER-28 just separated.
 
 ## Goal
 
@@ -96,7 +96,7 @@ legitimate only because the *premise changed*:
 - **156's premise:** docs still carry `priority`, so ShipIt already has an
   internal "what's next" surface (the prioritized docs list). A picker would be
   a redundant second triage surface with worse filtering — a strict loss.
-- **SHI-28 changed that premise:** priority *left* the docs. ShipIt now has
+- **TRACKER-28 changed that premise:** priority *left* the docs. ShipIt now has
   **no** internal "what's next" surface at all. Per CLAUDE.md §1/§2, leaving
   that hole forces the user into another tab to decide what to work on — the
   exact failure 156 itself invokes §1/§2 to avoid. So an inline surface is now
@@ -231,34 +231,35 @@ Client:
 
 ## Relationship to existing docs
 
-- **`docs/168-tracker-backed-priorities`** (SHI-28, **Done**) — shipped the
+- **`docs/168-tracker-backed-priorities`** (TRACKER-28, **Done**) — shipped the
   doc-frontmatter decoupling that removed ShipIt's only inline "what's next"
   surface. This doc builds the replacement. 168 is now the migration reference
   only; its "issues side" moved here.
-- **`docs/156-issue-to-session`** (SHI-43, planned) — the inbound **push**
+- **`docs/156-issue-to-session`** (TRACKER-43, planned) — the inbound **push**
   trigger from the tracker. Shares this doc's downstream
   `headless-sessions.create({ issueRef })` seeding primitive and its
   auth/app-registration foundation. 156 owns push; this doc owns pull.
 - **`docs/164-user-bug-filing`** (planned) — outbound: user files a GitHub
   issue against upstream ShipIt. Same GitHub auth model.
 
-## Resolved (inherited from SHI-28's design conversation)
+## Resolved (inherited from TRACKER-28's design conversation)
 
 1. **Repo → tracker mapping** — *hybrid.* GitHub from the session's own git
    remote with an optional `shipit.yaml` override; Linear workspace/team binding
    in ShipIt settings.
 2. **Issue refresh cadence** — *fetch on tab open + manual refresh button*; no
    background poller in v1.
-3. **Linear `issue:` pointer format** — *always a full Linear URL*; bare IDs are
-   not accepted, so the pointer stays unambiguous across workspaces.
+3. **Linear `issue:` pointer format** — *always a full Linear URL without the
+   title slug*; bare IDs are not accepted, so the pointer stays unambiguous
+   across workspaces.
 
-## Implementation status (Linear: SHI-67; GitHub: SHI-80)
+## Implementation status (Linear: TRACKER-67; GitHub: TRACKER-80)
 
-Both trackers now ship. The **Linear** path landed first (SHI-67); the **GitHub**
-sub-tab/adapter — originally deferred and tracked as **SHI-80** — landed by
+Both trackers now ship. The **Linear** path landed first (TRACKER-67); the **GitHub**
+sub-tab/adapter — originally deferred and tracked as **TRACKER-80** — landed by
 registering one more `Tracker`, validating the abstraction.
 
-### GitHub tracker (SHI-80)
+### GitHub tracker (TRACKER-80)
 
 GitHub issues are **per-repo**, which makes "enabled" mean something different
 than it does for Linear:
@@ -276,7 +277,7 @@ than it does for Linear:
   state (not a connect form). It is *not* literally always-on.
 - **Priority is label-derived** (`priority:high`, `P1`, `critical`, …) with a
   "No priority" fallback (GitHub has no priority field); PRs returned by the
-  issues endpoint are dropped. Read-only — the `/shipit` push trigger is SHI-43.
+  issues endpoint are dropped. Read-only — the `/shipit` push trigger is TRACKER-43.
 
 - **Auth (v1):** simplest read-only path — a Linear **API token** stored in
   `CredentialStore` (mirrors the GitHub-token pattern), plus a workspace/team

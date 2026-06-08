@@ -1,6 +1,6 @@
 ---
 description: Per-file "viewed" checkbox in the diff viewer to track review progress across large PRs, mirroring GitHub's review UX.
-issue: https://linear.app/shipit-ai/issue/SHI-34/mark-files-as-viewed-in-diff-viewer
+issue: https://linear.app/shipit-ai/issue/SHI-34
 ---
 
 # 103 — Mark Files as Viewed in Diff Viewer

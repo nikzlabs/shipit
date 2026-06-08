@@ -28,8 +28,7 @@ Tracks the precondition and implementation work for `plan.md`.
 - [ ] Extend the Axis-3 CI job with a goal-flow contract test
       (`--enable goals` + `experimentalApi: true` + the three
       `thread/goal/*` request methods + the two notifications). Add as
-      an explicit checklist item on
-      `docs/141-cli-version-strategy/checklist.md`.
+      an explicit checklist item on the CLI contract-test work stream.
 - [ ] Land the `CODEX_GOALS_RUNTIME_VERIFIED` constant once both pieces
       pass on the current pin.
 - [ ] Probe `thread/resume`'s response shape on a thread that

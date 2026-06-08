@@ -1,6 +1,6 @@
 ---
 description: Agent-agnostic slash-command layer that classifies /compact, /diff, /review, and other backend commands and routes them to the correct ShipIt surface.
-issue: https://linear.app/shipit-ai/issue/SHI-50/slash-commands
+issue: https://linear.app/shipit-ai/issue/SHI-50
 ---
 
 # 132 — Slash Commands

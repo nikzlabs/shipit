@@ -1,5 +1,5 @@
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-86/agent-issue-writes-via-unified-tracker-interface
+issue: https://linear.app/shipit-ai/issue/SHI-86
 title: Agent issue writes — through the unified tracker interface, not MCP
 description: Let the agent comment on, edit, re-status, and re-assign issues across all trackers via one ShipIt-brokered Tracker write interface, with a do-then-surface provenance card. Includes the cross-tracker status/assignee mapping.
 ---
@@ -72,7 +72,7 @@ all of it — same surface, same behavior, regardless of backing tracker.
 
 A write made via MCP is invisible to ShipIt: it can't render it in the Issues tab,
 show a provenance card, or persist it to chat history. A brokered
-`shipit issue comment` lets ShipIt render and persist "agent commented on SHI-28"
+`shipit issue comment` lets ShipIt render and persist "agent commented on TRACKER-28"
 inline.
 
 ### Scope of the interface (and what stays outside it)
@@ -175,7 +175,7 @@ tracker wants an internal id:
 
 The agent calls the verb; the broker performs the write synchronously and returns
 the result. ShipIt then **emits and persists a provenance card** in the transcript
-— "Agent commented on github:owner/repo#1047", "set SHI-28 → In Review",
+— "Agent commented on github:owner/repo#1047", "set TRACKER-28 → In Review",
 "assigned #42 to @alice" — with an **undo** affordance:
 
 - **Undo is a reverse brokered write.** To make it possible, each write captures

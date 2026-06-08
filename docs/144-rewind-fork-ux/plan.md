@@ -329,7 +329,7 @@ All actions:
 
 Concrete visual targets for the `RewindPoint` component and its associated surfaces (confirmation modal, undo toast, recover-overflow item). Sketches are ASCII-only; the implementer should follow the design tokens in `src/client/design-tokens.ts` for sizing/spacing and the existing `--color-*` CSS variables for color.
 
-> **Revision (SHI-26) — click-handle model, no hover-reveal.** The original spec below (full-width hairline + a button that fades in on hover, plus an always-visible pill on the gap-after-last) shipped, but proved too heavy in practice for a rarely-used action: the 24px hover band reserved a large gap between every turn, and because the *whole* band was the hover target, the Rewind button appeared whenever the cursor merely crossed a gap. The shipped control is now:
+> **Revision (TRACKER-26) — click-handle model, no hover-reveal.** The original spec below (full-width hairline + a button that fades in on hover, plus an always-visible pill on the gap-after-last) shipped, but proved too heavy in practice for a rarely-used action: the 24px hover band reserved a large gap between every turn, and because the *whole* band was the hover target, the Rewind button appeared whenever the cursor merely crossed a gap. The shipped control is now:
 > - A **fixed ~10px (`h-2.5`) row** that never changes height — so there is **no layout shift** (the rejected alternative was Option 1, a collapse-then-expand-on-hover handle, which moved the surrounding messages on hover and felt worse than the original). The inter-turn gap is small and constant.
 > - A small centered **pip handle** (`~18px` bar, 40% opacity) that is the *only* interactive target. It is **opened by click**, not hover. There is no full-width hover band and no button that fades in on cursor movement. The pip brightens/widens slightly on hover and on keyboard focus (`group-focus-within`) purely as an affordance hint; it does not reveal a separate button.
 > - The dropdown menu, confirmation modal, previews, undo toast, and all `gapPosition`/action semantics below are **unchanged** — only the trigger affordance changed.
@@ -488,7 +488,7 @@ Clicking it triggers the same restore path as the toast's **Undo**.
 
 ### Tokens at a glance
 
-> Superseded by the SHI-26 revision above: intermediate and gap-after-last now share a fixed `h-2.5` (~10px) row with a click-opened pip (40% → ~90% on hover/focus), no full-width hairline, no fade-in button. The table below reflects the original hover-reveal design.
+> Superseded by the TRACKER-26 revision above: intermediate and gap-after-last now share a fixed `h-2.5` (~10px) row with a click-opened pip (40% → ~90% on hover/focus), no full-width hairline, no fade-in button. The table below reflects the original hover-reveal design.
 
 | Surface | Height | Opacity at rest | Opacity on hover | Notes |
 |---|---|---|---|---|

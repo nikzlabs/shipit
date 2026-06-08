@@ -1,6 +1,6 @@
 ---
 description: Pause or throttle session containers whose browser tab has been inactive for several minutes to reclaim memory on multi-session setups.
-issue: https://linear.app/shipit-ai/issue/SHI-47/background-session-suspension
+issue: https://linear.app/shipit-ai/issue/SHI-47
 ---
 
 # Background session suspension — release memory from inactive tabs

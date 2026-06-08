@@ -1,6 +1,6 @@
 ---
 description: Let users delete messages and compact conversation history into a summarized fork to genuinely reduce the agent's context window.
-issue: https://linear.app/shipit-ai/issue/SHI-40/chat-history-editing
+issue: https://linear.app/shipit-ai/issue/SHI-40
 ---
 # 047 — Chat History Editing
 

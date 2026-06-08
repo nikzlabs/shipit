@@ -105,6 +105,6 @@ parses it (`release-markers.ts`) and drives the poller via
 
 ## Deferred / out of scope
 
-- [ ] Android / mobile artifacts (Linear SHI-66).
+- [ ] Android / mobile artifacts (Linear TRACKER-66).
 - [ ] Package-registry publishing (npm publish, crates.io, Docker push) — left to
       repo CI the tag already triggers.

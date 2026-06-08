@@ -1,15 +1,15 @@
 ---
-description: Highlight text in a chat message to quote it as a blockquote into the composer (SHI-10).
+description: Highlight text in a chat message to quote it as a blockquote into the composer (TRACKER-10).
 ---
 
-# Chat quote-reply (SHI-10)
+# Chat quote-reply (TRACKER-10)
 
 When a user highlights/selects text inside a chat message bubble, show a small
 floating **Reply** button near the selection. Clicking it inserts the selected
 passage as a markdown blockquote into the chat composer, followed by a blank
 line so the user can immediately type their reply to that specific passage.
 
-Linear: **SHI-10**.
+Linear: **TRACKER-10**.
 
 ## Why
 

@@ -561,7 +561,7 @@ return.
 ### Tier 2 (future)
 - `src/server/session/session-worker.ts` — `GET /present-files/*` static serving.
   **Partially realized by docs/170** (`docs/170-present-artifact-screenshot-loop/`,
-  SHI-68): the single-entry serving path now exists so the agent can navigate
+  TRACKER-68): the single-entry serving path now exists so the agent can navigate
   its own browser to a worker-local `viewUrl` and screenshot the rendered
   artifact. Multi-file (`files`/`entry`) and orchestrator preview-proxy routing
   for the *user's* browser remain future work.

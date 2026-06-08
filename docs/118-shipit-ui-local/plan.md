@@ -1,6 +1,6 @@
 ---
 description: Run a ShipIt orchestrator in local (no-Docker) mode inside a session container so developers can dogfood and iterate on the ShipIt source via chat.
-issue: https://linear.app/shipit-ai/issue/SHI-59/shipit-ui-in-local-mode-dogfooding
+issue: https://linear.app/shipit-ai/issue/SHI-59
 ---
 
 # ShipIt UI in local mode (dogfooding ShipIt inside ShipIt)

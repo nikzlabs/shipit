@@ -1,4 +1,4 @@
-# Checklist — present artifact screenshot loop (SHI-68)
+# Checklist — present artifact screenshot loop (TRACKER-68)
 
 - [x] Add `GET /present-files/:presentId/*` route to `session-worker.ts`, reading from `PresentBuffer` (extracted to `registerPresentFilesRoutes` in `present-view.ts` for testability)
 - [x] Serve `text/html` content as-is with correct `Content-Type` and `Cache-Control: no-store`

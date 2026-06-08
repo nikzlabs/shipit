@@ -343,7 +343,7 @@ Browser previews reach containers through a reverse proxy (`preview-proxy.ts`):
 Three orthogonal surfaces, split so each prune runs where the leak actually happens:
 
 - **Per-session teardown drops named volumes** when the session goes away for good. `ServiceManager.stop({ removeVolumes: true })` appends `--volumes` to `docker compose down`, dropping user-declared named volumes (e.g. `node_modules` caches) along with the containers. The flag is signaled by setting `removeVolumesOnDispose = true` on the container runner before disposal — `archiveSession` and `fullReset` do this. Idle eviction, restartAgent recovery, and reconciles keep the default `false` so the user can resume without losing build state.
-- **`deployment/vps/deploy.sh` owns build-time prunes.** After each `docker compose build` it runs `docker image prune -af --filter "until=168h"` and `docker builder prune -f --filter "until=72h"`. BuildKit cache only grows because of builds, so this is where the prune is causal — duplicating it on a timer would just do redundant work. `--no-cache` is no longer the default (it was eating ~80 GB on prod); set `FORCE_REBUILD=1` for a clean rebuild. The agent CLIs (Claude/Codex/Playwright-MCP) install from a committed lockfile (`docker/agent-cli/package-lock.json`) via `npm ci`, so their versions are deterministic and change only when that lockfile changes — bumped by the Renovate GitHub App with a cooldown, gated on the CLI contract test (see `docs/141-cli-version-strategy/plan.md`).
+- **`deployment/vps/deploy.sh` owns build-time prunes.** After each `docker compose build` it runs `docker image prune -af --filter "until=168h"` and `docker builder prune -f --filter "until=72h"`. BuildKit cache only grows because of builds, so this is where the prune is causal — duplicating it on a timer would just do redundant work. `--no-cache` is no longer the default (it was eating ~80 GB on prod); set `FORCE_REBUILD=1` for a clean rebuild. The agent CLIs (Claude/Codex/Playwright-MCP) install from a committed lockfile (`docker/agent-cli/package-lock.json`) via `npm ci`, so their versions are deterministic and change only when that lockfile changes — bumped by the Renovate GitHub App with a cooldown, gated on the CLI contract test .
 - **`disk-janitor.ts` runs once at orchestrator startup** (no periodic timer — see the module docstring for why). It covers leaks the deploy-time prune can't see: orphan ShipIt-managed compose volumes (matched by the `shipit-managed=true` label the override stamps onto every user-declared volume — sessions can be archived between deploys, leaking volumes that `deploy.sh` never touches), unreferenced `repo-cache/<hash>` / `dep-cache/<hash>` directories, and — opt-in via `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=<n>` — a safety-net sweep for archived workspaces that outlived archive's normal cleanup (interrupted shutdown, legacy data). The sweep only drops the on-disk git checkout + `node_modules`; chat history, usage, and session metadata are always preserved, and unarchive re-clones from the bare cache. Sessions without a `remoteUrl` are skipped defensively. BuildKit/image prune deliberately lives in `deploy.sh`, not here.
 
 ### Client dual-channel communication
@@ -404,17 +404,16 @@ docs/
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
-Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Work tracking lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer; see `docs/168-tracker-backed-priorities/`.
+Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Work tracking lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer; see the design docs reference.
 
 Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
 
 The recognized frontmatter fields are `issue`, `title`, and `description` — all optional. A `plan.md` with no frontmatter still appears in the list. The docs list groups structurally: a doc is **tracked** if it is a feature-directory `plan.md`/`checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling; within Tracked, docs whose `checklist.md` is 100% complete fold into a collapsed **Done** group, everything else stays **Active**.
 
-`issue:` points at the work item that tracks the doc; the tracker is inferred from the pointer's shape. **Linear must be a full URL** (`https://linear.app/<workspace>/issue/SHI-28/...`) — a bare `SHI-28` is not accepted. **GitHub** is `owner/repo#123` or a full issue URL. ShipIt renders a jump-to-issue chip from the pointer. A doc with no `issue:` is pure reference.
+`issue:` points at the work item that tracks the doc; the tracker is inferred from the pointer's shape. **Linear must be a full URL without the title slug** (`https://linear.app/<workspace>/issue/TRACKER-28`) — a bare `TRACKER-28` is not accepted. **GitHub** is `owner/repo#123` or a full issue URL. ShipIt renders a jump-to-issue chip from the pointer. A doc with no `issue:` is pure reference.
 
 ```yaml
 ---
-issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
 ---
 ```
 

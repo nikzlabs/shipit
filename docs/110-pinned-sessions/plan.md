@@ -1,6 +1,6 @@
 ---
 description: Let users pin sessions to the top of the session list, sticky across reloads and drag-reorderable within the pinned group.
-issue: https://linear.app/shipit-ai/issue/SHI-48/pinned-sessions
+issue: https://linear.app/shipit-ai/issue/SHI-48
 ---
 
 # 110 — Pinned Sessions

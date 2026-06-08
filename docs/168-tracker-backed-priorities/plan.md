@@ -1,18 +1,18 @@
 ---
 title: Tracker-backed priorities (doc decoupling)
 description: Move priority and work-status out of design-doc frontmatter into the issue tracker. Docs become reference material with an issue: pointer; the docs list groups by checklist state instead of status.
-issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
+issue: https://linear.app/shipit-ai/issue/SHI-28
 ---
 
 # Tracker-backed priorities
 
-Tracks Linear issue **SHI-28 — "Decouple priorities from documents."**
+Tracks Linear issue **TRACKER-28 — "Decouple priorities from documents."**
 
 > **Scope note.** This doc originally bundled two things: (1) stripping
 > `priority`/`status` from doc frontmatter, and (2) a new inline **Issues tab**
 > that renders tracker issues so "what's next" stays inside ShipIt. Part (1)
-> shipped (SHI-28, Done). Part (2) did **not** ship with it and is now tracked
-> separately as **SHI-67** with its design in
+> shipped (TRACKER-28, Done). Part (2) did **not** ship with it and is now tracked
+> separately as **TRACKER-67** with its design in
 > **`docs/170-inline-tracker-issues`**. This doc is now the reference for the
 > decoupling migration only. See "The §1/§2 gap" below — shipping (1) without
 > (2) left a live product-principle hole that 170 closes.
@@ -23,13 +23,13 @@ Priority — and, by extension, work-status — should live where work is actual
 coordinated: the issue tracker. A design doc used to do two jobs at once. It was
 the **spec** (what we're building and why) *and* the **work item** (its
 `status`/`priority` frontmatter decided where it sorted and whether it was
-"active"). SHI-28 separates those jobs:
+"active"). TRACKER-28 separates those jobs:
 
 - **Docs become reference material.** What the thing is, why, how. They no
   longer carry `priority` or `status`. They keep an optional `issue:` pointer to
   the issue that tracks the work.
 - **Issues become the prioritized work queue.** Priority and status live in
-  Linear (internal planning) and GitHub Issues (external bug reports).
+  Linear and GitHub Issues.
 
 ## Why this matters
 
@@ -50,7 +50,7 @@ exactly this reason.
 
 In practice the decoupling shipped and the inline surface did not, so ShipIt is
 currently in that gap: priority is gone from the docs and there is no inline
-"what's next" surface. Closing it is `docs/170-inline-tracker-issues` (SHI-67) —
+"what's next" surface. Closing it is `docs/170-inline-tracker-issues` (TRACKER-67) —
 read-only, priority-sorted Issues tab with a start-session action. That work is
 no longer bundled here; it is tracked on its own issue so this completed
 migration stays Done.
@@ -68,7 +68,7 @@ migration stays Done.
 
 | Decision | Choice | Rationale |
 |---|---|---|
-| Priority on docs | **Removed** | The whole point of SHI-28. |
+| Priority on docs | **Removed** | The whole point of TRACKER-28. |
 | Status on docs | **Removed too** (not just priority) | Status conflates design-maturity with work-state; the tracker owns work-state. |
 | Checklist UI | **Kept** | Local, deterministic, network-free progress signal; now also the grouping key for the docs list. |
 | Doc↔issue link | **`issue:` frontmatter pointer** | Lets ShipIt resolve the linked issue and cross-navigate (jump-to-issue) without a 1:1 constraint. |
@@ -81,14 +81,13 @@ migration stays Done.
 ---
 title: Tracker-backed priorities        # unchanged (optional; defaults to filename)
 description: One-line summary.           # unchanged (docs/138)
-issue: https://linear.app/shipit-ai/issue/SHI-28/decouple-priorities-from-documents
 ---
 ```
 
 - **Removed:** `status`, `priority`.
 - **`issue:`** accepts a tracker-qualified pointer.
-  - **Linear: always a full URL** (e.g.
-    `https://linear.app/shipit-ai/issue/SHI-28/...`). Bare `SHI-28` is *not*
+  - **Linear: always a full URL without the title slug** (e.g.
+    `https://linear.app/<workspace>/issue/TRACKER-28`). Bare `TRACKER-28` is *not*
     accepted — the full URL keeps the pointer unambiguous if a deployment ever
     wires up more than one Linear workspace.
   - **GitHub:** `owner/repo#123` or a full issue URL.
@@ -154,7 +153,7 @@ The replacement key does not depend on `status` — it keys off **doc structure*
 ## Data flow
 
 ```
-docs/NNN/plan.md (issue: SHI-28)
+docs/NNN/plan.md (issue: TRACKER-28)
         │ markdown.ts: parse title/description/issue + checklist counts (no status/priority)
         ▼
    DocsViewer: checklist-state groups + jump-to-issue chip from issue:
@@ -193,10 +192,10 @@ Docs/config:
 
 ## Relationship to existing docs
 
-- **`docs/170-inline-tracker-issues`** (SHI-67) — the inline Issues tab that was
+- **`docs/170-inline-tracker-issues`** (TRACKER-67) — the inline Issues tab that was
   originally part 2 of this doc. It is the surface that closes the §1/§2 gap this
   migration opened; the "issues side" design moved there in full.
-- **`docs/156-issue-to-session`** (SHI-43) — inbound **push** trigger from the
+- **`docs/156-issue-to-session`** (TRACKER-43) — inbound **push** trigger from the
   tracker. 156 owns push; `docs/170` owns the in-app **pull** picker. Both share
   the `headless-sessions.create({ issueRef })` seeding primitive.
 - **`docs/114-tracked-doc-checklist`** (done) — the checklist badge this
