@@ -17,11 +17,13 @@ optional optimization. Hardlink was considered and rejected.** Remaining work:
       (`node_modules` for Node; a standardized venv path for Python)
 - [ ] Prototype the keyless rolling base: mount current base → run real install on top →
       advance via optimistic compare-and-swap (parallel installs, serialized publish)
-- [ ] Measure warm-install time: "nothing changed", "one dep added", and "alternating
-      divergent branches" (thrash case) vs. cold — confirms the chain holds up
+- [ ] Measure warm-install time: `main` unchanged (warm no-op) and `main` advanced its
+      deps (incremental) vs. cold — the two cases reachable today (sessions only branch
+      from the default, so cross-branch thrash isn't a current scenario)
 - [ ] Decide overlay-stack flatten cadence (depth cap) and periodic clean-rebuild policy
       to bound drift from incremental installs (note `npm ci` wipes — no warm-base gain)
-- [ ] Decide whether to add the optional detection-free manifest fingerprint (glob-hash of
-      all manifests, not single-lockfile detection) to skip no-op installs / avoid thrash
+- [ ] Optional/future: detection-free manifest fingerprint (glob-hash of all manifests,
+      not single-lockfile detection) — only needed if create-from-arbitrary-branch lands
+      or `main` churns deps heavily
 - [ ] Python: validate "build venv at /workspace/.venv, overlay back at the same path"
       end-to-end (pyvenv.cfg + shebangs intact)

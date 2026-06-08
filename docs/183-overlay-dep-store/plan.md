@@ -194,26 +194,36 @@ because the package manager itself reconciles the tree. Concurrency is kept clea
   the base hasn't advanced since you started; otherwise keep your tree locally and skip the
   publish). The published chain stays strictly linear while installs stay parallel.
 
-**The honest limit of a single chain — branch divergence, not concurrency.**
-Serialization fixes *concurrent* forks, but one chain is one-dimensional while branches are
-many. When consecutive installs come from **divergent dependency states** (`main` vs a
-`feature` branch that changed deps, or a package-manager switch), each install fully
-*reconciles* the base (remove + add) instead of no-op'ing — slower, and it accumulates
-drift. This happens even with purely *sequential* sessions alternating branches, so
-serialization can't fix it. In practice branches of one repo usually share ~all deps, so
-the warm delta is tiny and the download cache covers additions — but a repo with wildly
-divergent branches will thrash on a single chain.
+**Does branch divergence break the single chain? In ShipIt's model, no.** The
+base-advancing install is the **creation-time `agent.install`**, and sessions are **always
+cut from the default branch** (`origin/HEAD`) — never from an arbitrary branch or PR
+([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
+[claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
+[session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). So every
+install that feeds the chain runs on **`main`'s dependency state at creation time**, which
+advances roughly **monotonically forward**. Consecutive bases are `main@t1 → main@t2 → …`,
+each a small forward delta on the previous — exactly the linear chain the design wants, with
+no cross-branch reconciliation. Two corollaries:
 
-**If thrashing (or the always-pay-install floor) bites, the fix is *not* lockfile
-detection.** You can route per-branch and skip a no-op install with a **detection-free
-content fingerprint**: hash the bytes of *every* dependency-manifest file found by a fixed
-glob across the tree (`package.json`, `*.lock`, `pnpm-lock.yaml`, `requirements*.txt`,
-`poetry.lock`, `uv.lock`, `pyproject.toml`, …) together with the runtime. This is **not**
-"pick the one lockfile" — it's a coarse fingerprint of *all* manifests, so monorepos and
-polyglot repos are included by construction, and a divergent branch simply fingerprints
-differently and gets its own lineage. It is optional and additive: ship the keyless single
-chain first; add the fingerprint only if measurements show thrashing or the warm-install
-seconds matter.
+- **Mid-session `npm install foo` doesn't feed the chain.** That's the agent's own shell
+  command, landing in the session's `upperdir` — not the `agent.install` step. A session's
+  divergent dependency work never advances the shared base, so it can't pollute it.
+- **"Did the base move?" is already a commit check, not a lockfile check.** The existing
+  `.shipit/.install-done` marker — deleted when HEAD changed
+  ([claim-session.ts:204-206](../../src/server/orchestrator/services/claim-session.ts#L204-L206),
+  checked at [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663))
+  — already skips install when `main` HEAD hasn't advanced. So an unchanged base costs ~0
+  *without* any lockfile detection.
+
+So the thrash I worried about earlier only arises **if** ShipIt ever supports **creating a
+session from an arbitrary branch/PR** (installs would then run on divergent dep states). It
+doesn't today. If that changes — or if `main` itself churns deps heavily — the fix is *not*
+lockfile detection but an optional **detection-free content fingerprint**: hash the bytes of
+*every* dependency-manifest file found by a fixed glob (`package.json`, `*.lock`,
+`pnpm-lock.yaml`, `requirements*.txt`, `poetry.lock`, `uv.lock`, `pyproject.toml`, …) plus
+the runtime. That's a coarse fingerprint of *all* manifests (monorepos included by
+construction), giving each divergent state its own lineage — additive, only if measurements
+ever call for it.
 
 **Shared caveats either way:**
 
@@ -258,8 +268,9 @@ mechanism; see [Why overlay, not hardlink](#why-overlay-not-hardlink) for why.
    janitor/archive awareness) to size the real cost — this is the gating unknown.
 2. Prototype the keyless rolling base: mount the repo's current base, run the real install
    on top, advance the base via optimistic compare-and-swap. Measure warm-install time for
-   "nothing changed", "one dep added", and "alternating divergent branches" (the thrash
-   case) vs. a cold install.
+   the two real cases — **`main` unchanged** (warm no-op; should approach the existing
+   marker skip) and **`main` advanced its deps** (incremental delta) — vs. a cold install.
+   (Cross-branch thrash isn't reachable today since sessions only branch from the default.)
 3. Rename `nm-store` → `dep-store` (module + store path) as a self-contained precursor,
    since it's purely a rename and unblocks the generalized naming.
 4. From the measurements, set the **flatten cadence** (overlay-depth cap) and the periodic
@@ -390,8 +401,9 @@ keyless rolling chain (§4) is preferred instead, and what the keyed variant sti
 
 - **Keyed pros:** the hit path is **~0** (a mount, no installer process) and fully
   **reproducible** and **concurrency-safe** by construction (identical inputs → identical
-  immutable layer; the atomic-rename publish dedupes). Different branches route to
-  different layers with **no thrashing**.
+  immutable layer; the atomic-rename publish dedupes). Per-key routing would also avoid
+  cross-branch thrash — though that isn't a real scenario today, since sessions only branch
+  from the default (§4), so this pro is mostly theoretical for now.
 - **Keyed cons (why it's not primary):** it depends on **detecting the lockfile**, which is
   exactly what we're trying to avoid — today's `findLockfile` only handles a *single
   top-level* lockfile and deliberately punts **monorepos** and nested packages, and
