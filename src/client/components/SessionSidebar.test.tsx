@@ -37,7 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   // Reset cross-test state so SessionStatusDot tests don't leak into others.
-  useSessionStore.setState({ activeRunnerSessions: new Set<string>() });
+  useSessionStore.setState({ activeRunnerSessions: new Set<string>(), messages: [], rewindRecoveries: {} });
   usePrStore.setState({ cardBySession: {}, statusBySession: {}, autoMergeBySession: {} });
   useUiStore.getState().setProjectSettingsRepoUrl(null);
   useRepoStore.setState({ collapsedParents: new Set<string>() });
@@ -144,6 +144,79 @@ describe("SessionSidebar", () => {
     await user.click(screen.getByLabelText("Session actions"));
     await user.click(await screen.findByText("Archive"));
     expect(onArchive).toHaveBeenCalledWith("s1");
+  });
+
+  describe("relocated chat actions (Download chat, Recover recent rewind)", () => {
+    it("shows Download chat only in the active session's menu", async () => {
+      const user = userEvent.setup();
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      // Current session → item present.
+      const { unmount } = render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(await screen.findByText("Download chat")).toBeTruthy();
+      unmount();
+
+      // Same session but NOT current → item absent (you'd download another
+      // session's transcript, which is confusing).
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="other" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(screen.queryByText("Download chat")).toBeNull();
+    });
+
+    it("serializes the current session's messages when Download chat is selected", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ messages: [{ role: "user", text: "hello" }] });
+      const createObjectURL = vi.fn().mockReturnValue("blob:x");
+      const revokeObjectURL = vi.fn();
+      Object.defineProperty(URL, "createObjectURL", { configurable: true, value: createObjectURL });
+      Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: revokeObjectURL });
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(await screen.findByText("Download chat"));
+
+      expect(createObjectURL).toHaveBeenCalledTimes(1);
+      expect(clickSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("shows Recover recent rewind only when a non-expired recovery exists for the current session", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({
+        rewindRecoveries: { s1: { sessionId: "s1", action: "both", expiresAt: Date.now() + 60_000 } },
+      });
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(await screen.findByText("Recover recent rewind")).toBeTruthy();
+    });
+
+    it("hides Recover recent rewind when no recovery is available", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ rewindRecoveries: {} });
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      expect(screen.queryByText("Recover recent rewind")).toBeNull();
+    });
+
+    it("dispatches the rewind-restore event for the session when selected", async () => {
+      const user = userEvent.setup();
+      useSessionStore.setState({
+        rewindRecoveries: { s1: { sessionId: "s1", action: "both", expiresAt: Date.now() + 60_000 } },
+      });
+      const dispatchSpy = vi.spyOn(window, "dispatchEvent");
+      const sessions = [baseSession({ id: "s1", title: "Active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
+      await user.click(screen.getByLabelText("Session actions"));
+      await user.click(await screen.findByText("Recover recent rewind"));
+
+      const restoreEvent = dispatchSpy.mock.calls
+        .map((c) => c[0])
+        .find((e): e is CustomEvent => e instanceof CustomEvent && e.type === "shipit:restore-rewind");
+      expect(restoreEvent?.detail).toEqual({ sessionId: "s1" });
+    });
   });
 
   it("shows collapsed state with expand button", () => {

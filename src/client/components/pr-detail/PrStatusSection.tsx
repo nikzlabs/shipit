@@ -27,13 +27,10 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
 import {
   AutoMergeToggle,
-  ClosePrDropdownItem,
   FixCIButton,
   MergeButton,
   ResolveConflictsButton,
-  useClosePr,
 } from "../PrStatusControls.js";
-import { OverflowMenu } from "../ui/overflow-menu.js";
 
 function ChecksSummary({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") {
@@ -125,11 +122,10 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   // when CI failed and the auto-loop isn't actively handling it.
   const showFixButton = card.phase === "open" && isCiFailed && !isAutoFixRunning && (!autoFixCi || isAutoFixExhausted);
   const showAutoMergeToggle = card.phase === "open" && (!isCiFailed || isCiPassed);
-  // Close lives in the merge dropdown when that button is shown; when it's
-  // hidden (conflicts, failing CI, review required, auto-merge armed) this
-  // overflow menu keeps it reachable — mirroring the inline card's ⋮ menu.
-  const closeState = useClosePr(sessionId);
-  const showCloseMenu = card.phase === "open" && !showMergeButton;
+  // Close lives in the merge dropdown and the header's PrActionsMenu, not here;
+  // only render the action box when one of these inline controls is present so
+  // it never collapses to an empty bordered row.
+  const hasActions = showMergeButton || showFixButton || showAutoMergeToggle || !!showConflictUi;
 
   return (
     <section className="px-4 py-3 border-b border-(--color-border-primary) space-y-3">
@@ -141,21 +137,13 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
 
       <ReviewSummary reviewDecision={reviewDecision} />
 
-      {card.phase === "open" && (
+      {hasActions && (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-(--color-border-primary) bg-(--color-bg-secondary)/40 p-2">
           {showMergeButton && <MergeButton sessionId={sessionId} autoMerge={autoMerge} />}
           {showFixButton && <FixCIButton sessionId={sessionId} />}
           {showAutoMergeToggle && <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />}
           {showConflictUi && (
             <ResolveConflictsButton sessionId={sessionId} baseBranch={pr.baseBranch} />
-          )}
-          {showCloseMenu && (
-            <OverflowMenu
-              label="More pull request actions"
-              onOpenChange={(open) => { if (!open) closeState.reset(); }}
-            >
-              <ClosePrDropdownItem state={closeState} />
-            </OverflowMenu>
           )}
         </div>
       )}
