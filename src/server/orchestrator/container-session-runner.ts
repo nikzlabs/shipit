@@ -777,6 +777,50 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
+   * Before the FIRST SSE connect for this runner, advance the worker-event
+   * cursor past any turn that has already COMPLETED on the worker, so the
+   * `since=0` replay doesn't re-deliver a finished turn into a fresh runner.
+   *
+   * On a fresh orchestrator `_lastSeenSeq` starts at 0, so the first connect
+   * would otherwise replay the worker's entire ring buffer — including the
+   * last turn that finished before the orchestrator restarted. Routed into
+   * the (possibly already re-created) `_agent` slot, those stale assistant
+   * events get re-persisted as part of the next turn: the turn renders twice
+   * and the duplicate survives a reload (the post-deploy double-render bug).
+   *
+   * `fastForwardStaleWorkerEventsBeforeFreshStart()` already covers the
+   * spawned/headless fresh-start path, but its guard short-circuits the moment
+   * ANY viewer is present (`attachViewer` → `ensureWorkerResourcesStarted` sets
+   * `_workerResourcesStarted`). So for an interactive session a human is
+   * watching — exactly the reported repro — that fast-forward never runs. This
+   * method closes that gap by fast-forwarding on the viewer-driven first
+   * connect too.
+   *
+   * Gated on the worker being IDLE (`running !== true`): if a turn is genuinely
+   * still streaming, a viewer attaching mid-turn MUST still replay the live
+   * turn's un-persisted events, so we leave the cursor at `since=0`. We only
+   * skip the replay of a turn that already finished.
+   *
+   * No-op once SSE is connected (advancing the cursor after connect would skip
+   * live events) and best-effort on probe failure (keep the `since=0` path so
+   * a slow/unreachable worker still prefers replay over event loss).
+   */
+  private async fastForwardCompletedTurnBeforeFirstConnect(): Promise<void> {
+    if (this.sse.isConnected) return;
+    try {
+      const status = await workerGet(this.workerUrl, "/agent/status", { timeoutMs: 3000 }) as {
+        running?: boolean;
+        latestSseSeq?: number;
+      };
+      // A live turn must still be replayed to a mid-turn viewer — don't skip it.
+      if (status.running === true) return;
+      this.sse.fastForwardLastSeenSeq(status.latestSseSeq ?? 0);
+    } catch {
+      // Best-effort only — preserve the since=0 replay path on probe failure.
+    }
+  }
+
+  /**
    * Ensure SSE is connected and worker resources are marked as started.
    * Used both by `attachViewer` (lazy on first viewer) and by
    * `_startAgentViaProxy` (so headless system-turns started without a
@@ -791,6 +835,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       return;
     }
     this._workerResourcesStarted = true;
+    // Skip the worker's ring-buffer replay of an already-completed turn before
+    // the very first connect (post-restart double-render bug) — but only when
+    // no turn is live, so a mid-turn viewer still catches up. See the method.
+    await this.fastForwardCompletedTurnBeforeFirstConnect();
     await this.connectEventStream();
     if (!this._disposed) void this.startWorkerResources();
   }

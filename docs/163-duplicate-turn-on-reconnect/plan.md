@@ -147,3 +147,40 @@ covering both the user-interrupt and abnormal-exit cases. `onInterruptedTurn` is
 WS-only (dispatch leaves it unset and uses `onNoResultExit`), so dispatched turns
 are unaffected. Regression test: "an abnormal exit (code 143) preserves the prior
 turn when the next message is sent" in `ws-disconnect-resilience.test.ts`.
+
+## Follow-up: stale replay was unguarded on the INTERACTIVE (viewer-attached) path
+
+The `latestSseSeq` fast-forward above (`fastForwardStaleWorkerEventsBeforeFreshStart`)
+only protected the spawned/headless path. Its first line is
+`if (this._workerResourcesStarted || this.sse.isConnected) return;`, and
+`attachViewer()` → `ensureWorkerResourcesStarted()` sets `_workerResourcesStarted`
+(and connects SSE) as soon as ANY viewer is present. So for a session a human is
+actively watching — the reported repro — the fast-forward NEVER ran: the
+viewer-driven first SSE connect still went out as `since=0` and the worker
+replayed its entire ring, including the turn that completed before the restart.
+
+When the user's next message created a fresh `_agent` before that `since=0`
+replay drained, `handleSSEEvent`'s `_agent === null` drop branch no longer
+applied — the stale `agent_assistant` events were routed into the live agent,
+wired through `wireAgentListeners()`, and re-persisted as part of the new turn.
+The duplicate therefore survived a reload (re-persisted, not a stale client
+render). The earlier regression test never caught this because it deliberately
+omits `attachViewer()` and so only exercises the no-viewer path the guard allows.
+
+Fix: `ensureWorkerResourcesStarted()` now fast-forwards the SSE cursor past the
+worker's `latestSseSeq` before the FIRST connect on the viewer-driven path too
+(`fastForwardCompletedTurnBeforeFirstConnect`), gated on the worker being IDLE
+(`/agent/status.running !== true`). A viewer attaching while a turn is genuinely
+still streaming keeps `since=0` so it catches up on the live turn's un-persisted
+events — only a turn that already finished is skipped. The spawned/headless
+fresh-start fast-forward is left unchanged.
+
+Additional key files:
+
+- `src/server/orchestrator/container-session-runner.ts` —
+  `fastForwardCompletedTurnBeforeFirstConnect()` called from
+  `ensureWorkerResourcesStarted()`.
+- `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` —
+  regression test "attaching a viewer before a fresh turn does not replay the
+  prior completed turn (post-restart double-render)" — mirrors the no-viewer
+  test but attaches a viewer first.

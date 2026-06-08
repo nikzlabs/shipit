@@ -324,6 +324,105 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose();
   });
 
+  // Regression for the post-deploy double-render on an INTERACTIVE session
+  // (the bug the test above misses because it never attaches a viewer):
+  //
+  // After an orchestrator restart the runner is fresh (SSE cursor at 0) but the
+  // worker container kept running, so its ring buffer still holds the previous
+  // turn that finished while the orchestrator was down. A human is VIEWING the
+  // session, so a viewer attaches first — `attachViewer()` →
+  // `ensureWorkerResourcesStarted()` sets `_workerResourcesStarted`, which made
+  // `fastForwardStaleWorkerEventsBeforeFreshStart()` short-circuit, so nothing
+  // fast-forwarded the cursor. When the user's next message creates the fresh
+  // `_agent` before the `since=0` replay drains, the completed turn is routed
+  // into the live agent and re-persisted → the turn renders twice and the
+  // duplicate survives a reload.
+  //
+  // The fix fast-forwards the cursor on the viewer-driven first connect too
+  // (gated on the worker being idle), so the completed turn is never replayed.
+  //
+  // Determinism: `attachViewer()` kicks off `ensureWorkerResourcesStarted()`,
+  // which suspends at its first `await` before connecting SSE. Creating the
+  // proxy synchronously right after sets `_agent` before the replay can drain —
+  // exactly the prod ordering, and the only ordering in which the stale events
+  // reach a live slot (rather than being dropped as "no _agent").
+  it("attaching a viewer before a fresh turn does not replay the prior completed turn (post-restart double-render)", async () => {
+    // A turn that completed BEFORE the orchestrator restarted — its events sit
+    // in the worker's SSE ring buffer.
+    const oldStart = await fetch(`${workerUrl}/agent/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        agentId: "claude",
+        params: { prompt: "old turn", cwd: "/workspace" },
+      }),
+    });
+    expect(oldStart.status).toBe(200);
+    const oldAgent = lastAgent;
+    oldAgent.emit("event", {
+      type: "agent_init",
+      agentId: "claude",
+      sessionId: "old-agent-session",
+      model: "claude-sonnet-4-6",
+      tools: [],
+    });
+    oldAgent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "STALE_REPLAY_CANARY" }],
+    });
+    oldAgent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "old-agent-session",
+    });
+    oldAgent.emit("done", 0);
+    await waitFor(() => lastAgent === oldAgent, 500, "old agent still latest");
+
+    const idleStatus = await fetch(`${workerUrl}/agent/status`);
+    const idle = await idleStatus.json() as { running: boolean; latestSseSeq: number };
+    expect(idle.running).toBe(false);
+    expect(idle.latestSseSeq).toBeGreaterThan(0);
+
+    // Fresh orchestrator: brand-new runner (so its SSE cursor starts at 0).
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-viewer-stale-replay",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+
+    // A human is viewing the session: attach a viewer, then synchronously
+    // create the fresh turn's `_agent` before SSE connects (see header).
+    runner.attachViewer();
+    const proxy = runner.createAgent("claude");
+    const events: unknown[] = [];
+    proxy.on("event", (event) => events.push(event));
+
+    // Let SSE connect and any ring-buffer replay drain. Without the attach-time
+    // fast-forward, the since=0 replay re-delivers the completed turn into the
+    // now-set `_agent`.
+    await new Promise((r) => setTimeout(r, 300));
+    expect(JSON.stringify(events)).not.toContain("STALE_REPLAY_CANARY");
+
+    // The fresh turn still receives its own events end-to-end.
+    proxy.run({ prompt: "fresh turn", cwd: "/workspace" });
+    await waitFor(() => lastAgent !== oldAgent && lastAgent?.runCalled, 3000, "fresh agent.run()");
+    expect(lastAgent.lastParams?.prompt).toBe("fresh turn");
+
+    lastAgent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "fresh output" }],
+    });
+    await waitFor(
+      () => JSON.stringify(events).includes("fresh output"),
+      3000,
+      "fresh event delivered",
+    );
+
+    lastAgent.emit("done", 0);
+    runner.dispose();
+  });
+
   // ---- proxy.interrupt() ----
 
   it("proxy.interrupt() POSTs to worker /agent/interrupt", async () => {
