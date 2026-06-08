@@ -10,7 +10,6 @@ import type { ServiceManager } from "./service-manager.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
-import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from "../shared/types.js";
@@ -84,13 +83,6 @@ export interface RunnerRegistryDeps {
    * callback. Optional so test setups without secrets still work.
    */
   secretStore?: SecretStore;
-  /**
-   * Provider for `source: platform:*` entries in `x-shipit-secrets`
-   * (087 Phase 4). When present, ServiceManager forwards Claude OAuth /
-   * GitHub tokens into compose services that declare them. Optional so
-   * tests / non-auth setups still work.
-   */
-  platformCredentials?: PlatformCredentialProvider;
   /**
    * Phase 1 follow-up — when set, ServiceManager uses Docker-secrets
    * isolation instead of env files. See `ServiceManagerOptions.dockerSecretsConfig`
@@ -229,7 +221,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, platformCredentials, dockerSecretsConfig, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -455,7 +447,6 @@ export function createRunnerRegistry(
           composeNotConfigured,
           containerManager,
           secretStore,
-          platformCredentials,
           dockerSecretsConfig,
           broadcastLog,
           credentialStore,

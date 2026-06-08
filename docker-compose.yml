@@ -140,13 +140,12 @@ services:
     # started, the outer's preview proxy routes
     # `<sessionId>--3000.localhost` to this container.
     x-shipit-preview: manual
-    # Forwards the user's existing Claude OAuth + GitHub token from the
-    # outer (production) ShipIt into the inner orch as env vars. The inner
-    # orch's AuthManager / GitHubAuthManager init from process.env, so the
-    # inner UI is logged in from the start without re-running the OAuth
-    # flow. Resolved by `platform-credentials.ts` — see Phase 4 of the
-    # secrets pipeline.
+    # The inner orch's AuthManager / GitHubAuthManager init from process.env,
+    # so the inner UI is logged in from the start. These are user-supplied
+    # secrets: the dogfooding developer sets them once in the outer ShipIt's
+    # Settings → Secrets panel, keyed by these names. Use a long-lived
+    # ANTHROPIC_API_KEY (it does not rotate) + a dedicated testing GITHUB_TOKEN.
     x-shipit-secrets:
-      - { name: ANTHROPIC_API_KEY,    source: platform:claude_oauth }
-      - { name: ANTHROPIC_AUTH_TOKEN, source: platform:claude_oauth }
-      - { name: GITHUB_TOKEN,         source: platform:github_token }
+      - { name: ANTHROPIC_API_KEY }
+      - { name: ANTHROPIC_AUTH_TOKEN }
+      - { name: GITHUB_TOKEN }

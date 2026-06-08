@@ -15,10 +15,12 @@
  * < 10-minute useful lifetime. Persisting across orchestrator restarts
  * isn't worth the complexity; the user can just click "Connect" again.
  *
- * The token-refresh codepath is intentionally synchronous-from-the-resolver:
- * `platform-credentials.ts` calls `refreshIfExpired()` inline during every
- * `syncSecrets()` pass. Refresh failures fall through to "return current
- * (expired) token" so the worker can at least emit a meaningful
+ * Near-expired MCP OAuth tokens are refreshed by an async path
+ * ({@link refreshExpiredMcpOAuthTokens}) triggered at orchestrator startup
+ * and before each agent turn, NOT inline during compose secret resolution
+ * (docs/184 removed the `source: platform:*` compose-resolver path that used
+ * to drive an inline refresh). Refresh failures fall through to "return
+ * current (expired) token" so the worker can at least emit a meaningful
  * `mcp_server_status` failure rather than silently dropping the server.
  */
 
@@ -522,9 +524,8 @@ export function normalizeTokenResponse(
 }
 
 /**
- * Refresh tokens for a source. Used by the platform-credentials resolver
- * when an access token is near expiry. Returns the fresh tokens (also
- * persists them via the credential store).
+ * Refresh tokens for a source when an access token is near expiry. Returns
+ * the fresh tokens (also persists them via the credential store).
  *
  * Throws if the provider has no refresh token on file, or if the refresh
  * call itself fails. The resolver catches and falls back to returning the

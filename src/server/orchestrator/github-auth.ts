@@ -198,11 +198,14 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
-   * Get the raw GitHub PAT for forwarding into compose services. Used by the
-   * platform credential provider for `source: platform:github_token`. Most
-   * callers should prefer task-specific helpers (e.g. `createPullRequest`)
-   * that use the token internally — this getter exists only for the secrets
-   * pipeline. Returns `null` if no token is configured.
+   * Get the raw GitHub PAT. Used by the GitHub Issues route and the GitHub
+   * service layer to build authenticated API calls. Most callers should
+   * prefer task-specific helpers (e.g. `createPullRequest`) that use the
+   * token internally — this getter exists only for callers that need the raw
+   * value. Returns `null` if no token is configured.
+   *
+   * Note: this token is NOT forwarded into compose services. docs/184 removed
+   * the `source: platform:github_token` compose-forwarding path.
    */
   getToken(): string | null {
     return this._token;

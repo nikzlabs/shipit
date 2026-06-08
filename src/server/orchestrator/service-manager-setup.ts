@@ -6,7 +6,6 @@ import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import type { WsLogEntry } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
@@ -251,7 +250,6 @@ export function setupServiceManager(
     composeNotConfigured: Set<string>;
     containerManager: SessionContainerManager | null;
     secretStore?: SecretStore;
-    platformCredentials?: PlatformCredentialProvider;
     dockerSecretsConfig?: { internalDir: string; hostDir?: string; entrypointSourcePath: string };
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
@@ -267,7 +265,6 @@ export function setupServiceManager(
     composeNotConfigured,
     containerManager,
     secretStore,
-    platformCredentials,
     dockerSecretsConfig,
     broadcastLog,
     credentialStore,
@@ -422,7 +419,6 @@ export function setupServiceManager(
     opsSession: session?.kind === "ops",
     secretsLoader,
     mcpAgentEnvLoader,
-    platformCredentials,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {

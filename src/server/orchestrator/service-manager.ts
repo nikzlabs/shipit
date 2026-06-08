@@ -38,7 +38,6 @@ import {
   type ComposeOverrideOptions,
   type ComposeService,
 } from "./compose-generator.js";
-import type { PlatformCredentialProvider } from "./platform-credentials.js";
 import {
   ServiceSecretsResolver,
   type SecretsStatusInternalSnapshot,
@@ -142,13 +141,6 @@ export interface ServiceManagerOptions {
    * worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
   mcpAgentEnvLoader?: () => Record<string, string>;
-  /**
-   * Resolves `source: platform:*` entries against orchestrator-level
-   * credentials (Claude OAuth, GitHub token). When omitted, those entries
-   * fall through to the user-secrets lookup like any other declaration —
-   * which usually means "missing".
-   */
-  platformCredentials?: PlatformCredentialProvider;
   /**
    * Phase 1 follow-up — Docker-secrets isolation. When configured, secret
    * values are written to per-secret files outside the workspace volume and
@@ -275,9 +267,11 @@ export class ServiceManager extends EventEmitter {
       workspaceDir: opts.workspaceDir,
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
-      ...(opts.platformCredentials ? { platformCredentials: opts.platformCredentials } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
+      // docs/184: relay the now-unhonored `source: platform:*` notice into the
+      // service's log stream so it surfaces in the same place as its output.
+      onPlatformSourceWarning: (serviceName, text) => this.emit("service_log", serviceName, text),
     });
 
     this.retry = new ServiceRetryManager({
