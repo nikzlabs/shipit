@@ -1,20 +1,21 @@
 ---
 status: planned
-description: Share a warm workspace baseline across sessions via one rolling overlay base per repo; each session runs its real install on top, so it's ecosystem-agnostic with no keys and no lockfile detection.
+description: Share a warm workspace baseline across sessions via one rolling overlay base per repo runtime; each session runs its real install on top, so it's ecosystem-agnostic with no keys and no lockfile detection.
 ---
 
 # Overlay-mounted rolling workspace base
 
 > **TL;DR — the proposal.** Instead of copying `node_modules` into each session (today's
-> `nm-store` `tar`/`cp -a`), keep **one rolling overlay base per repo**: the whole-workspace
-> filesystem state right after a successful install. A new session mounts that base read-only
+> `nm-store` `tar`/`cp -a`), keep **one rolling overlay base per repo runtime**: the
+> whole-workspace filesystem state right after a successful install for a compatible runtime.
+> A new session mounts that base read-only
 > as the overlay `lowerdir`, gets a per-session upper layer for copy-on-write, fast-forwards
 > its source with git, and runs its **real install command on top** — doing only incremental
 > work. Because we overlay the **entire workspace** (not a dependency subdirectory) and just
 > run the install command, the design is **environment-agnostic**: no keys, no lockfile
 > detection, no need to know where deps live (`node_modules`, `.venv`, `vendor/`, …). The
 > chain stays linear because **only a default-branch install may advance the base, and base
-> publishes are serialized per repo** (single-writer). Any session still runs its install
+> publishes are serialized per repo runtime** (single-writer). Any session still runs its install
 > freely into its *own* upper layer — that never races — but publishing a new base is
 > restricted and sequential, so the shared chain can't fork. The orchestrator owns the
 > host-side mount; the worker keeps owning the install.
@@ -52,10 +53,10 @@ only per-repo input is the `agent.install` command that already exists in `shipi
 monorepo, a polyglot repo, or a custom install script are all just "run the command, capture
 the resulting tree." This supersedes the node_modules-specific `nm-store` copy store entirely.
 
-### 2. Keyless rolling base per repo
+### 2. Keyless rolling base per repo runtime
 
-Route **every** session for a repo to the **one current base** for that repo and always run
-the install on top of it:
+Route every session for a **`(repo, runtime fingerprint)`** pair to that pair's one current
+base and always run the install on top of it:
 
 - **Nothing changed** → the package manager's up-to-date check makes the install a near
   no-op; the `upperdir` delta is ~empty.
@@ -63,9 +64,12 @@ the install on top of it:
   result becomes the next base.
 
 The base is scoped per **`(repo, runtime fingerprint)`** — not per lockfile. The runtime
-fingerprint (image digest + arch + libc + interpreter major) is still required so a base
-with compiled native addons/wheels is never reused across an incompatible runtime; it is
-*not* lockfile detection, so it doesn't reintroduce the thing we're avoiding.
+fingerprint (image digest + arch + libc + interpreter major) is required so a base with
+compiled native addons/wheels is never reused across an incompatible runtime; it is *not*
+lockfile detection, so it doesn't reintroduce the thing we're avoiding. That tuple is the
+unit for the current-base pointer, publish lock/CAS, depth counter, and janitor cleanup.
+After that scope is established, "per repo" in this doc is shorthand for "per repo runtime"
+unless explicitly stated otherwise.
 
 ### 3. Lifecycle of a session
 
@@ -99,9 +103,10 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > skips both warm and on-activation install until the user accepts trust, which **re-invokes
 > this same setup** via `runner.rerunServiceSetup` ([container-session-runner.ts:136-141](../../src/server/orchestrator/container-session-runner.ts#L136-L141));
 > (b) sessions with **no completed pre-install** (pool miss, unfinished standby); and (c)
-> **re-created runners** (idle eviction, restart-agent `docs/127`, reconnect). The
-> `.shipit/.install-done` marker makes the repeat a no-op unless deps are missing or `main`
-> moved, so "every activation" is cheap. So the warm pool is *not* the single installer. The
+> **re-created runners** (idle eviction, restart-agent `docs/127`, reconnect). A validated
+> `.shipit/.install-done` marker makes the repeat a no-op only when the checked-out source
+> commit, runtime fingerprint, and install command still match, so "every activation" is cheap.
+> So the warm pool is *not* the single installer. The
 > invariant we actually rely on is narrower and
 > must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
 > (safe — no shared state); **(b)** only a **default-branch**, **exit-0** install may *publish*
@@ -114,7 +119,8 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > `git merge-base --is-ancestor <base.commit> <candidate.commit>` true **and** the two differ.
 > Equal commit → deps already current, no-op. Behind, or diverged (e.g. a force-push rewrote
 > `main`) → **skip the publish**; the session keeps its own tree and the base waits for the
-> next genuinely-forward install. A short **per-repo lock** makes the read-compare-swap atomic;
+> next genuinely-forward install. A short **per-`(repo, runtime fingerprint)` lock** makes the
+> read-compare-swap atomic;
 > the *decision* is git ancestry, **not** wall-clock or lock-acquisition order — so an
 > older-commit install that grabs the lock late can never clobber a newer base. (This is a
 > compare-and-swap keyed on commit ancestry, but the "loser" simply declines to publish — no
@@ -131,16 +137,25 @@ Two properties keep the published chain clean:
   `--base` ref ([child-sessions.ts:70-78](../../src/server/orchestrator/services/child-sessions.ts#L70-L78)).
   Such non-default-branch sessions run their install on the base into their own upper layer but
   are **excluded from publishing** (rule (b)), so they never inject a historical/divergent tree
-  into the chain — which therefore stays `main@t1 → main@t2 → …`.
+  into the chain — which therefore stays `main@t1 → main@t2 → …`. They also must not inherit a
+  default-branch install marker: any `--base` reset or other non-default checkout whiteouts the
+  marker before `agent.install`, forcing the real install to validate that branch's manifests
+  against the shared base.
 - **Mid-session `npm install foo` never feeds the chain.** That's the agent's own shell
   command, landing in the session's `upperdir` — not `agent.install`. A session's divergent
   dependency work can't pollute the shared base.
 
-The existing **`.shipit/.install-done` marker** — deleted when HEAD changed
-([claim-session.ts:204-206](../../src/server/orchestrator/services/claim-session.ts#L204-L206),
-checked at [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663))
-— already gives a commit-granularity skip: when `main` hasn't advanced, the install is
-skipped entirely, at ~0 cost and **without any lockfile detection**. We keep it.
+The existing **`.shipit/.install-done` marker** is kept in concept, but presence alone is no
+longer enough. Today it is deleted when HEAD changes
+([claim-session.ts:204-206](../../src/server/orchestrator/services/claim-session.ts#L204-L206))
+and checked at [session-worker.ts:659-663](../../src/server/session/session-worker.ts#L659-L663);
+the overlay design must upgrade it to a stamped marker containing the source commit it
+validated, runtime fingerprint, and install command. A session may skip `agent.install` only
+when those fields match its current checkout and base scope. Any non-default checkout/reset,
+or any checkout whose source commit differs from the marker's stamped commit, whiteouts or
+deletes the marker before `agent.install` runs. That preserves the cheap unchanged-`main` path
+without letting child sessions or historical branches reuse dependencies from the default
+branch base blindly.
 
 ### 4. Orchestrator owns the host-side mount
 
@@ -170,8 +185,10 @@ periodic clean-rebuild schedule is needed.
   line.
 - **Environment-agnostic:** overlay the **whole workspace**; no ecosystem/target-path
   knowledge. Settled by §1.
-- **Skip policy:** keyless + keep the existing marker/`headChanged` skip (unchanged `main` →
-  ~0). No manifest fingerprint for now.
+- **Skip policy:** keyless + upgrade the existing marker/`headChanged` skip into a stamped
+  marker (source commit + runtime fingerprint + install command). Unchanged `main` still skips
+  at ~0, but non-default checkouts and mismatched marker stamps must delete/whiteout the marker
+  before `agent.install`. No manifest fingerprint for now.
 - **Base advancement is restricted and ordered by `main` commit — not "one installer."** The
   code has multiple install paths (warm-pool pre-install, *skipped for untrusted remotes*; and
   an on-activation `runInstall` guarded only by the marker), so we cannot rely on the warm pool
@@ -179,11 +196,13 @@ periodic clean-rebuild schedule is needed.
   shared state, no race — installs need not be serialized), and only a **default-branch,
   exit-0** install may **publish** a new base. A publish advances the base **only if its `main`
   commit strictly descends the current base's commit** (`git merge-base --is-ancestor`), under
-  a short per-repo lock that makes the read-compare-swap atomic. The decision is **commit
-  ancestry, not publish/wall-clock time**, so a late-but-older install can't clobber a newer
-  base; a stale or diverged publish is simply **skipped** (no reconciliation, no redo). This is
-  a compare-and-swap keyed on commit ancestry — lighter than the loser-reconciliation we ruled
-  out. Agent-spawned `--base` child sessions run on the base but never publish (§3).
+  a short per-`(repo, runtime fingerprint)` lock that makes the read-compare-swap atomic. The
+  decision is **commit ancestry, not publish/wall-clock time**, so a late-but-older install
+  can't clobber a newer base; a stale or diverged publish is simply **skipped** (no
+  reconciliation, no redo). This is a compare-and-swap keyed on commit ancestry — lighter than
+  the loser-reconciliation we ruled out. Agent-spawned `--base` child sessions run on the base
+  but never publish (§3), and their non-default checkout invalidates any inherited install
+  marker before install so they cannot skip against default-branch dependencies.
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
@@ -192,9 +211,9 @@ periodic clean-rebuild schedule is needed.
 - **Cold start & trust:** the first prep for a repo builds base **v0 from empty**, under the
   **existing repo trust gate** (`docs/178`) — no new gate; base creation simply rides the
   trust decision already made when the repo was added.
-- **Sharing scope:** single-user deployment today, so a base is effectively per-repo for the
-  one user. Cross-user sharing (and its secret-leak surface) is **deferred** until ShipIt has
-  a multi-user model.
+- **Sharing scope:** single-user deployment today, so a base is effectively per repo runtime
+  for the one user. Cross-user sharing (and its secret-leak surface) is **deferred** until
+  ShipIt has a multi-user model.
 - **Capture filter:** capture the workspace **as-is**, with **one exclusion: `.git`** (see
   below). No secret-filtering — env-var secrets are never written to the tree (so not
   captured); the only on-disk vector is an injected credential file (e.g. private-registry
@@ -231,10 +250,10 @@ design decisions are made (see Decisions).
    source diff in the upper layer stays small (`t → t'`).
 3. **Publish ordering by commit ancestry.** The base advances only when a candidate's `main`
    commit strictly descends the current base's commit (§3). Confirm the `git merge-base
-   --is-ancestor` check + short per-repo lock are cheap (they gate only the *publish*, not the
-   install, which runs into each session's own upper layer), and pick the conservative behavior
-   for **diverged history** (force-pushed `main`): skip the publish and let the next forward
-   commit re-advance.
+   --is-ancestor` check + short per-`(repo, runtime fingerprint)` lock are cheap (they gate
+   only the *publish*, not the install, which runs into each session's own upper layer), and
+   pick the conservative behavior for **diverged history** (force-pushed `main`): skip the
+   publish and let the next forward commit re-advance.
 4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
    and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
