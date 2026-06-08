@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, PR_STATUS_SLOW_INTERVAL_MS, parsePrNode, extractHeadSha, extractFailedCheckRuns } from "./pr-status-poller.js";
+import { PrStatusPoller, PR_STATUS_POLL_INTERVAL_MS, PR_STATUS_SLOW_INTERVAL_MS, parsePrNode, extractHeadSha, extractBaseSha, extractFailedCheckRuns } from "./pr-status-poller.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -73,6 +73,7 @@ function makeGraphQLPrNode(overrides: Record<string, unknown> = {}) {
     autoMergeRequest: null,
     headRefName: "shipit/abc-feature",
     baseRefName: "main",
+    baseRefOid: "base123",
     additions: 100,
     deletions: 20,
     files: { nodes: [{ path: "src/index.ts", additions: 7, deletions: 2, changeType: "CHANGED" }] },
@@ -1955,6 +1956,13 @@ describe("extractHeadSha", () => {
   it("returns undefined when no commits", () => {
     const node = makeGraphQLPrNode({ commits: { nodes: [] } });
     expect(extractHeadSha(node as never)).toBeUndefined();
+  });
+});
+
+describe("extractBaseSha", () => {
+  it("returns baseRefOid from the PR node", () => {
+    const node = makeGraphQLPrNode({ baseRefOid: "base456" });
+    expect(extractBaseSha(node as never)).toBe("base456");
   });
 });
 

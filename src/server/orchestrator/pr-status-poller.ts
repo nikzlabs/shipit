@@ -30,6 +30,7 @@ import {
   type GraphQLResponse,
   parsePrNode,
   extractHeadSha,
+  extractBaseSha,
   extractFailedCheckRuns,
   extractChangedFiles,
   prStatusEqual,
@@ -43,7 +44,7 @@ import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
 // without an import path change.
-export { parsePrNode, extractHeadSha, extractFailedCheckRuns, extractChangedFiles };
+export { parsePrNode, extractHeadSha, extractBaseSha, extractFailedCheckRuns, extractChangedFiles };
 
 /**
  * Per-repo polling cadences. The poller picks an interval per repo on every
@@ -1105,8 +1106,9 @@ export class PrStatusPoller {
         // repo's poll iteration.
         if (this.autoConflictResolveManager) {
           const headShaForResolve = extractHeadSha(prNode) ?? "";
+          const baseShaForResolve = extractBaseSha(prNode);
           this.autoConflictResolveManager
-            .handleTransition(session.id, summary, summary.baseBranch, headShaForResolve)
+            .handleTransition(session.id, summary, summary.baseBranch, headShaForResolve, baseShaForResolve)
             .catch((err: unknown) => {
               console.error(`[pr-poller] Auto-resolve handleTransition error for ${session.id}:`, err);
             });

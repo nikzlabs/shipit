@@ -64,6 +64,17 @@ export interface RemediationState {
    * (the conflict manager arms it on a successful force-push). See docs/146.
    */
   settleUntil?: number;
+  /**
+   * Head SHA first observed while a post-push settle window was open. For
+   * auto-resolve-conflicts, this is the branch tip ShipIt just produced by
+   * rebasing and force-pushing. A `conflicting` verdict for that same head and
+   * same base is stale: a head that contains the base cannot still conflict
+   * with it. Keep suppressing until the head changes again, the base moves, or
+   * GitHub reports a resolved/non-fire signal.
+   */
+  postPushSettledHeadSha?: string;
+  /** Base version paired with `postPushSettledHeadSha`, when the signal has it. */
+  postPushSettledBaseSha?: string;
 }
 
 /** Trigger classification of a poll signal. */
@@ -150,6 +161,15 @@ export abstract class AutoRemediationManager<TSignal> {
   protected abstract rebuildSignalForIdle(sessionId: string): TSignal | undefined;
 
   /**
+   * Optional base/version token for a signal. Subclasses that can distinguish
+   * "same head, same base" from "same head, new base" override this so the
+   * post-push stale-conflict guard does not suppress genuinely new conflicts.
+   */
+  protected signalBaseSha(_signal: TSignal): string | undefined {
+    return undefined;
+  }
+
+  /**
    * Kick one attempt. Returns once the attempt has *started* (it may settle
    * asynchronously). The subclass is responsible for the terminal write (its
    * own accounting) and, when an arbiter is configured, for releasing the claim
@@ -186,6 +206,8 @@ export abstract class AutoRemediationManager<TSignal> {
     delete state.lastError;
     delete state.lastEmittedDeferred;
     delete state.settleUntil;
+    delete state.postPushSettledHeadSha;
+    delete state.postPushSettledBaseSha;
   }
 
   /**
@@ -257,6 +279,10 @@ export abstract class AutoRemediationManager<TSignal> {
       if (!settling) {
         this.clearBudget(state);
         state.status = "idle";
+      } else {
+        state.postPushSettledHeadSha = headSha;
+        const baseSha = this.signalBaseSha(signal);
+        if (baseSha) state.postPushSettledBaseSha = baseSha;
       }
     }
     state.lastHeadSha = headSha;
@@ -267,6 +293,21 @@ export abstract class AutoRemediationManager<TSignal> {
       this.onDelete(sessionId);
       this.onChange(sessionId);
       return;
+    }
+
+    if (
+      state.postPushSettledHeadSha !== undefined
+      && headSha === state.postPushSettledHeadSha
+    ) {
+      const expectedBaseSha = state.postPushSettledBaseSha;
+      const currentBaseSha = this.signalBaseSha(signal);
+      if (!expectedBaseSha || !currentBaseSha || currentBaseSha === expectedBaseSha) {
+        return;
+      }
+      // Same PR head against a newer base can be a genuine fresh conflict.
+      this.clearBudget(state);
+      state.status = "idle";
+      state.lastHeadSha = headSha;
     }
 
     // 8 — arbiter stale-signal guard: never act on a signal whose head SHA was

@@ -432,18 +432,35 @@ describe("AutoConflictResolveManager", () => {
     expect(fx.cb.count).toBe(1);
   });
 
-  it("settle: a head still genuinely conflicting after the window fires the next attempt", async () => {
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1");
+  it("settle: stale conflicting on the pushed head stays suppressed after the window", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", "base1");
     await tick();
     expect(fx.cb.count).toBe(1);
     // Within the window the verdict is held.
     fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base1");
     await tick();
     expect(fx.cb.count).toBe(1);
-    // Window elapses and the pushed head is genuinely still conflicting → fire.
+    // The old bug: after the fixed window elapsed, the same stale verdict
+    // re-fired on the exact head ShipIt had just produced. Keep suppressing
+    // while the base SHA is unchanged.
     fx.advance(2);
-    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2");
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    expect(fx.manager.get("s1")?.attemptCount).toBe(1);
+  });
+
+  it("settle: a pushed head can retry when the base branch moved", async () => {
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha1", "base1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    fx.advance(AUTO_RESOLVE_SETTLE_MS - 1);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base1");
+    await tick();
+    expect(fx.cb.count).toBe(1);
+    fx.advance(2);
+    await fx.manager.handleTransition("s1", makeSummary({ mergeable: "conflicting" }), "main", "sha2", "base2");
     await tick();
     expect(fx.cb.count).toBe(2);
   });

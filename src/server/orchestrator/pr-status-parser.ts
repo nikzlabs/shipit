@@ -38,6 +38,7 @@ const PR_LIGHT_FIELDS = `
         autoMergeRequest { mergeMethod }
         headRefName
         baseRefName
+        baseRefOid
         additions
         deletions
         files(first: 100) {
@@ -205,6 +206,7 @@ export interface GraphQLPrNode {
   autoMergeRequest: { mergeMethod: string } | null;
   headRefName: string;
   baseRefName: string;
+  baseRefOid?: string;
   additions: number;
   deletions: number;
   files?: { nodes: { path: string; additions?: number; deletions?: number; changeType?: string }[] } | null;
@@ -454,6 +456,11 @@ export function parsePrNode(
 /** Extract the head SHA from a GraphQL PR node. */
 export function extractHeadSha(node: GraphQLPrNode): string | undefined {
   return node.commits.nodes[0]?.commit?.oid;
+}
+
+/** Extract the base branch SHA from a GraphQL PR node. */
+export function extractBaseSha(node: GraphQLPrNode): string | undefined {
+  return node.baseRefOid;
 }
 
 /**
