@@ -141,15 +141,10 @@ services:
     # `<sessionId>--3000.localhost` to this container.
     x-shipit-preview: manual
     # The inner orch's AuthManager / GitHubAuthManager init from process.env,
-    # so the inner UI is logged in from the start. These are USER-SUPPLIED
+    # so the inner UI is logged in from the start. These are user-supplied
     # secrets: the dogfooding developer sets them once in the outer ShipIt's
-    # Settings → Secrets panel, keyed by these names. They are NOT
-    # auto-forwarded from the outer user's platform identity — docs/184
-    # removed the `source: platform:*` forwarding path because a repo-declared
-    # compose file shouldn't be able to siphon a user's global Claude / GitHub
-    # token into service-process env. Use a long-lived ANTHROPIC_API_KEY (it
-    # does not rotate) + a dedicated testing GITHUB_TOKEN. See docs/184 and
-    # docs/131 for the rotation tradeoff.
+    # Settings → Secrets panel, keyed by these names. Use a long-lived
+    # ANTHROPIC_API_KEY (it does not rotate) + a dedicated testing GITHUB_TOKEN.
     x-shipit-secrets:
       - { name: ANTHROPIC_API_KEY }
       - { name: ANTHROPIC_AUTH_TOKEN }
