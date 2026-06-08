@@ -292,7 +292,13 @@ x-shipit-secrets[agent: true]
   service is absent from the map (tests / legacy).
 - `src/server/orchestrator/service-manager.ts` — `serviceEnvDir` option threaded to the
   resolver; `start()` reads `getServiceEnvFiles()` into the override opts. In env-file mode
-  the override references a stable path, so `refreshSecrets()` only rewrites file content.
+  the override references a stable path, so `refreshSecrets()` only rewrites file content
+  (the service set is immutable between `start()` and `refreshSecrets()` — a compose edit
+  routes through `reconcile()` → full `start()`). `stop({ removeVolumes: true })` (archive /
+  full reset) calls `removeSessionServiceEnvDir()` so the plaintext service env files don't
+  outlive the session — they sit outside the workspace checkout, so neither archive nor the
+  disk-janitor would otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
+  false and preserve the files for resume.
 - `src/server/orchestrator/index.ts` — derives the default `serviceEnvDir` from
   `SHIPIT_SERVICE_ENV_DIR` or `<stateDir>/service-env`, threaded through
   `runner-registry-factory.ts` → `service-manager-setup.ts` → `ServiceManager`.

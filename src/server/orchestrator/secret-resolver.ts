@@ -568,14 +568,45 @@ export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
 }
 
 /**
+ * Remove a session's external service-env directory
+ * (`<rootDir>/<sessionId>/`) and everything under it. docs/183.
+ *
+ * Called from `ServiceManager.stop({ removeVolumes: true })` — the
+ * session-going-away-for-good signal (archive / full reset) — so the plaintext
+ * service env files don't outlive the session. Without this they would
+ * accumulate on the volume root indefinitely, since (unlike the old
+ * in-workspace `.shipit/.env.<svc>` path) they're outside the workspace
+ * checkout that archive drops and outside the disk-janitor's orphan-workspace
+ * sweep. Best-effort: a failure here must not block teardown.
+ */
+export function removeSessionServiceEnvDir(opts: {
+  rootDir: string;
+  sessionId: string;
+}): void {
+  const { rootDir, sessionId } = opts;
+  if (!sessionId) return;
+  try {
+    fs.rmSync(path.join(rootDir, sessionId), { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup — never block session teardown on this.
+  }
+}
+
+/**
  * Throw if `rootDir` resolves to `workspaceDir` or a path inside it. The
  * out-of-workspace service-env placement (docs/183) is only isolation if the
  * directory is genuinely outside the agent's workspace mount — so we fail
  * closed rather than silently leak service-only secrets into the agent view.
+ *
+ * Resolves symlinks (best-effort) before the containment check: a lexical
+ * `path.relative` comparison alone would pass a `service-env` symlink whose
+ * target is inside the workspace, defeating the assertion in exactly the
+ * non-standard `stateDir` setups it exists to guard. `realpathSync` falls
+ * back to the lexical path for components that don't exist on disk yet.
  */
 function assertServiceEnvRootOutsideWorkspace(rootDir: string, workspaceDir: string): void {
-  const root = path.resolve(rootDir);
-  const ws = path.resolve(workspaceDir);
+  const root = realpathOrResolve(rootDir);
+  const ws = realpathOrResolve(workspaceDir);
   const rel = path.relative(ws, root);
   const inside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
   if (inside) {
@@ -584,6 +615,35 @@ function assertServiceEnvRootOutsideWorkspace(rootDir: string, workspaceDir: str
         `is inside the agent workspace "${ws}", which would expose service-only ` +
         `secrets to the agent. Set SHIPIT_SERVICE_ENV_DIR to a path outside the workspace.`,
     );
+  }
+}
+
+/**
+ * `fs.realpathSync` with a fallback that resolves the longest existing
+ * ancestor and re-appends the not-yet-created tail. Pure `path.resolve` when
+ * nothing on the path exists. Never throws — used only to harden a safety
+ * check, so a resolution failure degrades to the lexical path.
+ */
+function realpathOrResolve(p: string): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    // Path (or a leading component) doesn't exist yet — resolve the deepest
+    // existing ancestor so a symlinked parent is still followed, then re-join
+    // the remaining tail lexically.
+    let dir = abs;
+    const tail: string[] = [];
+    while (dir !== path.dirname(dir)) {
+      try {
+        const real = fs.realpathSync(dir);
+        return tail.length ? path.join(real, ...tail.reverse()) : real;
+      } catch {
+        tail.push(path.basename(dir));
+        dir = path.dirname(dir);
+      }
+    }
+    return abs;
   }
 }
 

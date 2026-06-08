@@ -9,6 +9,7 @@ import {
   writePerServiceEnvFiles,
   writeServiceEnvFilesToRoot,
   sweepWorkspaceServiceEnvFiles,
+  removeSessionServiceEnvDir,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
@@ -883,6 +884,43 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
         perServiceEnv: { web: "X=1\n" },
       }),
     ).toThrow(/inside the agent workspace/);
+  });
+
+  it("follows symlinks: a root symlinked to inside the workspace is rejected", () => {
+    const { workspaceDir, rootDir } = setup();
+    // `rootDir` is lexically a sibling of the workspace, but it's a symlink
+    // whose target lives INSIDE the workspace — the lexical check alone would
+    // be fooled; realpath resolution must catch it.
+    const insideTarget = path.join(workspaceDir, "leaky-service-env");
+    fs.mkdirSync(insideTarget, { recursive: true });
+    fs.symlinkSync(insideTarget, rootDir);
+
+    expect(() =>
+      writeServiceEnvFilesToRoot({
+        rootDir,
+        sessionId: "sess1",
+        workspaceDir,
+        perServiceEnv: { web: "X=1\n" },
+      }),
+    ).toThrow(/inside the agent workspace/);
+    // Nothing leaked into the symlink target.
+    expect(fs.existsSync(path.join(insideTarget, "sess1"))).toBe(false);
+  });
+
+  it("removeSessionServiceEnvDir drops the session dir and is a no-op when absent", () => {
+    const { rootDir } = setup();
+    const sessionDir = path.join(rootDir, "sess1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, ".env.web"), "SECRET=1\n");
+
+    removeSessionServiceEnvDir({ rootDir, sessionId: "sess1" });
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    // Second call (already gone) must not throw.
+    expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "sess1" })).not.toThrow();
+    // Empty sessionId is ignored (defensive — never rm the whole root).
+    expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "" })).not.toThrow();
+    expect(fs.existsSync(rootDir)).toBe(true);
   });
 });
 

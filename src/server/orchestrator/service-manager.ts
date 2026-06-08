@@ -45,6 +45,7 @@ import {
 } from "./service-secrets-resolver.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
+import { removeSessionServiceEnvDir } from "./secret-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -215,6 +216,8 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  /** docs/183 — external service-env root, for teardown cleanup. */
+  private readonly serviceEnvDir?: string;
 
   // Collaborators — see the module docstring.
   private readonly secrets: ServiceSecretsResolver;
@@ -270,6 +273,7 @@ export class ServiceManager extends EventEmitter {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
+    this.serviceEnvDir = opts.serviceEnvDir;
 
     this.secrets = new ServiceSecretsResolver({
       sessionId: opts.sessionId,
@@ -792,6 +796,16 @@ export class ServiceManager extends EventEmitter {
       await this.composeDown({ removeVolumes: opts.removeVolumes ?? false });
     } catch {
       // Best-effort cleanup
+    }
+
+    // docs/183: when the session is going away for good (archive / full reset
+    // pass `removeVolumes: true`), drop the external service-env directory so
+    // plaintext service secrets don't outlive the session. They sit outside
+    // the workspace checkout, so neither archive nor the disk-janitor would
+    // otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
+    // false, preserving the files for resume.
+    if (opts.removeVolumes && this.serviceEnvDir) {
+      removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
     }
 
     for (const [name] of this.services) {
