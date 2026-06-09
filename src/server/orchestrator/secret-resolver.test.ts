@@ -10,6 +10,7 @@ import {
   writeServiceEnvFilesToRoot,
   sweepWorkspaceServiceEnvFiles,
   removeSessionServiceEnvDir,
+  removeSessionSecretsDir,
   writeAgentEnvFile,
   writeIsolatedSecretFiles,
   composeSecretFilePath,
@@ -920,6 +921,23 @@ describe("writeServiceEnvFilesToRoot (docs/183)", () => {
     expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "sess1" })).not.toThrow();
     // Empty sessionId is ignored (defensive — never rm the whole root).
     expect(() => removeSessionServiceEnvDir({ rootDir, sessionId: "" })).not.toThrow();
+    expect(fs.existsSync(rootDir)).toBe(true);
+  });
+
+  it("removeSessionSecretsDir drops the Docker-secrets session dir and is a no-op when absent/empty", () => {
+    const { rootDir } = setup();
+    const sessionDir = path.join(rootDir, "sess1");
+    fs.mkdirSync(sessionDir, { recursive: true });
+    // Docker-secrets mode writes per-secret files named by the secret (no .env. prefix).
+    fs.writeFileSync(path.join(sessionDir, "DATABASE_URL"), "postgres://x");
+
+    removeSessionSecretsDir({ internalDir: rootDir, sessionId: "sess1" });
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    // Already gone — must not throw.
+    expect(() => removeSessionSecretsDir({ internalDir: rootDir, sessionId: "sess1" })).not.toThrow();
+    // Empty sessionId is ignored (defensive — never rm the whole root).
+    expect(() => removeSessionSecretsDir({ internalDir: rootDir, sessionId: "" })).not.toThrow();
     expect(fs.existsSync(rootDir)).toBe(true);
   });
 });

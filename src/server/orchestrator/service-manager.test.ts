@@ -970,6 +970,51 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
+  it("Docker-secrets mode removes the internal secrets dir on stop({ removeVolumes: true }) but keeps it otherwise", async () => {
+    const dir = setup();
+    const secretsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "isolated-secrets-root-"));
+    const entrypointPath = path.join(secretsRoot, "secrets-entrypoint.sh");
+    fs.writeFileSync(entrypointPath, "#!/bin/sh\nexec \"$@\"\n", { mode: 0o755 });
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const make = () => new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      dockerSecretsConfig: {
+        internalDir: secretsRoot,
+        entrypointSourcePath: entrypointPath,
+      },
+    });
+    const sessionDir = path.join(secretsRoot, "test-session");
+
+    // Default stop (idle eviction / reconcile) preserves the dir for resume.
+    const mgr1 = make();
+    try { await mgr1.start(); } catch { /* expected */ }
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    await mgr1.stop();
+    expect(fs.existsSync(sessionDir)).toBe(true);
+
+    // Teardown-for-good (archive / full reset) drops the plaintext secret files.
+    const mgr2 = make();
+    try { await mgr2.start(); } catch { /* expected */ }
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    await mgr2.stop({ removeVolumes: true });
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    fs.rmSync(secretsRoot, { recursive: true, force: true });
+  });
+
   // ---- docs/183: out-of-workspace service env files ----
 
   it("serviceEnvDir writes service env files outside the workspace and references them in the override", async () => {

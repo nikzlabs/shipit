@@ -45,7 +45,7 @@ import {
 } from "./service-secrets-resolver.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
-import { removeSessionServiceEnvDir } from "./secret-resolver.js";
+import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -218,6 +218,13 @@ export class ServiceManager extends EventEmitter {
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir?: string;
+  /**
+   * docs/087 Phase 1 follow-up — Docker-secrets orchestrator-internal root, for
+   * teardown cleanup. The same `<internalDir>/<sessionId>/` directory
+   * `writeIsolatedSecretFiles()` writes per-secret plaintext files into; dropped
+   * on `stop({ removeVolumes: true })` so they don't outlive the session.
+   */
+  private readonly secretsInternalDir?: string;
 
   // Collaborators — see the module docstring.
   private readonly secrets: ServiceSecretsResolver;
@@ -274,6 +281,7 @@ export class ServiceManager extends EventEmitter {
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.serviceEnvDir = opts.serviceEnvDir;
+    this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
 
     this.secrets = new ServiceSecretsResolver({
       sessionId: opts.sessionId,
@@ -806,6 +814,15 @@ export class ServiceManager extends EventEmitter {
     // false, preserving the files for resume.
     if (opts.removeVolumes && this.serviceEnvDir) {
       removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
+    }
+
+    // docs/087 Phase 1 follow-up: Docker-secrets mode has the same leak — it
+    // writes per-secret plaintext files to `<internalDir>/<sessionId>/` outside
+    // the workspace. Drop that directory under the same teardown-for-good guard
+    // (idle eviction / reconcile keep `removeVolumes` false to preserve files
+    // for resume).
+    if (opts.removeVolumes && this.secretsInternalDir) {
+      removeSessionSecretsDir({ internalDir: this.secretsInternalDir, sessionId: this.sessionId });
     }
 
     for (const [name] of this.services) {
