@@ -7,9 +7,10 @@
  */
 
 import { useState, useMemo } from "react";
-import { XIcon } from "@phosphor-icons/react";
+import { type Icon, NotePencilIcon, PencilSimpleIcon, TrashIcon, XIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -64,7 +65,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
   return (
     <>
       <div className="py-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary) pl-[1em] opacity-70 border-l-2 border-(--color-text-tertiary)/40">
-        <span className="text-(--color-text-secondary)">{verb}</span>
+        <VerbBadge verb={verb} />
         <button
           type="button"
           onClick={openFile}
@@ -101,6 +102,37 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
         />
       )}
     </>
+  );
+}
+
+/**
+ * The diff-block verb ("Edit"/"Write"/"Delete", or a Codex apply_patch kind) as
+ * a glyph rather than a word — the verb moves to the icon's accessible
+ * label/tooltip. Verbs we don't have a glyph for fall back to plain text.
+ *
+ * Deliberately icon-only (no visible word), unlike the inline tool line which
+ * shows icon + verb: here the file path and colored +/- stats already anchor
+ * the meaning, so the glyph is enough. The verb stays in `aria-label` for
+ * screen readers.
+ */
+const VERB_ICONS: Record<string, Icon> = {
+  Edit: PencilSimpleIcon,
+  Write: NotePencilIcon,
+  Delete: TrashIcon,
+};
+
+function VerbBadge({ verb }: { verb: string }) {
+  const Glyph = VERB_ICONS[verb];
+  if (!Glyph) return <span className="text-(--color-text-secondary)">{verb}</span>;
+  return (
+    <span
+      role="img"
+      aria-label={verb}
+      title={verb}
+      className="inline-flex shrink-0 items-center text-(--color-text-secondary)"
+    >
+      <Glyph size={ICON_SIZE.SM} />
+    </span>
   );
 }
 
