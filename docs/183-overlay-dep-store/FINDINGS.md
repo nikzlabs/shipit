@@ -188,6 +188,34 @@ exclusion on publish, stacked-lowerdir depth, bind-mount of the merged dir
 
 > **Host run output:** _(paste `host-overlay-spike.sh` summary here)_
 
+## Cross-environment portability + the propagation gap
+
+The decided architecture maps identically onto every documented install target —
+VPS (`deployment/vps/docker-compose.yml`) and local Docker on Linux/macOS/Windows
+(`docker/local/prod/compose.yml`): both are an orchestrator container with
+`docker.sock` + a named `*_workspace` volume + sessions spawned via the daemon
+with volume-subpath mounts. On macOS/Windows the daemon simply runs inside the
+Docker Desktop / WSL2 Linux VM — where the spikes already proved overlayfs works.
+No per-environment redesign is needed.
+
+**Open gap the single-namespace spikes did NOT cover (introduced by the
+long-lived-sidecar decision):** the sidecar performs the overlay mount in *its*
+mount namespace; for a **separate session container's** volume-subpath mount to
+show the merged contents, that mount must **propagate to the Docker daemon's
+namespace** (`rshared` on the volume backing dir). The prototypes validated
+overlay + bind + inotify *within one container*, not this **cross-container /
+daemon propagation**. It is identical on VPS and local Linux, but **most likely
+to differ on Docker Desktop (Mac/Windows)**, where the daemon-in-VM mount
+propagation under `/var/lib/docker/volumes` is the least bare-host-like part.
+
+**Next spike (the real remaining feasibility check):** a two-container test — a
+privileged sidecar mounts overlay at a named-volume subpath with `rshared`, then
+a *second* container mounts that subpath and asserts it sees the overlay-merged
+content. Run on a bare-Linux/VPS-like host **and** on Docker Desktop. Until this
+passes on both, the sidecar architecture is feasible-pending-propagation, not
+proven. Minor: the VPS provisioner raises inotify limits (README); local installs
+don't, but the watcher already runs today so it's not new.
+
 ## Net decision
 
 The chain logic (the first-sequenced prototype) is **validated and cheap**. The
