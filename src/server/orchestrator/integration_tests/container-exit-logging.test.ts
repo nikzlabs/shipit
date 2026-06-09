@@ -33,6 +33,7 @@ interface FakeRunner {
   emitted: WsServerMessage[];
   disposeCalls: { force?: boolean }[];
   setChatMessageGroups: (groups: ChatMessageGroup[]) => void;
+  setRunning: (running: boolean) => void;
 }
 
 function makeFakeRunner(sessionId: string): FakeRunner {
@@ -61,7 +62,8 @@ function makeFakeRunner(sessionId: string): FakeRunner {
     dispose: (opts?: { force?: boolean }) => { disposeCalls.push(opts ?? {}); },
   }) as unknown as SessionRunnerInterface & { chatMessageGroups: ChatMessageGroup[] };
   const setChatMessageGroups = (g: ChatMessageGroup[]): void => { runner.chatMessageGroups = g; };
-  return { runner, emitted, disposeCalls, setChatMessageGroups };
+  const setRunning = (running: boolean): void => { runner.running = running; };
+  return { runner, emitted, disposeCalls, setChatMessageGroups, setRunning };
 }
 
 interface FakeChatHistoryCalls {
@@ -142,7 +144,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
     });
   });
 
-  it("annotates exit 137 as OOMKilled when no explicit error string is given", () => {
+  it("does not assume exit 137 is OOMKilled when no explicit error string is given", () => {
     const { runner } = makeFakeRunner("sess-1");
     const registry = makeFakeRegistry(new Map([["sess-1", runner]]));
     const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
@@ -155,7 +157,8 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       (sid, source, text) => calls.push({ sid, source, text }),
     );
 
-    expect(calls[0]?.text).toContain("likely OOMKilled");
+    expect(calls[0]?.text).toContain("exit 137");
+    expect(calls[0]?.text).not.toContain("OOMKilled");
   });
 
   it("emits session_status to the runner and force-disposes", () => {
@@ -207,10 +210,11 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
   // entire pre-crash turn. handleContainerExited must finalize first.
   describe("partial-turn preservation (OOM mid-turn)", () => {
     it("finalizes in-flight chatMessageGroups before disposing the runner", () => {
-      const { runner, setChatMessageGroups } = makeFakeRunner("sess-oom");
+      const { runner, setChatMessageGroups, setRunning } = makeFakeRunner("sess-oom");
       const registry = makeFakeRegistry(new Map([["sess-oom", runner]]));
       const { manager, calls } = makeFakeChatHistoryManager();
 
+      setRunning(true);
       setChatMessageGroups([
         {
           text: "I'll start by reading the file.",
@@ -240,16 +244,17 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       expect(calls.append[0]?.message.text).toContain("OOMKilled");
     });
 
-    it("still finalizes when there are no in-memory groups (preserves orphaned in_progress rows)", () => {
+    it("running runner still finalizes when there are no in-memory groups (preserves orphaned in_progress rows)", () => {
       // The runner may have reconnected to a container whose prior turn
       // left in_progress=1 rows in the DB; chatMessageGroups is empty in
       // memory but the rows are still there. finalizeInProgress flips
       // them to permanent so the next turn's replaceInProgress doesn't
       // delete them.
-      const { runner } = makeFakeRunner("sess-oom2");
+      const { runner, setRunning } = makeFakeRunner("sess-oom2");
       const registry = makeFakeRegistry(new Map([["sess-oom2", runner]]));
       const { manager, calls } = makeFakeChatHistoryManager();
 
+      setRunning(true);
       handleContainerExited("sess-oom2", 137, undefined, registry, undefined, manager);
 
       expect(calls.replaceInProgress).toHaveLength(1);
@@ -258,11 +263,41 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
       expect(calls.append).toHaveLength(1);
     });
 
+    it("idle runner with stale chatMessageGroups does not overwrite DB in-progress rows", () => {
+      const { runner, setChatMessageGroups } = makeFakeRunner("sess-idle-stale");
+      const registry = makeFakeRegistry(new Map([["sess-idle-stale", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+
+      setChatMessageGroups([
+        { text: "This is the already-finalized previous assistant response.", toolUse: [] },
+      ]);
+
+      handleContainerExited("sess-idle-stale", 137, undefined, registry, undefined, manager);
+
+      expect(calls.replaceInProgress).toHaveLength(0);
+      expect(calls.finalizeInProgress).toEqual(["sess-idle-stale"]);
+      expect(calls.append).toHaveLength(1);
+      expect(calls.append[0]?.message.text).toContain("exit 137");
+    });
+
+    it("idle runner with no groups still finalizes orphaned in_progress rows", () => {
+      const { runner } = makeFakeRunner("sess-idle-empty");
+      const registry = makeFakeRegistry(new Map([["sess-idle-empty", runner]]));
+      const { manager, calls } = makeFakeChatHistoryManager();
+
+      handleContainerExited("sess-idle-empty", 1, undefined, registry, undefined, manager);
+
+      expect(calls.replaceInProgress).toHaveLength(0);
+      expect(calls.finalizeInProgress).toEqual(["sess-idle-empty"]);
+      expect(calls.append).toHaveLength(1);
+    });
+
     it("skips groups with no text and no tool use (empty placeholders)", () => {
-      const { runner, setChatMessageGroups } = makeFakeRunner("sess-oom3");
+      const { runner, setChatMessageGroups, setRunning } = makeFakeRunner("sess-oom3");
       const registry = makeFakeRegistry(new Map([["sess-oom3", runner]]));
       const { manager, calls } = makeFakeChatHistoryManager();
 
+      setRunning(true);
       setChatMessageGroups([
         { text: "", toolUse: [] },
         { text: "Real content", toolUse: [] },
@@ -277,8 +312,9 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 
     it("still force-disposes the runner if chat-history persistence throws", () => {
       // A persistence failure must not leak the runner — dispose still runs.
-      const { runner, disposeCalls, setChatMessageGroups } = makeFakeRunner("sess-oom4");
+      const { runner, disposeCalls, setChatMessageGroups, setRunning } = makeFakeRunner("sess-oom4");
       const registry = makeFakeRegistry(new Map([["sess-oom4", runner]]));
+      setRunning(true);
       setChatMessageGroups([{ text: "partial", toolUse: [] }]);
       const manager = {
         replaceInProgress: () => { throw new Error("db write failed"); },
