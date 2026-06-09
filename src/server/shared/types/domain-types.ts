@@ -644,7 +644,7 @@ export type ReviewComment = LineReviewComment | SelectionReviewComment;
 
 // ---- Agent review types (docs/151 — agent review cards) ----
 
-/** A line-anchored finding inside an immutable agent review snapshot. */
+/** A source-line-anchored finding inside an immutable agent review snapshot. */
 export interface AgentReviewLineComment {
   id: string;
   kind: "line";

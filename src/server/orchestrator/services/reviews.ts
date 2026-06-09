@@ -2,8 +2,10 @@
  * Review services — server-persisted, per-(session, file) reviews.
  *
  * Backs the unified review surface (docs/112-unified-review-surface):
- * markdown files get selection-anchored comments, code files get line-anchored
- * comments, and both share the same draft/sent/history lifecycle.
+ * markdown human drafts get selection-anchored comments, code human drafts get
+ * line-anchored comments, and both share the same draft/sent/history lifecycle.
+ * Agent review submissions can use either line or selection anchors for
+ * markdown snapshots because subagents often review the source form of a doc.
  */
 
 import { createHash } from "node:crypto";
@@ -505,7 +507,8 @@ function renderReview(
  * tool bridge.
  *
  * Contract:
- * - Snapshots the file at call time and stores it on the row. Selection
+ * - Snapshots the file at call time and stores it on the row. Line anchors are
+ *   accepted for both code and markdown snapshots. Selection
  *   anchors are matched against the snapshot (not the live file), so a
  *   comment whose quote was present at review time stays locatable even
  *   after the live file moves. A selection comment whose `quoted_text` is
@@ -571,20 +574,16 @@ export async function submitAiReviewComments(
   const snapshotHash = hashContent(snapshotContent);
   const fileType = detectFileReviewType(filePath);
 
-  // Anchor each comment against the snapshot. selection comments whose
-  // quoted_text isn't found in the snapshot are rejected outright — the
+  // Anchor each comment against the snapshot. Line comments are valid for code
+  // and markdown snapshots; selection comments stay markdown-only because the
+  // rendered markdown viewer owns that anchoring model. Selection comments
+  // whose quoted_text isn't found in the snapshot are rejected outright — the
   // subagent claimed to have quoted from this exact content, so a miss is a
   // bug, not drift.
   const storeInputs: AgentReviewStoreCommentInput[] = [];
   for (let i = 0; i < comments.length; i++) {
     const c = comments[i] as { kind: string; text: string; line?: number; quoted_text?: string; context_before?: string; context_after?: string };
     if (c.kind === "line") {
-      if (fileType !== "code") {
-        throw new ServiceError(
-          400,
-          `Comment at index ${i} is a line comment, but ${filePath} is not a code file.`,
-        );
-      }
       storeInputs.push({ kind: "line", line: c.line!, text: c.text });
       continue;
     }
@@ -636,4 +635,3 @@ export async function submitAiReviewComments(
 
   return { review, added: storeInputs.length, rendered };
 }
-
