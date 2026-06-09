@@ -104,17 +104,29 @@ selector — repo for the PR path, or "this workspace" — keeps both paths as
 sibling options instead of one being a hidden default. Deferred; the dialog
 layout should accommodate it from the start.
 
-**Route reshaping implied.** v1a's session-scoped
-`POST /api/sessions/:id/plugins/install` becomes (or is joined by) an app-wide,
-repo-targeted endpoint that internally creates a session + PR — shape TBD in the
-implementation plan (e.g. `POST /api/plugins/install { marketplaceId,
-pluginName, repoId }`). The catalog browse/preview routes
-(`api-routes-marketplace.ts`) are unaffected. The v1a session-scoped route is
-retained for the future in-workspace destination.
+**Route reshaping (implemented).** v1a's session-scoped
+`POST /api/sessions/:id/plugins/install` is joined by an app-wide, repo-targeted
+`POST /api/plugins/install { marketplaceId, pluginName, repoUrl }`
+(`api-routes-marketplace.ts`) that internally creates a session + PR. The catalog
+browse/preview routes are unaffected. The v1a session-scoped route is retained
+for the future in-workspace destination.
 
 The rest of this doc (catalog data model, install marker semantics, Monaco
 preview, trust posture) is unchanged by this revision; only the *destination*
 of the write and the *session-awareness* of the surface change.
+
+**Status (2026-06-09): v1c implemented.** Key files added/changed:
+`services/install-session.ts` (`installPluginAsSession()` — claim → branch
+rename → `installPlugin()` local commit → `agentCreatePr()` push+PR →
+`graduateSession()` → PR tracking; no agent turn); `api-routes-marketplace.ts`
+(the app-wide install route); `api-routes.ts` (shared `ClaimSessionService` in
+DI via `ApiDeps.claimSessionService`); `api-routes-session.ts` (uses the shared
+instance with a local fallback); client `SkillInstallSheet.tsx` (repo picker),
+`SkillsTab.tsx` (session-decoupled install), `stores/skills-store.ts`
+(`installToRepo`). Tests: `services/install-session.test.ts`,
+`SkillsTab.test.tsx`. The PR is opened via `agentCreatePr` rather than
+`quickCreatePr` (both push+create; `agentCreatePr` takes a fixed title/body with
+no LLM round-trip, the better fit for a no-turn flow).
 
 ## Summary
 

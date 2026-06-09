@@ -72,11 +72,13 @@ export async function registerSessionRoutes(
     ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
   };
 
-  // Single shared claim service for both the HTTP claim-session route and
-  // the agent-driven spawn route. The per-repo promise chain lives in the
-  // factory's closure, so callers MUST share this instance for the
-  // serialization to actually guard concurrent operations on the bare cache.
-  const claimSessionService = createClaimSessionService({
+  // Single shared claim service for every surface that mints a repo-backed
+  // session (HTTP claim, agent spawn, skill-install-as-session). The per-repo
+  // promise chain lives in the factory's closure, so callers MUST share one
+  // instance for the serialization to guard concurrent bare-cache operations.
+  // `registerApiRoutes` constructs and threads it in via `deps`; fall back to a
+  // local instance for direct callers / tests that don't provide one.
+  const claimSessionService = deps.claimSessionService ?? createClaimSessionService({
     sessionManager,
     repoStore: deps.repoStore,
     createGitManager: deps.createGitManager,

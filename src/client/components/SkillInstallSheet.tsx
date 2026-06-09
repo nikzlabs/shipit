@@ -20,16 +20,26 @@ import { Button } from "./ui/button.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { PluginInfo, SkillRef } from "../../server/shared/types.js";
 
+/** A repo the user can install into (docs/149 v1c repo picker). */
+export interface InstallRepoOption {
+  url: string;
+  /** Display label (e.g. `owner/repo`). */
+  label: string;
+  /** False while the repo is still cloning — can't install into it yet. */
+  ready: boolean;
+}
+
 interface SkillInstallSheetProps {
   plugin: PluginInfo;
   /** Where the install will write to (e.g. `.claude/skills`). */
   installPathLabel: string;
-  /** True while the agent is mid-turn — disables Install with a tooltip. */
-  agentRunning: boolean;
   /** True while the install request is in flight. */
   installing: boolean;
-  /** True if there's no active session — empty state instead of the install button. */
-  hasActiveSession: boolean;
+  /** Repos the user can install into. The install lands as a PR to the chosen repo. */
+  repos: InstallRepoOption[];
+  /** Currently-selected destination repo url, or null. */
+  selectedRepoUrl: string | null;
+  onSelectRepo: (url: string) => void;
   onCancel: () => void;
   onInstall: () => void;
   /** Async loader for a single SKILL.md body. */
@@ -39,9 +49,10 @@ interface SkillInstallSheetProps {
 export function SkillInstallSheet({
   plugin,
   installPathLabel,
-  agentRunning,
   installing,
-  hasActiveSession,
+  repos,
+  selectedRepoUrl,
+  onSelectRepo,
   onCancel,
   onInstall,
   fetchSkillBody,
@@ -70,13 +81,19 @@ export function SkillInstallSheet({
   const totalBytes = plugin.estimatedContextBytes;
   const contextCostLabel = formatBytes(totalBytes);
 
-  const installDisabled =
-    !hasActiveSession || agentRunning || installing || plugin.skills.length === 0;
+  const selectedRepo = repos.find((r) => r.url === selectedRepoUrl) ?? null;
+  const noRepos = repos.length === 0;
+  const repoNotReady = Boolean(selectedRepo && !selectedRepo.ready);
 
-  const installTooltip = !hasActiveSession
-    ? "Open a session to install skills"
-    : agentRunning
-    ? "Agent is working — install will become available when it's done"
+  const installDisabled =
+    installing || plugin.skills.length === 0 || !selectedRepo || repoNotReady;
+
+  const installTooltip = noRepos
+    ? "Add a repository first to install skills"
+    : !selectedRepo
+    ? "Choose a repository to install into"
+    : repoNotReady
+    ? "Repository is still cloning — try again in a moment"
     : "";
 
   return (
@@ -112,11 +129,35 @@ export function SkillInstallSheet({
             <p className="text-sm text-(--color-text-secondary)">{plugin.description}</p>
           )}
 
-          <div className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs space-y-1">
-            <div className="text-(--color-text-secondary)">
-              Installs to{" "}
-              <code className="text-(--color-text-primary)">{installPathLabel}</code>{" "}
-              in this repo
+          <div className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs space-y-2">
+            <label className="block">
+              <span className="text-(--color-text-secondary)">Install into repository</span>
+              {noRepos ? (
+                <div className="mt-1 text-(--color-text-tertiary)">
+                  No repositories yet — add one from the sidebar first.
+                </div>
+              ) : (
+                <select
+                  value={selectedRepoUrl ?? ""}
+                  onChange={(e) => onSelectRepo(e.target.value)}
+                  className="mt-1 w-full rounded-md bg-(--color-bg-primary) border border-(--color-border-secondary) px-2 py-1.5 text-xs text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus)"
+                  data-testid="skill-install-repo-select"
+                >
+                  <option value="" disabled>
+                    Choose a repository…
+                  </option>
+                  {repos.map((r) => (
+                    <option key={r.url} value={r.url} disabled={!r.ready}>
+                      {r.label}{r.ready ? "" : " (cloning…)"}
+                    </option>
+                  ))}
+                </select>
+              )}
+            </label>
+            <div className="text-(--color-text-tertiary)">
+              Opens a pull request that adds{" "}
+              <code className="text-(--color-text-secondary)">{installPathLabel}</code>. Your
+              current session is not changed.
             </div>
             <div className="text-(--color-text-tertiary)">
               {plugin.skills.length} skill{plugin.skills.length === 1 ? "" : "s"} · context cost ≈ {contextCostLabel}
@@ -156,7 +197,7 @@ export function SkillInstallSheet({
               className="rounded-md"
               data-testid="skill-install-confirm"
             >
-              {installing ? "Installing..." : "Install"}
+              {installing ? "Opening pull request…" : "Install"}
             </Button>
           </span>
         </div>

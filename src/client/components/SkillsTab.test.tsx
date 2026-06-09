@@ -17,7 +17,8 @@ import { SkillsTab } from "./SkillsTab.js";
 import { useSkillsStore } from "../stores/skills-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import type { MarketplaceInfo, PluginInfo } from "../../server/shared/types.js";
+import { useRepoStore } from "../stores/repo-store.js";
+import type { MarketplaceInfo, PluginInfo, RepoInfo } from "../../server/shared/types.js";
 
 vi.mock("monaco-editor", () => ({
   editor: {
@@ -72,11 +73,19 @@ const fakePlugin: PluginInfo = {
   estimatedContextBytes: 256,
 };
 
+const fakeRepo: RepoInfo = {
+  url: "https://github.com/acme/widgets.git",
+  addedAt: new Date().toISOString(),
+  lastUsedAt: new Date().toISOString(),
+  status: "ready",
+};
+
 describe("SkillsTab (docs/149)", () => {
   beforeEach(() => {
     useSkillsStore.getState().reset();
     useUiStore.setState({ activeAgentId: "claude" });
     useSessionStore.setState({ sessionId: "test-session" });
+    useRepoStore.setState({ repos: [fakeRepo], activeRepoUrl: fakeRepo.url });
   });
 
   afterEach(() => {
@@ -143,6 +152,72 @@ describe("SkillsTab (docs/149)", () => {
     expect(screen.getByText("demo-plugin")).toBeInTheDocument();
     expect(screen.getByText(/\/demo-plugin:hello/)).toBeInTheDocument();
     expect(screen.getByTestId("skills-uninstall-demo-plugin")).toBeInTheDocument();
+  });
+
+  it("install sheet targets a repo and posts a repo-scoped install (no session route)", async () => {
+    const fake = new FakeFetch();
+    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
+    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
+      plugins: [fakePlugin],
+      marketplace: fakeMarketplace,
+    }));
+    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
+    fake.on("GET", /\/skills\/hello$/, () => ({ content: "# hello skill" }));
+    fake.on("POST", /\/api\/plugins\/install$/, () => ({
+      sessionId: "new-install-session",
+      branch: "shipit/install-demo-plugin-abc",
+      pr: { number: 42, url: "https://github.com/acme/widgets/pull/42" },
+      installedDirs: ["/ws/.claude/skills/demo-plugin__hello"],
+    }));
+    fake.install();
+
+    render(<SkillsTab hasActiveSession />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("skills-install-demo-plugin")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("skills-install-demo-plugin"));
+
+    // The install sheet renders a repo picker defaulted to the active repo.
+    await waitFor(() => {
+      expect(screen.getByTestId("skill-install-repo-select")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("skill-install-confirm")).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId("skill-install-confirm"));
+
+    // It hits the app-wide repo-targeted route with the selected repo, NOT the
+    // session-scoped install route.
+    await waitFor(() => {
+      expect(fake.calls.some((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"))).toBe(true);
+    });
+    expect(
+      fake.calls.some((c) => c.url.includes("/sessions/") && c.url.endsWith("/plugins/install")),
+    ).toBe(false);
+  });
+
+  it("disables install when no repository is available", async () => {
+    useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
+    const fake = new FakeFetch();
+    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
+    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
+      plugins: [fakePlugin],
+      marketplace: fakeMarketplace,
+    }));
+    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
+    fake.on("GET", /\/skills\/hello$/, () => ({ content: "# hello skill" }));
+    fake.install();
+
+    render(<SkillsTab hasActiveSession />);
+    await waitFor(() => {
+      expect(screen.getByTestId("skills-install-demo-plugin")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("skills-install-demo-plugin"));
+
+    await waitFor(() => {
+      expect(screen.getByTestId("skill-install-sheet")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("skill-install-confirm")).toBeDisabled();
   });
 
   it("shows the Claude-only empty state when the active agent is Codex", () => {

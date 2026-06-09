@@ -1,24 +1,30 @@
 /**
- * Settings → Skills tab (docs/149 — skill install UX).
+ * Settings → Skills tab (docs/149 — skill install UX, 2026-06-09 v1c revision).
  *
- * Two sub-tabs in v1: Discover (browse the active agent's catalog) and
- * Installed (list ShipIt-managed installs in the current session). v2 adds
+ * Two sub-tabs: Discover (browse the agent's catalog) and Installed. v2 adds
  * Marketplaces + Errors.
  *
- * The tab is session-aware: the active session decides the catalog filter,
- * the install destination, and the install-button gate. Switching sessions
- * re-binds and re-fetches via the `sessionId` dep on the effects. v1 supports
- * Claude only — the tab disables with an explanatory empty state on Codex
- * (v1b will lift this; see plan).
+ * Install is **app-wide and repo-targeted**, NOT session-bound: the user picks
+ * a destination repository in the install sheet and the install runs in its own
+ * dedicated session that opens a PR (`POST /api/plugins/install`). The session
+ * the user is currently in is never touched. The Installed sub-tab remains a
+ * convenience view of ShipIt-managed installs in the *current* session's
+ * workspace (after a skill's PR is merged and you're working on that repo);
+ * app-wide Installed + uninstall-as-PR are a deferred follow-up (see checklist).
+ *
+ * v1 supports Claude only — the tab disables with an explanatory empty state on
+ * Codex (v1b will lift this; see plan).
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: per-session catalog/installed fetches + cross-tab refetch
 import { useEffect, useMemo, useState } from "react";
 import { useSkillsStore } from "../stores/skills-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
-import { SkillInstallSheet } from "./SkillInstallSheet.js";
+import { SkillInstallSheet, type InstallRepoOption } from "./SkillInstallSheet.js";
 import type { PluginInfo } from "../../server/shared/types.js";
 
 type SubTab = "discover" | "installed";
@@ -31,6 +37,21 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const agentId = useUiStore((s) => s.activeAgentId);
 
+  // Install destination is repo-targeted (docs/149 v1c) — the Skills tab is
+  // app-wide and never reads/mutates the active session for installs. Repos
+  // come from the app-wide repo store; default the picker to the active repo.
+  const repos = useRepoStore((s) => s.repos);
+  const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
+  const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
+
+  const repoOptions: InstallRepoOption[] = useMemo(
+    () => repos.map((r) => ({ url: r.url, label: parseRepoLabel(r.url), ready: r.status === "ready" })),
+    [repos],
+  );
+  const effectiveRepoUrl =
+    selectedRepoUrl ??
+    (activeRepoUrl && repos.some((r) => r.url === activeRepoUrl) ? activeRepoUrl : repos[0]?.url ?? null);
+
   const marketplaces = useSkillsStore((s) => s.marketplaces);
   const pluginsByMarketplace = useSkillsStore((s) => s.pluginsByMarketplace);
   const installed = useSkillsStore((s) => s.installed);
@@ -41,7 +62,7 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
   const fetchPlugins = useSkillsStore((s) => s.fetchPlugins);
   const refreshMarketplace = useSkillsStore((s) => s.refreshMarketplace);
   const fetchInstalled = useSkillsStore((s) => s.fetchInstalled);
-  const install = useSkillsStore((s) => s.install);
+  const installToRepo = useSkillsStore((s) => s.installToRepo);
   const uninstall = useSkillsStore((s) => s.uninstall);
 
   // Refetch catalogs whenever the active agent changes — store sync from
@@ -150,7 +171,6 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
             marketplaces={marketplaces}
             onRefreshMarketplace={(id) => void refreshMarketplace(id)}
             onInstallClick={(plugin) => setInstallingSheet(plugin)}
-            hasActiveSession={hasActiveSession}
           />
         )}
 
@@ -174,18 +194,25 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
         <SkillInstallSheet
           plugin={installingSheet}
           installPathLabel=".claude/skills"
-          agentRunning={false}
           installing={loading}
-          hasActiveSession={Boolean(hasActiveSession && sessionId)}
+          repos={repoOptions}
+          selectedRepoUrl={effectiveRepoUrl}
+          onSelectRepo={setSelectedRepoUrl}
           onCancel={() => setInstallingSheet(null)}
           fetchSkillBody={fetchSkillBody}
           onInstall={async () => {
-            if (!sessionId) return;
+            if (!effectiveRepoUrl) return;
             try {
-              await install(sessionId, installingSheet.marketplaceId, installingSheet.name);
+              const result = await installToRepo(
+                effectiveRepoUrl,
+                installingSheet.marketplaceId,
+                installingSheet.name,
+              );
               setInstallingSheet(null);
               useUiStore.getState().setToast({
-                message: `Installed ${installingSheet.name}. New skills are available for your next message.`,
+                message:
+                  `Opened pull request #${result.pr.number} to install ${installingSheet.name}. ` +
+                  `Review it in the new session, then merge to use the skill.`,
               });
             } catch (err) {
               useUiStore.getState().setToast({
@@ -237,7 +264,6 @@ function DiscoverList({
   marketplaces,
   onRefreshMarketplace,
   onInstallClick,
-  hasActiveSession,
 }: {
   plugins: PluginInfo[];
   loading: boolean;
@@ -247,7 +273,6 @@ function DiscoverList({
   marketplaces: { id: string; status: string; fetchError?: string }[];
   onRefreshMarketplace: (id: string) => void;
   onInstallClick: (plugin: PluginInfo) => void;
-  hasActiveSession: boolean;
 }) {
   const failed = marketplaces.filter((m) => m.status === "fetch-failed");
 
@@ -288,12 +313,6 @@ function DiscoverList({
       {error && !failed.length && (
         <div className="rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) p-3 text-xs text-(--color-error)">
           {error}
-        </div>
-      )}
-
-      {!hasActiveSession && (
-        <div className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs text-(--color-text-secondary)">
-          Open or create a session to install skills.
         </div>
       )}
 

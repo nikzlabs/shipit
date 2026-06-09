@@ -111,45 +111,55 @@ install marker, and writer logic are all reused; only the install *destination*
 and the surface's session-awareness change.
 
 ### Backend
-- [ ] App-wide, repo-targeted install endpoint (e.g.
-  `POST /api/plugins/install { marketplaceId, pluginName, repoId }`) that
-  spawns a dedicated repo-backed session, runs `installPlugin()` in its
-  workspace, and opens a PR. Reuses the existing writer untouched.
-- [ ] Wire skill-install session creation through the existing session-creation
-  machinery (one session per install, fresh branch, repo-backed).
-- [ ] After `installPlugin()`'s local commit, open the PR by calling
-  `quickCreatePr()` (`services/github.ts` — pushes branch + creates PR)
-  directly and unconditionally (title "Install <plugin> skill"). Do NOT rely on
-  `emitPrLifecycleAfterCommit` / the `autoCreatePr` toggle — that path is
-  viewer-gated and the headless install session has no WS viewer, so it would
-  silently produce no PR.
-- [ ] Drop the now-unneeded coupling: `runner.running` install gate, per-session
-  rebind, and the `killAgent` "pick up new skills" reload (only needed for the
-  superseded in-session write). Keep the per-workspace mutex dormant for the
-  future in-workspace option.
-- [ ] Retain the v1a session-scoped install route for the future in-workspace
-  destination (do not delete).
+- [x] App-wide, repo-targeted install endpoint
+  `POST /api/plugins/install { marketplaceId, pluginName, repoUrl }`
+  (`api-routes-marketplace.ts`) that spawns a dedicated repo-backed session,
+  runs `installPlugin()` in its workspace, and opens a PR. Writer reused untouched.
+- [x] `services/install-session.ts` — `installPluginAsSession()` orchestrates
+  claim (fresh repo-backed session, one per install) → branch rename to
+  `shipit/install-<plugin>-<slug>` → `installPlugin()` (local commit) → PR →
+  `graduateSession()` (sidebar) → PR tracking. No agent turn runs.
+- [x] After the local commit, open the PR by calling `agentCreatePr()`
+  (`services/github.ts` — pushes branch + creates PR with a fixed title/body,
+  no LLM) directly and unconditionally. NOT `emitPrLifecycleAfterCommit` /
+  the `autoCreatePr` toggle — that path is viewer-gated and the headless
+  install session has no WS viewer. (Plan named `quickCreatePr`; `agentCreatePr`
+  is the cleaner fit for a fixed title/body and satisfies the same requirement.)
+  GitHub auth is checked up front (401 before claiming).
+- [x] Shared `ClaimSessionService` constructed once in `registerApiRoutes`
+  (`api-routes.ts`), threaded via `ApiDeps.claimSessionService`;
+  `registerSessionRoutes` falls back to a local instance for direct callers/tests.
+- [x] No `runner.running` gate / per-session rebind / `killAgent` reload on the
+  new path (those existed only for the superseded in-session write). The
+  per-workspace mutex is still held around the install's commit for consistency.
+- [x] Retained the v1a session-scoped install route in `api-routes-files.ts` for
+  the future in-workspace destination (not deleted).
 
 ### Client
-- [ ] Skills tab decoupled from the active session (no `hasActiveSession`
-  binding, no per-session catalog/install-gate).
-- [ ] Repository picker in the install sheet (source: connected repos /
-  RepoStore). Empty-state when no repo is connectable.
-- [ ] Install action calls the app-wide repo-targeted endpoint; success surfaces
-  the new session + its PR (sidebar entry / PR card), not an in-session toast.
-- [ ] Dialog laid out to accommodate the future destination selector
-  ("Open as PR" vs "Install into this workspace") without rework.
+- [x] Skills tab install decoupled from the active session — Discover + install
+  no longer read `hasActiveSession`/`sessionId`. (Installed sub-tab kept as a
+  current-session convenience view; app-wide Installed/uninstall-as-PR deferred,
+  see Future.)
+- [x] Repository picker in the install sheet (`SkillInstallSheet.tsx`), sourced
+  from the app-wide `useRepoStore`, defaulted to the active repo. Empty-state
+  when no repo; install disabled until a ready repo is selected.
+- [x] `useSkillsStore.installToRepo()` calls the app-wide endpoint; success toast
+  points the user at the new session + PR number.
 
 ### Tests
-- [ ] Service/integration test: repo-targeted install spawns a session, writes
-  the skill, and opens a PR; current session is untouched.
-- [ ] Component test: repo picker renders, empty-state when no repo, install
-  disabled until a repo is selected.
+- [x] `services/install-session.test.ts` — repo-targeted install spawns a
+  session, writes+commits the skill in THAT workspace, opens a PR, graduates the
+  session, leaves a pre-existing session untouched, and fails fast (401) without
+  claiming when GitHub is not connected.
+- [x] `SkillsTab.test.tsx` — repo picker renders + install posts the app-wide
+  route (not the session route); install disabled when no repo is available.
 
 ### Future (deferred, same dialog)
 - [ ] In-workspace install as an explicit destination option (reinstates v1a's
   in-session write behind a user-selected choice; reactivates the mutex +
   reload path for that branch only).
+- [ ] App-wide Installed sub-tab + uninstall-as-PR (today's Installed view is
+  still scoped to the current session).
 
 ## v1b — Codex support
 
