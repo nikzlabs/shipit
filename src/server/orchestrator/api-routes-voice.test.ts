@@ -492,7 +492,11 @@ describe("Voice-note webhook config (docs/163)", () => {
 });
 
 describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
-  it("routes an authored note to the native sink and emits voice_note", async () => {
+  it("acks delivered:true for an active runner WITHOUT delivering (observation is the deliverer)", async () => {
+    // docs/163 — the card + webhook are delivered from the event-stream
+    // observation of the voice_note tool call (agent-listeners.ts), built from
+    // the tool input. This relay is a pure ack: it must NOT emit or record a
+    // card, only report that a runner exists to receive the note.
     const { emitted, runner, registry } = makeRunnerRegistry("sess-1");
     const { app } = await buildApp({ runnerRegistry: registry });
     const res = await app.inject({
@@ -502,17 +506,8 @@ describe("POST /api/sessions/:sessionId/voice-note (docs/163)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ delivered: true });
-    expect(emitted).toHaveLength(1);
-    expect(emitted[0]).toMatchObject({
-      type: "voice_note",
-      sessionId: "sess-1",
-      headline: "Done — want me to open a PR?",
-      needsAttention: true,
-      kind: "authored",
-    });
-    // docs/163 — the card is recorded on the runner for in-band persistence so
-    // it reloads where the tool was issued, not above the turn.
-    expect(runner.recordedCards).toHaveLength(1);
+    expect(emitted).toHaveLength(0);
+    expect(runner.recordedCards).toHaveLength(0);
     await app.close();
   });
 
