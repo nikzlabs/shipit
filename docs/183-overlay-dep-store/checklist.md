@@ -174,9 +174,10 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
 - [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
       only respects **live** mounts, not archived sessions.
 - [ ] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
-      Extend `prototype/volume-driver-overlay-spike.sh` to prove concurrent first-use of **one**
-      per-session `type=overlay` volume mounted into the agent `docker run` **and** a `docker
-      compose up` of ≥2 services. Assert: **(a)** the upperdir appears **exactly once** as an
+      Run `prototype/shared-volume-spike.sh` (written; needs a real Docker host — it can't run
+      from a session container, which by design has no `docker.sock`). It proves concurrent
+      first-use of **one** per-session `type=overlay` volume mounted into the agent `docker run`
+      **and** ≥2 service containers. Assert: **(a)** the upperdir appears **exactly once** as an
       `overlay` mount in the daemon host's `/proc/self/mountinfo` (one mount, not N — the decisive
       check); **(b)** ~50 cold-race trials (`volume rm`+create each iteration, no inter-start
       delay) with **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`; **(c)** a write

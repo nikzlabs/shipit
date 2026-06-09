@@ -514,7 +514,9 @@ delivery under the daemon-overlay mechanism — see below).
    `type=overlay` volume: the agent `docker run` and `docker compose up` can race on the volume's
    first mount, which is the overlay2 EBUSY window §4 flags. Docker's per-volume store lock should
    already serialize this (it does for every `local` volume), but it must be shown empirically for
-   `type=overlay` on every target. The gating spike (extends `volume-driver-overlay-spike.sh`):
+   `type=overlay` on every target. The gating spike — [`prototype/shared-volume-spike.sh`](./prototype/shared-volume-spike.sh),
+   a sibling to `volume-driver-overlay-spike.sh` (which only tests two *distinct* volumes sharing
+   one lower, not one volume shared by N containers):
    **(a)** after bring-up, assert the upperdir appears **exactly once** as an `overlay` mount in
    the daemon host's `/proc/self/mountinfo` (the decisive check — one mount, not N); **(b)** loop
    ~50× from a cold `volume rm`+create each iteration, launching agent + ≥2 services with no
