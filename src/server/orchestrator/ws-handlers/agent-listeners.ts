@@ -1026,6 +1026,12 @@ export function wireAgentListeners(
       // carry `parentToolUseId` and returned early above, so they aren't
       // observed and won't render — by design (a subagent shouldn't page the
       // user).
+      // Count recorded cards before delivery so we can detect whether either
+      // observation below recorded a new voice-note card this event and, if so,
+      // persist the in-progress turn immediately (see the note after the derived
+      // block).
+      const recordedCardsBefore = runner?.recordedCards.length ?? 0;
+
       if (runner && deps.deliverVoiceNote) {
         const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
         const input = (voiceCall?.input ?? {}) as {
@@ -1069,6 +1075,28 @@ export function wireAgentListeners(
             "plan",
           );
         }
+      }
+
+      // docs/163 — persist the in-progress turn the instant a voice-note card is
+      // recorded, mirroring the live-steer handler (a steer is "saved
+      // immediately" via persistTurnInProgress). `deliverVoiceNote` only
+      // *records* the card on the runner (emit + recordedCards); the card isn't
+      // written to chat history until `buildTurnMessages` runs at a boundary.
+      // Without an eager persist, the card lives only in the live client array
+      // and the recordedCards accumulator until the NEXT tool-result / agent_result
+      // boundary — a window that widens when the agent keeps replying (pure-text
+      // replies don't hit a tool-result boundary). A `loadSessionHistory` in that
+      // window (any WS reconnect — mobile bg/fg, network blip, ShipIt restart)
+      // replaces the live transcript with a DB snapshot that lacks the card, so
+      // the card vanishes until a later reload finalizes the turn. Persisting now
+      // makes it durable immediately — and it's the same in-band recordedCards
+      // path, so it stays anchored at its true position (no reload-reorder).
+      if (
+        runner
+        && opts.capturedSessionId
+        && runner.recordedCards.length > recordedCardsBefore
+      ) {
+        persistTurnInProgress(deps.chatHistoryManager, runner, opts.capturedSessionId);
       }
 
       // AskUserQuestion blocking: the Claude CLI in `-p` (headless) mode has no

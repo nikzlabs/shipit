@@ -135,6 +135,41 @@ boundary; a subagent shouldn't be paging the user. Key files:
 (ack-only relay), `voice-note-router.ts` (`VOICE_NOTE_TOOL_NAME`,
 `sanitizeVoiceContext`).
 
+### Post-ship fix #4 — card vanished mid-turn when the agent kept replying
+
+The card appeared live but **disappeared if the agent emitted more after it in
+the same turn**, reappearing only on a page reload. Root cause: a persistence
+*timing* gap reintroduced by post-ship fix #2's in-band mechanism. `deliverVoiceNote`
+only **records** the card on the runner (`emitChatCard` → live WS emit +
+`recordedCards`); the card isn't written to chat history until `buildTurnMessages`
+runs at a **boundary** — a tool-result event or `agent_result`. Between firing and
+that boundary the card lived **only** in the live client array and the
+`recordedCards` accumulator, not in the DB. Any `loadSessionHistory` in that
+window — fired on **every WS reconnect** (mobile background/foreground, a network
+blip, a ShipIt restart) — replaces the live transcript with a DB snapshot that
+*lacks the card*, so it vanishes. A later reload shows it again because by then
+`agent_result` finalized the turn and persisted it.
+
+Why "if the agent replies after it": when the note is the agent's last act,
+`agent_result` fires almost immediately and persists the card within
+milliseconds, so the clobber window is tiny. When the agent keeps streaming
+(especially **pure-text** replies, which hit no tool-result boundary), the turn
+stays open with the card unpersisted for much longer — widening the window.
+
+This is the same durability gap the original persistence fix closed (a finalized
+row written immediately), but post-ship fix #2 traded immediate-write for correct
+*position*. The fix keeps both: persist the in-progress turn **the instant a card
+is recorded**, mirroring the live-steer handler (a steer is likewise "saved
+immediately" via `persistTurnInProgress`). `agent-listeners.ts` now calls
+`persistTurnInProgress` right after the voice-note observation when
+`recordedCards` grew this event — so the card is durable in the DB immediately
+(any reconnect's `loadSessionHistory` returns it) while staying in-band, anchored
+at its true `afterGroupIndex` position (no reload-reorder). Gated on a card
+actually being recorded, so plain tool events don't trigger a needless rewrite.
+Covered by two cases in `agent-listeners.test.ts` (persists eagerly on a card;
+does not persist on a plain `Read`). Key file: `agent-listeners.ts` (eager
+`persistTurnInProgress` after the voice-note delivery blocks).
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for

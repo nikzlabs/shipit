@@ -341,6 +341,69 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    it("persists the in-progress turn the instant the authored card is recorded (no reconnect-clobber window)", () => {
+      // Regression (docs/163): the card was only written to chat history at the
+      // NEXT tool-result / agent_result boundary. Between firing and that
+      // boundary it lived only in the live client array + recordedCards — so a
+      // mid-turn `loadSessionHistory` (any WS reconnect) replaced the transcript
+      // with a DB snapshot lacking the card, and it vanished until a later
+      // reload. The window widened when the agent kept replying (pure-text
+      // replies hit no tool-result boundary). Fix: persist in-progress eagerly,
+      // mirroring the live-steer handler, so the card is durable immediately.
+      const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
+      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source });
+      const replaceInProgress = vi.fn();
+      const chatHistoryManager = {
+        replaceInProgress,
+        finalizeInProgress: vi.fn(),
+        updateLastMessage: vi.fn(() => null),
+        indexOfMessageId: vi.fn(() => -1),
+      } as unknown as AgentListenerDeps["chatHistoryManager"];
+      const { agent, runner } = wire({
+        deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
+        chatHistoryManager,
+      });
+
+      // ONLY the voice_note tool event — no tool_result, no trailing reply, so
+      // the only thing that could persist the card is the eager persist.
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [
+          { type: "text", text: "Here's the summary." },
+          { type: "tool_use", id: "v1", name: "mcp__shipit-voice__voice_note", input: { summary: "Done — your call.", needsAttention: true } },
+        ],
+      } satisfies AgentEvent);
+
+      expect(replaceInProgress).toHaveBeenCalled();
+      const lastBatch = replaceInProgress.mock.calls[replaceInProgress.mock.calls.length - 1][1] as { voiceNote?: unknown }[];
+      const persistedCard = lastBatch.find((m) => m.voiceNote);
+      expect(persistedCard).toBeDefined();
+      expect(runner.recordedCards).toHaveLength(1);
+      runner.dispose({ force: true });
+    });
+
+    it("does not persist in-progress when no voice-note card is recorded this event", () => {
+      // Guard against a needless replaceInProgress on every plain tool event —
+      // the eager persist must be gated on a card actually being recorded.
+      const replaceInProgress = vi.fn();
+      const chatHistoryManager = {
+        replaceInProgress,
+        finalizeInProgress: vi.fn(),
+        updateLastMessage: vi.fn(() => null),
+        indexOfMessageId: vi.fn(() => -1),
+      } as unknown as AgentListenerDeps["chatHistoryManager"];
+      const { agent, runner } = wire({ deliverVoiceNote: vi.fn(), chatHistoryManager });
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [{ type: "tool_use", id: "r1", name: "Read", input: { file_path: "/x" } }],
+      } satisfies AgentEvent);
+
+      expect(replaceInProgress).not.toHaveBeenCalled();
+      runner.dispose({ force: true });
+    });
+
     it("suppresses the derived headline when an authored note already fired this turn", async () => {
       const deliverVoiceNote = vi.fn();
       const { agent, runner } = wire({ deliverVoiceNote });
