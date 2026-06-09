@@ -133,19 +133,23 @@ below), so the base-advance rule must hold regardless of where the install runs:
 
 Two properties keep the published chain clean:
 
-- **It advances monotonically.** Most creation paths branch from the default branch
-  (`origin/HEAD`) — manual/warm-pool/unarchive
+- **It advances monotonically.** Normal creation paths branch from the default branch
+  (`origin/HEAD`) — manual/warm-pool/unarchive and generic agent-spawned sessions
   ([warm-pool-manager.ts:147-164](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164),
   [claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
-  [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216)). The
-  exception is **agent-spawned child sessions**, which may `git reset --hard` to an arbitrary
-  `--base` ref ([child-sessions.ts:70-78](../../src/server/orchestrator/services/child-sessions.ts#L70-L78)).
-  Such non-default-branch sessions run their install on the base into their own upper layer but
-  are **excluded from publishing** (rule (b)), so they never inject a historical/divergent tree
-  into the chain — which therefore stays `main@t1 → main@t2 → …`. They also must not inherit a
-  default-branch install marker: any `--base` reset or other non-default checkout whiteouts the
-  marker before `agent.install`, forcing the real install to validate that branch's manifests
-  against the shared base.
+  [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216),
+  [child-sessions.ts:70-81](../../src/server/orchestrator/services/child-sessions.ts#L70-L81)).
+  The old agent-facing arbitrary `--base` override for spawned child sessions was removed
+  in commit `8930b8e57`; generic children now
+  look like any other fresh claim and are publish-eligible only if they satisfy the same
+  pre-user/default-source rules as manual sessions. The remaining non-default reset path is
+  internal Ops `--shipit-source`, where ShipIt pins a fix session to a system-resolved inspected
+  build commit. Those source-pinned sessions run their install on the base into their own upper
+  layer but are **excluded from publishing** (rule (b)), so they never inject a historical or
+  divergent tree into the chain — which therefore stays `main@t1 → main@t2 → …`. They also must
+  not inherit a default-branch install marker: any internal source pin or other non-default
+  checkout whiteouts the marker before `agent.install`, forcing the real install to validate
+  that checkout's manifests against the shared base.
 - **Mid-session `npm install foo` never feeds the chain.** That's the agent's own shell
   command, landing in the session's `upperdir` — not `agent.install`. A session's divergent
   dependency work can't pollute the shared base.
@@ -159,8 +163,8 @@ validated, runtime fingerprint, and install command. A session may skip `agent.i
 when those fields match its current checkout and base scope. Any non-default checkout/reset,
 or any checkout whose source commit differs from the marker's stamped commit, whiteouts or
 deletes the marker before `agent.install` runs. That preserves the cheap unchanged-`main` path
-without letting child sessions or historical branches reuse dependencies from the default
-branch base blindly.
+without letting source-pinned sessions or historical branches reuse dependencies from the
+default branch base blindly.
 
 ### 4. Orchestrator owns the host-side mount
 
@@ -206,10 +210,12 @@ periodic clean-rebuild schedule is needed.
   not publish/wall-clock time**, so a late-but-older install can't clobber a newer base; a stale
   or diverged publish is simply **skipped** (no reconciliation, no redo). This is a
   compare-and-swap keyed on commit ancestry — lighter than the loser-reconciliation we ruled out.
-  Agent-spawned `--base` child sessions, sessions whose source base is not the remote default
-  commit, and sessions with user/agent dependency edits before publish run on the base but never
-  publish (§3), and their non-default checkout invalidates any inherited install marker before
-  install so they cannot skip against default-branch dependencies.
+  Internal Ops source-pinned sessions, any other session whose source base is not the remote
+  default commit, and sessions with user/agent dependency edits before publish run on the base
+  but never publish (§3), and their non-default checkout invalidates any inherited install
+  marker before install so they cannot skip against default-branch dependencies. Generic
+  agent-spawned children no longer have an agent-facing `--base`; they branch from the same
+  freshly fetched `origin/HEAD` claim path as manual sessions and follow the same publish rule.
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order
@@ -282,7 +288,7 @@ archive/restore (re-derive on unarchive), bad-base (exit-0 gate).*
 | Install paths (warm-pool pre-install + on-activation) | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243), [service-manager-setup.ts](../../src/server/orchestrator/service-manager-setup.ts#L322-L329) |
 | Install gate + marker / `headChanged` skip | [session-worker.ts](../../src/server/session/session-worker.ts#L649-L707), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L204-L206) |
 | Default-branch creation paths | [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L147-L164), [claim-session.ts](../../src/server/orchestrator/services/claim-session.ts#L361-L374), [session.ts](../../src/server/orchestrator/services/session.ts#L202-L216) |
-| `--base` child sessions (non-default base) | [child-sessions.ts](../../src/server/orchestrator/services/child-sessions.ts#L70-L78) |
+| Generic spawned sessions + internal Ops source pin | [child-sessions.ts](../../src/server/orchestrator/services/child-sessions.ts#L70-L81) |
 | Cache cleanup | [disk-janitor.ts](../../src/server/orchestrator/disk-janitor.ts#L568-L676) |
 
 ---
