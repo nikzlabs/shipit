@@ -180,9 +180,11 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       **and** ≥2 service containers. Assert: **(a)** the upperdir appears **exactly once** as an
       `overlay` mount in the daemon host's `/proc/self/mountinfo` (one mount, not N — the decisive
       check); **(b)** ~50 cold-race trials (`volume rm`+create each iteration, no inter-start
-      delay) with **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`; **(c)** a write
-      in the agent container is visible in a service container and `inotify` fires in a service
-      container (HMR path); **(d)** teardown↔startup overlap leaves the merged view intact. Run on
+      delay) with **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`; **(c)** the HMR
+      **polling** substrate — a file the agent writes is visible (fresh content + updated mtime) to
+      a *service* container's `stat()`/`read()` (dev servers poll because inotify doesn't cross the
+      container namespace; cross-container inotify is a non-gating data point); **(d)**
+      teardown↔startup overlap leaves the merged view intact. Run on
       prod systemd VPS (ext4) + Docker Desktop/Mac + Docker Desktop/Windows-WSL2. **Overlay-session
       preview support is gated on this spike going green.**
 - [ ] **Wire the shared overlay volume into compose** (after the spike). For overlay-eligible

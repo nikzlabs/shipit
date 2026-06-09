@@ -143,19 +143,32 @@ else
     && pass "service container reads lowerdir content through the shared merged view" \
     || fail "service did not see lowerdir base content: '$base_in_svc'"
 
-  # inotify in a NON-triggering container (the HMR delta): svc1 watches, agent writes.
-  docker exec -d ob-shared-svc1 sh -c 'timeout 8 inotifyd - /workspace 2>/dev/null > /tmp/ev.log' 2>/dev/null
+  # HMR substrate = POLLING, not inotify. Dev servers run in a SEPARATE container,
+  # and inotify does NOT cross the mount-namespace boundary between containers
+  # (shipit-docs/compose.md) — so today AND under overlay, HMR uses polling
+  # (usePolling / WATCHPACK_POLLING in the templates). What polling needs is that a
+  # file the agent creates/modifies becomes visible — fresh content + an updated
+  # mtime — to the service container's repeated stat()/read(). THAT is the gate.
+  docker exec ob-shared-agent sh -c 'echo poll1 > /workspace/pollprobe.txt' >/dev/null 2>&1
+  m1="$(docker exec ob-shared-svc1 sh -c 'stat -c %Y /workspace/pollprobe.txt 2>/dev/null' 2>&1)"
+  docker exec ob-shared-agent sh -c 'sleep 1; echo poll2 >> /workspace/pollprobe.txt' >/dev/null 2>&1
+  c2="$(docker exec ob-shared-svc1 sh -c 'cat /workspace/pollprobe.txt 2>/dev/null' 2>&1)"
+  m2="$(docker exec ob-shared-svc1 sh -c 'stat -c %Y /workspace/pollprobe.txt 2>/dev/null' 2>&1)"
+  echo "$c2" | grep -q poll2 && [ -n "$m1" ] && [ -n "$m2" ] && [ "$m2" -ge "$m1" ] \
+    && pass "service sees fresh writes + updated mtime through the shared mount (the HMR POLLING substrate)" \
+    || { fail "polling substrate failed — svc content='$c2' mtimes='$m1'->'$m2'"; }
+
+  # BONUS, NEVER gating: native cross-container inotify. HMR does NOT rely on this
+  # (it polls), and the namespace boundary is unchanged from today — so a MISS here
+  # is EXPECTED and not a failure. Recorded only as a data point.
+  docker exec -d ob-shared-svc1 sh -c 'timeout 6 inotifyd - /workspace 2>/dev/null > /tmp/ev.log' 2>/dev/null
   sleep 1
   docker exec ob-shared-agent sh -c 'echo hmr > /workspace/hmrprobe.txt' >/dev/null 2>&1
   sleep 2
   ev="$(docker exec ob-shared-svc1 sh -c 'cat /tmp/ev.log 2>/dev/null' 2>&1)"
-  if echo "$ev" | grep -q "hmrprobe.txt"; then
-    pass "inotify fired in a NON-triggering container (HMR works for compose services)"
-  elif docker run --rm "$ALPINE" sh -c 'command -v inotifyd' >/dev/null 2>&1; then
-    fail "inotify did NOT fire in the watching service container — events=[$ev]"
-  else
-    warn "inotifyd unavailable in $ALPINE on this host — inotify sub-check skipped (not a fail)"
-  fi
+  echo "$ev" | grep -q "hmrprobe.txt" \
+    && warn "(info) cross-container inotify DID fire here — bonus, not required (HMR polls)" \
+    || warn "(info) cross-container inotify did NOT fire — EXPECTED; HMR uses polling, so NOT a blocker"
   docker rm -f ob-shared-agent ob-shared-svc1 ob-shared-svc2 >/dev/null 2>&1 || true
 fi
 

@@ -143,8 +143,10 @@ Mounts one shared overlay volume into 3 concurrent unprivileged containers and
 asserts: **exactly one** overlay superblock backs all of them (read from the daemon
 namespace's `/proc/1/mountinfo` via a `--pid=host` probe — the decisive check), a
 cold-race loop (`COLD_TRIALS`, default 25, fresh volume each) with **zero** EBUSY /
-`upperdir is in-use`, cross-container write coherence + inotify in a non-triggering
-container (the HMR path), and a teardown↔startup overlap. **Cannot run inside a
+`upperdir is in-use`, the HMR **polling** substrate (a service container sees the
+agent's fresh writes + updated mtime — dev servers poll because inotify doesn't
+cross the container namespace, so cross-container inotify is recorded as a
+non-gating data point, not a pass/fail), and a teardown↔startup overlap. **Cannot run inside a
 session container** (no `docker.sock` by design) — run on the prod VPS (ext4),
 Docker Desktop/Mac, and Docker Desktop/Windows-WSL2, and paste each summary into
 `../FINDINGS.md`. Green on all three retires Open Q #4.

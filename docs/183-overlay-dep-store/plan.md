@@ -521,10 +521,22 @@ delivery under the daemon-overlay mechanism — see below).
    the daemon host's `/proc/self/mountinfo` (the decisive check — one mount, not N); **(b)** loop
    ~50× from a cold `volume rm`+create each iteration, launching agent + ≥2 services with no
    inter-start delay, asserting **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`;
-   **(c)** assert a write in the agent container is visible in a service container and `inotify`
-   fires in a service container (HMR path) — not just within one namespace; **(d)** exercise the
-   teardown↔startup overlap (stop the last container while starting a new one) and confirm the
-   merged view survives. Run all of it on the full matrix — prod systemd VPS (ext4), Docker
+   **(c)** assert the **HMR polling substrate**: a file the agent writes is visible — fresh
+   content + an updated mtime — to a *service* container's `stat()`/`read()`. Note previews do
+   **not** use cross-container inotify today and won't under overlay: dev servers run in a separate
+   container and inotify doesn't cross the mount-namespace boundary, so the templates already drive
+   HMR by **polling** (`usePolling`/`WATCHPACK_POLLING`, see
+   [`shipit-docs/compose.md`](../../src/server/shipit-docs/compose.md)); polling only needs the
+   write/mtime coherence this check proves, so native cross-container inotify is recorded as a
+   **non-gating** data point, not a pass/fail. **(d)** exercise the teardown↔startup overlap (stop
+   the last container while starting a new one) and confirm the merged view survives.
+
+   > **The two watchers don't both depend on this.** ShipIt's own file-tree watcher
+   > (`file-watcher.ts`, chokidar/inotify) runs **inside the agent container** over the merged
+   > mount — *same-namespace* inotify, already proven by the Phase-0 21/21 run — so it is unaffected
+   > by the shared-volume question. Only the dev-server HMR watcher lives in a separate container,
+   > and it polls. So the spike gates previews on **read-through + write/mtime coherence**, not on
+   > inotify crossing a container boundary. Run all of it on the full matrix — prod systemd VPS (ext4), Docker
    Desktop/Mac, Docker Desktop/Windows-WSL2 — since EBUSY is kernel/storage-driver-dependent. Green
    = 1 overlay mount + 0 errors across 50 cold-race trials × 3 hosts + clean teardown overlap; that
    retires the blocker and the rest is ordinary wiring. Until then, previews/dev-servers are **not**
