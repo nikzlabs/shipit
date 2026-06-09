@@ -91,6 +91,14 @@ export interface RemediationManagerConfig {
   getRunner: (sessionId: string) => SessionRunnerInterface | undefined;
   /** Read the global enable setting at decision time (not mirrored per-session). */
   isGlobalEnabled: () => boolean;
+  /**
+   * docs/186 — optional per-session enable gate, read at decision time alongside
+   * `isGlobalEnabled`. Returns false to suppress the automation for one session
+   * even while the global setting is on (e.g. the auto-fix-CI per-session pause).
+   * Absent ⇒ always enabled, so automations that have no per-session override are
+   * unaffected.
+   */
+  isSessionEnabled?: (sessionId: string) => boolean;
   /** Injectable clock so cooldown logic is testable. */
   now: () => number;
   /**
@@ -251,8 +259,11 @@ export abstract class AutoRemediationManager<TSignal> {
     // has the right baseline.
     this.cacheSignal(sessionId, signal);
 
-    // 3.
+    // 3 — global gate, then the optional per-session gate (docs/186). Both are
+    // read after the signal is cached so a first poll after re-enabling/resuming
+    // has the right baseline.
     if (!this.cfg.isGlobalEnabled()) return;
+    if (this.cfg.isSessionEnabled && !this.cfg.isSessionEnabled(sessionId)) return;
 
     // 4.
     let state = this.states.get(sessionId);
@@ -368,6 +379,7 @@ export abstract class AutoRemediationManager<TSignal> {
     const state = this.states.get(sessionId);
     if (state?.status !== "deferred") return;
     if (!this.cfg.isGlobalEnabled()) return;
+    if (this.cfg.isSessionEnabled && !this.cfg.isSessionEnabled(sessionId)) return;
 
     if (!this.cachedTriggerActive(sessionId)) {
       // Trigger cleared while we waited — settle.

@@ -688,9 +688,34 @@ export async function registerGitHubRoutes(
     },
   );
 
-  // docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle was
-  // removed. Auto-fix CI is now a global account-level setting
-  // (PUT /api/settings { autoFixCi }); the poller reads it at decision time.
+  // docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle (which
+  // controlled the on/off switch) was removed: auto-fix CI is now a global
+  // account-level setting (PUT /api/settings { autoFixCi }).
+  //
+  // docs/186 — a DIFFERENT per-session control: a pause override on top of the
+  // global setting. The global stays the master on/off; this suppresses the
+  // auto-fix loop for a single session while the global is on. Persisted on the
+  // session row and re-broadcast so every tab's PR menu reflects it.
+  // POST /api/sessions/:id/pr/auto-fix-pause { paused: boolean }
+  app.post<{ Params: { id: string }; Body: { paused: boolean } }>(
+    "/api/sessions/:id/pr/auto-fix-pause",
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (typeof request.body?.paused !== "boolean") {
+        reply.code(400).send({ error: "\"paused\" field is required (boolean)" });
+        return;
+      }
+      sessionManager.setAutoFixCiPaused(request.params.id, request.body.paused);
+      // Re-broadcast the session list so the PR menu's toggle reconciles across
+      // tabs and survives a reload (the flag lives on the session record).
+      deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+      return { paused: request.body.paused };
+    },
+  );
 
   // POST /api/sessions/:id/pr/auto-merge — toggle auto-merge on/off
   app.post<{ Params: { id: string }; Body: { enabled: boolean } }>(

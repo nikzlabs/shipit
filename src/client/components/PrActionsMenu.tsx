@@ -18,9 +18,10 @@ import { usePrStore } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
-import { AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
+import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } from "./PrStatusControls.js";
 
 export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
@@ -30,6 +31,10 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const startRebase = useGitStore((s) => s.startRebase);
   const rebaseStatus = useGitStore((s) => s.rebaseStatus);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  // docs/186 — the per-session auto-fix pause only makes sense when the global
+  // auto-fix-CI setting is on, so the toggle is gated on it (pausing an
+  // already-off loop would be a no-op the user can't reason about).
+  const globalAutoFixCi = useSettingsStore((s) => s.autoFixCi);
   const closeState = useClosePr(sessionId);
 
   // Whether the session has a GitHub remote — gates the remote-only actions
@@ -62,6 +67,9 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   // in practice Copy branch name is essentially always available, so it's never
   // empty for a real session.
   const showAutoMergeToggle = canAutoMerge && !isOpen;
+  // Auto-fix pause is relevant whenever the session has a remote and the global
+  // auto-fix-CI loop is on — independent of the PR phase (CI runs while open).
+  const showAutoFixPause = canAutoMerge && globalAutoFixCi;
 
   return (
     <OverflowMenu
@@ -77,6 +85,14 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
         <>
           <div className="px-2 py-1">
             <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />
+          </div>
+          <DropdownMenuSeparator />
+        </>
+      )}
+      {showAutoFixPause && (
+        <>
+          <div className="px-2 py-1">
+            <AutoFixPauseToggle sessionId={sessionId} />
           </div>
           <DropdownMenuSeparator />
         </>

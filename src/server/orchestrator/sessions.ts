@@ -41,6 +41,8 @@ interface SessionRow {
   spawned_by_turn: string | null;
   /** docs/182 — 1 when the session's last completed turn ended in an error. */
   last_turn_errored: number;
+  /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
+  auto_fix_ci_paused: number;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -219,6 +221,7 @@ export class SessionManager {
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     if (row.last_turn_errored) info.lastTurnErrored = true;
+    if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     return info;
   }
 
@@ -539,6 +542,16 @@ export class SessionManager {
    */
   setLastTurnErrored(id: string, errored: boolean): void {
     this.db.prepare("UPDATE sessions SET last_turn_errored = ? WHERE id = ?").run(errored ? 1 : 0, id);
+  }
+
+  /**
+   * docs/186 — pause or resume the auto-fix-CI loop for a single session. A
+   * per-session override on top of the global `autoFixCi` setting: while paused,
+   * the PR poller's auto-fix loop is suppressed for this session even with the
+   * global setting on. Persisted so the pause survives an orchestrator restart.
+   */
+  setAutoFixCiPaused(id: string, paused: boolean): void {
+    this.db.prepare("UPDATE sessions SET auto_fix_ci_paused = ? WHERE id = ?").run(paused ? 1 : 0, id);
   }
 
   setProviderRoute(id: string, kind: ProviderRouteKind, routeId: string): void {

@@ -130,6 +130,13 @@ interface SessionState {
   setSessions: (
     sessions: SessionInfo[] | ((prev: SessionInfo[]) => SessionInfo[]),
   ) => void;
+  /**
+   * docs/186 — pause / resume the auto-fix-CI loop for a single session.
+   * Optimistically flips `autoFixCiPaused` on the session record, POSTs the
+   * change, and reverts if the request fails. The server re-broadcasts the
+   * session list so other tabs reconcile.
+   */
+  setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
   setAuthUrl: (url: string | null) => void;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
@@ -279,6 +286,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       sessions:
         typeof sessions === "function" ? sessions(state.sessions) : sessions,
     })),
+
+  setAutoFixCiPaused: async (sessionId, paused) => {
+    const patch = (value: boolean) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, autoFixCiPaused: value } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.autoFixCiPaused ?? false;
+    patch(paused); // optimistic
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pr/auto-fix-pause`, {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ paused }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        console.error("[session-store] Auto-fix pause toggle failed:", data.error);
+        patch(prev); // revert
+      }
+    } catch (err) {
+      console.error("[session-store] Auto-fix pause toggle failed:", err);
+      patch(prev); // revert
+    }
+  },
 
   setAuthUrl: (authUrl) => set({ authUrl }),
 

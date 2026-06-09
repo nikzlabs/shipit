@@ -88,6 +88,11 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     now: () => number = () => Date.now(),
     /** docs/169 Workstream C — cross-automation arbiter (optional). */
     arbiter?: RemediationArbiter,
+    /**
+     * docs/186 — per-session pause gate. Returns false when auto-fix is paused
+     * for the session, suppressing the loop even with the global setting on.
+     */
+    isSessionEnabled?: (sessionId: string) => boolean,
   ) {
     super({
       name: "auto-fix",
@@ -97,6 +102,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
       isGlobalEnabled,
       now,
       ...(arbiter ? { arbiter } : {}),
+      ...(isSessionEnabled ? { isSessionEnabled } : {}),
     });
     this.fetchAndFixCb = fetchAndFixCb;
   }
