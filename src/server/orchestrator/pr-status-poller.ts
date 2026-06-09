@@ -803,6 +803,7 @@ export class PrStatusPoller {
           status: fixState.status,
           attemptCount: fixState.attemptCount,
           maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
+          manual: fixState.manual ?? false,
         },
       };
     }

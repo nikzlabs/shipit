@@ -568,7 +568,9 @@ function OpenPhase({
           <div className="mt-1 flex items-center gap-2">
             <Spinner />
             <span className="text-xs text-(--color-warning)">
-              Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
+              {autoFix.manual
+                ? "Fixing CI…"
+                : `Auto-fixing (attempt ${autoFix.attemptCount}/${autoFix.maxAttempts})...`}
             </span>
           </div>
         )}

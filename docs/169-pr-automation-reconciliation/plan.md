@@ -271,3 +271,15 @@ finer-grained calls to make during implementation:
 2. **Settings UI grouping** — present auto-fix CI and auto-resolve conflicts as two
    switches under a shared "PR automations" settings group? (Cosmetic, but worth doing
    together since both move to global settings.)
+
+## Follow-up: manual vs. auto fix label
+
+The manual "Fix CI" button (`triggerCIFix` → `markRunning`) and the auto-fix loop share
+the same `RemediationState`/`autoFix` status, so the card's running line was always
+"Auto-fixing (attempt N/3)…" — wrong for a user who clicked the button. `RemediationState`
+now carries a `manual` flag: `markRunning` sets it `true`; every loop-driven fire (base
+`runTransition` step 12 and `onRunnerIdle`) sets it `false`. `attachAutomationState`
+surfaces it on the `autoFix` SSE payload, and `PrLifecycleCard` / `PrStatusSection` render
+a plain "Fixing CI…" (no attempt counter) when `manual`, else the auto label. The manual
+dispatch's chat-activity label is likewise "Fixing CI…" (`github-ci-fix.ts`); the auto
+loop keeps "Auto-fixing CI..." (`app-lifecycle.ts` `fetchAndFixCb`).

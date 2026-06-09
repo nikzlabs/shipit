@@ -499,6 +499,21 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText(/Auto-fixing \(attempt 2\/3\)/)).toBeInTheDocument();
   });
 
+  it("shows a plain 'Fixing CI…' label (no attempt counter) for a manual fix", () => {
+    // A manually-triggered fix shouldn't be labeled "Auto-fixing" — the user
+    // clicked "Fix CI", it's not the automatic loop. (docs/169)
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+      autoFix: { status: "running", attemptCount: 1, maxAttempts: 3, manual: true },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    expect(screen.getByText("Fixing CI…")).toBeInTheDocument();
+    expect(screen.queryByText(/Auto-fixing/)).toBeNull();
+  });
+
   it("shows auto-fix exhausted state", () => {
     setCard("s1", {
       ...openPrCard,

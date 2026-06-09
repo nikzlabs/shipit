@@ -246,7 +246,18 @@ describe("AutoFixManager", () => {
     const s = fx.manager.markRunning("s1");
     expect(s.attemptCount).toBe(1);
     expect(s.status).toBe("running");
+    expect(s.manual).toBe(true);
     expect(fx.manager.get("s1")?.status).toBe("running");
+  });
+
+  it("loop-driven fire clears the manual flag (not the 'Fix CI' button)", async () => {
+    // A manual fix leaves manual=true; a subsequent loop-driven fire must reset
+    // it so the card shows "Auto-fixing", not "Fixing CI…".
+    fx.manager.markRunning("s1");
+    fx.manager.delete("s1"); // simulate head-SHA change dropping the manual state
+    await fx.fail();
+    await tick();
+    expect(fx.manager.get("s1")?.manual).toBe(false);
   });
 
   it("delete drops state", async () => {

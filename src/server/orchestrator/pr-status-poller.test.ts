@@ -2018,10 +2018,10 @@ describe("PrStatusPoller — auto-fix state", () => {
     pollerAF.destroy();
   });
 
-  it("markAutoFixRunning creates state lazily", () => {
+  it("markAutoFixRunning creates state lazily and marks it manual", () => {
     pollerAF.markAutoFixRunning("s1");
     const state = pollerAF.getAutoFixState("s1");
-    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
+    expect(state).toMatchObject({ attemptCount: 1, status: "running", manual: true });
   });
 
   it("markAutoFixRunning increments count and sets running", () => {
@@ -2051,7 +2051,7 @@ describe("PrStatusPoller — auto-fix state", () => {
 
     const statuses = poller2.getAllStatuses();
     expect(statuses).toHaveLength(1);
-    expect(statuses[0].autoFix).toMatchObject({ attemptCount: 1, status: "running" });
+    expect(statuses[0].autoFix).toMatchObject({ attemptCount: 1, status: "running", manual: true });
     poller2.destroy();
     vi.useRealTimers();
   });

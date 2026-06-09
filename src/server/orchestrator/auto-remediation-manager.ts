@@ -46,6 +46,14 @@ export interface RemediationState {
   /** Epoch ms; the next eligible attempt time after a cooldown. */
   nextEligibleAt?: number;
   /**
+   * True when the current `running` attempt was user-initiated (a manual
+   * one-shot) rather than fired by the automation loop. Inert for automations
+   * that never set it; auto-fix sets it in `markRunning` and clears it on every
+   * loop-driven fire so the card can distinguish "Fixing CI…" from
+   * "Auto-fixing (attempt N/3)…". Only meaningful while `status === "running"`.
+   */
+  manual?: boolean;
+  /**
    * Set by `resetForUserActivity` while an attempt is in flight; applied at the
    * end of the subclass's terminal write so the in-flight attempt's terminal
    * status doesn't overwrite the reset the user just earned.
@@ -366,6 +374,7 @@ export abstract class AutoRemediationManager<TSignal> {
       return;
     }
     state.status = "running";
+    state.manual = false; // loop-driven fire — not the manual "Fix CI" button
     this.onChange(sessionId);
     this.fireAttempt(sessionId, signal, state.attemptCount + 1);
   }
@@ -409,6 +418,7 @@ export abstract class AutoRemediationManager<TSignal> {
 
     if (!this.tryClaim(sessionId, state.lastHeadSha)) return;
     state.status = "running";
+    state.manual = false; // loop-driven fire — not the manual "Fix CI" button
     this.onChange(sessionId);
     this.fireAttempt(sessionId, signal, state.attemptCount + 1);
   }

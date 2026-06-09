@@ -177,6 +177,7 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     }
     state.attemptCount++;
     state.status = "running";
+    state.manual = true; // user clicked "Fix CI" — label it "Fixing CI…", not "Auto-fixing"
     this.onChange(sessionId);
     return state;
   }

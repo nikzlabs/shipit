@@ -179,7 +179,7 @@ describe("PrStatusPoller auto-fix state", () => {
     prStatusPoller.markAutoFixRunning(sessionId);
 
     const state = prStatusPoller.getAutoFixState(sessionId);
-    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
+    expect(state).toMatchObject({ attemptCount: 1, status: "running", manual: true });
   });
 
   it("untrackSession clears auto-fix state", () => {

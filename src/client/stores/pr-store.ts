@@ -58,6 +58,8 @@ export interface PrCardState {
     status: "idle" | "running" | "deferred" | "exhausted";
     attemptCount: number;
     maxAttempts: number;
+    /** True when the running fix was triggered by the manual "Fix CI" button. */
+    manual?: boolean;
   };
   /** Auto-merge state (open phase). */
   autoMerge?: {
