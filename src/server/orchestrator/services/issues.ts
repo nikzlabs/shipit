@@ -329,9 +329,20 @@ export async function undoIssueWrite(
         await tracker.setAssignee(card.issueId, card.undo.previousAssigneeId, { raw: true });
         return;
       case "create":
-        // No prior state to restore — cancel the issue we created. `canceled`
-        // resolves to Linear's canceled state / GitHub close-as-not_planned.
-        await tracker.setStatus(card.issueId, "canceled");
+        // No prior state to restore — cancel the issue we created. Prefer a
+        // `canceled` state, but some Linear teams have none configured; fall
+        // back to `completed` (close it) rather than leaving the created issue
+        // stranded with a dead Undo. GitHub always resolves `canceled`
+        // (close-as-not_planned), so the fallback only fires for Linear.
+        try {
+          await tracker.setStatus(card.issueId, "canceled");
+        } catch (statusErr) {
+          if (statusErr instanceof TrackerResolutionError) {
+            await tracker.setStatus(card.issueId, "completed");
+          } else {
+            throw statusErr;
+          }
+        }
     }
   } catch (err) {
     toResolutionServiceError(err);

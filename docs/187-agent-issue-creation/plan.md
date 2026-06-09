@@ -179,7 +179,11 @@ actor end-to-end within one turn.
 - **Undo cancels (not archive).** Linear → `canceled` state, GitHub → close as
   `not_planned`. Visible, honest ("Canceled SHI-28"), and symmetric across
   trackers. Implemented via `tracker.setStatus(card.issueId, "canceled")` in the
-  `create` undo branch.
+  `create` undo branch. **Fallback:** a Linear team may have no `canceled`-type
+  state, in which case `setStatus("canceled")` throws `TrackerResolutionError`;
+  the undo branch then retries with `completed` so the created issue is closed
+  rather than stranded with a dead Undo. (GitHub always resolves `canceled`, so
+  the fallback only fires for Linear.)
 - **`create` defaults to Linear.** There's no pointer to infer a tracker from, and
   Linear is the workspace-wide tracker and the design-doc convention. `--tracker
   github` files on the session's repo instead. An unconfigured tracker fails with a
