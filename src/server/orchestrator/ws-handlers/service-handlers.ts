@@ -32,16 +32,19 @@ export async function handleStartService(
   }
 }
 
-export function handleSubscribeServiceLogs(
+export async function handleSubscribeServiceLogs(
   ctx: ConnectionCtx & ServiceCtx,
   msg: WsSubscribeServiceLogs,
-): void {
+): Promise<void> {
   const mgr = ctx.getServiceManager();
   if (!mgr) {
     ctx.send({ type: "error", message: "No compose stack running for this session" });
     return;
   }
-  const buffer = mgr.getLogBuffer(msg.name);
+  // Pull a fresh snapshot from Docker rather than the in-memory ring buffer:
+  // the buffer rotates and is wiped on reconcile, so it routinely drops the
+  // history from before the panel was opened. snapshotLogs() never rejects.
+  const buffer = await mgr.snapshotLogs(msg.name);
   ctx.send({ type: "service_log_buffer", sessionId: ctx.getActiveAppSessionId() ?? "", name: msg.name, buffer });
 }
 

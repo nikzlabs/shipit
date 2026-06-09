@@ -204,6 +204,13 @@ export class ServiceManager extends EventEmitter {
   private readonly composeConfig: ComposeConfig;
 
   private static readonly MAX_LOG_BUFFER = 80_000;
+  /**
+   * Byte cap for an on-demand {@link snapshotLogs} backlog. Larger than the
+   * live ring buffer (which only needs to cover the reconnect window) because
+   * this is the full history shown on panel open; bounded so a chatty service
+   * can't push megabytes over the WS in one `service_log_buffer` message.
+   */
+  private static readonly MAX_LOG_SNAPSHOT = 500_000;
 
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
@@ -498,6 +505,54 @@ export class ServiceManager extends EventEmitter {
   /** Get the buffered log output for a service. */
   getLogBuffer(name: string): string {
     return this.logBuffers.get(name) ?? "";
+  }
+
+  /**
+   * Fetch an authoritative log snapshot directly from Docker at call time.
+   *
+   * This is the source of truth for the backlog shown when the user opens the
+   * logs panel. Unlike {@link getLogBuffer} — the in-memory ring buffer, which
+   * rotates at MAX_LOG_BUFFER (so older lines are evicted as the service keeps
+   * logging) and is wiped on every reconcile/restart (`logBuffers.clear()`) —
+   * this runs a fresh `docker compose logs --tail <lines>` and returns whatever
+   * Docker still retains for the *current* container. That's what makes the
+   * panel show history from before it was opened instead of only the slice that
+   * happened to survive in the ring buffer. The live `-f` stream
+   * ({@link streamLogs}) still feeds incremental updates after this snapshot.
+   *
+   * Never rejects: falls back to the in-memory buffer if the snapshot command
+   * errors or returns nothing.
+   */
+  async snapshotLogs(name: string, lines = 2000): Promise<string> {
+    if (!this.services.has(name)) return "";
+    const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
+    const args = this.composeArgs("logs", "--no-log-prefix", "--tail", tail, name);
+
+    return new Promise<string>((resolve) => {
+      let settled = false;
+      const finish = (val: string) => {
+        if (settled) return;
+        settled = true;
+        const out = val.length > ServiceManager.MAX_LOG_SNAPSHOT
+          ? truncateTerminalBuffer(val, ServiceManager.MAX_LOG_SNAPSHOT)
+          : val;
+        resolve(out.length > 0 ? out : this.getLogBuffer(name));
+      };
+      try {
+        const proc = spawn("docker", args, {
+          cwd: this.workspaceDir,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        const onData = (chunk: Buffer) => { out += chunk.toString(); };
+        proc.stdout?.on("data", onData);
+        proc.stderr?.on("data", onData);
+        proc.on("error", () => finish(this.getLogBuffer(name)));
+        proc.on("close", () => finish(out));
+      } catch {
+        finish(this.getLogBuffer(name));
+      }
+    });
   }
 
   /**
