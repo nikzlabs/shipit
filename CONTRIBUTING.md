@@ -2,7 +2,7 @@
 
 Thanks for your interest in ShipIt! This file covers everything you need to work on ShipIt itself: the architecture, the dev loop, and how the pieces talk to each other.
 
-**Heads up:** ShipIt isn't accepting pull requests right now. Bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
+**Heads up:** ShipIt is not currently accepting unsolicited pull requests. The PR template, CLA checks, and CI remain in place for maintainer-authored branches, invited contributions, release validation, and future contribution workflows. Issues, bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
 
 For installing and using ShipIt, see the [README](README.md). For platform docs that the agent reads from inside session containers, see `src/server/shipit-docs/`. For per-feature design notes, see `docs/NNN-feature-name/plan.md`.
 
