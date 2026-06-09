@@ -568,28 +568,59 @@ export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
 }
 
 /**
- * Remove a session's external service-env directory
- * (`<rootDir>/<sessionId>/`) and everything under it. docs/183.
+ * Remove a session's per-session secret-file directory
+ * (`<rootDir>/<sessionId>/`) and everything under it. Best-effort: a failure
+ * here must not block session teardown.
  *
- * Called from `ServiceManager.stop({ removeVolumes: true })` — the
- * session-going-away-for-good signal (archive / full reset) — so the plaintext
- * service env files don't outlive the session. Without this they would
- * accumulate on the volume root indefinitely, since (unlike the old
- * in-workspace `.shipit/.env.<svc>` path) they're outside the workspace
- * checkout that archive drops and outside the disk-janitor's orphan-workspace
- * sweep. Best-effort: a failure here must not block teardown.
+ * Both out-of-workspace secret-delivery modes write plaintext per-session
+ * files under `<rootDir>/<sessionId>/` (env-file mode → docs/183; Docker-secrets
+ * mode → docs/087 Phase 1 follow-up). Those roots live outside the workspace
+ * checkout, so neither archive nor the disk-janitor's orphan-workspace sweep
+ * reclaims them — without an explicit drop on teardown they accumulate
+ * indefinitely. This helper is the shared cleanup both modes call.
  */
-export function removeSessionServiceEnvDir(opts: {
-  rootDir: string;
-  sessionId: string;
-}): void {
-  const { rootDir, sessionId } = opts;
+function removeSessionSecretDir(rootDir: string, sessionId: string): void {
   if (!sessionId) return;
   try {
     fs.rmSync(path.join(rootDir, sessionId), { recursive: true, force: true });
   } catch {
     // Best-effort cleanup — never block session teardown on this.
   }
+}
+
+/**
+ * Remove a session's external service-env directory
+ * (`<rootDir>/<sessionId>/`). docs/183.
+ *
+ * Called from `ServiceManager.stop({ removeVolumes: true })` — the
+ * session-going-away-for-good signal (archive / full reset) — so the plaintext
+ * service env files written by env-file mode don't outlive the session.
+ */
+export function removeSessionServiceEnvDir(opts: {
+  rootDir: string;
+  sessionId: string;
+}): void {
+  removeSessionSecretDir(opts.rootDir, opts.sessionId);
+}
+
+/**
+ * Remove a session's Docker-secrets directory (`<internalDir>/<sessionId>/`).
+ * docs/087 Phase 1 follow-up, teardown cleanup added per docs/183.
+ *
+ * Docker-secrets mode (`writeIsolatedSecretFiles()`) writes per-secret plaintext
+ * files to `<internalDir>/<sessionId>/<NAME>`. Like the env-file directory that
+ * docs/183 cleans up, this lives outside the workspace checkout, so it must be
+ * dropped explicitly when the session goes away for good. Called from
+ * `ServiceManager.stop({ removeVolumes: true })` under the same guard; idle
+ * eviction / reconcile (default `removeVolumes: false`) preserve the files so a
+ * resumed session keeps its secrets. Only the orchestrator-internal `internalDir`
+ * is touched — the optional `hostDir` path semantics are unaffected.
+ */
+export function removeSessionSecretsDir(opts: {
+  internalDir: string;
+  sessionId: string;
+}): void {
+  removeSessionSecretDir(opts.internalDir, opts.sessionId);
 }
 
 /**
