@@ -38,8 +38,8 @@ echo "  1. Cloudflare Tunnel"
 echo "     Exposes ShipIt at https://your-domain.com (a domain you own and have"
 echo "     added to Cloudflare). Cloudflare proxies traffic into this VPS over an"
 echo "     outbound tunnel — no inbound ports to open, no public IP exposed."
-echo "     Anyone on the internet who knows the URL can reach it, unless you also"
-echo "     enable Zero Trust (this script can set that up) to gate access by email."
+echo "     Cloudflare Zero Trust is required by default so only authorized users"
+echo "     can reach ShipIt; the script can create the Access app and policy."
 echo ""
 echo "  2. Tailscale"
 echo "     Exposes ShipIt only to devices on your Tailscale network (tailnet)."
@@ -243,15 +243,10 @@ if [ "${ZERO_TRUST_DONE:-}" = "true" ]; then
   echo "  Zero Trust access control is configured."
   echo "  To manage policies later: https://one.dash.cloudflare.com -> Access -> Applications"
 elif [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "  No access control configured - your instance is publicly accessible!"
-  echo "  Set up Zero Trust access control:"
-  echo "    1. Go to: https://one.dash.cloudflare.com"
-  echo "    2. Navigate to: Access -> Applications -> Add an application"
-  echo "    3. Choose 'Self-hosted', set domain to: $DOMAIN"
-  echo "    4. Add a second domain: *.$DOMAIN (for preview subdomains)"
-  echo "    5. Create an Allow policy for your team's emails"
-  echo "    6. Save - users will authenticate through Cloudflare before reaching ShipIt"
-  echo "  Or run cloudflare.sh again and provide a Cloudflare API token when prompted."
+  echo "  WARNING: Cloudflare Zero Trust was disabled by explicit override."
+  echo "  Your instance is publicly accessible unless another access layer protects it."
+  echo "  To enable Zero Trust, run cloudflare.sh again without"
+  echo "  SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 and provide a Cloudflare API token."
 fi
 
 echo ""
@@ -268,7 +263,7 @@ fi
 if [ "${ZERO_TRUST_DONE:-}" = "true" ]; then
   echo "    2. Authenticate through Cloudflare Zero Trust"
 elif [ "$INSTALL_CLOUDFLARE" = "true" ]; then
-  echo "    2. If you set up Zero Trust, you'll authenticate through Cloudflare first"
+  echo "    2. This Cloudflare route is public because you explicitly disabled Zero Trust"
 else
   echo "    2. Complete the access setup you chose"
 fi
