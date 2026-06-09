@@ -63,8 +63,9 @@ per fresh session — a conscious, temporary regression until overlay lands.
       concurrent sessions over one read-only base with no EBUSY. **Decision: adopt daemon-overlay,
       drop the privileged sidecar + the propagation prerequisite (and the startup probe / re-arm /
       unmount-ordering they implied).** **All four documented targets are overlay-eligible.**
-- [ ] Confirm `volume-driver-overlay-spike.sh` once on a **Linux/VPS** daemon (expected to pass
-      trivially — daemon-side overlay is standard there).
+- [x] Confirm `volume-driver-overlay-spike.sh` once on a **Linux/VPS** daemon — satisfied by the
+      prod-VPS production-layout run recorded under Phase 2 (`shipit-16gb`, Ubuntu 24.04, docker
+      29.5.2, PASS=7/7).
 - [x] Decide host-mount mechanism, helper shape, storage layout, propagation prerequisite, and
       fallback (plan §4). See `FINDINGS.md` for evidence + live 31,396-file / ~24s measurement.
 
@@ -190,10 +191,12 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
   - [ ] Add an `overlayVolumeName(session)` resolver → `shipit-<sessionId[:12]>_overlay` for
         overlay-eligible sessions, `undefined` otherwise. All branches below key off it; non-overlay
         sessions stay byte-for-byte unchanged.
-  - [ ] **Agent container:** in `buildMounts` (`container-lifecycle.ts`), for overlay sessions mount
-        the overlay volume at `/workspace` **at the volume root** (no subpath). Leave `/uploads`,
-        `/dep-cache`, `/credentials` as subpaths of the `shipit-workspace` state volume — only the
-        `/workspace` source switches.
+  - [ ] **Agent container — `buildMounts` signature change (not a value swap):** `buildMounts`
+        reuses its single `workspaceVolume` param for `/workspace`, `/uploads`, AND `/dep-cache`, so
+        passing the overlay name would wrongly repoint all three. Add a distinct
+        `overlayWorkspaceVolume` argument applied to `/workspace` **only** (mounted at the volume
+        root, no subpath). `/uploads` + `/dep-cache` keep the `shipit-workspace` state volume,
+        `/credentials` keeps `credentialsVolume`.
   - [ ] **Compose services:** pass `workspaceVolume = <overlay name>` and **`workspaceSubpath = ""`**
         to `generateComposeOverride` (`service-manager.ts`) for overlay sessions. No generator code
         change — `rewriteVolumes` + the `shipit-workspace`→`{name, external:true}` alias do the rest;

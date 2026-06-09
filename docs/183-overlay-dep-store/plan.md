@@ -321,22 +321,29 @@ the session** — see the mechanism decision below.
 #### Compose/preview wiring (Open Q #4 resolved — the mechanism, scoped)
 
 The shared-overlay-volume mechanism is proven (PASS=8/8 across all three hosts; Open Q #4).
-Wiring it in is small because **both** the agent container and compose services already mount
-subpaths of one shared `external` named volume (`shipit-workspace`) today — the overlay path
-just points that name at the per-session `type=overlay` volume for overlay-eligible sessions.
-The concrete touchpoints:
+Wiring it in is small because the agent container and compose services already mount subpaths of
+one shared `external` named volume (`shipit-workspace`) today. The **compose** side is a pure
+option-value change (below); the **agent** side needs a one-argument signature change to
+`buildMounts`, because that function currently feeds a *single* `workspaceVolume` parameter into
+three different mounts. The concrete touchpoints:
 
 - **Resolve the overlay volume name.** One helper returns `shipit-<sessionId[:12]>_overlay` (the
   §4 GC name) for overlay-eligible sessions, `undefined` otherwise. Everything below branches on it;
   non-overlay sessions are byte-for-byte unchanged.
-- **Agent container — switch only the `/workspace` mount.** `buildMounts`
-  ([container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
-  currently mounts the workspace as `Subpath: sessions/<id>/workspace` of `shipit-workspace`. For
-  an overlay session, mount the per-session `type=overlay` volume at `/workspace` **at the volume
-  root** (no subpath — the daemon-merged tree *is* the volume root). Critically, the **other**
-  agent mounts — `/uploads`, `/dep-cache`, `/credentials` — stay subpaths of the original
-  `shipit-workspace` state volume; they are not part of the overlay, so only the `/workspace`
-  source switches.
+- **Agent container — `buildMounts` needs a new param, not a value swap.** `buildMounts`
+  ([container-lifecycle.ts:85-158](../../src/server/orchestrator/container-lifecycle.ts#L85-L158))
+  takes a **single** `workspaceVolume` parameter and reuses it for **three** mounts: `/workspace`
+  (subpath `sessions/<id>/workspace`, L97-104), `/uploads` (subpath `sessions/<id>/uploads`,
+  L131-138), and `/dep-cache` (subpath `dep-cache/<hash>`, L146-154). So you **cannot** just pass
+  the overlay volume name — that would also repoint `/uploads` and `/dep-cache` at the overlay
+  volume, whose root is the merged workspace and which has no `sessions/<id>/uploads` or
+  `dep-cache/<hash>` subtree (both mounts would resolve to non-existent paths, and an overlay-backed
+  `/dep-cache` would also break cross-session cache sharing). The change is a **signature change**:
+  add a distinct `overlayWorkspaceVolume` argument applied to the `/workspace` mount **only** —
+  mounting the per-session `type=overlay` volume at `/workspace` **at the volume root** (no subpath —
+  the daemon-merged tree *is* the volume root). `/uploads` and `/dep-cache` keep using the existing
+  `workspaceVolume` (the `shipit-workspace` state volume), and `/credentials` keeps its separate
+  `credentialsVolume` param. Only the `/workspace` source switches.
 - **Compose services — option values only, no new generator code.** Pass
   `workspaceVolume = <overlay volume name>` and **`workspaceSubpath = ""`** to
   `generateComposeOverride` ([service-manager.ts:604-611](../../src/server/orchestrator/service-manager.ts#L604-L611)).
@@ -555,8 +562,12 @@ multi-container spike going PASS=8/8 on all three host targets — see below).
    structurally impossible, and all containers get a coherent merged view (the dev server sees the
    agent's edits and vice-versa — what HMR needs). The compose-generator change is small: for
    overlay-eligible sessions, point `opts.workspaceVolume` at the per-session overlay volume name
-   instead of `shipit-workspace`; `rewriteVolumes`, the `external: true` declaration, and subpath
-   resolution are all unchanged. Services must mount **only** that merged volume — never an
+   instead of `shipit-workspace` **and set `opts.workspaceSubpath = ""`** (the overlay volume's
+   root *is* the merged workspace, so there is no `sessions/<id>/workspace` storage subpath to
+   prepend — passing the existing non-empty subpath would mount every service at a path that
+   doesn't exist on the overlay volume and the dev server would fail to boot); `rewriteVolumes` and
+   the `external: true` declaration are otherwise unchanged. See the "Compose/preview wiring"
+   subsection in §4 for the full per-mount detail. Services must mount **only** that merged volume — never an
    `overlay-base/` lowerdir subpath (the §4 read-only-lower rule) and never a bare-upperdir subpath.
 
    **The one unproven bit + how it's proven.** The new variable is *concurrent first-use* of a
