@@ -40,6 +40,7 @@ import {
   type HealthMonitorState,
 } from "./container-health.js";
 import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount } from "../shared/shipit-config.js";
+import type { OverlaySpec } from "./overlay-volume.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -116,6 +117,16 @@ export interface ContainerConfig {
    * true; otherwise dropped at config-build time.
    */
   hostMounts?: HostMount[];
+  /**
+   * docs/183 Phase 2 — overlay dep store. When set, the orchestrator creates a
+   * per-session `local`-driver `type=overlay` volume (lowerdir=shared base,
+   * upper/work=this session) and mounts it at `/workspace` instead of the
+   * `workspaceVolume` subpath; the daemon performs the overlay mount as it builds
+   * the container. `/uploads` and `/dep-cache` keep using `workspaceVolume`.
+   * Populated by later-phase eligibility logic; absent for non-overlay sessions
+   * (the byte-for-byte-unchanged path).
+   */
+  overlaySpec?: OverlaySpec;
 }
 
 export interface SessionContainer {
@@ -151,6 +162,13 @@ export interface SessionContainer {
    * re-adopted containers, where the booted limits genuinely aren't known.
    */
   bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
+  /**
+   * docs/183 Phase 2 — name of the per-session overlay volume created for this
+   * container, when it is an overlay session. Recorded so `destroyContainer` can
+   * `docker volume rm` it on teardown without re-deriving eligibility. Absent for
+   * non-overlay sessions.
+   */
+  overlayVolumeName?: string;
 }
 
 export interface SessionContainerManagerEvents {

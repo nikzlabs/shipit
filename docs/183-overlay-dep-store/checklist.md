@@ -101,34 +101,43 @@ Mechanism: the orchestrator (unprivileged, via `docker.sock`) has the **daemon**
 overlay through a `local` `type=overlay` volume. No privileged sidecar, no propagation, no
 `CAP_SYS_ADMIN`. (See the rejected sidecar design in `FINDINGS.md` for why.)
 
-- [ ] Orchestrator creates a **per-session `local`-driver `type=overlay` volume** —
-      `o=lowerdir=<base>,upperdir=<session-upper>,workdir=<session-work>` using **absolute
-      daemon-host paths** resolved via `docker volume inspect -f '{{.Mountpoint}}'` — and mounts
-      it at `/workspace` (extend `buildMounts`); the daemon performs the overlay mount as it
-      builds the container (merged view present by construction).
-- [ ] **Base lives in `overlay-base/<scope-hash>/` on the workspace volume — NOT under
-      `dep-cache/`.** The dep-cache subtree is mounted **rw** into every session (`/dep-cache`),
-      so a base there would be writable from inside sessions and could corrupt the immutable
-      lowerdir under other sessions' live mounts. The `overlay-base/` subtree must **never** be
-      bind/Subpath-mounted into a session container.
-- [ ] **Per-session upper/work** under `sessions/{uuid}/` (kernel forbids sharing an upperdir;
-      same subtree → upper+work share an fs); **shared read-only base** across sessions.
-      **`workdir` empty.**
-- [ ] **Serialize** volume create/mount to avoid the overlay2 `device or resource busy` (EBUSY)
-      hazard under parallel container starts.
-- [ ] **Volume lifecycle + GC:** name the volume **`shipit-<sessionId[:12]>_overlay`** so the
-      existing `sweepOrphanSessionVolumes` (regex `^shipit-([a-f0-9-]{12})_`, dangling, live-prefix
-      check) reclaims it automatically — a crash-orphaned volume is swept once no session owns the
-      prefix; a live/idle session's volume is preserved. **Avoid `shipit-overlay-<id>`** (fails the
-      `<12 hex>_` regex → leaks). Stamp `shipit-managed=true` for parity. Teardown = `docker volume
-      rm` on dispose. Extend `sweepOrphanedCaches` to cover unreferenced `overlay-base/<hash>/`.
-- [ ] Add the workspace-view resolver before enabling overlay sessions: `session.workspaceDir`
-      is storage/upperdir metadata for overlay sessions, while file/doc/git/compose/watcher and
-      post-turn operations must dispatch through worker HTTP endpoints against the container's
-      merged `/workspace`. Audit all direct orchestrator `fs`/`GitManager` uses against
-      `session.workspaceDir` and route or prove them storage-only.
-- [ ] Verify the route stays within the containment model (docs/172) — orchestrator stays
-      unprivileged; session containers gain no capability.
+- [x] Orchestrator creates a **per-session `local`-driver `type=overlay` volume** —
+      `o=lowerdir=<base>,upperdir=<session-upper>,workdir=<session-work>` — and mounts it at
+      `/workspace` (extend `buildMounts`); the daemon performs the overlay mount as it builds the
+      container (merged view present by construction). **Done:** new
+      [`overlay-volume.ts`](../../src/server/orchestrator/overlay-volume.ts) (`createOverlayVolume`,
+      `resolveVolumeMountpoint` for the `docker volume inspect` absolute paths, `OverlaySpec`);
+      `buildMounts` gained an `overlayWorkspaceVolume` arg mounting the overlay volume at the
+      `/workspace` **root** (no subpath), with `/uploads` + `/dep-cache` left on the state volume;
+      `createContainer` creates the volume when `config.overlaySpec` is set. **Inert until a caller
+      populates `overlaySpec` (Phase 3/4) — non-overlay sessions are byte-for-byte unchanged.**
+- [x] **Base lives in `overlay-base/<scope-hash>/` on the workspace volume — NOT under
+      `dep-cache/`.** Encoded as `overlayBaseDir()` + `OVERLAY_BASE_SUBDIR` in `overlay-volume.ts`,
+      with the read-only-lower / never-mounted-into-a-session rationale in the docstring. (Actually
+      *writing* base contents is Phase 3; this fixes the layout + the GC target.)
+- [x] **Per-session upper/work** under `sessions/{uuid}/`; **shared read-only base** across
+      sessions; **`workdir` empty.** Captured as the `OverlaySpec` contract (`upperdir`/`workdir`
+      are absolute daemon-host paths the caller supplies; the docstring states the same-fs +
+      empty-workdir kernel rules). The concrete path computation per session lands in Phase 3.
+- [x] **Serialize** volume create/mount to avoid the overlay2 `device or resource busy` (EBUSY)
+      hazard — `createOverlayVolume` runs through a single-writer async mutex (`serialize`).
+- [x] **Volume lifecycle + GC:** volume named **`shipit-<sessionId[:12]>_overlay`** (matches
+      `sweepOrphanSessionVolumes`' `^shipit-([a-f0-9-]{12})_` regex → automatic orphan reclaim;
+      test added), `shipit-managed=true` label stamped, teardown = `docker volume rm` in
+      `destroyContainer` (+ the create-failure path). Added `sweepOrphanedOverlayBases` for
+      `overlay-base/<hash>/` dirs, **gated on a live-scope-hash source** (NOT the repo-url
+      `liveHashes` set — that would delete every live base) with an mtime fallback; the source is
+      wired in Phase 3, so the sweep is skipped until then.
+- [ ] **DEFERRED to Phase 4** — workspace-view resolver: `session.workspaceDir` is storage/upperdir
+      metadata for overlay sessions, while file/doc/git/compose/watcher and post-turn operations
+      must dispatch through worker HTTP endpoints against the container's merged `/workspace`. This
+      is the broad "audit every direct orchestrator `fs`/`GitManager` use" task and only matters
+      once overlay sessions are actually *enabled* (Phase 4), so it is tracked there rather than
+      blocking the mount subsystem.
+- [x] Verify the route stays within the containment model (docs/172) — the orchestrator gains no
+      capability (it already holds `docker.sock`); the daemon performs the mount; session
+      containers gain no capability (the overlay volume is an ordinary `-v name:/workspace` mount,
+      `CapAdd`/`CapDrop` unchanged in `createContainer`).
 - [x] **Production-layout spike confirmed** — `volume-driver-overlay-spike.sh` (updated to seed
       `lowerdir` under `overlay-base/<hash>/` and `upperdir`/`workdir` under `sessions/<uuid>/`,
       cross-subtree nested subpaths of one volume) ran **PASS=7 FAIL=0 on the prod VPS**

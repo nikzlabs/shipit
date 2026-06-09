@@ -1107,4 +1107,97 @@ describe("runDiskJanitor", () => {
 
     expect(result.credentialDirsRemoved).toBe(0);
   });
+
+  // -------------------------------------------------------------------------
+  // docs/183 Phase 2/3 — overlay resources
+  // -------------------------------------------------------------------------
+
+  it("reclaims an orphan `shipit-<id>_overlay` volume (existing orphan-volume sweep)", async () => {
+    // The overlay volume name deliberately matches the `^shipit-([a-f0-9-]{12})_`
+    // pattern, so no new sweep is needed — the existing one reclaims it once no
+    // live session owns the prefix. This locks that contract.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    const rmRequests: string[] = [];
+    const dockerListing = [
+      `shipit-${liveId.slice(0, 12)}_overlay`, // live session — PRESERVE
+      "shipit-deadbeef0000_overlay",            // orphan — REMOVE
+    ].join("\n");
+
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") return Promise.resolve(dockerListing);
+      if (args[0] === "volume" && args[1] === "rm") { rmRequests.push(args[2]); return Promise.resolve(""); }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({ sessionManager, repoStore, stateDir: tmpDir, runDocker });
+
+    expect(rmRequests).toEqual(["shipit-deadbeef0000_overlay"]);
+    expect(rmRequests).not.toContain(`shipit-${liveId.slice(0, 12)}_overlay`);
+    expect(result.orphanVolumesRemoved).toBe(1);
+  });
+
+  it("overlay-base sweep is skipped when liveOverlayScopeHashes is not provided", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // Seed a stale overlay-base dir; without a live-scope-hash source the sweep
+    // must NOT touch it (we can't confirm it isn't a live lowerdir).
+    const baseDir = path.join(tmpDir, "overlay-base", "0123456789abcdef");
+    fs.mkdirSync(baseDir, { recursive: true });
+    fs.writeFileSync(path.join(baseDir, "marker"), "x");
+    const old = Date.now() / 1000 - 99 * 86_400;
+    fs.utimesSync(baseDir, old, old);
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(baseDir)).toBe(true);
+    expect(result.overlayBasesRemoved).toBe(0);
+  });
+
+  it("overlay-base sweep removes stale, unreferenced bases but keeps live + young ones", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const root = path.join(tmpDir, "overlay-base");
+    fs.mkdirSync(root, { recursive: true });
+    const mk = (hash: string, ageDays: number) => {
+      const d = path.join(root, hash);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "marker"), "x");
+      const t = Date.now() / 1000 - ageDays * 86_400;
+      fs.utimesSync(d, t, t);
+      return d;
+    };
+    const liveStale = mk("aaaaaaaaaaaaaaaa", 99);   // live → keep despite age
+    const orphanStale = mk("bbbbbbbbbbbbbbbb", 99);  // unreferenced + old → REMOVE
+    const orphanYoung = mk("cccccccccccccccc", 1);   // unreferenced but young → keep
+    // A stray file (not a dir) must be ignored.
+    fs.writeFileSync(path.join(root, "stray.txt"), "x");
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      liveOverlayScopeHashes: () => new Set(["aaaaaaaaaaaaaaaa"]),
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(liveStale)).toBe(true);
+    expect(fs.existsSync(orphanStale)).toBe(false);
+    expect(fs.existsSync(orphanYoung)).toBe(true);
+    expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
+    expect(result.overlayBasesRemoved).toBe(1);
+  });
 });
