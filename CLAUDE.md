@@ -417,6 +417,15 @@ The recognized frontmatter fields are `issue`, `title`, and `description` — al
 ---
 ```
 
+### Keep the tracker in sync when you touch a design doc
+
+Whenever you create or materially update a `docs/NNN-*` design doc, sync its tracker item in the same turn. Use the tracker-neutral `shipit issue` command (see `src/server/shipit-docs/issues.md`) — not `gh issue`, `gh api`, or a Linear MCP.
+
+- **Doc has an `issue:` pointer (Linear *or* GitHub).** Post a comment on that issue summarizing what changed in the doc and why: `shipit issue comment <pointer> --body-file - <<'EOF' … EOF`. The pointer's shape selects the tracker; pass it verbatim. This applies equally to GitHub-attached docs — comment, don't open a second tracker item.
+- **Doc has no `issue:` pointer.** **Propose** a matching Linear issue — do not auto-create one. `shipit issue create` is intentionally rejected because issue creation is human-gated (docs/164); the agent never files issues unprompted. Surface a suggested Linear title and body for the user to confirm, and once they've created it, write the returned Linear URL back into the doc's `issue:` frontmatter (full URL, no title slug) to cross-link the two.
+
+This rule is specific to the ShipIt repo and deliberately lives here, not in `src/server/shipit-docs/design-docs.md` — that file ships to every repo edited inside ShipIt, and those projects don't necessarily want their docs wired to a tracker this way.
+
 A `checklist.md` can exist alongside any doc — it tracks remaining work items and drives the Active/Done grouping. When the work is finished, mark all checklist items complete (`[x]`).
 
 When a doc describes UI whose layout is load-bearing (filters, tables, responsive breakpoints), commit the prototype into the feature folder as a sibling of `plan.md` — `mockup.html`, `mockup.svg`, or a `mocks/` subdir for several. Prefer self-contained, static artifacts (one HTML file with inline CSS, or SVG) so they open with no build step and stay diffable; `.png` screenshots are an acceptable supplement but aren't diffable, so keep HTML/SVG as the source of truth. Link the mock from `plan.md` with a short "Visual reference" note so a reader lands on the picture. The `present` tool's tab is ephemeral and never touches the repo; committed mocks are reviewable in PRs, render in the file tree, and survive across sessions.
