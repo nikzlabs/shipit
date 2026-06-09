@@ -227,8 +227,15 @@ so it's not new.
   the WSL2 daemon-host root is **rprivate**, and propagation requires a one-time
   **`mount --make-rshared /`** on the daemon host first. (`propagation-spike.sh
   --with-host-setup` now applies that via a `--pid=host` nsenter container and
-  re-tests — run it to confirm the fix yields propagation.) → _pending the
-  --with-host-setup re-run verdict._
+  re-tests — run it to confirm the fix yields propagation.)
+  - **`--with-host-setup` re-run:** `mount --make-rshared /` **succeeded in PID 1's
+    mount namespace** ("host root is now a shared mount") but the daemon **still
+    rejected `:rshared`** with the same error. Strong signal that **dockerd runs in
+    a different mount namespace than PID 1** on this WSL host, so a PID-1
+    `make-rshared` never reaches the daemon's view. The canonical fix is then
+    `MountFlags=shared` on the **dockerd service** (+ restart), not `make-rshared /`
+    on PID 1. A diagnostic rung (compares dockerd/containerd mount-ns vs PID 1)
+    was added to confirm — _pending that diagnostic re-run._
 - Bare Linux / VPS: _(paste verdict — systemd hosts usually mount `/` rshared at
   boot, so the plain rung may already pass)_
 - Docker Desktop (Mac/Win): _(paste verdict — may differ; note whether

@@ -112,6 +112,29 @@ run_rung() { # name  "docker-run-args-for-A"  "docker-run-args-for-B"  PROP
 VERDICT="none"
 note() { [ "$LAST_RESULT" = "PROPAGATED" ] && VERDICT="$1"; }
 
+# Diagnose WHY propagation isn't reaching the daemon. The usual culprit: dockerd
+# runs in a DIFFERENT mount namespace than PID 1, so `make-rshared /` in PID 1
+# never reaches the daemon's view. Pure /proc parsing — no extra packages.
+diagnose_host() {
+  hdr "Diagnostics — is the daemon even in PID 1's mount namespace?"
+  docker run --rm --privileged --pid=host "$IMG" sh -c '
+    p1=$(readlink /proc/1/ns/mnt); echo "    PID1     mnt ns: $p1"
+    for c in dockerd containerd; do
+      for d in /proc/[0-9]*; do
+        [ -r "$d/comm" ] || continue
+        if [ "$(cat "$d/comm" 2>/dev/null)" = "$c" ]; then
+          pid=${d#/proc/}; ns=$(readlink /proc/$pid/ns/mnt)
+          [ "$ns" = "$p1" ] && tag="SAME as PID1" || tag="DIFFERENT from PID1  <-- propagation gap"
+          echo "    $c (pid $pid) mnt ns: $ns  [$tag]"
+          break
+        fi
+      done
+    done
+    echo "    --- PID1 propagation flags (mountinfo) ---"
+    awk '\''$5=="/" || $5 ~ /\/var\/lib\/docker/ {print "      "$5"  "($0 ~ /shared:/ ? "shared" : "private")}'\'' /proc/1/mountinfo | sort -u
+  ' 2>&1 | sed 's/^/  /'
+}
+
 # Rung 0 — baseline: plain named-volume bind in both. Expected NOT propagated
 # (Docker mounts volumes rprivate), establishing that the naive approach fails.
 run_rung "A0" "-v $VOL:/vol"            "-v $VOL:/vol"            "none";          note "baseline-volume(rprivate)"
@@ -139,6 +162,7 @@ if [ "$WITH_HOST_SETUP" -eq 1 ]; then
     warn "could not apply host setup (no --pid=host / nsenter on this daemon?):"; echo "$setup_out" | sed 's/^/      /'
   fi
   run_rung "A2" "-v $MP:/vol:rshared"   "-v $MP:/vol:rslave"     "none";          note "host-mountpoint :rshared AFTER make-rshared /"
+  [ "$VERDICT" = "none" ] && diagnose_host
 else
   echo
   warn "Tip: if rung A2 failed with 'not a shared mount', re-run with --with-host-setup"
