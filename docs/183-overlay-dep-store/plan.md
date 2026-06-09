@@ -369,8 +369,8 @@ on top of the simplified install path.
    per-session `local` `type=overlay` volume (`lowerdir`=base, `upperdir`/`workdir`=session,
    absolute daemon-host paths from `docker volume inspect`) and mounts it at `/workspace`;
    **serialize** volume create/mount (overlay2 EBUSY hazard); teardown is `docker volume rm`
-   (daemon unmounts on container stop — no manual unmount-ordering); confirm the spike once on
-   the Linux/VPS daemon; mount-cost timing. *(No sidecar, no propagation probe, no re-arm — all
+   (daemon unmounts on container stop — no manual unmount-ordering); mount-cost timing (the one
+   nice-to-have left — not a gate). *(No sidecar, no propagation probe, no re-arm — all
    removed by this mechanism.)*
 3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
    base in the `overlay-base/<hash>/` subtree (NOT dep-cache — see §4 storage layout) + per-session
@@ -398,9 +398,9 @@ design decisions are made (see Decisions). Status of each is tracked in
    propagation. Proven on Docker Desktop/Windows-WSL2 (`volume-driver-overlay-spike.sh` 7/7) —
    the host where the rejected sidecar/propagation approach failed — so **all four documented
    targets are overlay-eligible**. Teardown ordering also dissolves: the daemon unmounts on
-   container stop; the orchestrator just `docker volume rm`s. Remaining nice-to-haves: a Linux/VPS
-   run of the volume-driver spike (expected trivial) and mount-cost timing — see
-   [`FINDINGS.md`](./FINDINGS.md).*
+   container stop; the orchestrator just `docker volume rm`s. Proven in the production layout on
+   the prod VPS too (`shipit-16gb`, Ubuntu 24.04, 7/7). Only nice-to-have left: mount-cost timing
+   (not a gate) — see [`FINDINGS.md`](./FINDINGS.md).*
 2. **Source + `.git` on the overlay.** ✅ **Resolved** (WSL2/ext4 + Docker Desktop/Mac): clone +
    fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
    and a published base carries source contents with `.git` excluded cleanly.
