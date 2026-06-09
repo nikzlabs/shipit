@@ -574,3 +574,12 @@ wiring (point overlay-session services at the per-session overlay volume by subp
 > (Docker Desktop), docker 29.4.1, linux/amd64, cold-trials=25. "SHARED type=overlay
 > VOLUME ACROSS N CONTAINERS WORKS — one daemon overlay mount, bind-shared into every
 > consumer, no EBUSY." Cross-container inotify did not fire (expected; HMR polls).
+> **Docker Desktop / Mac run:** PASS=8 FAIL=0, daemon `docker-desktop` (Docker Desktop),
+> docker 29.5.3, **linux/arm64**, cold-trials=25. Identical result on a different arch —
+> single superblock, 0 EBUSY across 25 cold-race trials, polling substrate green,
+> cross-container inotify did not fire (expected).
+
+**Matrix: 2 of 3 green** (Docker Desktop/Windows-WSL2 ✅ amd64, Docker Desktop/Mac ✅
+arm64). **Remaining: prod VPS (ext4)** — the actual production substrate and the one
+storage driver not yet exercised by this spike. Green there retires Open Q #4 outright
+and unblocks the compose-generator wiring.

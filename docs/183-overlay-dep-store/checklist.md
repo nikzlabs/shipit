@@ -186,9 +186,9 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       container namespace; cross-container inotify is a non-gating data point); **(d)**
       teardown↔startup overlap leaves the merged view intact. Run on
       prod systemd VPS (ext4) + Docker Desktop/Mac + Docker Desktop/Windows-WSL2. **Overlay-session
-      preview support is gated on this spike going green.** *(Docker Desktop/Windows-WSL2: PASS=8/8,
-      25 cold-race trials, single superblock confirmed — the decisive host done; VPS + Mac
-      pending.)*
+      preview support is gated on this spike going green.** *(Both Docker Desktop hosts green:
+      Windows-WSL2 amd64 + Mac arm64, each PASS=8/8, 25 cold-race trials, single superblock
+      confirmed. Only the prod VPS (ext4) remains.)*
 - [ ] **Wire the shared overlay volume into compose** (after the spike). For overlay-eligible
       sessions, point `opts.workspaceVolume` at the per-session overlay volume name
       (`shipit-<sessionId[:12]>_overlay`) instead of `shipit-workspace` so `rewriteVolumes` +
