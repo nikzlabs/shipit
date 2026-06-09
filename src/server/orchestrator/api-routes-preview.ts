@@ -58,12 +58,12 @@ export async function registerPreviewRoutes(
         reply.code(404).send({ error: `Unknown service: ${request.params.name}` });
         return;
       }
-      let logs = stripAnsi(mgr.getLogBuffer(request.params.name));
+      // Snapshot fresh from Docker (see ServiceManager.snapshotLogs): the
+      // in-memory ring buffer rotates and is wiped on reconcile, so it drops
+      // history the caller expects to still be there.
       const lines = parseInt(request.query.lines ?? "", 10);
-      if (Number.isFinite(lines) && lines > 0) {
-        const allLines = logs.split("\n");
-        logs = allLines.slice(-lines).join("\n");
-      }
+      const tail = Number.isFinite(lines) && lines > 0 ? lines : undefined;
+      const logs = stripAnsi(await mgr.snapshotLogs(request.params.name, tail ?? 2000));
       return { name: request.params.name, logs };
     },
   );
