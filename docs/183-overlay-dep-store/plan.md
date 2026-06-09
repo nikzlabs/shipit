@@ -169,10 +169,96 @@ default branch base blindly.
 
 The mount can't happen inside the session container — ShipIt's containment model is
 unprivileged containers, HTTP-only, no `docker exec` (`docs/172-agent-containment`). So the
-**orchestrator mounts on the host and bind-mounts the merged dir into the session**: mount
-(lower + upper + workdir) on activate, unmount + clean workdir on disposal, and teach
-`disk-janitor` / archive flows about live mounts before they tear down dirs. This is the one
-genuinely new subsystem and the gating unknown for the whole proposal.
+**orchestrator (which holds `docker.sock`) has the daemon create the overlay and mount it into
+the session** — see the mechanism decision below.
+
+#### Host-mount design decisions (decided — see [`FINDINGS.md`](./FINDINGS.md))
+
+- **Mount mechanism — daemon-performed overlay via the `local` volume driver.** The orchestrator
+  stays **unprivileged**; using the `docker.sock` it already holds, it creates a per-session
+  **`local`-driver volume with `type=overlay`** and `o=lowerdir=<base>,upperdir=<session-upper>,
+  workdir=<session-work>` (absolute daemon-host paths, resolved via `docker volume inspect`).
+  When the session container mounts that volume at `/workspace`, the **Docker daemon performs the
+  `mount -t overlay`** as it constructs the container, so the merged view is in the container's
+  mount namespace **by construction**. **No privileged sidecar, no `CAP_SYS_ADMIN` anywhere, and
+  no cross-container mount propagation** — which is what makes it work uniformly across **all
+  four** install targets, including Docker Desktop/Windows. **Proven** on Docker Desktop/Windows
+  (the host where the propagation approach was dead): `prototype/volume-driver-overlay-spike.sh`
+  PASS=7/7 — unprivileged merged visibility, copy-up to a per-session upper, immutable shared
+  base, and two concurrent sessions over one read-only base with no EBUSY.
+
+  *Rejected — privileged sidecar driving `mount -t overlay` with shared propagation.* The
+  earlier design ran a long-lived `--privileged` "mounter" sidecar whose overlay mount had to
+  **propagate** (`rshared`) into the daemon's namespace to reach a separate session container.
+  That works on systemd VPS and Docker Desktop/Mac but is **confirmed rejected on Docker
+  Desktop/Windows-WSL2** (managed `docker-desktop` distro, no user-applicable
+  `MountFlags=shared` fix — `propagation-spike.sh`, see [`FINDINGS.md`](./FINDINGS.md)). The
+  daemon-overlay mechanism above makes the whole propagation problem — and the sidecar, the
+  startup propagation probe, the re-arm-on-boot, and the disk-janitor unmount-ordering hazard
+  (Docker unmounts on container stop; we just `docker volume rm`) — disappear. *(Also rejected:
+  standing `CAP_SYS_ADMIN` on the orchestrator; a custom Docker volume plugin — too heavy.)*
+
+  **Per-session-upper rule + concurrency caveat (kernel-level, respected by the design):** the
+  kernel errors `upperdir is in-use by another mount` if two overlays share an `upperdir`, so
+  each session gets its **own** upper/work; a **shared read-only `lowerdir`** across sessions is
+  fine (proven). `device or resource busy` is a known overlay2 hazard under **parallel** mount
+  creation → **serialize** the volume create/mount. `workdir` must be empty and on the upper's fs.
+
+  **Volume lifecycle + GC (the overlay volume is a new Docker resource — must not leak).**
+  **Name it on the pattern the existing orphan sweep already matches** — `sweepOrphanSessionVolumes`
+  ([disk-janitor.ts:366-421](../../src/server/orchestrator/disk-janitor.ts#L366-L421)) reclaims
+  dangling volumes matching `^shipit-([a-f0-9-]{12})_` whose 12-char session prefix is not a live
+  session, so name the volume **`shipit-<sessionId[:12]>_overlay`**. That makes orphan recovery
+  *automatic*: a live (incl. idle-evicted) session's volume is preserved (live-prefix check; and
+  it's `dangling=false` while attached), and a volume orphaned by an orchestrator crash between
+  `docker volume create`↔start or stop↔`docker volume rm` is swept once no session owns the
+  prefix. Also stamp the `shipit-managed=true` label for parity with compose volumes. Happy-path
+  teardown stays `docker volume rm` on dispose (daemon unmounts on container stop — no manual
+  unmount-ordering). **Do NOT** use a name like `shipit-overlay-<id>`: it fails the
+  `<12 hex>_` regex and would leak. For the on-disk `overlay-base/<hash>/` dirs, extend the
+  existing unreferenced-`dep-cache/<hash>` cache sweep (`sweepOrphanedCaches`) to cover them.
+
+  *Confirm-before-build — done.* `volume-driver-overlay-spike.sh`, updated to seed the real
+  production layout (`lowerdir` under the workspace volume's `overlay-base/<hash>/`,
+  `upperdir`/`workdir` under `sessions/<uuid>/` — cross-subtree nested subpaths of the *same*
+  named volume's `_data`), ran **PASS=7/7 on the prod VPS** (`shipit-16gb`, Ubuntu 24.04, docker
+  29.5.2) — settling both the production path layout and a non-Docker-Desktop Linux daemon. Only
+  nice-to-have left: mount-cost timing (not a gate).
+
+  - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
+    unavailable the fallback is simply running `agent.install` into the workspace as today,
+    warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
+    — a *separate* subtree from `nm-store`, so a plain install pulls tarballs locally with **no
+    network**. Note this removes network only, **not** the node_modules extract/link cost (the
+    tens-of-thousands-of-tiny-writes that dominate a large-tree install — e.g. ~24s for ShipIt's
+    own repo); that extract cost is precisely what the overlay warm-base path eliminates and the
+    fallback still pays. So the fallback is "correct + network-free," not "fast." The `nm-store`
+    materialization (`tar`/`cp -a`, lockfile detection,
+    command allowlist, store keying) adds nothing the overlay base doesn't do better and is
+    **deleted entirely** ([nm-store.ts](../../src/server/session/nm-store.ts)), leaving exactly
+    two paths: overlay (warm, near-no-op) or plain full install (correct everywhere).
+- **Storage layout — single workspace volume; base in its OWN subtree, never mounted into a
+  session.** Per-session `upper`/`work` live under the session subtree (`sessions/{uuid}/` — the
+  same subtree, so upper+work share a filesystem, satisfying overlay's same-fs rule). The shared
+  base (lowerdir) lives under a **dedicated `overlay-base/<scope-hash>/` subtree of the workspace
+  volume — NOT under the `dep-cache` subtree.** This is a correctness requirement, not a
+  preference: the per-repo dep-cache is bind/Subpath-mounted **read-write** into every session at
+  `/dep-cache` ([container-lifecycle.ts:146-158](../../src/server/orchestrator/container-lifecycle.ts#L146-L158)),
+  so a base placed there would be **writable from inside any session** — and the agent (or even
+  the install writing the npm cache) could mutate the shared **lowerdir under other sessions'
+  live overlay mounts**, which is undefined behavior (overlay requires an immutable lower; see
+  §Overlay operational cost). The `overlay-base/` subtree is on the same workspace volume (so the
+  daemon resolves its absolute path the same way and overlay's lower-can-differ-fs rule is moot)
+  but is **never bind/Subpath-mounted into a session container**, so it is unreachable-for-write
+  from any session. Its absolute daemon-host path is resolvable via `docker volume inspect`.
+  **How the merged
+  dir reaches the session:** the orchestrator creates the per-session `local`-driver
+  `type=overlay` volume from those paths and mounts it at `/workspace`; the **daemon** performs
+  the overlay mount as it builds the container, so the merged view is present **by
+  construction** — no nested-mount/propagation step, and no `merged` dir to pre-create on disk
+  (the daemon's volume mount is the merged view). This replaces the Subpath-of-a-pre-mounted-dir
+  approach (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
+  for overlay-eligible sessions.
 
 ### 5. Bounding drift and overlay depth
 
@@ -187,10 +273,21 @@ periodic clean-rebuild schedule is needed.
 
 ## Decisions (this iteration)
 
-- **Sequencing:** prototype the **keyless rolling-base logic first** (on the current copy
-  substrate), then build the host-mount subsystem. *Caveat:* the host-side mount remains the
-  true gating risk — validating the chain logic first does not de-risk it, so keep it next in
-  line.
+> **Prototype status (all green):** keyless rolling-base **logic** validated —
+> [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts) (33/33 against a real git
+> repo); overlay **substrate** confirmed (WSL2/ext4 19/19 + Docker Desktop/Mac 21/21); and the
+> **mount mechanism** settled — **daemon-performed overlay via the `local` volume driver**,
+> proven on Docker Desktop/Windows-WSL2 ([`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
+> 7/7), which makes all four install targets overlay-eligible and removes the privileged sidecar.
+> The earlier [`host-overlay-spike.sh`](./prototype/host-overlay-spike.sh) /
+> [`propagation-spike.sh`](./prototype/propagation-spike.sh) remain as substrate evidence and the
+> record of why the sidecar approach was rejected. Results in [`FINDINGS.md`](./FINDINGS.md),
+> how-to in [`prototype/README.md`](./prototype/README.md).
+
+- **Sequencing:** prototype the **keyless rolling-base logic first** (done), then settle the
+  **host-mount mechanism** (done — daemon-overlay). Both are now validated, so the gating risk
+  the earlier draft worried about (the privileged host-side mount) is retired: the daemon does
+  the mount, no sidecar.
 - **Environment-agnostic:** overlay the **whole workspace**; no ecosystem/target-path
   knowledge. Settled by §1.
 - **Skip policy:** keyless + upgrade the existing marker/`headChanged` skip into a stamped
@@ -248,27 +345,78 @@ periodic clean-rebuild schedule is needed.
 - **Bad-base gate:** advance the base **only when the install exits 0**. A non-zero install
   still serves the current session's tree but is never published as the base.
 
+## Implementation phases
+
+Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Phase 1 deletes
+nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
+on top of the simplified install path.
+
+0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
+   (WSL2 + Docker Desktop/Mac), and the §4 design are settled. **Mechanism = daemon-performed
+   overlay via the `local` volume driver** (no sidecar, no propagation, no `CAP_SYS_ADMIN`):
+   proven in the **production layout** on both **Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh`
+   7/7 — the host where the rejected sidecar approach failed) and the **prod systemd VPS**
+   (`shipit-16gb`, Ubuntu 24.04, 7/7). **All four documented targets are overlay-eligible** and
+   the confirm-before-build gate is cleared. (The earlier propagation spike — VPS/Mac pass,
+   Windows fails — is the evidence for *why the sidecar was rejected*; superseded.)
+1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
+   `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
+   becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
+   [148](../148-fast-npm-install/plan.md) superseded. *Interim:* fast-path-eligible repos pay a
+   full install per fresh session until Phase 3 — a conscious, temporary regression with a known
+   end date now that overlay is proven across all targets.
+2. **Daemon-overlay mount subsystem** — orchestrator (unprivileged, via `docker.sock`) creates a
+   per-session `local` `type=overlay` volume (`lowerdir`=base, `upperdir`/`workdir`=session,
+   absolute daemon-host paths from `docker volume inspect`) and mounts it at `/workspace`;
+   **serialize** volume create/mount (overlay2 EBUSY hazard); teardown is `docker volume rm`
+   (daemon unmounts on container stop — no manual unmount-ordering); mount-cost timing (the one
+   nice-to-have left — not a gate). *(No sidecar, no propagation probe, no re-arm — all
+   removed by this mechanism.)*
+3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
+   base in the `overlay-base/<hash>/` subtree (NOT dep-cache — see §4 storage layout) + per-session
+   upper/work, the stamped marker, the publish
+   commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
+4. **Session lifecycle integration** — on-activation install → publish rule, eligibility
+   exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, compose +
+   watcher production wiring.
+5. **Measure & tune** — warm-vs-cold install timing on the containerized path, set the depth cap,
+   optional manifest-fingerprint skip.
+
 ## Open questions
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
-design decisions are made (see Decisions).
+design decisions are made (see Decisions). Status of each is tracked in
+[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3/#4 are resolved.
 
-1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
-   whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
-   the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
-   the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
-2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
-   absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
-   source diff in the upper layer stays small (`t → t'`).
-3. **Publish ordering by commit ancestry.** The base advances only when a candidate's `main`
-   commit strictly descends the current base's commit (§3). Confirm the `git merge-base
-   --is-ancestor` check + short per-`(repo, runtime fingerprint)` lock are cheap (they gate
-   only the *publish*, not the install, which runs into each session's own upper layer), and
-   pick the conservative behavior for **diverged history** (force-pushed `main`): skip the
-   publish and let the next forward commit re-advance.
-4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
-   and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
-   source, and `inotify` over overlay (copy-up event quirks), behave correctly?
+1. **Host-mount feasibility (the gate).** ✅ **Resolved.** Can the unprivileged orchestrator own
+   a per-session whole-workspace overlay within the containment model (`docs/172`), across all
+   install targets? *Substrate confirmed (WSL2/ext4 19/19 + Docker Desktop/Mac 21/21: mount, CoW
+   with immutable base, 16-deep lowerdirs, teardown). The **mechanism** is the
+   **daemon-performed overlay via the `local` volume driver** — the orchestrator (via
+   `docker.sock`, no added capability) has the daemon mount the overlay as it builds the session
+   container, so there's no privileged sidecar, no `CAP_SYS_ADMIN`, and no cross-container
+   propagation. Proven on Docker Desktop/Windows-WSL2 (`volume-driver-overlay-spike.sh` 7/7) —
+   the host where the rejected sidecar/propagation approach failed — so **all four documented
+   targets are overlay-eligible**. Teardown ordering also dissolves: the daemon unmounts on
+   container stop; the orchestrator just `docker volume rm`s. Proven in the production layout on
+   the prod VPS too (`shipit-16gb`, Ubuntu 24.04, 7/7). Only nice-to-have left: mount-cost timing
+   (not a gate) — see [`FINDINGS.md`](./FINDINGS.md).*
+2. **Source + `.git` on the overlay.** ✅ **Resolved** (WSL2/ext4 + Docker Desktop/Mac): clone +
+   fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
+   and a published base carries source contents with `.git` excluded cleanly.
+3. **Publish ordering by commit ancestry.** ✅ **Resolved** by
+   [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts). The base advances only
+   when a candidate's `main` commit strictly descends the current base's commit (§3). The
+   `git merge-base --is-ancestor` check (~2.3 ms/call) + short per-`(repo, runtime
+   fingerprint)` lock (~0.1 ms/call) are confirmed cheap and gate only the *publish*. Diverged
+   history (force-pushed `main`) is handled conservatively: skip the publish, let the next
+   forward commit re-advance. A late-but-older publisher correctly declines (ancestry, not
+   wall-clock).
+4. **Compose + file watcher over the merged dir.** ✅ **Resolved.** Bind-mounting the overlay
+   **merged** dir reads through to the base and writes via the bind reach the upper
+   (compose-service pattern); `inotify` over the overlay sees both plain creates and copy-up
+   modifies. Confirmed on Docker Desktop/Mac (named-volume substrate, `run-in-docker.sh`,
+   21/21 incl. inotify) and bind-mount-corroborated on WSL2.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
