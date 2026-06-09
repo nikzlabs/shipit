@@ -318,6 +318,54 @@ the session** — see the mechanism decision below.
     `upperdir` alone. Otherwise a base publish after an empty/no-op install would lose every
     dependency and source file that came only from the lowerdir.
 
+#### Compose/preview wiring (Open Q #4 resolved — the mechanism, scoped)
+
+The shared-overlay-volume mechanism is proven (PASS=8/8 across all three hosts; Open Q #4).
+Wiring it in is small because **both** the agent container and compose services already mount
+subpaths of one shared `external` named volume (`shipit-workspace`) today — the overlay path
+just points that name at the per-session `type=overlay` volume for overlay-eligible sessions.
+The concrete touchpoints:
+
+- **Resolve the overlay volume name.** One helper returns `shipit-<sessionId[:12]>_overlay` (the
+  §4 GC name) for overlay-eligible sessions, `undefined` otherwise. Everything below branches on it;
+  non-overlay sessions are byte-for-byte unchanged.
+- **Agent container — switch only the `/workspace` mount.** `buildMounts`
+  ([container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
+  currently mounts the workspace as `Subpath: sessions/<id>/workspace` of `shipit-workspace`. For
+  an overlay session, mount the per-session `type=overlay` volume at `/workspace` **at the volume
+  root** (no subpath — the daemon-merged tree *is* the volume root). Critically, the **other**
+  agent mounts — `/uploads`, `/dep-cache`, `/credentials` — stay subpaths of the original
+  `shipit-workspace` state volume; they are not part of the overlay, so only the `/workspace`
+  source switches.
+- **Compose services — option values only, no new generator code.** Pass
+  `workspaceVolume = <overlay volume name>` and **`workspaceSubpath = ""`** to
+  `generateComposeOverride` ([service-manager.ts:604-611](../../src/server/orchestrator/service-manager.ts#L604-L611)).
+  `rewriteVolumes` then maps each `.`/`./sub` workspace mount onto the merged volume: `joinSubpath("", ".")`
+  → root mount, `joinSubpath("", "backend")` → `backend`. The existing top-level alias mapping
+  (`shipit-workspace` → `{ name: opts.workspaceVolume, external: true }`,
+  [compose-generator.ts:651-655](../../src/server/orchestrator/compose-generator.ts#L651-L655))
+  carries the rename. The empty subpath is the key difference from today: `shipit-workspace`'s root
+  is the **state dir** (workspace at `sessions/<id>/workspace`), whereas the overlay volume's root
+  **is** the workspace.
+- **Volume must exist before `docker compose up`.** The Phase-2 daemon-overlay subsystem
+  `docker volume create`s the overlay volume before the agent container starts; compose references
+  it `external: true`, so it must already exist when the stack comes up. The agent-container start
+  triggers the daemon's single `mount -t overlay` first; compose then refcount-shares it (the spike
+  proved concurrent first-use is safe regardless of order).
+- **Secrets delivery must not assume the workspace is host-readable.** The `x-shipit-secrets`
+  entrypoint wrapper and per-service env file live under `.shipit/` in the workspace today
+  ([compose-generator.ts:589-615](../../src/server/orchestrator/compose-generator.ts#L589-L615)).
+  For overlay sessions, either write them into the **merged** tree via the worker (per the
+  workspace-view resolver above) so the service container reads them at the subpath, or — cleaner —
+  use the already-present **out-of-workspace `serviceEnvFiles`** mode (absolute path outside the
+  workspace), which sidesteps the overlay entirely. Prefer out-of-workspace for overlay sessions;
+  the entrypoint-script mount needs the same treatment.
+- **Guardrail (must hold by construction + asserted by test).** No service mount may resolve to an
+  `overlay-base/` lowerdir subpath (the read-only-lower rule) or a bare-upperdir subpath. Because
+  the rewrite only ever targets the merged overlay volume root + a relative subpath, this holds —
+  but a compose-generator test must assert an overlay-session override **never** references the
+  `shipit-workspace` storage subpath (`sessions/<id>/…`) or the `overlay-base/` tree.
+
 ### 5. Bounding drift and overlay depth
 
 Re-running install over generations can leave extraneous packages or stale links, and
