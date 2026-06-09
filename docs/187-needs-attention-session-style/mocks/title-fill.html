@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Needs-attention — title highlight</title>
+<style>
+  :root {
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f9fafb;
+    --color-bg-tertiary: #f3f4f6;
+    --color-text-primary: #111827;
+    --color-text-secondary: #4b5563;
+    --color-text-tertiary: #9ca3af;
+    --color-border-primary: #e5e7eb;
+    --color-border-secondary: #d1d5db;
+    --amber-600: #d97706;   /* the current attention token */
+    --amber-700: #b45309;
+    --amber-800: #92400e;
+    --color-pr: #7c3aed;
+    --color-success: #16a34a;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: var(--font);
+    background: radial-gradient(1200px 600px at 50% -10%, #ffffff, #eef1f5 70%);
+    color: var(--color-text-primary); -webkit-font-smoothing: antialiased;
+    padding: 40px 28px 64px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { font-size: 13px; color: var(--color-text-secondary); max-width: 880px; margin: 0 0 16px; line-height: 1.5; }
+  code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 5px; font-size: 11px; color: var(--color-text-secondary); }
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin: 0 0 30px; font-size:11px; color:var(--color-text-tertiary); }
+  .legend b { color: var(--color-text-secondary); font-weight:600; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 22px; max-width: 1320px; }
+  .card {
+    background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
+    border-radius: 14px; padding: 16px 14px 18px;
+    box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 8px 24px -16px rgba(16,24,40,0.25);
+  }
+  .card.featured { outline: 2px solid rgba(217,119,6,0.14); }
+  .label { display: flex; align-items: baseline; gap: 8px; margin: 2px 4px 6px; }
+  .label .name { font-size: 13px; font-weight: 650; }
+  .label .tag {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--amber-700); background: rgba(217,119,6,0.12); padding: 2px 6px; border-radius: 999px;
+  }
+  .label .tag.warn { color: #b91c1c; background: rgba(220,38,38,0.10); }
+  .desc-row { font-size: 11px; color: var(--color-text-tertiary); margin: 0 4px 12px; line-height: 1.45; }
+  .desc-row b { color: var(--color-text-secondary); }
+
+  .list { padding: 4px 0; }
+  .row {
+    position: relative; display: flex; align-items: flex-start; gap: 6px;
+    margin: 3px 4px; padding: 6px 8px; border-radius: 6px;
+    font-size: 12px; color: var(--color-text-secondary);
+  }
+  .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .prdot { width: 7px; height: 7px; border-radius: 999px; margin-top: 5px; flex: none; background: var(--color-pr); }
+  .body { flex: 1; min-width: 0; }
+  .title { color: var(--color-text-primary); font-weight: 550; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row:not(.sel) .title { font-weight: 500; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--color-text-tertiary); font-size: 10px; }
+  .statusdot { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: none; }
+  .state {
+    flex: none; align-self: center; font-size: 9px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--color-text-tertiary);
+    border: 1px solid var(--color-border-primary); border-radius: 999px; padding: 1px 6px; background: var(--color-bg-primary);
+  }
+
+  /* ---- the title-highlight primitive: a span that hugs the text, truncates, white text ---- */
+  .hl {
+    display: inline-block; max-width: 100%; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: #ffffff !important; font-weight: 600;
+    padding: 1px 6px; border-radius: 5px;
+  }
+
+  /* T1 · Solid pill, token amber-600 */
+  .t1 .attn .hl { background: var(--amber-600); }
+  /* T2 · Full-width bar (spans the title line), token amber-600 */
+  .t2 .attn .hl { background: var(--amber-600); display: block; max-width: none; border-radius: 6px; }
+  /* T3 · Deeper amber-800 pill (contrast-safe white text) */
+  .t3 .attn .hl { background: var(--amber-800); }
+  /* T4 · Rounded chip, amber-700 */
+  .t4 .attn .hl { background: var(--amber-700); border-radius: 999px; padding: 1px 9px; }
+
+  .swatchrow { display:flex; gap:8px; margin: 0 4px 12px; }
+  .sw { font-size:10px; color:#fff; padding:2px 7px; border-radius:5px; font-weight:600; }
+  .note { font-size: 10px; color: var(--color-text-tertiary); margin: 8px 4px 0; line-height: 1.4; }
+
+  .foot { margin-top: 36px; font-size: 12px; color: var(--color-text-tertiary); max-width: 880px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>Needs-attention — highlight the title only · light theme</h1>
+  <p class="sub">
+    The attention color goes <strong>behind the title text</strong> as a solid fill, with the title flipped to white — the row background is untouched,
+    so this never collides with the gray selected fill. Each card shows the four states plus a long title (to check truncation). Token amber is
+    <code>#d97706</code>; deeper shades trade a little brightness for white-text legibility.
+  </p>
+  <div class="legend">
+    <span><b>Row 1</b> — normal</span>
+    <span><b>Row 2</b> — needs attention</span>
+    <span><b>Row 3</b> — long title, needs attention</span>
+    <span><b>Row 4</b> — selected <i>and</i> needs attention</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- T3 first (recommended for contrast) -->
+    <div class="card t3 featured">
+      <div class="label"><span class="name">1 · Deep amber pill</span><span class="tag">recommended</span></div>
+      <div class="desc-row">Solid <b>amber-800</b> fill behind the title, white text. The deeper shade is what makes white text actually readable.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deployment vps deploy script</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- T1 token amber pill -->
+    <div class="card t1">
+      <div class="label"><span class="name">2 · Token amber pill</span><span class="tag warn">low contrast</span></div>
+      <div class="desc-row">Same idea with the <b>current token amber-600</b> (<code>#d97706</code>). True to the existing color, but white text on it is light — see how it reads to you.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deployment vps deploy script</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- T2 full width bar -->
+    <div class="card t2">
+      <div class="label"><span class="name">3 · Full-width bar</span></div>
+      <div class="desc-row">The fill spans the whole title line instead of hugging the text — a bolder, more banner-like marker. Token amber-600 shown.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deployment vps deploy script</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- T4 rounded chip -->
+    <div class="card t4">
+      <div class="label"><span class="name">4 · Rounded chip</span></div>
+      <div class="desc-row">Pill with full rounding (<code>999px</code>) and a touch more side padding — reads as a “tag” rather than a highlight. Amber-700.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deployment vps deploy script</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel attn"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--amber-600)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div style="max-width:880px;">
+    <div class="swatchrow" style="margin-top:30px;">
+      <span class="sw" style="background:var(--amber-600)">amber-600 #d97706</span>
+      <span class="sw" style="background:var(--amber-700)">amber-700 #b45309</span>
+      <span class="sw" style="background:var(--amber-800)">amber-800 #92400e</span>
+    </div>
+    <p class="foot">
+      White text on the current token (<b>amber-600</b>) sits around 2.6:1 contrast — under the 4.5:1 AA bar for small text — so it reads a bit washed.
+      <b>amber-700</b> (~3.4:1) and <b>amber-800</b> (~4.8:1) keep the same hue but make the white title legible; #1 uses 800. The highlight hugs the title and
+      truncates with it, and because only the title is filled it coexists cleanly with the gray <b>selected</b> row (row 4). One change in <code>SessionItem</code>:
+      wrap the title in a span and toggle the fill on <code>needsAttention</code>.
+    </p>
+  </div>
+</body>
+</html>

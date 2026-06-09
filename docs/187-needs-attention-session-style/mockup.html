@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Needs-attention — all options compared</title>
+<style>
+  :root{
+    --sel:#f9fafb; --txt:#111827; --txt2:#4b5563; --txt3:#9ca3af;
+    --bd:#e5e7eb; --bd2:#d1d5db; --pr:#7c3aed; --ok:#16a34a;
+    --am:#d97706; --am700:#b45309; --am800:#92400e;
+    --a08:rgba(217,119,6,0.08); --a12:rgba(217,119,6,0.12); --a22:rgba(217,119,6,0.22);
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:#eef1f5;color:var(--txt);-webkit-font-smoothing:antialiased;padding:36px 26px 64px;}
+  h1{font-size:20px;font-weight:650;margin:0 0 6px;letter-spacing:-0.01em;}
+  .sub{font-size:13px;color:var(--txt2);max-width:980px;margin:0 0 18px;line-height:1.5;}
+  code{background:var(--bd);padding:1px 5px;border-radius:5px;font-size:11px;color:#374151;}
+
+  .helper{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;max-width:980px;margin:0 0 30px;}
+  .hcard{background:#fff;border:1px solid var(--bd);border-radius:10px;padding:11px 13px;font-size:11px;color:var(--txt2);line-height:1.5;}
+  .hcard b{color:var(--txt);font-weight:650;display:block;font-size:12px;margin-bottom:3px;}
+  .cost{display:inline-block;margin-top:6px;font-size:10px;font-weight:600;padding:1px 7px;border-radius:999px;}
+  .cost.free{color:#15803d;background:rgba(22,163,74,.12);}
+  .cost.some{color:#b45309;background:rgba(217,119,6,.12);}
+
+  section{max-width:1320px;margin:0 0 14px;}
+  .sechead{display:flex;align-items:baseline;gap:10px;margin:26px 4px 12px;}
+  .sechead h2{font-size:14px;font-weight:650;margin:0;}
+  .sechead .meta{font-size:11px;color:var(--txt3);}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(258px,1fr));gap:16px;}
+
+  .card{background:#fff;border:1px solid var(--bd);border-radius:12px;padding:12px 10px 14px;
+    box-shadow:0 1px 2px rgba(16,24,40,.04),0 8px 22px -18px rgba(16,24,40,.3);}
+  .card.rec{outline:2px solid var(--a12);}
+  .clabel{display:flex;align-items:center;gap:7px;margin:1px 4px 8px;}
+  .clabel .n{font-size:12px;font-weight:600;}
+  .clabel .tag{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--am700);background:var(--a12);padding:1px 6px;border-radius:999px;}
+
+  .list{padding:2px 0;}
+  .row{position:relative;display:flex;align-items:flex-start;gap:6px;margin:4px 3px;padding:5px 8px;border-radius:6px;
+    font-size:12px;color:var(--txt2);border-left:3px solid transparent;border-right:2px solid transparent;}
+  .row.sel{background:var(--sel);color:var(--txt);}
+  .prdot{width:6px;height:6px;border-radius:999px;margin-top:5px;flex:none;background:var(--pr);}
+  .body{flex:1;min-width:0;}
+  .title{color:var(--txt);font-weight:540;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .row:not(.sel) .title{font-weight:500;}
+  .meta{display:flex;align-items:center;gap:5px;margin-top:3px;color:var(--txt3);font-size:10px;}
+  .statusdot{width:5px;height:5px;border-radius:999px;background:var(--ok);flex:none;}
+  .row.attn .statusdot{background:var(--am);}
+
+  /* ============ ROW BORDER (no new tokens) ============ */
+  .both .row.attn{border-left-color:var(--am);border-right-color:var(--am);}
+  .rail .row.attn{border-left:3px solid var(--am);border-radius:6px;}
+  .grail .row.attn{border-left:3px solid var(--am);margin-top:0;margin-bottom:0;}
+  .grail .row.attn + .row.attn{border-top-left-radius:0;}
+  .grail .row.attn:has(+ .row.attn){border-bottom-left-radius:0;}
+  .ring .row.attn{border:1.5px solid var(--am);border-radius:8px;}
+  .glow .row.attn{border-radius:8px;box-shadow:0 0 0 1px rgba(217,119,6,.45),0 0 11px -2px rgba(217,119,6,.55);}
+  .edge .row.attn{border-left:3px solid var(--am);}
+  .edge .row.attn::after{content:"";position:absolute;right:7px;top:50%;transform:translateY(-50%);width:6px;height:6px;border-radius:999px;background:var(--am);}
+  .pulse .row.attn{border-left:3px solid var(--am);animation:rp 1.7s infinite;}
+  @keyframes rp{0%,100%{box-shadow:-2px 0 7px -2px rgba(217,119,6,0);}50%{box-shadow:-2px 0 8px -1px rgba(217,119,6,.7);}}
+
+  /* ============ ROW BACKGROUND (collision handling) ============ */
+  .bgfill .row.attn{background:var(--a12);}
+  .bgfill .row.attn.sel{background:var(--a12);box-shadow:inset 0 0 0 1.5px var(--bd2);}
+  .bgsel .row.attn{background:var(--a12);}
+  .bgsel .row.attn.sel{background:var(--sel);border-left:3px solid var(--am);border-radius:6px;}
+  .bgdeep .row.attn{background:var(--a12);}
+  .bgdeep .row.attn.sel{background:var(--a22);color:var(--txt);}
+  .bgtint .row.attn{background:var(--a08);border-left:3px solid var(--am);border-radius:6px;}
+  .bgtint .row.attn.sel{background:var(--sel);border-left:3px solid var(--am);}
+
+  /* ============ TITLE FILL (2 new tokens / theme) ============ */
+  .tdeep .row.attn .title,.ttoken .row.attn .title,.tchip .row.attn .title,.tbar .row.attn .title{
+    display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    color:#fff;font-weight:600;padding:1px 6px;border-radius:5px;}
+  .tdeep .row.attn .title{background:var(--am800);}
+  .ttoken .row.attn .title{background:var(--am);}
+  .tchip .row.attn .title{background:var(--am700);border-radius:999px;padding:1px 9px;}
+  .tbar .row.attn .title{background:var(--am);display:block;max-width:none;border-radius:6px;}
+
+  /* ============ TITLE OUTLINE (no new tokens) ============ */
+  .opill .row.attn .title,.ochip .row.attn .title,.odash .row.attn .title{
+    display:inline-block;max-width:100%;vertical-align:bottom;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    padding:0 6px;border-radius:5px;border:1.5px solid var(--am);}
+  .ochip .row.attn .title{border-radius:999px;padding:0 9px;}
+  .odash .row.attn .title{border-style:dashed;}
+
+  .foot{margin-top:34px;font-size:12px;color:var(--txt2);max-width:980px;line-height:1.6;}
+</style>
+</head>
+<body>
+  <h1>Needs-attention — every option, one screen</h1>
+  <p class="sub">
+    All variants explored, same 4-row list each: <b>normal</b> · two <b>adjacent attention</b> rows (to show stacking) · a <b>selected + attention</b> row
+    (bottom, gray fill — the collision case). Light theme. Amber = <code>--color-attention</code>. The four families differ mostly in <i>weight</i> and in <i>implementation cost</i>:
+  </p>
+
+  <div class="helper">
+    <div class="hcard"><b>Row border</b>An accent on the row edge(s). Reuses the existing token in every theme.<span class="cost free">no new tokens</span></div>
+    <div class="hcard"><b>Row background</b>Tints the whole row — strongest, but collides with the selected fill, so needs a both-state rule.<span class="cost some">+collision rule</span></div>
+    <div class="hcard"><b>Title fill</b>Solid color behind the title, white text. Boldest. Needs a fill+text token pair per theme.<span class="cost some">+2 tokens × 14 themes</span></div>
+    <div class="hcard"><b>Title outline</b>Border around the title only; text/bg untouched. Quiet &amp; cheap.<span class="cost free">no new tokens</span></div>
+  </div>
+
+  <!-- ROW BORDER -->
+  <section>
+    <div class="sechead"><h2>A · Row border</h2><span class="meta">no new tokens · reuses <code>--color-attention</code></span></div>
+    <div class="grid">
+      <div class="card both"><div class="clabel"><span class="n">A0 · Both edges</span><span class="tag" style="color:var(--txt3);background:#f3f4f6;">current</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card rail rec"><div class="clabel"><span class="n">A1 · Left rail</span><span class="tag">pick</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card grail rec"><div class="clabel"><span class="n">A2 · Grouped rail</span><span class="tag">pick</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card ring"><div class="clabel"><span class="n">A3 · Outline ring</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card glow"><div class="clabel"><span class="n">A4 · Soft glow</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card edge"><div class="clabel"><span class="n">A5 · Rail + edge dot</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card pulse"><div class="clabel"><span class="n">A6 · Pulsing rail</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+    </div>
+  </section>
+
+  <!-- ROW BACKGROUND -->
+  <section>
+    <div class="sechead"><h2>B · Row background</h2><span class="meta">strongest · each handles the selected+attention collision differently (bottom row)</span></div>
+    <div class="grid">
+      <div class="card bgfill"><div class="clabel"><span class="n">B1 · Fill + selection ring</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card bgsel"><div class="clabel"><span class="n">B2 · Selected wins → rail</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card bgdeep"><div class="clabel"><span class="n">B3 · Deepened both-state</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card bgtint"><div class="clabel"><span class="n">B4 · Tint + rail</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+    </div>
+  </section>
+
+  <!-- TITLE FILL -->
+  <section>
+    <div class="sechead"><h2>C · Title fill</h2><span class="meta">boldest · needs a fill + on-fill token pair per theme</span></div>
+    <div class="grid">
+      <div class="card tdeep"><div class="clabel"><span class="n">C1 · Deep amber pill</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card ttoken"><div class="clabel"><span class="n">C2 · Token amber pill</span><span class="tag" style="color:#b91c1c;background:rgba(220,38,38,.1);">low contrast</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card tbar"><div class="clabel"><span class="n">C3 · Full-width bar</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card tchip"><div class="clabel"><span class="n">C4 · Rounded chip</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+    </div>
+  </section>
+
+  <!-- TITLE OUTLINE -->
+  <section>
+    <div class="sechead"><h2>D · Title outline</h2><span class="meta">quiet &amp; cheap · text/background untouched · no new tokens</span></div>
+    <div class="grid">
+      <div class="card opill rec"><div class="clabel"><span class="n">D1 · Outline pill</span><span class="tag">pick</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card ochip"><div class="clabel"><span class="n">D2 · Outline chip</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+      <div class="card odash"><div class="clabel"><span class="n">D3 · Dashed outline</span></div><div class="list"><div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Fix CI on auth refresh</span><div class="meta"><span class="statusdot"></span><span>shipit · 5m</span></div></div></div><div class="row attn"><span class="prdot"></span><div class="body"><span class="title">Resolve merge conflict</span><div class="meta"><span class="statusdot"></span><span>api · 8m</span></div></div></div><div class="row attn sel"><span class="prdot"></span><div class="body"><span class="title">Waiting for your input</span><div class="meta"><span class="statusdot"></span><span>web · now</span></div></div></div></div></div>
+    </div>
+  </section>
+
+  <p class="foot">
+    Cheapest &amp; theme-proof: <b>A (row border)</b> and <b>D (title outline)</b> — both reuse <code>--color-attention</code> with no new tokens. Strongest: <b>C (title fill)</b>,
+    at the cost of a per-theme token pair. <b>B (row background)</b> sits between but has to resolve the selected collision. Shortlist: <b>A1 left rail</b>,
+    <b>A2 grouped rail</b>, or <b>D1 outline pill</b>.
+  </p>
+</body>
+</html>

@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Needs-attention session styles</title>
+<style>
+  :root {
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f9fafb;
+    --color-bg-tertiary: #f3f4f6;
+    --color-bg-hover: rgba(0,0,0,0.04);
+    --color-text-primary: #111827;
+    --color-text-secondary: #4b5563;
+    --color-text-tertiary: #9ca3af;
+    --color-border-primary: #e5e7eb;
+    --color-border-secondary: #d1d5db;
+    --color-attention: #d97706;       /* amber-600 */
+    --color-attention-subtle: rgba(217,119,6,0.10);
+    --color-pr: #7c3aed;
+    --color-success: #16a34a;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    background: radial-gradient(1200px 600px at 50% -10%, #ffffff, #eef1f5 70%);
+    color: var(--color-text-primary);
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 28px 64px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { font-size: 13px; color: var(--color-text-secondary); max-width: 820px; margin: 0 0 32px; line-height: 1.5; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 22px; max-width: 1320px; }
+  .card {
+    background: var(--color-bg-primary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: 14px;
+    padding: 16px 14px 18px;
+    box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 8px 24px -16px rgba(16,24,40,0.25);
+  }
+  .card.featured { outline: 2px solid var(--color-attention-subtle); }
+  .label { display: flex; align-items: baseline; gap: 8px; margin: 2px 4px 6px; }
+  .label .name { font-size: 13px; font-weight: 650; }
+  .label .tag {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--color-attention); background: var(--color-attention-subtle);
+    padding: 2px 6px; border-radius: 999px;
+  }
+  .desc-row { font-size: 11px; color: var(--color-text-tertiary); margin: 0 4px 12px; line-height: 1.45; }
+
+  .list { padding: 4px 0; }
+
+  .row {
+    position: relative;
+    display: flex; align-items: flex-start; gap: 6px;
+    margin: 2px 4px; padding: 6px 8px;
+    border-radius: 6px;
+    border-left: 2px solid transparent;
+    border-right: 2px solid transparent;
+    font-size: 12px; color: var(--color-text-secondary);
+    transition: background .12s, border-color .12s, box-shadow .12s;
+  }
+  .row:hover { background: var(--color-bg-hover); }
+  .row.current { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .prdot { width: 7px; height: 7px; border-radius: 999px; margin-top: 5px; flex: none; background: var(--color-pr); }
+  .body { flex: 1; min-width: 0; }
+  .title { color: var(--color-text-primary); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row:not(.current) .title { color: inherit; font-weight: 500; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; color: var(--color-text-tertiary); font-size: 10px; }
+  .statusdot { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: none; }
+  .repo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dots { color: var(--color-text-tertiary); margin-top: -2px; font-size: 14px; letter-spacing: 1px; opacity: .0; transition: opacity .12s; }
+  .row:hover .dots { opacity: .6; }
+
+  /* 0 — current: both-side borders */
+  .v-current .row.attn { border-left-color: var(--color-attention); border-right-color: var(--color-attention); }
+
+  /* 1 — left rail only */
+  .v-rail .row.attn { border-left: 3px solid var(--color-attention); border-radius: 6px; }
+
+  /* 2 — full outline ring */
+  .v-ring .row.attn { border: 1.5px solid var(--color-attention); border-radius: 8px; }
+
+  /* 3 — left rail + pulse dot */
+  .v-pulse .row.attn { border-left: 3px solid var(--color-attention); }
+  .v-pulse .row.attn .title-line { display: flex; align-items: center; gap: 6px; }
+  .pulse {
+    width: 7px; height: 7px; border-radius: 999px; flex: none;
+    background: var(--color-attention);
+    box-shadow: 0 0 0 0 rgba(217,119,6,0.55);
+    animation: pulse 1.8s infinite;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(217,119,6,0.45); }
+    70% { box-shadow: 0 0 0 6px rgba(217,119,6,0); }
+    100% { box-shadow: 0 0 0 0 rgba(217,119,6,0); }
+  }
+
+  /* 4 — soft amber glow */
+  .v-glow .row.attn { border-radius: 8px; box-shadow: 0 0 0 1px rgba(217,119,6,0.45), 0 0 12px -2px rgba(217,119,6,0.55); }
+
+  /* 5 — rail + trailing edge dot */
+  .v-edge .row.attn { border-left: 3px solid var(--color-attention); }
+  .v-edge .row.attn::after {
+    content: ""; position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+    width: 6px; height: 6px; border-radius: 999px; background: var(--color-attention);
+  }
+
+  /* 6 — continuous rail w/ gap collapse: adjacent attn rows share one bar */
+  .v-group .row.attn { border-left: 3px solid var(--color-attention); }
+  .v-group .row.attn + .row.attn { border-top-left-radius: 0; }
+  .v-group .row.attn:has(+ .row.attn) { border-bottom-left-radius: 0; }
+  .v-group .row.attn { margin-top: 0; margin-bottom: 0; }
+  .v-group .row.attn + .row.attn { margin-top: 0; }
+
+  .foot { margin-top: 38px; font-size: 12px; color: var(--color-text-tertiary); max-width: 820px; line-height: 1.6; }
+  .foot code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 5px; font-size: 11px; color: var(--color-text-secondary); }
+</style>
+</head>
+<body>
+  <h1>Sessions that need attention — light theme · <span style="font-weight:550;color:var(--color-text-secondary)">multiple at once</span></h1>
+  <p class="sub">
+    Each list flags <strong>three</strong> sessions — two of them adjacent (rows 2&nbsp;&amp;&nbsp;3) — plus a non-adjacent one (row 5), with the selected
+    session (row 4) sitting right between them. The real stress test: does the treatment still read when stacked, do adjacent flags merge or fight,
+    and does it stay distinct from the gray selected fill? Amber token <code>--color-attention #d97706</code>; background fill stays reserved for selection.
+  </p>
+
+  <div class="grid">
+
+    <!-- 0 CURRENT -->
+    <div class="card v-current">
+      <div class="label"><span class="name">0 · Current</span></div>
+      <div class="desc-row">Both-side borders. Stacked, the right-hand bars create a busy double-edge column.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+    <!-- 1 LEFT RAIL -->
+    <div class="card v-rail featured">
+      <div class="label"><span class="name">1 · Left rail</span><span class="tag">recommended</span></div>
+      <div class="desc-row">One bar each. Adjacent rows show two short rails with a small gap — still scans as a flagged cluster.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+    <!-- 6 GROUPED RAIL -->
+    <div class="card v-group featured">
+      <div class="label"><span class="name">6 · Grouped rail</span><span class="tag">new</span></div>
+      <div class="desc-row">Like #1, but adjacent flagged rows fuse into <strong>one continuous bar</strong> — reads the whole cluster as a single "needs you" zone.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+    <!-- 2 OUTLINE RING -->
+    <div class="card v-ring">
+      <div class="label"><span class="name">2 · Outline ring</span></div>
+      <div class="desc-row">Three full rings get visually heavy when stacked — strong, but can feel noisy with many flags.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+    <!-- 3 RAIL + PULSE -->
+    <div class="card v-pulse">
+      <div class="label"><span class="name">3 · Rail + pulse dot</span></div>
+      <div class="desc-row">Multiple pulses animating at once can get busy — most effective when flags are rare.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title-line"><span class="pulse"></span><span class="title" style="flex:1;min-width:0;">Fix CI on auth refresh</span></div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title-line"><span class="pulse"></span><span class="title" style="flex:1;min-width:0;">Resolve merge conflict</span></div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title-line"><span class="pulse"></span><span class="title" style="flex:1;min-width:0;">Waiting for your input</span></div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+    <!-- 5 RAIL + EDGE DOT -->
+    <div class="card v-edge">
+      <div class="label"><span class="name">5 · Rail + edge dot</span></div>
+      <div class="desc-row">Rail plus a trailing dot — the dots line up in a column on the right, a tidy secondary signal.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>2h</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">shipit</span><span>·</span><span>5m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">api</span><span>·</span><span>8m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row current"><span class="prdot"></span><div class="body"><div class="title">Needs-attention restyle</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>now</span></div></div><div class="dots">⋯</div></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Waiting for your input</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span class="repo">web</span><span>·</span><span>20m</span></div></div><div class="dots">⋯</div></div>
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span class="repo">shipit</span><span>·</span><span>1d</span></div></div><div class="dots">⋯</div></div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="foot">
+    With several flags live at once, the quiet single-edge treatments (<strong>#1 rail</strong>, <strong>#6 grouped rail</strong>, <strong>#5 rail + dot</strong>) stay legible,
+    while full <strong>rings (#2)</strong> and multiple <strong>pulses (#3)</strong> get heavier the more sessions are flagged. #6 is the only one that treats an adjacent
+    run as a single zone. Each is a one-line swap of <code>border-x-2 border-x-(--color-attention)</code> in <code>SessionItem</code> (<code>SessionSidebar.tsx</code>).
+  </p>
+</body>
+</html>

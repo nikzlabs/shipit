@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Title highlight across themes</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: #eef1f5; color: #111827; -webkit-font-smoothing: antialiased; padding: 40px 28px 64px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { font-size: 13px; color: #4b5563; max-width: 900px; margin: 0 0 28px; line-height: 1.5; }
+  code { background: #e5e7eb; padding: 1px 5px; border-radius: 5px; font-size: 11px; color: #374151; }
+
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; max-width: 1040px; }
+  @media (max-width: 820px){ .cols { grid-template-columns: 1fr; } }
+
+  .panel { border-radius: 16px; padding: 18px 16px 20px; border: 1px solid; }
+  .panel h2 { font-size: 13px; font-weight: 650; margin: 0 0 2px; }
+  .panel .ph { font-size: 11px; margin: 0 0 14px; }
+
+  /* ----- light panel ----- */
+  .light {
+    background: #ffffff; border-color: #e5e7eb;
+    --surface: #ffffff; --sel: #f9fafb; --txt: #111827; --txt2: #4b5563; --txt3: #9ca3af;
+    --pr: #7c3aed; --ok: #16a34a;
+    --fill: #92400e;      /* amber-800 */
+    --onfill: #ffffff;    /* white text */
+    --dot: #d97706;
+  }
+  .light h2 { color:#111827; } .light .ph { color:#9ca3af; }
+
+  /* ----- dark panel ----- */
+  .dark {
+    background: #030712; border-color: #1f2937;
+    --surface: #030712; --sel: #111827; --txt: #f3f4f6; --txt2: #9ca3af; --txt3: #6b7280;
+    --pr: #a78bfa; --ok: #22c55e;
+    --fill: #f59e0b;      /* amber-500 (bright) */
+    --onfill: #111827;    /* dark text */
+    --dot: #f59e0b;
+  }
+  .dark h2 { color:#f3f4f6; } .dark .ph { color:#6b7280; }
+
+  .list { padding: 4px 0; }
+  .row {
+    position: relative; display: flex; align-items: flex-start; gap: 6px;
+    margin: 3px 2px; padding: 6px 8px; border-radius: 6px; font-size: 12px; color: var(--txt2);
+  }
+  .row.sel { background: var(--sel); color: var(--txt); }
+  .prdot { width: 7px; height: 7px; border-radius: 999px; margin-top: 5px; flex: none; background: var(--pr); }
+  .body { flex: 1; min-width: 0; }
+  .title { color: var(--txt); font-weight: 540; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row:not(.sel) .title { font-weight: 500; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 3px; color: var(--txt3); font-size: 10px; }
+  .statusdot { width: 6px; height: 6px; border-radius: 999px; background: var(--ok); flex: none; }
+  .state {
+    flex: none; align-self: center; font-size: 9px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--txt3); border: 1px solid currentColor; border-radius: 999px; padding: 1px 6px; opacity:.6;
+  }
+
+  .hl {
+    display: inline-block; max-width: 100%; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    background: var(--fill); color: var(--onfill) !important; font-weight: 600;
+    padding: 1px 6px; border-radius: 5px;
+  }
+
+  .tokbox { margin-top: 14px; padding: 10px 12px; border-radius: 10px; font-size: 11px; line-height: 1.7; }
+  .light .tokbox { background:#f9fafb; border:1px solid #e5e7eb; color:#4b5563; }
+  .dark .tokbox { background:#111827; border:1px solid #1f2937; color:#9ca3af; }
+  .tokbox b { font-weight:600; }
+  .sw { display:inline-block; width:11px; height:11px; border-radius:3px; vertical-align:-1px; margin-right:4px; border:1px solid rgba(128,128,128,.4); }
+
+  .why { max-width: 1040px; margin: 30px 0 0; }
+  .why h3 { font-size: 13px; font-weight: 650; margin: 0 0 8px; }
+  .badrow {
+    display:inline-flex; align-items:center; gap:8px; background:#030712; border:1px solid #1f2937;
+    border-radius:8px; padding:8px 12px; margin-right:14px; margin-bottom:8px;
+  }
+  .badrow .t { font-size:12px; font-weight:600; padding:1px 6px; border-radius:5px; }
+  .cap { font-size:11px; color:#6b7280; }
+
+  .foot { margin-top: 26px; font-size: 12px; color: #4b5563; max-width: 1040px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>Title highlight — how it works across themes</h1>
+  <p class="sub">
+    The fill + text colors can't be one constant: a light surface needs a <strong>dark fill + white text</strong>, a dark surface needs a
+    <strong>bright fill + dark text</strong>. So instead of hardcoding amber-800, add a <strong>two-token pair</strong> that each theme sets —
+    <code>--color-attention-fill</code> and <code>--color-attention-on-fill</code> — exactly like the existing single <code>--color-attention</code> already differs per theme.
+  </p>
+
+  <div class="cols">
+
+    <!-- LIGHT -->
+    <div class="panel light">
+      <h2>Light themes · 6 of them</h2>
+      <p class="ph">light · cool-light · warm-light · codex-light · solarized-light · claude-light</p>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deploy script</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+      <div class="tokbox">
+        <span class="sw" style="background:#92400e"></span><b>--color-attention-fill:</b> #92400e <span style="opacity:.7">(amber-800)</span><br>
+        <span class="sw" style="background:#ffffff"></span><b>--color-attention-on-fill:</b> #ffffff <span style="opacity:.7">(white)</span>
+      </div>
+    </div>
+
+    <!-- DARK -->
+    <div class="panel dark">
+      <h2>Dark themes · 8 of them</h2>
+      <p class="ph">dark · claude · rose · solarized · codex · forest · high-contrast · midnight</p>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title">Refine preview proxy routing</span><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title hl">Fix CI on auth refresh</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row"><span class="prdot"></span><div class="body"><span class="title hl">Resolve merge conflict in deploy script</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>api · 8m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><span class="title hl">Waiting for your input</span><div class="meta"><span class="statusdot" style="background:var(--dot)"></span><span>web · now</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+      <div class="tokbox">
+        <span class="sw" style="background:#f59e0b"></span><b>--color-attention-fill:</b> #f59e0b <span style="opacity:.7">(amber-500, bright)</span><br>
+        <span class="sw" style="background:#111827"></span><b>--color-attention-on-fill:</b> #111827 <span style="opacity:.7">(near-black)</span>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="why">
+    <h3>Why the text color flips (not just the fill)</h3>
+    <div>
+      <span class="badrow"><span class="t" style="background:#f59e0b;color:#111827;">Fix CI on auth refresh</span><span class="cap">✓ dark theme — bright fill + dark text</span></span>
+      <span class="badrow"><span class="t" style="background:#92400e;color:#ffffff;">Fix CI on auth refresh</span><span class="cap">✗ dark theme — light-theme fill barely separates from #030712</span></span>
+    </div>
+    <p class="cap" style="max-width:1040px; line-height:1.6;">
+      On the near-black dark surface, the light-theme's dark amber-800 pill (right) almost disappears; the bright amber-500 + dark text (left) pops.
+      That's the whole reason it's a per-theme token pair rather than a constant.
+    </p>
+  </div>
+
+  <p class="foot">
+    <b>Net:</b> the border options need <i>zero</i> new tokens — they reuse <code>--color-attention</code> as-is across all 14 themes. The title-fill option
+    is nicer visually but costs <b>two new tokens × 14 theme files</b>: light themes get amber-800 + white, dark themes get amber-500 + near-black. <code>high-contrast</code>
+    can push further (pure <code>#000</code>/<code>#fff</code>); <code>solarized</code> can use its own amber. The component code is identical for every theme — it just reads the two vars.
+  </p>
+</body>
+</html>
