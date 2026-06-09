@@ -196,10 +196,21 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       reproducibility reset) — `flattened` outcome + `shouldFlattenNext()` so the session prep
       path can clean-reinstall before the snapshot. `DEFAULT_DEPTH_CAP = 16`; final value set in
       Phase 5 from measurement.
-- [ ] **Exclude/normalize `.git`** from the base (don't carry session branch refs forward);
-      verify git/worktree absolute gitdir pointers behave on the overlay.
-- [ ] Publish/flatten from a worker-exported merged-workspace snapshot, not the host upperdir
-      alone, so lowerdir-only source/dependency files are preserved in the next base.
+- [x] **Exclude/normalize `.git`** from the base (don't carry session branch refs forward).
+      **Done** — the snapshot export ([`workspace-snapshot.ts`](../../src/server/session/workspace-snapshot.ts))
+      excludes the **top-level** `.git` via `--exclude ./.git` (a nested `vendor/foo/.git` is kept
+      as ordinary source); `SNAPSHOT_EXCLUDES` keeps the one-exclusion rationale in one place.
+      Worktree/gitdir absolute-pointer behavior on the overlay was already settled by the Phase-0
+      spike (Open Q #2 — a linked worktree's absolute gitdir pointer resolves on the merged dir).
+- [x] Publish/flatten from a worker-exported merged-workspace snapshot, not the host upperdir
+      alone, so lowerdir-only source/dependency files are preserved in the next base. **Worker
+      producer done** — `createWorkspaceSnapshotTar` streams the **merged** `/workspace` as a tar
+      (whiteouts already resolved by the merged view, symlinks verbatim) and the worker exposes it
+      at `GET /workspace/snapshot`; covered by [`workspace-snapshot.test.ts`](../../src/server/session/workspace-snapshot.test.ts)
+      (6 tests: `.git` excluded, nested `.git` kept, symlinks preserved, install marker round-trips,
+      missing-path rejects). *Still to wire (Phase 4): the orchestrator pulls the stream over HTTP,
+      extracts it into a temp dir on the state volume, and passes that dir as
+      `PublishCandidate.snapshotDir` to `publishBase`.*
 - [ ] **Cold start:** build base v0 from empty under the existing repo trust gate (docs/178).
 - [ ] **Wire the overlay-base GC live source + honor its contract** (the Phase 2 sweep
       `sweepOrphanedOverlayBases` is gated on this — see code review). Two hard requirements,
