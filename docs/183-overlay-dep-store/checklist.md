@@ -22,12 +22,14 @@ rolling-base logic first; the host mount stays the gating risk.
 - [~] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
       unmount + workdir cleanup on dispose); size its cost — the gating unknown.
       Substrate **confirmed** — passed **WSL2/ext4 19/19** and **Docker Desktop/Mac 21/21**
-      (`prototype/run-in-docker.sh`, named-volume substrate, incl. inotify). The gate is now a
-      **design** problem, not a feasibility one: resolve how the **unprivileged orchestrator
-      container** (only `docker.sock`, no `SYS_ADMIN`) performs the mount and where the `merged`
-      dir lives so the **daemon** can bind it into a session (daemon-host fs; on macOS the
-      Docker Desktop Linux VM's native ext4, not a FUSE host path). Nice-to-have: prod (non-WSL)
-      kernel run + mount/unmount timing — see `FINDINGS.md`
+      (`prototype/run-in-docker.sh`, named-volume substrate, incl. inotify). **Mechanism
+      decided** (see plan §4 "Host-mount design decisions"): a **long-lived privileged
+      sidecar** driven by the orchestrator over a unix socket performs the overlay mount with
+      shared propagation (orchestrator stays unprivileged); overlay state lives in the
+      **workspace volume** with the shared base under the **dep-cache** subtree and per-session
+      upper/work/merged under the session subtree, mounted via the existing volume-Subpath
+      mechanism. Nice-to-have: prod (non-WSL) kernel run + mount/unmount timing — see
+      `FINDINGS.md`
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)

@@ -186,6 +186,13 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
   tiny, single-purpose component rather than added to the central long-lived orchestrator.
   *(Rejected: standing `CAP_SYS_ADMIN` on the orchestrator; a custom Docker volume plugin —
   too heavy to build/operate.)*
+  - **Helper shape — long-lived privileged sidecar.** A small `--privileged` "mounter" service
+    runs alongside the orchestrator and exposes a tiny **mount/unmount API over a local unix
+    socket**. It owns a **stable mount namespace** with propagation (`rshared` on the volume
+    backing dir) configured **once**, so mount lifecycle, health, and observability are simple
+    to reason about. It has no network surface. *(Rejected: ephemeral per-operation
+    `--privileged` container — correctness would lean on mount propagation outliving the
+    container, a known footgun, plus per-op spawn latency.)*
 - **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
   `upper`/`work`/`merged` live under the session subtree (`sessions/{uuid}/`); the shared base
   (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
