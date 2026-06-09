@@ -208,13 +208,20 @@ daemon propagation**. It is identical on VPS and local Linux, but **most likely
 to differ on Docker Desktop (Mac/Windows)**, where the daemon-in-VM mount
 propagation under `/var/lib/docker/volumes` is the least bare-host-like part.
 
-**Next spike (the real remaining feasibility check):** a two-container test — a
-privileged sidecar mounts overlay at a named-volume subpath with `rshared`, then
-a *second* container mounts that subpath and asserts it sees the overlay-merged
-content. Run on a bare-Linux/VPS-like host **and** on Docker Desktop. Until this
-passes on both, the sidecar architecture is feasible-pending-propagation, not
-proven. Minor: the VPS provisioner raises inotify limits (README); local installs
-don't, but the watcher already runs today so it's not new.
+**Next spike (the real remaining feasibility check):** `prototype/propagation-spike.sh`
+— a two-container test: a privileged sidecar mounts overlay on the shared named
+volume, then a *second* container checks whether it sees the overlay-merged
+content. It runs a ladder (plain volume bind → `make-rshared` → host-mountpoint
+`:rshared`) and prints a per-host verdict. Run on a bare-Linux/VPS-like host
+**and** on Docker Desktop. Until it passes on both, the sidecar architecture is
+**feasible-pending-propagation**, not proven. Minor: the VPS provisioner raises
+inotify limits (README); local installs don't, but the watcher already runs today
+so it's not new.
+
+> **Propagation verdicts:**
+> - Bare Linux / VPS: _(paste `propagation-spike.sh` verdict)_
+> - Docker Desktop (Mac/Win): _(paste verdict — may differ; if it needs host-side
+>   `mount --make-rshared`, note whether that's reachable on Docker Desktop)_
 
 ## Net decision
 

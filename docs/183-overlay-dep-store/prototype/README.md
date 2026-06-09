@@ -80,3 +80,21 @@ scratch dir on a Docker named volume (VM-native ext4), installing `git` +
 eventually gets mount capability — it validates the substrate, not the
 production mechanism (see `../FINDINGS.md`). Works on any Docker host, so it's
 also the easiest way to get the inotify result on Linux.
+
+### Cross-container propagation (the sidecar architecture's real gap) — `propagation-spike.sh`
+
+The spikes above prove overlay works *within one container*. The chosen
+long-lived-sidecar design needs more: an overlay mounted by the sidecar must be
+visible to a **separate session container** through the shared named volume —
+i.e. the mount must propagate to the Docker daemon's namespace.
+
+```
+bash docs/183-overlay-dep-store/prototype/propagation-spike.sh
+```
+
+Driven entirely through the `docker` CLI (so it runs the same on Linux and Docker
+Desktop/WSL2), it runs a ladder of propagation setups — plain volume bind
+(baseline), `make-rshared`, and the realistic host-mountpoint `:rshared` sidecar
+pattern — and reports per rung whether container B sees the overlay-merged
+content, ending with a verdict. **Run on BOTH a bare-Linux/VPS host and Docker
+Desktop; the verdict can differ** — paste both into `../FINDINGS.md`.
