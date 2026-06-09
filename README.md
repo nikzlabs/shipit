@@ -109,7 +109,7 @@ running even when your laptop is closed.
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises
 the inotify limits session containers need, and optionally puts ShipIt behind a
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-(with optional Zero Trust SSO) and/or exposes it over [Tailscale](https://tailscale.com/) — no open
+(with required Zero Trust SSO by default) and/or exposes it over [Tailscale](https://tailscale.com/) — no open
 inbound ports required.
 
 **Run it as root.** The script installs system packages, configures Docker, and sets up systemd

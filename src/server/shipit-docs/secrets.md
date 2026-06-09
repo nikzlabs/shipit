@@ -27,14 +27,14 @@ The simplest form — just list env var names:
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     ports: ["5173:5173"]
     x-shipit-secrets:
       - STRIPE_PUBLISHABLE_KEY
 
   api:
-    image: node:20
+    image: node:24-slim
     command: npm start
     ports: ["3000:3000"]
     x-shipit-secrets:
@@ -60,7 +60,7 @@ list:
 ```yaml
 services:
   api:
-    image: node:20
+    image: node:24-slim
     x-shipit-secrets:
       # Simple shorthand
       - SENTRY_DSN

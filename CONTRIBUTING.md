@@ -2,7 +2,7 @@
 
 Thanks for your interest in ShipIt! This file covers everything you need to work on ShipIt itself: the architecture, the dev loop, and how the pieces talk to each other.
 
-**Heads up:** ShipIt isn't accepting pull requests right now. Bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
+**Heads up:** ShipIt is not currently accepting unsolicited pull requests. The PR template, CLA checks, and CI remain in place for maintainer-authored branches, invited contributions, release validation, and future contribution workflows. Issues, bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
 
 For installing and using ShipIt, see the [README](README.md). For platform docs that the agent reads from inside session containers, see `src/server/shipit-docs/`. For per-feature design notes, see `docs/NNN-feature-name/plan.md`.
 
@@ -43,14 +43,14 @@ Session continuity is maintained via the agent CLI's resume mechanism (e.g., Cla
 | Backend | [Fastify](https://fastify.dev/) 5, @fastify/websocket, TypeScript |
 | Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 7, [Tailwind CSS](https://tailwindcss.com/) 4 |
 | Agent backends | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) — pluggable, more can be added |
-| Runtime | Node.js 20, Docker |
+| Runtime | Node.js 24, Docker |
 | Testing | [Vitest](https://vitest.dev/) 4, @testing-library/react, jsdom |
 
 ## Development setup
 
 **Prerequisites:**
 
-- Node.js 20+ and npm
+- Node.js 24 and npm
 - git
 - Docker (session containers always run containerized)
 - At least one agent CLI installed globally if you want to drive the agent locally:
