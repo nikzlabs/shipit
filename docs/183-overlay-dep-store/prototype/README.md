@@ -115,10 +115,13 @@ sidecar, no `CAP_SYS_ADMIN` in our containers.
 bash docs/183-overlay-dep-store/prototype/volume-driver-overlay-spike.sh
 ```
 
-Seeds a shared read-only base + two per-session uppers, mounts daemon-overlay
-volumes into two **unprivileged** containers, and checks merged visibility,
-copy-up isolation, base immutability, and concurrent shared-lower mounts (the
-`upperdir in-use` / EBUSY case). **The decisive run is Docker Desktop/Windows-WSL2**
-(where `propagation-spike.sh` fails); also run a Linux/VPS host. Paste both
-summaries into `../FINDINGS.md`. If Windows passes, this likely **replaces** the
-sidecar design — see the "Alternative mechanism" section in `../FINDINGS.md`.
+Seeds the **production layout** in one workspace-like volume — base (lowerdir)
+under `overlay-base/<hash>/`, each session's upper/work under `sessions/<uuid>/`,
+cross-subtree nested subpaths of the same volume's `_data` — then mounts
+daemon-overlay volumes into two **unprivileged** containers and checks merged
+visibility, copy-up isolation, base immutability, and concurrent shared-lower
+mounts (the `upperdir in-use` / EBUSY case). Proven on Docker Desktop/Windows-WSL2
+(7/7, where `propagation-spike.sh` fails) → this **replaces** the sidecar design
+(see the daemon-overlay section in `../FINDINGS.md`). **Remaining "confirm-before-build":
+run it on a Linux/VPS daemon** (the un-run axis) to settle the production layout on
+a non-Docker-Desktop daemon; paste the summary into `../FINDINGS.md`.

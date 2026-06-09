@@ -509,6 +509,18 @@ updated.)
 
 > **Docker Desktop / Windows-WSL2 run:** PASS=7 FAIL=0, daemon `docker-desktop`
 > (Docker Desktop), docker 29.4.1. "DAEMON-MOUNTED OVERLAY WORKS — no sidecar, no
-> propagation needed."
-> **Linux / VPS run:** _(still to run — expected to pass trivially; a daemon-side
-> overlay mount is bog-standard on a bare Linux daemon. Confirm before building.)_
+> propagation needed." *(This run used the earlier **scratch-sibling** layout —
+> base/upper/work as siblings in a dedicated volume.)*
+
+**Confirm-before-build — one open verification (the spike now mirrors prod layout).**
+The 7/7 run proved the *mechanism* but used sibling dirs in a dedicated scratch
+volume, not the production layout (base in `overlay-base/<hash>/`, upper/work in
+`sessions/<uuid>/`, **cross-subtree nested subpaths of the one workspace volume**).
+`volume-driver-overlay-spike.sh` has been **updated to seed exactly that layout**,
+so a single run now settles both open axes — the production path shape **and** a
+non-Docker-Desktop **Linux/VPS** daemon. Run it on the VPS (the un-run daemon
+axis); optionally re-run on Docker Desktop/Windows to reconfirm under the new
+layout. Paste verdicts below.
+
+> **Linux / VPS run (updated prod-layout spike):** _(paste summary here)_
+> **Docker Desktop / Windows re-run (updated prod-layout spike):** _(optional; paste here)_

@@ -54,31 +54,36 @@ hdr "0. Environment"
 echo "    docker: $(docker version -f '{{.Server.Version}}' 2>/dev/null)  os/arch: $(docker version -f '{{.Server.Os}}/{{.Server.Arch}}' 2>/dev/null)"
 echo "    daemon name: $(docker info -f '{{.Name}}' 2>/dev/null)  ($(docker info -f '{{.OperatingSystem}}' 2>/dev/null))"
 
-# 1. Seed base/up1/wk1/up2/wk2 inside the store volume. The base (lowerdir) is
-#    shared read-only by both sessions; each session gets its OWN upper/work
-#    (kernel forbids re-using an upperdir across overlay mounts).
+# 1. Seed the PRODUCTION layout inside one workspace-like volume (mirrors
+#    `shipit_workspace`): the base (lowerdir) under `overlay-base/<hash>/base`,
+#    each session's OWN upper/work under `sessions/<uuid>/` — CROSS-SUBTREE nested
+#    subpaths of the SAME volume's _data, exactly as the design specifies (base is
+#    deliberately NOT under a `dep-cache/` subtree, which prod mounts rw into
+#    sessions). This is the layout the 7/7 scratch-sibling run did NOT exercise.
 docker volume create "$STORE" >/dev/null
 MP="$(docker volume inspect -f '{{.Mountpoint}}' "$STORE")"
-hdr "1. Seed shared base + per-session upper/work (daemon-host path: $MP)"
-seed_out="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c '
+BASE="overlay-base/h1/base"          # lowerdir subtree (never mounted into a session)
+SA="sessions/sessA"; SB="sessions/sessB"
+hdr "1. Seed prod layout — base in $BASE, uppers in sessions/<uuid>/ (vol _data: $MP)"
+seed_out="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c "
   set -e
-  mkdir -p /vol/base /vol/up1 /vol/wk1 /vol/up2 /vol/wk2
-  echo "HELLO_FROM_LOWER" > /vol/base/marker.txt
-  echo seeded' 2>&1)"
-[ "$seed_out" = "seeded" ] && pass "seeded base/up1/wk1/up2/wk2 in the store volume" \
+  mkdir -p /vol/$BASE /vol/$SA/upper /vol/$SA/work /vol/$SB/upper /vol/$SB/work
+  echo $LOWER_MARK > /vol/$BASE/marker.txt
+  echo seeded" 2>&1)"
+[ "$seed_out" = "seeded" ] && pass "seeded prod layout (base in $BASE; uppers in sessions/<uuid>/)" \
                            || { fail "seed failed: $seed_out"; echo "Summary: PASS=$PASS FAIL=$FAIL"; exit 1; }
 
-# Helper: create a local-driver overlay volume whose lower/upper/work are the
-# absolute DAEMON-HOST paths inside the store volume. The daemon mounts it.
-make_overlay_vol() { # name  upperRel  workRel
+# Helper: create a local-driver overlay volume whose lower/upper/work are absolute
+# DAEMON-HOST paths — NESTED, CROSS-SUBTREE subpaths of the one volume's _data.
+make_overlay_vol() { # name  sessionDir
   docker volume create "$1" --driver local \
     --opt type=overlay --opt device=overlay \
-    --opt "o=lowerdir=$MP/base,upperdir=$MP/$2,workdir=$MP/$3" >/dev/null
+    --opt "o=lowerdir=$MP/$BASE,upperdir=$MP/$2/upper,workdir=$MP/$2/work" >/dev/null
 }
 
 # 2. Single overlay volume: a plain (unprivileged) container sees the merged view.
 hdr "2. Daemon-mounted overlay volume — container sees merged (no propagation, no privilege)"
-if ! make_overlay_vol ob-ovl-m1 up1 wk1 2>err.txt; then
+if ! make_overlay_vol ob-ovl-m1 "$SA" 2>err.txt; then
   fail "volume create rejected: $(cat err.txt 2>/dev/null)"; rm -f err.txt
 else
   rm -f err.txt
@@ -93,9 +98,9 @@ else
   echo "$out" | grep -q "WROTE_OK" && pass "container can write into the merged view (copy-up to upper)" \
                                    || warn "write into merged failed (may be read-only env)"
   # The write must have landed in the UPPER, leaving the BASE immutable.
-  chk="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c '
-    [ -f /vol/up1/session.txt ] && echo UPPER_HAS_WRITE || echo UPPER_EMPTY
-    grep -q SESSION1 /vol/base/marker.txt 2>/dev/null && echo BASE_DIRTY || echo BASE_CLEAN' 2>&1)"
+  chk="$(docker run --rm -v "$STORE":/vol "$IMG" bash -c "
+    [ -f /vol/$SA/upper/session.txt ] && echo UPPER_HAS_WRITE || echo UPPER_EMPTY
+    grep -q SESSION1 /vol/$BASE/marker.txt 2>/dev/null && echo BASE_DIRTY || echo BASE_CLEAN" 2>&1)"
   echo "$chk" | grep -q UPPER_HAS_WRITE && pass "write landed in the per-session UPPER" || warn "write not found in upper: $chk"
   echo "$chk" | grep -q BASE_CLEAN      && pass "BASE stayed immutable (shared lower safe)" || fail "BASE was mutated: $chk"
 fi
@@ -104,7 +109,7 @@ fi
 #    multi-session pattern. Each has its own upper; isolation must hold and there
 #    must be no 'upperdir in-use' / EBUSY between them.
 hdr "3. Two sessions sharing one read-only base, concurrent — isolation + no EBUSY"
-make_overlay_vol ob-ovl-m2 up2 wk2 2>/dev/null || true
+make_overlay_vol ob-ovl-m2 "$SB" 2>/dev/null || true
 docker run -d --name ob-ovl-c1 -v ob-ovl-m1:/m "$IMG" sleep 60 >/dev/null 2>&1
 c2_err="$(docker run -d --name ob-ovl-c2 -v ob-ovl-m2:/m "$IMG" sleep 60 2>&1)" && c2_ok=1 || c2_ok=0
 if [ "$c2_ok" = 1 ]; then
@@ -123,12 +128,13 @@ docker rm -f ob-ovl-c1 ob-ovl-c2 >/dev/null 2>&1 || true
 hdr "Summary"
 echo "    PASS=$PASS FAIL=$FAIL"
 if [ "$FAIL" -eq 0 ]; then
-  ok "DAEMON-MOUNTED OVERLAY WORKS on this host — no sidecar, no propagation needed."
-  echo "    → If this host is Docker Desktop/Windows (where propagation-spike.sh FAILS),"
-  echo "      this mechanism makes overlay viable there too. Record it in ../FINDINGS.md."
+  ok "DAEMON-MOUNTED OVERLAY WORKS on this host, in the PRODUCTION layout —"
+  echo "    base in overlay-base/<hash>/ + uppers in sessions/<uuid>/, cross-subtree"
+  echo "    nested subpaths of ONE volume. No sidecar, no propagation, no privilege."
+  echo "    → Closes the 'confirm-before-build' item for this daemon. Record in ../FINDINGS.md."
 else
   bad "Daemon-mounted overlay did NOT fully work here — record which checks failed."
 fi
 echo
-echo "Run on BOTH Docker Desktop/Windows-WSL2 AND a Linux/VPS host; paste each"
-echo "summary into ../FINDINGS.md (this is the alternative to the sidecar design)."
+echo "Run on a Linux/VPS daemon (the un-run axis) and, if handy, re-run on Docker"
+echo "Desktop/Windows; paste each summary into ../FINDINGS.md."
