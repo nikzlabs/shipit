@@ -222,6 +222,18 @@ This feature should not remove Docker-secrets mode. Instead:
 - The docs should describe Docker-secrets mode as the stronger service-file isolation
   option, not the only way to avoid workspace leaks.
 
+**Teardown cleanup applies to Docker-secrets mode too.** Docker-secrets mode writes
+per-secret plaintext files to `<internalDir>/<sessionId>/<NAME>` via
+`writeIsolatedSecretFiles()`. Like the env-file directory above, that root lives outside
+the workspace checkout, so neither archive nor the disk-janitor reclaims it. `ServiceManager`
+retains `dockerSecretsConfig.internalDir` and, under the same
+`stop({ removeVolumes: true })` guard as the env-file path, calls
+`removeSessionSecretsDir({ internalDir, sessionId })` so the per-session secret files don't
+accumulate forever. Idle eviction / reconcile (default `removeVolumes: false`) preserve them
+for resume, matching the env-file contract. Only the orchestrator-internal `internalDir` is
+swept — the optional `hostDir` (the Docker-daemon-visible path used in compose `file:`
+references) is untouched.
+
 ### 5. Dogfood compose keeps service-only secrets out of the workspace
 
 The ShipIt repo's `dev` service declares service-only secrets:
@@ -282,7 +294,10 @@ x-shipit-secrets[agent: true]
   service-name → absolute-path map, and fails closed via
   `assertServiceEnvRootOutsideWorkspace()` if the root resolves inside the agent workspace.
   `sweepWorkspaceServiceEnvFiles()` removes any pre-183 in-workspace `.env.<svc>` leak (also
-  reused by Docker-secrets mode).
+  reused by Docker-secrets mode). `removeSessionServiceEnvDir()` (env-file mode) and
+  `removeSessionSecretsDir()` (Docker-secrets `<internalDir>/<sessionId>/`) both delegate to a
+  shared `removeSessionSecretDir()` best-effort remover — recursive, force, no-op on empty
+  `sessionId`.
 - `src/server/orchestrator/service-secrets-resolver.ts` — `serviceEnvDir` option selects the
   out-of-workspace write path; `getServiceEnvFiles()` carries the env-file map from secret
   sync to compose override generation. Delivery precedence: Docker-secrets mode →
@@ -298,7 +313,10 @@ x-shipit-secrets[agent: true]
   full reset) calls `removeSessionServiceEnvDir()` so the plaintext service env files don't
   outlive the session — they sit outside the workspace checkout, so neither archive nor the
   disk-janitor would otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
-  false and preserve the files for resume.
+  false and preserve the files for resume. In Docker-secrets mode the manager additionally
+  retains `dockerSecretsConfig.internalDir` and, under the same guard, calls
+  `removeSessionSecretsDir()` to drop `<internalDir>/<sessionId>/` — same contract; the
+  `hostDir` path is left untouched.
 - `src/server/orchestrator/index.ts` — derives the default `serviceEnvDir` from
   `SHIPIT_SERVICE_ENV_DIR` or `<stateDir>/service-env`, threaded through
   `runner-registry-factory.ts` → `service-manager-setup.ts` → `ServiceManager`.
