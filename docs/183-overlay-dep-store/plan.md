@@ -169,78 +169,45 @@ default branch base blindly.
 
 The mount can't happen inside the session container — ShipIt's containment model is
 unprivileged containers, HTTP-only, no `docker exec` (`docs/172-agent-containment`). So the
-**orchestrator mounts on the host and bind-mounts the merged dir into the session**: mount
-(lower + upper + workdir) on activate, unmount + clean workdir on disposal, and teach
-`disk-janitor` / archive flows about live mounts before they tear down dirs. This is the one
-genuinely new subsystem and the gating unknown for the whole proposal.
+**orchestrator (which holds `docker.sock`) has the daemon create the overlay and mount it into
+the session** — see the mechanism decision below.
 
 #### Host-mount design decisions (decided — see [`FINDINGS.md`](./FINDINGS.md))
 
-After the spikes confirmed the substrate, the gate became a design problem, now settled —
-including propagation on the prod VPS (proven, see the prerequisite bullet):
+- **Mount mechanism — daemon-performed overlay via the `local` volume driver.** The orchestrator
+  stays **unprivileged**; using the `docker.sock` it already holds, it creates a per-session
+  **`local`-driver volume with `type=overlay`** and `o=lowerdir=<base>,upperdir=<session-upper>,
+  workdir=<session-work>` (absolute daemon-host paths, resolved via `docker volume inspect`).
+  When the session container mounts that volume at `/workspace`, the **Docker daemon performs the
+  `mount -t overlay`** as it constructs the container, so the merged view is in the container's
+  mount namespace **by construction**. **No privileged sidecar, no `CAP_SYS_ADMIN` anywhere, and
+  no cross-container mount propagation** — which is what makes it work uniformly across **all
+  four** install targets, including Docker Desktop/Windows. **Proven** on Docker Desktop/Windows
+  (the host where the propagation approach was dead): `prototype/volume-driver-overlay-spike.sh`
+  PASS=7/7 — unprivileged merged visibility, copy-up to a per-session upper, immutable shared
+  base, and two concurrent sessions over one read-only base with no EBUSY.
 
-- **Mount mechanism — privileged helper driven via `docker.sock`.** The orchestrator stays
-  **unprivileged**; it uses the `docker.sock` it already holds (already root-on-host-equivalent)
-  to drive a small **privileged helper** that performs the `mount -t overlay` on the daemon
-  host with **shared mount propagation**, so the mount lives in the host namespace and the
-  daemon can bind the `merged` dir into the session. `CAP_SYS_ADMIN` is confined to that one
-  tiny, single-purpose component rather than added to the central long-lived orchestrator.
-  *(Rejected: standing `CAP_SYS_ADMIN` on the orchestrator; a custom Docker volume plugin —
-  too heavy to build/operate.)*
-  - **Helper shape — long-lived privileged sidecar.** A small `--privileged` "mounter" service
-    runs alongside the orchestrator and exposes a tiny **mount/unmount API over a local unix
-    socket**. It owns a **stable mount namespace** with propagation (`rshared` on the volume
-    backing dir) configured **once**, so mount lifecycle, health, and observability are simple
-    to reason about. It has no network surface. *(Rejected: ephemeral per-operation
-    `--privileged` container — correctness would lean on mount propagation outliving the
-    container, a known footgun, plus per-op spawn latency.)*
-  - **Prerequisite — shared mount propagation on the daemon host** (partially validated by
-    [`prototype/propagation-spike.sh`](./prototype/propagation-spike.sh)). For the sidecar's
-    overlay mount to reach a *separate* session container, it must mount under a **shared
-    mountpoint** the daemon sees — a dedicated self-bind dir marked `rshared`
-    (`mount --bind D D && mount --make-rshared D`). This requires the daemon host's mount
-    tree to support shared propagation. **It splits by virtualization substrate — so
-    "Docker Desktop" is not one answer.** Status by target:
-    - **systemd Linux VPS — proven on prod, no setup.** `propagation-spike.sh` rung A2 ran on
-      the prod VPS (systemd, docker 29.5.2, linux/amd64) and reported PROPAGATED on the plain
-      run — systemd mounts `/` rshared at boot, so the `:rshared` bind is accepted with no
-      provisioning. The always-on #1 install target is confirmed; the open blocker that gated
-      the Phase 1 nm-store deletion is **closed**.
-    - **Docker Desktop / macOS — propagation works with no setup, proven.** The LinuxKit VM
-      mounts `/` shared by default (rung A2 PROPAGATED, docker 29.5.3, arm64). **Open caveat:**
-      the spike did not confirm this survives a **VM restart** (the LinuxKit VM is recreated
-      routinely); Phase 2's startup probe must **re-verify/re-arm propagation on each daemon/VM
-      start**, not assume one-time setup persists.
-    - **Docker Desktop / Windows (WSL2 backend) — CONFIRMED to NOT propagate.** Tested on a
-      real Docker Desktop/Windows install (docker 29.4.1; `docker info` → `docker-desktop` /
-      "Docker Desktop"): every rung — plain volume, runtime `make-rshared`, and even a
-      dedicated self-bind shared mountpoint — was **rejected** by the daemon. The daemon lives
-      in Docker Desktop's managed `docker-desktop` WSL2 distro, whose mount topology refuses
-      the `:rshared` source even when `/proc/1/mountinfo` reads shared, and the distro is
-      managed/ephemeral so there's **no user-applicable `MountFlags=shared` fix**. → This is a
-      **confirmed plain-install-fallback target**, and a *mainstream* one (a common Windows
-      local-dev setup), not a narrow edge. (An earlier draft mislabelled this run as "bare
-      docker-ce-in-WSL2" — it was Docker Desktop; corrected.)
-    - **Native docker-ce inside a WSL2 distro (no Docker Desktop) — UNTESTED.** Likely also
-      private `/`; if so, `MountFlags=shared` + restart is at least *possible* because the user
-      owns the dockerd unit. TBD — run the spike there to classify it.
+  *Rejected — privileged sidecar driving `mount -t overlay` with shared propagation.* The
+  earlier design ran a long-lived `--privileged` "mounter" sidecar whose overlay mount had to
+  **propagate** (`rshared`) into the daemon's namespace to reach a separate session container.
+  That works on systemd VPS and Docker Desktop/Mac but is **confirmed rejected on Docker
+  Desktop/Windows-WSL2** (managed `docker-desktop` distro, no user-applicable
+  `MountFlags=shared` fix — `propagation-spike.sh`, see [`FINDINGS.md`](./FINDINGS.md)). The
+  daemon-overlay mechanism above makes the whole propagation problem — and the sidecar, the
+  startup propagation probe, the re-arm-on-boot, and the disk-janitor unmount-ordering hazard
+  (Docker unmounts on container stop; we just `docker volume rm`) — disappear. *(Also rejected:
+  standing `CAP_SYS_ADMIN` on the orchestrator; a custom Docker volume plugin — too heavy.)*
 
-    So the requirement is "shared propagation on the daemon substrate," documented as a
-    prerequisite, detected at startup; overlay is not lost where it's absent, it degrades to a
-    plain install. Overlay-eligible (proven): VPS + Docker Desktop/Mac. No-overlay fallback
-    (confirmed): Docker Desktop/Windows.
+  **Per-session-upper rule + concurrency caveat (kernel-level, respected by the design):** the
+  kernel errors `upperdir is in-use by another mount` if two overlays share an `upperdir`, so
+  each session gets its **own** upper/work; a **shared read-only `lowerdir`** across sessions is
+  fine (proven). `device or resource busy` is a known overlay2 hazard under **parallel** mount
+  creation → **serialize** the volume create/mount. `workdir` must be empty and on the upper's fs.
 
-    > **⚠ This mechanism may be superseded — alternative under investigation.** The propagation
-    > prerequisite (and the whole privileged sidecar) exists only because a sidecar's overlay
-    > mount must reach a separate container's namespace. Docker's **`local` volume driver** can
-    > instead have the **daemon perform the `mount -t overlay`** (`type=overlay`,
-    > `o=lowerdir=…,upperdir=…,workdir=…`) as it constructs the session container — so the merged
-    > view is in the container by construction, with **no propagation in the path**. If proven,
-    > this **drops the sidecar + the propagation prerequisite and makes Docker Desktop/Windows
-    > work too**. Demonstrated upstream (docker/for-linux#1206) but not yet run for the ShipIt
-    > pattern — spike: [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh),
-    > evidence + caveats in [`FINDINGS.md`](./FINDINGS.md). Settle this **before** building the
-    > Phase 2 sidecar.
+  *Remaining confirm-before-build:* run the spike once on the **Linux/VPS** daemon too (expected
+  to pass trivially — a daemon-side overlay mount is standard there; the VPS already passed the
+  harder sidecar test).
+
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
     warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
@@ -254,22 +221,18 @@ including propagation on the prod VPS (proven, see the prerequisite bullet):
     **deleted entirely** ([nm-store.ts](../../src/server/session/nm-store.ts)), leaving exactly
     two paths: overlay (warm, near-no-op) or plain full install (correct everywhere).
 - **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
-  `upper`/`work`/`merged` live under the session subtree (`sessions/{uuid}/`); the shared base
+  `upper`/`work` live under the session subtree (`sessions/{uuid}/`); the shared base
   (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
   mounted, and GC'd per repo, the natural home for a per-`(repo, runtime)` base. Everything is
-  on the one workspace named volume (one fs → satisfies overlay's upper+work+merged same-fs
-  rule). **How the merged dir reaches the session:** the session's volume-Subpath mount
-  (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
-  resolves the `merged` subpath, but a Subpath mount does **not** by itself surface a *nested*
-  mount the sidecar created inside the volume — the merged dir only appears in the session
-  **because the overlay mount propagated into the daemon's namespace** (the `rshared`
-  prerequisite above). The Subpath mechanism and propagation are not separable steps: Subpath
-  is the addressing, propagation is what makes the nested overlay visible. **Unverified gap:**
-  `propagation-spike.sh` validated a *direct bind-mount* of merged into a sibling container,
-  **not** the volume-Subpath path production actually uses — Phase 2 must verify the overlay
-  surfaces through a real volume-Subpath mount, not only a direct bind.
-  *(Rejected: a dedicated overlay volume — extra plumbing for the janitor/helper without a
-  clear win at single-user scale.)*
+  on the one workspace named volume (one fs → satisfies overlay's upper+work same-fs rule), and
+  their absolute daemon-host paths are resolvable via `docker volume inspect`. **How the merged
+  dir reaches the session:** the orchestrator creates the per-session `local`-driver
+  `type=overlay` volume from those paths and mounts it at `/workspace`; the **daemon** performs
+  the overlay mount as it builds the container, so the merged view is present **by
+  construction** — no nested-mount/propagation step, and no `merged` dir to pre-create on disk
+  (the daemon's volume mount is the merged view). This replaces the Subpath-of-a-pre-mounted-dir
+  approach (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
+  for overlay-eligible sessions.
 
 ### 5. Bounding drift and overlay depth
 
@@ -284,17 +247,21 @@ periodic clean-rebuild schedule is needed.
 
 ## Decisions (this iteration)
 
-> **Prototype status:** the keyless rolling-base **logic** is built and validated —
+> **Prototype status (all green):** keyless rolling-base **logic** validated —
 > [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts) (33/33 against a real git
-> repo); the host overlay mount has a ready spike,
-> [`prototype/host-overlay-spike.sh`](./prototype/host-overlay-spike.sh), that must run on the
-> ext4 host (it **cannot** run inside a session container — no `CAP_SYS_ADMIN`). Results and
-> timings in [`FINDINGS.md`](./FINDINGS.md), how-to in [`prototype/README.md`](./prototype/README.md).
+> repo); overlay **substrate** confirmed (WSL2/ext4 19/19 + Docker Desktop/Mac 21/21); and the
+> **mount mechanism** settled — **daemon-performed overlay via the `local` volume driver**,
+> proven on Docker Desktop/Windows-WSL2 ([`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
+> 7/7), which makes all four install targets overlay-eligible and removes the privileged sidecar.
+> The earlier [`host-overlay-spike.sh`](./prototype/host-overlay-spike.sh) /
+> [`propagation-spike.sh`](./prototype/propagation-spike.sh) remain as substrate evidence and the
+> record of why the sidecar approach was rejected. Results in [`FINDINGS.md`](./FINDINGS.md),
+> how-to in [`prototype/README.md`](./prototype/README.md).
 
-- **Sequencing:** prototype the **keyless rolling-base logic first** (on the current copy
-  substrate), then build the host-mount subsystem. *Caveat:* the host-side mount remains the
-  true gating risk — validating the chain logic first does not de-risk it, so keep it next in
-  line. *(Logic prototype done; host spike written and pending a host run.)*
+- **Sequencing:** prototype the **keyless rolling-base logic first** (done), then settle the
+  **host-mount mechanism** (done — daemon-overlay). Both are now validated, so the gating risk
+  the earlier draft worried about (the privileged host-side mount) is retired: the daemon does
+  the mount, no sidecar.
 - **Environment-agnostic:** overlay the **whole workspace**; no ecosystem/target-path
   knowledge. Settled by §1.
 - **Skip policy:** keyless + upgrade the existing marker/`headChanged` skip into a stamped
@@ -359,26 +326,27 @@ nm-store first** — a clean, self-contained simplification — then the overlay
 on top of the simplified install path.
 
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
-   (WSL2 + Docker Desktop/Mac), and the §4 design are settled. Cross-container propagation is
-   proven on the two overlay-eligible substrates: Docker Desktop/**Mac** and the **prod systemd
-   VPS** (`propagation-spike.sh` rung A2 PROPAGATED, plain run, docker 29.5.2). **Docker
-   Desktop/Windows (WSL2 backend) is confirmed NOT to propagate** (no user-applicable fix) →
-   plain-install fallback; native docker-ce in a WSL2 distro is untested.
+   (WSL2 + Docker Desktop/Mac), and the §4 design are settled. **Mechanism = daemon-performed
+   overlay via the `local` volume driver** (no sidecar, no propagation, no `CAP_SYS_ADMIN`):
+   proven on **Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh` 7/7 — the host
+   where the rejected sidecar/propagation approach failed). **All four documented targets are
+   overlay-eligible.** (The earlier propagation spike — VPS/Mac pass, Windows fails — is the
+   evidence for *why the sidecar was rejected*; superseded.)
 1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
    `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
    becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
    [148](../148-fast-npm-install/plan.md) superseded. *Interim:* fast-path-eligible repos pay a
    full install per fresh session until Phase 3 — a conscious, temporary regression with a known
-   end date now that overlay is proven on the prod VPS.
-2. **Host-mount sidecar subsystem** — the long-lived privileged sidecar (mount/unmount over a
-   unix socket, dedicated self-bind `rshared` mountpoint), orchestrator wiring, the startup
-   shared-propagation probe that **re-verifies/re-arms propagation on every daemon/VM start**
-   (not a one-time setup — guards the Docker Desktop VM-restart case) and selects overlay vs
-   plain-install fallback, verification that the overlay surfaces through the **real
-   volume-Subpath mount** (not only a direct bind), `disk-janitor`/archive teardown ordering, and
-   the VPS propagation + mount-cost confirmation.
+   end date now that overlay is proven across all targets.
+2. **Daemon-overlay mount subsystem** — orchestrator (unprivileged, via `docker.sock`) creates a
+   per-session `local` `type=overlay` volume (`lowerdir`=base, `upperdir`/`workdir`=session,
+   absolute daemon-host paths from `docker volume inspect`) and mounts it at `/workspace`;
+   **serialize** volume create/mount (overlay2 EBUSY hazard); teardown is `docker volume rm`
+   (daemon unmounts on container stop — no manual unmount-ordering); confirm the spike once on
+   the Linux/VPS daemon; mount-cost timing. *(No sidecar, no propagation probe, no re-arm — all
+   removed by this mechanism.)*
 3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
-   base in the dep-cache subtree + per-session upper/work/merged, the stamped marker, the publish
+   base in the dep-cache subtree + per-session upper/work, the stamped marker, the publish
    commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
 4. **Session lifecycle integration** — on-activation install → publish rule, eligibility
    exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, compose +
@@ -390,27 +358,20 @@ on top of the simplified install path.
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
 design decisions are made (see Decisions). Status of each is tracked in
-[`FINDINGS.md`](./FINDINGS.md); #3 is resolved, #1/#2/#4 are pending a host run of
-[`prototype/host-overlay-spike.sh`](./prototype/host-overlay-spike.sh).
+[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3/#4 are resolved.
 
-1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
-   whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
-   the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
-   the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
-   *Status: substrate **confirmed** — spike passed **WSL2/ext4 19/19** and **Docker Desktop/Mac
-   21/21** (named-volume substrate, incl. inotify): mount, CoW with immutable base, 16-deep
-   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering. But the spikes ran
-   `--privileged`/root-with-`CAP_SYS_ADMIN`, which sidesteps the real shape of the gate: the
-   orchestrator runs as an **unprivileged container** (only `docker.sock`, no
-   `cap_add: SYS_ADMIN` — `docker/local/prod/compose.yml`), and session workspaces are Docker
-   **named volumes** whose bind-mounts the **daemon** resolves. So "orchestrator owns the
-   host-side mount" needs (a) a mount-capable mechanism (add the cap, a privileged helper, or
-   go through the daemon) and (b) the `merged` dir on the **daemon-host fs**, not the
-   orchestrator container's private fs. This holds identically on Linux and on macOS local
-   Docker (where everything runs inside the Docker Desktop **Linux VM**; keep overlay layers on
-   the VM's native ext4, not a FUSE-backed host path — confirmed by the Mac run). Remaining to
-   close: resolve the **privilege/daemon-host-fs mechanism** (the real gate now), plus a
-   nice-to-have run on the prod (non-WSL/non-Desktop) kernel and mount/unmount timing — see
+1. **Host-mount feasibility (the gate).** ✅ **Resolved.** Can the unprivileged orchestrator own
+   a per-session whole-workspace overlay within the containment model (`docs/172`), across all
+   install targets? *Substrate confirmed (WSL2/ext4 19/19 + Docker Desktop/Mac 21/21: mount, CoW
+   with immutable base, 16-deep lowerdirs, teardown). The **mechanism** is the
+   **daemon-performed overlay via the `local` volume driver** — the orchestrator (via
+   `docker.sock`, no added capability) has the daemon mount the overlay as it builds the session
+   container, so there's no privileged sidecar, no `CAP_SYS_ADMIN`, and no cross-container
+   propagation. Proven on Docker Desktop/Windows-WSL2 (`volume-driver-overlay-spike.sh` 7/7) —
+   the host where the rejected sidecar/propagation approach failed — so **all four documented
+   targets are overlay-eligible**. Teardown ordering also dissolves: the daemon unmounts on
+   container stop; the orchestrator just `docker volume rm`s. Remaining nice-to-haves: a Linux/VPS
+   run of the volume-driver spike (expected trivial) and mount-cost timing — see
    [`FINDINGS.md`](./FINDINGS.md).*
 2. **Source + `.git` on the overlay.** ✅ **Resolved** (WSL2/ext4 + Docker Desktop/Mac): clone +
    fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,

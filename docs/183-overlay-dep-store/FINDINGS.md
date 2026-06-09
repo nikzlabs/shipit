@@ -319,6 +319,16 @@ Docker Desktop/**Windows** is a **confirmed no-overlay target** → plain-instal
 fallback, with no known runtime fix. Native docker-ce inside a WSL2 distro is
 untested and TBD.
 
+> **⚠ This entire propagation split is now MOOT — superseded by the daemon-overlay
+> mechanism (next section).** It is the verdict for the *rejected* privileged-sidecar
+> approach, kept as evidence for why that approach was abandoned. With the daemon
+> performing the overlay mount via the `local` volume driver, there is no
+> propagation in the path, so **all four targets — VPS, Docker Desktop/Mac, Docker
+> Desktop/Windows, and Linux — are overlay-eligible.** Docker Desktop/Windows is
+> proven; the others are expected (Mac/VPS already pass the harder sidecar test;
+> Linux daemon-side overlay is bog-standard). The "no-overlay fallback" framing
+> below applies only to the abandoned sidecar design.
+
 **Design implication:** require **shared mount propagation on the daemon host** as
 a documented prerequisite, detected by the startup probe; where it's absent, **fall
 back to a plain full `agent.install`** — *not* a copy store. Overlay-eligible
@@ -432,7 +442,7 @@ The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.
 
-## Alternative mechanism — daemon-performed overlay via the `local` volume driver (UNDER INVESTIGATION)
+## Daemon-performed overlay via the `local` volume driver — **PROVEN on Docker Desktop/Windows (the decisive host); adopt over the sidecar**
 
 **Motivation: kill the propagation dependency that fails on Docker Desktop/Windows.**
 The sidecar design's hard part is making a privileged helper's overlay mount
@@ -470,16 +480,35 @@ user's setup), where the sidecar mechanism is confirmed dead.
   hazard under **parallel** container creation — serialize the create/mount.
 - Standard overlay rules: `workdir` empty + same fs as `upperdir`.
 
-**Status: PROMISING LEAD, NOT YET PROVEN for our case.** Documented + demonstrated
-upstream and it removes the failing dependency by construction, but not yet run on
-Docker Desktop/Windows for the ShipIt pattern (shared RO base + per-session upper).
-Spike written: [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
-— seeds a shared base + two per-session uppers, mounts daemon-overlay volumes into
-two **unprivileged** containers, checks merged visibility, copy-up isolation, base
-immutability, and concurrent shared-lower mounts (the EBUSY case). **Run it on
-Docker Desktop/Windows-WSL2** (the decisive host) and a Linux/VPS host; paste both
-summaries here. If Windows passes, revisit the §4 mechanism decision: prefer the
-volume-driver overlay over the privileged sidecar.
+**Status: PROVEN on the decisive host — Docker Desktop/Windows-WSL2.** The spike
+[`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
+ran on Docker Desktop/Windows (`docker info` → `docker-desktop` / "Docker Desktop",
+docker 29.4.1 — the **same daemon that rejected propagation** in `propagation-spike.sh`)
+and reported **PASS=7 FAIL=0**:
 
-> **Docker Desktop / Windows-WSL2 run:** _(paste `volume-driver-overlay-spike.sh` summary here)_
-> **Linux / VPS run:** _(paste summary here)_
+- ✅ an **unprivileged** container sees the overlay-merged LOWER content — the
+  daemon performed the `mount -t overlay`, no propagation, no `CAP_SYS_ADMIN`;
+- ✅ writes copy-up into the **per-session upper**, the shared **base stays
+  immutable**;
+- ✅ **two concurrent sessions** sharing one read-only base, each with its own
+  upper, mount with **no EBUSY** and writes stay **isolated**.
+
+**This is the decisive result.** The mechanism works on the exact target where the
+sidecar/propagation design is dead, so:
+
+1. **Docker Desktop/Windows-WSL2 flips from "no-overlay fallback" to overlay-eligible.**
+2. **The privileged sidecar and the shared-propagation prerequisite can be dropped
+   from the design** — fewer moving parts, no startup propagation probe, no
+   re-arm-on-boot, no `CAP_SYS_ADMIN` anywhere. Teardown ordering is also handled
+   by Docker (the daemon unmounts the overlay when the last container stops; we
+   just `docker volume rm`), removing the disk-janitor unmount-before-rm hazard.
+
+**→ Decision: adopt the daemon-performed `local`-volume overlay as the §4
+mechanism; demote the privileged sidecar to a rejected alternative.** (plan §4
+updated.)
+
+> **Docker Desktop / Windows-WSL2 run:** PASS=7 FAIL=0, daemon `docker-desktop`
+> (Docker Desktop), docker 29.4.1. "DAEMON-MOUNTED OVERLAY WORKS — no sidecar, no
+> propagation needed."
+> **Linux / VPS run:** _(still to run — expected to pass trivially; a daemon-side
+> overlay mount is bog-standard on a bare Linux daemon. Confirm before building.)_
