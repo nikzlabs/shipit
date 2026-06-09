@@ -55,6 +55,13 @@ interface AppLayoutProps {
   onMobileNewSession: () => void;
   onMobileQuickSession: () => void;
   onMobileVoiceSession: () => void;
+  /**
+   * Called with the session the quick-capture overlay just created. Lets the
+   * app graduate the URL when the overlay reused the /{slug}/new page's
+   * claimed session (see App.tsx `handleQuickSessionCreated`). Background
+   * sessions return a different id and don't trigger navigation.
+   */
+  onQuickSessionCreated: (session: SessionInfo) => void;
   chatPanel: ReactNode;
   rightPanel: ReactNode;
 
@@ -111,6 +118,7 @@ export function AppLayout({
   onMobileNewSession,
   onMobileQuickSession,
   onMobileVoiceSession,
+  onQuickSessionCreated,
   chatPanel,
   rightPanel,
   fraction,
@@ -310,7 +318,7 @@ export function AppLayout({
       )}
 
       {toast && <Toast toast={toast} />}
-      <QuickCaptureOverlay onAddRepo={onAddRepo} />
+      <QuickCaptureOverlay onAddRepo={onAddRepo} onSessionCreated={onQuickSessionCreated} />
     </>
   );
 }

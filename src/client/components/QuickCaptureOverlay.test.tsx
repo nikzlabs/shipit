@@ -196,6 +196,22 @@ describe("QuickCaptureOverlay", () => {
     expect(useSessionStore.getState().sessionId).toBe("current");
   });
 
+  it("notifies onSessionCreated with the created session so the app can graduate the URL", async () => {
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    const created = session("graduated", "https://github.com/acme/app.git");
+    createHeadlessSessionMock.mockResolvedValue(created);
+    const onSessionCreated = vi.fn();
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} onSessionCreated={onSessionCreated} />);
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+
+    await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith(created));
+  });
+
   it("derives the sent agent from the saved model, ignoring a stale vibe-agent-id", async () => {
     // Regression for docs/166: a user who used Codex once "a while ago" keeps a
     // stale `vibe-agent-id="codex"` while their saved/selected model is a Claude
