@@ -9,7 +9,7 @@ caches, etc.). When a project needs a live preview, create a
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     working_dir: /app
     ports: ["5173:5173"]
@@ -23,7 +23,7 @@ services:
 
 Use standard public images — never custom ShipIt images:
 
-- **Node.js**: `node:20` or `node:22` (match `engines.node` in package.json)
+- **Node.js**: use the active LTS/current image that matches `engines.node` in `package.json` (for ShipIt itself, `node:24-slim`)
 - **Python**: `python:3.12` (match `.python-version` or `pyproject.toml`)
 - **PostgreSQL**: `postgres:16`
 - **Redis**: `redis:7`
@@ -99,7 +99,7 @@ Controls how ShipIt treats each service:
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     ports: ["5173:5173"]
     x-shipit-preview: auto     # Shown in preview pane
 
@@ -148,7 +148,7 @@ ShipIt auto-injects them into every session for the repo:
 ```yaml
 services:
   api:
-    image: node:20
+    image: node:24-slim
     x-shipit-secrets:
       - STRIPE_SECRET_KEY            # string shorthand
       - name: DATABASE_URL           # object form with metadata
@@ -167,7 +167,7 @@ above the preview. See [secrets.md](secrets.md) for the full reference
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     working_dir: /app
     ports: ["5173:5173"]
@@ -182,7 +182,7 @@ services:
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     working_dir: /app
     ports: ["3000:3000"]
@@ -197,7 +197,7 @@ services:
 ```yaml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     working_dir: /app
     ports: ["3000:3000"]
@@ -402,7 +402,7 @@ compose: docker-compose.yml
 # docker-compose.yml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev          # plain run, no install gate
     working_dir: /app
     ports: ["5173:5173"]

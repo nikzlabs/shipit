@@ -12,6 +12,9 @@
     "type": "git",
     "url": "git+https://github.com/nicolasalt/shipit.git"
   },
+  "engines": {
+    "node": "24.x"
+  },
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/server/orchestrator/index.ts",

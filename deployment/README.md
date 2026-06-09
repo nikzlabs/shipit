@@ -52,12 +52,12 @@ updating in place (no host-side systemd watcher locally).
 
 ## Deploying ShipIt to a VPS
 
-Self-host ShipIt on any Linux VPS with optional Cloudflare Tunnel and/or Tailscale access.
+Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trust access control, Tailscale access, or both.
 
 ## What you get
 
 - ShipIt at `https://shipit.example.com` with SSL via Cloudflare, tailnet-only HTTPS via Tailscale, or both
-- Optional access control via Cloudflare Zero Trust (SSO, email allowlist, etc.)
+- Required access control for Cloudflare Tunnel via Cloudflare Zero Trust (SSO, email allowlist, etc.)
 - Preview subdomains through your chosen access hostname
 - One-click updates from the ShipIt UI
 - No open HTTP/HTTPS ports by default — ShipIt listens on localhost and access scripts proxy to it
@@ -86,7 +86,7 @@ The script will ask whether to install Cloudflare, Tailscale, both, or neither, 
 - Install Docker
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:
-  - Cloudflare: install `cloudflared`, authenticate, create a tunnel, configure DNS routes, lock down the firewall, and optionally create a Zero Trust Access application + policy via the Cloudflare API
+  - Cloudflare: install `cloudflared`, authenticate, create a Zero Trust Access application + policy via the Cloudflare API, create a tunnel, configure DNS routes, and lock down the firewall
   - Tailscale: install Tailscale, authenticate the VPS, and expose ShipIt with Tailscale Serve
 - Build and start ShipIt
 
@@ -99,7 +99,7 @@ bash /opt/shipit/deployment/vps/tailscale.sh
 
 ### Cloudflare Zero Trust access control
 
-The Cloudflare setup script can configure Zero Trust automatically if you provide a Cloudflare API token. To create one:
+The Cloudflare setup script requires Zero Trust by default before it routes `shipit.example.com` and `*.shipit.example.com` to ShipIt. To create the required Cloudflare API token:
 
 1. Go to [Cloudflare API Tokens](https://dash.cloudflare.com/profile/api-tokens)
 2. Create a token with **Account > Access: Apps and Policies > Edit** permission
@@ -107,11 +107,17 @@ The Cloudflare setup script can configure Zero Trust automatically if you provid
 
 The script will ask for these values and create a self-hosted Access application covering `shipit.example.com` and `*.shipit.example.com`, with an allow policy for your email or email domain.
 
-If you skip this during setup, you can configure it later in the [Zero Trust dashboard](https://one.dash.cloudflare.com) under **Access → Applications**, or rerun `cloudflare.sh`.
+If Zero Trust setup fails or you leave the API token blank, the script exits before configuring public Cloudflare Tunnel ingress. For deliberate testing or when another access layer already protects the hostname, you can opt out explicitly:
+
+```bash
+SHIPIT_ALLOW_PUBLIC_UNAUTHENTICATED=1 bash /opt/shipit/deployment/vps/cloudflare.sh
+```
+
+That override publishes ShipIt publicly at `shipit.example.com` and `*.shipit.example.com`; do not use it for normal installs.
 
 Users authenticate through Cloudflare before reaching ShipIt. You can use any identity provider Cloudflare supports (Google, GitHub, one-time PIN, etc.).
 
-Once Cloudflare setup is complete, visit `https://shipit.example.com` — authenticate through Zero Trust if configured, then complete Claude CLI OAuth.
+Once Cloudflare setup is complete, visit `https://shipit.example.com` — authenticate through Zero Trust, then complete Claude CLI OAuth.
 
 ## Updating
 
