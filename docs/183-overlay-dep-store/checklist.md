@@ -23,8 +23,12 @@ rolling-base logic first; the host mount stays the gating risk.
       unmount + workdir cleanup on dispose); size its cost — the gating unknown.
       Spike `prototype/host-overlay-spike.sh` **passed 19/19 on a WSL2/ext4 host** (mount,
       CoW+immutable base, 16-deep lowerdirs, bind-mount merged, safe teardown). Remaining:
-      run inotify check (install `inotify-tools`), repeat on prod (non-WSL) kernel, and time
-      the mount/unmount cost — see `FINDINGS.md`
+      resolve how the **unprivileged orchestrator container** (only `docker.sock`, no
+      `SYS_ADMIN`) actually performs the mount and where the `merged` dir lives so the
+      **daemon** can bind it into a session (must be on the daemon-host fs; on macOS that's the
+      Docker Desktop Linux VM's native ext4, not a FUSE host path); run inotify check (install
+      `inotify-tools`); repeat on prod (non-WSL) kernel; time the mount/unmount cost — see
+      `FINDINGS.md`
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)

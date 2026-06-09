@@ -62,11 +62,37 @@ First privileged host run, on **WSL2** (`6.6.114.1-microsoft-standard-WSL2`, ext
     `apt-get install inotify-tools` to confirm the recursive watcher sees plain
     creates **and** copy-up modifies over the overlay.
 
-**macOS:** the spike was also run on a Mac and correctly bailed at preflight —
-macOS (XNU) has no `/proc` and no overlayfs; it's a **Linux-only** kernel
-feature. This isn't a gap: ShipIt's orchestrator runs on Linux. On a Mac, run the
-spike **inside the Docker Desktop Linux VM** (or on the Linux host), not on the
-macOS host. The preflight now prints this guidance instead of a raw `grep` error.
+**macOS (supported install — corrected):** ShipIt's local-Docker install runs on
+macOS too (README), so macOS matters. The spike run *on the Mac host* correctly
+bailed — XNU has no `/proc`/overlayfs — but that is **not** the place the mount
+would happen. All real deployments run `containerized` mode
+(`docker/local/prod/compose.yml`: `USE_CONTAINERS=true`, orchestrator is a
+container on `/var/run/docker.sock`), so on a Mac the daemon, orchestrator
+container, session containers, and the `workspace` **named volume** all live
+inside **Docker Desktop's Linux VM**, which has overlayfs. (`local` runtime mode
+is only the ShipIt-in-ShipIt dogfood inner orchestrator, not a standalone
+deploy.) So the overlay mount is a Linux operation on every platform; on a Mac
+run the spike **inside the Docker Desktop Linux VM**, not on XNU. The preflight
+now prints this guidance instead of a raw `grep` error.
+
+**Two topology constraints the spike under-tested (Linux AND Mac):**
+
+1. **The orchestrator container is unprivileged.** `docker/local/prod/compose.yml`
+   grants it only `docker.sock` — no `privileged` / `cap_add: SYS_ADMIN`. The
+   spike ran as root-with-`CAP_SYS_ADMIN` directly, which assumes a capability
+   the orchestrator does not currently have. "Orchestrator owns the host-side
+   mount" therefore needs a concrete mechanism: add the cap to the orchestrator,
+   use a privileged helper/sidecar, or perform the mount via the daemon. **This
+   is the real shape of the gate, beyond "does overlayfs work."**
+2. **The merged dir must live on the daemon-host filesystem.** Session workspaces
+   are Docker volumes/bind-mounts resolved by the **daemon**; the overlay
+   `merged` dir must be a path the daemon can bind into a sibling session
+   container — i.e. on the daemon host fs (the VPS host, or the Docker Desktop
+   VM on Mac), not inside the orchestrator container's private fs.
+
+   *macOS corollary:* keep overlay `upperdir`/`workdir` on the VM's **native
+   ext4** (a named volume / VM path). overlayfs refuses a FUSE upperdir, so a
+   gRPC-FUSE/virtiofs-backed macOS host path will not work as an upper.
 
 **Caveats before calling #1/#2/#4 fully closed:**
 1. Run the **inotify** check (install `inotify-tools`) — it's the one untested item.

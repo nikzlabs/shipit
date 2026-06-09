@@ -267,9 +267,18 @@ design decisions are made (see Decisions). Status of each is tracked in
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
    the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
    *Status: spike passed **19/19 on a WSL2/ext4 host** (mount, CoW with immutable base, 16-deep
-   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering). Remaining to fully
-   close: the inotify check, a repeat on the prod (non-WSL) kernel, and timing the mount/unmount
-   cost — see [`FINDINGS.md`](./FINDINGS.md).*
+   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering). But the spike ran
+   as root-with-`CAP_SYS_ADMIN` directly, which sidesteps the real shape of the gate: the
+   orchestrator runs as an **unprivileged container** (only `docker.sock`, no
+   `cap_add: SYS_ADMIN` — `docker/local/prod/compose.yml`), and session workspaces are Docker
+   **named volumes** whose bind-mounts the **daemon** resolves. So "orchestrator owns the
+   host-side mount" needs (a) a mount-capable mechanism (add the cap, a privileged helper, or
+   go through the daemon) and (b) the `merged` dir on the **daemon-host fs**, not the
+   orchestrator container's private fs. This holds identically on Linux and on macOS local
+   Docker (where everything runs inside the Docker Desktop **Linux VM**; keep overlay layers on
+   the VM's native ext4, not a FUSE-backed host path). Remaining to fully close: resolve the
+   privilege/daemon-host-fs mechanism, run the inotify check, repeat on the prod (non-WSL)
+   kernel, and time the mount/unmount cost — see [`FINDINGS.md`](./FINDINGS.md).*
 2. **Source + `.git` on the overlay.** ✅ **Corroborated** on the WSL2/ext4 host: clone +
    fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
    and a published base carries source contents with `.git` excluded cleanly. Confirm git
