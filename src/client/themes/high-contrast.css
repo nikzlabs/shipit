@@ -45,6 +45,7 @@
   --color-folder: #ffe040;
   --color-autofix: #ff9020;
   --color-attention: #f59e0b;
+  --color-attention-wash: rgba(245, 158, 11, 0.55);
 
   /* Context meter */
   --color-context-ok: #40e870;

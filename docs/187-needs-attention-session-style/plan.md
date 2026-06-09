@@ -86,25 +86,29 @@ amber gradient fades in from the row's left edge and dissolves by ~60%.
 ```tsx
 // SessionItem — applied as an inline backgroundImage on the row div
 const attentionWash = needsAttention
-  ? `linear-gradient(90deg, color-mix(in srgb, var(--color-attention) 18%, transparent), ${
-      isCurrent ? "var(--color-bg-secondary)" : "transparent"
-    } 60%)`
+  ? "linear-gradient(90deg, transparent, var(--color-attention-wash), transparent)"
   : undefined;
 // ...
 <div ... style={attentionWash ? { backgroundImage: attentionWash } : undefined}>
 ```
 
+The gradient **peaks in the row's center and fades to transparent on both sides**
+(an earlier left-edge version was changed to center-origin).
+
 Why this shape:
 - **No layout impact.** It's purely a background, so the PR badge, title, CI icon,
   timestamp, auto-merge icon, and ⋮ menu all stay exactly where they are.
-- **Coexists with selection.** The gradient's far stop is the selected-row gray
-  (`--color-bg-secondary`) when the row is current, so a selected + needs-attention
-  row washes from amber into its own selection fill instead of fighting it; for a
-  non-selected row the far stop is `transparent` so the card background shows.
-- **No new tokens.** `color-mix(in srgb, var(--color-attention) 18%, transparent)`
-  derives the translucent amber from the existing per-theme `--color-attention`, so
-  it adapts across all 14 themes (amber-600 in light, amber-500 in dark) with no
-  theme-file edits.
+- **Coexists with selection.** Because both sides are transparent, the wash layers
+  over the row's own `background-color`: a selected + needs-attention row keeps its
+  gray selection fill at the edges with the amber blended in at the center — no
+  special-casing of `isCurrent` needed.
+- **Per-theme visibility via one new token.** A flat `color-mix` at 18% was nearly
+  invisible on the near-black dark surface. Visibility is now driven by a single new
+  token, **`--color-attention-wash`**, added to all 14 theme files: light themes use
+  `rgba(217,119,6,0.28)` (amber-600), dark themes `rgba(245,158,11,0.45)` (amber-500),
+  and `high-contrast` `0.55`. This is the one place family C's "title fill" cost (a
+  per-theme token) reappears — but it's a single token, not a fill+text pair, and the
+  component reads it identically in every theme.
 
 Note: because the CI-pending status glyph also uses amber (`--color-warning` ==
 `--color-attention`), the wash shares that hue. It reads as a row-level state
@@ -120,8 +124,9 @@ board are the shape/position-based alternatives.
   All options above are a swap here (row variants) or wrapping the title `<p>` in a
   span and toggling a class (title variants), keyed on `needsAttention` + `isCurrent`.
 - `src/client/hooks/useAttentionInfo.ts` — derives `needsAttention` and the reason string.
-- `src/client/themes/*.css` — `--color-attention` per theme; title-fill (family C)
-  would add `--color-attention-fill` / `--color-attention-on-fill` here.
+- `src/client/themes/*.css` — `--color-attention` per theme, plus the
+  `--color-attention-wash` token added for the implemented gradient wash (light 0.28,
+  dark 0.45, high-contrast 0.55).
 
 ## Visual reference
 

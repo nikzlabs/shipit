@@ -346,15 +346,14 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
   // docs/187 — "edge gradient wash": a needs-attention session is marked by a
-  // soft amber gradient fading in from the row's left edge and dissolving by
-  // ~60%. The far stop is the selected-row gray when this row is current (so the
-  // wash blends into the selection fill) and transparent otherwise, so it never
-  // collides with the selected background. `color-mix` derives the translucent
-  // amber from the per-theme `--color-attention`, so no new tokens are needed.
+  // soft amber gradient that peaks in the row's center and fades to transparent
+  // on both sides. Driven by the per-theme `--color-attention-wash` token, which
+  // carries a higher opacity in dark themes (the near-black surface needs it to
+  // read). Because the sides are transparent, the wash layers over the row's own
+  // background-color — so a selected row keeps its gray fill at the edges with the
+  // amber blended in at the center, no special-casing required.
   const attentionWash = needsAttention
-    ? `linear-gradient(90deg, color-mix(in srgb, var(--color-attention) 18%, transparent), ${
-        isCurrent ? "var(--color-bg-secondary)" : "transparent"
-      } 60%)`
+    ? "linear-gradient(90deg, transparent, var(--color-attention-wash), transparent)"
     : undefined;
 
   return (
