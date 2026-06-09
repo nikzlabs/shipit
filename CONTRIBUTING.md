@@ -2,7 +2,7 @@
 
 Thanks for your interest in ShipIt! This file covers everything you need to work on ShipIt itself: the architecture, the dev loop, and how the pieces talk to each other.
 
-**Heads up:** ShipIt is not currently accepting unsolicited pull requests. The PR template, CLA checks, and CI remain in place for maintainer-authored branches, invited contributions, release validation, and future contribution workflows. Issues, bug reports, feature requests, and design discussion are welcome — please [open an issue](https://github.com/nicolasalt/shipit/issues).
+**Heads up:** ShipIt is not currently accepting unsolicited pull requests. The PR template, CLA checks, and CI remain in place for maintainer-authored branches, invited contributions, release validation, and future contribution workflows. Issues, bug reports, feature requests, and design discussion are welcome — the easiest way to file one is to **ask the agent inside ShipIt** ("file a bug about …" / "report this to ShipIt"); it compiles a report and posts a review card so you can submit the issue under your own GitHub identity without leaving the app. You can also [open an issue](https://github.com/nicolasalt/shipit/issues) directly on GitHub.
 
 For installing and using ShipIt, see the [README](README.md). For platform docs that the agent reads from inside session containers, see `src/server/shipit-docs/`. For per-feature design notes, see `docs/NNN-feature-name/plan.md`.
 
@@ -135,7 +135,7 @@ For the full module-level map and the per-subsystem skills (server architecture,
 
 ## External contributions
 
-ShipIt isn't accepting pull requests right now. If you've found a bug, have a feature idea, or want to discuss a design, please [open an issue](https://github.com/nicolasalt/shipit/issues) instead.
+ShipIt isn't accepting pull requests right now. If you've found a bug, have a feature idea, or want to discuss a design, the primary path is to **ask the agent inside ShipIt to file it** — say something like "file a bug about X" or "report this to ShipIt," and the agent compiles a report and posts an inline review card. ShipIt redacts the body server-side; nothing is filed until you hit **Submit** on that card, which opens the issue on the public repo under your own GitHub identity. If you'd rather not go through the agent, you can still [open an issue](https://github.com/nicolasalt/shipit/issues) directly.
 
 If you're hacking on your own fork, the quality checks the project gates on internally are:
 
