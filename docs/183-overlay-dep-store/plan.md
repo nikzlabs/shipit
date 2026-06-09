@@ -209,8 +209,12 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
     warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
-    — which is a *separate* subtree from `nm-store`, so a plain install still pulls tarballs
-    locally with no network. The `nm-store` materialization (`tar`/`cp -a`, lockfile detection,
+    — a *separate* subtree from `nm-store`, so a plain install pulls tarballs locally with **no
+    network**. Note this removes network only, **not** the node_modules extract/link cost (the
+    tens-of-thousands-of-tiny-writes that dominate a large-tree install — e.g. ~24s for ShipIt's
+    own repo); that extract cost is precisely what the overlay warm-base path eliminates and the
+    fallback still pays. So the fallback is "correct + network-free," not "fast." The `nm-store`
+    materialization (`tar`/`cp -a`, lockfile detection,
     command allowlist, store keying) adds nothing the overlay base doesn't do better and is
     **deleted entirely** ([nm-store.ts](../../src/server/session/nm-store.ts)), leaving exactly
     two paths: overlay (warm, near-no-op) or plain full install (correct everywhere).

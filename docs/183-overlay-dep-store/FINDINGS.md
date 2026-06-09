@@ -301,11 +301,23 @@ the daemon host** as a documented prerequisite (the VPS provisioner guarantees
 it; Docker Desktop has it). Where propagation isn't available (bare-WSL
 docker-ce), **fall back to a plain full `agent.install`** — *not* a copy store.
 `nm-store` is **removed entirely**, not retained: the existing download cache
-(`/dep-cache`, docs/075) is a separate subtree, so a plain install is already
-fast (local tarballs, no network), and nm-store's materialization adds nothing
-the overlay base doesn't do better. Exactly two paths remain: overlay (warm,
-near-no-op) or plain full install (correct everywhere). The portability concern
-is now narrow, not fundamental.
+(`/dep-cache`, docs/075) is a separate subtree, so a plain install runs with **no
+network** — but that removes network only, **not** the node_modules extract/link
+cost (the dominant cost; ~24s for ShipIt's own repo). That extract cost is exactly
+what overlay's warm base eliminates and the fallback still pays, so the fallback
+is "correct + network-free," **not fast**. Acceptable because it's the narrow
+no-overlay edge (Mac Desktop + VPS get overlay). Exactly two paths remain:
+overlay (warm, near-no-op) or plain full install (baseline). The portability
+concern is narrow, not fundamental.
+
+> **Caveat on the 24s measurement:** it came from a **dogfood** session, which
+> runs in `RUNTIME_MODE=local` (docs/118) — in-process, **no container**, so (a)
+> **no overlay** there ever (overlay is containerized-only), and (b) the shared
+> download-cache env (`npm_config_cache=/dep-cache/...`, wired via container
+> `buildEnv`) may not apply, so that number could be partly cache-cold *and* is
+> not the path overlay changes. Overlay's win lands on **containerized** sessions
+> (VPS, Docker Desktop). Measure warm-vs-cold install on the *containerized* path
+> (checklist) before trusting any single number.
 
 **Implication for the design:** the sidecar must run on a daemon host whose root
 (or at least the Docker data subtree) is a **shared mount**. On a VPS this is a

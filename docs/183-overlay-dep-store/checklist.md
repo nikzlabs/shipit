@@ -17,8 +17,11 @@ rolling-base logic first; the host mount stays the gating risk.
       commit-ancestry compare-and-swap (installs run concurrently into their own uppers)
       — done in `prototype/rolling-base.ts` + `run-rolling-base.ts` (33/33 pass against a
       real git repo); see `FINDINGS.md`
-- [ ] Measure warm-install time: `main` unchanged (warm no-op, ~marker skip) and `main`
-      advanced its deps (incremental) vs. cold
+- [ ] Measure warm-install time **on the containerized path** (NOT dogfood/local mode, which
+      has no overlay and may bypass the shared download cache): `main` unchanged (warm overlay
+      no-op, ~marker skip), `main` advanced its deps (incremental), and cold. Separate the
+      **network** cost (download cache) from the **extract/link** cost (what overlay removes) —
+      a warm download cache alone still pays ~full extract (~24s observed for ShipIt's tree)
 - [~] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
       unmount + workdir cleanup on dispose); size its cost — the gating unknown.
       Substrate **confirmed** — passed **WSL2/ext4 19/19** and **Docker Desktop/Mac 21/21**
