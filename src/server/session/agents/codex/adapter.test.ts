@@ -532,9 +532,9 @@ describe("CodexAdapter", () => {
   });
 
   it("labels internally-tagged kinds and surfaces the top-level diff (not [object Object])", async () => {
-    // Verified wire shape (Codex App Server v2, FileUpdateChange): the unified
-    // diff is the top-level `diff` string and `kind` is an internally-tagged
-    // enum object `{ type: "add"|"delete"|"update", move_path? }`.
+    // Verified wire shape (Codex App Server v2, FileUpdateChange): `diff` is
+    // top-level and `kind` is an internally-tagged enum object
+    // `{ type: "add"|"delete"|"update", move_path? }`.
     await createAndInit("Edit a file");
     events.length = 0;
 
@@ -580,6 +580,54 @@ describe("CodexAdapter", () => {
           type: "tool_result",
           tool_use_id: "fc-2",
           content: "update /workspace/src/game/Game.js\nadd /workspace/src/new.js\ndelete /workspace/src/old.js",
+        },
+      ],
+    });
+  });
+
+  it("normalizes Codex 0.136 add fileChange raw content into added diff lines", async () => {
+    // Runtime-verified against codex-cli 0.136.0: completed fileChange items
+    // for new files carry raw file content in `diff`, while `turn/diff/updated`
+    // carries the full unified diff. DiffBlock needs +/- lines for its stats.
+    await createAndInit("Write a file");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "fileChange",
+        id: "fc-add-raw",
+        status: "completed",
+        changes: [
+          {
+            path: "/workspace/scratch-icon-test.md",
+            kind: { type: "add" },
+            diff: "# Scratch icon test\ncreated by codex wire probe\n",
+          },
+        ],
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "fc-add-raw",
+          name: "apply_patch",
+          input: {
+            files: ["/workspace/scratch-icon-test.md"],
+            changes: [
+              {
+                path: "/workspace/scratch-icon-test.md",
+                kind: "add",
+                diff: "+# Scratch icon test\n+created by codex wire probe",
+              },
+            ],
+          },
         },
       ],
     });
