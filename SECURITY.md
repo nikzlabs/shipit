@@ -12,7 +12,7 @@ disclose the problem to everyone before a fix is available.
 
 Instead, use **GitHub's private vulnerability reporting**:
 
-1. Go to the [Security tab](https://github.com/nicolasalt/shipit/security) of the repository.
+1. Go to this repository's **Security** tab on GitHub.
 2. Click **Report a vulnerability**.
 3. Describe the issue using the guidance below.
 

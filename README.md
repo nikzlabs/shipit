@@ -12,18 +12,6 @@ development that still ships the way real software does: branches, reviews, CI, 
   <img src="https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white" alt="Self-hosted via Docker">
 </p>
 
-<!-- TODO: hero screenshot or GIF — one frame showing chat + live preview + the inline PR card.
-     Drop it at docs/assets/hero.png (or .gif for the describe → preview → PR loop) and uncomment:
-<p align="center">
-  <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
-</p>
--->
-
-<!-- TODO: 60-second demo video / live demo link. For a self-hosted app there's no `npm install`
-     quick-win, so a video lets people evaluate without cloning + building Docker images. Host it
-     (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
-     or a clickable thumbnail right under the hero image. -->
-
 ShipIt is a browser-based AI dev environment: describe what you want in chat, the agent writes the
 code, and you see results live. It has the ease of prompt-to-app builders, but the work runs through
 a real engineering loop — branches, pull requests, CI, and deploys — on _your_ repo, _your_ Git, and
