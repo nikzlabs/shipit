@@ -1065,13 +1065,45 @@ describe("Integration: Session Worker install endpoint", () => {
 
     expect(fs.existsSync(path.join(installWorkspaceDir, ".shipit", ".install-done"))).toBe(true);
 
-    // A second install short-circuits on the marker.
+    // A second install with the SAME commands short-circuits on the stamped
+    // marker (source commit + runtime + commands all match).
     const second = await installWorker.getApp().inject({
       method: "POST",
       url: "/install",
       payload: { commands: ["true"] },
     });
     expect(second.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
+  // docs/183 Phase 3 — the stamped marker skips ONLY on an exact match. A
+  // changed install command must NOT skip: the stale marker is whiteouted and
+  // `agent.install` re-runs against the new command.
+  it("stamped marker: a changed install command re-runs instead of skipping", async () => {
+    await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+      return !body.running && body.lastResult?.ok === true;
+    }, 5_000, "first install completed");
+
+    // Different command list → stamp mismatch → must start a fresh install, not
+    // short-circuit on the existing marker.
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["sh -c 'true'"] },
+    });
+    expect(second.json()).toEqual({ started: true });
+
+    await waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+      return !body.running && body.lastResult?.ok === true;
+    }, 5_000, "second install completed");
   });
 
   it("SSE replays last install_done to a late-connecting client", async () => {

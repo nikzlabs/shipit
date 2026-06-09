@@ -71,8 +71,12 @@ values fall back to defaults.
 - Steps run sequentially in the agent container before services start.
 - If any step fails, subsequent steps are skipped and the error is reported.
 - The `.shipit/.install-done` marker is only written after all steps succeed.
-- On resume, install is skipped (marker exists). Editing `shipit.yaml` clears
-  the marker.
+  It is *stamped* with the source commit, the container's runtime fingerprint,
+  and the install commands it ran.
+- On resume, install is skipped only when that stamp still matches — i.e. the
+  checked-out commit, the runtime, and the install commands are all unchanged.
+  A new commit, a changed `install` in `shipit.yaml`, or a different runtime
+  re-runs install (a warm dependency cache keeps the re-run fast).
 - When `install` is a string, it's treated as a single-element list.
 
 > **Python projects usually have no `install` step.** A Python virtualenv is
