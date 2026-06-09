@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useCallback, useLayoutEffect, useRef, type RefCallback } from "react";
 
 /**
  * Drives the right-panel tab bar's icon-only collapse by measuring *real*
@@ -14,28 +14,47 @@ import { useLayoutEffect, useRef } from "react";
  * `flex-1` spacer in the bar shrinks to zero first, so `scrollWidth` only
  * exceeds `clientWidth` once the tabs themselves genuinely don't fit.
  *
+ * Returns a **callback ref**, not a RefObject. This matters on mobile: the
+ * right panel is mounted lazily (only while the Workspace tab is active), so a
+ * `useEffect`/`useLayoutEffect` keyed on a stable dependency would run once at
+ * the *parent's* mount — while the bar isn't in the tree and `ref.current` is
+ * null — set up nothing, and never re-run when the bar later attaches. The bar
+ * then stayed un-measured and the labels never collapsed (they just overflowed
+ * off-screen). A callback ref fires exactly on attach/detach, so the
+ * ResizeObserver is wired the moment the bar mounts regardless of when that is.
+ *
  * `signature` must change whenever the set of visible tabs changes: a
  * width-only ResizeObserver won't fire when the panel keeps its width but a tab
  * appears or disappears, so we re-measure when the signature changes.
  */
-export function useTabLabelCollapse<T extends HTMLElement>(signature: string) {
-  const ref = useRef<T>(null);
+export function useTabLabelCollapse(signature: string): RefCallback<HTMLElement> {
+  const elRef = useRef<HTMLElement | null>(null);
 
-  useLayoutEffect(() => {
-    const el = ref.current;
+  const measure = useCallback(() => {
+    const el = elRef.current;
     if (!el) return;
+    el.dataset.collapsed = "false";
+    el.dataset.collapsed = el.scrollWidth > el.clientWidth + 1 ? "true" : "false";
+  }, []);
 
-    const measure = () => {
-      el.dataset.collapsed = "false";
-      const overflowing = el.scrollWidth > el.clientWidth + 1;
-      el.dataset.collapsed = overflowing ? "true" : "false";
-    };
+  // Callback ref: observe the bar the instant it mounts and disconnect when it
+  // unmounts. The cleanup return is supported by React 19 ref callbacks.
+  const setRef = useCallback<RefCallback<HTMLElement>>(
+    (node) => {
+      elRef.current = node;
+      if (!node) return;
+      const observer = new ResizeObserver(measure);
+      observer.observe(node);
+      measure();
+      return () => observer.disconnect();
+    },
+    [measure],
+  );
 
-    const observer = new ResizeObserver(measure);
-    observer.observe(el);
-    measure();
-    return () => observer.disconnect();
-  }, [signature]);
+  // Re-measure when the visible-tab signature changes (a width-only
+  // ResizeObserver won't fire when the panel keeps its width but a tab
+  // appears/disappears). No-op while the bar is unmounted.
+  useLayoutEffect(measure, [signature, measure]);
 
-  return ref;
+  return setRef;
 }

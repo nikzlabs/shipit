@@ -1125,15 +1125,18 @@ export default function App() {
   // Re-measure the tab bar whenever the set of visible tabs changes so the
   // icon-only collapse adapts to the actual tab count, not a fixed worst-case
   // width. (See useTabLabelCollapse.)
-  const tabBarRef = useTabLabelCollapse<HTMLDivElement>(
+  const tabBarRef = useTabLabelCollapse(
     [isLocalMode, isOpsSession, presentations.length > 0, hasPr, rightTab !== "present" && presentUnseenCount > 0].join("|"),
   );
   const rightPanel = (
     <>
       {/* Tabs collapse to icon-only when they'd overflow the bar (driven by
-          useTabLabelCollapse via data-collapsed). Persistent views sit on the
-          left; transient Present/PR are grouped to the right. */}
-      <div ref={tabBarRef} className="group/tabs flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
+          useTabLabelCollapse via data-collapsed). When even the icons don't fit
+          — narrow phones with PR + Present present — the bar scrolls
+          horizontally so every tab stays reachable instead of clipping off the
+          right edge. Persistent views sit on the left; transient Present/PR are
+          grouped to the right. */}
+      <div ref={tabBarRef} className="group/tabs flex h-10.25 min-w-0 overflow-x-auto no-scrollbar border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
           <Tab icon={<EyeIcon size={ICON_SIZE.SM} />} label="Preview" active={rightTab === "preview"} onClick={() => handleTabChange("preview")} />
         )}

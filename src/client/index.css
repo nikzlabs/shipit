@@ -392,6 +392,16 @@ html, body {
   scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
+/* Horizontal strips (e.g. the right-panel tab bar) that need to scroll on
+   overflow but are too short to give up height to the 8px scrollbar. The strip
+   stays swipe/scroll-able; the scrollbar itself is just hidden. */
+@utility no-scrollbar {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
 /* ── Syntax highlighting (token-based, works in all themes) ── */
 .hljs {
   color: var(--color-syntax-base);
