@@ -1480,7 +1480,7 @@ export function Settings({
           </TabsContent>
 
           <TabsContent value="skills">
-            <SkillsTab hasActiveSession={hasActiveSession} />
+            <SkillsTab />
           </TabsContent>
 
           <TabsContent value="mcp">

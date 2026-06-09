@@ -103,6 +103,74 @@
   resolves as before). Regression test added in `marketplace.test.ts` +
   `skill-scan.test.ts`.
 
+## v1c — Repo-selected install via dedicated session + PR (2026-06-09 revision)
+
+Supersedes v1a's session-bound install destination. See the plan.md
+"2026-06-09 — Design revision" section. v1a's catalog browse, Monaco preview,
+install marker, and writer logic are all reused; only the install *destination*
+and the surface's session-awareness change.
+
+### Backend
+- [x] App-wide, repo-targeted install endpoint
+  `POST /api/plugins/install { marketplaceId, pluginName, repoUrl }`
+  (`api-routes-marketplace.ts`) that spawns a dedicated repo-backed session,
+  runs `installPlugin()` in its workspace, and opens a PR. Writer reused untouched.
+- [x] `services/install-session.ts` — `installPluginAsSession()` orchestrates
+  claim (fresh repo-backed session, one per install) → branch rename to
+  `shipit/install-<plugin>-<slug>` → `installPlugin()` (local commit) → PR →
+  `graduateSession()` (sidebar) → PR tracking. No agent turn runs.
+- [x] After the local commit, open the PR by calling `agentCreatePr()`
+  (`services/github.ts` — pushes branch + creates PR with a fixed title/body,
+  no LLM) directly and unconditionally. NOT `emitPrLifecycleAfterCommit` /
+  the `autoCreatePr` toggle — that path is viewer-gated and the headless
+  install session has no WS viewer. (Plan named `quickCreatePr`; `agentCreatePr`
+  is the cleaner fit for a fixed title/body and satisfies the same requirement.)
+  GitHub auth is checked up front (401 before claiming).
+- [x] Shared `ClaimSessionService` constructed once in `registerApiRoutes`
+  (`api-routes.ts`), threaded via `ApiDeps.claimSessionService`;
+  `registerSessionRoutes` falls back to a local instance for direct callers/tests.
+- [x] No `runner.running` gate / per-session rebind / `killAgent` reload on the
+  new path (those existed only for the superseded in-session write). The
+  per-workspace mutex is still held around the install's commit for consistency.
+- [x] Retained the v1a session-scoped install route in `api-routes-files.ts` for
+  the future in-workspace destination (not deleted).
+
+### Client
+- [x] Skills tab is **Discover-only**, fully decoupled from the active session
+  (no `hasActiveSession`/`sessionId`). The Installed sub-tab, the uninstall
+  button, `SubTabButton`/`InstalledList`, and the store's
+  `installed`/`fetchInstalled`/`uninstall`/`install` actions were removed.
+- [x] Repository picker in the install sheet (`SkillInstallSheet.tsx`), sourced
+  from the app-wide `useRepoStore`, defaulted to the active repo. Empty-state
+  when no repo; install disabled until a ready repo is selected.
+- [x] `useSkillsStore.installToRepo()` calls the app-wide endpoint; success toast
+  points the user at the new session + PR number.
+
+### Uninstall — intentionally not a feature (2026-06-09)
+- [x] **No uninstall UI, route, or service.** Removing a marketplace skill is a
+  plain "delete the `<plugin>__<skill>/` dir + commit" the user asks the agent
+  to do (CLAUDE.md §5). Removed: the `DELETE /api/sessions/:id/plugins/...`
+  route, `GET /api/sessions/:id/plugins`, `uninstallPlugin` +
+  `scanInstalledPlugins` (`marketplace.ts`), `InstalledPluginInfo` type, and the
+  matching tests. Install keeps its UI because it adds value the agent can't
+  replicate cheaply (catalog discovery, preview-before-consent, namespaced
+  flat-dir write). `src/server/shipit-docs/skills.md` updated to tell the agent
+  removal = delete the directory.
+
+### Tests
+- [x] `services/install-session.test.ts` — repo-targeted install spawns a
+  session, writes+commits the skill in THAT workspace, opens a PR, graduates the
+  session, leaves a pre-existing session untouched, and fails fast (401) without
+  claiming when GitHub is not connected.
+- [x] `SkillsTab.test.tsx` — repo picker renders + install posts the app-wide
+  route (not the session route); install disabled when no repo is available.
+
+### Future (deferred, same dialog)
+- [ ] In-workspace install as an explicit destination option (reinstates v1a's
+  in-session write behind a user-selected choice; reactivates the mutex +
+  reload path for that branch only). The session-scoped `POST /api/sessions/:id/
+  plugins/install` route is retained as the seam for this.
+
 ## v1b — Codex support
 
 Tracked but out of scope for this branch. Requires the v0 spikes that were

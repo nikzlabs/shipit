@@ -129,8 +129,12 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     expect(data.plugins[0].skills.map((s) => s.name)).toEqual(["hello"]);
   });
 
-  it("install + list + uninstall round-trip on a session", async () => {
-    // Install
+  // The session-scoped install route is retained as the seam for a future
+  // "install into this workspace" option. The primary path is the app-wide
+  // repo-targeted `POST /api/plugins/install` (covered in
+  // services/install-session.test.ts). There is no uninstall route — removal is
+  // an agent task (docs/149).
+  it("session-scoped install writes the flat-dir layout and rejects a duplicate", async () => {
     const install = await app.inject({
       method: "POST",
       url: `/api/sessions/${sessionId}/plugins/install`,
@@ -153,19 +157,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     const body = fs.readFileSync(installedFile, "utf-8");
     expect(body).toMatch(/^name: demo-plugin:hello$/m);
 
-    // List shows the install
-    const list = await app.inject({
-      method: "GET",
-      url: `/api/sessions/${sessionId}/plugins`,
-    });
-    expect(list.statusCode).toBe(200);
-    const listJson = list.json() as { plugins: { pluginName: string; skillName: string }[] };
-    expect(listJson.plugins).toHaveLength(1);
-    expect(listJson.plugins[0]).toMatchObject({
-      pluginName: "demo-plugin",
-      skillName: "hello",
-    });
-
     // Second install on the same target is a 409 (already installed)
     const dup = await app.inject({
       method: "POST",
@@ -173,21 +164,6 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
       payload: { marketplaceId: CATALOG_ID, pluginName: "demo-plugin" },
     });
     expect(dup.statusCode).toBe(409);
-
-    // Uninstall
-    const uninstall = await app.inject({
-      method: "DELETE",
-      url: `/api/sessions/${sessionId}/plugins/${CATALOG_ID}/demo-plugin`,
-    });
-    expect(uninstall.statusCode).toBe(200);
-    expect(fs.existsSync(installedFile)).toBe(false);
-
-    // Empty list afterwards
-    const list2 = await app.inject({
-      method: "GET",
-      url: `/api/sessions/${sessionId}/plugins`,
-    });
-    expect((list2.json() as { plugins: unknown[] }).plugins).toHaveLength(0);
   });
 
   it("rejects install with missing fields", async () => {

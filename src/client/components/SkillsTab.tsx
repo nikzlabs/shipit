@@ -1,48 +1,61 @@
 /**
- * Settings → Skills tab (docs/149 — skill install UX).
+ * Settings → Skills tab (docs/149 — skill install UX, 2026-06-09 v1c revision).
  *
- * Two sub-tabs in v1: Discover (browse the active agent's catalog) and
- * Installed (list ShipIt-managed installs in the current session). v2 adds
- * Marketplaces + Errors.
+ * Discover-only: browse the agent's catalog and install. Install is **app-wide
+ * and repo-targeted**, NOT session-bound — the user picks a destination
+ * repository in the install sheet and the install runs in its own dedicated
+ * session that opens a PR (`POST /api/plugins/install`). The session the user is
+ * currently in is never touched.
  *
- * The tab is session-aware: the active session decides the catalog filter,
- * the install destination, and the install-button gate. Switching sessions
- * re-binds and re-fetches via the `sessionId` dep on the effects. v1 supports
- * Claude only — the tab disables with an explanatory empty state on Codex
- * (v1b will lift this; see plan).
+ * There is no Installed list or uninstall button: removing a marketplace skill
+ * is a plain "delete the dir + commit" the user asks the agent to do
+ * (CLAUDE.md §5 — chat is the input surface, the agent is the actor). Install
+ * keeps its UI because it adds value the agent can't replicate cheaply: catalog
+ * discovery, preview-before-consent, and the namespaced flat-dir write.
+ *
+ * v1 supports Claude only — the tab shows a "v1b" empty state on Codex.
  */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: per-session catalog/installed fetches + cross-tab refetch
+// eslint-disable-next-line no-restricted-imports -- useEffect: catalog fetches as the agent/marketplaces change
 import { useEffect, useMemo, useState } from "react";
 import { useSkillsStore } from "../stores/skills-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { parseRepoLabel } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
-import { SkillInstallSheet } from "./SkillInstallSheet.js";
+import { SkillInstallSheet, type InstallRepoOption } from "./SkillInstallSheet.js";
 import type { PluginInfo } from "../../server/shared/types.js";
 
-type SubTab = "discover" | "installed";
-
-export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
-  const [subTab, setSubTab] = useState<SubTab>("discover");
+export function SkillsTab() {
   const [installingSheet, setInstallingSheet] = useState<PluginInfo | null>(null);
   const [search, setSearch] = useState("");
 
-  const sessionId = useSessionStore((s) => s.sessionId);
   const agentId = useUiStore((s) => s.activeAgentId);
+
+  // Install destination is repo-targeted (docs/149 v1c) — the Skills tab is
+  // app-wide and never reads/mutates the active session. Repos come from the
+  // app-wide repo store; default the picker to the active repo.
+  const repos = useRepoStore((s) => s.repos);
+  const activeRepoUrl = useRepoStore((s) => s.activeRepoUrl);
+  const [selectedRepoUrl, setSelectedRepoUrl] = useState<string | null>(null);
+
+  const repoOptions: InstallRepoOption[] = useMemo(
+    () => repos.map((r) => ({ url: r.url, label: parseRepoLabel(r.url), ready: r.status === "ready" })),
+    [repos],
+  );
+  const effectiveRepoUrl =
+    selectedRepoUrl ??
+    (activeRepoUrl && repos.some((r) => r.url === activeRepoUrl) ? activeRepoUrl : repos[0]?.url ?? null);
 
   const marketplaces = useSkillsStore((s) => s.marketplaces);
   const pluginsByMarketplace = useSkillsStore((s) => s.pluginsByMarketplace);
-  const installed = useSkillsStore((s) => s.installed);
   const loading = useSkillsStore((s) => s.loading);
   const error = useSkillsStore((s) => s.error);
 
   const fetchMarketplaces = useSkillsStore((s) => s.fetchMarketplaces);
   const fetchPlugins = useSkillsStore((s) => s.fetchPlugins);
   const refreshMarketplace = useSkillsStore((s) => s.refreshMarketplace);
-  const fetchInstalled = useSkillsStore((s) => s.fetchInstalled);
-  const install = useSkillsStore((s) => s.install);
-  const uninstall = useSkillsStore((s) => s.uninstall);
+  const installToRepo = useSkillsStore((s) => s.installToRepo);
 
   // Refetch catalogs whenever the active agent changes — store sync from
   // the route-backed external system.
@@ -63,14 +76,6 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
       if (!pluginsByMarketplace[m.id]) void fetchPlugins(m.id);
     }
   }, [marketplaces, pluginsByMarketplace, fetchPlugins]);
-
-  // Per-session installed list. Refetch on session switch — the install
-  // sheet's own success path also refetches via the store action.
-  // eslint-disable-next-line no-restricted-syntax -- effect rebinding to per-session HTTP source on switch
-  useEffect(() => {
-    if (!sessionId) return;
-    void fetchInstalled(sessionId);
-  }, [sessionId, fetchInstalled]);
 
   const allPlugins = useMemo(() => {
     const out: PluginInfo[] = [];
@@ -123,69 +128,42 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
 
   return (
     <div className="flex flex-col h-full">
-      {/* Sub-tab strip */}
-      <div className="flex items-center gap-1 px-5 pt-3 pb-2 border-b border-(--color-border-secondary)">
-        <SubTabButton
-          label="Discover"
-          active={subTab === "discover"}
-          onClick={() => setSubTab("discover")}
-        />
-        <SubTabButton
-          label="Installed"
-          active={subTab === "installed"}
-          count={installed.length || undefined}
-          onClick={() => setSubTab("installed")}
-        />
-      </div>
-
-      {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
-        {subTab === "discover" && (
-          <DiscoverList
-            plugins={filteredPlugins}
-            loading={loading}
-            error={error}
-            search={search}
-            onSearchChange={setSearch}
-            marketplaces={marketplaces}
-            onRefreshMarketplace={(id) => void refreshMarketplace(id)}
-            onInstallClick={(plugin) => setInstallingSheet(plugin)}
-            hasActiveSession={hasActiveSession}
-          />
-        )}
-
-        {subTab === "installed" && (
-          <InstalledList
-            installed={installed}
-            onUninstall={async (marketplaceId, pluginName) => {
-              if (!sessionId) return;
-              try {
-                await uninstall(sessionId, marketplaceId, pluginName);
-              } catch {
-                // Error is already surfaced via the store; nothing to do.
-              }
-            }}
-            hasActiveSession={hasActiveSession}
-          />
-        )}
+        <DiscoverList
+          plugins={filteredPlugins}
+          loading={loading}
+          error={error}
+          search={search}
+          onSearchChange={setSearch}
+          marketplaces={marketplaces}
+          onRefreshMarketplace={(id) => void refreshMarketplace(id)}
+          onInstallClick={(plugin) => setInstallingSheet(plugin)}
+        />
       </div>
 
       {installingSheet && (
         <SkillInstallSheet
           plugin={installingSheet}
           installPathLabel=".claude/skills"
-          agentRunning={false}
           installing={loading}
-          hasActiveSession={Boolean(hasActiveSession && sessionId)}
+          repos={repoOptions}
+          selectedRepoUrl={effectiveRepoUrl}
+          onSelectRepo={setSelectedRepoUrl}
           onCancel={() => setInstallingSheet(null)}
           fetchSkillBody={fetchSkillBody}
           onInstall={async () => {
-            if (!sessionId) return;
+            if (!effectiveRepoUrl) return;
             try {
-              await install(sessionId, installingSheet.marketplaceId, installingSheet.name);
+              const result = await installToRepo(
+                effectiveRepoUrl,
+                installingSheet.marketplaceId,
+                installingSheet.name,
+              );
               setInstallingSheet(null);
               useUiStore.getState().setToast({
-                message: `Installed ${installingSheet.name}. New skills are available for your next message.`,
+                message:
+                  `Opened pull request #${result.pr.number} to install ${installingSheet.name}. ` +
+                  `Review it in the new session, then merge to use the skill.`,
               });
             } catch (err) {
               useUiStore.getState().setToast({
@@ -199,35 +177,6 @@ export function SkillsTab({ hasActiveSession }: { hasActiveSession: boolean }) {
   );
 }
 
-function SubTabButton({
-  label,
-  active,
-  onClick,
-  count,
-}: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  count?: number;
-}) {
-  return (
-    <button
-      onClick={onClick}
-      className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-        active
-          ? "bg-(--color-bg-hover) text-(--color-text-primary)"
-          : "text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-      }`}
-      data-testid={`skills-subtab-${label.toLowerCase()}`}
-    >
-      {label}
-      {count !== undefined && (
-        <span className="ml-1.5 text-(--color-text-tertiary)">{count}</span>
-      )}
-    </button>
-  );
-}
-
 function DiscoverList({
   plugins,
   loading,
@@ -237,7 +186,6 @@ function DiscoverList({
   marketplaces,
   onRefreshMarketplace,
   onInstallClick,
-  hasActiveSession,
 }: {
   plugins: PluginInfo[];
   loading: boolean;
@@ -247,7 +195,6 @@ function DiscoverList({
   marketplaces: { id: string; status: string; fetchError?: string }[];
   onRefreshMarketplace: (id: string) => void;
   onInstallClick: (plugin: PluginInfo) => void;
-  hasActiveSession: boolean;
 }) {
   const failed = marketplaces.filter((m) => m.status === "fetch-failed");
 
@@ -288,12 +235,6 @@ function DiscoverList({
       {error && !failed.length && (
         <div className="rounded-md border border-(--color-error)/40 bg-(--color-error-subtle) p-3 text-xs text-(--color-error)">
           {error}
-        </div>
-      )}
-
-      {!hasActiveSession && (
-        <div className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs text-(--color-text-secondary)">
-          Open or create a session to install skills.
         </div>
       )}
 
@@ -345,83 +286,5 @@ function DiscoverList({
         ))}
       </ul>
     </div>
-  );
-}
-
-function InstalledList({
-  installed,
-  onUninstall,
-  hasActiveSession,
-}: {
-  installed: { marketplaceId: string; pluginName: string; skillName: string }[];
-  onUninstall: (marketplaceId: string, pluginName: string) => Promise<void>;
-  hasActiveSession: boolean;
-}) {
-  if (!hasActiveSession) {
-    return (
-      <div className="text-xs text-(--color-text-tertiary) py-6 text-center">
-        Open a session to see installed skills.
-      </div>
-    );
-  }
-
-  // Group by plugin so we render one row per plugin (a plugin may install
-  // multiple skills under `<plugin>__<skill>/` directories).
-  const grouped = new Map<string, { marketplaceId: string; pluginName: string; skills: string[] }>();
-  for (const e of installed) {
-    const key = `${e.marketplaceId}/${e.pluginName}`;
-    const existing = grouped.get(key);
-    if (existing) {
-      existing.skills.push(e.skillName);
-    } else {
-      grouped.set(key, {
-        marketplaceId: e.marketplaceId,
-        pluginName: e.pluginName,
-        skills: [e.skillName],
-      });
-    }
-  }
-
-  if (grouped.size === 0) {
-    return (
-      <div className="text-xs text-(--color-text-tertiary) py-6 text-center">
-        No plugins installed yet. Browse Discover to add one.
-      </div>
-    );
-  }
-
-  return (
-    <ul className="flex flex-col gap-2" data-testid="skills-installed-list">
-      {Array.from(grouped.values()).map((g) => (
-        <li
-          key={`${g.marketplaceId}/${g.pluginName}`}
-          className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 flex items-start gap-3"
-        >
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium text-(--color-text-primary) truncate">
-                {g.pluginName}
-              </span>
-              <span className="text-[10px] uppercase tracking-wide text-(--color-text-tertiary) shrink-0">
-                {g.marketplaceId}
-              </span>
-            </div>
-            <div className="text-[11px] text-(--color-text-tertiary) mt-0.5">
-              {g.skills.length} skill{g.skills.length === 1 ? "" : "s"}:{" "}
-              {g.skills.map((s) => `/${g.pluginName}:${s}`).join(", ")}
-            </div>
-          </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => void onUninstall(g.marketplaceId, g.pluginName)}
-            className="rounded-md shrink-0 text-(--color-error) hover:text-(--color-error)"
-            data-testid={`skills-uninstall-${g.pluginName}`}
-          >
-            Uninstall
-          </Button>
-        </li>
-      ))}
-    </ul>
   );
 }
