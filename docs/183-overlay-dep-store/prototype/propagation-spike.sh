@@ -16,9 +16,20 @@
 #   - PROPAGATED : B sees the OVERLAY-merged content A mounted (the actual goal)
 #
 # Run on a Docker host:  bash propagation-spike.sh
+#   --with-host-setup : ALSO make the daemon-host root a shared mount
+#                       (mount --make-rshared / inside the host mount namespace,
+#                       via a --pid=host nsenter container) and re-test the
+#                       sidecar rung. This MUTATES host mount propagation — it is
+#                       the standard systemd default and reversible with
+#                       `mount --make-rprivate /`, but it is opt-in for that
+#                       reason. Use it to confirm the fix the bare run reveals.
+#
 # Run it on BOTH a bare-Linux/VPS-like host AND Docker Desktop (Mac/Windows);
 # the verdict can differ between them. Paste both verdicts into ../FINDINGS.md.
 set -u
+
+WITH_HOST_SETUP=0
+[ "${1:-}" = "--with-host-setup" ] && WITH_HOST_SETUP=1
 
 IMG="ubuntu:24.04"
 VOL="ob-prop-vol"
@@ -74,8 +85,13 @@ run_rung() { # name  "docker-run-args-for-A"  "docker-run-args-for-B"  PROP
   hdr "Rung: $name"
   A="ob-prop-$name"
   docker rm -f "$A" >/dev/null 2>&1 || true
+  local run_out
   # shellcheck disable=SC2086
-  docker run -d --privileged --name "$A" $a_args "$IMG" sleep 600 >/dev/null
+  if ! run_out="$(docker run -d --privileged --name "$A" $a_args "$IMG" sleep 600 2>&1)"; then
+    bad "sidecar container could not start:"; echo "$run_out" | sed 's/^/      /'
+    echo "$run_out" | grep -q "not a shared mount" && warn "→ daemon-host root is not a shared mount; re-run with --with-host-setup"
+    LAST_RESULT="invalid"; A=""; return
+  fi
   local setup_out
   setup_out="$(docker exec -e PROP="$prop" "$A" bash -c "$SIDECAR_SETUP" 2>&1)"
   echo "$setup_out" | grep -q SIDECAR_OVERLAY_OK && ok "sidecar mounted overlay (sees lower)" || { bad "sidecar overlay setup failed:"; echo "$setup_out" | sed 's/^/      /'; A=""; docker rm -f "ob-prop-$name" >/dev/null 2>&1; return; }
@@ -110,6 +126,24 @@ run_rung "A1" "-v $VOL:/vol"            "-v $VOL:/vol"            "make-rshared"
 # the same host path. Requires the host subtree to be a shared mount (systemd
 # hosts usually mount / rshared at boot; Docker Desktop's VM may differ).
 run_rung "A2" "-v $MP:/vol:rshared"     "-v $MP:/vol:rslave"     "none";          note "host-mountpoint :rshared (sidecar pattern)"
+
+# Rung 3 — opt-in: perform the standard host-side fix (make the daemon-host root
+# a shared mount) and re-test the sidecar rung. This is what a VPS provisioner
+# would do once at setup; here we apply it via a --pid=host nsenter container.
+if [ "$WITH_HOST_SETUP" -eq 1 ]; then
+  hdr "Host setup: mount --make-rshared / (in the daemon-host mount namespace)"
+  if setup_out="$(docker run --rm --privileged --pid=host "$IMG" \
+        nsenter -t 1 -m -- sh -c 'mount --make-rshared / && echo HOST_RSHARED_OK' 2>&1)"; then
+    echo "$setup_out" | grep -q HOST_RSHARED_OK && ok "host root is now a shared mount" || { warn "host setup output:"; echo "$setup_out" | sed 's/^/      /'; }
+  else
+    warn "could not apply host setup (no --pid=host / nsenter on this daemon?):"; echo "$setup_out" | sed 's/^/      /'
+  fi
+  run_rung "A2" "-v $MP:/vol:rshared"   "-v $MP:/vol:rslave"     "none";          note "host-mountpoint :rshared AFTER make-rshared /"
+else
+  echo
+  warn "Tip: if rung A2 failed with 'not a shared mount', re-run with --with-host-setup"
+  warn "to apply 'mount --make-rshared /' on the daemon host and confirm the fix."
+fi
 
 hdr "Verdict"
 if [ "$VERDICT" != "none" ]; then

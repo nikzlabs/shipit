@@ -218,10 +218,29 @@ content. It runs a ladder (plain volume bind → `make-rshared` → host-mountpo
 inotify limits (README); local installs don't, but the watcher already runs today
 so it's not new.
 
-> **Propagation verdicts:**
-> - Bare Linux / VPS: _(paste `propagation-spike.sh` verdict)_
-> - Docker Desktop (Mac/Win): _(paste verdict — may differ; if it needs host-side
->   `mount --make-rshared`, note whether that's reachable on Docker Desktop)_
+**Propagation verdicts:**
+
+- **WSL2 (docker 29.4.1):** baseline + `make-rshared` rungs → overlay works but
+  stays in the sidecar namespace (**not propagated**, expected). The realistic
+  host-mountpoint `:rshared` rung was **rejected by the daemon**: *"path
+  …/volumes/ob-prop-vol/_data is mounted on / but it is not a shared mount."* So
+  the WSL2 daemon-host root is **rprivate**, and propagation requires a one-time
+  **`mount --make-rshared /`** on the daemon host first. (`propagation-spike.sh
+  --with-host-setup` now applies that via a `--pid=host` nsenter container and
+  re-tests — run it to confirm the fix yields propagation.) → _pending the
+  --with-host-setup re-run verdict._
+- Bare Linux / VPS: _(paste verdict — systemd hosts usually mount `/` rshared at
+  boot, so the plain rung may already pass)_
+- Docker Desktop (Mac/Win): _(paste verdict — may differ; note whether
+  `--with-host-setup` works, i.e. whether `--pid=host` nsenter into the VM is
+  permitted)_
+
+**Implication for the design:** the sidecar must run on a daemon host whose root
+(or at least the Docker data subtree) is a **shared mount**. On a VPS this is a
+one-line provisioner step (`mount --make-rshared /`, or `MountFlags=shared` for
+dockerd) — cheap and standard. The open risk is **Docker Desktop (Mac/Win)**:
+confirm `--make-rshared` is both applicable and *persistent* across VM restarts
+there, or the local-install story needs a different hook.
 
 ## Net decision
 
