@@ -54,15 +54,6 @@ interface VoiceTurnState {
   authored: boolean;
   /** Count of attention-grabbing notes routed this turn (for the cap). */
   attentionCount: number;
-  /**
-   * Summaries of authored notes already delivered this turn. An authored note
-   * arrives on TWO channels — the fast event-stream observation and the slower
-   * HTTP relay — and either may win the race. Whichever fires first delivers
-   * and records the summary here; the other no-ops. Keyed by summary (a turn
-   * rarely emits two notes with identical text, and when it does, collapsing
-   * the duplicate is the desired outcome).
-   */
-  deliveredAuthored: Set<string>;
 }
 
 // Per-turn voice state keyed by runner. A WeakMap keeps both runner
@@ -74,7 +65,7 @@ const turnStates = new WeakMap<object, VoiceTurnState>();
 function stateFor(runner: object): VoiceTurnState {
   let s = turnStates.get(runner);
   if (!s) {
-    s = { authored: false, attentionCount: 0, deliveredAuthored: new Set() };
+    s = { authored: false, attentionCount: 0 };
     turnStates.set(runner, s);
   }
   return s;
@@ -139,12 +130,6 @@ export interface RouteVoiceNoteResult {
   attention: boolean;
   /** True when the per-turn attention cap downgraded this note to silent. */
   capped: boolean;
-  /**
-   * True when this authored note was already delivered this turn on the other
-   * channel (observation vs relay) and this call was a no-op. The relay treats
-   * it as a successful delivery in its ack to the agent.
-   */
-  alreadyDelivered?: boolean;
 }
 
 let fallbackCounter = 0;
@@ -170,31 +155,11 @@ export async function routeVoiceNote(
   deps: RouteVoiceNoteDeps,
 ): Promise<RouteVoiceNoteResult> {
   const { runner, sessionId, credentialStore, source } = deps;
-
-  const state = stateFor(runner);
-  // An authored note races down two channels — the fast event-stream
-  // observation and the slower HTTP relay. Deliver it exactly once: the first
-  // caller records the summary and proceeds; the second no-ops. The check and
-  // the record are synchronous (no await between them), so the two callers
-  // can't both pass. Derived (ask/plan) notes have a single channel and skip
-  // this entirely.
-  if (source === "authored") {
-    if (state.deliveredAuthored.has(payload.summary)) {
-      return {
-        id: "",
-        native: false,
-        webhook: false,
-        attention: false,
-        capped: false,
-        alreadyDelivered: true,
-      };
-    }
-    state.deliveredAuthored.add(payload.summary);
-    state.authored = true;
-  }
-
   const id = (deps.idFactory ?? defaultId)();
   const nowIso = (deps.now ?? (() => new Date().toISOString()))();
+
+  const state = stateFor(runner);
+  if (source === "authored") state.authored = true;
 
   // Per-turn attention cap. A `needsAttention: false` note is silent by
   // construction; an attention note past the cap is downgraded to silent.

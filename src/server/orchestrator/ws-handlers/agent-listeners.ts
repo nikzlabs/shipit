@@ -1013,17 +1013,19 @@ export function wireAgentListeners(
         runner.chatMessageGroups = groups;
       }
 
-      // docs/163 — authored voice note: deliver the native card the instant we
-      // OBSERVE the built-in `voice_note` tool in the event stream, instead of
-      // waiting for the slower bridge → worker → orchestrator HTTP relay. When
-      // the agent batches `voice_note` with AskUserQuestion / ExitPlanMode (a
-      // parallel tool call), the relay fires late — the CLI is mid-interrupt —
-      // so the card used to trail the question dialog by a couple of seconds.
-      // Observing it here puts the card on the SAME fast channel as the dialog,
-      // and sets the authored flag synchronously so the derived nudge below is
-      // correctly suppressed even in the same-message case. The relay still
-      // arrives (carrying the webhook payload + the agent's ack); routeVoiceNote
-      // dedups by summary so it doesn't double-deliver.
+      // docs/163 — authored voice note: this OBSERVATION is the sole deliverer
+      // of the card (and webhook). The card is built entirely from the tool
+      // INPUT, and observation is guaranteed and rides the same fast channel as
+      // the rest of the turn — so the bridge → worker → orchestrator HTTP relay
+      // is reduced to a pure ack (it no longer delivers). That fixes the lag:
+      // when the agent batches `voice_note` with AskUserQuestion / ExitPlanMode
+      // (a parallel tool call), the relay fired late — the CLI is mid-interrupt
+      // — so the card used to trail the question dialog by a couple of seconds.
+      // Delivering here also sets the authored flag synchronously so the derived
+      // nudge below is suppressed even in the same-message case. Subagent calls
+      // carry `parentToolUseId` and returned early above, so they aren't
+      // observed and won't render — by design (a subagent shouldn't page the
+      // user).
       if (runner && deps.deliverVoiceNote) {
         const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
         const input = (voiceCall?.input ?? {}) as {

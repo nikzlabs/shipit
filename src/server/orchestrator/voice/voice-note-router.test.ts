@@ -205,11 +205,9 @@ describe("routeVoiceNote", () => {
     const { runner, emitted } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
     const results = [];
-    // Distinct summaries: an over-narrating agent emits distinct headlines, and
-    // the cross-channel dedup keys on summary, so identical text would collapse.
     for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN + 2; i++) {
       results.push(
-        await routeVoiceNote(base({ summary: `Heads-up number ${i}` }), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId }),
+        await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId }),
       );
     }
     const attention = results.filter((r) => r.attention).length;
@@ -219,28 +217,11 @@ describe("routeVoiceNote", () => {
     expect(emitted).toHaveLength(MAX_ATTENTION_NOTES_PER_TURN + 2);
   });
 
-  it("dedups an authored note across the two channels (observation + relay): one card, second is a no-op", async () => {
-    // An authored note races down two channels — the event-stream observation
-    // and the HTTP relay — both calling routeVoiceNote with source "authored".
-    // Whichever lands first delivers; the second must no-op (no double card, no
-    // double cap count) and report `alreadyDelivered` for the relay's ack.
-    const { runner, emitted } = fakeRunner();
-    const credentialStore = fakeCredentialStore({ mode: "native" });
-    const first = await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
-    const second = await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
-    expect(first.native).toBe(true);
-    expect(first.alreadyDelivered).toBeUndefined();
-    expect(second.native).toBe(false);
-    expect(second.alreadyDelivered).toBe(true);
-    // Exactly one card on the wire.
-    expect(emitted).toHaveLength(1);
-  });
-
   it("resetVoiceNoteTurnState clears the per-turn cap and authored flag", async () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
     for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN; i++) {
-      await routeVoiceNote(base({ summary: `Heads-up number ${i}` }), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
+      await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     }
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(true);
     resetVoiceNoteTurnState(runner);

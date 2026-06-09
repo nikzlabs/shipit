@@ -109,23 +109,31 @@ than the SSE agent-event stream. In the batched case the CLI fires the bridge
 the `AskUserQuestion`/`ExitPlanMode`) — so the dialog rendered off the fast SSE
 stream while the card waited on the relay, landing below the dialog seconds later.
 
-Fix: deliver the authored card from the **event-stream observation** too. The
-orchestrator already observes every tool call (it derives ask/plan headlines that
-way); `agent-listeners.ts` now matches the built-in `voice_note` tool
+Fix: make the **event-stream observation the sole deliverer** of the authored
+note. The card is built entirely from the tool **input**, and the orchestrator
+already observes every tool call (it derives ask/plan headlines that way), so it
+has everything it needs — and the observation rides the same fast channel as the
+rest of the turn. `agent-listeners.ts` now matches the built-in `voice_note` tool
 (`VOICE_NOTE_TOOL_NAME = "mcp__shipit-voice__voice_note"`), reads its `input`,
-and routes the note via the same `deliverVoiceNote` path — so the card rides the
-same channel and lands at the same moment as the dialog. It also sets the
-authored flag *synchronously* before the derived-nudge check, so the
-same-message overlap can no longer emit a redundant derived headline.
+and routes the note (card + webhook) via the same `deliverVoiceNote` path — so
+the card lands at the same moment as the dialog. It also sets the authored flag
+*synchronously* before the derived-nudge check, so the same-message overlap can
+no longer emit a redundant derived headline.
 
-The HTTP relay still arrives (it carries the webhook payload and the agent's ack)
-so `routeVoiceNote` **dedups authored notes by summary within the turn**: a new
-`deliveredAuthored` set on the per-turn state means whichever channel
-(observation or relay) lands first delivers, and the second no-ops and reports
-`alreadyDelivered: true` for the relay's ack. Subagent (`parentToolUseId`) voice
-calls aren't observed at the top level, so the relay remains their deliverer.
-Key files: `agent-listeners.ts` (observation), `voice-note-router.ts` (dedup +
-`sanitizeVoiceContext`, now shared with `api-routes-voice.ts`).
+The bridge → worker → orchestrator HTTP relay (`POST /voice-note`) is reduced to
+a **pure ack**: it no longer delivers anything (the relay's output was never
+needed for the card — only the agent's tool call needs a return value). It
+reports `delivered: !!runner` so a torn-down turn still acks honestly. There is
+no second delivery path and therefore no dedup.
+
+**Tradeoff (accepted):** a `voice_note` called by a *subagent* carries
+`parentToolUseId`, so the agent-listener routes it into the parent's
+`subagentEvents` and returns early — before the observation — and it won't
+render. By design: `voice_note` is the main agent signalling the user at a turn
+boundary; a subagent shouldn't be paging the user. Key files:
+`agent-listeners.ts` (the sole-deliverer observation), `api-routes-voice.ts`
+(ack-only relay), `voice-note-router.ts` (`VOICE_NOTE_TOOL_NAME`,
+`sanitizeVoiceContext`).
 
 ## Problem
 
