@@ -14,9 +14,10 @@ from empty under the **existing** repo trust gate.
 `docker.sock`) creates a per-session **`local`-driver `type=overlay` volume** so the **Docker
 daemon performs the overlay mount** as it builds the session container — merged view present
 **by construction**, with **no privileged sidecar, no `CAP_SYS_ADMIN`, and no cross-container
-mount propagation**. Base (lowerdir) in the **dep-cache** subtree; per-session upper/work in the
-session subtree (kernel forbids sharing an upperdir); absolute daemon-host paths via
-`docker volume inspect`. **Proven on Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh`
+mount propagation**. Base (lowerdir) in a dedicated **`overlay-base/<hash>/`** subtree (NOT
+`dep-cache`, which is mounted rw into sessions — would corrupt the immutable lower); per-session
+upper/work in the session subtree (kernel forbids sharing an upperdir); absolute daemon-host paths
+via `docker volume inspect`. **Proven on Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh`
 7/7), the host where the rejected sidecar/propagation approach failed → **all four documented
 targets (VPS, Docker Desktop/Mac, Docker Desktop/Windows, Linux) are overlay-eligible.** Plain
 `agent.install` remains the fallback only for hosts without overlayfs at all; `nm-store` is
@@ -50,11 +51,10 @@ per fresh session — a conscious, temporary regression until overlay lands.
       systemd VPS (docker 29.5.2, linux/amd64) and reported **PROPAGATED on the plain run, no
       host setup**. Overlay-on-VPS proven; the Phase 1 nm-store regression now has a guaranteed
       end date on the primary target.
-- [ ] **OPEN — confirm Docker Desktop/Mac propagation survives a VM restart.** The LinuxKit VM is
-      recreated routinely; if it returns with `/` private, local Mac installs silently drop to
-      the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
-- [ ] **OPEN (nice-to-have) — classify native docker-ce-in-WSL2** (no Docker Desktop): run the
-      spike to confirm whether `MountFlags=shared` makes it overlay-eligible or it too falls back.
+- [x] ~~Confirm Docker Desktop/Mac propagation survives a VM restart~~ — **MOOT under
+      daemon-overlay** (no propagation, no re-arm probe). Was a gate only for the rejected sidecar.
+- [x] ~~Classify native docker-ce-in-WSL2 propagation~~ — **MOOT under daemon-overlay** (the
+      `local` `type=overlay` mount needs no shared propagation; the daemon performs it).
 - [x] **Mechanism decided — daemon-performed overlay via the `local` volume driver.**
       [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
       ran on **Docker Desktop/Windows-WSL2** (the decisive host — `docker-desktop`, docker
@@ -98,25 +98,38 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       daemon-host paths** resolved via `docker volume inspect -f '{{.Mountpoint}}'` — and mounts
       it at `/workspace` (extend `buildMounts`); the daemon performs the overlay mount as it
       builds the container (merged view present by construction).
-- [ ] **Per-session upper/work** (kernel forbids sharing an upperdir); **shared read-only base**
-      across sessions; **`workdir` empty + on the upper's fs**.
+- [ ] **Base lives in `overlay-base/<scope-hash>/` on the workspace volume — NOT under
+      `dep-cache/`.** The dep-cache subtree is mounted **rw** into every session (`/dep-cache`),
+      so a base there would be writable from inside sessions and could corrupt the immutable
+      lowerdir under other sessions' live mounts. The `overlay-base/` subtree must **never** be
+      bind/Subpath-mounted into a session container.
+- [ ] **Per-session upper/work** under `sessions/{uuid}/` (kernel forbids sharing an upperdir;
+      same subtree → upper+work share an fs); **shared read-only base** across sessions.
+      **`workdir` empty.**
 - [ ] **Serialize** volume create/mount to avoid the overlay2 `device or resource busy` (EBUSY)
       hazard under parallel container starts.
-- [ ] Teardown = `docker volume rm` on dispose; the daemon unmounts the overlay when the last
-      container stops, so **no manual unmount-before-rm ordering** is needed (hazard removed by
-      this mechanism). Make `disk-janitor`/archive flows remove the per-session overlay volume.
+- [ ] **Volume lifecycle + GC:** name the volume **`shipit-<sessionId[:12]>_overlay`** so the
+      existing `sweepOrphanSessionVolumes` (regex `^shipit-([a-f0-9-]{12})_`, dangling, live-prefix
+      check) reclaims it automatically — a crash-orphaned volume is swept once no session owns the
+      prefix; a live/idle session's volume is preserved. **Avoid `shipit-overlay-<id>`** (fails the
+      `<12 hex>_` regex → leaks). Stamp `shipit-managed=true` for parity. Teardown = `docker volume
+      rm` on dispose. Extend `sweepOrphanedCaches` to cover unreferenced `overlay-base/<hash>/`.
 - [ ] Verify the route stays within the containment model (docs/172) — orchestrator stays
       unprivileged; session containers gain no capability.
-- [ ] Confirm `volume-driver-overlay-spike.sh` on a **Linux/VPS** daemon + **size mount cost**
-      (nice-to-have measurement).
+- [ ] **Re-run `volume-driver-overlay-spike.sh` in the production layout before building:**
+      `lowerdir` a subpath under the workspace volume's `overlay-base/<hash>/`, `upperdir`/`workdir`
+      under `sessions/<uuid>/` — i.e. **cross-subtree nested subpaths of the one `shipit_workspace`
+      volume's `_data`** (the 7/7 run used sibling dirs in a dedicated scratch volume). Run on a
+      **Linux/VPS** daemon too + **size mount cost**.
 
 ### Phase 3 — Rolling-base logic wired to the real install
 
 - [ ] Scope the base per `(repo, runtime fingerprint)` — image digest + arch + libc + relevant
       runtime ABI/version (Node native-module ABI, CPython impl + major.minor / ABI tag). Reuses
       the relocated `runtimeKey`.
-- [ ] Base (lowerdir) under the per-repo **dep-cache** subtree; per-session upper/work/merged in
-      the session subtree; mount base + run `agent.install` on top into the session's own upper.
+- [ ] Base (lowerdir) under the dedicated **`overlay-base/<hash>/`** subtree (NOT `dep-cache` —
+      see Phase 2); per-session upper/work in the session subtree; mount base + run `agent.install`
+      on top into the session's own upper.
 - [ ] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
       + install command); skip install only on exact match; non-default checkout / mismatch
       whiteouts the marker first.

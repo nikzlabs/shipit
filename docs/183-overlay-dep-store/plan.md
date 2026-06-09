@@ -204,9 +204,28 @@ the session** — see the mechanism decision below.
   fine (proven). `device or resource busy` is a known overlay2 hazard under **parallel** mount
   creation → **serialize** the volume create/mount. `workdir` must be empty and on the upper's fs.
 
-  *Remaining confirm-before-build:* run the spike once on the **Linux/VPS** daemon too (expected
-  to pass trivially — a daemon-side overlay mount is standard there; the VPS already passed the
-  harder sidecar test).
+  **Volume lifecycle + GC (the overlay volume is a new Docker resource — must not leak).**
+  **Name it on the pattern the existing orphan sweep already matches** — `sweepOrphanSessionVolumes`
+  ([disk-janitor.ts:366-421](../../src/server/orchestrator/disk-janitor.ts#L366-L421)) reclaims
+  dangling volumes matching `^shipit-([a-f0-9-]{12})_` whose 12-char session prefix is not a live
+  session, so name the volume **`shipit-<sessionId[:12]>_overlay`**. That makes orphan recovery
+  *automatic*: a live (incl. idle-evicted) session's volume is preserved (live-prefix check; and
+  it's `dangling=false` while attached), and a volume orphaned by an orchestrator crash between
+  `docker volume create`↔start or stop↔`docker volume rm` is swept once no session owns the
+  prefix. Also stamp the `shipit-managed=true` label for parity with compose volumes. Happy-path
+  teardown stays `docker volume rm` on dispose (daemon unmounts on container stop — no manual
+  unmount-ordering). **Do NOT** use a name like `shipit-overlay-<id>`: it fails the
+  `<12 hex>_` regex and would leak. For the on-disk `overlay-base/<hash>/` dirs, extend the
+  existing unreferenced-`dep-cache/<hash>` cache sweep (`sweepOrphanedCaches`) to cover them.
+
+  *Remaining confirm-before-build:* run `volume-driver-overlay-spike.sh` once on the **Linux/VPS**
+  daemon, **and once with the real production layout** — `lowerdir` a subpath under the workspace
+  volume's `overlay-base/<hash>/`, `upperdir`/`workdir` under `sessions/<uuid>/`, all nested
+  subpaths of the *same* `shipit_workspace` named volume's `_data` (the spike proved siblings in a
+  dedicated scratch volume; the daemon accepting **cross-subtree nested** `o=` components of the
+  shared workspace volume is plausibly equivalent but not yet exercised). Expected to pass — a
+  daemon-side overlay mount is standard on Linux and the VPS already passed the harder sidecar
+  test — but prove it before building.
 
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
@@ -220,12 +239,21 @@ the session** — see the mechanism decision below.
     command allowlist, store keying) adds nothing the overlay base doesn't do better and is
     **deleted entirely** ([nm-store.ts](../../src/server/session/nm-store.ts)), leaving exactly
     two paths: overlay (warm, near-no-op) or plain full install (correct everywhere).
-- **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
-  `upper`/`work` live under the session subtree (`sessions/{uuid}/`); the shared base
-  (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
-  mounted, and GC'd per repo, the natural home for a per-`(repo, runtime)` base. Everything is
-  on the one workspace named volume (one fs → satisfies overlay's upper+work same-fs rule), and
-  their absolute daemon-host paths are resolvable via `docker volume inspect`. **How the merged
+- **Storage layout — single workspace volume; base in its OWN subtree, never mounted into a
+  session.** Per-session `upper`/`work` live under the session subtree (`sessions/{uuid}/` — the
+  same subtree, so upper+work share a filesystem, satisfying overlay's same-fs rule). The shared
+  base (lowerdir) lives under a **dedicated `overlay-base/<scope-hash>/` subtree of the workspace
+  volume — NOT under the `dep-cache` subtree.** This is a correctness requirement, not a
+  preference: the per-repo dep-cache is bind/Subpath-mounted **read-write** into every session at
+  `/dep-cache` ([container-lifecycle.ts:146-158](../../src/server/orchestrator/container-lifecycle.ts#L146-L158)),
+  so a base placed there would be **writable from inside any session** — and the agent (or even
+  the install writing the npm cache) could mutate the shared **lowerdir under other sessions'
+  live overlay mounts**, which is undefined behavior (overlay requires an immutable lower; see
+  §Overlay operational cost). The `overlay-base/` subtree is on the same workspace volume (so the
+  daemon resolves its absolute path the same way and overlay's lower-can-differ-fs rule is moot)
+  but is **never bind/Subpath-mounted into a session container**, so it is unreachable-for-write
+  from any session. Its absolute daemon-host path is resolvable via `docker volume inspect`.
+  **How the merged
   dir reaches the session:** the orchestrator creates the per-session `local`-driver
   `type=overlay` volume from those paths and mounts it at `/workspace`; the **daemon** performs
   the overlay mount as it builds the container, so the merged view is present **by
@@ -346,7 +374,8 @@ on top of the simplified install path.
    the Linux/VPS daemon; mount-cost timing. *(No sidecar, no propagation probe, no re-arm — all
    removed by this mechanism.)*
 3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
-   base in the dep-cache subtree + per-session upper/work, the stamped marker, the publish
+   base in the `overlay-base/<hash>/` subtree (NOT dep-cache — see §4 storage layout) + per-session
+   upper/work, the stamped marker, the publish
    commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
 4. **Session lifecycle integration** — on-activation install → publish rule, eligibility
    exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, compose +
