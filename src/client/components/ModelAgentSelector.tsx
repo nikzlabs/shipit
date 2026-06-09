@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { formatModelName } from "../utils/format-model.js";
+import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
@@ -45,7 +45,7 @@ export function ModelAgentSelector({
   hasActiveSession = false,
   disabled,
 }: ModelAgentSelectorProps) {
-  const [pendingModel, setPendingModel] = useState<string | undefined>(getSavedModelId);
+  const [pendingModel, setPendingModel] = useState<string | undefined>(undefined);
 
   // The active session's persisted model (set when the user picked a model for
   // this session, survives reconnects). This is the authoritative answer for
@@ -55,6 +55,7 @@ export function ModelAgentSelector({
   // to an existing session (model Y) would show X — see the bug fix in this
   // file's history.
   const sessionId = useSessionStore((s) => s.sessionId);
+  const pendingSessionRef = useRef<string | undefined>(sessionId);
   const sessions = useSessionStore((s) => s.sessions);
   const currentSession = sessionId ? sessions.find((s) => s.id === sessionId) : undefined;
   const sessionModel = currentSession?.model;
@@ -72,6 +73,8 @@ export function ModelAgentSelector({
     hasActiveSession && currentSession?.agentPinned ? currentSession.agentId : undefined;
 
   const activeAgent = agents.find((a) => a.id === activeAgentId);
+  const sessionAgent = agents.find((a) => a.id === currentSession?.agentId);
+  const displayAgent = sessionAgent ?? activeAgent;
 
   // The persisted selection for this session. Always one of the agent's
   // hardcoded row keys (e.g. "sonnet", "claude-opus-4-8"):
@@ -87,19 +90,30 @@ export function ModelAgentSelector({
   // turn's agent_init confirms it. Because this is always a hardcoded row key, a
   // model the CLI may have switched to that we don't offer matches no row and so
   // highlights nothing; we still surface it in the label below.
-  const selectedModel = pendingModel ?? persistedSelection;
+  const pendingModelForCurrentSession = pendingSessionRef.current === sessionId ? pendingModel : undefined;
+  const selectedModel = pendingModelForCurrentSession ?? persistedSelection;
 
   // The raw model id the CLI reported running this turn (e.g. "claude-opus-4-8"
   // or the versioned "claude-sonnet-4-6"); undefined before the first turn.
   const liveModel = modelInfo?.model ?? undefined;
+  const liveModelAlias = liveModel ? resolveModelAlias(liveModel) : undefined;
+  const liveModelMatchesCurrentAgent =
+    !!liveModel &&
+    !!displayAgent &&
+    (displayAgent.models.includes(liveModel) ||
+      (liveModelAlias ? displayAgent.models.includes(liveModelAlias) : false));
+  const scopedLiveModel = liveModelMatchesCurrentAgent ? liveModel : undefined;
 
   // The trigger label. An optimistic pick wins for instant feedback; otherwise
   // show whatever the CLI actually reported this turn (so a mid-turn switch is
   // reflected and the right name survives a page reload), falling back to the
-  // persisted selection before the first turn. formatModelName maps both
-  // versioned ids and our hardcoded keys to pretty names, and shows the raw id
-  // for anything it doesn't recognize.
-  const displayName = formatModelName(pendingModel ?? liveModel ?? persistedSelection ?? "");
+  // persisted selection before the first turn. `modelInfo` is global UI state,
+  // so it is trusted only when the reported model belongs to the active
+  // session's agent; otherwise session switches can show a stale model from the
+  // previous session in the trigger while the menu rows are already correct.
+  // formatModelName maps both versioned ids and our hardcoded keys to pretty
+  // names, and shows the raw id for anything it doesn't recognize.
+  const displayName = formatModelName(pendingModelForCurrentSession ?? scopedLiveModel ?? persistedSelection ?? "");
 
   // The picker is interactive whenever it isn't in a loading transition.
   // Mid-session, the dropdown still opens — only cross-agent rows are locked
@@ -124,10 +138,11 @@ export function ModelAgentSelector({
       if (!pinnedAgentId) {
         onAgentChange(agentId);
       }
+      pendingSessionRef.current = sessionId;
       setPendingModel(model);
       onModelChange?.(model);
     },
-    [onAgentChange, onModelChange, pinnedAgentId],
+    [onAgentChange, onModelChange, pinnedAgentId, sessionId],
   );
 
   // Clear the optimistic pending pick once the CLI confirms a model for the

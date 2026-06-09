@@ -50,6 +50,7 @@ function setSessionState(session: SessionInfo | undefined) {
 }
 
 beforeEach(() => {
+  localStorage.removeItem("vibe-model-id");
   setSessionState(undefined);
 });
 
@@ -223,5 +224,50 @@ describe("ModelAgentSelector — mid-session model picking", () => {
       <ModelAgentSelector {...props} modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }} />,
     );
     expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Opus 4.8");
+  });
+
+  it("ignores stale live model info from another agent after switching sessions", () => {
+    // Reproduces the visible mismatch from session switching: the selected
+    // session is pinned to Claude, but global modelInfo still contains the
+    // previous Codex session's GPT model. The trigger must follow the active
+    // session, matching the menu rows.
+    setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
+    render(
+      <ModelAgentSelector
+        agents={agents}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={{ model: "gpt-5.5", contextWindowTokens: 200000 }}
+        hasActiveSession={true}
+      />,
+    );
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 4.7");
+    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.5");
+  });
+
+  it("does not carry an optimistic model pick into a different session", async () => {
+    const user = userEvent.setup();
+    const codexSession = makeSession({ id: "s1", model: "gpt-5.5", agentId: "codex", agentPinned: true });
+    const claudeSession = makeSession({ id: "s2", model: "sonnet", agentId: "claude", agentPinned: true });
+    useSessionStore.setState({ sessionId: "s1", sessions: [codexSession, claudeSession] });
+
+    const props = {
+      agents,
+      onAgentChange: vi.fn(),
+      onModelChange: vi.fn(),
+      modelInfo: null,
+      hasActiveSession: true,
+    };
+    const { rerender } = render(<ModelAgentSelector {...props} activeAgentId="codex" />);
+
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    await user.click(screen.getByTestId("model-option-gpt-5.4"));
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("GPT-5.4");
+
+    useSessionStore.setState({ sessionId: "s2", sessions: [codexSession, claudeSession] });
+    rerender(<ModelAgentSelector {...props} activeAgentId="claude" />);
+    expect(screen.getByTestId("model-agent-trigger")).toHaveTextContent("Sonnet 4.7");
+    expect(screen.getByTestId("model-agent-trigger")).not.toHaveTextContent("GPT-5.4");
   });
 });
