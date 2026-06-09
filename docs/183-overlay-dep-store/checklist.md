@@ -11,14 +11,18 @@ clean reinstall** (specific tunable cap); **re-derive on unarchive**; **exit-0 b
 gate**; cold start builds v0 from empty under the **existing** repo trust gate. Prototype the
 rolling-base logic first; the host mount stays the gating risk.
 
-- [ ] Prototype the keyless rolling base on the current substrate: mount current base →
+- [x] Prototype the keyless rolling base on the current substrate: mount current base →
       git fast-forward source → run real install on top → publish only for exit-0 pre-user
       installs whose recorded source base is the remote default-branch commit, via the
       commit-ancestry compare-and-swap (installs run concurrently into their own uppers)
+      — done in `prototype/rolling-base.ts` + `run-rolling-base.ts` (33/33 pass against a
+      real git repo); see `FINDINGS.md`
 - [ ] Measure warm-install time: `main` unchanged (warm no-op, ~marker skip) and `main`
       advanced its deps (incremental) vs. cold
-- [ ] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
-      unmount + workdir cleanup on dispose); size its cost — the gating unknown
+- [~] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
+      unmount + workdir cleanup on dispose); size its cost — the gating unknown.
+      Spike script written (`prototype/host-overlay-spike.sh`); **cannot run in-container**
+      (no CAP_SYS_ADMIN — probe in `FINDINGS.md`), run it on the ext4 host to close this
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)
@@ -44,8 +48,12 @@ rolling-base logic first; the host mount stays the gating risk.
       candidate strictly descends the base** (`git merge-base --is-ancestor`), under a short
       per-`(repo, runtime fingerprint)` lock for atomic read-compare-swap. Order by commit
       ancestry, not publish time; skip stale/diverged (force-push) publishes
+      — *logic validated in `prototype/rolling-base.ts` (ancestry CAS, force-push skip,
+      late-older-loser, ~2.3ms ancestry / ~0.1ms lock); production wiring still to do*
 - [ ] Set a **specific** depth cap (~10–20, tunable); on hit, rebuild base from empty (clean
       reinstall = drift + reproducibility reset)
+      — *flatten-from-empty behavior validated in `prototype/rolling-base.ts` (cap=16,
+      depth resets, generation bumps); final value to be set from host measurement*
 - [ ] Exclude/normalize `.git` from the base (correctness — don't carry session branch refs
       forward); verify git/worktree (absolute gitdir pointers) behave on the overlay
 - [ ] Gate base advance on install **exit code 0** (non-zero serves the session, isn't published)

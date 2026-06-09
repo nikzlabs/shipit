@@ -187,10 +187,17 @@ periodic clean-rebuild schedule is needed.
 
 ## Decisions (this iteration)
 
+> **Prototype status:** the keyless rolling-base **logic** is built and validated —
+> [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts) (33/33 against a real git
+> repo); the host overlay mount has a ready spike,
+> [`prototype/host-overlay-spike.sh`](./prototype/host-overlay-spike.sh), that must run on the
+> ext4 host (it **cannot** run inside a session container — no `CAP_SYS_ADMIN`). Results and
+> timings in [`FINDINGS.md`](./FINDINGS.md), how-to in [`prototype/README.md`](./prototype/README.md).
+
 - **Sequencing:** prototype the **keyless rolling-base logic first** (on the current copy
   substrate), then build the host-mount subsystem. *Caveat:* the host-side mount remains the
   true gating risk — validating the chain logic first does not de-risk it, so keep it next in
-  line.
+  line. *(Logic prototype done; host spike written and pending a host run.)*
 - **Environment-agnostic:** overlay the **whole workspace**; no ecosystem/target-path
   knowledge. Settled by §1.
 - **Skip policy:** keyless + upgrade the existing marker/`headChanged` skip into a stamped
@@ -251,21 +258,27 @@ periodic clean-rebuild schedule is needed.
 ## Open questions
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
-design decisions are made (see Decisions).
+design decisions are made (see Decisions). Status of each is tracked in
+[`FINDINGS.md`](./FINDINGS.md); #3 is resolved, #1/#2/#4 are pending a host run of
+[`prototype/host-overlay-spike.sh`](./prototype/host-overlay-spike.sh).
 
 1. **Host-mount feasibility (the gate).** Can the orchestrator own a per-session
    whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
    the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
+   *Confirmed unrunnable inside a session container (no `CAP_SYS_ADMIN`); spike script ready
+   for the host — see [`FINDINGS.md`](./FINDINGS.md).*
 2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
    absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
    source diff in the upper layer stays small (`t → t'`).
-3. **Publish ordering by commit ancestry.** The base advances only when a candidate's `main`
-   commit strictly descends the current base's commit (§3). Confirm the `git merge-base
-   --is-ancestor` check + short per-`(repo, runtime fingerprint)` lock are cheap (they gate
-   only the *publish*, not the install, which runs into each session's own upper layer), and
-   pick the conservative behavior for **diverged history** (force-pushed `main`): skip the
-   publish and let the next forward commit re-advance.
+3. **Publish ordering by commit ancestry.** ✅ **Resolved** by
+   [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts). The base advances only
+   when a candidate's `main` commit strictly descends the current base's commit (§3). The
+   `git merge-base --is-ancestor` check (~2.3 ms/call) + short per-`(repo, runtime
+   fingerprint)` lock (~0.1 ms/call) are confirmed cheap and gate only the *publish*. Diverged
+   history (force-pushed `main`) is handled conservatively: skip the publish, let the next
+   forward commit re-advance. A late-but-older publisher correctly declines (ancestry, not
+   wall-clock).
 4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
    and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
    source, and `inotify` over overlay (copy-up event quirks), behave correctly?
