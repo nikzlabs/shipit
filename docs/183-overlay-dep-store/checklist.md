@@ -173,22 +173,18 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       dependency edits before publish (`child-sessions.ts`).
 - [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
       only respects **live** mounts, not archived sessions.
-- [ ] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
-      Run `prototype/shared-volume-spike.sh` (written; needs a real Docker host — it can't run
-      from a session container, which by design has no `docker.sock`). It proves concurrent
-      first-use of **one** per-session `type=overlay` volume mounted into the agent `docker run`
-      **and** ≥2 service containers. Assert: **(a)** the upperdir appears **exactly once** as an
-      `overlay` mount in the daemon host's `/proc/self/mountinfo` (one mount, not N — the decisive
-      check); **(b)** ~50 cold-race trials (`volume rm`+create each iteration, no inter-start
-      delay) with **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`; **(c)** the HMR
-      **polling** substrate — a file the agent writes is visible (fresh content + updated mtime) to
-      a *service* container's `stat()`/`read()` (dev servers poll because inotify doesn't cross the
-      container namespace; cross-container inotify is a non-gating data point); **(d)**
-      teardown↔startup overlap leaves the merged view intact. Run on
-      prod systemd VPS (ext4) + Docker Desktop/Mac + Docker Desktop/Windows-WSL2. **Overlay-session
-      preview support is gated on this spike going green.** *(Both Docker Desktop hosts green:
-      Windows-WSL2 amd64 + Mac arm64, each PASS=8/8, 25 cold-race trials, single superblock
-      confirmed. Only the prod VPS (ext4) remains.)*
+- [x] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
+      `prototype/shared-volume-spike.sh` proves concurrent first-use of **one** per-session
+      `type=overlay` volume mounted into the agent `docker run` **and** ≥2 service containers:
+      **(a)** the upperdir backs **exactly one** overlay superblock (one daemon mount + bind-share,
+      not N — the decisive check); **(b)** cold-race trials with **zero**
+      `EBUSY`/`upperdir is in-use`; **(c)** the HMR **polling** substrate — the agent's writes are
+      visible (fresh content + updated mtime) to a *service* container (dev servers poll;
+      cross-container inotify is a non-gating data point that, as expected, did not fire);
+      **(d)** teardown↔startup overlap leaves the merged view intact. **Matrix complete — PASS=8/8
+      on all three hosts:** Docker Desktop/Windows-WSL2 (amd64, 25 trials), Docker Desktop/Mac
+      (arm64, 25 trials), prod VPS `shipit-16gb` (Ubuntu 24.04/**ext4**, 50 trials). See
+      [`FINDINGS.md`](./FINDINGS.md). **Open Q #4 resolved.**
 - [ ] **Wire the shared overlay volume into compose** (after the spike). For overlay-eligible
       sessions, point `opts.workspaceVolume` at the per-session overlay volume name
       (`shipit-<sessionId[:12]>_overlay`) instead of `shipit-workspace` so `rewriteVolumes` +

@@ -527,7 +527,7 @@ nice-to-have measurement, not a gate).
 > **Docker Desktop / Windows (scratch-sibling layout):** PASS=7 FAIL=0 (docker
 > 29.4.1) — earlier run; the mechanism on that daemon is already proven.
 
-## Open question #4 — one shared `type=overlay` volume across N containers (compose/preview) → **PROVEN on Docker Desktop/Windows-WSL2 (the decisive host); VPS + Mac pending**
+## Open question #4 — one shared `type=overlay` volume across N containers (compose/preview) → **RESOLVED (all 3 hosts green)**
 
 `volume-driver-overlay-spike.sh` proved daemon-overlay for a single consumer and for
 two **distinct** volumes sharing one read-only lower. The compose/preview path needs
@@ -579,7 +579,25 @@ wiring (point overlay-session services at the per-session overlay volume by subp
 > single superblock, 0 EBUSY across 25 cold-race trials, polling substrate green,
 > cross-container inotify did not fire (expected).
 
-**Matrix: 2 of 3 green** (Docker Desktop/Windows-WSL2 ✅ amd64, Docker Desktop/Mac ✅
-arm64). **Remaining: prod VPS (ext4)** — the actual production substrate and the one
-storage driver not yet exercised by this spike. Green there retires Open Q #4 outright
-and unblocks the compose-generator wiring.
+> **Prod VPS run:** PASS=8 FAIL=0, daemon `shipit-16gb` (Ubuntu 24.04.4 LTS), docker
+> 29.5.2, linux/amd64, **cold-trials=50**. Native (non-VM) Linux daemon on **ext4** —
+> the actual production substrate and the storage driver the other two hosts didn't
+> exercise. Single superblock, 0 EBUSY across 50 cold-race first-mounts, polling
+> substrate green, teardown overlap clean. Cross-container inotify did not fire (expected).
+
+**Matrix COMPLETE — 3 of 3 green → Open Q #4 RESOLVED.**
+
+| Host | Arch / kernel | Storage | Trials | Result |
+|---|---|---|---|---|
+| Docker Desktop/Windows-WSL2 | amd64 / LinuxKit VM | overlay2-on-overlay2 | 25 | ✅ PASS=8/8 |
+| Docker Desktop/Mac | arm64 / LinuxKit VM | overlay2-on-overlay2 | 25 | ✅ PASS=8/8 |
+| Prod VPS `shipit-16gb` | amd64 / native Ubuntu 24.04 | **ext4** | 50 | ✅ PASS=8/8 |
+
+The decisive property held on every target: Docker's `local`-volume refcount performs
+**exactly one** `mount -t overlay` and bind-shares `_data` into every additional
+container (verified by the single-superblock probe), so the kernel's shared-`upperdir`
+error never fires and N containers — the agent + every compose service — get one
+coherent merged view. **Nothing else gates the compose/preview path; proceed to the
+compose-generator wiring** (point overlay-session services at the per-session overlay
+volume by subpath; dev-server HMR keeps polling, which the write/mtime-coherence check
+confirmed works over the shared mount).

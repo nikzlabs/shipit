@@ -448,8 +448,8 @@ on top of the simplified install path.
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
 design decisions are made (see Decisions). Status of each is tracked in
-[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3 are resolved, #4 is reopened (compose/dev-server
-delivery under the daemon-overlay mechanism — see below).
+[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3/#4 are all resolved (#4 resolved by the shared-overlay
+multi-container spike going PASS=8/8 on all three host targets — see below).
 
 1. **Host-mount feasibility (the gate).** ✅ **Resolved.** Can the unprivileged orchestrator own
    a per-session whole-workspace overlay within the containment model (`docs/172`), across all
@@ -477,9 +477,9 @@ delivery under the daemon-overlay mechanism — see below).
    late-but-older publisher correctly declines (ancestry, not wall-clock); a force-pushed
    default branch does not wait for impossible old-lineage ancestry and instead starts a clean
    generation.
-4. **Compose + file watcher over the merged dir.** ⚠️ **Design decided; spike PASS=8/8 on both
-   Docker Desktop hosts (Windows-WSL2 amd64 + Mac arm64) — only the prod VPS (ext4) remains.** The
-   Phase-0 spike proved the *filesystem* behavior —
+4. **Compose + file watcher over the merged dir.** ✅ **Resolved — spike PASS=8/8 on all three
+   targets (Docker Desktop/Windows-WSL2 amd64, Docker Desktop/Mac arm64, prod VPS ext4; see
+   [`FINDINGS.md`](./FINDINGS.md)).** The Phase-0 spike proved the *filesystem* behavior —
    bind-mounting the overlay **merged** dir reads through to the base and writes reach the upper,
    and `inotify` over the overlay sees both plain creates and copy-up modifies (Docker Desktop/Mac
    named-volume substrate, `run-in-docker.sh`, 21/21 incl. inotify; bind-mount-corroborated on
@@ -540,11 +540,12 @@ delivery under the daemon-overlay mechanism — see below).
    > inotify crossing a container boundary. Run all of it on the full matrix — prod systemd VPS (ext4), Docker
    Desktop/Mac, Docker Desktop/Windows-WSL2 — since EBUSY is kernel/storage-driver-dependent. Green
    = 1 overlay mount + 0 errors across the cold-race trials × 3 hosts + clean teardown overlap; that
-   retires the blocker and the rest is ordinary wiring. **Both Docker Desktop hosts are already
-   green (Windows-WSL2 amd64 + Mac arm64, each PASS=8/8, 25 cold-race trials, 0 EBUSY, single
-   superblock confirmed; see [`FINDINGS.md`](./FINDINGS.md)); only the prod VPS (ext4) remains.**
-   Until the matrix is complete, previews/dev-servers are **not** yet covered for overlay
-   sessions — a Phase 4 gate.
+   retires the blocker and the rest is ordinary wiring. **The matrix is now complete — all three
+   hosts PASS=8/8 (Windows-WSL2 amd64 + Mac arm64 at 25 trials, prod VPS/ext4 at 50; single
+   superblock + 0 EBUSY everywhere; see [`FINDINGS.md`](./FINDINGS.md)).** The remaining work is
+   the compose-generator wiring (point overlay-session services at the per-session overlay volume
+   by subpath); dev-server HMR keeps polling, which the write/mtime-coherence check confirmed works
+   over the shared mount.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
