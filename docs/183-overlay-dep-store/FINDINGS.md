@@ -36,7 +36,12 @@ Both are negligible and gate only the publish (the install itself runs into each
 session's own upper, unserialized). **The ordering machinery is confirmed not a
 bottleneck.**
 
-## Open questions #1, #2, #4 — host overlay mount → **CORROBORATED on a WSL2/ext4 host (1 gap: inotify)**
+## Open questions #1, #2, #4 — host overlay mount → **SUBSTRATE CONFIRMED (WSL2 + Docker Desktop/Mac); gate now a privilege-mechanism design problem**
+
+Two privileged runs, **21/21 across the two combined** (the WSL2 run's one
+inotify SKIP was closed by the Docker Desktop run). The overlay substrate works;
+what remains for #1 is **not** "does overlayfs work" but the orchestrator
+privilege + daemon-host-fs mechanism (see the two constraints below).
 
 First privileged host run, on **WSL2** (`6.6.114.1-microsoft-standard-WSL2`, ext4):
 **PASS=19 FAIL=0 SKIP=1 → "HOST-MOUNT GATE: feasible on this host."** This clears
@@ -100,14 +105,18 @@ now prints this guidance instead of a raw `grep` error.
    (non-WSL) kernel. Repeat on the prod-equivalent host to be definitive.
 3. **Cost not yet measured:** open question #1 also asks to *size* the mount —
    time a few mount/unmount cycles on the real host.
-4. **macOS substrate not yet tested.** Docker Desktop's Linux VM + its
-   volume-backing fs differ from WSL2 and from a bare VPS. Run
-   `prototype/run-in-docker.sh` (spike inside a privileged container, scratch on
-   a named volume) on a Mac to confirm overlayfs works on that fs and the
-   native-ext4-not-FUSE upperdir requirement holds. This run also closes #1
-   (inotify) since it installs `inotify-tools`.
+4. ✅ **macOS substrate — done.** Ran `prototype/run-in-docker.sh` on Docker
+   Desktop (Mac): spike inside a `--privileged` container with scratch on a
+   **named volume** (VM-native ext4), kernel `6.12.76-linuxkit`. **PASS=21
+   FAIL=0 SKIP=0** — every check, *including inotify* (plain create **and**
+   copy-up modify). So overlayfs works on Docker Desktop's volume-backing fs, the
+   native-ext4-not-FUSE upperdir requirement is satisfied, and the file-watcher
+   question (#4) is confirmed. This also retroactively closes the WSL2 inotify
+   SKIP. (16 stacked lowerdirs → 262-byte option string, well under the limit.)
 
-> **macOS run output:** _(paste `run-in-docker.sh` summary here)_
+> **macOS (Docker Desktop) run:** PASS=21 FAIL=0 SKIP=0, kernel
+> `6.12.76-linuxkit`, scratch on a named volume (ext4 family). Includes inotify
+> create + copy-up. "HOST-MOUNT GATE: feasible on this host."
 
 <details><summary>Full WSL2 run output</summary>
 
@@ -182,12 +191,22 @@ exclusion on publish, stacked-lowerdir depth, bind-mount of the merged dir
 ## Net decision
 
 The chain logic (the first-sequenced prototype) is **validated and cheap**. The
-host mount — the gating risk — is now **corroborated feasible** on a WSL2/ext4
-host (19/19 of the runnable checks pass): overlay mount, CoW with an immutable
-base, whole-workspace capture, git/worktree/`.git` handling, 16-deep stacked
-lowerdirs well under the option-size limit, bind-mounting the merged dir, and
-safe teardown ordering all work. **Remaining to fully close the gate:** (1) the
-inotify check (install `inotify-tools` and re-run), (2) a repeat on the
-prod-equivalent (non-WSL) kernel, and (3) timing the mount/unmount cost. Net:
-the design is **green to proceed to building the orchestrator-owned mount
-lifecycle**, with those three confirmations folded into that work.
+overlay **substrate is confirmed feasible** on both WSL2/ext4 and Docker
+Desktop/Mac (21/21 across the two runs, incl. inotify): overlay mount, CoW with
+an immutable base, whole-workspace capture, git/worktree/`.git` handling, 16-deep
+stacked lowerdirs well under the option-size limit, bind-mounting the merged dir,
+inotify (create + copy-up), and safe teardown ordering all work — on the
+volume-backing fs that mirrors where ShipIt's `workspace` actually lives.
+
+**The gate is no longer "does overlayfs work" — it's a design problem:**
+1. **Orchestrator mount capability.** The orchestrator is an *unprivileged*
+   container (`docker.sock` only; the spikes used `--privileged`/`CAP_SYS_ADMIN`
+   as a substrate stand-in). Decide the real mechanism: add the cap to the
+   orchestrator, a privileged mount-helper, or via the daemon.
+2. **Daemon-host-fs placement.** The `merged` dir must live where the daemon can
+   bind it into a sibling session container (daemon-host fs / VM-native ext4),
+   not the orchestrator container's private fs.
+
+Still nice-to-have, not blocking: a run on the **prod VPS** (non-WSL/non-Desktop)
+kernel and **mount/unmount timing**. Net: **green to proceed to building the
+orchestrator-owned mount lifecycle**, whose first job is mechanism (1)+(2).

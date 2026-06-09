@@ -266,9 +266,10 @@ design decisions are made (see Decisions). Status of each is tracked in
    whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
    the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
-   *Status: spike passed **19/19 on a WSL2/ext4 host** (mount, CoW with immutable base, 16-deep
-   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering). But the spike ran
-   as root-with-`CAP_SYS_ADMIN` directly, which sidesteps the real shape of the gate: the
+   *Status: substrate **confirmed** — spike passed **WSL2/ext4 19/19** and **Docker Desktop/Mac
+   21/21** (named-volume substrate, incl. inotify): mount, CoW with immutable base, 16-deep
+   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering. But the spikes ran
+   `--privileged`/root-with-`CAP_SYS_ADMIN`, which sidesteps the real shape of the gate: the
    orchestrator runs as an **unprivileged container** (only `docker.sock`, no
    `cap_add: SYS_ADMIN` — `docker/local/prod/compose.yml`), and session workspaces are Docker
    **named volumes** whose bind-mounts the **daemon** resolves. So "orchestrator owns the
@@ -276,14 +277,13 @@ design decisions are made (see Decisions). Status of each is tracked in
    go through the daemon) and (b) the `merged` dir on the **daemon-host fs**, not the
    orchestrator container's private fs. This holds identically on Linux and on macOS local
    Docker (where everything runs inside the Docker Desktop **Linux VM**; keep overlay layers on
-   the VM's native ext4, not a FUSE-backed host path). Remaining to fully close: resolve the
-   privilege/daemon-host-fs mechanism, run the inotify check, repeat on the prod (non-WSL)
-   kernel, and time the mount/unmount cost — see [`FINDINGS.md`](./FINDINGS.md).*
-2. **Source + `.git` on the overlay.** ✅ **Corroborated** on the WSL2/ext4 host: clone +
+   the VM's native ext4, not a FUSE-backed host path — confirmed by the Mac run). Remaining to
+   close: resolve the **privilege/daemon-host-fs mechanism** (the real gate now), plus a
+   nice-to-have run on the prod (non-WSL/non-Desktop) kernel and mount/unmount timing — see
+   [`FINDINGS.md`](./FINDINGS.md).*
+2. **Source + `.git` on the overlay.** ✅ **Resolved** (WSL2/ext4 + Docker Desktop/Mac): clone +
    fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
-   and a published base carries source contents with `.git` excluded cleanly. Confirm git
-   (and worktree gitdir pointers with absolute paths) behave on the overlay, that `.git` is
-   excluded/normalized cleanly, and the source diff in the upper layer stays small (`t → t'`).
+   and a published base carries source contents with `.git` excluded cleanly.
 3. **Publish ordering by commit ancestry.** ✅ **Resolved** by
    [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts). The base advances only
    when a candidate's `main` commit strictly descends the current base's commit (§3). The
@@ -292,11 +292,11 @@ design decisions are made (see Decisions). Status of each is tracked in
    history (force-pushed `main`) is handled conservatively: skip the publish, let the next
    forward commit re-advance. A late-but-older publisher correctly declines (ancestry, not
    wall-clock).
-4. **Compose + file watcher over the merged dir.** ◐ **Partly corroborated** on WSL2/ext4:
-   bind-mounting the overlay **merged** dir reads through to the base and writes via the bind
-   reach the upper (the compose-service pattern); **inotify still untested** (the host lacked
-   `inotify-tools`). Confirm bind-mounts using the overlay merged dir as source, and `inotify`
-   over overlay (copy-up event quirks), behave correctly.
+4. **Compose + file watcher over the merged dir.** ✅ **Resolved.** Bind-mounting the overlay
+   **merged** dir reads through to the base and writes via the bind reach the upper
+   (compose-service pattern); `inotify` over the overlay sees both plain creates and copy-up
+   modifies. Confirmed on Docker Desktop/Mac (named-volume substrate, `run-in-docker.sh`,
+   21/21 incl. inotify) and bind-mount-corroborated on WSL2.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose

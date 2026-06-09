@@ -39,5 +39,7 @@ docker run --rm --privileged \
     apt-get update -qq >/dev/null
     apt-get install -y -qq git inotify-tools >/dev/null
     echo "scratch fstype: $(stat -f -c %T /scratch)"
-    bash /spike.sh /scratch
+    # Use a SUBDIR of the volume — the spike rm -rf its scratch dir, and the
+    # volume mountpoint itself ("/scratch") is busy and cannot be unlinked.
+    bash /spike.sh /scratch/run
   '

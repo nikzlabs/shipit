@@ -21,14 +21,13 @@ rolling-base logic first; the host mount stays the gating risk.
       advanced its deps (incremental) vs. cold
 - [~] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
       unmount + workdir cleanup on dispose); size its cost — the gating unknown.
-      Spike `prototype/host-overlay-spike.sh` **passed 19/19 on a WSL2/ext4 host** (mount,
-      CoW+immutable base, 16-deep lowerdirs, bind-mount merged, safe teardown). Remaining:
-      resolve how the **unprivileged orchestrator container** (only `docker.sock`, no
-      `SYS_ADMIN`) actually performs the mount and where the `merged` dir lives so the
-      **daemon** can bind it into a session (must be on the daemon-host fs; on macOS that's the
-      Docker Desktop Linux VM's native ext4, not a FUSE host path); run inotify check (install
-      `inotify-tools`); repeat on prod (non-WSL) kernel; time the mount/unmount cost — see
-      `FINDINGS.md`
+      Substrate **confirmed** — passed **WSL2/ext4 19/19** and **Docker Desktop/Mac 21/21**
+      (`prototype/run-in-docker.sh`, named-volume substrate, incl. inotify). The gate is now a
+      **design** problem, not a feasibility one: resolve how the **unprivileged orchestrator
+      container** (only `docker.sock`, no `SYS_ADMIN`) performs the mount and where the `merged`
+      dir lives so the **daemon** can bind it into a session (daemon-host fs; on macOS the
+      Docker Desktop Linux VM's native ext4, not a FUSE host path). Nice-to-have: prod (non-WSL)
+      kernel run + mount/unmount timing — see `FINDINGS.md`
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)
@@ -66,7 +65,9 @@ rolling-base logic first; the host mount stays the gating risk.
 - [ ] Re-derive on unarchive (persist source/metadata only; re-clone + reinstall) — so base
       GC only respects live mounts, not archived sessions
 - [ ] Cold-start path: build base v0 from empty under the existing repo trust gate (docs/178)
-- [ ] Verify compose bind-mounts using the overlay merged dir + `inotify` file watcher work
+- [x] Verify compose bind-mounts using the overlay merged dir + `inotify` file watcher work
+      — confirmed on Docker Desktop/Mac (`prototype/run-in-docker.sh`, 21/21 incl. inotify
+      create + copy-up) and bind-mount-corroborated on WSL2
 - [ ] Remove/retire the node_modules-specific `nm-store` copy store once the base supersedes it
 - [ ] Optional/future: detection-free manifest fingerprint to skip no-op installs — only if
       measurements call for it
