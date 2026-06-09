@@ -218,14 +218,12 @@ the session** — see the mechanism decision below.
   `<12 hex>_` regex and would leak. For the on-disk `overlay-base/<hash>/` dirs, extend the
   existing unreferenced-`dep-cache/<hash>` cache sweep (`sweepOrphanedCaches`) to cover them.
 
-  *Remaining confirm-before-build:* run `volume-driver-overlay-spike.sh` once on the **Linux/VPS**
-  daemon, **and once with the real production layout** — `lowerdir` a subpath under the workspace
-  volume's `overlay-base/<hash>/`, `upperdir`/`workdir` under `sessions/<uuid>/`, all nested
-  subpaths of the *same* `shipit_workspace` named volume's `_data` (the spike proved siblings in a
-  dedicated scratch volume; the daemon accepting **cross-subtree nested** `o=` components of the
-  shared workspace volume is plausibly equivalent but not yet exercised). Expected to pass — a
-  daemon-side overlay mount is standard on Linux and the VPS already passed the harder sidecar
-  test — but prove it before building.
+  *Confirm-before-build — done.* `volume-driver-overlay-spike.sh`, updated to seed the real
+  production layout (`lowerdir` under the workspace volume's `overlay-base/<hash>/`,
+  `upperdir`/`workdir` under `sessions/<uuid>/` — cross-subtree nested subpaths of the *same*
+  named volume's `_data`), ran **PASS=7/7 on the prod VPS** (`shipit-16gb`, Ubuntu 24.04, docker
+  29.5.2) — settling both the production path layout and a non-Docker-Desktop Linux daemon. Only
+  nice-to-have left: mount-cost timing (not a gate).
 
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
@@ -356,10 +354,11 @@ on top of the simplified install path.
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
    (WSL2 + Docker Desktop/Mac), and the §4 design are settled. **Mechanism = daemon-performed
    overlay via the `local` volume driver** (no sidecar, no propagation, no `CAP_SYS_ADMIN`):
-   proven on **Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh` 7/7 — the host
-   where the rejected sidecar/propagation approach failed). **All four documented targets are
-   overlay-eligible.** (The earlier propagation spike — VPS/Mac pass, Windows fails — is the
-   evidence for *why the sidecar was rejected*; superseded.)
+   proven in the **production layout** on both **Docker Desktop/Windows-WSL2** (`volume-driver-overlay-spike.sh`
+   7/7 — the host where the rejected sidecar approach failed) and the **prod systemd VPS**
+   (`shipit-16gb`, Ubuntu 24.04, 7/7). **All four documented targets are overlay-eligible** and
+   the confirm-before-build gate is cleared. (The earlier propagation spike — VPS/Mac pass,
+   Windows fails — is the evidence for *why the sidecar was rejected*; superseded.)
 1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
    `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
    becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark

@@ -116,11 +116,13 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       rm` on dispose. Extend `sweepOrphanedCaches` to cover unreferenced `overlay-base/<hash>/`.
 - [ ] Verify the route stays within the containment model (docs/172) — orchestrator stays
       unprivileged; session containers gain no capability.
-- [ ] **Re-run `volume-driver-overlay-spike.sh` in the production layout before building:**
-      `lowerdir` a subpath under the workspace volume's `overlay-base/<hash>/`, `upperdir`/`workdir`
-      under `sessions/<uuid>/` — i.e. **cross-subtree nested subpaths of the one `shipit_workspace`
-      volume's `_data`** (the 7/7 run used sibling dirs in a dedicated scratch volume). Run on a
-      **Linux/VPS** daemon too + **size mount cost**.
+- [x] **Production-layout spike confirmed** — `volume-driver-overlay-spike.sh` (updated to seed
+      `lowerdir` under `overlay-base/<hash>/` and `upperdir`/`workdir` under `sessions/<uuid>/`,
+      cross-subtree nested subpaths of one volume) ran **PASS=7 FAIL=0 on the prod VPS**
+      (`shipit-16gb`, Ubuntu 24.04, docker 29.5.2, linux/amd64) — settles both the production path
+      layout and a non-Docker-Desktop Linux daemon. (Mechanism also 7/7 on Docker Desktop/Windows.)
+- [ ] **Size mount cost** (nice-to-have measurement, not a gate) — time a few overlay-volume
+      create/mount/rm cycles on the real daemon.
 
 ### Phase 3 — Rolling-base logic wired to the real install
 

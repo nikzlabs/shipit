@@ -512,15 +512,17 @@ updated.)
 > propagation needed." *(This run used the earlier **scratch-sibling** layout —
 > base/upper/work as siblings in a dedicated volume.)*
 
-**Confirm-before-build — one open verification (the spike now mirrors prod layout).**
-The 7/7 run proved the *mechanism* but used sibling dirs in a dedicated scratch
-volume, not the production layout (base in `overlay-base/<hash>/`, upper/work in
-`sessions/<uuid>/`, **cross-subtree nested subpaths of the one workspace volume**).
-`volume-driver-overlay-spike.sh` has been **updated to seed exactly that layout**,
-so a single run now settles both open axes — the production path shape **and** a
-non-Docker-Desktop **Linux/VPS** daemon. Run it on the VPS (the un-run daemon
-axis); optionally re-run on Docker Desktop/Windows to reconfirm under the new
-layout. Paste verdicts below.
+**Confirm-before-build — CLOSED.** The mechanism is now proven in the **production
+layout** (base in `overlay-base/<hash>/`, upper/work in `sessions/<uuid>/`,
+**cross-subtree nested subpaths of the one workspace volume**) on **both** a
+Docker Desktop daemon and a bare-Linux systemd daemon — the two axes that were
+open. Nothing else is gated before building Phase 2 (mount-cost timing remains a
+nice-to-have measurement, not a gate).
 
-> **Linux / VPS run (updated prod-layout spike):** _(paste summary here)_
-> **Docker Desktop / Windows re-run (updated prod-layout spike):** _(optional; paste here)_
+> **Linux / VPS run (updated prod-layout spike):** PASS=7 FAIL=0, daemon
+> `shipit-16gb` (Ubuntu 24.04.4 LTS), docker 29.5.2, linux/amd64. "DAEMON-MOUNTED
+> OVERLAY WORKS in the PRODUCTION layout — no sidecar, no propagation, no
+> privilege." Confirms the cross-subtree nested-subpath layout **and** a
+> non-Docker-Desktop Linux daemon.
+> **Docker Desktop / Windows (scratch-sibling layout):** PASS=7 FAIL=0 (docker
+> 29.4.1) — earlier run; the mechanism on that daemon is already proven.
