@@ -28,8 +28,7 @@ import {
   speakVoice,
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
-import { routeVoiceNote } from "./voice/voice-note-router.js";
-import type { VoiceNoteContext } from "../shared/types/voice-note-types.js";
+import { routeVoiceNote, sanitizeVoiceContext } from "./voice/voice-note-router.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
@@ -212,25 +211,13 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
           { summary, needsAttention, ...(context ? { context } : {}) },
           { runner, sessionId, credentialStore, source: "authored" },
         );
-        return { delivered: result.native || result.webhook };
+        // `alreadyDelivered` ⇒ the event-stream observation beat the relay and
+        // showed the card already; still a successful delivery from the agent's
+        // POV. Don't report not_delivered just because this leg was a no-op.
+        return { delivered: result.alreadyDelivered || result.native || result.webhook };
       } catch (err) {
         handleError(reply, err, "Failed to deliver voice note");
       }
     },
   );
-}
-
-/**
- * Keep only the known display-only context fields, all strings. The agent
- * supplies this; we don't trust arbitrary shapes onto the webhook / WS message.
- */
-function sanitizeVoiceContext(input: unknown): VoiceNoteContext | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const src = input as Record<string, unknown>;
-  const out: VoiceNoteContext = {};
-  for (const key of ["repo", "prUrl", "prTitle", "sessionName"] as const) {
-    const v = src[key];
-    if (typeof v === "string" && v.trim()) out[key] = v;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

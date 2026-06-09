@@ -98,6 +98,35 @@ Fixed by persisting the card in-band, mirroring the live-steer mechanism:
 - The now-unused `chatHistoryManager` dep was dropped from `RouteVoiceNoteDeps`
   and its three call sites.
 
+### Post-ship fix #3 — card timing vs. a batched AskUserQuestion/ExitPlanMode
+
+The authored native card lagged the question/plan dialog by a couple of seconds
+when the agent emitted `voice_note` **as a parallel tool call alongside**
+`AskUserQuestion` / `ExitPlanMode`. Root cause: the authored card was delivered
+**only** from the bridge → worker → orchestrator **HTTP relay**, a slower channel
+than the SSE agent-event stream. In the batched case the CLI fires the bridge
+*late* — it's mid-interrupt (ShipIt interrupts the CLI the instant it observes
+the `AskUserQuestion`/`ExitPlanMode`) — so the dialog rendered off the fast SSE
+stream while the card waited on the relay, landing below the dialog seconds later.
+
+Fix: deliver the authored card from the **event-stream observation** too. The
+orchestrator already observes every tool call (it derives ask/plan headlines that
+way); `agent-listeners.ts` now matches the built-in `voice_note` tool
+(`VOICE_NOTE_TOOL_NAME = "mcp__shipit-voice__voice_note"`), reads its `input`,
+and routes the note via the same `deliverVoiceNote` path — so the card rides the
+same channel and lands at the same moment as the dialog. It also sets the
+authored flag *synchronously* before the derived-nudge check, so the
+same-message overlap can no longer emit a redundant derived headline.
+
+The HTTP relay still arrives (it carries the webhook payload and the agent's ack)
+so `routeVoiceNote` **dedups authored notes by summary within the turn**: a new
+`deliveredAuthored` set on the per-turn state means whichever channel
+(observation or relay) lands first delivers, and the second no-ops and reports
+`alreadyDelivered: true` for the relay's ack. Subagent (`parentToolUseId`) voice
+calls aren't observed at the top level, so the relay remains their deliverer.
+Key files: `agent-listeners.ts` (observation), `voice-note-router.ts` (dedup +
+`sanitizeVoiceContext`, now shared with `api-routes-voice.ts`).
+
 ## Problem
 
 ShipIt has two voice mechanisms today, and neither is the right surface for
