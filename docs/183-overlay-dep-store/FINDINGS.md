@@ -286,7 +286,7 @@ host's default mount propagation:
 | Daemon host | `/` default | Propagation |
 |---|---|---|
 | Docker Desktop (Mac) | shared | ✅ proven, no setup |
-| systemd Linux VPS | shared (boot) | ✅ very likely (confirm) |
+| systemd Linux VPS | shared (boot) | ⚠️ expected, **NOT yet run — open release blocker** |
 | native docker-ce in a bare WSL2 distro | private | ❌ — needs daemon-level shared propagation; a *runtime* `make-rshared` is NOT honored |
 
 So the WSL2 failure was a **daemon-default** issue (private `/`), not a broken
@@ -365,19 +365,29 @@ volume-backing fs that mirrors where ShipIt's `workspace` actually lives.
    bind it into a sibling session container (daemon-host fs / VM-native ext4),
    not the orchestrator container's private fs.
 
-Still nice-to-have, not blocking: a run on the **prod VPS** (non-WSL/non-Desktop)
-kernel and **mount/unmount timing**. Net: **green to proceed to building the
-orchestrator-owned mount lifecycle**, whose first job is mechanism (1)+(2).
+**Open blocker (not nice-to-have): cross-container propagation on the prod VPS.**
+Propagation is proven **only on Docker Desktop/Mac**; rung A2 of
+`propagation-spike.sh` has **never run on the prod VPS** (the always-on, #1
+install target). It is *expected* to pass (systemd sets `/` rshared at boot) but
+is **unconfirmed**, so overlay-on-VPS is unproven. This gates the build: Phase 1
+deletes nm-store before overlay lands, so if VPS propagation fails the "temporary"
+regression becomes **permanent on the primary target**. Confirm VPS propagation
+before — or concurrently with — relying on the overlay path in production.
+Still genuinely nice-to-have (non-blocking): **mount/unmount timing**. Net:
+**proceed to building the orchestrator-owned mount lifecycle** (whose first job is
+mechanism (1)+(2)) **while treating the VPS propagation run as a release gate**,
+not an afterthought.
 
 **Update — cross-container propagation resolved (the sidecar's real dependency).**
 `prototype/propagation-spike.sh` proved the sidecar's overlay mount can reach a
 separate session container **iff the daemon host provides shared mount
 propagation**: **Docker Desktop (Mac) works with no setup** (proven), a systemd
-VPS is expected to (boot default), and only a **bare docker-ce-in-WSL2 daemon**
-(private `/`) lacks it — there the install **falls back to a plain full
-`agent.install`** (no copy store; `nm-store` is removed, the download cache keeps
-it fast). So the requirement is a documented host prerequisite, not a portability
-blocker.
+VPS is *expected* to (boot default) **but this is unconfirmed — an open blocker,
+see Net decision**, and only a **bare docker-ce-in-WSL2 daemon** (private `/`)
+lacks it — there the install **falls back to a plain full `agent.install`** (no
+copy store; `nm-store` is removed, the download cache keeps it fast). So the
+requirement is a documented host prerequisite; it is not a *portability* blocker,
+but the prod-VPS confirmation is a *release* blocker.
 The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.

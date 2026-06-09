@@ -36,10 +36,18 @@ per fresh session — a conscious, temporary regression until overlay lands.
       — WSL2/ext4 19/19 + Docker Desktop/Mac 21/21 (`host-overlay-spike.sh`, `run-in-docker.sh`).
 - [x] Verify compose bind-mount over the merged dir + `inotify` (create + copy-up)
       — Docker Desktop/Mac 21/21; bind-mount-corroborated on WSL2.
-- [x] Prove cross-container mount propagation for the sidecar design (`propagation-spike.sh`):
+- [x] Prove cross-container mount propagation **on Docker Desktop/Mac** (`propagation-spike.sh`):
       works **iff the daemon host has shared propagation** + a dedicated self-bind `rshared`
       mountpoint. Docker Desktop/Mac ✓ no setup; bare docker-ce-in-WSL2 ✗ (→ plain-install
       fallback). Requirement = documented host prerequisite, not a portability blocker.
+- [ ] **OPEN BLOCKER — confirm propagation on the prod VPS.** Run `propagation-spike.sh` rung A2
+      on the always-on systemd VPS (the #1 install target) and confirm PROPAGATED. Expected to
+      pass (systemd sets `/` rshared at boot) but **never actually run there** — until it does,
+      overlay-on-VPS is unproven and the Phase 1 nm-store deletion's "temporary" regression has
+      no guaranteed end date on the primary target.
+- [ ] **OPEN — confirm Docker Desktop propagation survives a VM restart.** The LinuxKit VM is
+      recreated routinely; if it returns with `/` private, local Mac/Windows installs silently
+      drop to the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
 - [x] Decide host-mount mechanism, helper shape, storage layout, propagation prerequisite, and
       fallback (plan §4). See `FINDINGS.md` for evidence + live 31,396-file / ~24s measurement.
 
@@ -68,9 +76,13 @@ per fresh session — a conscious, temporary regression until overlay lands.
       sets up a dedicated self-bind `rshared` mountpoint once; performs the overlay mount
       (lower + per-session upper/work → merged) on activate, unmount + workdir cleanup on dispose.
 - [ ] Orchestrator drives the sidecar (it stays unprivileged); session mounts the `merged` dir
-      via the existing volume-Subpath mechanism (`buildMounts`).
-- [ ] **Startup capability probe:** detect shared mount propagation on the daemon host →
-      enable overlay, else fall back to plain `agent.install`. Document the prerequisite
+      via the existing volume-Subpath mechanism (`buildMounts`). **Verify the overlay actually
+      surfaces through the volume-Subpath mount** — the spike only proved a *direct* bind-mount;
+      a Subpath mount must still see the nested overlay via propagation, which is untested.
+- [ ] **Startup capability probe (re-run on every daemon/VM start, not one-time):** detect shared
+      mount propagation on the daemon host → enable overlay, else fall back to plain
+      `agent.install`. Must **re-verify/re-arm on each boot** to cover the Docker Desktop
+      VM-restart case (VM may return with `/` private). Document the prerequisite
       (`MountFlags=shared` for self-hosted bare-WSL docker-ce; VPS provisioner guarantees it).
 - [ ] Make `disk-janitor` (and archive flows) aware of **live overlay mounts** — unmount before
       removing workdir/merged (teardown ordering hazard the spike confirmed).

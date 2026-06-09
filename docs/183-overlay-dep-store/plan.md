@@ -176,7 +176,9 @@ genuinely new subsystem and the gating unknown for the whole proposal.
 
 #### Host-mount design decisions (decided — see [`FINDINGS.md`](./FINDINGS.md))
 
-After the spikes confirmed the substrate, the gate became a design problem, now settled:
+After the spikes confirmed the substrate, the gate became a design problem. The mechanism is
+decided; the one item still pending empirical confirmation is **propagation on the prod VPS**
+(see the prerequisite bullet):
 
 - **Mount mechanism — privileged helper driven via `docker.sock`.** The orchestrator stays
   **unprivileged**; it uses the `docker.sock` it already holds (already root-on-host-equivalent)
@@ -193,19 +195,32 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
     to reason about. It has no network surface. *(Rejected: ephemeral per-operation
     `--privileged` container — correctness would lean on mount propagation outliving the
     container, a known footgun, plus per-op spawn latency.)*
-  - **Prerequisite — shared mount propagation on the daemon host** (validated by
+  - **Prerequisite — shared mount propagation on the daemon host** (partially validated by
     [`prototype/propagation-spike.sh`](./prototype/propagation-spike.sh)). For the sidecar's
     overlay mount to reach a *separate* session container, it must mount under a **shared
     mountpoint** the daemon sees — a dedicated self-bind dir marked `rshared`
     (`mount --bind D D && mount --make-rshared D`). This requires the daemon host's mount
-    tree to support shared propagation: **Docker Desktop (Mac) provides it by default
-    (proven — propagation works with no setup); a systemd Linux VPS sets `/` rshared at boot
-    (expected to work, confirm once).** A **bare docker-ce-in-WSL2 daemon defaults to private
-    `/` and does not honor a *runtime* `make-rshared`** — it needs daemon-level config
-    (`MountFlags=shared` + restart) or that install **falls back to a plain full
-    `agent.install`**, detected at startup. So the requirement is "shared propagation on the
-    daemon host," documented as a prerequisite; overlay is not lost where it's absent, it
-    degrades to a normal install.
+    tree to support shared propagation. Status by target:
+    - **Docker Desktop (Mac) — propagation works with no setup, proven once.** The LinuxKit
+      VM mounts `/` shared by default (rung A2 PROPAGATED on first attempt). **Open caveat
+      before relying on it:** the spike did not confirm this survives a **VM restart** — the
+      LinuxKit VM is recreated/restarted routinely, and if it comes back with `/` private,
+      every Mac/Windows local install silently drops to the slow fallback. Phase 2's startup
+      probe must therefore **re-verify (and, if needed, re-arm) propagation on each daemon/VM
+      start**, not assume a one-time setup persists.
+    - **systemd Linux VPS — expected but NOT yet confirmed.** systemd sets `/` rshared at
+      boot, so the VPS (the always-on production target and the #1 install target) is
+      *expected* to behave like Docker Desktop — but `propagation-spike.sh` rung A2 has
+      **never actually run on the prod VPS**. This is an **open blocker**, not an expectation:
+      until it passes there, overlay-on-VPS is unproven, which matters because Phase 1 deletes
+      nm-store before the overlay path lands (see Implementation phases).
+    - **Bare docker-ce-in-WSL2 — does not work via any runtime fix.** Defaults to private `/`
+      and does not honor a *runtime* `make-rshared` (proven: every spike rung rejected). Needs
+      daemon-level config (`MountFlags=shared` + restart) or that install **falls back to a
+      plain full `agent.install`**, detected at startup.
+
+    So the requirement is "shared propagation on the daemon host," documented as a
+    prerequisite; overlay is not lost where it's absent, it degrades to a normal install.
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
     warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
@@ -223,8 +238,16 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
   (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
   mounted, and GC'd per repo, the natural home for a per-`(repo, runtime)` base. Everything is
   on the one workspace named volume (one fs → satisfies overlay's upper+work+merged same-fs
-  rule) and mounts into the session via the **existing volume-Subpath mechanism**
-  (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104)).
+  rule). **How the merged dir reaches the session:** the session's volume-Subpath mount
+  (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
+  resolves the `merged` subpath, but a Subpath mount does **not** by itself surface a *nested*
+  mount the sidecar created inside the volume — the merged dir only appears in the session
+  **because the overlay mount propagated into the daemon's namespace** (the `rshared`
+  prerequisite above). The Subpath mechanism and propagation are not separable steps: Subpath
+  is the addressing, propagation is what makes the nested overlay visible. **Unverified gap:**
+  `propagation-spike.sh` validated a *direct bind-mount* of merged into a sibling container,
+  **not** the volume-Subpath path production actually uses — Phase 2 must verify the overlay
+  surfaces through a real volume-Subpath mount, not only a direct bind.
   *(Rejected: a dedicated overlay volume — extra plumbing for the janitor/helper without a
   clear win at single-user scale.)*
 
@@ -315,17 +338,28 @@ Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Pha
 nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
 on top of the simplified install path.
 
-0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate (WSL2 +
-   Docker Desktop/Mac), cross-container propagation, and the §4 design decisions are settled.
+0. **Prototypes & decisions** *(mostly done — one open blocker)* — rolling-base logic (33/33),
+   overlay substrate (WSL2 + Docker Desktop/Mac), and the §4 design *shape* are settled.
+   **Still open:** cross-container propagation is proven **only on Docker Desktop/Mac** — it has
+   **not run on the prod VPS** (the always-on, #1 install target), so overlay-on-VPS is unproven.
+   Run `propagation-spike.sh` rung A2 on the prod VPS and confirm PROPAGATED **before relying on
+   the overlay path in production**.
 1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
    `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
    becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
    [148](../148-fast-npm-install/plan.md) superseded. *Interim:* fast-path-eligible repos pay a
-   full install per fresh session until Phase 3 — a conscious, temporary regression.
+   full install per fresh session until Phase 3 — a conscious, temporary regression. **Risk to
+   weigh:** if the Phase 0 VPS propagation check fails, overlay never lands on the VPS and this
+   "temporary" regression becomes **permanent on the primary target**. Confirm VPS propagation
+   (Phase 0) before — or concurrently with — landing this deletion, so the regression has a known
+   end date.
 2. **Host-mount sidecar subsystem** — the long-lived privileged sidecar (mount/unmount over a
    unix socket, dedicated self-bind `rshared` mountpoint), orchestrator wiring, the startup
-   shared-propagation probe (overlay vs plain-install fallback), `disk-janitor`/archive teardown
-   ordering, and the VPS propagation + mount-cost confirmation.
+   shared-propagation probe that **re-verifies/re-arms propagation on every daemon/VM start**
+   (not a one-time setup — guards the Docker Desktop VM-restart case) and selects overlay vs
+   plain-install fallback, verification that the overlay surfaces through the **real
+   volume-Subpath mount** (not only a direct bind), `disk-janitor`/archive teardown ordering, and
+   the VPS propagation + mount-cost confirmation.
 3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
    base in the dep-cache subtree + per-session upper/work/merged, the stamped marker, the publish
    commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
