@@ -83,6 +83,56 @@ describe("buildMounts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// docs/183 Phase 2 — overlay workspace volume
+// ---------------------------------------------------------------------------
+
+describe("buildMounts — overlay session (docs/183)", () => {
+  const OVERLAY_VOL = "shipit-sess-1abc234_overlay";
+
+  it("mounts the overlay volume at /workspace ROOT (no subpath) when set", () => {
+    const config = baseConfig({ uploadsDir: "/workspace/sessions/sess-1/uploads" });
+    const result = buildMounts(config, "shipit-workspace", "shipit-credentials", OVERLAY_VOL);
+    const wsMount = result.mounts.find((m) => m.Target === "/workspace");
+    expect(wsMount).toBeDefined();
+    expect(wsMount!.Source).toBe(OVERLAY_VOL);
+    // The merged overlay tree IS the volume root — no storage subpath.
+    expect(wsMount!.VolumeOptions?.Subpath).toBeUndefined();
+    // And the state-volume /workspace subpath mount must NOT also be present.
+    expect(
+      result.mounts.filter((m) => m.Target === "/workspace"),
+    ).toHaveLength(1);
+    // No /workspace bind leaked in either.
+    expect(result.binds.some((b) => b.endsWith(":/workspace:rw"))).toBe(false);
+  });
+
+  it("keeps /uploads and /dep-cache on the state workspaceVolume, NOT the overlay volume", () => {
+    const config = baseConfig({
+      uploadsDir: "/workspace/sessions/sess-1/uploads",
+      depCacheDir: "/workspace/dep-cache/abc123",
+    });
+    const result = buildMounts(config, "shipit-workspace", undefined, OVERLAY_VOL);
+
+    const uploads = result.mounts.find((m) => m.Target === "/uploads");
+    expect(uploads!.Source).toBe("shipit-workspace");
+    expect(uploads!.Source).not.toBe(OVERLAY_VOL);
+    expect(uploads!.VolumeOptions?.Subpath).toBe("sessions/sess-1/uploads");
+
+    const depCache = result.mounts.find((m) => m.Target === DEP_CACHE_CONTAINER_PATH);
+    expect(depCache!.Source).toBe("shipit-workspace");
+    expect(depCache!.Source).not.toBe(OVERLAY_VOL);
+    expect(depCache!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
+  });
+
+  it("non-overlay sessions are unchanged (overlay arg omitted)", () => {
+    const config = baseConfig();
+    const result = buildMounts(config, "shipit-workspace", undefined);
+    const wsMount = result.mounts.find((m) => m.Target === "/workspace");
+    expect(wsMount!.Source).toBe("shipit-workspace");
+    expect(wsMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // docs/128 — ops session host-mount security gate
 //
 // The whole point of these tests: privileged read-only host binds are applied

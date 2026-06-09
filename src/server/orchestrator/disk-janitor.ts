@@ -42,6 +42,11 @@
  *     docs/183 Phase 1 (superseded by the overlay rolling base), so the whole
  *     subtree is reclaimed wholesale (~2.4 GB observed). Effectively one-time:
  *     the worker never writes nm-store again, so later sweeps no-op.
+ *   - **Stale `overlay-base/<scope-hash>` dirs** (docs/183 Phase 2/3) whose
+ *     scope-hash is not in the live-mount set AND whose mtime is older than
+ *     `DISK_JANITOR_CACHE_DAYS`. Gated on a `liveOverlayScopeHashes` source
+ *     (Phase 3) so a base still backing a live overlay `lowerdir` is never
+ *     removed; skipped entirely until that source is wired.
  *
  * Why startup-only (no timer) for THESE sweeps: every item above is
  * recovering from a failure earlier in the lifecycle — orphan volumes only
@@ -110,6 +115,7 @@ import type { GitManager } from "../shared/git.js";
 import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
+import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -148,6 +154,28 @@ export interface DiskJanitorDeps {
   /** Default true. Set false to disable the branch sweep entirely. */
   sweepOrphanBranches?: boolean;
   /**
+   * docs/183 Phase 2/3 — overlay rolling-base GC. Returns the set of overlay-base
+   * scope-hashes (`(repo, runtime fingerprint)`) that are currently live, i.e.
+   * mounted as a `lowerdir` by some session or otherwise referenced. The sweep
+   * removes `overlay-base/<hash>/` dirs NOT in this set (and older than
+   * `cacheDays`). This MUST be provided before the sweep runs: removing a base
+   * dir while it backs a live overlay mount is undefined behavior, and the
+   * scope-hash keying never matches the repo-url `liveHashes` set (the naive
+   * extension the plan warns against). The live-scope-hash registry is built in
+   * Phase 3 when sessions record their base scope; until then this is omitted and
+   * the overlay-base sweep is skipped (no bases exist on disk yet anyway).
+   *
+   * **Completeness is a hard requirement.** The returned set must be an
+   * authoritative snapshot of every base referenced by any *resumable* session
+   * (not just currently-running containers) — an incomplete set lets the mtime
+   * fallback reap a live base. The janitor runs at orchestrator startup, when
+   * reconciliation may not have repopulated the registry yet, so the Phase 3
+   * provider must either wait for that or err toward over-reporting live hashes.
+   * See `sweepOrphanedOverlayBases` for the matching mtime-stamp requirement on
+   * the publish path.
+   */
+  liveOverlayScopeHashes?: () => Set<string>;
+  /**
    * Throttle: milliseconds to pause between each destructive operation
    * (volume/network removal, branch delete, cache/workspace/nm-store rm). The
    * startup sweep is never urgent — every item is recovering from a past
@@ -168,6 +196,8 @@ export interface DiskJanitorResult {
   cachesRemoved: number;
   /** docs/183 — dead `dep-cache/<hash>/nm-store` dirs removed (supersedes docs/148). */
   nmStoresRemoved: number;
+  /** docs/183 Phase 2/3 — stale, unreferenced `overlay-base/<hash>` dirs removed. */
+  overlayBasesRemoved: number;
   /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
@@ -189,6 +219,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     workspacesRemoved: 0,
     cachesRemoved: 0,
     nmStoresRemoved: 0,
+    overlayBasesRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
   };
@@ -235,6 +266,23 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
   }
 
+  // docs/183 Phase 2/3 — sweep stale, unreferenced overlay bases. Gated on a
+  // live-scope-hash source (Phase 3): removing a base dir that still backs a live
+  // overlay `lowerdir` is undefined behavior, so without a way to confirm which
+  // bases are in use we don't touch the subtree at all.
+  if (deps.liveOverlayScopeHashes) {
+    try {
+      result.overlayBasesRemoved = await sweepOrphanedOverlayBases(
+        deps.stateDir,
+        deps.liveOverlayScopeHashes(),
+        deps.cacheDays ?? DEFAULT_CACHE_DAYS,
+        paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] overlay-base sweep failed:", getMessage(err));
+    }
+  }
+
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
@@ -271,6 +319,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `workspaces=${result.workspacesRemoved} `
     + `caches=${result.cachesRemoved} `
     + `nm-stores=${result.nmStoresRemoved} `
+    + `overlay-bases=${result.overlayBasesRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved}`,
   );
@@ -634,6 +683,83 @@ async function sweepDeadNmStores(
       console.log(`[disk-janitor] removed dead nm-store ${nmRoot}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${nmRoot}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+/**
+ * docs/183 Phase 2/3 — reclaim stale, unreferenced overlay bases under
+ * `<stateDir>/overlay-base/<scope-hash>/`.
+ *
+ * Two guards, BOTH required for a dir to be removed — this is the "compute the
+ * live scope-hashes, fall back to mtime for the rest" rule from plan §4:
+ *
+ *   1. The dir's scope-hash is NOT in `liveScopeHashes` (the set of bases
+ *      currently mounted as a `lowerdir` by some session, or otherwise
+ *      referenced). Removing a base while a live overlay mount uses it as its
+ *      read-only lower is undefined behavior, so a live base is always kept.
+ *   2. The dir's mtime is older than `days`. This is the safety net for bases we
+ *      can't positively confirm live (same age-guard shape as `sweepOrphanedCaches`
+ *      / `sweepArchivedWorkspaces`): a base published seconds ago by a session
+ *      whose mount the registry hasn't observed yet is still young, so it survives.
+ *
+ * The repo-url `liveHashes` set used by `sweepOrphanedCaches` is deliberately NOT
+ * reused: an overlay-base scope-hash keys on `(repo, runtime fingerprint)`, so it
+ * never appears in a repo-url-keyed set — a naive extension would delete every
+ * live base on the first run.
+ *
+ * **Phase 3 contract (must hold before this sweep is wired live):** the
+ * scope-hash is STABLE across commits, so `overlay-base/<hash>/` is one long-lived
+ * directory that rolls forward. POSIX only bumps a directory's own mtime on a
+ * direct-child change, so guard #2 is a sound liveness proxy ONLY if every base
+ * advance rewrites the TOP-LEVEL `overlay-base/<hash>` entry (publish into a temp
+ * dir then atomic rename over the path, or `fs.utimes` the dir) — otherwise a
+ * continuously-live base whose deps changed only in nested paths keeps an old
+ * top-level mtime and could be reaped if it is also (transiently) absent from the
+ * live set. And `liveScopeHashes` MUST be a COMPLETE, authoritative snapshot of
+ * every base any resumable session could mount (not just currently-running
+ * containers); the janitor runs at startup, exactly when in-flight reconciliation
+ * may not have repopulated the registry, so an incomplete set there is the worst
+ * case. See `DiskJanitorDeps.liveOverlayScopeHashes`.
+ */
+async function sweepOrphanedOverlayBases(
+  stateDir: string,
+  liveScopeHashes: Set<string>,
+  days: number,
+  paceMs: number,
+): Promise<number> {
+  const cutoffMs = Date.now() - days * 86_400_000;
+  const dir = path.join(stateDir, OVERLAY_BASE_SUBDIR);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return 0; // No overlay-base subtree yet — nothing to sweep.
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (liveScopeHashes.has(entry)) continue; // live base — never remove.
+    const full = path.join(dir, entry);
+    let mtimeMs: number;
+    try {
+      // lstat, not stat: a symlink named like a scope-hash must never be treated
+      // as a base dir (and never have its target followed).
+      const st = await fs.lstat(full);
+      if (!st.isDirectory()) continue;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs >= cutoffMs) continue; // recently touched — keep (young/unconfirmed).
+    try {
+      await sleep(paceMs);
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed stale overlay base ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }
   }
   return removed;

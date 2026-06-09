@@ -24,6 +24,7 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
+import { createOverlayVolume, removeOverlayVolume, type OverlaySpec } from "./overlay-volume.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -86,6 +87,7 @@ export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
   credentialsVolume: string | undefined,
+  overlayWorkspaceVolume?: string,
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
@@ -94,7 +96,20 @@ export function buildMounts(
   // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
   const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
-  if (workspaceVolume) {
+  if (overlayWorkspaceVolume) {
+    // docs/183 Phase 2 — overlay session: mount the per-session `type=overlay`
+    // volume AT ITS ROOT (no subpath). The daemon-merged tree *is* the volume
+    // root, so there is no `sessions/<id>/workspace` storage subpath to prepend.
+    // `/uploads` and `/dep-cache` below deliberately keep using `workspaceVolume`
+    // (the `shipit-workspace` state volume) — the overlay volume has no
+    // `sessions/<id>/uploads` or `dep-cache/<hash>` subtree, and an
+    // overlay-backed `/dep-cache` would break cross-session cache sharing.
+    mounts.push({
+      Type: "volume",
+      Source: overlayWorkspaceVolume,
+      Target: CONTAINER_WORKSPACE_DIR,
+    });
+  } else if (workspaceVolume) {
     const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
@@ -311,10 +326,19 @@ export async function createContainer(
     );
   }
 
+  // docs/183 Phase 2 — overlay session: mount the per-session `type=overlay`
+  // volume at `/workspace`. We only need its NAME here for buildMounts; the
+  // volume itself is created inside the try block below — right before the
+  // container references it — so any throw between here and container start
+  // (e.g. buildEnv rejecting a misconfigured docker-proxy) can't leak a
+  // just-created volume. Non-overlay sessions skip this entirely.
+  const overlayWorkspaceVolume = config.overlaySpec?.volumeName;
+
   const { binds, mounts, workspaceDir } = buildMounts(
     config,
     deps.workspaceVolume,
     deps.credentialsVolume,
+    overlayWorkspaceVolume,
   );
 
   const env = buildEnv(
@@ -388,12 +412,24 @@ export async function createContainer(
       cpuQuota: config.cpuQuota,
       pidsLimit: config.pidsLimit,
     } : undefined,
+    // docs/183 Phase 2 — recorded so destroyContainer can `docker volume rm` the
+    // per-session overlay volume on teardown (and the failure path below).
+    overlayVolumeName: config.overlaySpec?.volumeName,
   };
   deps.containers.set(config.sessionId, sc);
 
   const shortId = config.sessionId.slice(0, 12);
 
   try {
+    // docs/183 Phase 2 — create the per-session `local` `type=overlay` volume
+    // (serialized inside createOverlayVolume to dodge the overlay2 EBUSY hazard)
+    // right before the container references it; the daemon performs the
+    // `mount -t overlay` as it builds the container. Kept INSIDE the try so any
+    // later failure removes it via the catch below (`sc.overlayVolumeName`).
+    if (config.overlaySpec) {
+      await createOverlayVolume(deps.docker, config.overlaySpec, deps.baseLabels());
+    }
+
     // Remove any leftover container with the same name (e.g. from a crash)
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
@@ -461,6 +497,12 @@ export async function createContainer(
       } catch {
         // Container reference invalid
       }
+    }
+    // docs/183 Phase 2 — drop the per-session overlay volume we created above so a
+    // failed create doesn't leak it. The disk-janitor orphan-volume sweep is the
+    // backstop, but reclaim eagerly here.
+    if (sc.overlayVolumeName) {
+      await removeOverlayVolume(deps.docker, sc.overlayVolumeName);
     }
     throw err;
   }
@@ -607,6 +649,14 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
+  // docs/183 Phase 2 — drop the per-session overlay volume after the container is
+  // gone. The daemon unmounts the overlay on container stop, so this is a plain
+  // `docker volume rm` with no manual unmount-ordering. The shared read-only base
+  // (lowerdir) lives in its own `overlay-base/<hash>/` subtree and is NOT touched.
+  if (sc.overlayVolumeName) {
+    await removeOverlayVolume(deps.docker, sc.overlayVolumeName);
+  }
+
   sc.status = "stopped";
   deps.containers.delete(sessionId);
   deps.emitter.emit("container_destroyed", sessionId);
@@ -634,6 +684,8 @@ export function buildContainerConfig(
     opsSession?: boolean;
     /** docs/128 — allow-listed read-only host mounts; applied only when opsSession. */
     hostMounts?: HostMount[];
+    /** docs/183 Phase 2 — overlay dep store spec; absent for non-overlay sessions. */
+    overlaySpec?: OverlaySpec;
   },
 ): ContainerConfig {
   return {
@@ -659,5 +711,6 @@ export function buildContainerConfig(
     dockerAccess: opts.opsSession ? false : opts.dockerAccess,
     opsSession: opts.opsSession,
     hostMounts: opts.opsSession ? opts.hostMounts : undefined,
+    overlaySpec: opts.overlaySpec,
   };
 }
