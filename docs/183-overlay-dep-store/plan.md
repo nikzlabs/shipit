@@ -80,18 +80,22 @@ the first-turn critical path — but it is **not** the only install path (see th
 below), so the base-advance rule must hold regardless of where the install runs:
 
 1. **Mount** the repo's current base as `lowerdir` + a fresh per-session `upperdir`/workdir.
-2. **Fast-forward source** with git to the session's checkout (normally the new default-branch
-   commit; writes the source diff into the upper layer via copy-up). Record that **`main`
-   commit** — it stamps any base this session publishes.
+2. **Sync source inside the merged `/workspace`, not by pre-populating the host upperdir.** The
+   checkout/reset that moves source to the session commit must run against the overlay mount with
+   a git index that knows the base commit, then clean lower-only paths (`git clean -ffdx`, or an
+   equivalent explicit whiteout pass). This is what creates overlay whiteouts for files deleted
+   since the base; a host-side clone into the upperdir alone would let deleted files leak through
+   from the lowerdir into builds, installs, file views, and commits. Record the remote
+   default-branch commit used for that sync — it stamps any base this session publishes.
 3. **Run `agent.install`** on top of the base (writes only the dep delta into *this session's*
    upper layer — this never races another session).
 4. **Maybe advance the base** — publish the merged result as the next base **only if** the
    install exited 0, the install ran before any user/agent dependency edits, the session's
    recorded source base is the remote default-branch commit (normal ShipIt sessions are
    per-session branches cut from `origin/HEAD`, not literally named `main`), **and the
-   candidate's `main` commit strictly descends the current base's commit** (see the ordering
-   rule below). Otherwise the install result is used by the session but never published.
-   Activation hands the user the already-prepped tree.
+   ordering rule below allows the publish** (normal strict-descendant advance, or a current
+   remote-default lineage reset after a force-push). Otherwise the install result is used by the
+   session but never published. Activation hands the user the already-prepped tree.
 
 > **Separate "runs an install" from "advances the base."** There is more than one install
 > path: the warm pool pre-installs on standbys ([warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts#L214-L243)),
@@ -114,22 +118,26 @@ below), so the base-advance rule must hold regardless of where the install runs:
 > invariant we actually rely on is narrower and
 > must be enforced explicitly: **(a)** any session may run install into its own `upperdir`
 > (safe — no shared state); **(b)** only an **exit-0**, pre-user install whose recorded source
-> base is the remote default-branch commit may *publish* a new base; **(c)** the publish advances
-> the base only if it moves it **forward in `main`'s history** (ordering rule below). That, not
-> "one installer," is what keeps the chain linear.
+> base is the remote default-branch commit may *publish* a new base; **(c)** the publish either
+> moves the base **forward in `main`'s history** or performs the explicit remote-default lineage
+> reset described in the ordering rule below. That, not "one installer," is what keeps the chain
+> linear.
 
 > **Ordering rule — compare by `main` commit, never by publish time.** Each base is stamped
-> with the `main` commit it was built from (step 2). On publish, advance the base **iff the
-> candidate's commit strictly descends the current base's commit** —
+> with the `main` commit it was built from (step 2). On publish, advance the base when the
+> candidate's commit strictly descends the current base's commit —
 > `git merge-base --is-ancestor <base.commit> <candidate.commit>` true **and** the two differ.
-> Equal commit → deps already current, no-op. Behind, or diverged (e.g. a force-push rewrote
-> `main`) → **skip the publish**; the session keeps its own tree and the base waits for the
-> next genuinely-forward install. A short **per-`(repo, runtime fingerprint)` lock** makes the
-> read-compare-swap atomic;
+> Equal commit → deps already current, no-op. Behind → skip the publish; the session keeps its
+> own tree. Diverged while the candidate is the current remote default commit (for example a
+> force-push rewrote `main`) → treat it as a **lineage reset**, not a permanent skip: under the
+> same per-scope lock, rebuild/publish a clean base from empty for the rewritten default commit
+> (or rotate to an equivalent new base generation keyed by that rewritten default HEAD). That
+> prevents stale pre-rewrite source/dependency content from remaining every future session's
+> lowerdir. A short **per-`(repo, runtime fingerprint)` lock** makes the read-compare-swap atomic;
 > the *decision* is git ancestry, **not** wall-clock or lock-acquisition order — so an
 > older-commit install that grabs the lock late can never clobber a newer base. (This is a
-> compare-and-swap keyed on commit ancestry, but the "loser" simply declines to publish — no
-> reconciliation, no redo.)
+> compare-and-swap keyed on commit ancestry; behind "losers" simply decline to publish, while a
+> current-default divergence is the explicit clean-reset case.)
 
 Two properties keep the published chain clean:
 
@@ -327,12 +335,14 @@ periodic clean-rebuild schedule is needed.
   being the sole installer. Instead: any session runs install into its **own** `upperdir` (no
   shared state, no race — installs need not be serialized), and only an **exit-0**, pre-user
   install whose recorded source base is the remote default-branch commit may **publish** a new
-  base. A publish advances the base **only if its `main` commit strictly descends the current
-  base's commit** (`git merge-base --is-ancestor`), under a short per-`(repo, runtime
+  base. A publish advances the base when its `main` commit strictly descends the current
+  base's commit (`git merge-base --is-ancestor`), under a short per-`(repo, runtime
   fingerprint)` lock that makes the read-compare-swap atomic. The decision is **commit ancestry,
   not publish/wall-clock time**, so a late-but-older install can't clobber a newer base; a stale
-  or diverged publish is simply **skipped** (no reconciliation, no redo). This is a
-  compare-and-swap keyed on commit ancestry — lighter than the loser-reconciliation we ruled out.
+  behind publish is skipped, while a diverged candidate that is the current remote default commit
+  triggers a **lineage reset** (clean rebuild from empty, or equivalent new generation keyed by
+  the rewritten default HEAD). This is a compare-and-swap keyed on commit ancestry — lighter
+  than the loser-reconciliation we ruled out.
   Internal Ops source-pinned sessions, any other session whose source base is not the remote
   default commit, and sessions with user/agent dependency edits before publish run on the base
   but never publish (§3), and their non-default checkout invalidates any inherited install
@@ -431,16 +441,18 @@ design decisions are made (see Decisions). Status of each is tracked in
    the prod VPS too (`shipit-16gb`, Ubuntu 24.04, 7/7). Only nice-to-have left: mount-cost timing
    (not a gate) — see [`FINDINGS.md`](./FINDINGS.md).*
 2. **Source + `.git` on the overlay.** ✅ **Resolved** (WSL2/ext4 + Docker Desktop/Mac): clone +
-   fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
-   and a published base carries source contents with `.git` excluded cleanly.
+   checkout/reset work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
+   and a published base carries source contents with `.git` excluded cleanly. Implementation must
+   include the §3 clean/whiteout step for paths deleted since the lowerdir base.
 3. **Publish ordering by commit ancestry.** ✅ **Resolved** by
    [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts). The base advances only
-   when a candidate's `main` commit strictly descends the current base's commit (§3). The
+   when a candidate's `main` commit strictly descends the current base's commit (§3), or when
+   the current remote default has diverged and forces a lineage reset from empty. The
    `git merge-base --is-ancestor` check (~2.3 ms/call) + short per-`(repo, runtime
-   fingerprint)` lock (~0.1 ms/call) are confirmed cheap and gate only the *publish*. Diverged
-   history (force-pushed `main`) is handled conservatively: skip the publish, let the next
-   forward commit re-advance. A late-but-older publisher correctly declines (ancestry, not
-   wall-clock).
+   fingerprint)` lock (~0.1 ms/call) are confirmed cheap and gate only the *publish*. A
+   late-but-older publisher correctly declines (ancestry, not wall-clock); a force-pushed
+   default branch does not wait for impossible old-lineage ancestry and instead starts a clean
+   generation.
 4. **Compose + file watcher over the merged dir.** ✅ **Resolved.** Bind-mounting the overlay
    **merged** dir reads through to the base and writes via the bind reach the upper
    (compose-service pattern); `inotify` over the overlay sees both plain creates and copy-up

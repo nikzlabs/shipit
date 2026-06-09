@@ -33,8 +33,8 @@ per fresh session — a conscious, temporary regression until overlay lands.
 ### Phase 0 — Prototypes & decisions (DONE)
 
 - [x] Prototype the keyless rolling base on the current substrate: mount current base →
-      git fast-forward source → run real install on top → publish only for exit-0 pre-user
-      installs whose recorded source base is the remote default-branch commit, via the
+      sync source in the merged workspace → run real install on top → publish only for exit-0
+      pre-user installs whose recorded source base is the remote default-branch commit, via the
       commit-ancestry compare-and-swap (installs run concurrently into their own uppers)
       — `prototype/rolling-base.ts` + `run-rolling-base.ts` (33/33 against a real git repo).
 - [x] Confirm overlay substrate (mount / CoW / immutable base / depth / bind-mount / teardown)
@@ -137,14 +137,22 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
 - [ ] Base (lowerdir) under the dedicated **`overlay-base/<hash>/`** subtree (NOT `dep-cache` —
       see Phase 2); per-session upper/work in the session subtree; mount base + run `agent.install`
       on top into the session's own upper.
+- [ ] Source sync runs **inside the merged `/workspace`** from a git checkout/index that knows the
+      base commit, then resets/checks out the target commit and runs `git clean -ffdx` (or an
+      equivalent explicit whiteout pass) before install/activation. This must create whiteouts for
+      lowerdir files deleted since the base; do not rely on a pre-container host checkout into the
+      upperdir.
 - [ ] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
       + install command); skip install only on exact match; non-default checkout / mismatch
       whiteouts the marker first.
 - [ ] **Publish compare-and-swap:** advance the base only for **exit-0 pre-user installs whose
-      recorded source base is the remote default commit**, and **only if the candidate strictly
-      descends the base** (`git merge-base --is-ancestor`), under a short per-`(repo, runtime
-      fingerprint)` lock. Order by commit ancestry, not publish time; skip stale/diverged
-      (force-push) publishes. *(Logic validated in `prototype/rolling-base.ts`.)*
+      recorded source base is the remote default commit**, and when the candidate strictly
+      descends the base (`git merge-base --is-ancestor`) under a short per-`(repo, runtime
+      fingerprint)` lock. Order by commit ancestry, not publish time; skip stale/behind
+      publishes, but if the candidate is the current remote default and has diverged from the
+      base (force-push), perform a lineage reset by rebuilding/publishing from empty or rotating
+      to an equivalent new generation keyed by the rewritten default HEAD. *(Logic validated in
+      `prototype/rolling-base.ts`; lineage-reset handling must be added.)*
 - [ ] Gate base advance on install **exit code 0** (non-zero serves the session, isn't published).
 - [ ] **Depth-cap flatten:** set a specific cap (~10–20, from measurement); on hit rebuild base
       from **empty** (clean reinstall = drift + reproducibility reset).
