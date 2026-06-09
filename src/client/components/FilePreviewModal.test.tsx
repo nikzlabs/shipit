@@ -397,6 +397,35 @@ describe("FilePreviewModal", () => {
       expect(onSwitchToLive).toHaveBeenCalledOnce();
     });
 
+    it("renders source line findings for markdown agent reviews", () => {
+      setupSessionAndAgents("claude");
+      render(
+        <FilePreviewModal
+          filePath="docs/foo/plan.md"
+          content={sampleReview.snapshotContent}
+          fileType="markdown"
+          onClose={() => {}}
+          mode="agent-review"
+          agentReview={{
+            ...sampleReview,
+            comments: [
+              ...sampleReview.comments,
+              {
+                id: "ac2",
+                kind: "line" as const,
+                line: 2,
+                text: "This source line needs a stronger migration plan.",
+              },
+            ],
+          }}
+        />,
+      );
+      expect(screen.getByTestId("markdown-line-findings")).toBeInTheDocument();
+      expect(screen.getByText("Source line findings")).toBeInTheDocument();
+      expect(screen.getByText("L2")).toBeInTheDocument();
+      expect(screen.getByText("This source line needs a stronger migration plan.")).toBeInTheDocument();
+    });
+
     it("suppresses sibling tabs", () => {
       setupSessionAndAgents("claude");
       render(

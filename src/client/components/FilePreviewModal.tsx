@@ -266,12 +266,14 @@ function MarkdownViewer({
   content,
   sessionId,
   comments,
+  lineComments = [],
   readOnly = false,
 }: {
   filePath: string;
   content: string;
   sessionId: string;
   comments: SelectionCommentData[];
+  lineComments?: { id: string; line: number; text: string }[];
   readOnly?: boolean;
 }) {
   const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
@@ -303,14 +305,38 @@ function MarkdownViewer({
   );
 
   return (
-    <MarkdownSelectionComments
-      content={content}
-      comments={comments}
-      onAddComment={handleAdd}
-      onEditComment={handleEdit}
-      onDeleteComment={handleDelete}
-      readOnly={readOnly}
-    />
+    <div className="space-y-4">
+      {lineComments.length > 0 && (
+        <div
+          className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary)"
+          data-testid="markdown-line-findings"
+        >
+          <div className="border-b border-(--color-border-secondary) px-3 py-2 text-xs font-medium text-(--color-text-secondary)">
+            Source line findings
+          </div>
+          <div className="divide-y divide-(--color-border-secondary)">
+            {lineComments.map((comment) => (
+              <div key={comment.id} className="grid grid-cols-[auto_1fr] gap-3 px-3 py-2">
+                <span className="font-mono text-[11px] text-(--color-text-tertiary) pt-0.5">
+                  L{comment.line}
+                </span>
+                <p className="text-sm text-(--color-text-primary) whitespace-pre-wrap">
+                  {comment.text}
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      <MarkdownSelectionComments
+        content={content}
+        comments={comments}
+        onAddComment={handleAdd}
+        onEditComment={handleEdit}
+        onDeleteComment={handleDelete}
+        readOnly={readOnly}
+      />
+    </div>
   );
 }
 
@@ -646,6 +672,7 @@ export function FilePreviewModal({
               content={content}
               sessionId={sessionId}
               comments={markdownComments}
+              lineComments={isAgentReviewMode ? codeComments : []}
               readOnly={isAgentReviewMode}
             />
           ) : fileType === "image" ? (

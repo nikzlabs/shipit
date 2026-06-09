@@ -97,6 +97,13 @@ describe("composeReviewMessage", () => {
     expect(body).toContain("return the tool result verbatim");
   });
 
+  it("explains which submit_review_comments anchor shapes to use", () => {
+    const body = composeReviewMessage("docs/plan.md", null);
+    expect(body).toContain('use `{kind: "line", line, text}`');
+    expect(body).toContain("valid for both code and markdown files");
+    expect(body).toContain('`{kind: "selection", quoted_text, text}`');
+  });
+
   it("tells the parent not to stop after the review feedback", () => {
     const body = composeReviewMessage("plan.md", null);
     expect(body).toContain("The subagent's verbatim tool result is input for your next step");

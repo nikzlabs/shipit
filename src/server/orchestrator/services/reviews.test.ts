@@ -384,14 +384,20 @@ describe("submitAiReviewComments", () => {
     ).rejects.toBeInstanceOf(ServiceError);
   });
 
-  it("rejects a line comment on a markdown file with a clear message", async () => {
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-        { kind: "line", line: 1, text: "should not work here" },
-      ]),
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: expect.stringContaining("is not a code file"),
-    });
+  it("accepts a line comment on a markdown snapshot", async () => {
+    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
+      { kind: "line", line: 5, text: "call out the source-line issue" },
+    ]);
+
+    expect(result.review.fileType).toBe("markdown");
+    expect(result.review.comments).toEqual([
+      expect.objectContaining({
+        kind: "line",
+        line: 5,
+        text: "call out the source-line issue",
+      }),
+    ]);
+    expect(result.rendered).toContain("line 5");
+    expect(result.rendered).toContain("call out the source-line issue");
   });
 });
