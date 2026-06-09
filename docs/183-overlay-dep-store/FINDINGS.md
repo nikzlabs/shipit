@@ -247,11 +247,40 @@ so it's not new.
     /var/obshared`), overlay state under it. _Pending that rung's verdict_ — this
     is also the cleaner production layout (overlay state on its own shared mount,
     independent of `/` and the docker data-root).
-- Bare Linux / VPS: _(paste verdict — systemd hosts usually mount `/` rshared at
-  boot, so the plain rung may already pass)_
-- Docker Desktop (Mac/Win): _(paste verdict — may differ; note whether
-  `--with-host-setup` works, i.e. whether `--pid=host` nsenter into the VM is
-  permitted)_
+  - **Dedicated self-bind shared mount (rung A3) — also rejected.** Even a real
+    shared **mountpoint** (`/var/obshared`, setup confirmed "is a shared
+    mountpoint") was refused: *"path /var/obshared is mounted on / but it is not a
+    shared mount."* So on WSL2, **no runtime-applied propagation setup** (volume
+    bind, `make-rshared /`, dedicated shared mountpoint) makes this dockerd accept
+    a `:rshared` bind — despite dockerd being in PID 1's namespace and the mounts
+    reading `shared` in `/proc/1/mountinfo`.
+  - **Conclusion (WSL2):** the `:rshared`-bind / mount-propagation approach the
+    long-lived sidecar relies on **does not work on this WSL2 daemon** via any
+    runtime fix. The only untested lever is **daemon-level** shared propagation
+    set **before dockerd starts** (`MountFlags=shared` on the docker service +
+    restart) — which can't be applied at runtime from a container, so the spike
+    can't reach it. **This means the sidecar-via-propagation mechanism is NOT yet
+    proven on any host, and is likely unavailable on WSL2 / Docker-Desktop-class
+    daemons.**
+
+**Decisive next test (manual, host-level — cannot be scripted from a container):**
+on a real Linux host / VPS, configure dockerd with shared propagation at startup
+(`MountFlags=shared` in the docker systemd unit, or `mount --make-rshared /`
+*before* the daemon starts) + restart docker, then run `propagation-spike.sh`
+(plain, no `--with-host-setup`) and check rung **A2**. If it reports PROPAGATED,
+the sidecar design works on VPS; if not, the mechanism needs rethinking even
+there.
+
+- Bare Linux / VPS (with daemon-level shared propagation): _(paste rung A2 verdict)_
+- Docker Desktop (Mac/Win): _(paste verdict — expected to share WSL2's limitation)_
+
+**Design implication (reopened):** if propagation is VPS-only (or needs a daemon
+config local installs can't guarantee), the sidecar mechanism is **not portable**
+as the sole path. Options: (A) adopt sidecar on VPS + **fall back to the copy
+substrate (today's nm-store) on local/WSL/Desktop**; (B) switch to a mechanism
+that needs **no cross-namespace propagation** (Docker volume plugin / daemon
+performs the mount); (C) overlay only where propagation is verified, copy
+everywhere else (graceful degradation). Decision pending.
 
 **Implication for the design:** the sidecar must run on a daemon host whose root
 (or at least the Docker data subtree) is a **shared mount**. On a VPS this is a
