@@ -176,8 +176,10 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       [`overlay-base.test.ts`](../../src/server/orchestrator/overlay-base.test.ts) (14 tests, real
       git repo): created/advanced/flattened/reset/skipped-equal/skipped-not-forward/skipped-ineligible,
       ancestry-not-walltime ordering, concurrent convergence, scope isolation, mtime stamp.
-      *Still to wire (Phase 4): the `isAncestor` oracle over the bare cache + the snapshot/install
-      caller.*
+      *Still to wire (Phase 4): the `isAncestor` oracle over the bare cache, the snapshot/install
+      caller, and `currentDefaultCommit` (the caller must pass the repo's current `origin/HEAD`
+      under the lock so a stale install that diverges because `main` advanced normally skips
+      instead of triggering a base-clobbering reset — see the `publishBase` contract).*
 - [x] Gate base advance on install **exit code 0** (non-zero serves the session, isn't published)
       — enforced by `publishBase`'s eligibility check (`skipped-ineligible`).
 - [x] **Depth-cap flatten:** rebuild base from **empty** on hit (clean reinstall = drift +

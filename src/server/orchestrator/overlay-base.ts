@@ -163,6 +163,10 @@ export function readBasePointer(stateDir: string, scope: OverlayScope): BasePoin
   return readBasePointerByHash(stateDir, scopeHashOf(scope));
 }
 
+// Pointer reads/writes are deliberately SYNCHRONOUS (`fsSync`): the files are
+// tiny, and the read-compare-swap must not yield mid-CAS inside the per-scope
+// lock. Do not "modernize" these to `fs/promises` — an await here would open a
+// window for an interleaving the lock is meant to prevent.
 function readBasePointerByHash(stateDir: string, scopeHash: string): BasePointer | null {
   try {
     const raw = fsSync.readFileSync(pointerPath(stateDir, scopeHash), "utf8");
@@ -217,10 +221,14 @@ async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promis
   } catch {
     // A prior holder's failure is its own caller's problem, not ours.
   }
+  const tail = scopeLocks.get(scopeHash);
   try {
     return await fn();
   } finally {
     release();
+    // If no later caller queued behind us, drop the entry so the map doesn't
+    // grow without bound across many one-shot scopes.
+    if (scopeLocks.get(scopeHash) === tail) scopeLocks.delete(scopeHash);
   }
 }
 
@@ -246,16 +254,33 @@ export async function copySnapshotToBase(
   const overlayRoot = path.join(stateDir, OVERLAY_BASE_SUBDIR);
   await fs.mkdir(overlayRoot, { recursive: true });
 
-  const tmp = path.join(overlayRoot, `.tmp-${scopeHash}-${crypto.randomBytes(4).toString("hex")}`);
-  // recursive copy; preserve symlinks rather than dereferencing them so a venv
-  // or a pnpm store inside the tree round-trips faithfully.
-  await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+  const rand = crypto.randomBytes(4).toString("hex");
+  const tmp = path.join(overlayRoot, `.tmp-${scopeHash}-${rand}`);
+  try {
+    // recursive copy; preserve symlinks rather than dereferencing them so a venv
+    // or a pnpm store inside the tree round-trips faithfully.
+    await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+  } catch (err) {
+    // A partial copy must not leak a `.tmp-…` dir under overlay-base/.
+    await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
 
-  // Swap: remove the old contents (live mounts retain their pinned inodes),
-  // then rename the temp dir into place. Both run under the per-scope publish
-  // lock, so no concurrent publisher races this.
-  await fs.rm(baseDir, { recursive: true, force: true });
+  // Swap so a crash never leaves the scope-hash path *missing*: move the old
+  // contents aside first, rename the fresh copy into place, then drop the old.
+  // A crash between any two steps leaves either the old or the new dir at
+  // `baseDir`, never neither. Live overlay mounts keep their pinned (now-
+  // unlinked) lowerdir inodes, so an in-flight session is unaffected. All of
+  // this runs under the per-scope publish lock, so no publisher races it.
+  const old = `${baseDir}.old-${rand}`;
+  let hadOld = true;
+  try {
+    await fs.rename(baseDir, old);
+  } catch {
+    hadOld = false; // ENOENT on the first publish for this scope — nothing to move
+  }
   await fs.rename(tmp, baseDir);
+  if (hadOld) await fs.rm(old, { recursive: true, force: true }).catch(() => {});
 
   const now = new Date();
   await fs.utimes(baseDir, now, now).catch(() => {
@@ -274,6 +299,17 @@ export interface PublishBaseArgs {
   candidate: PublishCandidate;
   /** Ancestry oracle — typically `RepoGit`/`GitManager.isAncestor` over the bare cache. */
   isAncestor: IsAncestorFn;
+  /**
+   * The repo's CURRENT remote default-branch commit, resolved by the caller
+   * under (or just before) the publish lock. Required to classify a divergence
+   * as a force-push **lineage reset**: `candidate.sourceIsDefaultBranch` is only
+   * a snapshot taken at install time, so a candidate that diverges from the base
+   * might just be a stale install while `main` advanced *normally* — that must
+   * be a skip, not a base-clobbering reset. We treat a divergence as a reset
+   * ONLY when the candidate IS the current default. When omitted, divergence
+   * conservatively skips (the prototype's behavior).
+   */
+  currentDefaultCommit?: string;
   depthCap?: number;
   /** Override the default snapshot copy (tests / future reflink path). */
   materialize?: MaterializeFn;
@@ -344,16 +380,19 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
       return { outcome: "skipped-not-forward", pointer: current };
     }
 
-    // Neither ancestor → diverged. The candidate is eligible, so its source IS
-    // the current remote default commit (rule (b)); a diverged current-default
-    // means `main` was force-pushed. Lineage reset: rebuild a clean base from
-    // empty for the rewritten default rather than carrying stale content as
-    // every future session's lowerdir.
-    return finalize(stateDir, materialize, candidate, scopeHash, {
-      outcome: "reset",
-      depth: 1,
-      generation: current.generation + 1,
-    });
+    // Neither ancestor → diverged. This is a force-push lineage reset ONLY if
+    // the candidate is the repo's *current* default commit — otherwise it's a
+    // stale install that diverges because `main` advanced normally in the
+    // meantime, which must not clobber a healthy forward base. Reset rebuilds a
+    // clean base from empty for the rewritten default; everything else skips.
+    if (args.currentDefaultCommit && candidate.commit === args.currentDefaultCommit) {
+      return finalize(stateDir, materialize, candidate, scopeHash, {
+        outcome: "reset",
+        depth: 1,
+        generation: current.generation + 1,
+      });
+    }
+    return { outcome: "skipped-not-forward", pointer: current };
   });
 }
 

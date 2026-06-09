@@ -178,28 +178,50 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(ptr).toMatchObject({ commit: last, depth: 1, generation: 3 });
   });
 
-  it("lineage-resets when the current default diverges (force-push)", async () => {
-    const c1 = commit("c1");
-    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
-
-    // Rewrite history: reset main to before c1 and commit a divergent line.
-    git(repoDir, "reset", "--hard", "HEAD~0"); // ensure clean
+  /** Rewrite `main` to a divergent orphan line; returns the rewritten commit. */
+  function forcePushDivergentHistory(): string {
     git(repoDir, "checkout", "-q", "--orphan", "rewritten");
     fs.writeFileSync(path.join(repoDir, "rewrite.txt"), "rewritten");
     git(repoDir, "add", "-A");
     git(repoDir, "commit", "-q", "-m", "rewritten");
-    const rewritten = git(repoDir, "rev-parse", "HEAD");
+    return git(repoDir, "rev-parse", "HEAD");
+  }
+
+  it("lineage-resets when the candidate is the current default but diverged (force-push)", async () => {
+    const c1 = commit("c1");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
 
     // The new session synced to the (now current default) rewritten commit, which
     // is neither ancestor nor descendant of c1.
+    const rewritten = forcePushDivergentHistory();
     const res = await publishBase({
       stateDir,
       scope: SCOPE,
       candidate: candidate({ commit: rewritten }),
       isAncestor,
+      currentDefaultCommit: rewritten,
     });
     expect(res.outcome).toBe("reset");
     expect(res.pointer).toMatchObject({ commit: rewritten, depth: 1, generation: 2 });
+  });
+
+  it("does NOT reset on a divergence that isn't the current default (stale install, main advanced)", async () => {
+    const c1 = commit("c1");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
+
+    // A candidate that diverges from the base but is NOT the current default —
+    // e.g. it was built on an older default snapshot while `main` moved on. This
+    // must skip, not clobber the healthy base with a reset.
+    const diverged = forcePushDivergentHistory();
+    const res = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: diverged }),
+      isAncestor,
+      currentDefaultCommit: "0000000000000000000000000000000000000000", // some other current HEAD
+    });
+    expect(res.outcome).toBe("skipped-not-forward");
+    expect(res.pointer).toMatchObject({ commit: c1, depth: 1, generation: 1 });
   });
 
   it("skips ineligible candidates (non-zero exit, post-user, or non-default source)", async () => {
@@ -232,17 +254,77 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(readBasePointer(stateDir, other)).not.toBeNull();
   });
 
-  it("converges to the newest commit under concurrent publishers (no torn pointer)", async () => {
+  it("serializes concurrent publishers and converges to the newest commit", async () => {
     const commits = [commit("c1"), commit("c2"), commit("c3"), commit("c4")];
     const newest = commits[commits.length - 1];
+
+    // A materialize that records when it enters/exits, with an await in between,
+    // so two overlapping CAS bodies would be detectable (a broken lock would let
+    // a second publisher start materializing before the first finished).
+    let active = 0;
+    let maxConcurrent = 0;
+    const materialize = async (snapshotDir: string, scopeHash: string): Promise<string> => {
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      await new Promise((r) => setTimeout(r, 1));
+      try {
+        return await copySnapshotToBase(stateDir, snapshotDir, scopeHash);
+      } finally {
+        active--;
+      }
+    };
+
     // Fire all publishers concurrently in shuffled order.
     const shuffled = [commits[2], commits[0], commits[3], commits[1]];
-    await Promise.all(
+    const results = await Promise.all(
       shuffled.map((c) =>
-        publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c }), isAncestor }),
+        publishBase({
+          stateDir,
+          scope: SCOPE,
+          candidate: candidate({ commit: c }),
+          isAncestor,
+          materialize,
+        }),
       ),
     );
+
+    // The lock must have kept every CAS body strictly sequential.
+    expect(maxConcurrent).toBe(1);
+    // Decision is ancestry, not submission order: newest wins regardless.
     expect(readBasePointer(stateDir, SCOPE)?.commit).toBe(newest);
+    // Exactly one base was created; behind candidates either advanced (when they
+    // arrived in order) or skipped — never a second "created".
+    expect(results.filter((r) => r.outcome === "created")).toHaveLength(1);
+    expect(results.every((r) => r.outcome !== "skipped-ineligible")).toBe(true);
+  });
+
+  it("releases the scope lock when a publish throws (next publisher is not wedged)", async () => {
+    const c1 = commit("c1");
+    let calls = 0;
+    const flaky = async (snapshotDir: string, scopeHash: string): Promise<string> => {
+      calls++;
+      if (calls === 1) throw new Error("boom");
+      return copySnapshotToBase(stateDir, snapshotDir, scopeHash);
+    };
+    await expect(
+      publishBase({
+        stateDir,
+        scope: SCOPE,
+        candidate: candidate({ commit: c1 }),
+        isAncestor,
+        materialize: flaky,
+      }),
+    ).rejects.toThrow("boom");
+
+    // A second publish for the same scope must still acquire the lock and succeed.
+    const res = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: c1 }),
+      isAncestor,
+      materialize: flaky,
+    });
+    expect(res.outcome).toBe("created");
   });
 
   it("stamps the top-level base dir mtime on every advance (GC contract)", async () => {
