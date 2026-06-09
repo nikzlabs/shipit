@@ -1125,7 +1125,7 @@ export default function App() {
   // Re-measure the tab bar whenever the set of visible tabs changes so the
   // icon-only collapse adapts to the actual tab count, not a fixed worst-case
   // width. (See useTabLabelCollapse.)
-  const tabBarRef = useTabLabelCollapse<HTMLDivElement>(
+  const tabBarRef = useTabLabelCollapse(
     [isLocalMode, isOpsSession, presentations.length > 0, hasPr, rightTab !== "present" && presentUnseenCount > 0].join("|"),
   );
   const rightPanel = (
