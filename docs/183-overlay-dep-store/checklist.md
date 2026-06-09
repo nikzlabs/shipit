@@ -21,8 +21,10 @@ rolling-base logic first; the host mount stays the gating risk.
       advanced its deps (incremental) vs. cold
 - [~] Spike the orchestrator host-side **whole-workspace** overlay mount (mount on activate,
       unmount + workdir cleanup on dispose); size its cost — the gating unknown.
-      Spike script written (`prototype/host-overlay-spike.sh`); **cannot run in-container**
-      (no CAP_SYS_ADMIN — probe in `FINDINGS.md`), run it on the ext4 host to close this
+      Spike `prototype/host-overlay-spike.sh` **passed 19/19 on a WSL2/ext4 host** (mount,
+      CoW+immutable base, 16-deep lowerdirs, bind-mount merged, safe teardown). Remaining:
+      run inotify check (install `inotify-tools`), repeat on prod (non-WSL) kernel, and time
+      the mount/unmount cost — see `FINDINGS.md`
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)

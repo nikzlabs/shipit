@@ -39,6 +39,15 @@ if [ "$(id -u)" -ne 0 ]; then
   echo "  must run as root (overlay mount needs CAP_SYS_ADMIN). Try: sudo bash $0"
   exit 2
 fi
+# overlayfs is a Linux kernel feature. macOS (XNU) has no /proc and no overlay —
+# there is nothing to validate there. ShipIt's orchestrator runs on Linux, so on
+# a Mac run this INSIDE the Docker Desktop Linux VM (or on the actual Linux host),
+# not on the macOS host itself.
+if [ ! -r /proc/filesystems ]; then
+  echo "  no /proc/filesystems — not a Linux host (likely macOS)."
+  echo "  overlayfs is Linux-only; prod runs on Linux. Run this inside the Docker"
+  echo "  Desktop Linux VM or on the Linux host, not on macOS."; exit 2
+fi
 if ! grep -q overlay /proc/filesystems; then
   echo "  overlay not in /proc/filesystems — kernel lacks overlayfs"; exit 2
 fi

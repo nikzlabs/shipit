@@ -266,11 +266,15 @@ design decisions are made (see Decisions). Status of each is tracked in
    whole-workspace overlay (mount on activate, unmount + workdir cleanup on dispose) within
    the containment model (`docs/172`), on the prod VPS's ext4? overlayfs works on ext4, but
    the privileged host-side mount + teardown ordering with `disk-janitor` is unproven.
-   *Confirmed unrunnable inside a session container (no `CAP_SYS_ADMIN`); spike script ready
-   for the host — see [`FINDINGS.md`](./FINDINGS.md).*
-2. **Source + `.git` on the overlay.** Confirm git (and worktree gitdir pointers with
-   absolute paths) behave on the overlay, that `.git` is excluded/normalized cleanly, and the
-   source diff in the upper layer stays small (`t → t'`).
+   *Status: spike passed **19/19 on a WSL2/ext4 host** (mount, CoW with immutable base, 16-deep
+   stacked lowerdirs, bind-mount of the merged dir, safe teardown ordering). Remaining to fully
+   close: the inotify check, a repeat on the prod (non-WSL) kernel, and timing the mount/unmount
+   cost — see [`FINDINGS.md`](./FINDINGS.md).*
+2. **Source + `.git` on the overlay.** ✅ **Corroborated** on the WSL2/ext4 host: clone +
+   fast-forward work on the merged dir, a linked worktree's absolute gitdir pointer resolves,
+   and a published base carries source contents with `.git` excluded cleanly. Confirm git
+   (and worktree gitdir pointers with absolute paths) behave on the overlay, that `.git` is
+   excluded/normalized cleanly, and the source diff in the upper layer stays small (`t → t'`).
 3. **Publish ordering by commit ancestry.** ✅ **Resolved** by
    [`prototype/run-rolling-base.ts`](./prototype/run-rolling-base.ts). The base advances only
    when a candidate's `main` commit strictly descends the current base's commit (§3). The
@@ -279,9 +283,11 @@ design decisions are made (see Decisions). Status of each is tracked in
    history (force-pushed `main`) is handled conservatively: skip the publish, let the next
    forward commit re-advance. A late-but-older publisher correctly declines (ancestry, not
    wall-clock).
-4. **Compose + file watcher over the merged dir.** Compose services bind-mount the workspace
-   and the recursive watcher runs on it. Do bind-mounts using the overlay **merged** dir as
-   source, and `inotify` over overlay (copy-up event quirks), behave correctly?
+4. **Compose + file watcher over the merged dir.** ◐ **Partly corroborated** on WSL2/ext4:
+   bind-mounting the overlay **merged** dir reads through to the base and writes via the bind
+   reach the upper (the compose-service pattern); **inotify still untested** (the host lacked
+   `inotify-tools`). Confirm bind-mounts using the overlay merged dir as source, and `inotify`
+   over overlay (copy-up event quirks), behave correctly.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
