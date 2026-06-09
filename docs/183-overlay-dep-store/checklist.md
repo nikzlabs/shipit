@@ -114,6 +114,11 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       prefix; a live/idle session's volume is preserved. **Avoid `shipit-overlay-<id>`** (fails the
       `<12 hex>_` regex → leaks). Stamp `shipit-managed=true` for parity. Teardown = `docker volume
       rm` on dispose. Extend `sweepOrphanedCaches` to cover unreferenced `overlay-base/<hash>/`.
+- [ ] Add the workspace-view resolver before enabling overlay sessions: `session.workspaceDir`
+      is storage/upperdir metadata for overlay sessions, while file/doc/git/compose/watcher and
+      post-turn operations must dispatch through worker HTTP endpoints against the container's
+      merged `/workspace`. Audit all direct orchestrator `fs`/`GitManager` uses against
+      `session.workspaceDir` and route or prove them storage-only.
 - [ ] Verify the route stays within the containment model (docs/172) — orchestrator stays
       unprivileged; session containers gain no capability.
 - [x] **Production-layout spike confirmed** — `volume-driver-overlay-spike.sh` (updated to seed
@@ -145,6 +150,8 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       from **empty** (clean reinstall = drift + reproducibility reset).
 - [ ] **Exclude/normalize `.git`** from the base (don't carry session branch refs forward);
       verify git/worktree absolute gitdir pointers behave on the overlay.
+- [ ] Publish/flatten from a worker-exported merged-workspace snapshot, not the host upperdir
+      alone, so lowerdir-only source/dependency files are preserved in the next base.
 - [ ] **Cold start:** build base v0 from empty under the existing repo trust gate (docs/178).
 
 ### Phase 4 — Session lifecycle integration
@@ -160,6 +167,9 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       only respects **live** mounts, not archived sessions.
 - [ ] Production-wire compose bind-mount over the merged dir + file watcher (behavior already
       verified in Phase 0).
+- [ ] Route production file/doc/git/compose/watcher/post-turn flows through the workspace-view
+      resolver so the UI, PR/diff data, rollback/rebase/push/pull, and auto-commit operate on
+      the same merged tree the agent sees.
 
 ### Phase 5 — Measure & tune
 

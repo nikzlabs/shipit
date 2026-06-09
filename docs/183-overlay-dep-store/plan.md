@@ -260,6 +260,33 @@ the session** — see the mechanism decision below.
   approach (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104))
   for overlay-eligible sessions.
 
+  **Authoritative workspace view — worker APIs, not the host `upperdir`.** The daemon-mounted
+  `local` overlay volume makes the merged tree visible in the **session container**; it does
+  **not** make the same merged tree reliably visible to the already-running orchestrator
+  container at `session.workspaceDir`. That host path is only the session's upper/storage
+  subtree for overlay sessions, so treating it as the authoritative workspace would hide files
+  inherited from the base and make ShipIt show/commit/diff the wrong tree. Therefore overlay
+  sessions must split storage metadata from the operational workspace view:
+
+  - `session.workspaceDir` remains the durable session storage/upperdir path used for cleanup,
+    janitor ownership, and non-overlay fallback.
+  - All user-visible and correctness-sensitive workspace operations for overlay sessions run
+    through the session worker against `/workspace`, the same merged mount the agent sees.
+    This includes file tree/content/edit routes (`services/files.ts`), doc discovery, compose
+    config and service-env reads/writes, file watcher state, Git reads and mutations
+    (`services/git.ts`), rollback/rebase/push/pull, PR/diff stats, and post-turn
+    auto-commit/auto-push (`ws-handlers/post-turn.ts`).
+  - The implementation adds a small "workspace view" resolver at the orchestrator boundary:
+    non-overlay sessions keep the existing host-path `GitManager`/filesystem path, while
+    overlay sessions dispatch to worker HTTP endpoints that expose the needed file and git
+    operations inside the container. Any remaining direct `fs` or `GitManager` use against
+    `session.workspaceDir` must be audited and either proven storage-only or routed through
+    that resolver before the overlay path is enabled.
+  - Publish/flatten code that needs to build the next base consumes an explicit worker-exported
+    snapshot of the merged workspace (excluding `.git` as already decided), not the host
+    `upperdir` alone. Otherwise a base publish after an empty/no-op install would lose every
+    dependency and source file that came only from the lowerdir.
+
 ### 5. Bounding drift and overlay depth
 
 Re-running install over generations can leave extraneous packages or stale links, and
@@ -369,16 +396,18 @@ on top of the simplified install path.
    per-session `local` `type=overlay` volume (`lowerdir`=base, `upperdir`/`workdir`=session,
    absolute daemon-host paths from `docker volume inspect`) and mounts it at `/workspace`;
    **serialize** volume create/mount (overlay2 EBUSY hazard); teardown is `docker volume rm`
-   (daemon unmounts on container stop — no manual unmount-ordering); mount-cost timing (the one
-   nice-to-have left — not a gate). *(No sidecar, no propagation probe, no re-arm — all
-   removed by this mechanism.)*
+   (daemon unmounts on container stop — no manual unmount-ordering); add the workspace-view
+   resolver that prevents overlay sessions from using the host `upperdir` as their authoritative
+   tree; mount-cost timing (the one nice-to-have left — not a gate). *(No sidecar, no propagation
+   probe, no re-arm — all removed by this mechanism.)*
 3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
    base in the `overlay-base/<hash>/` subtree (NOT dep-cache — see §4 storage layout) + per-session
    upper/work, the stamped marker, the publish
    commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
 4. **Session lifecycle integration** — on-activation install → publish rule, eligibility
-   exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, compose +
-   watcher production wiring.
+   exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, worker-backed
+   file/doc/git/compose/watcher/post-turn operations over the merged `/workspace`, and production
+   wiring.
 5. **Measure & tune** — warm-vs-cold install timing on the containerized path, set the depth cap,
    optional manifest-fingerprint skip.
 
