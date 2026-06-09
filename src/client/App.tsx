@@ -19,6 +19,7 @@ import { useAutoFix } from "./hooks/useAutoFix.js";
 import { CircleNotchIcon, EyeIcon, HardDrivesIcon, BookOpenIcon, ListChecksIcon, FilesIcon, TerminalWindowIcon, ClockCounterClockwiseIcon, PresentationChartIcon, GitPullRequestIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Tab } from "./components/ui/tab.js";
+import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
@@ -1101,12 +1102,18 @@ export default function App() {
   // Whether the always-mounted PreviewFrame (+ Services drawer) is the visible
   // tab. The `pr && !hasPr` case keeps the preview up while a PR is pending.
   const previewVisible = !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
+  // Re-measure the tab bar whenever the set of visible tabs changes so the
+  // icon-only collapse adapts to the actual tab count, not a fixed worst-case
+  // width. (See useTabLabelCollapse.)
+  const tabBarRef = useTabLabelCollapse<HTMLDivElement>(
+    [isLocalMode, isOpsSession, presentations.length > 0, hasPr, rightTab !== "present" && presentUnseenCount > 0].join("|"),
+  );
   const rightPanel = (
     <>
-      {/* @container lets the tabs collapse to icon-only when the panel is
-          narrowed (see Tab) instead of overflowing the bar. Persistent views
-          sit on the left; transient Present/PR are grouped to the right. */}
-      <div className="@container flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
+      {/* Tabs collapse to icon-only when they'd overflow the bar (driven by
+          useTabLabelCollapse via data-collapsed). Persistent views sit on the
+          left; transient Present/PR are grouped to the right. */}
+      <div ref={tabBarRef} className="group/tabs flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
           <Tab icon={<EyeIcon size={ICON_SIZE.SM} />} label="Preview" active={rightTab === "preview"} onClick={() => handleTabChange("preview")} />
         )}

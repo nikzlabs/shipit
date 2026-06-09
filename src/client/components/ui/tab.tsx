@@ -5,9 +5,10 @@ import { cva, type VariantProps } from "class-variance-authority";
  * Tab — a single tab button for the right-panel tab bar (Preview / Docs / …).
  *
  * Renders a Phosphor icon followed by a label, with an accent underline on the
- * active tab. The label is hidden below the container's `@3xl` width (see the
- * `@container` on the tab bar) so a narrowed panel collapses to icon-only
- * instead of overflowing — the `aria-label`/`title` keep it accessible.
+ * active tab. The label hides when an ancestor `group/tabs` has
+ * `data-collapsed="true"` — driven by `useTabLabelCollapse`, which measures
+ * real overflow so a narrowed panel collapses to icon-only instead of
+ * overflowing. The `aria-label`/`title` keep it accessible when collapsed.
  *
  * The `pr` tone recolors the active underline + icon with `--color-pr` so the
  * contextual PR tab reads as distinct from the persistent views.
@@ -58,7 +59,7 @@ export const Tab = forwardRef<HTMLButtonElement, TabProps>(
       <span className={tone === "pr" && active ? "text-(--color-pr)" : undefined}>
         {icon}
       </span>
-      <span className="hidden @3xl:inline">{label}</span>
+      <span className="group-data-[collapsed=true]/tabs:hidden">{label}</span>
       {badge}
     </button>
   ),
