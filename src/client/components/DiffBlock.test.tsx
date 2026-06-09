@@ -1,8 +1,15 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { vi } from "vitest";
 import { DiffBlock } from "./DiffBlock.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useSessionStore.getState().reset();
+  useFileStore.getState().reset();
+});
 
 describe("DiffBlock", () => {
   describe("file header", () => {
@@ -60,6 +67,14 @@ describe("DiffBlock", () => {
       expect(screen.getByText("+3")).toBeInTheDocument();
     });
 
+    it("does not count a trailing newline as an extra written line", () => {
+      render(
+        <DiffBlock filePath="f.ts" newString={"a\nb\n"} isWrite />
+      );
+      expect(screen.getByText("+2")).toBeInTheDocument();
+      expect(screen.queryByText("+3")).not.toBeInTheDocument();
+    });
+
     it("does not show removed count in write mode", () => {
       render(
         <DiffBlock filePath="f.ts" newString="content" isWrite />
@@ -77,6 +92,25 @@ describe("DiffBlock", () => {
     it("shows fallback when old and new are undefined", () => {
       render(<DiffBlock filePath="f.ts" oldString={undefined} newString={undefined} />);
       expect(screen.getByText("no changes")).toBeInTheDocument();
+    });
+
+    it("shows fallback for an empty unified diff", () => {
+      render(<DiffBlock filePath="f.ts" unifiedDiff="" />);
+      expect(screen.getByText("no changes")).toBeInTheDocument();
+    });
+  });
+
+  describe("file path", () => {
+    it("opens the file preview when clicked", async () => {
+      useSessionStore.getState().setSessionId("session-1");
+      const openPreview = vi.spyOn(useFileStore.getState(), "openPreview").mockResolvedValue();
+
+      render(<DiffBlock filePath="/workspace/src/app.ts" newString="hello" isWrite />);
+      fireEvent.click(screen.getByRole("button", { name: "Open src/app.ts" }));
+
+      await waitFor(() => {
+        expect(openPreview).toHaveBeenCalledWith("session-1", "src/app.ts");
+      });
     });
   });
 });

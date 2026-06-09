@@ -11,6 +11,8 @@ import { XIcon } from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
 import { sessionRelativePath } from "../path-utils.js";
+import { useFileStore } from "../stores/file-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 
 export interface DiffBlockProps {
   filePath: string;
@@ -29,7 +31,8 @@ export interface DiffBlockProps {
 
 function countLines(text: string): number {
   if (!text) return 0;
-  return text.split("\n").length;
+  const normalized = text.endsWith("\n") ? text.slice(0, -1) : text;
+  return normalized ? normalized.split("\n").length : 0;
 }
 
 /** Count added/removed lines in a unified diff, ignoring file/hunk headers. */
@@ -46,17 +49,31 @@ function countDiffLines(diff: string): { added: number; removed: number } {
 export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff, label }: DiffBlockProps) {
   const [showModal, setShowModal] = useState(false);
   const isUnified = unifiedDiff !== undefined;
+  const sessionId = useSessionStore((s) => s.sessionId);
   const { added, removed } = isUnified
     ? countDiffLines(unifiedDiff)
     : { added: countLines(newString ?? ""), removed: countLines(oldString ?? "") };
   const hasContent = added > 0 || removed > 0;
   const verb = label ?? (isWrite ? "Write" : "Edit");
+  const relativePath = sessionRelativePath(filePath);
+  const openFile = () => {
+    if (!sessionId || !relativePath || relativePath === "unknown") return;
+    void useFileStore.getState().openPreview(sessionId, relativePath);
+  };
 
   return (
     <>
       <div className="py-1 flex items-center gap-2 text-xs font-mono text-(--color-text-tertiary) pl-[1em] opacity-70 border-l-2 border-(--color-text-tertiary)/40">
         <span className="text-(--color-text-secondary)">{verb}</span>
-        <span className="text-(--color-text-primary) truncate">{sessionRelativePath(filePath)}</span>
+        <button
+          type="button"
+          onClick={openFile}
+          disabled={!sessionId || !relativePath || relativePath === "unknown"}
+          className="min-w-0 truncate text-left text-(--color-text-primary) enabled:cursor-pointer enabled:hover:underline disabled:cursor-default"
+          aria-label={`Open ${relativePath}`}
+        >
+          {relativePath}
+        </button>
         {hasContent ? (
           <button
             onClick={() => setShowModal(true)}
@@ -66,7 +83,7 @@ export function DiffBlock({ filePath, oldString, newString, isWrite, unifiedDiff
             {added > 0 && <span className="text-(--color-success)">+{added}</span>}
             {removed > 0 && <span className="text-(--color-error)">-{removed}</span>}
           </button>
-        ) : isUnified ? null : (
+        ) : (
           <span className="flex items-center gap-1.5 shrink-0">
             <span className="text-(--color-text-secondary) italic">no changes</span>
           </span>

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { CodexAdapter, unwrapShellCommand } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
+import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
 /**
  * To test the CodexAdapter without spawning a real process, we mock child_process.spawn.
@@ -68,6 +69,9 @@ let fakeProc: FakeChildProcess;
 let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
 
 vi.mock("node:child_process", () => ({
+  execFile: (_cmd: string, _args: string[], cb: (error: Error | null, stdout: string, stderr: string) => void) => {
+    cb(null, "/usr/local/bin/codex\n", "");
+  },
   spawn: (_cmd: string, _args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
     fakeProc = new FakeChildProcess();
     lastSpawnEnv = options.env;
@@ -149,7 +153,12 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.supportsSystemPrompt).toBe(true);
     expect(adapter.capabilities.supportsPermissionModes).toBe(false);
     expect(adapter.capabilities.toolNames).toContain("shell");
-    expect(adapter.capabilities.toolNames).toContain("file_write");
+    expect(adapter.capabilities.toolNames).toContain("commandExecution");
+    expect(adapter.capabilities.toolNames).toContain("fileChange");
+    expect(adapter.capabilities.toolNames).toContain("apply_patch");
+    expect(adapter.capabilities.toolNames).not.toContain("file_write");
+    expect(adapter.capabilities.toolNames).not.toContain("file_read");
+    expect(adapter.capabilities.toolNames).not.toContain("file_edit");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
     // 125 — chat-native AI review requires a subagent primitive plus custom
     // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
@@ -318,7 +327,7 @@ describe("CodexAdapter", () => {
       agentId: "codex",
       sessionId: "thread-abc-123",
       model: "gpt-5.5",
-      tools: ["shell", "file_write", "file_read", "file_edit", "AskUserQuestion"],
+      tools: [...CODEX_TOOL_NAMES],
     });
   });
 
@@ -444,7 +453,7 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("annotates a failed commandExecution with its exit code", async () => {
+  it("synthesizes a shell tool_use for a completed-only commandExecution", async () => {
     await createAndInit("Run a failing command");
     events.length = 0;
 
@@ -459,10 +468,21 @@ describe("CodexAdapter", () => {
     });
 
     await vi.waitFor(() => {
-      expect(events.length).toBe(1);
+      expect(events.length).toBe(2);
     });
 
     expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-002",
+          name: "shell",
+          input: { command: "", cwd: undefined },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
       type: "agent_tool_result",
       content: [{ type: "tool_result", tool_use_id: "call-002", content: "boom\n[exit code: 1]" }],
     });
@@ -1039,6 +1059,77 @@ describe("CodexAdapter", () => {
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
       content: [{ type: "tool_use", id: "call-other-1", name: "shipit-review__submit_review_comments" }],
+    });
+  });
+
+  it("synthesizes an MCP tool_use for a completed-only tool call", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "mcpToolCall",
+        id: "web-1",
+        tool: "WebSearch",
+        arguments: JSON.stringify({ query: "Pixi.js v8 release notes" }),
+        result: "search results",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "web-1",
+          name: "WebSearch",
+          input: { query: "Pixi.js v8 release notes" },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "web-1", content: "search results" }],
+    });
+  });
+
+  it("does not duplicate MCP tool_use when started and completed both arrive", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "dynamicToolCall",
+        id: "fetch-1",
+        tool: "WebFetch",
+        arguments: JSON.stringify({ url: "https://example.com" }),
+      },
+    });
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "dynamicToolCall",
+        id: "fetch-1",
+        tool: "WebFetch",
+        arguments: JSON.stringify({ url: "https://example.com" }),
+        result: "example summary",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toMatchObject({
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "fetch-1", name: "WebFetch" }],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "fetch-1", content: "example summary" }],
     });
   });
 

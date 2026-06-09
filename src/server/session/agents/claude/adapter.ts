@@ -12,7 +12,7 @@ import fs from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess } from "./process.js";
 import type { ClaudeEvent, ClaudeMcpServerInit, PermissionMode } from "../../../shared/types.js";
 import { CLAUDE_PERMISSION_MODES } from "../../../shared/types.js";
-import { CLAUDE_MODELS } from "../../../shared/agent-registry.js";
+import { CLAUDE_MODELS, CLAUDE_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import type {
   AgentId,
   AgentCapabilities,
@@ -56,10 +56,7 @@ export class ClaudeAdapter
     supportsSystemPrompt: true,
     supportsPermissionModes: true,
     supportedPermissionModes: CLAUDE_PERMISSION_MODES,
-    toolNames: [
-      "Write", "Read", "Edit", "Bash", "Glob", "Grep",
-      "WebFetch", "WebSearch", "AskUserQuestion",
-    ],
+    toolNames: [...CLAUDE_TOOL_NAMES],
     models: CLAUDE_MODELS,
     // Claude Code has both a subagent primitive (the Task tool) and custom
     // MCP tool registration via mcpConfigPath, which 125 needs.

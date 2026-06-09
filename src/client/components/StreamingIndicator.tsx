@@ -69,6 +69,9 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     case "Bash":
+    case "PowerShell":
+    case "Monitor":
+    case "commandExecution":
     case "shell":
       return {
         label: `Running command...`,
@@ -84,6 +87,12 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
     case "grep":
       return {
         label: `Searching code...`,
+        tool: toolName,
+      };
+    case "LSP":
+    case "lsp":
+      return {
+        label: "Checking code...",
         tool: toolName,
       };
     case "WebFetch":
@@ -105,8 +114,25 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     case "TodoWrite":
+    case "TaskCreate":
+    case "TaskUpdate":
+    case "TaskList":
+    case "TaskGet":
+    case "TaskStop":
       return {
         label: "Updating tasks...",
+        tool: toolName,
+      };
+    case "fileChange":
+    case "apply_patch":
+      return {
+        label: "Editing files...",
+        tool: toolName,
+      };
+    case "NotebookEdit":
+    case "notebook_edit":
+      return {
+        label: "Editing notebook...",
         tool: toolName,
       };
     case "Task": {
@@ -130,6 +156,38 @@ export function activityFromTool(toolName: string, input: Record<string, unknown
         tool: toolName,
       };
     }
+    case "collabToolCall":
+    case "spawn_agent":
+      return {
+        label: "Running agent...",
+        tool: toolName,
+      };
+    case "mcpToolCall":
+    case "dynamicToolCall":
+    case "ListMcpResourcesTool":
+    case "ReadMcpResourceTool":
+    case "WaitForMcpServers":
+      return {
+        label: "Using external tool...",
+        tool: toolName,
+      };
+    case "webSearch":
+      return {
+        label: `Searching web...`,
+        tool: toolName,
+      };
+    case "imageView":
+    case "view_image":
+      return {
+        label: "Viewing image...",
+        tool: toolName,
+      };
+    case "ToolSearch":
+    case "tool_search":
+      return {
+        label: "Loading tool...",
+        tool: toolName,
+      };
     default: {
       // Generic MCP tool handling — works for any MCP server
       if (toolName.startsWith("mcp__")) {

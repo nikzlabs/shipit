@@ -21,7 +21,23 @@ export type CanonicalTool =
   | "web_fetch"
   | "web_search"
   | "ask_user"
-  | "browser";
+  | "browser"
+  | "agent"
+  | "plan"
+  | "worktree"
+  | "mcp"
+  | "lsp"
+  | "monitor"
+  | "notebook_edit"
+  | "notification"
+  | "schedule"
+  | "task"
+  | "todo"
+  | "skill"
+  | "workflow"
+  | "tool_search"
+  | "team"
+  | "image_view";
 
 const AGENT_TOOL_MAPS: Record<AgentId, Record<string, CanonicalTool>> = {
   claude: CLAUDE_TOOL_MAP,
