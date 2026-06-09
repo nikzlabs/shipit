@@ -1,7 +1,18 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: xterm auto-scroll for tool group
 import { useEffect, useRef, useState } from "react";
 import { useMemo } from "react";
-import { EyeIcon, PresentationChartIcon, XIcon } from "@phosphor-icons/react";
+import {
+  DownloadSimpleIcon,
+  EyeIcon,
+  FilesIcon,
+  GlobeIcon,
+  type Icon,
+  MagnifyingGlassIcon,
+  NotebookIcon,
+  PresentationChartIcon,
+  ScrollIcon,
+  XIcon,
+} from "@phosphor-icons/react";
 import hljs from "highlight.js";
 import { DiffBlock } from "./DiffBlock.js";
 import { ToolSpinner } from "./StreamingIndicator.js";
@@ -9,6 +20,7 @@ import { AskUserQuestion, type AskQuestionItem } from "./AskUserQuestion.js";
 import { PlanApproval } from "./PlanApproval.js";
 import { ToolResult } from "./ToolResult.js";
 import { Dialog, DialogContent } from "./ui/dialog.js";
+import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -176,6 +188,11 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     ? (tool.input.url as string)
     : null;
 
+  // Experiment: for shell/Bash, drop the tool icon entirely and show the
+  // command flush — the command itself already reads as the tool, so the glyph
+  // is redundant and the leading space it occupied is removed too.
+  const isCommandTool = tool.name === "Bash" || tool.name === "shell";
+
   return (
     <div className="min-w-0 overflow-hidden">
       <div
@@ -183,9 +200,9 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
         onClick={hasResult ? () => setShowModal(true) : undefined}
       >
         {inProgress && <ToolSpinner />}
-        <FormattedToolName name={tool.name} highlight={inProgress} />
+        {!isCommandTool && <FormattedToolName name={tool.name} highlight={inProgress} />}
         {commandText ? (
-          <span className="ml-1 text-(--color-text-secondary) truncate">
+          <span className={`${isCommandTool ? "" : "ml-1 "}text-(--color-text-secondary) truncate`}>
             {commandText}
           </span>
         ) : null}
@@ -250,18 +267,60 @@ function parseMcpToolName(name: string): { server: string; tool: string } | null
   return { server: parts[1], tool: parts.slice(2).join("__") };
 }
 
-/** Renders a tool name with an MCP server chip when applicable. */
+/**
+ * Per-tool glyph + short verb for the inline tool line. The icon anchors the
+ * eye; the one-word `label` keeps the verb visible (not hover-only) so it reads
+ * on touch too. Labels are kept to a single word so the line never wraps.
+ *
+ * Only tools that actually reach `FormattedToolName` are listed — the read-only
+ * / fetch tools that fall through to the compact one-liner. These are Claude's
+ * PascalCase names; Codex emits only `shell` and `apply_patch` on this surface,
+ * both handled before we ever look here, so it needs no entry.
+ *
+ * Intentionally absent:
+ *   - Bash / shell → command tools render flush with no icon (see `isCommandTool`).
+ *   - Edit / Write / apply_patch → file changes render as DiffBlocks; their glyph
+ *     comes from `VerbBadge` (DiffBlock.tsx), not this map.
+ *   - Task → subagent calls render as a dedicated `SubagentCall` element.
+ * Earlier this map also carried lowercase canonical aliases (`grep`, `glob`,
+ * `file_*`, `web_*`, `browser`); they were dropped because no backend emits them
+ * on this surface — an unknown name correctly falls through to the text fallback.
+ */
+const TOOL_ICONS: Record<string, { Icon: Icon; label: string }> = {
+  Read: { Icon: ScrollIcon, label: "Read" },
+  Grep: { Icon: MagnifyingGlassIcon, label: "Grep" },
+  Glob: { Icon: FilesIcon, label: "Glob" },
+  WebFetch: { Icon: DownloadSimpleIcon, label: "Fetch" },
+  WebSearch: { Icon: GlobeIcon, label: "Search" },
+  NotebookEdit: { Icon: NotebookIcon, label: "Notebook" },
+};
+
+/**
+ * Renders a tool as an icon (with the tool name as its accessible label/tooltip),
+ * an MCP server chip for `mcp__*` tools, or a plain text fallback for anything
+ * we don't have a glyph for.
+ */
 function FormattedToolName({ name, highlight }: { name: string; highlight: boolean }) {
   const parsed = parseMcpToolName(name);
-  if (!parsed) {
-    return <span className={highlight ? "text-(--color-accent)" : ""}>{name}</span>;
+  if (parsed) {
+    return (
+      <span className={`inline-flex shrink-0 items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
+        <span className="shrink-0 border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
+        <span>{parsed.tool}</span>
+      </span>
+    );
   }
-  return (
-    <span className={`inline-flex items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
-      <span className="border border-current rounded px-1 py-px text-[10px] leading-tight opacity-70">{parsed.server}</span>
-      <span>{parsed.tool}</span>
-    </span>
-  );
+  const mapped = TOOL_ICONS[name];
+  if (mapped) {
+    const { Icon, label } = mapped;
+    return (
+      <span className={`inline-flex shrink-0 items-center gap-1.5${highlight ? " text-(--color-accent)" : ""}`}>
+        <Icon size={ICON_SIZE.SM} aria-hidden />
+        <span>{label}</span>
+      </span>
+    );
+  }
+  return <span className={highlight ? "text-(--color-accent)" : ""}>{name}</span>;
 }
 
 interface PresentToolResult {

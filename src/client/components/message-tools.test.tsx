@@ -31,8 +31,9 @@ describe("ToolUseItem apply_patch", () => {
     // Paths render (workspace prefix stripped), kind mapped to Claude verbs.
     expect(screen.getByText("src/game/Game.js")).toBeInTheDocument();
     expect(screen.getByText("src/new.js")).toBeInTheDocument();
-    expect(screen.getByText("Edit")).toBeInTheDocument();
-    expect(screen.getByText("Write")).toBeInTheDocument();
+    // Kind verbs render as icons labeled with the verb (update → Edit, add → Write).
+    expect(screen.getByLabelText("Edit")).toBeInTheDocument();
+    expect(screen.getByLabelText("Write")).toBeInTheDocument();
     // Line stats from the unified diff (update: +1/-1, add: +2).
     expect(screen.getByText("+1")).toBeInTheDocument();
     expect(screen.getByText("-1")).toBeInTheDocument();
@@ -55,6 +56,49 @@ describe("ToolUseItem apply_patch", () => {
     fireEvent.click(screen.getByLabelText("Show diff"));
     expect(screen.getByText("+new")).toBeInTheDocument();
     expect(screen.getByText("-old")).toBeInTheDocument();
+  });
+});
+
+describe("ToolUseItem inline tool icon", () => {
+  it("renders the tool as a glyph + short verb, plus its argument", () => {
+    render(
+      <ToolUseItem
+        tool={tool("Read", { file_path: "/workspace/src/foo.ts" })}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    // The verb is shown as visible text (not hover-only) next to the glyph…
+    expect(screen.getByText("Read")).toBeInTheDocument();
+    // …followed by the argument summary (file path).
+    expect(screen.getByText("src/foo.ts")).toBeInTheDocument();
+  });
+
+  it("shows no icon for shell/Bash — just the command, flush", () => {
+    render(
+      <ToolUseItem
+        tool={tool("shell", { command: "ls -la" })}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    // No tool word at all (no icon, no "shell"); the command stands in for the tool.
+    expect(screen.queryByText("shell")).toBeNull();
+    expect(screen.getByText("ls -la")).toBeInTheDocument();
+  });
+
+  it("falls back to text for tools without a mapped icon", () => {
+    render(
+      <ToolUseItem
+        tool={tool("SomeUnknownTool", {})}
+        isLast={false}
+        isStreaming={false}
+        isQuestionDisabled
+      />,
+    );
+    expect(screen.getByText("SomeUnknownTool")).toBeInTheDocument();
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeAll, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, act } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, act, within } from "@testing-library/react";
 import { MessageList, parseMessageSegments, type ChatMessage, type ChatMessageImage, type ToolUseBlock, type ToolResultBlock } from "./MessageList.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -199,7 +199,8 @@ describe("MessageList", () => {
           isLoading={false}
         />
       );
-      expect(screen.getByText("Bash")).toBeInTheDocument();
+      // shell/Bash deliberately shows no tool word — just the command, flush.
+      expect(screen.queryByText("Bash")).toBeNull();
       expect(screen.getByText("npm test")).toBeInTheDocument();
     });
 
@@ -219,7 +220,7 @@ describe("MessageList", () => {
         />
       );
       expect(screen.getByText("src/app.ts")).toBeInTheDocument();
-      expect(screen.getByText("Edit")).toBeInTheDocument();
+      expect(screen.getByLabelText("Edit")).toBeInTheDocument();
     });
 
     it("renders Write tool as a DiffBlock with write label", () => {
@@ -238,7 +239,7 @@ describe("MessageList", () => {
         />
       );
       expect(screen.getByText("new-file.ts")).toBeInTheDocument();
-      expect(screen.getByText("Write")).toBeInTheDocument();
+      expect(screen.getByLabelText("Write")).toBeInTheDocument();
     });
 
     it("shows file_path for tools that have it", () => {
@@ -311,8 +312,8 @@ describe("MessageList", () => {
       expect(groups).toHaveLength(1);
       expect(groups[0].className).toContain("max-h-30");
       expect(groups[0].className).toContain("overflow-y-auto");
-      // All tools render inside the group
-      expect(screen.getByText("Bash")).toBeInTheDocument();
+      // All tools render inside the group (Bash shows its command, no icon)
+      expect(screen.getByText("npm test")).toBeInTheDocument();
       expect(screen.getByText("app.ts")).toBeInTheDocument();
       expect(screen.getByText("TODO")).toBeInTheDocument();
     });
@@ -331,9 +332,9 @@ describe("MessageList", () => {
       );
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // DiffBlock labels are inside the group
-      expect(screen.getByText("Edit")).toBeInTheDocument();
-      expect(screen.getByText("Write")).toBeInTheDocument();
+      // DiffBlock verbs render as labeled icons inside the group
+      expect(screen.getByLabelText("Edit")).toBeInTheDocument();
+      expect(screen.getByLabelText("Write")).toBeInTheDocument();
     });
 
     it("renders consecutive tool-only messages in a single container", () => {
@@ -346,8 +347,8 @@ describe("MessageList", () => {
       render(<MessageList messages={messages} isLoading={false} />);
       const groups = screen.getAllByTestId("tool-call-group");
       expect(groups).toHaveLength(1);
-      // All three tools are inside the single group
-      expect(groups[0].textContent).toContain("Glob");
+      // All three tools are inside the single group (Glob → files icon + "Glob" verb)
+      expect(within(groups[0]).getByText("Glob")).toBeInTheDocument();
       expect(groups[0].textContent).toContain("a.ts");
       expect(groups[0].textContent).toContain("b.ts");
     });

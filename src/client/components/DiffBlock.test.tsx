@@ -22,12 +22,26 @@ describe("DiffBlock", () => {
       render(
         <DiffBlock filePath="src/app.ts" oldString="old" newString="replaced" />
       );
-      expect(screen.getByText("Edit")).toBeInTheDocument();
+      // The verb renders as an icon labeled with the verb, not the raw word.
+      expect(screen.getByLabelText("Edit")).toBeInTheDocument();
     });
 
     it("shows 'write' label for write mode", () => {
       render(<DiffBlock filePath="src/app.ts" newString="content" isWrite />);
-      expect(screen.getByText("Write")).toBeInTheDocument();
+      expect(screen.getByLabelText("Write")).toBeInTheDocument();
+    });
+
+    it("shows a 'Delete' verb icon for a Codex delete (label override)", () => {
+      render(<DiffBlock filePath="src/app.ts" unifiedDiff={"-old\n-line"} label="Delete" />);
+      // Delete maps to the trash glyph, surfaced via aria-label/title.
+      expect(screen.getByLabelText("Delete")).toBeInTheDocument();
+    });
+
+    it("falls back to the raw verb text when there's no glyph for it", () => {
+      render(<DiffBlock filePath="src/app.ts" unifiedDiff={"+x"} label="Rename" />);
+      // Unmapped verbs (e.g. a future Codex kind) render as plain text, not a glyph.
+      expect(screen.getByText("Rename")).toBeInTheDocument();
+      expect(screen.queryByLabelText("Rename")).toBeNull();
     });
   });
 
