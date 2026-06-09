@@ -43,14 +43,14 @@ Session continuity is maintained via the agent CLI's resume mechanism (e.g., Cla
 | Backend | [Fastify](https://fastify.dev/) 5, @fastify/websocket, TypeScript |
 | Frontend | [React](https://react.dev/) 19, [Vite](https://vite.dev/) 7, [Tailwind CSS](https://tailwindcss.com/) 4 |
 | Agent backends | [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code), [Codex CLI](https://github.com/openai/codex) — pluggable, more can be added |
-| Runtime | Node.js 20, Docker |
+| Runtime | Node.js 24, Docker |
 | Testing | [Vitest](https://vitest.dev/) 4, @testing-library/react, jsdom |
 
 ## Development setup
 
 **Prerequisites:**
 
-- Node.js 20+ and npm
+- Node.js 24 and npm
 - git
 - Docker (session containers always run containerized)
 - At least one agent CLI installed globally if you want to drive the agent locally:

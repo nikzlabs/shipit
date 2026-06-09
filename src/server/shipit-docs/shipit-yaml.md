@@ -184,7 +184,7 @@ compose: docker-compose.yml
 # After — docker-compose.yml
 services:
   web:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     working_dir: /app
     ports: ["5173:5173"]

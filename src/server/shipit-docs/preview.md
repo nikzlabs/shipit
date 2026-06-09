@@ -65,7 +65,7 @@ compose: docker-compose.yml
 # docker-compose.yml
 services:
   preview:
-    image: node:20
+    image: node:24-slim
     command: npm run dev -- --host 0.0.0.0
     working_dir: /app/preview
     ports: ["5173:5173"]
@@ -141,13 +141,13 @@ its own preview tab:
 ```yaml
 services:
   frontend:
-    image: node:20
+    image: node:24-slim
     command: npm run dev
     ports: ["5173:5173"]
     x-shipit-preview: auto
 
   api:
-    image: node:20
+    image: node:24-slim
     command: npm run api
     ports: ["3001:3001"]
     x-shipit-preview: auto
