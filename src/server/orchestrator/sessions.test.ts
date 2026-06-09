@@ -114,6 +114,19 @@ describe("SessionManager", () => {
     expect(new SessionManager(dbManager).get("sess-1")!.lastTurnErrored).toBeUndefined();
   });
 
+  it("docs/186: autoFixCiPaused defaults to false and round-trips via setAutoFixCiPaused", () => {
+    const mgr = new SessionManager(dbManager);
+    mgr.track("sess-1", "Pausable");
+    expect(mgr.get("sess-1")!.autoFixCiPaused).toBeUndefined();
+
+    mgr.setAutoFixCiPaused("sess-1", true);
+    // Survives a fresh manager instance (persisted on the row).
+    expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBe(true);
+
+    mgr.setAutoFixCiPaused("sess-1", false);
+    expect(new SessionManager(dbManager).get("sess-1")!.autoFixCiPaused).toBeUndefined();
+  });
+
   it("docs/150: persists provider route kind and id", () => {
     const mgr = new SessionManager(dbManager);
     mgr.track("sess-1", "Route me");

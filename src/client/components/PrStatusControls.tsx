@@ -4,6 +4,7 @@ import {
   CheckCircleIcon,
   GitMergeIcon,
   InfoIcon,
+  WrenchIcon,
 } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
 import { GitPullRequestClosedIcon } from "./GitPullRequestClosedIcon.js";
@@ -74,8 +75,33 @@ function ManagedMergeInfo({ settingsUrl }: { settingsUrl?: string }) {
   );
 }
 
-// docs/169 — the per-card AutoFixToggle was removed: auto-fix CI is now a global
-// account-level setting (Settings → PR automations), not a per-session toggle.
+// docs/169 — the per-card AutoFixToggle that controlled the on/off switch was
+// removed: auto-fix CI is now a global account-level setting (Settings → PR
+// automations). docs/186 reintroduces a DIFFERENT per-session control below — a
+// pause override on top of that global setting, not an independent on/off.
+
+/**
+ * docs/186 — per-session pause toggle for the auto-fix-CI loop. Shown in the PR
+ * overflow menu only when the global `autoFixCi` setting is on (the caller
+ * gates visibility), since pausing a globally-disabled loop is meaningless. The
+ * switch shows the *active* (not-paused) state: on ⇒ auto-fix runs for this
+ * session, off ⇒ paused. Paused state lives on the session record.
+ */
+export function AutoFixPauseToggle({ sessionId }: { sessionId: string }) {
+  const paused = useSessionStore(
+    (s) => s.sessions.find((sess) => sess.id === sessionId)?.autoFixCiPaused ?? false,
+  );
+  const setAutoFixCiPaused = useSessionStore((s) => s.setAutoFixCiPaused);
+
+  return (
+    <ToggleSwitch
+      label={<span className="inline-flex items-center gap-1"><WrenchIcon size={ICON_SIZE.XS} />Auto-fix CI</span>}
+      enabled={!paused}
+      onToggle={() => void setAutoFixCiPaused(sessionId, !paused)}
+      title={paused ? "Resume CI auto-fixing for this session" : "Pause CI auto-fixing for this session"}
+    />
+  );
+}
 
 export function AutoMergeToggle({ sessionId, autoMerge }: { sessionId: string; autoMerge?: PrCardState["autoMerge"] }) {
   const toggleAutoMerge = usePrStore((s) => s.toggleAutoMerge);

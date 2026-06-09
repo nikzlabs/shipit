@@ -171,6 +171,14 @@ export interface SessionInfo {
    * the next clean turn completion.
    */
   lastTurnErrored?: boolean;
+  /**
+   * docs/186 — per-session pause for the auto-fix-CI loop. When true, the PR
+   * poller's auto-fix loop is suppressed for THIS session even while the global
+   * `autoFixCi` setting is on. Persisted on the session row so a pause survives
+   * a restart. Undefined / false means the global setting governs. Toggled from
+   * the PR card's overflow menu (only shown when the global setting is on).
+   */
+  autoFixCiPaused?: boolean;
 }
 
 // ---- Repo types ----

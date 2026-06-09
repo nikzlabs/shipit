@@ -62,9 +62,10 @@ function recordingCb(outcome: () => AutoFixResult | Promise<AutoFixResult>): Rec
   return cb as RecordingCb;
 }
 
-function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb }) {
+function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: RecordingCb; paused?: boolean }) {
   let time = 1_000_000;
   let enabled = opts?.enabled ?? true;
+  let paused = opts?.paused ?? false;
   let runner: RunnerStub | undefined = opts?.runner ?? makeRunner(false);
   const changes: string[] = [];
   const cb = opts?.cb ?? recordingCb(() => ({ outcome: "fixed" }));
@@ -74,12 +75,15 @@ function makeFixture(opts?: { enabled?: boolean; runner?: RunnerStub; cb?: Recor
     () => enabled,
     cb,
     () => time,
+    undefined,
+    () => !paused, // docs/186 — per-session pause gate
   );
   return {
     manager,
     cb,
     changes,
     setEnabled: (v: boolean) => { enabled = v; },
+    setPaused: (v: boolean) => { paused = v; },
     setRunner: (r: RunnerStub | undefined) => { runner = r; },
     advance: (ms: number) => { time += ms; },
     fail: (oid = "sha1") => manager.handleTransition("s1", makeSummary("failure"), makeNode(oid), "o", "r"),
@@ -110,6 +114,28 @@ describe("AutoFixManager", () => {
     await tick();
     expect(fx.cb.count()).toBe(0);
     expect(fx.manager.get("s1")).toBeUndefined();
+  });
+
+  it("docs/186 — does NOT fire while the session is paused (per-session gate off)", async () => {
+    fx = makeFixture({ paused: true });
+    await fx.fail();
+    await tick();
+    expect(fx.cb.count()).toBe(0);
+    // No state created — the gate returns before the first-seen init, same as
+    // the global-disabled case.
+    expect(fx.manager.get("s1")).toBeUndefined();
+  });
+
+  it("docs/186 — resuming a paused session lets the next FAILURE poll fire", async () => {
+    fx = makeFixture({ paused: true });
+    await fx.fail();
+    await tick();
+    expect(fx.cb.count()).toBe(0);
+    // User resumes; the gate now passes and the next poll fires.
+    fx.setPaused(false);
+    await fx.fail();
+    await tick();
+    expect(fx.cb.count()).toBe(1);
   });
 
   it("PENDING / none / SUCCESS never fire", async () => {
