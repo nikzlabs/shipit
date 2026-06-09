@@ -246,6 +246,10 @@ export class PrStatusPoller {
       opts.fetchAndFixCb,
       undefined,
       this.remediationArbiter,
+      // docs/186 — per-session pause gate. A session whose row carries
+      // `autoFixCiPaused` opts out of the auto-fix loop even with the global
+      // setting on. Read at decision time so a resume takes effect next poll.
+      (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
     );
     this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);

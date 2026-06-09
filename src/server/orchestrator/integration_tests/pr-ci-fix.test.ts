@@ -124,6 +124,50 @@ describe("POST /api/sessions/:id/pr/fix-ci", () => {
   });
 });
 
+describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
+  it("persists the per-session pause flag and re-broadcasts the session list", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-fix-pause`,
+      payload: { paused: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ paused: true });
+    expect(sessionManager.get(sessionId)!.autoFixCiPaused).toBe(true);
+    // The flag shows up in the visible session list the route re-broadcasts.
+    expect(sessionManager.list().find((s) => s.id === sessionId)?.autoFixCiPaused).toBe(true);
+  });
+
+  it("resumes by clearing the flag", async () => {
+    sessionManager.setAutoFixCiPaused(sessionId, true);
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-fix-pause`,
+      payload: { paused: false },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(sessionManager.get(sessionId)!.autoFixCiPaused).toBeUndefined();
+  });
+
+  it("returns 404 for an unknown session", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/does-not-exist/pr/auto-fix-pause`,
+      payload: { paused: true },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it("returns 400 when the paused field is missing or non-boolean", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/pr/auto-fix-pause`,
+      payload: {},
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe("PrStatusPoller auto-fix state", () => {
   it("getAutoFixState returns undefined when not set", () => {
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();

@@ -467,6 +467,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN last_turn_errored INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/186 — per-session pause for the auto-fix-CI loop. The on/off master is
+  // still the global `autoFixCi` setting; this column is a per-session override
+  // that suppresses the auto-fix loop for a single session even while the global
+  // is on (e.g. the user is hand-fixing a flaky check and doesn't want the agent
+  // racing them). Persisted so a pause survives an orchestrator restart. Default
+  // 0 (not paused) — the global setting governs unless the user pauses here.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN auto_fix_ci_paused INTEGER NOT NULL DEFAULT 0");
+  },
 ];
 
 export class DatabaseManager {
