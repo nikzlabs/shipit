@@ -235,7 +235,18 @@ so it's not new.
     `make-rshared` never reaches the daemon's view. The canonical fix is then
     `MountFlags=shared` on the **dockerd service** (+ restart), not `make-rshared /`
     on PID 1. A diagnostic rung (compares dockerd/containerd mount-ns vs PID 1)
-    was added to confirm — _pending that diagnostic re-run._
+    was added to confirm.
+  - **Diagnostic result (hypothesis disproved):** dockerd **and** containerd run
+    in the **same** mount namespace as PID 1 (`mnt:[4026532375]`), and `/` **is**
+    shared after the fix — yet the daemon **still** rejects the `:rshared` bind.
+    So the blocker is *not* a namespace gap. The volume path is a **plain
+    directory on `/`**, not its own mount point, and dockerd's `:rshared` check
+    wants the source to be a real **shared mountpoint**. → Added a
+    production-realistic rung: a **dedicated self-bind directory marked shared**
+    (`mount --bind /var/obshared /var/obshared && mount --make-rshared
+    /var/obshared`), overlay state under it. _Pending that rung's verdict_ — this
+    is also the cleaner production layout (overlay state on its own shared mount,
+    independent of `/` and the docker data-root).
 - Bare Linux / VPS: _(paste verdict — systemd hosts usually mount `/` rshared at
   boot, so the plain rung may already pass)_
 - Docker Desktop (Mac/Win): _(paste verdict — may differ; note whether

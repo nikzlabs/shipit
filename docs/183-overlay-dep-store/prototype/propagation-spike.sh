@@ -163,6 +163,20 @@ if [ "$WITH_HOST_SETUP" -eq 1 ]; then
   fi
   run_rung "A2" "-v $MP:/vol:rshared"   "-v $MP:/vol:rslave"     "none";          note "host-mountpoint :rshared AFTER make-rshared /"
   [ "$VERDICT" = "none" ] && diagnose_host
+
+  # Rung 3 — the production-realistic pattern: a DEDICATED directory that is its
+  # OWN self-bind mount, marked shared. The source is then a real shared
+  # mountpoint (not just a dir on /), which is what dockerd's :rshared check
+  # actually wants. This is also how ShipIt would lay out overlay state without
+  # depending on /'s propagation or the docker data-root dir.
+  hdr "Host setup: dedicated self-bind shared mount /var/obshared (provisioner-style)"
+  setup_out="$(docker run --rm --privileged --pid=host "$IMG" nsenter -t 1 -m -- sh -c '
+    mkdir -p /var/obshared
+    mount --bind /var/obshared /var/obshared 2>/dev/null || true
+    mount --make-rshared /var/obshared && echo OBSHARED_OK' 2>&1)"
+  echo "$setup_out" | grep -q OBSHARED_OK && ok "/var/obshared is a shared mountpoint" || { warn "setup output:"; echo "$setup_out" | sed 's/^/      /'; }
+  run_rung "A3" "-v /var/obshared:/vol:rshared" "-v /var/obshared:/vol:rslave" "none"; note "dedicated self-bind shared host dir"
+  docker run --rm --privileged --pid=host "$IMG" nsenter -t 1 -m -- sh -c 'umount -R /var/obshared 2>/dev/null; rmdir /var/obshared 2>/dev/null' >/dev/null 2>&1 || true
 else
   echo
   warn "Tip: if rung A2 failed with 'not a shared mount', re-run with --with-host-setup"
