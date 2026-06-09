@@ -231,12 +231,12 @@ describe("MessageInput", () => {
           onSend={vi.fn()}
           disabled={false}
           onAgentChange={vi.fn()}
-          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet-4"], supportsReview: true }]}
-          modelInfo={{ model: "Opus 4.6", contextWindowTokens: 200000 }}
+          agents={[{ id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-opus-4-8"], supportsReview: true }]}
+          modelInfo={{ model: "claude-opus-4-8", contextWindowTokens: 200000 }}
         />,
       );
       expect(screen.getByTestId("model-agent-selector")).toBeInTheDocument();
-      expect(screen.getByText("Opus 4.6")).toBeInTheDocument();
+      expect(screen.getByText("Opus 4.8")).toBeInTheDocument();
     });
   });
 
