@@ -1097,6 +1097,94 @@ describe("CodexAdapter", () => {
     });
   });
 
+  it("maps native Codex webSearch items to visible WebSearch tool calls", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "webSearch",
+        id: "native-web-1",
+        query: "latest Vite release",
+        action: { type: "search", query: "latest Vite release" },
+      },
+    });
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "webSearch",
+        id: "native-web-1",
+        query: "latest Vite release",
+        action: { type: "search", query: "latest Vite release" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "native-web-1",
+          name: "WebSearch",
+          input: { query: "latest Vite release" },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "native-web-1",
+          content: "Searched web for: latest Vite release",
+        },
+      ],
+    });
+  });
+
+  it("maps native Codex open-page webSearch actions to visible WebFetch tool calls", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "webSearch",
+        id: "native-fetch-1",
+        query: "OpenAI docs",
+        action: { type: "openPage", url: "https://platform.openai.com/docs" },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "native-fetch-1",
+          name: "WebFetch",
+          input: { url: "https://platform.openai.com/docs", query: "OpenAI docs" },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [
+        {
+          type: "tool_result",
+          tool_use_id: "native-fetch-1",
+          content: "Fetched https://platform.openai.com/docs",
+        },
+      ],
+    });
+  });
+
   it("does not duplicate MCP tool_use when started and completed both arrive", async () => {
     await createAndInit("Hello");
     events.length = 0;

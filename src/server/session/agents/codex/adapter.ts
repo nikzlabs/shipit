@@ -139,6 +139,17 @@ interface CodexItem {
   arguments?: string; // JSON-encoded arguments
   result?: unknown;
   error?: unknown;
+  // webSearch — native Codex internet browsing. `query` is always present on
+  // the thread item; `action` distinguishes searching from opening/finding in
+  // a fetched page.
+  query?: string;
+  action?: {
+    type?: string;
+    query?: string | null;
+    queries?: string[] | null;
+    url?: string | null;
+    pattern?: string | null;
+  } | null;
   // collabToolCall — subagent orchestration (spawn_agent, send_input, wait, …)
   prompt?: string;
   receiverThreadId?: string;
@@ -206,6 +217,43 @@ function summarizeCodexSubagentPrompt(prompt: unknown): string {
   const firstLine = prompt.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
   if (!firstLine) return "Running agent...";
   return firstLine.length > 90 ? `${firstLine.slice(0, 87)}...` : firstLine;
+}
+
+function normalizeWebSearchItem(item: CodexItem): { name: "WebFetch" | "WebSearch"; input: Record<string, unknown>; summary: string } {
+  const action = item.action ?? undefined;
+  const actionType = action?.type;
+  const query = action?.query ?? item.query ?? action?.queries?.find(Boolean) ?? "";
+
+  if (actionType === "openPage") {
+    const url = action?.url ?? item.query ?? "";
+    return {
+      name: "WebFetch",
+      input: { url, query: item.query },
+      summary: url ? `Fetched ${url}` : "Fetched page",
+    };
+  }
+
+  if (actionType === "findInPage") {
+    const url = action?.url ?? "";
+    const pattern = action?.pattern ?? "";
+    return {
+      name: "WebFetch",
+      input: { url, pattern, query: item.query },
+      summary: [url ? `Fetched ${url}` : "Fetched page", pattern ? `Found "${pattern}"` : ""]
+        .filter(Boolean)
+        .join("\n"),
+    };
+  }
+
+  const queries = action?.queries?.filter((q) => q.length > 0);
+  return {
+    name: "WebSearch",
+    input: {
+      query: query || item.query || "",
+      ...(queries && queries.length > 1 ? { queries } : {}),
+    },
+    summary: query || item.query ? `Searched web for: ${query || item.query}` : "Searched web",
+  };
 }
 
 /**
@@ -1130,6 +1178,23 @@ export class CodexAdapter
         break;
       }
 
+      case "webSearch": {
+        const normalized = normalizeWebSearchItem(item);
+        if (phase === "started") {
+          this.emitToolUseOnce(id, normalized.name, normalized.input);
+        } else {
+          this.emitToolUseOnce(id, normalized.name, normalized.input);
+          const payload = item.result ?? item.error;
+          this.emitToolResult(
+            id,
+            typeof payload === "string" && payload.length > 0
+              ? payload
+              : normalized.summary,
+          );
+        }
+        break;
+      }
+
       case "collabToolCall": {
         // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
         // `wait`, `close_agent`, …). Surface it as a tool call so the review
@@ -1163,8 +1228,8 @@ export class CodexAdapter
         break;
       }
 
-      // userMessage (echo of our own prompt), reasoning, plan, webSearch,
-      // imageView, etc. have no ShipIt mapping — ignore them.
+      // userMessage (echo of our own prompt), reasoning, plan, imageView, etc.
+      // have no ShipIt mapping — ignore them.
       default:
         break;
     }
