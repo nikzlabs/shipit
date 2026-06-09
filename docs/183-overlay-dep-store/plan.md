@@ -174,6 +174,28 @@ unprivileged containers, HTTP-only, no `docker exec` (`docs/172-agent-containmen
 `disk-janitor` / archive flows about live mounts before they tear down dirs. This is the one
 genuinely new subsystem and the gating unknown for the whole proposal.
 
+#### Host-mount design decisions (decided — see [`FINDINGS.md`](./FINDINGS.md))
+
+After the spikes confirmed the substrate, the gate became a design problem, now settled:
+
+- **Mount mechanism — privileged helper driven via `docker.sock`.** The orchestrator stays
+  **unprivileged**; it uses the `docker.sock` it already holds (already root-on-host-equivalent)
+  to drive a small **privileged helper** that performs the `mount -t overlay` on the daemon
+  host with **shared mount propagation**, so the mount lives in the host namespace and the
+  daemon can bind the `merged` dir into the session. `CAP_SYS_ADMIN` is confined to that one
+  tiny, single-purpose component rather than added to the central long-lived orchestrator.
+  *(Rejected: standing `CAP_SYS_ADMIN` on the orchestrator; a custom Docker volume plugin —
+  too heavy to build/operate.)*
+- **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
+  `upper`/`work`/`merged` live under the session subtree (`sessions/{uuid}/`); the shared base
+  (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
+  mounted, and GC'd per repo, the natural home for a per-`(repo, runtime)` base. Everything is
+  on the one workspace named volume (one fs → satisfies overlay's upper+work+merged same-fs
+  rule) and mounts into the session via the **existing volume-Subpath mechanism**
+  (`buildMounts`, [container-lifecycle.ts:97-104](../../src/server/orchestrator/container-lifecycle.ts#L97-L104)).
+  *(Rejected: a dedicated overlay volume — extra plumbing for the janitor/helper without a
+  clear win at single-user scale.)*
+
 ### 5. Bounding drift and overlay depth
 
 Re-running install over generations can leave extraneous packages or stale links, and
