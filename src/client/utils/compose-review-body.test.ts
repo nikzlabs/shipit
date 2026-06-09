@@ -97,6 +97,13 @@ describe("composeReviewMessage", () => {
     expect(body).toContain("return the tool result verbatim");
   });
 
+  it("tells the parent not to stop after the review feedback", () => {
+    const body = composeReviewMessage("plan.md", null);
+    expect(body).toContain("The subagent's verbatim tool result is input for your next step");
+    expect(body).toContain("Do not stop after printing or summarizing the review feedback");
+    expect(body).toContain("Your final response to the user should describe the fixes you applied");
+  });
+
   it("truncates long comments and notes when the cap drops some", () => {
     const many = Array.from({ length: 25 }, (_, i) => selection(`c${i}`, `note ${i}`));
     const draft = review({ comments: many });
