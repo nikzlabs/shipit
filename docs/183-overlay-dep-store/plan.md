@@ -87,6 +87,21 @@ below), so the base-advance rule must hold regardless of where the install runs:
    since the base; a host-side clone into the upperdir alone would let deleted files leak through
    from the lowerdir into builds, installs, file views, and commits. Record the remote
    default-branch commit used for that sync — it stamps any base this session publishes.
+
+   > **This re-sequences the existing creation flow — call it out as real work, not a given.**
+   > Today the claim path does the *opposite*: `cloneFromCache(workspaceDir)` →
+   > `fetchAndResolveDefaultBranch` → `git checkout -b <branch>` all run on the host
+   > `workspaceDir` **before any container or overlay volume exists**
+   > ([claim-session.ts:353-374](../../src/server/orchestrator/services/claim-session.ts#L353-L374)),
+   > and the warm/manual/unarchive paths share that pre-container clone. For an overlay session
+   > that host path is the **upperdir**, so the current sequence is precisely the
+   > "host-side clone into the upperdir alone" warned against here. The overlay path must move the
+   > clone + fetch + branch + reset (and the lower-only clean/whiteout pass) to run **against the
+   > merged mount after the container starts** — i.e. through the session worker against
+   > `/workspace`, per §4's worker-backed git operations. This is a non-trivial change to the
+   > creation flow and shifts where the clone latency lands (the warm pool currently relies on
+   > that work being done pre-container, off the activation critical path); Phase 4 must restructure
+   > it explicitly rather than assume the existing pre-container clone still applies.
 3. **Run `agent.install`** on top of the base (writes only the dep delta into *this session's*
    upper layer — this never races another session).
 4. **Maybe advance the base** — publish the merged result as the next base **only if** the
@@ -224,7 +239,15 @@ the session** — see the mechanism decision below.
   teardown stays `docker volume rm` on dispose (daemon unmounts on container stop — no manual
   unmount-ordering). **Do NOT** use a name like `shipit-overlay-<id>`: it fails the
   `<12 hex>_` regex and would leak. For the on-disk `overlay-base/<hash>/` dirs, extend the
-  existing unreferenced-`dep-cache/<hash>` cache sweep (`sweepOrphanedCaches`) to cover them.
+  existing unreferenced-`dep-cache/<hash>` cache sweep (`sweepOrphanedCaches`) to cover them —
+  **but not by reusing its `liveHashes` set.** That set keys liveness on `repoUrlToHash(repo.url)`
+  ([disk-janitor.ts:580-587](../../src/server/orchestrator/disk-janitor.ts#L580-L587)) and removes
+  any entry not in it with no age guard. An `overlay-base/<scope-hash>` is keyed on **`(repo,
+  runtime fingerprint)`**, so its hash will never appear in the repo-url `liveHashes` set — a naive
+  extension would delete **every live base on the first run**, defeating the rolling base. The
+  sweep must instead compute the set of live overlay-base scope-hashes (repo url × the runtime
+  fingerprints currently in use / recently seen), and fall back to an mtime/age guard for
+  scope-hashes it can't positively confirm live, exactly as `sweepStaleNmStores` guards by mtime.
 
   *Confirm-before-build — done.* `volume-driver-overlay-spike.sh`, updated to seed the real
   production layout (`lowerdir` under the workspace volume's `overlay-base/<hash>/`,
@@ -425,7 +448,8 @@ on top of the simplified install path.
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
 design decisions are made (see Decisions). Status of each is tracked in
-[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3/#4 are resolved.
+[`FINDINGS.md`](./FINDINGS.md); #1/#2/#3 are resolved, #4 is reopened (compose/dev-server
+delivery under the daemon-overlay mechanism — see below).
 
 1. **Host-mount feasibility (the gate).** ✅ **Resolved.** Can the unprivileged orchestrator own
    a per-session whole-workspace overlay within the containment model (`docs/172`), across all
@@ -453,11 +477,28 @@ design decisions are made (see Decisions). Status of each is tracked in
    late-but-older publisher correctly declines (ancestry, not wall-clock); a force-pushed
    default branch does not wait for impossible old-lineage ancestry and instead starts a clean
    generation.
-4. **Compose + file watcher over the merged dir.** ✅ **Resolved.** Bind-mounting the overlay
-   **merged** dir reads through to the base and writes via the bind reach the upper
-   (compose-service pattern); `inotify` over the overlay sees both plain creates and copy-up
-   modifies. Confirmed on Docker Desktop/Mac (named-volume substrate, `run-in-docker.sh`,
-   21/21 incl. inotify) and bind-mount-corroborated on WSL2.
+4. **Compose + file watcher over the merged dir.** ⚠️ **Substrate confirmed; multi-container
+   delivery still open under the daemon-overlay mechanism.** The spike proved the *filesystem*
+   behavior — bind-mounting the overlay **merged** dir reads through to the base and writes reach
+   the upper, and `inotify` over the overlay sees both plain creates and copy-up modifies
+   (Docker Desktop/Mac named-volume substrate, `run-in-docker.sh`, 21/21 incl. inotify;
+   bind-mount-corroborated on WSL2). **But that spike mounted the merged dir within a single
+   container's mount namespace** — the model §4 *rejected*. Under the adopted daemon-overlay
+   mechanism the merged tree exists only as the per-session `local` `type=overlay` volume the
+   daemon mounts into the **agent** container. Compose **dev-server services are separate
+   containers**, and today they mount the workspace as a **Subpath of the shared
+   `shipit-workspace` volume** (`entry.volume = { subpath }`,
+   [compose-generator.ts:492-518](../../src/server/orchestrator/compose-generator.ts#L492-L518)).
+   For an overlay session that subpath resolves to the session's **upperdir**, so a vite/next dev
+   server would see a workspace with **no `node_modules` and no lowerdir source** and fail to
+   start. The plan needs an explicit mechanism for giving compose service containers the **same
+   merged view** — e.g. every compose service mounts the **same per-session `type=overlay`
+   volume** at `/workspace` instead of a `shipit-workspace` Subpath. That has to be reconciled
+   with the kernel's `upperdir is in-use by another mount` constraint (§4): two containers must
+   share **one** daemon overlay mount of that volume, not each construct a second overlay over the
+   same upper. Until that is specified and proven (a multi-container, single-overlay-volume spike),
+   previews/dev-servers are **not** covered for overlay sessions — this is a Phase 4 blocker, not a
+   resolved item.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose

@@ -173,8 +173,16 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       dependency edits before publish (`child-sessions.ts`).
 - [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
       only respects **live** mounts, not archived sessions.
-- [ ] Production-wire compose bind-mount over the merged dir + file watcher (behavior already
-      verified in Phase 0).
+- [ ] **Give compose service containers the merged view** (Open Q #4 — reopened). The Phase 0
+      spike only proved the filesystem behavior **within a single container's namespace** (the
+      model §4 rejected); under daemon-overlay the merged tree is the agent container's per-session
+      `type=overlay` volume, while compose dev-servers are separate containers that today mount a
+      Subpath of `shipit-workspace` — which for an overlay session is the **upperdir** (no
+      `node_modules`, no lowerdir source), so the dev server fails to start. Design + prove (a
+      multi-container spike) mounting the **same** per-session `type=overlay` volume into each
+      compose service, reconciled with the kernel's `upperdir is in-use by another mount` rule (one
+      shared daemon overlay mount, not a second overlay over the same upper). **Overlay-session
+      preview support is gated on this spike.** Then wire the file watcher over that merged mount.
 - [ ] Route production file/doc/git/compose/watcher/post-turn flows through the workspace-view
       resolver so the UI, PR/diff data, rollback/rebase/push/pull, and auto-commit operate on
       the same merged tree the agent sees.
