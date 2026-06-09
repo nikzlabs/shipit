@@ -24,20 +24,26 @@ to protect your edits. To customize an installed skill safely:
 
 - **Fork it**: copy the contents into a new `.claude/skills/<your-name>/`
   directory (no marker, no double-underscore), then modify freely.
-- **Uninstall and rewrite**: remove the install via the Skills tab, then
-  re-author as a hand-written skill.
+- **Remove and rewrite**: delete the `<plugin>__<skill>/` directory (marker
+  and all) and commit, then re-author as a hand-written skill.
 
 Do not delete just the `.shipit-installed.json` file to "convert" a managed
-skill into a hand-written one — `git log` will still show ShipIt installed
-it, and the uninstall verb will fail to find it.
+skill into a hand-written one — delete the whole directory if you mean to
+remove it, or fork into a new directory if you mean to customize it.
 
-## Installs auto-commit
+## Installing and removing skills
 
-When the user clicks Install in the Skills tab, ShipIt writes the skill
-files and immediately makes a path-scoped commit
-(`Install <plugin> from <marketplace>`). Unrelated working-tree edits stay
-out of that commit. The next user turn's normal auto-commit will sweep
-those unrelated edits as usual.
+**Install** from **Settings → Skills** is repo-targeted: ShipIt spawns a
+dedicated session that writes the skill files and opens a pull request titled
+`Install <plugin> skill`. The skill becomes available in a session once that
+PR is merged and lands on the branch you're working from — it does not appear
+in an unrelated in-progress session.
+
+**Removing a skill has no dedicated UI** — by design (CLAUDE.md §5). Removing a
+marketplace skill is just deleting its directory: if the user asks you to
+remove or uninstall an installed skill, do exactly that — delete
+`.claude/skills/<plugin>__<skill>/` and commit. (A hand-written skill is the
+same: delete its `.claude/skills/<name>/` directory.)
 
 ## How to know which skills are available right now
 
@@ -49,7 +55,8 @@ Look at the workspace at chat time, not at a memory of an earlier state:
   directory name — that's how plugin namespacing with `:` works inside a
   flat filesystem).
 
-If the user just installed something, your next message naturally picks it
-up — the orchestrator either respawns `claude -p` for a fresh process (the
-default) or kills the persistent worker-side process so its replacement
-re-scans the skills directory.
+Whatever skill directories are present in `.claude/skills/` at chat time, your
+next spawn picks them up — the orchestrator either respawns `claude -p` for a
+fresh process (the default) or kills the persistent worker-side process so its
+replacement re-scans the skills directory. (Marketplace installs arrive via a
+merged PR, so they show up once that PR is merged into the branch you're on.)

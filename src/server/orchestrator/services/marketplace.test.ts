@@ -2,7 +2,8 @@
  * Marketplace service tests (docs/149).
  *
  * Builds a fake catalog clone on disk and exercises the listPlugins /
- * installPlugin / uninstallPlugin / scanInstalledPlugins flow against it.
+ * installPlugin flow against it. (Uninstall is not a ShipIt feature — the
+ * agent handles removal; see docs/149.)
  * No network calls — `ensureCatalogCloned` is bypassed by pre-populating the
  * cache dir. The git operations run against a real `simpleGit` repo in a
  * temp dir so `commitPaths` is verified end-to-end too.
@@ -20,8 +21,6 @@ import { MarketplaceStore } from "../marketplace-store.js";
 import {
   installPlugin,
   listPlugins,
-  uninstallPlugin,
-  scanInstalledPlugins,
   withWorkspaceLock,
   rewriteFrontmatterName,
   readPluginSkillBody,
@@ -328,67 +327,6 @@ describe("services/marketplace (docs/149)", () => {
           agentRegistry,
         }),
       ).rejects.toMatchObject({ statusCode: 400 });
-    });
-  });
-
-  describe("scanInstalledPlugins + uninstallPlugin", () => {
-    it("scans only directories with a valid marker, and uninstall removes them", async () => {
-      const workspace = path.join(tmp, "ws4");
-      const git = await initRepo(workspace);
-      await withWorkspaceLock(workspace, async () =>
-        installPlugin({
-          workspaceDir: workspace,
-          agentId: "claude",
-          marketplaceId: "test-catalog",
-          pluginName: PLUGIN_NAME,
-          cacheRoot,
-          store,
-          git,
-          agentRegistry,
-        }),
-      );
-      // Add a hand-written sibling dir; scan must ignore it.
-      const handDir = path.join(workspace, ".claude", "skills", "hand-written");
-      fs.mkdirSync(handDir, { recursive: true });
-      fs.writeFileSync(path.join(handDir, "SKILL.md"), "---\nname: hand\n---\nmine\n");
-
-      const installed = await scanInstalledPlugins(workspace, "claude", agentRegistry);
-      expect(installed).toHaveLength(2);
-      expect(installed.every((e) => e.marketplaceId === "test-catalog")).toBe(true);
-      expect(installed.every((e) => e.pluginName === PLUGIN_NAME)).toBe(true);
-
-      const removed = await withWorkspaceLock(workspace, async () =>
-        uninstallPlugin({
-          workspaceDir: workspace,
-          agentId: "claude",
-          marketplaceId: "test-catalog",
-          pluginName: PLUGIN_NAME,
-          git,
-          agentRegistry,
-        }),
-      );
-      expect(removed.removed).toHaveLength(2);
-      // Hand-written sibling survived.
-      expect(fs.existsSync(path.join(handDir, "SKILL.md"))).toBe(true);
-      // Managed dirs gone.
-      expect(
-        fs.existsSync(path.join(workspace, ".claude", "skills", `${PLUGIN_NAME}__${SKILL_NAME_A}`)),
-      ).toBe(false);
-    });
-
-    it("uninstall is a 404 when nothing is installed", async () => {
-      const workspace = path.join(tmp, "ws5");
-      const git = await initRepo(workspace);
-      await expect(
-        uninstallPlugin({
-          workspaceDir: workspace,
-          agentId: "claude",
-          marketplaceId: "test-catalog",
-          pluginName: PLUGIN_NAME,
-          git,
-          agentRegistry,
-        }),
-      ).rejects.toMatchObject({ statusCode: 404 });
     });
   });
 

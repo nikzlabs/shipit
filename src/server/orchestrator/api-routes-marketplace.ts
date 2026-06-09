@@ -14,10 +14,12 @@ import {
   ServiceError,
   ensureCatalogCloned,
   getCatalogCacheRoot,
+  installPluginAsSession,
   listMarketplaces,
   listPlugins,
   readPluginSkillBody,
 } from "./services/index.js";
+import { getErrorMessage } from "./validation.js";
 import type { AgentId } from "../shared/types.js";
 
 export interface MarketplaceRouteDeps {
@@ -79,6 +81,58 @@ export async function registerMarketplaceRoutes(
           return;
         }
         reply.code(500).send({ error: (err as Error).message });
+      }
+    },
+  );
+
+  // POST /api/plugins/install — repo-targeted install (docs/149 v1c).
+  //
+  // App-wide, NOT session-scoped: the user explicitly picks a repo, and the
+  // install runs in its own freshly-spawned session on a new branch and opens a
+  // PR. The current session (if any) is never touched. The session-scoped
+  // `POST /api/sessions/:id/plugins/install` route is retained in
+  // api-routes-files.ts for the future "install into this workspace" option.
+  app.post<{ Body: { marketplaceId?: unknown; pluginName?: unknown; repoUrl?: unknown } }>(
+    "/api/plugins/install",
+    async (request, reply) => {
+      const marketplaceId = typeof request.body.marketplaceId === "string" ? request.body.marketplaceId : null;
+      const pluginName = typeof request.body.pluginName === "string" ? request.body.pluginName : null;
+      const repoUrl = typeof request.body.repoUrl === "string" ? request.body.repoUrl.trim() : null;
+      if (!marketplaceId || !pluginName || !repoUrl) {
+        reply.code(400).send({ error: "marketplaceId, pluginName, and repoUrl are required" });
+        return;
+      }
+      if (!deps.claimSessionService) {
+        reply.code(503).send({ error: "Session creation is unavailable in this runtime." });
+        return;
+      }
+      try {
+        await ensureCatalogCloned(marketplaceStore, marketplaceId, cacheRoot);
+        const result = await installPluginAsSession(
+          {
+            claimService: deps.claimSessionService,
+            sessionManager: deps.sessionManager,
+            runnerRegistry: deps.runnerRegistry,
+            repoStore: deps.repoStore,
+            createGitManager: deps.createGitManager,
+            agentRegistry: deps.agentRegistry,
+            marketplaceStore,
+            cacheRoot,
+            githubAuthManager: deps.githubAuthManager,
+            sseBroadcast: deps.sseBroadcast,
+            defaultAgentId: deps.defaultAgentId,
+            ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
+            ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
+          },
+          { repoUrl, marketplaceId, pluginName },
+        );
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: getErrorMessage(err) });
       }
     },
   );

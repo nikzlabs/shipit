@@ -555,21 +555,6 @@ export interface InstallMarker {
   skillMdHash: string;
 }
 
-/**
- * One row of the Installed sub-tab. v1 lists ShipIt-managed installs only;
- * hand-written skills are surfaced in the composer's `/`-autocomplete (doc 138)
- * instead.
- */
-export interface InstalledPluginInfo {
-  marketplaceId: string;
-  pluginName: string;
-  skillName: string;
-  version: string;
-  installedAt: string;
-  /** Filesystem path of the installed `<plugin>__<skill>/` directory. */
-  directory: string;
-}
-
 /** Returned from `installPlugin()` so the client can refresh + report status. */
 export interface InstallResult {
   /** The directories written under `.claude/skills/` (one per skill). */

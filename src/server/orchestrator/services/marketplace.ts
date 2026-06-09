@@ -33,7 +33,6 @@ import type {
   AgentId,
   InstallMarker,
   InstallResult,
-  InstalledPluginInfo,
   MarketplaceInfo,
   MarketplaceSource,
   PluginInfo,
@@ -535,94 +534,14 @@ export function rewriteFrontmatterName(body: string, newName: string): string {
   return body.replace(match[0], `---\n${replaced}\n---`);
 }
 
-/**
- * Uninstall a plugin: remove every `<plugin>__<skill>/` directory whose marker
- * matches the given `marketplaceId` + `pluginName`. Refuses to touch
- * directories without a marker (hand-written) or with a different plugin's
- * marker. Auto-commits the removal with a path-scoped `git add`.
- *
- * Caller MUST already hold `withWorkspaceLock(workspaceDir, ...)`.
- */
-export async function uninstallPlugin(opts: {
-  workspaceDir: string;
-  agentId: AgentId;
-  marketplaceId: string;
-  pluginName: string;
-  git: GitManager;
-  agentRegistry: AgentRegistry;
-}): Promise<{ removed: string[]; commitHash: string | null }> {
-  const { workspaceDir, agentId, marketplaceId, pluginName, git, agentRegistry } = opts;
-  const installed = await scanInstalledPlugins(workspaceDir, agentId, agentRegistry);
-  const matching = installed.filter(
-    (p) => p.marketplaceId === marketplaceId && p.pluginName === pluginName,
-  );
-  if (matching.length === 0) {
-    throw new ServiceError(404, `No installed plugin ${pluginName} from ${marketplaceId}`);
-  }
-
-  const removedPaths: string[] = [];
-  for (const entry of matching) {
-    await fs.rm(entry.directory, { recursive: true, force: true });
-    removedPaths.push(path.relative(workspaceDir, entry.directory));
-  }
-
-  const commitHash = await git.commitPaths(
-    removedPaths,
-    `Uninstall ${pluginName} from ${marketplaceId}`,
-  );
-  return { removed: removedPaths, commitHash };
-}
-
-// ---- Installed listing ----
-
-/**
- * Scan `<workspaceDir>/<agentSkillsDir>/` for ShipIt-managed installs (those
- * carrying a `.shipit-installed.json` marker). Hand-written skills without a
- * marker are intentionally excluded — they're already surfaced in the
- * composer's `/`-autocomplete (doc 138).
- */
-export async function scanInstalledPlugins(
-  workspaceDir: string,
-  agentId: AgentId,
-  agentRegistry: AgentRegistry,
-): Promise<InstalledPluginInfo[]> {
-  const skillsRoot = skillsRootFor(workspaceDir, agentId, agentRegistry);
-  let entries;
-  try {
-    entries = await fs.readdir(skillsRoot, { withFileTypes: true });
-  } catch {
-    return [];
-  }
-  const out: InstalledPluginInfo[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    const dir = path.join(skillsRoot, entry.name);
-    const markerPath = path.join(dir, INSTALL_MARKER_FILENAME);
-    let marker: InstallMarker | null = null;
-    try {
-      marker = JSON.parse(await fs.readFile(markerPath, "utf-8")) as InstallMarker;
-    } catch {
-      continue;
-    }
-    // Skill name is the part after `__` in the directory name. If we ever
-    // change the delimiter, also update `targetSkillDirName()` above.
-    const sep = entry.name.indexOf("__");
-    const skillName = sep >= 0 ? entry.name.slice(sep + 2) : entry.name;
-    out.push({
-      marketplaceId: marker.marketplaceId,
-      pluginName: marker.pluginName,
-      skillName,
-      version: marker.version,
-      installedAt: marker.installedAt,
-      directory: dir,
-    });
-  }
-  out.sort((a, b) => {
-    const byPlugin = a.pluginName.localeCompare(b.pluginName);
-    return byPlugin !== 0 ? byPlugin : a.skillName.localeCompare(b.skillName);
-  });
-  return out;
-}
+// Uninstall is intentionally NOT a ShipIt feature (docs/149, 2026-06-09):
+// removing a marketplace skill is just "delete the `<plugin>__<skill>/`
+// directory and commit it" — a plain agent task under CLAUDE.md §5 ("chat is
+// the input surface, the agent is the actor"). The user asks the agent to
+// remove a skill rather than pressing a dedicated button, so there's no
+// uninstall service, route, or installed-scan here. Install keeps its UI
+// because it adds real value the agent can't replicate cheaply: catalog
+// discovery, preview-before-consent, and the namespaced flat-dir write.
 
 // ---- Helpers exported for tests ----
 

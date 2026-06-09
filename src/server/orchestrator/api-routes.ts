@@ -41,6 +41,7 @@ import { registerSourceRoutes } from "./api-routes-source.js";
 import { registerFileRoutes } from "./api-routes-files.js";
 import { registerGitRoutes } from "./api-routes-git.js";
 import { registerSessionRoutes } from "./api-routes-session.js";
+import { createClaimSessionService, type ClaimSessionService } from "./services/claim-session.js";
 import { registerPreviewRoutes } from "./api-routes-preview.js";
 import { registerGitHubRoutes } from "./api-routes-github.js";
 import { registerSecretsRoutes } from "./api-routes-secrets.js";
@@ -170,6 +171,15 @@ export interface ApiDeps {
    * that don't seed any marketplaces can omit this and the routes go away.
    */
   marketplaceStore?: MarketplaceStore;
+  /**
+   * Shared claim-session service (docs/149 v1c). Constructed once in
+   * `registerApiRoutes` and threaded to every route module that mints a
+   * repo-backed session (the home-screen claim, agent spawn, and the
+   * skill-install-as-session route). A single instance is REQUIRED: the
+   * per-repo serialization lives in the factory closure, so separate
+   * instances would not guard concurrent git ops on the same bare cache.
+   */
+  claimSessionService?: ClaimSessionService;
   /** Service managers — per-session compose lifecycle (keyed by sessionId). */
   serviceManagers?: Map<string, ServiceManager>;
   /**
@@ -262,11 +272,32 @@ export async function registerApiRoutes(
     done();
   });
 
+  // Single shared claim-session service for every surface that mints a
+  // repo-backed session (home-screen claim, agent spawn, skill-install-as-
+  // session). The per-repo promise chain lives in the factory closure, so all
+  // callers MUST share this instance for the serialization to guard the bare
+  // cache. See ApiDeps.claimSessionService.
+  const claimSessionService = deps.claimSessionService ?? createClaimSessionService({
+    sessionManager: deps.sessionManager,
+    repoStore: deps.repoStore,
+    createGitManager: deps.createGitManager,
+    createRepoGit: deps.createRepoGit,
+    githubAuthManager: deps.githubAuthManager,
+    getSharedRepoDir: deps.getSharedRepoDir,
+    createSessionDirFull: deps.createSessionDirFull,
+    sseBroadcast: deps.sseBroadcast,
+    ...(deps.warmSessionForRepo ? { warmSessionForRepo: deps.warmSessionForRepo } : {}),
+    ...(deps.waitForWarmSession ? { waitForWarmSession: deps.waitForWarmSession } : {}),
+    ...(deps.shouldSkipClaimFetch ? { shouldSkipClaimFetch: deps.shouldSkipClaimFetch } : {}),
+    ...(deps.containerManager ? { containerManager: deps.containerManager } : {}),
+  });
+  const deps2: ApiDeps = { ...deps, claimSessionService };
+
   // Register all domain-specific route modules
-  await registerBootstrapRoutes(app, deps);
-  await registerFileRoutes(app, deps);
-  await registerGitRoutes(app, deps);
-  await registerSessionRoutes(app, deps);
+  await registerBootstrapRoutes(app, deps2);
+  await registerFileRoutes(app, deps2);
+  await registerGitRoutes(app, deps2);
+  await registerSessionRoutes(app, deps2);
   await registerContainerRoutes(app, deps);
   await registerHostRoutes(app, deps);
   await registerSourceRoutes(app, deps);
@@ -297,7 +328,7 @@ export async function registerApiRoutes(
   // test setups that don't need this surface keep their route table minimal.
   if (deps.marketplaceStore) {
     await registerMarketplaceRoutes(app, {
-      ...deps,
+      ...deps2,
       marketplaceStore: deps.marketplaceStore,
       stateDir: deps.stateDir ?? deps.workspaceDir,
     });
