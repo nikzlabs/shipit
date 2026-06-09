@@ -75,6 +75,23 @@ three are theme-proof with no new tokens and don't touch the selected-row fill. 
 A/D for a clean low-cost change; reach for C (title fill) only if a bolder signal is
 worth the per-theme token work.
 
+## Decision — implemented: D1 · outline pill
+
+**D1 (title outline pill)** was chosen and implemented. The old both-edges row
+border was removed and the attention signal moved onto the title:
+
+```tsx
+// SessionItem, the title <p>
+needsAttention
+  ? "inline-block max-w-full border-[1.5px] border-(--color-attention) rounded px-1.5 py-px"
+  : ""
+```
+
+`inline-block max-w-full` lets the border hug the title yet still truncate with an
+ellipsis on long names; `border-(--color-attention)` reuses the existing per-theme
+token, so it works in all 14 themes with **no new tokens** and leaves the gray
+selected-row fill untouched.
+
 ## Key files
 
 - `src/client/components/SessionSidebar.tsx` — `SessionItem` (the row). The

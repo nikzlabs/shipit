@@ -351,8 +351,6 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
         indented ? "ml-5" : ""
       } ${
-        needsAttention ? "border-x-2 border-x-(--color-attention)" : "border-x-2 border-x-transparent"
-      } ${
         isArchived ? "opacity-60" : ""
       } ${
         isCurrent
@@ -409,7 +407,15 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           disabled={disabled}
           className="flex-1 min-w-0 text-left"
         >
-          <p className="truncate leading-snug">{session.title}</p>
+          <p
+            className={`truncate leading-snug ${
+              needsAttention
+                ? "inline-block max-w-full border-[1.5px] border-(--color-attention) rounded px-1.5 py-px"
+                : ""
+            }`}
+          >
+            {session.title}
+          </p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <SessionStatusDot sessionId={session.id} />
             {session.kind === "ops" && (
