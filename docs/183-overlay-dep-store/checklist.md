@@ -159,9 +159,19 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       equivalent explicit whiteout pass) before install/activation. This must create whiteouts for
       lowerdir files deleted since the base; do not rely on a pre-container host checkout into the
       upperdir.
-- [ ] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
+- [x] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
       + install command); skip install only on exact match; non-default checkout / mismatch
-      whiteouts the marker first.
+      whiteouts the marker first. **Done** — new
+      [`install-marker.ts`](../../src/server/session/install-marker.ts) (pure
+      `serialize`/`parse`/`markerMatches`, version-gated; a legacy bare-timestamp marker parses to
+      `null` → safe one-time reinstall). The worker `/install` gate
+      ([session-worker.ts](../../src/server/session/session-worker.ts)) computes the stamp
+      (`git rev-parse HEAD` via `readSourceCommit`, `runtimeKey()`, the raw `commands`), skips only
+      on an exact match, and whiteouts a stale/mismatched marker before reinstalling; the marker is
+      written on install success. Covered by `install-marker.test.ts` (14 unit tests) + worker
+      integration tests (same-command skip, changed-command re-run). *The base captures `.shipit/`
+      (only `.git` is excluded), so a fresh session over an unchanged-`main` base reads a valid
+      stamp from the lowerdir and skips at ~0.*
 - [x] **Publish compare-and-swap:** advance the base only for **exit-0 pre-user installs whose
       recorded source base is the remote default commit**, and when the candidate strictly
       descends the base (`git merge-base --is-ancestor`) under a short per-`(repo, runtime

@@ -53,7 +53,14 @@ import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
 import { registerPresentFilesRoutes } from "./present-view.js";
-import { tuneNpmInstall } from "./install-runtime.js";
+import { runtimeKey, tuneNpmInstall } from "./install-runtime.js";
+import {
+  makeMarker,
+  markerMatches,
+  parseMarker,
+  serializeMarker,
+  type InstallMarkerStamp,
+} from "./install-marker.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -635,15 +642,30 @@ export class SessionWorker extends EventEmitter {
         return reply.code(400).send({ error: "commands array is required" });
       }
 
-      // Check marker file — skip if install already completed. Check before
-      // the `running` guard so a pre-install that finished + wrote the marker
-      // (warm-pool path) but hasn't yet flipped `_installRunning` to false on
-      // a racy caller still short-circuits cleanly.
+      // Check the stamped marker — skip only when it EXACTLY matches this
+      // session's install context (source commit + runtime fingerprint +
+      // install commands), per docs/183 Phase 3. Presence alone is no longer
+      // enough: a session over a shared overlay base inherits the base's marker
+      // from the lowerdir, so the stamp is what proves the base's deps still fit
+      // this checkout/runtime/command. A mismatch (non-default checkout,
+      // force-push, edited install command, incompatible runtime) or a legacy
+      // bare-timestamp marker is treated as a miss — the stale marker is removed
+      // and `agent.install` re-runs. Checked before the `running` guard so a
+      // finished pre-install that wrote the marker (warm-pool path) but hasn't
+      // yet flipped `_installRunning` still short-circuits cleanly.
       const markerDir = path.join(this.workspaceDir, ".shipit");
       const markerFile = path.join(markerDir, ".install-done");
-      if (fs.existsSync(markerFile)) {
+      const stamp: InstallMarkerStamp = {
+        sourceCommit: await this.readSourceCommit(),
+        runtimeKey: runtimeKey(),
+        installCommands: commands,
+      };
+      if (await this.installMarkerMatches(markerFile, stamp)) {
         return { skipped: true, reason: "marker" };
       }
+      // Stale / legacy / mismatched marker — whiteout it before reinstalling so
+      // a partial reinstall can never leave an old stamp claiming success.
+      await fsp.rm(markerFile, { force: true }).catch(() => {});
 
       if (this._installRunning) {
         // Join the in-flight install instead of failing. The caller awaits the
@@ -662,7 +684,7 @@ export class SessionWorker extends EventEmitter {
       // via SSE (`install_done` / `install_error`). The lockfile-keyed copy
       // store fast path (docs/148) was removed in docs/183 Phase 1 — the
       // overlay rolling base will reclaim the install-extract cost instead.
-      void this.runRealInstallCommands(commands, markerDir, markerFile);
+      void this.runRealInstallCommands(commands, markerDir, markerFile, stamp);
       return { started: true };
     });
 
@@ -1040,8 +1062,8 @@ export class SessionWorker extends EventEmitter {
    * broadcast so an orchestrator that races to query `/install/status` right
    * after the SSE event sees a consistent `running: false` snapshot.
    */
-  private finishInstallOk(markerDir: string, markerFile: string): void {
-    this.writeMarker(markerDir, markerFile);
+  private finishInstallOk(markerDir: string, markerFile: string, stamp: InstallMarkerStamp): void {
+    this.writeMarker(markerDir, markerFile, stamp);
     this._lastInstallResult = { ok: true };
     this._installRunning = false;
     this._installProcess = null;
@@ -1062,6 +1084,7 @@ export class SessionWorker extends EventEmitter {
     commands: string[],
     markerDir: string,
     markerFile: string,
+    stamp: InstallMarkerStamp,
   ): Promise<void> {
     try {
       for (const rawCmd of commands) {
@@ -1083,7 +1106,7 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
-      this.finishInstallOk(markerDir, markerFile);
+      this.finishInstallOk(markerDir, markerFile, stamp);
     } catch (err) {
       const message = getErrorMessage(err);
       this._lastInstallResult = { ok: false, message };
@@ -1096,10 +1119,64 @@ export class SessionWorker extends EventEmitter {
     }
   }
 
-  /** Write the `.shipit/.install-done` marker. */
-  private writeMarker(markerDir: string, markerFile: string): void {
+  /**
+   * Write the stamped `.shipit/.install-done` marker (docs/183 Phase 3). The
+   * stamp records the source commit + runtime fingerprint + install commands
+   * the install ran against, so a later `/install` skips only on an exact match.
+   */
+  private writeMarker(markerDir: string, markerFile: string, stamp: InstallMarkerStamp): void {
     fs.mkdirSync(markerDir, { recursive: true });
-    fs.writeFileSync(markerFile, new Date().toISOString());
+    fs.writeFileSync(markerFile, serializeMarker(makeMarker(stamp, new Date().toISOString())));
+  }
+
+  /**
+   * Read the stamped marker and report whether it exactly matches `stamp`.
+   * A missing file, a legacy bare-timestamp marker, or a corrupt/future-version
+   * stamp all parse to `null` and count as a miss — the caller then whiteouts
+   * the marker and reinstalls.
+   */
+  private async installMarkerMatches(
+    markerFile: string,
+    stamp: InstallMarkerStamp,
+  ): Promise<boolean> {
+    let raw: string;
+    try {
+      raw = await fsp.readFile(markerFile, "utf8");
+    } catch {
+      return false; // no marker yet
+    }
+    const marker = parseMarker(raw);
+    return marker !== null && markerMatches(marker, stamp);
+  }
+
+  /**
+   * Resolve the git HEAD of the workspace for the marker stamp. Returns `null`
+   * for a non-git workspace (standalone/template sessions), where the marker
+   * simply omits the commit from its match decision. Best-effort: any git
+   * failure also yields `null` rather than blocking the install.
+   */
+  private readSourceCommit(): Promise<string | null> {
+    return new Promise((resolve) => {
+      let out = "";
+      let settled = false;
+      const done = (v: string | null) => {
+        if (!settled) {
+          settled = true;
+          resolve(v);
+        }
+      };
+      try {
+        const proc = spawn("git", ["rev-parse", "HEAD"], {
+          cwd: this.workspaceDir,
+          stdio: ["ignore", "pipe", "ignore"],
+        });
+        proc.stdout?.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+        proc.on("error", () => done(null));
+        proc.on("close", (code) => done(code === 0 && out.trim() ? out.trim() : null));
+      } catch {
+        done(null);
+      }
+    });
   }
 
   /**
