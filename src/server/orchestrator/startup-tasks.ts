@@ -227,9 +227,11 @@ export function scheduleStartupTasks(
  * `die`/`oom` event reaches the orchestrator, and without this rescue the
  * next turn's first `agent_tool_result` calls `replaceInProgress`, which
  * deletes the orphaned in-progress rows of the OOM'd turn. The user loses
- * everything the agent produced before the crash. Mirror the error-handler
- * shape: persist `runner.chatMessageGroups` as in-progress, finalize, then
- * append a synthetic assistant error so the failure is visible inline.
+ * everything the agent produced before the crash. For active turns, mirror
+ * the error-handler shape: persist `runner.chatMessageGroups` as in-progress,
+ * finalize, then append a synthetic assistant error so the failure is visible
+ * inline. For idle runners, never write `chatMessageGroups`; they may contain
+ * the last completed turn and would duplicate already-finalized history.
  */
 export function handleContainerExited(
   sessionId: string,
@@ -243,7 +245,7 @@ export function handleContainerExited(
   const exitDetail = error
     ? `: ${error}`
     : exitCode !== undefined && exitCode !== 0
-      ? ` (exit ${exitCode}${exitCode === 137 ? ", likely OOMKilled" : ""})`
+      ? ` (exit ${exitCode})`
       : "";
   if (broadcastLog) {
     broadcastLog(sessionId, "server", `Session container exited unexpectedly${exitDetail}.`);
@@ -278,20 +280,22 @@ function preservePartialTurnOnContainerExit(
   exitDetail: string,
 ): void {
   try {
-    const groups = runner.chatMessageGroups;
-    const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
-    const partialMessages = persistableGroups.map((g) => ({
-      role: "assistant" as const,
-      text: g.text,
-      toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-      toolResults: g.toolResults?.length ? g.toolResults : undefined,
-      subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-    }));
-    // Even when there are no in-memory groups (e.g. this runner reconnected
-    // to a container whose prior turn left in_progress=1 rows in the DB),
-    // finalize so those rows are preserved instead of being deleted by the
-    // next turn's replaceInProgress.
-    chatHistoryManager.replaceInProgress(sessionId, partialMessages);
+    if (runner.running) {
+      const groups = runner.chatMessageGroups;
+      const persistableGroups = groups.filter((g) => g.text || g.toolUse.length > 0);
+      const partialMessages = persistableGroups.map((g) => ({
+        role: "assistant" as const,
+        text: g.text,
+        toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+        toolResults: g.toolResults?.length ? g.toolResults : undefined,
+        subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+      }));
+      chatHistoryManager.replaceInProgress(sessionId, partialMessages);
+    }
+    // Even when the runner is idle or there are no in-memory groups (e.g.
+    // this runner reconnected to a container whose prior turn left
+    // in_progress=1 rows in the DB), finalize so those rows are preserved
+    // instead of being deleted by the next turn's replaceInProgress.
     chatHistoryManager.finalizeInProgress(sessionId);
     chatHistoryManager.append(sessionId, {
       role: "assistant",
