@@ -308,6 +308,13 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
         preview service sees `node_modules` from the lowerdir — is host-gated.)
   - [x] File watcher: the agent-container file-tree watcher is same-namespace inotify over `/workspace`
         (the merged mount), already correct — no change.
+- [ ] **NOT DONE — warm-pool standby overlay mount.** A session that claims a warm standby reuses the
+      standby container, which is built (`warm-pool-manager.ts`) WITHOUT an `overlaySpec` — so warm-
+      claimed sessions silently run plain (non-overlay). The warm pool is the primary prep path the
+      plan targets, so it needs `prepareOverlaySpec` wiring once source-sync lands. Until then the
+      on-activation backstop in `setupServiceManager` still runs install + (for genuine overlay
+      containers) publish; a warm-claimed session just pays a full install. Harmless while the flag
+      is off; flagged so it isn't forgotten when enabling.
 - [ ] **NOT DONE — host-gated. Route production file/doc/git/compose/watcher/post-turn flows through a
       workspace-view resolver.** For an overlay session `session.workspaceDir` is only the upperdir, so
       the orchestrator must read/write the merged tree via worker HTTP (file tree/content/edit, doc

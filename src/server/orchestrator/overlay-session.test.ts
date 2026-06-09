@@ -162,6 +162,33 @@ describe("publishOverlayBaseAfterInstall", () => {
     expect(fetchSnapshot).not.toHaveBeenCalled();
   });
 
+  it("short-circuits (no snapshot pull) when the base is already at this commit", async () => {
+    const COMMIT = "cafef00dcafef00dcafef00dcafef00dcafef00d";
+    // Seed a base at COMMIT via a first publish.
+    const seed = vi.fn(async (_url: string, dest: string) => {
+      await fs.mkdir(dest, { recursive: true });
+      await fs.writeFile(path.join(dest, "marker"), "v0");
+    });
+    await publishOverlayBaseAfterInstall(session(), scope, {
+      stateDir, workerUrl: "http://worker",
+      isAncestor: async () => false,
+      currentDefaultCommit: COMMIT,
+      fetchHeadCommit: async () => COMMIT,
+      fetchSnapshot: seed,
+    });
+    // Second call at the same commit must not pull a snapshot again.
+    const fetchSnapshot = vi.fn();
+    const res = await publishOverlayBaseAfterInstall(session(), scope, {
+      stateDir, workerUrl: "http://worker",
+      isAncestor: async () => false,
+      currentDefaultCommit: COMMIT,
+      fetchHeadCommit: async () => COMMIT,
+      fetchSnapshot,
+    });
+    expect(res?.outcome).toBe("skipped-equal");
+    expect(fetchSnapshot).not.toHaveBeenCalled();
+  });
+
   it("returns null when HEAD can't be resolved", async () => {
     const res = await publishOverlayBaseAfterInstall(session(), scope, {
       stateDir,

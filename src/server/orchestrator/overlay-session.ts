@@ -182,8 +182,23 @@ export async function buildOverlaySpec(
   await fs.rm(workDir, { recursive: true, force: true });
   await fs.mkdir(workDir, { recursive: true });
 
-  const toDaemonPath = (p: string): string =>
-    path.posix.join(mountpoint, ...path.relative(deps.stateDir, p).split(path.sep));
+  const toDaemonPath = (p: string): string => {
+    const rel = path.relative(deps.stateDir, p);
+    // The mapping is only valid when `p` is genuinely under `stateDir` AND
+    // `stateDir` is the orchestrator's mount of the same named volume whose
+    // daemon-host `mountpoint` we resolved. We can't cheaply verify the volume
+    // identity, but a relative path that escapes (`..`) or is absolute means
+    // `stateDir` isn't the volume root (e.g. a misconfigured `SHIPIT_STATE_DIR`
+    // not on `WORKSPACE_VOLUME`) — bail so `prepareOverlaySpec` falls back to
+    // plain install rather than wiring the overlay to a bogus daemon path.
+    if (rel.startsWith("..") || path.isAbsolute(rel)) {
+      throw new Error(
+        `overlay stateDir ${deps.stateDir} is not an ancestor of ${p} — ` +
+          `SHIPIT_STATE_DIR must be the orchestrator mount of WORKSPACE_VOLUME`,
+      );
+    }
+    return path.posix.join(mountpoint, ...rel.split(path.sep));
+  };
 
   return {
     volumeName: overlayVolumeName(session.id),
@@ -298,6 +313,16 @@ export async function publishOverlayBaseAfterInstall(
     // Not a publish candidate (source isn't the default tip) — don't pull a
     // snapshot we'd only discard. Surface the existing pointer for the caller's logs.
     return { outcome: "skipped-ineligible", pointer: readBasePointer(deps.stateDir, scope) };
+  }
+
+  // Peek the current base before exporting the (whole-workspace) snapshot: when
+  // the base is already at this commit, `publishBase` would return `skipped-equal`
+  // after we'd uselessly tarred + extracted the entire merged tree. A marker-skip
+  // install on an unchanged default branch is the steady-state case, so short-
+  // circuit here to avoid re-exporting a snapshot every activation.
+  const existing = readBasePointer(deps.stateDir, scope);
+  if (existing?.commit === commit) {
+    return { outcome: "skipped-equal", pointer: existing };
   }
 
   const snapshotDir = path.join(
