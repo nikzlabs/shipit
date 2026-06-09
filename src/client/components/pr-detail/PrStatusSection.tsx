@@ -164,9 +164,7 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
       {isAutoFixRunning && autoFix && (
         <div className="flex items-center gap-2 text-xs text-(--color-warning)">
           <CircleNotchIcon size={12} className="animate-spin" />
-          {autoFix.manual
-            ? "Fixing CI…"
-            : `Auto-fixing (attempt ${autoFix.attemptCount}/${autoFix.maxAttempts})...`}
+          Auto-fixing (attempt {autoFix.attemptCount}/{autoFix.maxAttempts})...
         </div>
       )}
       {isAutoFixExhausted && autoFix && (

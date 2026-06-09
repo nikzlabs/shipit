@@ -315,9 +315,14 @@ export function MergeButton({ sessionId, autoMerge }: { sessionId: string; autoM
 export function FixCIButton({ sessionId }: { sessionId: string }) {
   const fixCI = usePrStore((s) => s.fixCI);
   const setToast = useUiStore((s) => s.setToast);
+  // A manual fix is a plain agent turn (it no longer drives the auto-fix card
+  // state), so the button stays mounted while the agent works. Disable it on
+  // agent-running to keep the user from dispatching a redundant second fix turn.
+  const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
   const [fixingCI, setFixingCI] = useState(false);
 
   const handleFixCI = async () => {
+    if (isAgentRunning || fixingCI) return;
     setFixingCI(true);
     const error = await fixCI(sessionId);
     if (error) {
@@ -326,17 +331,21 @@ export function FixCIButton({ sessionId }: { sessionId: string }) {
     setFixingCI(false);
   };
 
+  const busy = fixingCI || isAgentRunning;
+  const label = fixingCI ? "Fixing..." : "Fix CI";
+  const title = isAgentRunning ? "Wait for the agent to finish" : fixingCI ? "Fixing CI" : "Fix CI";
+
   return (
     <Button
       variant="destructive"
       size="sm"
       onClick={handleFixCI}
-      disabled={fixingCI}
-      title={fixingCI ? "Fixing CI" : "Fix CI"}
-      aria-label={fixingCI ? "Fixing CI" : "Fix CI"}
+      disabled={busy}
+      title={title}
+      aria-label={title}
       className="shrink-0 h-6"
     >
-      {fixingCI ? "Fixing..." : "Fix CI"}
+      {label}
     </Button>
   );
 }

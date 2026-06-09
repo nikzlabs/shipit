@@ -192,13 +192,6 @@ export interface AutoFixState {
   attemptCount: number;       // resets when head SHA changes
   lastHeadSha: string;        // tracks which commit's CI we're fixing
   status: "idle" | "running" | "deferred" | "exhausted";
-  /**
-   * True when the in-flight fix was kicked off by the user clicking "Fix CI"
-   * rather than by the auto-fix loop. Drives the card label ("Fixing CI…" vs
-   * "Auto-fixing (attempt N/3)…") so a manually-triggered fix isn't mislabeled
-   * as automatic. Only meaningful while `status === "running"`.
-   */
-  manual?: boolean;
   lastError?: string;
   nextEligibleAt?: number;
 }
@@ -334,8 +327,6 @@ export interface PrStatusSummary {
     status: "idle" | "running" | "deferred" | "exhausted";
     attemptCount: number;
     maxAttempts: number;       // always 3
-    /** True when the running fix was triggered by the manual "Fix CI" button. */
-    manual?: boolean;
   };
   /** GitHub Deployment statuses from platforms like Vercel/Cloudflare (fetched via GitHub Deployments API). */
   deployments?: GitHubDeploymentStatus[];

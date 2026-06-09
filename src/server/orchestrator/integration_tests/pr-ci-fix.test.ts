@@ -100,8 +100,8 @@ afterEach(async () => {
 // docs/169 — the per-session POST /api/sessions/:id/pr/auto-fix toggle was
 // removed; auto-fix CI is now a global account-level setting
 // (PUT /api/settings { autoFixCi }). The auto-loop reads the global flag at
-// decision time. The manual "Fix CI" button (/pr/fix-ci) and `markAutoFixRunning`
-// remain and are covered below.
+// decision time. The manual "Fix CI" button (/pr/fix-ci) dispatches a plain
+// agent turn and (docs/169 follow-up) no longer marks the auto-fix state running.
 
 describe("POST /api/sessions/:id/pr/fix-ci", () => {
   it("returns 401 when not authenticated with GitHub", async () => {
@@ -170,22 +170,9 @@ describe("POST /api/sessions/:id/pr/auto-fix-pause (docs/186)", () => {
 
 describe("PrStatusPoller auto-fix state", () => {
   it("getAutoFixState returns undefined when not set", () => {
-    expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
-  });
-
-  it("markAutoFixRunning creates state and increments attempt count", () => {
-    // docs/169 — the manual "Fix CI" path marks a one-shot fix running. With
-    // no per-session toggle, markRunning lazily creates the state.
-    prStatusPoller.markAutoFixRunning(sessionId);
-
-    const state = prStatusPoller.getAutoFixState(sessionId);
-    expect(state).toMatchObject({ attemptCount: 1, status: "running", manual: true });
-  });
-
-  it("untrackSession clears auto-fix state", () => {
-    prStatusPoller.markAutoFixRunning(sessionId);
-    prStatusPoller.untrackSession(sessionId);
-
+    // docs/169 follow-up — a manual "Fix CI" is a plain agent turn and no longer
+    // seeds auto-fix state; only the automatic loop sets it (covered by the
+    // auto-fix-manager and pr-status-poller unit suites).
     expect(prStatusPoller.getAutoFixState(sessionId)).toBeUndefined();
   });
 });

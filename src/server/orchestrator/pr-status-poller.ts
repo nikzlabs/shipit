@@ -739,14 +739,6 @@ export class PrStatusPoller {
     return this.lastPrNodes.get(sessionId);
   }
 
-  /** Increment attempt count for auto-fix and set status to running. */
-  markAutoFixRunning(sessionId: string): void {
-    this.autoFix.markRunning(sessionId);
-    // Auto-fix running ⇒ autonomous-action keep-alive: the loop wants prompt
-    // CI feedback even if the user's tab is closed. Open the gate.
-    this.ensureSupervisor();
-  }
-
   // ---- Auto-merge state management ----
 
   /** Get auto-merge state for a session. */
@@ -803,7 +795,6 @@ export class PrStatusPoller {
           status: fixState.status,
           attemptCount: fixState.attemptCount,
           maxAttempts: MAX_AUTO_FIX_ATTEMPTS,
-          manual: fixState.manual ?? false,
         },
       };
     }

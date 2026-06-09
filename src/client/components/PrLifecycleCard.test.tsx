@@ -472,6 +472,22 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByRole("button", { name: "Fix CI" })).toHaveAttribute("title", "Fix CI");
   });
 
+  it("disables the Fix CI button while the agent is running (no redundant fix turn)", () => {
+    // docs/169 follow-up — a manual fix is a plain agent turn that no longer
+    // hides behind an auto-fix "running" state, so the button stays mounted.
+    // Gate it on agent-running so the user can't dispatch a second fix turn.
+    setCard("s1", {
+      ...openPrCard,
+      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
+    });
+    useSessionStore.setState({ activeRunnerSessions: new Set(["s1"]) });
+
+    render(<PrLifecycleCard sessionId="s1" />);
+
+    const btn = screen.getByRole("button", { name: "Wait for the agent to finish" });
+    expect(btn).toBeDisabled();
+  });
+
   it("does NOT show a per-card auto-fix toggle (docs/169 — it moved to global settings)", async () => {
     const user = userEvent.setup();
     setCard("s1", {
@@ -497,21 +513,6 @@ describe("PrLifecycleCard", () => {
     render(<PrLifecycleCard sessionId="s1" />);
 
     expect(screen.getByText(/Auto-fixing \(attempt 2\/3\)/)).toBeInTheDocument();
-  });
-
-  it("shows a plain 'Fixing CI…' label (no attempt counter) for a manual fix", () => {
-    // A manually-triggered fix shouldn't be labeled "Auto-fixing" — the user
-    // clicked "Fix CI", it's not the automatic loop. (docs/169)
-    setCard("s1", {
-      ...openPrCard,
-      checks: { state: "failure", total: 3, passed: 1, failed: 2, pending: 0 },
-      autoFix: { status: "running", attemptCount: 1, maxAttempts: 3, manual: true },
-    });
-
-    render(<PrLifecycleCard sessionId="s1" />);
-
-    expect(screen.getByText("Fixing CI…")).toBeInTheDocument();
-    expect(screen.queryByText(/Auto-fixing/)).toBeNull();
   });
 
   it("shows auto-fix exhausted state", () => {

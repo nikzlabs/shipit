@@ -27,7 +27,7 @@ import type { GraphQLPrNode } from "./pr-status-parser.js";
 import { extractFailedCheckRuns, extractHeadSha } from "./pr-status-parser.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { getErrorMessage } from "./validation.js";
-import { AutoRemediationManager, type RemediationState } from "./auto-remediation-manager.js";
+import { AutoRemediationManager } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
 
 export const MAX_AUTO_FIX_ATTEMPTS = 3;
@@ -159,28 +159,10 @@ export class AutoFixManager extends AutoRemediationManager<CiSignal> {
     return this.runTransition(sessionId, signal, extractHeadSha(prNode) ?? "");
   }
 
-  // ---- Manual one-shot fix (the "Fix CI" button) --------------------------
-
-  /**
-   * Mark a manual one-shot fix as running. Used by `triggerCIFix` (the
-   * user-clicked "Fix CI" button), which dispatches its own turn rather than
-   * going through the auto-loop's `fireAttempt`. Increments the attempt counter
-   * and flips to `running` so the card shows progress; the next head-SHA change
-   * (the fix's push) resets the state. Creates state on first use so a manual
-   * fix works even with the global auto-fix toggle off.
-   */
-  markRunning(sessionId: string): RemediationState {
-    let state = this.states.get(sessionId);
-    if (!state) {
-      state = { attemptCount: 0, lastHeadSha: "", status: "idle" };
-      this.states.set(sessionId, state);
-    }
-    state.attemptCount++;
-    state.status = "running";
-    state.manual = true; // user clicked "Fix CI" — label it "Fixing CI…", not "Auto-fixing"
-    this.onChange(sessionId);
-    return state;
-  }
+  // A manual "Fix CI" no longer engages this state machine. It's a plain
+  // user-initiated agent turn (`triggerCIFix` dispatches it directly); the
+  // auto-fix `running` status — and the "Auto-fixing (attempt N/3)…" card line
+  // it drives — is reserved for the automatic loop below. (docs/169 follow-up)
 
   // ---- Fire + terminal accounting (auto-loop) -----------------------------
 

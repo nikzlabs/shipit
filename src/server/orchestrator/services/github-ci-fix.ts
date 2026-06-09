@@ -261,10 +261,13 @@ export async function triggerCIFix(
   const logs = await fetchCIFailureLogs(githubAuth, owner, repo, failedChecks, runner.sessionDir);
   const prompt = buildCIFixPrompt(logs);
 
-  // Update auto-fix state
-  prStatusPoller.markAutoFixRunning(sessionId);
-  const autoFixState = prStatusPoller.getAutoFixState(sessionId);
-  const attemptNumber = autoFixState?.attemptCount ?? 1;
+  // A manual "Fix CI" is just a user-initiated agent turn — it deliberately
+  // does NOT touch the auto-fix state machine. The user explicitly asked for the
+  // fix and watches the agent work in chat, so a separate "fixing" line on the
+  // PR card adds no value; worse, the old `markAutoFixRunning` call left a
+  // sticky `running` status that lingered after the turn ended (hiding the
+  // button and stranding the poller keep-alive). The auto-fix `running` line is
+  // now reserved for the automatic loop. (docs/169 follow-up)
 
   // docs/149 — bring the session's env up to date (OAuth token sync,
   // MCP refresh, secrets push) before the system turn fires. Without
@@ -284,9 +287,12 @@ export async function triggerCIFix(
   }
 
   // dispatch handles both cases: enqueues when busy, emits system_turn
-  // event for WS handler pickup when idle.
-  // Manual "Fix CI" — label it "Fixing CI…" (the auto-loop path uses
-  // "Auto-fixing CI..." in app-lifecycle's fetchAndFixCb).
+  // event for WS handler pickup when idle. Label the chat-activity bubble
+  // "Fixing CI…" (the auto-loop path uses "Auto-fixing CI..." in app-lifecycle's
+  // fetchAndFixCb).
+  const queued = runner.running;
   runner.dispatch({ text: prompt, activity: "Fixing CI…" });
-  return { status: runner.running ? "queued" : "sent", attemptNumber };
+  // attemptNumber is vestigial (the client ignores it); a manual fix is always a
+  // single one-shot, so report 1.
+  return { status: queued ? "queued" : "sent", attemptNumber: 1 };
 }
