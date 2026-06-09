@@ -220,7 +220,9 @@ so it's not new.
 
 **Propagation verdicts:**
 
-- **WSL2 (docker 29.4.1):** baseline + `make-rshared` rungs → overlay works but
+- **Docker Desktop / Windows — WSL2 backend (docker 29.4.1; `docker info` →
+  Name `docker-desktop`, OperatingSystem "Docker Desktop"):** baseline +
+  `make-rshared` rungs → overlay works but
   stays in the sidecar namespace (**not propagated**, expected). The realistic
   host-mountpoint `:rshared` rung was **rejected by the daemon**: *"path
   …/volumes/ob-prop-vol/_data is mounted on / but it is not a shared mount."* So
@@ -254,14 +256,19 @@ so it's not new.
     bind, `make-rshared /`, dedicated shared mountpoint) makes this dockerd accept
     a `:rshared` bind — despite dockerd being in PID 1's namespace and the mounts
     reading `shared` in `/proc/1/mountinfo`.
-  - **Conclusion (WSL2):** the `:rshared`-bind / mount-propagation approach the
-    long-lived sidecar relies on **does not work on this WSL2 daemon** via any
-    runtime fix. The only untested lever is **daemon-level** shared propagation
-    set **before dockerd starts** (`MountFlags=shared` on the docker service +
-    restart) — which can't be applied at runtime from a container, so the spike
-    can't reach it. **This means the sidecar-via-propagation mechanism is NOT yet
-    proven on any host, and is likely unavailable on WSL2 / Docker-Desktop-class
-    daemons.**
+  - **Conclusion (Docker Desktop / Windows-WSL2):** the `:rshared`-bind /
+    mount-propagation approach the long-lived sidecar relies on **does not work on
+    Docker Desktop's WSL2 backend** via any runtime fix — not even a dedicated
+    self-bind shared mountpoint (rung A3). The daemon runs inside Docker Desktop's
+    managed `docker-desktop` WSL2 distro, whose mount topology rejects the
+    `:rshared` source even when `/proc/1/mountinfo` reads `shared`. The only
+    untested lever is **daemon-level** config before dockerd starts
+    (`MountFlags=shared`), but the `docker-desktop` distro is **managed/ephemeral**
+    — a user can't persist a systemd-unit override there the way they can on a VPS,
+    so there is **no known user-applicable fix**. → **Docker Desktop on Windows is
+    a confirmed plain-install-fallback target.** (NB: this is *not* the same as
+    Docker Desktop on **Mac**, which uses a different VM substrate and **does**
+    propagate — see below. "Docker Desktop" is not one behaviour.)
 
 **Decisive next test (manual, host-level — cannot be scripted from a container):**
 on a real Linux host / VPS, run `propagation-spike.sh` (plain, no
@@ -285,36 +292,55 @@ design works on the VPS.
   host-mountpoint :rshared (sidecar pattern)." **This closes the prod-VPS open
   blocker.**
 
-**Corrected conclusion — the requirement is "daemon host `/` is a shared mount,"
-not a platform.** The differentiator across the two runs was purely the daemon
-host's default mount propagation:
+**Corrected conclusion — the requirement is "the daemon's mount substrate provides
+shared propagation," which splits BY virtualization substrate (and therefore partly
+by platform — Docker Desktop is not one behaviour).** The differentiator is whether
+the daemon's host root is a shared mount that accepts a `:rshared` source:
 
-| Daemon host | `/` default | Propagation |
-|---|---|---|
-| Docker Desktop (Mac) | shared | ✅ proven, no setup |
-| systemd Linux VPS (docker 29.5.2) | shared (boot) | ✅ **proven on prod, no setup** (rung A2 PROPAGATED, plain run) |
-| native docker-ce in a bare WSL2 distro | private | ❌ — needs daemon-level shared propagation; a *runtime* `make-rshared` is NOT honored |
+| Daemon host | substrate | propagation | overlay? |
+|---|---|---|---|
+| Docker Desktop / **macOS** (docker 29.5.3) | LinuxKit VM, `/` shared by default | ✅ proven, no setup | **yes** |
+| systemd Linux VPS (docker 29.5.2) | bare metal, systemd sets `/` rshared at boot | ✅ **proven on prod, no setup** (rung A2 PROPAGATED) | **yes** |
+| Docker Desktop / **Windows** (WSL2 backend, docker 29.4.1) | managed `docker-desktop` WSL2 distro | ❌ **confirmed rejected** — even a dedicated self-bind shared mountpoint refused; no user-applicable runtime fix | **no → plain install** |
+| native docker-ce inside a user WSL2 distro | (NOT tested) | ❓ untested — likely also private `/`; if so, `MountFlags=shared` + restart is at least *possible* (user owns the unit) | unknown |
 
-So the WSL2 failure was a **daemon-default** issue (private `/`), not a broken
-mechanism. The sidecar design is **feasible on every documented target that
-provides shared propagation** — Docker Desktop (proven) and systemd VPS (the
-always-on target) both do by default; the only gap is a bare docker-ce-in-WSL2
-daemon, where it must be configured (`MountFlags=shared` + restart) or that
-install falls back to a plain full `agent.install` (no copy store).
+**Correction (this row was previously mislabelled).** The failing WSL2 run was
+**Docker Desktop's WSL2 backend** (confirmed: `docker info` → `docker-desktop` /
+"Docker Desktop"), *not* "bare docker-ce in a WSL2 distro" as an earlier draft
+asserted — that bare config was never tested. So the failure is **not** a
+daemon-default quirk of an obscure setup; it is **Docker Desktop on Windows**, a
+mainstream local target. "Docker Desktop has shared propagation" is therefore
+**false in general** — it holds on the Mac LinuxKit VM and fails on the Windows
+WSL2 backend.
 
-**Design implication (largely resolved):** require **shared mount propagation on
-the daemon host** as a documented prerequisite (the VPS provisioner guarantees
-it; Docker Desktop has it). Where propagation isn't available (bare-WSL
-docker-ce), **fall back to a plain full `agent.install`** — *not* a copy store.
+The sidecar design is **feasible on the targets whose substrate provides shared
+propagation** — Docker Desktop/**Mac** (proven) and systemd Linux/**VPS** (proven).
+Docker Desktop/**Windows** is a **confirmed no-overlay target** → plain-install
+fallback, with no known runtime fix. Native docker-ce inside a WSL2 distro is
+untested and TBD.
+
+**Design implication:** require **shared mount propagation on the daemon host** as
+a documented prerequisite, detected by the startup probe; where it's absent, **fall
+back to a plain full `agent.install`** — *not* a copy store. Overlay-eligible
+targets (proven): systemd Linux/**VPS** and Docker Desktop/**Mac**. No-overlay
+fallback target (confirmed): Docker Desktop/**Windows-WSL2**, with no known runtime
+fix. Untested: native docker-ce in a WSL2 distro.
+
 `nm-store` is **removed entirely**, not retained: the existing download cache
 (`/dep-cache`, docs/075) is a separate subtree, so a plain install runs with **no
 network** — but that removes network only, **not** the node_modules extract/link
 cost (the dominant cost; ~24s for ShipIt's own repo). That extract cost is exactly
 what overlay's warm base eliminates and the fallback still pays, so the fallback
-is "correct + network-free," **not fast**. Acceptable because it's the narrow
-no-overlay edge (Mac Desktop + VPS get overlay). Exactly two paths remain:
-overlay (warm, near-no-op) or plain full install (baseline). The portability
-concern is narrow, not fundamental.
+is "correct + network-free," **not fast**.
+
+**This is no longer "a narrow edge."** The fallback now covers **Docker Desktop on
+Windows**, a mainstream local-dev target — not just an obscure bare-WSL config.
+The mitigating context: the overlay feature is aimed squarely at the **always-on
+VPS** (the intended production setup per the README), which is proven; local
+installs are dev/trial, where a slower-but-correct install is acceptable. Still,
+the doc should not undersell it — two paths remain (overlay where the substrate
+propagates; plain full install otherwise), and Windows/Docker-Desktop users land on
+the latter until/unless Docker Desktop changes its WSL2 mount topology.
 
 **Live measurement — production ShipIt session on the ShipIt repo (the real
 containerized path).** Inspected from inside such a session:
@@ -342,15 +368,21 @@ it targets.
 > download-cache env (`npm_config_cache=/dep-cache/...`, wired via container
 > `buildEnv`) may not apply, so that number could be partly cache-cold *and* is
 > not the path overlay changes. Overlay's win lands on **containerized** sessions
-> (VPS, Docker Desktop). Measure warm-vs-cold install on the *containerized* path
+> whose daemon propagates (VPS, Docker Desktop/**Mac** — *not* Docker
+> Desktop/Windows). Measure warm-vs-cold install on the *containerized* path
 > (checklist) before trusting any single number.
 
 **Implication for the design:** the sidecar must run on a daemon host whose root
-(or at least the Docker data subtree) is a **shared mount**. On a VPS this is a
-one-line provisioner step (`mount --make-rshared /`, or `MountFlags=shared` for
-dockerd) — cheap and standard. The open risk is **Docker Desktop (Mac/Win)**:
-confirm `--make-rshared` is both applicable and *persistent* across VM restarts
-there, or the local-install story needs a different hook.
+(or at least the Docker data subtree) is a **shared mount**. On a VPS this is the
+boot default (proven). Docker Desktop is **substrate-dependent**: the Mac LinuxKit
+VM propagates (proven); the **Windows WSL2 backend does NOT and has no
+user-applicable runtime fix** (confirmed → fallback). Two open risks remain for the
+Docker Desktop/**Mac** case: confirm propagation is *persistent across VM restarts*
+(the LinuxKit VM is recreated routinely) — covered by the Phase 2 re-arm-on-boot
+probe — and run the spike on Docker Desktop/Mac for **Windows-vs-Mac** parity is
+already established (they differ). For Windows users the local-install story is the
+plain-install fallback, full stop, unless Docker Desktop changes its WSL2 mount
+topology.
 
 ## Net decision
 
@@ -375,9 +407,10 @@ volume-backing fs that mirrors where ShipIt's `workspace` actually lives.
 Rung A2 of `propagation-spike.sh` ran on the prod VPS (systemd, docker 29.5.2,
 linux/amd64) and reported **PROPAGATED ✓ on the plain run, no host setup** —
 proving the sidecar's `:rshared` mechanism on the always-on #1 install target.
-Propagation is now proven on **both** containerized targets that get overlay
-(Docker Desktop/Mac + systemd VPS); only bare docker-ce-in-WSL2 lacks it (→
-plain-install fallback). The Phase 1 nm-store deletion therefore has a guaranteed
+Propagation is proven on the two substrates that get overlay (Docker Desktop/**Mac**
++ systemd **VPS**); **Docker Desktop/Windows (WSL2 backend) is confirmed NOT to
+propagate** (→ plain-install fallback, no known runtime fix); native docker-ce in a
+WSL2 distro is untested. The Phase 1 nm-store deletion therefore has a guaranteed
 end date on prod. Still genuinely nice-to-have (non-blocking): **mount/unmount
 timing**. Net: **proceed to building the orchestrator-owned mount lifecycle**
 (whose first job is mechanism (1)+(2)).
@@ -387,12 +420,14 @@ timing**. Net: **proceed to building the orchestrator-owned mount lifecycle**
 separate session container **iff the daemon host provides shared mount
 propagation**: **Docker Desktop (Mac) works with no setup** (proven) and a
 **systemd VPS works with no setup** (proven on prod — docker 29.5.2, rung A2
-PROPAGATED on the plain run); only a **bare docker-ce-in-WSL2 daemon** (private
-`/`) lacks it — there the install **falls back to a plain full `agent.install`**
-(no copy store; `nm-store` is removed, the download cache keeps it fast). So the
-requirement is a documented host prerequisite, satisfied by default on both
-overlay-eligible targets; the prod-VPS confirmation that was an open release
-blocker is now **closed**.
+PROPAGATED on the plain run); **Docker Desktop on Windows (WSL2 backend) does NOT
+propagate** (confirmed — `docker info` → `docker-desktop`; no user-applicable
+runtime fix) and falls back to a plain full `agent.install` (no copy store;
+`nm-store` is removed, the download cache keeps it network-free). So the
+requirement is a documented host prerequisite, satisfied by default on the two
+overlay-eligible substrates; the prod-VPS confirmation that was an open release
+blocker is now **closed**, but Docker Desktop/Windows is a confirmed
+no-overlay target, not the "narrow edge" an earlier draft claimed.
 The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.

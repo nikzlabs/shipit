@@ -36,17 +36,21 @@ per fresh session — a conscious, temporary regression until overlay lands.
       — WSL2/ext4 19/19 + Docker Desktop/Mac 21/21 (`host-overlay-spike.sh`, `run-in-docker.sh`).
 - [x] Verify compose bind-mount over the merged dir + `inotify` (create + copy-up)
       — Docker Desktop/Mac 21/21; bind-mount-corroborated on WSL2.
-- [x] Prove cross-container mount propagation **on Docker Desktop/Mac** (`propagation-spike.sh`):
-      works **iff the daemon host has shared propagation** + a dedicated self-bind `rshared`
-      mountpoint. Docker Desktop/Mac ✓ no setup; bare docker-ce-in-WSL2 ✗ (→ plain-install
-      fallback). Requirement = documented host prerequisite, not a portability blocker.
+- [x] Prove cross-container mount propagation (`propagation-spike.sh`): works **iff the daemon
+      substrate provides shared propagation** + a dedicated self-bind `rshared` mountpoint. It
+      **splits by substrate, not by "is it Docker Desktop"**:
+      Docker Desktop/**Mac** ✓ no setup; Docker Desktop/**Windows (WSL2 backend)** ✗ confirmed
+      (no user-applicable fix → plain-install fallback; an earlier draft mislabelled this run as
+      "bare docker-ce-in-WSL2"); native docker-ce in a WSL2 distro = untested.
 - [x] **Confirm propagation on the prod VPS** — `propagation-spike.sh` rung A2 ran on the prod
       systemd VPS (docker 29.5.2, linux/amd64) and reported **PROPAGATED on the plain run, no
       host setup**. Overlay-on-VPS proven; the Phase 1 nm-store regression now has a guaranteed
       end date on the primary target.
-- [ ] **OPEN — confirm Docker Desktop propagation survives a VM restart.** The LinuxKit VM is
-      recreated routinely; if it returns with `/` private, local Mac/Windows installs silently
-      drop to the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
+- [ ] **OPEN — confirm Docker Desktop/Mac propagation survives a VM restart.** The LinuxKit VM is
+      recreated routinely; if it returns with `/` private, local Mac installs silently drop to
+      the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
+- [ ] **OPEN (nice-to-have) — classify native docker-ce-in-WSL2** (no Docker Desktop): run the
+      spike to confirm whether `MountFlags=shared` makes it overlay-eligible or it too falls back.
 - [x] Decide host-mount mechanism, helper shape, storage layout, propagation prerequisite, and
       fallback (plan §4). See `FINDINGS.md` for evidence + live 31,396-file / ~24s measurement.
 

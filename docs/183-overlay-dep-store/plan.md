@@ -199,26 +199,36 @@ including propagation on the prod VPS (proven, see the prerequisite bullet):
     overlay mount to reach a *separate* session container, it must mount under a **shared
     mountpoint** the daemon sees — a dedicated self-bind dir marked `rshared`
     (`mount --bind D D && mount --make-rshared D`). This requires the daemon host's mount
-    tree to support shared propagation. Status by target:
-    - **Docker Desktop (Mac) — propagation works with no setup, proven once.** The LinuxKit
-      VM mounts `/` shared by default (rung A2 PROPAGATED on first attempt). **Open caveat
-      before relying on it:** the spike did not confirm this survives a **VM restart** — the
-      LinuxKit VM is recreated/restarted routinely, and if it comes back with `/` private,
-      every Mac/Windows local install silently drops to the slow fallback. Phase 2's startup
-      probe must therefore **re-verify (and, if needed, re-arm) propagation on each daemon/VM
-      start**, not assume a one-time setup persists.
+    tree to support shared propagation. **It splits by virtualization substrate — so
+    "Docker Desktop" is not one answer.** Status by target:
     - **systemd Linux VPS — proven on prod, no setup.** `propagation-spike.sh` rung A2 ran on
       the prod VPS (systemd, docker 29.5.2, linux/amd64) and reported PROPAGATED on the plain
       run — systemd mounts `/` rshared at boot, so the `:rshared` bind is accepted with no
-      provisioning, identical to Docker Desktop. The always-on #1 install target is confirmed;
-      the open blocker that gated the Phase 1 nm-store deletion is **closed**.
-    - **Bare docker-ce-in-WSL2 — does not work via any runtime fix.** Defaults to private `/`
-      and does not honor a *runtime* `make-rshared` (proven: every spike rung rejected). Needs
-      daemon-level config (`MountFlags=shared` + restart) or that install **falls back to a
-      plain full `agent.install`**, detected at startup.
+      provisioning. The always-on #1 install target is confirmed; the open blocker that gated
+      the Phase 1 nm-store deletion is **closed**.
+    - **Docker Desktop / macOS — propagation works with no setup, proven.** The LinuxKit VM
+      mounts `/` shared by default (rung A2 PROPAGATED, docker 29.5.3, arm64). **Open caveat:**
+      the spike did not confirm this survives a **VM restart** (the LinuxKit VM is recreated
+      routinely); Phase 2's startup probe must **re-verify/re-arm propagation on each daemon/VM
+      start**, not assume one-time setup persists.
+    - **Docker Desktop / Windows (WSL2 backend) — CONFIRMED to NOT propagate.** Tested on a
+      real Docker Desktop/Windows install (docker 29.4.1; `docker info` → `docker-desktop` /
+      "Docker Desktop"): every rung — plain volume, runtime `make-rshared`, and even a
+      dedicated self-bind shared mountpoint — was **rejected** by the daemon. The daemon lives
+      in Docker Desktop's managed `docker-desktop` WSL2 distro, whose mount topology refuses
+      the `:rshared` source even when `/proc/1/mountinfo` reads shared, and the distro is
+      managed/ephemeral so there's **no user-applicable `MountFlags=shared` fix**. → This is a
+      **confirmed plain-install-fallback target**, and a *mainstream* one (a common Windows
+      local-dev setup), not a narrow edge. (An earlier draft mislabelled this run as "bare
+      docker-ce-in-WSL2" — it was Docker Desktop; corrected.)
+    - **Native docker-ce inside a WSL2 distro (no Docker Desktop) — UNTESTED.** Likely also
+      private `/`; if so, `MountFlags=shared` + restart is at least *possible* because the user
+      owns the dockerd unit. TBD — run the spike there to classify it.
 
-    So the requirement is "shared propagation on the daemon host," documented as a
-    prerequisite; overlay is not lost where it's absent, it degrades to a normal install.
+    So the requirement is "shared propagation on the daemon substrate," documented as a
+    prerequisite, detected at startup; overlay is not lost where it's absent, it degrades to a
+    plain install. Overlay-eligible (proven): VPS + Docker Desktop/Mac. No-overlay fallback
+    (confirmed): Docker Desktop/Windows.
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
     warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
@@ -338,9 +348,10 @@ on top of the simplified install path.
 
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
    (WSL2 + Docker Desktop/Mac), and the §4 design are settled. Cross-container propagation is
-   proven on **both** overlay-eligible targets: Docker Desktop/Mac and the **prod systemd VPS**
-   (`propagation-spike.sh` rung A2 PROPAGATED, plain run, docker 29.5.2). Bare docker-ce-in-WSL2
-   is the only target without it → plain-install fallback.
+   proven on the two overlay-eligible substrates: Docker Desktop/**Mac** and the **prod systemd
+   VPS** (`propagation-spike.sh` rung A2 PROPAGATED, plain run, docker 29.5.2). **Docker
+   Desktop/Windows (WSL2 backend) is confirmed NOT to propagate** (no user-applicable fix) →
+   plain-install fallback; native docker-ce in a WSL2 distro is untested.
 1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
    `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
    becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
