@@ -688,6 +688,46 @@ describe("generateComposeOverride env_file injection", () => {
     expect(override).toContain(".shipit/.env.web");
     expect(override).toContain(".shipit/.env.api");
   });
+
+  // docs/183 — out-of-workspace env-file paths
+  it("uses supplied absolute env-file paths when serviceEnvFiles is present", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "web", secrets: ["STRIPE_KEY"] },
+        { name: "api", secrets: ["DATABASE_URL"] },
+      ],
+      {
+        ...baseOpts,
+        serviceEnvFiles: {
+          web: "/workspace/service-env/test-session-123/.env.web",
+          api: "/workspace/service-env/test-session-123/.env.api",
+        },
+      },
+    );
+    expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
+    expect(override).toContain("/workspace/service-env/test-session-123/.env.api");
+    // The workspace-relative path is NOT used when the absolute path is supplied.
+    expect(override).not.toContain(".shipit/.env.web");
+    expect(override).not.toContain(".shipit/.env.api");
+  });
+
+  it("falls back to .shipit/.env.<service> when a service is missing from serviceEnvFiles", () => {
+    const override = generateComposeOverride(
+      [
+        { name: "web", secrets: ["STRIPE_KEY"] },
+        { name: "api", secrets: ["DATABASE_URL"] },
+      ],
+      {
+        ...baseOpts,
+        serviceEnvFiles: {
+          web: "/workspace/service-env/test-session-123/.env.web",
+          // api intentionally omitted
+        },
+      },
+    );
+    expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
+    expect(override).toContain(".shipit/.env.api");
+  });
 });
 
 // ---------------------------------------------------------------------------

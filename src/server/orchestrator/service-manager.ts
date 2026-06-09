@@ -45,6 +45,7 @@ import {
 } from "./service-secrets-resolver.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
+import { removeSessionServiceEnvDir } from "./secret-resolver.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -164,6 +165,15 @@ export interface ServiceManagerOptions {
    * baseline).
    */
   dockerSecretsConfig?: DockerSecretsConfig;
+  /**
+   * docs/183 — orchestrator-private root for per-service env files, OUTSIDE
+   * the session workspace. When set (and Docker-secrets mode is off), service
+   * env files are written to `<serviceEnvDir>/<sessionId>/.env.<svc>` and the
+   * compose override references those absolute paths, keeping service-only
+   * secrets out of the agent-readable workspace. Omit for tests / non-container
+   * setups, which fall back to the legacy workspace `.shipit/.env.<svc>` path.
+   */
+  serviceEnvDir?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -206,6 +216,8 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  /** docs/183 — external service-env root, for teardown cleanup. */
+  private readonly serviceEnvDir?: string;
 
   // Collaborators — see the module docstring.
   private readonly secrets: ServiceSecretsResolver;
@@ -261,6 +273,7 @@ export class ServiceManager extends EventEmitter {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
+    this.serviceEnvDir = opts.serviceEnvDir;
 
     this.secrets = new ServiceSecretsResolver({
       sessionId: opts.sessionId,
@@ -268,6 +281,7 @@ export class ServiceManager extends EventEmitter {
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.mcpAgentEnvLoader ? { mcpAgentEnvLoader: opts.mcpAgentEnvLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
+      ...(opts.serviceEnvDir ? { serviceEnvDir: opts.serviceEnvDir } : {}),
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
       // docs/184: relay the now-unhonored `source: platform:*` notice into the
       // service's log stream so it surfaces in the same place as its output.
@@ -523,6 +537,7 @@ export class ServiceManager extends EventEmitter {
     // Generate override
     const userNamedVolumes = parseUserNamedVolumes(composePath);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
+    const serviceEnvFiles = this.secrets.getServiceEnvFiles();
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
@@ -531,6 +546,7 @@ export class ServiceManager extends EventEmitter {
       stackName: this.stackName,
       userNamedVolumes,
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
+      ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);
@@ -780,6 +796,16 @@ export class ServiceManager extends EventEmitter {
       await this.composeDown({ removeVolumes: opts.removeVolumes ?? false });
     } catch {
       // Best-effort cleanup
+    }
+
+    // docs/183: when the session is going away for good (archive / full reset
+    // pass `removeVolumes: true`), drop the external service-env directory so
+    // plaintext service secrets don't outlive the session. They sit outside
+    // the workspace checkout, so neither archive nor the disk-janitor would
+    // otherwise reclaim them. Idle eviction / reconcile keep `removeVolumes`
+    // false, preserving the files for resume.
+    if (opts.removeVolumes && this.serviceEnvDir) {
+      removeSessionServiceEnvDir({ rootDir: this.serviceEnvDir, sessionId: this.sessionId });
     }
 
     for (const [name] of this.services) {

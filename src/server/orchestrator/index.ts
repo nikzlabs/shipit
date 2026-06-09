@@ -292,6 +292,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     }
     : undefined;
 
+  // docs/183 — service-only secret isolation. By default, per-service compose
+  // env files are written to `<stateDir>/service-env/<sessionId>/.env.<svc>`,
+  // OUTSIDE the agent's workspace mount, instead of the agent-readable
+  // workspace `.shipit/.env.<svc>`. In containerized runtime `stateDir`
+  // defaults to the workspace-volume root, and the agent mounts only the
+  // `sessions/<id>/workspace` subpath, so this directory is outside the
+  // agent's view (see docs/183 §"Why <stateDir>/service-env is agent-invisible").
+  // `SHIPIT_SERVICE_ENV_DIR` overrides the root for operators who keep
+  // `stateDir` somewhere the safety assertion would reject. Docker-secrets
+  // mode (above) takes priority over this when configured.
+  const serviceEnvDir = process.env.SHIPIT_SERVICE_ENV_DIR
+    ?? path.join(stateDir, "service-env");
+
   // docs/149 — lazy holder for the PR status poller. The poller is constructed
   // AFTER the runner registry (depends on it), but the registry's system-turn
   // PR lifecycle hook needs to reach it at runtime. Wired below, after the
@@ -402,6 +415,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
+    serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
     readSystemPrompt: readSystemPromptApp,
     generateText,

@@ -111,6 +111,18 @@ export interface ComposeOverrideOptions {
      */
     entrypointWorkspacePath: string;
   };
+  /**
+   * docs/183 — service-name → absolute env-file path for services that
+   * declare `x-shipit-secrets`. When provided (out-of-workspace env-file
+   * mode), the service's `env_file:` entry uses this absolute path instead
+   * of the workspace-relative `.shipit/.env.<service>`. A service missing
+   * from the map falls back to the workspace path, so partial maps and the
+   * no-map (test / legacy) case both behave correctly.
+   *
+   * Ignored when `dockerSecrets` is active (that mode uses `secrets:`, not
+   * `env_file:`).
+   */
+  serviceEnvFiles?: Record<string, string>;
 }
 
 export class ComposeValidationError extends Error {
@@ -595,8 +607,12 @@ export function generateComposeOverride(
     } else if (svc.secrets && svc.secrets.length > 0) {
       // Inject the per-service secrets env file if the service declared any
       // secrets via `x-shipit-secrets`. The orchestrator writes the file before
-      // running `docker compose up` (see secret-resolver.ts).
-      entry.env_file = [`.shipit/.env.${svc.name}`];
+      // running `docker compose up` (see secret-resolver.ts). docs/183: in
+      // out-of-workspace env-file mode the file lives at an absolute path
+      // outside the workspace (`serviceEnvFiles[name]`); otherwise it falls
+      // back to the workspace-relative `.shipit/.env.<service>`.
+      const envFilePath = opts.serviceEnvFiles?.[svc.name] ?? `.shipit/.env.${svc.name}`;
+      entry.env_file = [envFilePath];
     }
 
     overrideServices[svc.name] = entry;

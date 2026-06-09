@@ -94,6 +94,12 @@ export interface RunnerRegistryDeps {
     entrypointSourcePath: string;
   };
   /**
+   * docs/183 — orchestrator-private root for per-service compose env files,
+   * outside the agent's workspace mount. Forwarded into `setupServiceManager`
+   * → `ServiceManager`. See `ServiceManagerOptions.serviceEnvDir`.
+   */
+  serviceEnvDir?: string;
+  /**
    * Runtime mode. In `"local"` mode, ServiceManager is not constructed for
    * inner sessions (no Docker → no Compose). The compose-not-configured
    * event is also suppressed at the source so the inner UI doesn't see it
@@ -221,7 +227,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, dockerSecretsConfig, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -448,6 +454,7 @@ export function createRunnerRegistry(
           containerManager,
           secretStore,
           dockerSecretsConfig,
+          serviceEnvDir,
           broadcastLog,
           credentialStore,
         };

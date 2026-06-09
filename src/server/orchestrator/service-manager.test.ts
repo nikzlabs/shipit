@@ -970,6 +970,215 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
+  // ---- docs/183: out-of-workspace service env files ----
+
+  it("serviceEnvDir writes service env files outside the workspace and references them in the override", async () => {
+    const dir = setup();
+    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      serviceEnvDir: serviceEnvRoot,
+    });
+
+    try { await mgr.start(); } catch { /* expected — no docker */ }
+
+    // Env file written outside the workspace…
+    const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
+    expect(fs.existsSync(externalEnv)).toBe(true);
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://x");
+
+    // …and NOT in the agent-readable workspace.
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+
+    // Override references the absolute external path, not the workspace path.
+    const override = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    expect(override).toContain("env_file:");
+    expect(override).toContain(externalEnv);
+    expect(override).not.toContain(".shipit/.env.api");
+
+    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
+  });
+
+  it("regression: dogfood-style service-only secrets stay out of the workspace (.shipit/.env.dev absent)", async () => {
+    const dir = setup();
+    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
+    // The dogfood `dev` service declares service-only secrets with NO agent: true.
+    writeCompose(dir, `
+services:
+  dev:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - ANTHROPIC_API_KEY
+      - GITHUB_TOKEN
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ ANTHROPIC_API_KEY: "sk-ant-xxx", GITHUB_TOKEN: "ghp_xxx" }),
+      pollIntervalMs: 0,
+      serviceEnvDir: serviceEnvRoot,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    // No workspace leak — the agent can't read either secret-bearing file.
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.dev"))).toBe(false);
+    // No agent env file, since nothing is marked agent: true.
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.agent"))).toBe(false);
+
+    // The external service env file holds the values.
+    const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.dev");
+    const body = fs.readFileSync(externalEnv, "utf-8");
+    expect(body).toContain("ANTHROPIC_API_KEY=sk-ant-xxx");
+    expect(body).toContain("GITHUB_TOKEN=ghp_xxx");
+
+    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
+  });
+
+  it("serviceEnvDir sweeps a pre-183 in-workspace .shipit/.env.<svc> leak", async () => {
+    const dir = setup();
+    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
+    // Pre-seed a leaked env file from the old in-workspace write path.
+    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".shipit/.env.api"), "LEAKED=value\n");
+
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const fakeRunner: ComposeRunner = () => Promise.reject(new Error("no docker"));
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: fakeRunner,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      serviceEnvDir: serviceEnvRoot,
+    });
+
+    try { await mgr.start(); } catch { /* expected */ }
+
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+
+    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
+  });
+
+  it("refreshSecrets in serviceEnvDir mode rewrites the external file and leaves the override's absolute path intact", async () => {
+    const dir = setup();
+    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    let secrets: Record<string, string> = { DATABASE_URL: "postgres://old" };
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") {
+        return Promise.resolve(JSON.stringify({ Service: "api", ID: "abc", State: "running", ExitCode: 0 }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      secretsLoader: async () => ({ ...secrets }),
+      pollIntervalMs: 0,
+      serviceEnvDir: serviceEnvRoot,
+    });
+
+    await mgr.start();
+    const externalEnv = path.join(serviceEnvRoot, "test-session", ".env.api");
+    const overrideBefore = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://old");
+    expect(overrideBefore).toContain(externalEnv);
+
+    secrets = { DATABASE_URL: "postgres://new" };
+    await mgr.refreshSecrets();
+
+    // External file content updated…
+    expect(fs.readFileSync(externalEnv, "utf-8")).toContain("DATABASE_URL=postgres://new");
+    // …and the absolute env_file path in the override is unchanged (still outside the workspace).
+    const overrideAfter = fs.readFileSync(path.join(dir, ".shipit/compose.override.yml"), "utf-8");
+    expect(overrideAfter).toContain(externalEnv);
+    expect(fs.existsSync(path.join(dir, ".shipit/.env.api"))).toBe(false);
+
+    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
+  });
+
+  it("removes the external service-env dir on stop({ removeVolumes: true }) but keeps it otherwise", async () => {
+    const dir = setup();
+    const serviceEnvRoot = fs.mkdtempSync(path.join(os.tmpdir(), "service-env-root-"));
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+    x-shipit-secrets:
+      - DATABASE_URL
+`);
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = () => Promise.resolve("");
+    const make = () => new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      secretsLoader: async () => ({ DATABASE_URL: "postgres://x" }),
+      pollIntervalMs: 0,
+      serviceEnvDir: serviceEnvRoot,
+    });
+    const sessionDir = path.join(serviceEnvRoot, "test-session");
+
+    // Default stop (idle eviction / reconcile) preserves the dir for resume.
+    const mgr1 = make();
+    try { await mgr1.start(); } catch { /* ok */ }
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    await mgr1.stop();
+    expect(fs.existsSync(sessionDir)).toBe(true);
+
+    // Teardown-for-good (archive / full reset) drops the plaintext secrets.
+    const mgr2 = make();
+    try { await mgr2.start(); } catch { /* ok */ }
+    expect(fs.existsSync(sessionDir)).toBe(true);
+    await mgr2.stop({ removeVolumes: true });
+    expect(fs.existsSync(sessionDir)).toBe(false);
+
+    fs.rmSync(serviceEnvRoot, { recursive: true, force: true });
+  });
+
   it("emits secrets_status with declared + missingRequired + agentNames", async () => {
     const dir = setup();
     writeCompose(dir, `
