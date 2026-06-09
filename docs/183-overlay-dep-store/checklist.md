@@ -162,17 +162,30 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
 - [ ] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
       + install command); skip install only on exact match; non-default checkout / mismatch
       whiteouts the marker first.
-- [ ] **Publish compare-and-swap:** advance the base only for **exit-0 pre-user installs whose
+- [x] **Publish compare-and-swap:** advance the base only for **exit-0 pre-user installs whose
       recorded source base is the remote default commit**, and when the candidate strictly
       descends the base (`git merge-base --is-ancestor`) under a short per-`(repo, runtime
       fingerprint)` lock. Order by commit ancestry, not publish time; skip stale/behind
       publishes, but if the candidate is the current remote default and has diverged from the
-      base (force-push), perform a lineage reset by rebuilding/publishing from empty or rotating
-      to an equivalent new generation keyed by the rewritten default HEAD. *(Logic validated in
-      `prototype/rolling-base.ts`; lineage-reset handling must be added.)*
-- [ ] Gate base advance on install **exit code 0** (non-zero serves the session, isn't published).
-- [ ] **Depth-cap flatten:** set a specific cap (~10–20, from measurement); on hit rebuild base
-      from **empty** (clean reinstall = drift + reproducibility reset).
+      base (force-push), perform a lineage reset by rebuilding/publishing from empty.
+      **Done** — ported the validated prototype into production
+      [`overlay-base.ts`](../../src/server/orchestrator/overlay-base.ts) (`publishBase`,
+      per-scope in-process lock, `BasePointer` persistence in the `overlay-base-meta/` sibling
+      subtree, `OverlayScope`/`PublishCandidate` types) **with the force-push lineage reset
+      added** (`reset` outcome on a diverged eligible candidate). Covered by
+      [`overlay-base.test.ts`](../../src/server/orchestrator/overlay-base.test.ts) (14 tests, real
+      git repo): created/advanced/flattened/reset/skipped-equal/skipped-not-forward/skipped-ineligible,
+      ancestry-not-walltime ordering, concurrent convergence, scope isolation, mtime stamp.
+      *Still to wire (Phase 4): the `isAncestor` oracle over the bare cache, the snapshot/install
+      caller, and `currentDefaultCommit` (the caller must pass the repo's current `origin/HEAD`
+      under the lock so a stale install that diverges because `main` advanced normally skips
+      instead of triggering a base-clobbering reset — see the `publishBase` contract).*
+- [x] Gate base advance on install **exit code 0** (non-zero serves the session, isn't published)
+      — enforced by `publishBase`'s eligibility check (`skipped-ineligible`).
+- [x] **Depth-cap flatten:** rebuild base from **empty** on hit (clean reinstall = drift +
+      reproducibility reset) — `flattened` outcome + `shouldFlattenNext()` so the session prep
+      path can clean-reinstall before the snapshot. `DEFAULT_DEPTH_CAP = 16`; final value set in
+      Phase 5 from measurement.
 - [ ] **Exclude/normalize `.git`** from the base (don't carry session branch refs forward);
       verify git/worktree absolute gitdir pointers behave on the overlay.
 - [ ] Publish/flatten from a worker-exported merged-workspace snapshot, not the host upperdir
@@ -183,7 +196,8 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       else the mtime fallback can reap a live base out from under a mount: (a) **publish must
       stamp the top-level `overlay-base/<hash>` dir** (atomic temp-dir + rename over the path, or
       `fs.utimes`) on every advance — the scope-hash is stable across commits, so nested-only
-      writes leave the dir's own mtime stale; (b) `DiskJanitorDeps.liveOverlayScopeHashes` must
+      writes leave the dir's own mtime stale **— DONE: `copySnapshotToBase` swaps a temp dir into
+      place and `utimes` it, asserted by the GC-contract test**; (b) `DiskJanitorDeps.liveOverlayScopeHashes` must
       return a **complete, authoritative** snapshot of every base any *resumable* (not just
       running) session could mount, accounting for the startup-timing window before reconciliation
       repopulates the registry.
