@@ -1,12 +1,18 @@
 /**
- * GitPullRequestClosedIcon — GitHub's "git-pull-request-closed" Octicon.
+ * GitPullRequestClosedIcon — closed-pull-request glyph drawn in Phosphor's style.
  *
  * Phosphor (our default icon pack) ships no closed-pull-request glyph, so this
- * one-off mirrors GitHub's own icon pixel-for-pixel for the closed-PR badge —
- * the single sanctioned exception to the "icons come from @phosphor-icons"
- * rule, justified by matching the user's GitHub muscle memory. Props mirror the
- * subset of Phosphor's icon API we actually use (`size` + SVG passthrough), so
- * it drops into the same `<Icon size={…} />` call sites.
+ * one-off fills the gap — the single sanctioned exception to the "icons come
+ * from @phosphor-icons" rule. It is NOT GitHub's Octicon: that glyph is a 16px
+ * native drawing with thin strokes that fill the badge edge-to-edge, so next to
+ * its Phosphor siblings (`GitPullRequest`/`GitMerge`) it read as too thin and
+ * too large within the badge border. Instead this reuses Phosphor's own
+ * `GitPullRequest` (regular) left rail verbatim and adds a right-side stem,
+ * bottom dot, and an X mark drawn with Phosphor's 16-unit stroke weight on the
+ * same 256 viewBox — so it matches its neighbors' stroke weight, dot size, and
+ * internal padding pixel-for-pixel. Props mirror the subset of Phosphor's icon
+ * API we use (`size` + SVG passthrough), so it drops into the same
+ * `<Icon size={…} />` call sites.
  */
 import type { SVGProps } from "react";
 
@@ -18,13 +24,18 @@ export function GitPullRequestClosedIcon({
     <svg
       width={size}
       height={size}
-      viewBox="0 0 16 16"
+      viewBox="0 0 256 256"
       fill="currentColor"
       xmlns="http://www.w3.org/2000/svg"
       aria-hidden="true"
       {...props}
     >
-      <path d="M3.25 1A2.25 2.25 0 0 1 4 5.372v5.256a2.251 2.251 0 1 1-1.5 0V5.372A2.251 2.251 0 0 1 3.25 1Zm9.5 5.5a.75.75 0 0 1 .75.75v3.378a2.251 2.251 0 1 1-1.5 0V7.25a.75.75 0 0 1 .75-.75Zm-2.03-5.273a.75.75 0 0 1 1.06 0l.97.97.97-.97a.748.748 0 0 1 1.265.332.75.75 0 0 1-.205.729l-.97.97.97.97a.751.751 0 0 1-.018 1.042.751.751 0 0 1-1.042.018l-.97-.97-.97.97a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l.97-.97-.97-.97a.75.75 0 0 1 0-1.06ZM2.5 3.25a.75.75 0 1 0 1.5 0 .75.75 0 0 0-1.5 0ZM3.25 12a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Zm9.5 0a.75.75 0 1 0 0 1.5.75.75 0 0 0 0-1.5Z" />
+      {/* Left rail (top dot + bar + bottom dot) — Phosphor GitPullRequest, regular weight */}
+      <path d="M104,64A32,32,0,1,0,64,95v66a32,32,0,1,0,16,0V95A32.06,32.06,0,0,0,104,64ZM56,64A16,16,0,1,1,72,80,16,16,0,0,1,56,64ZM88,192a16,16,0,1,1-16-16A16,16,0,0,1,88,192Z" />
+      {/* Right-side stem + bottom dot */}
+      <path d="M192,161V120a8,8,0,0,0-16,0v41a32,32,0,1,0,16,0Zm-8,47a16,16,0,1,1,16-16A16,16,0,0,1,184,208Z" />
+      {/* X mark (top right) — closed-without-merge */}
+      <path d="M211.31,69.66,200,81l11.31,11.31a8,8,0,0,1-11.32,11.32L188.69,92.34,177.37,103.66a8,8,0,0,1-11.32-11.32L177.37,81,166.05,69.66a8,8,0,0,1,11.32-11.32L188.69,69.66,200,58.34a8,8,0,1,1,11.32,11.32Z" />
     </svg>
   );
 }
