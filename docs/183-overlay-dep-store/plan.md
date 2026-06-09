@@ -139,17 +139,16 @@ Two properties keep the published chain clean:
   [claim-session.ts:361-374](../../src/server/orchestrator/services/claim-session.ts#L361-L374),
   [session.ts:202-216](../../src/server/orchestrator/services/session.ts#L202-L216),
   [child-sessions.ts:70-81](../../src/server/orchestrator/services/child-sessions.ts#L70-L81)).
-  The old agent-facing arbitrary `--base` override for spawned child sessions was removed
-  in commit `8930b8e57`; generic children now
-  look like any other fresh claim and are publish-eligible only if they satisfy the same
-  pre-user/default-source rules as manual sessions. The remaining non-default reset path is
-  internal Ops `--shipit-source`, where ShipIt pins a fix session to a system-resolved inspected
-  build commit. Those source-pinned sessions run their install on the base into their own upper
-  layer but are **excluded from publishing** (rule (b)), so they never inject a historical or
-  divergent tree into the chain — which therefore stays `main@t1 → main@t2 → …`. They also must
-  not inherit a default-branch install marker: any internal source pin or other non-default
-  checkout whiteouts the marker before `agent.install`, forcing the real install to validate
-  that checkout's manifests against the shared base.
+  Generic spawned sessions therefore look like any other fresh claim and are publish-eligible
+  only if they satisfy the same pre-user/default-source rules as manual sessions. The only
+  non-default reset path here is internal Ops `--shipit-source`, where ShipIt pins a fix
+  session to a system-resolved inspected build commit. Those source-pinned sessions run their
+  install on the base into their own upper layer but are **excluded from publishing** (rule
+  (b)), so they never inject a historical or divergent tree into the chain — which therefore
+  stays `main@t1 → main@t2 → …`. They also must not inherit a default-branch install marker:
+  any internal source pin or other non-default checkout whiteouts the marker before
+  `agent.install`, forcing the real install to validate that checkout's manifests against the
+  shared base.
 - **Mid-session `npm install foo` never feeds the chain.** That's the agent's own shell
   command, landing in the session's `upperdir` — not `agent.install`. A session's divergent
   dependency work can't pollute the shared base.
@@ -214,8 +213,8 @@ periodic clean-rebuild schedule is needed.
   default commit, and sessions with user/agent dependency edits before publish run on the base
   but never publish (§3), and their non-default checkout invalidates any inherited install
   marker before install so they cannot skip against default-branch dependencies. Generic
-  agent-spawned children no longer have an agent-facing `--base`; they branch from the same
-  freshly fetched `origin/HEAD` claim path as manual sessions and follow the same publish rule.
+  agent-spawned children branch from the same freshly fetched `origin/HEAD` claim path as
+  manual sessions and follow the same publish rule.
 - **Flatten = clean reinstall.** When the depth cap is hit, rebuild the base from **empty**
   rather than collapsing layers, so every flatten is also a correctness reset (no separate
   clean-rebuild schedule needed). The **depth cap is a specific tunable value** (on the order

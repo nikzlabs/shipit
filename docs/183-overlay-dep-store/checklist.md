@@ -32,10 +32,9 @@ rolling-base logic first; the host mount stays the gating risk.
       install serialization). Eligibility is by **source base + exit-0 + ancestry**, not by the
       literal branch name or which code path ran the install — so an on-activation install for
       a normal session cut from `origin/HEAD` **is** eligible (it's how trust-deferred repos
-      build v0). Generic agent-spawned children also use the normal `origin/HEAD` claim path;
-      the old agent-facing `--base` override was removed in commit `8930b8e57`. Exclude
-      internal Ops source-pinned sessions, any session whose source base is not the remote
-      default commit, and sessions with user/agent dependency edits before publish
+      build v0). Generic agent-spawned children also use the normal `origin/HEAD` claim path.
+      Exclude internal Ops source-pinned sessions, any session whose source base is not the
+      remote default commit, and sessions with user/agent dependency edits before publish
       (child-sessions.ts)
 - [ ] Wire the on-activation install (service-manager-setup.ts) — the idempotent backstop for
       trust-deferred repos, pool misses, and re-created runners — to feed the base under the
