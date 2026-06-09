@@ -148,17 +148,30 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
 
 ### Phase 3 — Rolling-base logic wired to the real install
 
-- [ ] Scope the base per `(repo, runtime fingerprint)` — image digest + arch + libc + relevant
-      runtime ABI/version (Node native-module ABI, CPython impl + major.minor / ABI tag). Reuses
-      the relocated `runtimeKey`.
-- [ ] Base (lowerdir) under the dedicated **`overlay-base/<hash>/`** subtree (NOT `dep-cache` —
-      see Phase 2); per-session upper/work in the session subtree; mount base + run `agent.install`
-      on top into the session's own upper.
-- [ ] Source sync runs **inside the merged `/workspace`** from a git checkout/index that knows the
-      base commit, then resets/checks out the target commit and runs `git clean -ffdx` (or an
-      equivalent explicit whiteout pass) before install/activation. This must create whiteouts for
-      lowerdir files deleted since the base; do not rely on a pre-container host checkout into the
-      upperdir.
+- [x] Scope the base per `(repo, runtime fingerprint)`. **Done** — the orchestrator-side
+      fingerprint is `overlayRuntimeKey()` (`overlay-session.ts`): `<SESSION_WORKER_IMAGE_ID |
+      IMAGE_DIGEST>|<arch>`. A worker-image digest pins libc + Node ABI, so image+arch is an
+      ABI-correct fingerprint computable BEFORE the container exists (the base scope must pick the
+      `lowerdir` at create time, so it can't wait for the worker's `runtimeKey()`). Feeds
+      `overlayScopeHash(repoUrl, runtimeKey)` for the base pointer, volume, and GC.
+- [x] Base (lowerdir) under the dedicated **`overlay-base/<hash>/`** subtree; per-session upper/work
+      in the session subtree; mount base + run `agent.install` on top into the session's own upper.
+      **Done** — `buildOverlaySpec` (`overlay-session.ts`) resolves the daemon-host absolute paths
+      (`lowerdir = <vol mountpoint>/overlay-base/<hash>`, `upperdir`/`workdir` under
+      `sessions/<id>/overlay-{upper,work}`), ensures the (empty for cold-start v0) base dir exists,
+      **preserves the upper across container recreations** (it holds the session's `.git` + work),
+      and resets the scratch workdir. Wired into container creation via
+      `SessionContainerManager.prepareOverlaySpec` → `buildConfigForWorkspace({ overlaySpec })` →
+      the existing Phase-2 `createContainer` overlay-volume path. The install runs unchanged inside
+      the merged `/workspace`.
+- [ ] **NOT DONE — host-gated. Source sync inside the merged `/workspace`.** The clone/checkout/reset
+      + `git clean -ffdx` (whiteout pass for lowerdir-deleted files) must run **inside the merged
+      mount after the container starts**, not the current pre-container host clone into
+      `session.workspaceDir`. Until this lands, an overlay session's merged `/workspace` would NOT
+      contain the source/`.git` (the host clone lands in the storage subtree, which is no longer the
+      merged root). **This is the load-bearing re-sequencing the plan §3 step 2 flags and is the
+      reason the `OVERLAY_DEP_STORE` flag must stay OFF until host validation.** Tracked with the
+      workspace-view resolver in Phase 4.
 - [x] Upgrade `.shipit/.install-done` to a **stamped marker** (source commit + runtime fingerprint
       + install command); skip install only on exact match; non-default checkout / mismatch
       whiteouts the marker first. **Done** — new
@@ -211,8 +224,13 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       missing-path rejects). *Still to wire (Phase 4): the orchestrator pulls the stream over HTTP,
       extracts it into a temp dir on the state volume, and passes that dir as
       `PublishCandidate.snapshotDir` to `publishBase`.*
-- [ ] **Cold start:** build base v0 from empty under the existing repo trust gate (docs/178).
-- [ ] **Wire the overlay-base GC live source + honor its contract** (the Phase 2 sweep
+- [x] **Cold start:** build base v0 from empty under the existing repo trust gate (docs/178).
+      **Done** — `buildOverlaySpec` creates an empty `overlay-base/<hash>` lowerdir when no base
+      exists, and `publishOverlayBaseAfterInstall` → `publishBase` emits the `created` outcome on the
+      first exit-0 default-branch install. The existing trust gate in `setupServiceManager` (and the
+      warm-pool pre-install skip) already defers install for untrusted remotes, so v0 creation rides
+      that decision with no new gate.
+- [x] **Wire the overlay-base GC live source + honor its contract** (the Phase 2 sweep
       `sweepOrphanedOverlayBases` is gated on this — see code review). Two hard requirements,
       else the mtime fallback can reap a live base out from under a mount: (a) **publish must
       stamp the top-level `overlay-base/<hash>` dir** (atomic temp-dir + rename over the path, or
@@ -220,20 +238,37 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       writes leave the dir's own mtime stale **— DONE: `copySnapshotToBase` swaps a temp dir into
       place and `utimes` it, asserted by the GC-contract test**; (b) `DiskJanitorDeps.liveOverlayScopeHashes` must
       return a **complete, authoritative** snapshot of every base any *resumable* (not just
-      running) session could mount, accounting for the startup-timing window before reconciliation
-      repopulates the registry.
+      running) session could mount **— DONE: `liveOverlayScopeHashes(sessionManager.listAll())`
+      (`overlay-session.ts`, wired in `index.ts`) enumerates every non-evicted repo-backed non-ops
+      session and maps it to `overlayScopeHash(remoteUrl, overlayRuntimeKey())`. It reads the durable
+      session DB (not the in-memory runner registry), so the startup-timing window before
+      reconciliation is moot — an archived/evicted session is excluded (re-derived on unarchive),
+      everything else is kept. Returns ∅ when the flag is off, keeping the sweep inert.**
 
 ### Phase 4 — Session lifecycle integration
 
-- [ ] Wire the on-activation install (`service-manager-setup.ts`) — the idempotent backstop for
+- [x] Wire the on-activation install (`service-manager-setup.ts`) — the idempotent backstop for
       trust-deferred repos, pool misses, and re-created runners — to the overlay path + publish
-      rule; the stamped marker makes repeats no-ops.
-- [ ] Enforce publish eligibility across creation paths: generic agent-spawned children use the
-      normal `origin/HEAD` claim path (eligible); **exclude** Ops source-pinned sessions, any
-      session whose source base isn't the remote default commit, and sessions with user/agent
-      dependency edits before publish (`child-sessions.ts`).
-- [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
-      only respects **live** mounts, not archived sessions.
+      rule; the stamped marker makes repeats no-ops. **Done** — `setupServiceManager` chains a
+      fire-and-forget `publishOverlayBase(sessionId, workerUrl)` off the install promise on `ok`.
+      The callback is built in `index.ts` (closes over the bare-cache `createRepoGit`/`getBareCacheDir`
+      + `stateDir`), resolves `currentDefaultCommit` + the `isAncestor` oracle from the bare cache, and
+      calls `publishOverlayBaseAfterInstall`. A re-created runner after user edits self-excludes
+      because HEAD has moved off the default tip (`sourceIsDefaultBranch` false → short-circuit).
+- [x] Enforce publish eligibility across creation paths. **Done by construction** — eligibility is a
+      pure function of session state at publish time, not the creation path: `publishOverlayBaseAfterInstall`
+      pulls the worker's HEAD and publishes **only** when it equals the repo's current default commit
+      (`sourceIsDefaultBranch`). Ops source-pinned sessions are excluded up front (`isOverlayEligible`
+      rejects `kind === "ops"`); any non-default checkout (historical branch, `--shipit-source` pin)
+      or a user/agent commit moves HEAD off the default tip and self-excludes. Generic agent-spawned
+      children branch from `origin/HEAD` like manual sessions, so they're eligible iff their HEAD is
+      still the default tip — the same test, no per-path special-casing.
+- [x] **Re-derive on unarchive** — **already satisfied, no change needed.** `unarchiveSession`
+      (`services/session.ts`) removes the workspace and re-clones from the bare cache + re-fetches;
+      it never restores an `upperdir`. We never persist the per-session overlay upper, so base GC's
+      `liveOverlayScopeHashes` only counts non-evicted sessions — an archived session's base is
+      reclaimable and re-derived (cold-start v0 or a fresh install on the current base) on unarchive.
+      Confirmed by reading the unarchive flow; documented here so the invariant is explicit.
 - [x] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
       `prototype/shared-volume-spike.sh` proves concurrent first-use of **one** per-session
       `type=overlay` volume mounted into the agent `docker run` **and** ≥2 service containers:
@@ -246,37 +281,42 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       on all three hosts:** Docker Desktop/Windows-WSL2 (amd64, 25 trials), Docker Desktop/Mac
       (arm64, 25 trials), prod VPS `shipit-16gb` (Ubuntu 24.04/**ext4**, 50 trials). See
       [`FINDINGS.md`](./FINDINGS.md). **Open Q #4 resolved.**
-- [ ] **Wire the shared overlay volume into compose + the agent container** (Open Q #4 mechanism is
-      proven — this is the wiring; full design in plan §4 "Compose/preview wiring"). Steps:
-  - [ ] Add an `overlayVolumeName(session)` resolver → `shipit-<sessionId[:12]>_overlay` for
-        overlay-eligible sessions, `undefined` otherwise. All branches below key off it; non-overlay
-        sessions stay byte-for-byte unchanged.
-  - [ ] **Agent container — `buildMounts` signature change (not a value swap):** `buildMounts`
-        reuses its single `workspaceVolume` param for `/workspace`, `/uploads`, AND `/dep-cache`, so
-        passing the overlay name would wrongly repoint all three. Add a distinct
-        `overlayWorkspaceVolume` argument applied to `/workspace` **only** (mounted at the volume
-        root, no subpath). `/uploads` + `/dep-cache` keep the `shipit-workspace` state volume,
-        `/credentials` keeps `credentialsVolume`.
-  - [ ] **Compose services:** pass `workspaceVolume = <overlay name>` and **`workspaceSubpath = ""`**
-        to `generateComposeOverride` (`service-manager.ts`) for overlay sessions. No generator code
-        change — `rewriteVolumes` + the `shipit-workspace`→`{name, external:true}` alias do the rest;
-        empty subpath roots every service mount at the merged tree.
-  - [ ] **Ordering:** ensure the Phase-2 subsystem `docker volume create`s the overlay volume before
-        the agent container starts and before `docker compose up` (compose references it `external`).
-  - [ ] **Secrets:** for overlay sessions prefer the out-of-workspace `serviceEnvFiles` mode (absolute
-        path) for env files, and give the `x-shipit-secrets` entrypoint-script mount the same
-        out-of-workspace / worker-written treatment so it doesn't depend on host-readable workspace.
-  - [ ] **Tests:** compose-generator unit test — an overlay-session override points every workspace
-        mount at the overlay volume rooted at the merged tree and **never** references the
-        `shipit-workspace` storage subpath (`sessions/<id>/…`) or the `overlay-base/` tree;
-        `buildMounts` test — overlay session mounts the overlay volume at `/workspace` root while
-        `/dep-cache` etc. stay on the state volume; integration — an overlay session's preview service
-        boots and sees `node_modules` from the lowerdir.
-  - [ ] Wire the file watcher over the merged mount (the agent-container file-tree watcher is
-        same-namespace inotify — already covered; just confirm it points at `/workspace`).
-- [ ] Route production file/doc/git/compose/watcher/post-turn flows through the workspace-view
-      resolver so the UI, PR/diff data, rollback/rebase/push/pull, and auto-commit operate on
-      the same merged tree the agent sees.
+- [x] **Wire the shared overlay volume into compose + the agent container** (Open Q #4 mechanism
+      proven). Steps:
+  - [x] `overlayVolumeName(session)` resolver — already exists (`overlay-volume.ts`); eligibility +
+        spec construction live in `overlay-session.ts` (`isOverlayEligible`, `resolveOverlayScope`,
+        `buildOverlaySpec`). Non-overlay sessions stay byte-for-byte unchanged (flag off / no remote).
+  - [x] **Agent container — `buildMounts`** already takes the distinct `overlayWorkspaceVolume` arg
+        (Phase 2) mounting the overlay volume at `/workspace` root only; `/uploads` + `/dep-cache`
+        stay on `shipit-workspace`. **Now populated**: `prepareOverlaySpec` builds the spec →
+        `buildConfigForWorkspace({ overlaySpec })` → `createContainer` creates the volume + mounts it.
+  - [x] **Compose services:** `setupServiceManager` now points `wsVolume` at the container's recorded
+        `overlayVolumeName` and sets `wsSubpath = ""` for overlay sessions, so `generateComposeOverride`
+        roots every service mount at the merged tree (no generator change). Keyed on the container's
+        actual `overlayVolumeName` so compose follows what the container really mounted.
+  - [x] **Ordering:** unchanged — `createContainer` `docker volume create`s the overlay volume before
+        the agent container starts (Phase 2); compose `up` happens later in `setupServiceManager` and
+        refcount-shares the same `external` volume (spike-proven safe).
+  - [~] **Secrets:** overlay relies on the existing out-of-workspace `serviceEnvDir` mode
+        (`serviceEnvFiles` absolute paths) — already the production default, so env files don't depend
+        on the merged workspace. The `x-shipit-secrets` entrypoint-script mount uses an absolute host
+        `entrypointSourcePath` (not workspace), so it's also unaffected. **No code change; flagged for
+        host validation that both resolve correctly over the overlay volume.**
+  - [x] **Tests:** compose-generator unit tests added (`compose-generator.test.ts`) — overlay override
+        roots service mounts at the overlay volume, never the `shipit-workspace` storage subpath nor
+        `overlay-base/`; subdir subpath stays relative to the merged root. (A live integration test —
+        preview service sees `node_modules` from the lowerdir — is host-gated.)
+  - [x] File watcher: the agent-container file-tree watcher is same-namespace inotify over `/workspace`
+        (the merged mount), already correct — no change.
+- [ ] **NOT DONE — host-gated. Route production file/doc/git/compose/watcher/post-turn flows through a
+      workspace-view resolver.** For an overlay session `session.workspaceDir` is only the upperdir, so
+      the orchestrator must read/write the merged tree via worker HTTP (file tree/content/edit, doc
+      discovery, Git reads + mutations, rollback/rebase/push/pull, PR/diff stats, post-turn
+      auto-commit/auto-push). This is the broad "audit every direct `fs`/`GitManager` use against
+      `session.workspaceDir`" task. **Paired with the Phase-3 source-sync re-sequencing, this is the
+      remaining work that the `OVERLAY_DEP_STORE` flag gates** — overlay must NOT be enabled in
+      production until both land and pass host-matrix validation. The publish path already side-steps
+      this for its one need (it reads HEAD + the snapshot via worker endpoints, not the host upperdir).
 
 ### Phase 5 — Measure & tune
 

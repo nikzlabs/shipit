@@ -259,6 +259,12 @@ export function setupServiceManager(
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
+    /**
+     * docs/183 Phase 4 — overlay rolling-base publish hook. Called after an
+     * exit-0 on-activation install with `(sessionId, workerUrl)`. Inert when
+     * overlay is off; it self-gates on eligibility + source-is-default-branch.
+     */
+    publishOverlayBase?: (sessionId: string, workerUrl: string) => void;
   },
 ): void {
   const {
@@ -274,6 +280,7 @@ export function setupServiceManager(
     serviceEnvDir,
     broadcastLog,
     credentialStore,
+    publishOverlayBase,
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
@@ -329,6 +336,20 @@ export function setupServiceManager(
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
       return { ok: false };
     });
+    // docs/183 Phase 4 — after an exit-0 install, try to advance the shared
+    // overlay rolling base. Self-gates on eligibility + source==default-branch,
+    // so a re-created runner after user edits self-excludes (HEAD has moved off
+    // the default tip). Fire-and-forget; a publish failure never affects the
+    // session. A `skipped: true` install (marker already valid) still resolves
+    // `ok`, but the base is already current so the publish CAS no-ops.
+    if (publishOverlayBase) {
+      const cr = runner;
+      const ip = installPromise;
+      void (async () => {
+        const res = await ip;
+        if (res.ok) publishOverlayBase(cr.sessionId, cr.getWorkerUrl());
+      })();
+    }
   }
 
   // docs/088 — install npm packages for enabled stdio MCP servers at session
@@ -357,8 +378,25 @@ export function setupServiceManager(
 
   // Workspace volume info for compose volume rewriting: user `.:/workspace`
   // bind mounts must map to the same storage as the agent container.
-  const wsVolume = process.env.WORKSPACE_VOLUME;
-  const wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+  let wsVolume = process.env.WORKSPACE_VOLUME;
+  let wsSubpath = wsVolume ? workspaceDir.replace(/^\/workspace\//, "") : undefined;
+
+  // docs/183 Phase 4 — overlay session: the agent container mounted a per-session
+  // `type=overlay` volume at the `/workspace` ROOT (the daemon-merged tree IS the
+  // volume root). Compose dev-server services must mount that SAME shared volume
+  // at the merged root — not the `shipit-workspace` storage subpath, which for an
+  // overlay session is only the upperdir (no `node_modules`, no lowerdir source),
+  // so a vite/next server there would fail to boot. Keyed on the container's
+  // recorded `overlayVolumeName` so compose follows what the container actually
+  // mounted (if overlay-spec prep fell back to plain install, this is undefined
+  // and compose keeps the storage subpath). One shared `external` overlay volume
+  // ⇒ one daemon overlay mount, refcount-bind-shared into every service — see
+  // plan §4 "Compose/preview wiring".
+  const overlayVol = containerManager?.get(runner.sessionId)?.overlayVolumeName;
+  if (overlayVol) {
+    wsVolume = overlayVol;
+    wsSubpath = "";
+  }
 
   // Secrets loader — resolves to the user-saved secrets for this session's
   // repo. Each session activation reads the latest values from the database,

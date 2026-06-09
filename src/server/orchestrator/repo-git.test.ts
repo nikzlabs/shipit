@@ -143,3 +143,36 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
     expect(cloneOriginHead).toBe(remoteHead);
   });
 });
+
+describe("RepoGit overlay publish oracle (docs/183)", () => {
+  it("isAncestor orders commits by ancestry (reflexive, forward, behind)", async () => {
+    const seedDir = path.join(tmpDir, "seed");
+    const cacheDir = path.join(tmpDir, "cache-ancestor");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+    const c0 = await cacheGit.readHead();
+
+    const c1 = advanceRemote(seedDir, remoteUrl, "# c1\n");
+    await cacheGit.fetchCache(0);
+
+    expect(await cacheGit.isAncestor(c0, c0)).toBe(true); // reflexive
+    expect(await cacheGit.isAncestor(c0, c1)).toBe(true); // strictly forward
+    expect(await cacheGit.isAncestor(c1, c0)).toBe(false); // behind
+    expect(await cacheGit.isAncestor("0000000000000000000000000000000000000000", c1)).toBe(false); // unknown
+  });
+
+  it("resolveDefaultBranchCommit tracks the bare cache's default branch tip", async () => {
+    const seedDir = path.join(tmpDir, "seed");
+    const cacheDir = path.join(tmpDir, "cache-default");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    expect(await cacheGit.resolveDefaultBranchCommit()).toBe(await cacheGit.readHead());
+
+    const c1 = advanceRemote(seedDir, remoteUrl, "# moved\n");
+    await cacheGit.fetchCache(0);
+    expect(await cacheGit.resolveDefaultBranchCommit()).toBe(c1);
+  });
+});

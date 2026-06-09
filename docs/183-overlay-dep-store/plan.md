@@ -466,6 +466,24 @@ Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Pha
 nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
 on top of the simplified install path.
 
+> **Implementation status (current).** Phases 0–2 and the Phase-3 *decision logic* are done.
+> The Phase-3/4 **orchestration spine** is now wired behind the **`OVERLAY_DEP_STORE` feature
+> flag (default OFF)**, so production is byte-for-byte unchanged until a deployment opts in:
+> `overlay-session.ts` (eligibility, `(repo, runtime)` scope, daemon-host spec construction with
+> upper-persists/workdir-resets, snapshot→publish, GC live-source), the `RepoGit` ancestry oracle
+> (`isAncestor` via an explicit git exit-code — simple-git's `raw` does NOT reject on
+> `--is-ancestor` exit-1, which would have silently broken the CAS) + `resolveDefaultBranchCommit`,
+> the worker `GET /workspace/head-commit`, container-spec population (`prepareOverlaySpec` →
+> `buildConfigForWorkspace`), compose volume rooting (`setupServiceManager`), the publish-on-install
+> hook, and the disk-janitor GC source. **Two host-gated pieces remain and are why the flag must
+> stay OFF in production:** (1) the **source-sync re-sequencing** — clone/checkout/`git clean -ffdx`
+> must run inside the merged `/workspace` after the container starts, not the pre-container host
+> clone (Phase 3); and (2) the **workspace-view resolver** — routing every file/doc/git/post-turn
+> flow through the worker because `session.workspaceDir` is only the upperdir for overlay sessions
+> (Phase 4). Both require real Docker overlay across the host matrix to verify; the pure logic is
+> unit-tested (`overlay-session.test.ts`, `overlay-base.test.ts`, `repo-git.test.ts`,
+> `compose-generator.test.ts`).
+
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
    (WSL2 + Docker Desktop/Mac), and the §4 design are settled. **Mechanism = daemon-performed
    overlay via the `local` volume driver** (no sidecar, no propagation, no `CAP_SYS_ADMIN`):

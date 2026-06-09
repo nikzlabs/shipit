@@ -722,6 +722,16 @@ export class SessionWorker extends EventEmitter {
       return reply.send(stream);
     });
 
+    // docs/183 Phase 4 — the merged-workspace HEAD commit. The overlay publish
+    // path needs the source commit the install actually ran against to stamp the
+    // candidate base and decide publish eligibility (source == remote default).
+    // The orchestrator can't read it from the host upperdir (`.git` lives in the
+    // merged tree, not the host storage path), so it asks the worker, which runs
+    // `git rev-parse HEAD` in the same merged `/workspace` the agent sees.
+    app.get("/workspace/head-commit", async () => ({
+      commit: await this.readSourceCommit(),
+    }));
+
     // --- MCP endpoints (docs/088-mcp-integration) ---
 
     // Install npm packages for stdio MCP servers. Runs at session activation,

@@ -71,6 +71,13 @@ export interface RunnerRegistryDeps {
   /** Container manager for connecting agent containers to compose networks. */
   containerManager: SessionContainerManager | null;
   /**
+   * docs/183 Phase 4 — overlay rolling-base publish hook. Invoked by
+   * `setupServiceManager` after an exit-0 on-activation install, with the
+   * session id and the agent container's worker URL. Closes over the bare-cache
+   * git deps in the orchestrator entry point. Optional/inert when overlay is off.
+   */
+  publishOverlayBase?: (sessionId: string, workerUrl: string) => void;
+  /**
    * Account-level credential store (docs/088). Used to wire ServiceManager's
    * `mcpAgentEnvLoader` (merging `mcp__*` secrets into the agent env) and to
    * trigger MCP npm-package installs at session activation. Optional so test
@@ -227,6 +234,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
+    publishOverlayBase,
     credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
@@ -457,6 +465,7 @@ export function createRunnerRegistry(
           serviceEnvDir,
           broadcastLog,
           credentialStore,
+          publishOverlayBase,
         };
         setupServiceManager(runner, setupDeps);
 

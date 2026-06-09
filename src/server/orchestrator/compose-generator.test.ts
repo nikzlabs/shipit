@@ -388,6 +388,35 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("external: true");
   });
 
+  // docs/183 Phase 4 — overlay session: the per-session `type=overlay` volume is
+  // the merged-workspace root, so services mount it with an EMPTY subpath (no
+  // `sessions/<id>/workspace` storage subpath to prepend — that path is only the
+  // upperdir on an overlay volume and has no node_modules/lowerdir source).
+  it("roots overlay-session workspace mounts at the overlay volume with no subpath", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], volumes: [".:/app"] }],
+      { ...baseOpts, workspaceVolume: "shipit-abcdef012345_overlay", workspaceSubpath: "" },
+    );
+    // The top-level alias carries the overlay volume name.
+    expect(override).toContain("name: shipit-abcdef012345_overlay");
+    expect(override).toContain("external: true");
+    expect(override).toContain("source: shipit-workspace");
+    expect(override).toContain("target: /app");
+    // Root mount — never the storage subpath nor the overlay-base lowerdir tree.
+    expect(override).not.toContain("subpath:");
+    expect(override).not.toContain("sessions/");
+    expect(override).not.toContain("overlay-base");
+  });
+
+  it("keeps a subdirectory subpath relative to the overlay root", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", volumes: ["./backend:/app"] }],
+      { ...baseOpts, workspaceVolume: "shipit-abcdef012345_overlay", workspaceSubpath: "" },
+    );
+    expect(override).toContain("subpath: backend");
+    expect(override).not.toContain("sessions/");
+  });
+
   it("rewrites subdirectory volumes with combined subpath", () => {
     const override = generateComposeOverride(
       [{ name: "api", volumes: ["./backend:/app"] }],
