@@ -81,19 +81,16 @@ worth the per-theme token work.
 border was removed and the attention signal moved onto the title:
 
 ```tsx
-// SessionItem, the title <p> — the border box is ALWAYS present (so every
-// title sits in the same place); only its color toggles.
-`truncate leading-snug inline-block max-w-full border-[1.5px] rounded px-1.5 py-px ${
-  needsAttention ? "border-(--color-attention)" : "border-transparent"
-}`
+// SessionItem, the title <p>
+needsAttention
+  ? "inline-block max-w-full border-[1.5px] border-(--color-attention) rounded px-1.5 py-px"
+  : ""
 ```
 
 `inline-block max-w-full` lets the border hug the title yet still truncate with an
-ellipsis on long names. The `border-[1.5px] ... px-1.5 py-px` box is applied to
-**every** title and only the border *color* changes — transparent when no
-attention — so flagged and unflagged titles stay aligned (no horizontal shift).
-`border-(--color-attention)` reuses the existing per-theme token, so it works in
-all 14 themes with **no new tokens** and leaves the gray selected-row fill untouched.
+ellipsis on long names; `border-(--color-attention)` reuses the existing per-theme
+token, so it works in all 14 themes with **no new tokens** and leaves the gray
+selected-row fill untouched.
 
 ## Key files
 
