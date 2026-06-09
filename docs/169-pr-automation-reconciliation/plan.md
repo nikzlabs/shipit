@@ -271,3 +271,29 @@ finer-grained calls to make during implementation:
 2. **Settings UI grouping** — present auto-fix CI and auto-resolve conflicts as two
    switches under a shared "PR automations" settings group? (Cosmetic, but worth doing
    together since both move to global settings.)
+
+## Follow-up: manual "Fix CI" is decoupled from the auto-fix card state
+
+The manual "Fix CI" button used to call `prStatusPoller.markAutoFixRunning` →
+`AutoFixManager.markRunning`, sharing the auto-loop's `RemediationState`/`autoFix` status.
+That had two problems a user reported:
+
+1. The card showed "Auto-fixing (attempt 1/3)…" for a fix the user triggered by hand —
+   misleading wording (it's not the automatic loop), and the attempt counter is
+   meaningless for a one-shot.
+2. That `running` status was **sticky**: the base state machine short-circuits on
+   `status === "running"` before the head-SHA reset, and the manual path never ran the
+   loop's post-turn `completeTurn`, so the line lingered after the agent stopped —
+   hiding the button and stranding the poller keep-alive.
+
+Resolution: **a manual "Fix CI" is just a user-initiated agent turn and no longer touches
+the auto-fix state machine at all.** `triggerCIFix` only fetches logs and `runner.dispatch`es
+the fix prompt (chat-activity label "Fixing CI…"; the auto loop keeps "Auto-fixing CI..."
+in `app-lifecycle.ts`'s `fetchAndFixCb`). The now-dead `markRunning` / `markAutoFixRunning`
+methods were removed. The card's "Auto-fixing (attempt N/3)…" line is reserved for the
+automatic loop, so nothing extra renders for a manual fix — the agent's work shows in chat,
+which is the only feedback the user needs. The `FixCIButton` (no longer hidden by a
+`running` status) is gated on `activeRunnerSessions` so a second fix turn can't be
+dispatched mid-fix. Keep-alive during the manual turn is covered by the existing
+headless-runner signal (`runner.running && viewerCount === 0`) in
+`anyAutonomousActionInFlight`.

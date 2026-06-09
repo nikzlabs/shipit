@@ -1638,51 +1638,6 @@ describe("PrStatusPoller", () => {
     expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBe(1);
   });
 
-  it("auto-fix in flight keeps polling alive even with no viewers", async () => {
-    const failingNode = makeGraphQLPrNode({
-      commits: {
-        nodes: [{
-          commit: {
-            oid: "sha-1",
-            statusCheckRollup: {
-              state: "PENDING",
-              contexts: {
-                nodes: [
-                  { databaseId: 1, name: "test", status: "IN_PROGRESS", conclusion: null },
-                ],
-              },
-            },
-          },
-        }],
-      },
-    });
-    const graphqlResult = {
-      data: { repository: { pullRequests: { nodes: [failingNode] } } },
-    };
-    githubAuth = makeGitHubAuth(graphqlResult);
-    sessionManager = makeSessionManager([
-      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
-    ]);
-    const registry = makeFakeRegistry();
-    // No viewers anywhere.
-
-    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, runnerRegistry: registry });
-    poller.trackSession("s1", "https://github.com/owner/repo");
-    // trackSession alone (with no viewers and no autonomous flag yet) sees
-    // a closed gate and skips the first poll.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(githubAuth.graphqlQuery).not.toHaveBeenCalled();
-
-    // docs/169 — a manual fix marks the manager running. That alone keeps the
-    // gate open and arms the supervisor (creates state lazily).
-    poller.markAutoFixRunning("s1");
-
-    // Auto-fix keep-alive forces fast cadence → repeated polls fire over
-    // the next minute even though no browser is attached.
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect((githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mock.calls.length).toBeGreaterThan(0);
-  });
-
   it("headless turn (running runner, no viewer) keeps the gate open and polls continue", async () => {
     // PR has pending CI so the cadence is fast — without the headless-gate
     // signal, this would still be skipped (no viewer, no autonomous action).
@@ -2018,40 +1973,72 @@ describe("PrStatusPoller — auto-fix state", () => {
     pollerAF.destroy();
   });
 
-  it("markAutoFixRunning creates state lazily", () => {
-    pollerAF.markAutoFixRunning("s1");
-    const state = pollerAF.getAutoFixState("s1");
-    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
-  });
+  // docs/169 follow-up — the manual "Fix CI" button no longer touches the
+  // auto-fix state machine (it's a plain agent turn), so the only thing that
+  // sets `status: "running"` is the automatic loop. These tests drive that loop
+  // through a failing-CI poll rather than the removed `markAutoFixRunning`.
+  function makeFailingNode() {
+    return makeGraphQLPrNode({
+      commits: {
+        nodes: [{
+          commit: {
+            oid: "sha-fail",
+            statusCheckRollup: {
+              state: "FAILURE",
+              contexts: {
+                nodes: [
+                  { databaseId: 1, name: "test", status: "COMPLETED", conclusion: "FAILURE", title: "3 tests failed", detailsUrl: "https://example.com" },
+                ],
+              },
+            },
+          },
+        }],
+      },
+    });
+  }
 
-  it("markAutoFixRunning increments count and sets running", () => {
-    pollerAF.markAutoFixRunning("s1");
-    const state = pollerAF.getAutoFixState("s1");
-    expect(state).toMatchObject({ attemptCount: 1, status: "running" });
-  });
-
-  it("getAllStatuses includes autoFix state", async () => {
-    // Create poller with real auth and data
-    const graphqlResult = {
-      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
-    };
-    const githubAuth = makeGitHubAuth(graphqlResult);
+  /** A poller wired so the auto-fix loop fires and parks in `running`. */
+  function makeRunningAutoFixPoller() {
+    const githubAuth = makeGitHubAuth({
+      data: { repository: { pullRequests: { nodes: [makeFailingNode()] } } },
+    });
     const sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
     ]);
+    const registry = makeFakeRegistry();
+    registry.setViewers("s1", 1); // open the poll gate
+    registry.setRunning("s1", false); // idle runner → pre-attempt gate passes
+    return new PrStatusPoller({
+      githubAuth,
+      sessionManager,
+      sseBroadcast: sseBroadcastAF,
+      runnerRegistry: registry,
+      isAutoFixEnabled: () => true,
+      // Never resolves → the attempt stays in flight, so status stays "running".
+      fetchAndFixCb: () => new Promise<never>(() => { /* hang */ }),
+    });
+  }
 
+  it("auto-fix loop flips state to running on a failing-CI poll", async () => {
     vi.useFakeTimers();
-    const poller2 = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast: sseBroadcastAF });
+    const poller2 = makeRunningAutoFixPoller();
     poller2.trackSession("s1", "https://github.com/owner/repo");
-    // docs/169 — a manual fix populates the autoFix state (no per-session toggle).
-    poller2.markAutoFixRunning("s1");
+    await vi.advanceTimersByTimeAsync(0);
 
-    // Need to poll to populate lastKnown
+    expect(poller2.getAutoFixState("s1")).toMatchObject({ status: "running" });
+    poller2.destroy();
+    vi.useRealTimers();
+  });
+
+  it("getAllStatuses surfaces the auto-fix state on the summary", async () => {
+    vi.useFakeTimers();
+    const poller2 = makeRunningAutoFixPoller();
+    poller2.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
     const statuses = poller2.getAllStatuses();
     expect(statuses).toHaveLength(1);
-    expect(statuses[0].autoFix).toMatchObject({ attemptCount: 1, status: "running" });
+    expect(statuses[0].autoFix).toMatchObject({ status: "running", maxAttempts: 3 });
     poller2.destroy();
     vi.useRealTimers();
   });

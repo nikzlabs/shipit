@@ -242,13 +242,6 @@ describe("AutoFixManager", () => {
     expect(fx.cb.count()).toBe(2);
   });
 
-  it("markRunning (manual fix) creates state lazily and increments", () => {
-    const s = fx.manager.markRunning("s1");
-    expect(s.attemptCount).toBe(1);
-    expect(s.status).toBe("running");
-    expect(fx.manager.get("s1")?.status).toBe("running");
-  });
-
   it("delete drops state", async () => {
     await fx.fail();
     await tick();
