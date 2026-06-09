@@ -113,27 +113,37 @@ ShipIt supports two delivery modes for service secrets:
 
 ### env-file mode (default)
 
-For each service that declares secrets, ShipIt writes
-`.shipit/.env.<service>` and references it via `env_file:` in the
-generated compose override:
+For each service that declares secrets, ShipIt writes a per-service env file
+and references it via `env_file:` in the generated compose override:
 
 ```yaml
-# .shipit/compose.override.yml (generated)
+# .shipit/compose.override.yml (generated, containerized mode)
 services:
   api:
-    env_file: [.shipit/.env.api]
+    env_file: [/workspace/service-env/<sessionId>/.env.api]
     # ... other override fields
 ```
 
 ```
-# .shipit/.env.api (generated)
+# .env.api (generated)
 DATABASE_URL=postgres://...
 REDIS_URL=redis://...
 STRIPE_SECRET_KEY=sk_test_...
 ```
 
-The env files live under `.shipit/` (gitignored). They are rewritten on
-every session activation and on every secrets save.
+**Service-only env files are NOT in your workspace.** In containerized runtime
+ShipIt writes them to an orchestrator-private directory *outside* the workspace
+(`<stateDir>/service-env/<sessionId>/.env.<service>`, overridable with
+`SHIPIT_SERVICE_ENV_DIR`). The agent container mounts only the session's
+workspace subpath of the shared volume, so it cannot read these files even
+though they sit on the same volume. This keeps a service-only secret (a
+database URL, a third-party API key) out of the agent's reach unless you
+explicitly mark it `agent: true`. Only `.shipit/.env.agent` — which holds
+`agent: true` values and MCP credentials — lives in the workspace.
+
+The files are rewritten on every session activation and on every secrets save.
+Marking an entry `agent: true` is the supported way to expose its value to the
+agent; everything else stays service-only.
 
 ### Docker-secrets mode (opt-in)
 

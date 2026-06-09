@@ -463,6 +463,190 @@ export function writePerServiceEnvFiles(opts: {
   return written;
 }
 
+/**
+ * Write per-service env files to an orchestrator-private root OUTSIDE the
+ * session workspace (docs/183): `<rootDir>/<sessionId>/.env.<service>`.
+ *
+ * This is the default delivery mode in containerized runtime — it keeps
+ * service-only secrets out of the agent-readable workspace while preserving
+ * the env-var semantics inside the service container. The generated compose
+ * override references the returned absolute paths via `env_file:` rather than
+ * the workspace-relative `.shipit/.env.<service>`.
+ *
+ * Why this is agent-invisible: in production `rootDir` defaults to
+ * `<stateDir>/service-env`, where `stateDir` is the workspace-volume root. The
+ * agent container mounts only the `sessions/<id>/workspace` subpath of that
+ * volume, so a `service-env/` directory at the volume root is outside the
+ * agent's mount even though both live on the same Docker volume. That subpath
+ * dependency is load-bearing — see plan §"Why `<stateDir>/service-env` is
+ * agent-invisible".
+ *
+ * Safety invariant (plan §"Resolved Decisions"): the resolved root must NOT
+ * live inside the agent's workspace mount, or the isolation is a no-op. If
+ * `rootDir` resolves to `workspaceDir` or a descendant, this throws rather
+ * than silently leaking the files into the agent's view.
+ *
+ * Behaviour:
+ *   - Creates `<rootDir>/<sessionId>/` (mode 0700) if missing.
+ *   - Files are written with mode 0600.
+ *   - Stale `.env.<svc>` files in the session dir (services that no longer
+ *     declare secrets) are swept.
+ *   - Any leftover workspace `.shipit/.env.<svc>` files from the pre-183
+ *     write path are swept so a prior leak doesn't linger in the agent view.
+ *
+ * Returns a map of service name → absolute env-file path (for the override)
+ * plus the per-session directory.
+ */
+export function writeServiceEnvFilesToRoot(opts: {
+  rootDir: string;
+  sessionId: string;
+  workspaceDir: string;
+  perServiceEnv: Record<string, string>;
+}): { serviceEnvFiles: Record<string, string>; sessionDir: string } {
+  const { rootDir, sessionId, workspaceDir, perServiceEnv } = opts;
+  assertServiceEnvRootOutsideWorkspace(rootDir, workspaceDir);
+
+  const sessionDir = path.join(rootDir, sessionId);
+  fs.mkdirSync(sessionDir, { recursive: true, mode: 0o700 });
+
+  // Sweep stale `.env.<svc>` files for services that no longer declare secrets,
+  // so a service can't re-pick up a leftover file from a previous compose def.
+  let existing: string[] = [];
+  try {
+    existing = fs.readdirSync(sessionDir);
+  } catch {
+    existing = [];
+  }
+  const keep = new Set<string>();
+  for (const svc of Object.keys(perServiceEnv)) keep.add(`.env.${svc}`);
+  for (const entry of existing) {
+    if (!entry.startsWith(".env.")) continue;
+    if (keep.has(entry)) continue;
+    try {
+      fs.unlinkSync(path.join(sessionDir, entry));
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+
+  const serviceEnvFiles: Record<string, string> = {};
+  for (const [serviceName, body] of Object.entries(perServiceEnv)) {
+    const filePath = path.join(sessionDir, `.env.${serviceName}`);
+    fs.writeFileSync(filePath, body, { mode: 0o600 });
+    serviceEnvFiles[serviceName] = filePath;
+  }
+
+  // Sweep any pre-183 workspace service env files so the agent can't read
+  // stale plaintext values left behind by the old in-workspace write path.
+  sweepWorkspaceServiceEnvFiles(workspaceDir);
+
+  return { serviceEnvFiles, sessionDir };
+}
+
+/**
+ * Remove workspace `.shipit/.env.<service>` files (every `.env.*` except
+ * `.env.agent`, which Phase 3 owns). Used when service env files moved out of
+ * the workspace (docs/183) and by Docker-secrets mode, so stale plaintext
+ * service secrets don't linger in the agent-readable workspace.
+ */
+export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
+  const shipitDir = path.join(workspaceDir, ".shipit");
+  let existing: string[] = [];
+  try {
+    existing = fs.readdirSync(shipitDir);
+  } catch {
+    return;
+  }
+  for (const entry of existing) {
+    if (!entry.startsWith(".env.") || entry === ".env.agent") continue;
+    try {
+      fs.unlinkSync(path.join(shipitDir, entry));
+    } catch {
+      // Best-effort cleanup
+    }
+  }
+}
+
+/**
+ * Remove a session's external service-env directory
+ * (`<rootDir>/<sessionId>/`) and everything under it. docs/183.
+ *
+ * Called from `ServiceManager.stop({ removeVolumes: true })` — the
+ * session-going-away-for-good signal (archive / full reset) — so the plaintext
+ * service env files don't outlive the session. Without this they would
+ * accumulate on the volume root indefinitely, since (unlike the old
+ * in-workspace `.shipit/.env.<svc>` path) they're outside the workspace
+ * checkout that archive drops and outside the disk-janitor's orphan-workspace
+ * sweep. Best-effort: a failure here must not block teardown.
+ */
+export function removeSessionServiceEnvDir(opts: {
+  rootDir: string;
+  sessionId: string;
+}): void {
+  const { rootDir, sessionId } = opts;
+  if (!sessionId) return;
+  try {
+    fs.rmSync(path.join(rootDir, sessionId), { recursive: true, force: true });
+  } catch {
+    // Best-effort cleanup — never block session teardown on this.
+  }
+}
+
+/**
+ * Throw if `rootDir` resolves to `workspaceDir` or a path inside it. The
+ * out-of-workspace service-env placement (docs/183) is only isolation if the
+ * directory is genuinely outside the agent's workspace mount — so we fail
+ * closed rather than silently leak service-only secrets into the agent view.
+ *
+ * Resolves symlinks (best-effort) before the containment check: a lexical
+ * `path.relative` comparison alone would pass a `service-env` symlink whose
+ * target is inside the workspace, defeating the assertion in exactly the
+ * non-standard `stateDir` setups it exists to guard. `realpathSync` falls
+ * back to the lexical path for components that don't exist on disk yet.
+ */
+function assertServiceEnvRootOutsideWorkspace(rootDir: string, workspaceDir: string): void {
+  const root = realpathOrResolve(rootDir);
+  const ws = realpathOrResolve(workspaceDir);
+  const rel = path.relative(ws, root);
+  const inside = rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  if (inside) {
+    throw new Error(
+      `Refusing to write service env files: resolved service-env root "${root}" ` +
+        `is inside the agent workspace "${ws}", which would expose service-only ` +
+        `secrets to the agent. Set SHIPIT_SERVICE_ENV_DIR to a path outside the workspace.`,
+    );
+  }
+}
+
+/**
+ * `fs.realpathSync` with a fallback that resolves the longest existing
+ * ancestor and re-appends the not-yet-created tail. Pure `path.resolve` when
+ * nothing on the path exists. Never throws — used only to harden a safety
+ * check, so a resolution failure degrades to the lexical path.
+ */
+function realpathOrResolve(p: string): string {
+  const abs = path.resolve(p);
+  try {
+    return fs.realpathSync(abs);
+  } catch {
+    // Path (or a leading component) doesn't exist yet — resolve the deepest
+    // existing ancestor so a symlinked parent is still followed, then re-join
+    // the remaining tail lexically.
+    let dir = abs;
+    const tail: string[] = [];
+    while (dir !== path.dirname(dir)) {
+      try {
+        const real = fs.realpathSync(dir);
+        return tail.length ? path.join(real, ...tail.reverse()) : real;
+      } catch {
+        tail.push(path.basename(dir));
+        dir = path.dirname(dir);
+      }
+    }
+    return abs;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Phase 1 follow-up: Docker-secrets mode
 // ---------------------------------------------------------------------------
