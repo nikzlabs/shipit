@@ -16,8 +16,9 @@ import { useQuickCaptureHotkey } from "./hooks/useQuickCaptureHotkey.js";
 import { useKeybinding } from "./keybindings/use-keybinding.js";
 import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
-import { CircleNotchIcon } from "@phosphor-icons/react";
+import { CircleNotchIcon, EyeIcon, HardDrivesIcon, BookOpenIcon, ListChecksIcon, FilesIcon, TerminalWindowIcon, ClockCounterClockwiseIcon, PresentationChartIcon, GitPullRequestIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
+import { Tab } from "./components/ui/tab.js";
 import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
@@ -1102,30 +1103,40 @@ export default function App() {
   const previewVisible = !isLocalMode && (rightTab === "preview" || (rightTab === "pr" && !hasPr));
   const rightPanel = (
     <>
-      <div className="flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
+      {/* @container lets the tabs collapse to icon-only when the panel is
+          narrowed (see Tab) instead of overflowing the bar. Persistent views
+          sit on the left; transient Present/PR are grouped to the right. */}
+      <div className="@container flex h-10.25 border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
         {!isLocalMode && !isOpsSession && (
-          <button onClick={() => handleTabChange("preview")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "preview" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Preview</button>
+          <Tab icon={<EyeIcon size={ICON_SIZE.SM} />} label="Preview" active={rightTab === "preview"} onClick={() => handleTabChange("preview")} />
         )}
         {isOpsSession && (
-          <button onClick={() => handleTabChange("host")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "host" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Host</button>
+          <Tab icon={<HardDrivesIcon size={ICON_SIZE.SM} />} label="Host" active={rightTab === "host"} onClick={() => handleTabChange("host")} />
         )}
-        <button onClick={() => handleTabChange("docs")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "docs" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Docs</button>
-        <button onClick={() => handleTabChange("issues")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "issues" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Issues</button>
-        <button onClick={() => handleTabChange("files")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "files" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Files</button>
+        <Tab icon={<BookOpenIcon size={ICON_SIZE.SM} />} label="Docs" active={rightTab === "docs"} onClick={() => handleTabChange("docs")} />
+        <Tab icon={<ListChecksIcon size={ICON_SIZE.SM} />} label="Issues" active={rightTab === "issues"} onClick={() => handleTabChange("issues")} />
+        <Tab icon={<FilesIcon size={ICON_SIZE.SM} />} label="Files" active={rightTab === "files"} onClick={() => handleTabChange("files")} />
         {!isLocalMode && (
-          <button onClick={() => handleTabChange("terminal")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "terminal" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>Terminal</button>
+          <Tab icon={<TerminalWindowIcon size={ICON_SIZE.SM} />} label="Terminal" active={rightTab === "terminal"} onClick={() => handleTabChange("terminal")} />
+        )}
+        <Tab icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />} label="History" active={rightTab === "history"} onClick={() => handleTabChange("history")} />
+        <span className="flex-1" />
+        {(presentations.length > 0 || (hasPr && !isOpsSession)) && (
+          <span className="self-center h-[18px] w-px bg-(--color-border-secondary) mx-1" aria-hidden="true" />
         )}
         {presentations.length > 0 && (
-          <button onClick={() => handleTabChange("present")} className={`px-3 sm:px-4 h-full inline-flex items-center gap-1.5 text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "present" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>
-            Present
-            {rightTab !== "present" && presentUnseenCount > 0 && (
+          <Tab
+            icon={<PresentationChartIcon size={ICON_SIZE.SM} />}
+            label="Present"
+            active={rightTab === "present"}
+            onClick={() => handleTabChange("present")}
+            badge={rightTab !== "present" && presentUnseenCount > 0 ? (
               <span className="inline-flex items-center justify-center min-w-[1.25rem] h-4 px-1 rounded-full bg-(--color-accent) text-(--color-accent-text) text-[10px] font-semibold leading-none">{presentUnseenCount}</span>
-            )}
-          </button>
+            ) : undefined}
+          />
         )}
-        <button onClick={() => handleTabChange("history")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "history" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>History</button>
         {hasPr && !isOpsSession && (
-          <button onClick={() => handleTabChange("pr")} className={`px-3 sm:px-4 h-full inline-flex items-center text-xs sm:text-sm font-medium transition-colors border-b-2 ${rightTab === "pr" ? "text-(--color-text-primary) border-(--color-border-focus)" : "text-(--color-text-secondary) border-transparent hover:text-(--color-text-primary)"}`}>PR</button>
+          <Tab icon={<GitPullRequestIcon size={ICON_SIZE.SM} />} label="PR" tone="pr" active={rightTab === "pr"} onClick={() => handleTabChange("pr")} />
         )}
       </div>
       <div className="flex-1 min-h-0 relative">
