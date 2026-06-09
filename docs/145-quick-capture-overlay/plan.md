@@ -222,6 +222,23 @@ container. The agent only starts when the first WS `send_message`
 message arrives. So "don't navigate" is still load-bearing — but for
 activation + first message, not for container boot.
 
+**Exception — graduating the `/{slug}/new` page's own session.** "Don't
+navigate" is the rule for *background* sessions, but it has one corner. When
+the user fires quick-capture while sitting on a `/{slug}/new` page, that page
+has already claimed an **ungraduated warm session**, and the server's claim
+*reuse* path (`claim-session.ts` → `findUngraduatedWarm`) hands that very
+session back instead of minting a fresh one. The overlay then graduates the
+session the user is *looking at* — so it isn't a background session at all,
+and leaving the URL stuck on `/{slug}/new` strands a now-real session behind a
+"new"-shaped URL (the bug: "worked in the same session, but the URL didn't
+change"). Fix: the overlay reports the created session to the app via
+`onSessionCreated`, and `App.tsx` `handleQuickSessionCreated` graduates the URL
+to `/session/{id}` **only when the returned id equals the active session id**
+(i.e. the overlay reused what we're viewing). A genuine background session — a
+different repo, or a fresh pre-warm — returns a different id, matches nothing,
+and stays background. This mirrors the existing `/{slug}/new` → `/session/{id}`
+graduation that a normal `handleSend` already performs.
+
 **But the right primitive already exists.** Look at
 `src/server/orchestrator/services/child-sessions.ts:spawnChildSession`:
 it creates a session, queues the first prompt via `sendSystemMessage` on

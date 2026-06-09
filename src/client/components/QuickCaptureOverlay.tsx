@@ -12,9 +12,16 @@ import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
 import { Button } from "./ui/button.js";
-import type { FileContextRef } from "../../server/shared/types.js";
+import type { FileContextRef, SessionInfo } from "../../server/shared/types.js";
 
-export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
+export function QuickCaptureOverlay({
+  onAddRepo,
+  onSessionCreated,
+}: {
+  onAddRepo: () => void;
+  /** Notified with the freshly created (or reused-and-graduated) session. */
+  onSessionCreated?: (session: SessionInfo) => void;
+}) {
   const open = useUiStore((s) => s.quickCaptureOpen);
   const bootstrapLoaded = useUiStore((s) => s.bootstrapLoaded);
   const agentList = useUiStore((s) => s.agentList);
@@ -118,7 +125,7 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
     setSubmitting(true);
     setError(null);
     try {
-      await createHeadlessSession({
+      const created = await createHeadlessSession({
         repoUrl: selectedRepo.url,
         initialPrompt: payload.text,
         agent: selectedAgentId,
@@ -127,6 +134,11 @@ export function QuickCaptureOverlay({ onAddRepo }: { onAddRepo: () => void }) {
         ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
       });
       setPendingFiles([]);
+      // Let the app graduate the URL when the server reused the session the
+      // user is sitting on (a /{slug}/new page's claimed session). See
+      // App.tsx `handleQuickSessionCreated` — a true background session won't
+      // match the active session id and stays put.
+      onSessionCreated?.(created);
       close();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Couldn't start a session — try again");

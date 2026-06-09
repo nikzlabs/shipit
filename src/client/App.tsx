@@ -71,7 +71,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount, TrackerIssue } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, SessionInfo, TrackerIssue } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -761,6 +761,26 @@ export default function App() {
       void navigate("/");
     }
   }, [handleNewSessionForRepo, navigate]);
+
+  // Quick-capture (the lightning / lightning+mic buttons) normally spawns a
+  // *background* session and intentionally does NOT navigate — docs/145. The
+  // exception: when the user is on a /{slug}/new page, that page has already
+  // claimed an ungraduated warm session, and the server's claim *reuse* path
+  // (`findUngraduatedWarm`) graduates that very session instead of minting a
+  // fresh one. In that case the "background" session IS the one we're viewing,
+  // so leaving the URL on /{slug}/new strands it — the session graduated but
+  // the address bar stayed on .../new. Detect the reuse (returned id === the
+  // session we're sitting on) and graduate the URL exactly as a normal send
+  // does (handleSend). A genuine background session (different repo, or a
+  // fresh pre-warm) returns a different id, so it stays background — no nav.
+  const handleQuickSessionCreated = useCallback(
+    (session: SessionInfo) => {
+      if (isNewSessionRoute && session.id === useSessionStore.getState().sessionId) {
+        void navigate(`/session/${session.id}`, { replace: true });
+      }
+    },
+    [isNewSessionRoute, navigate],
+  );
 
   useKeyboardShortcuts({
     searchOpen,
@@ -1461,6 +1481,7 @@ export default function App() {
         onMobileNewSession={handleNewSessionShortcut}
         onMobileQuickSession={() => useUiStore.getState().setQuickCaptureOpen(true)}
         onMobileVoiceSession={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
+        onQuickSessionCreated={handleQuickSessionCreated}
         chatPanel={chatPanel}
         rightPanel={rightPanel}
         fraction={fraction}
