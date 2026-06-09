@@ -55,11 +55,11 @@ export type { ProxyAgentRunner } from "./proxy-agent-process.js";
 // ---------------------------------------------------------------------------
 
 /**
- * Timeout for the POST /install request. A fast-install cache HIT holds the
- * response open while the worker materializes `node_modules` (seconds for a
- * large tree); a MISS returns `{ started: true }` immediately and streams via
- * SSE. The bound is generous but finite so a genuinely wedged worker resolves
- * the install gate (as a failure) rather than blocking the first turn forever.
+ * Timeout for the POST /install request. The worker returns `{ started: true }`
+ * (or `{ skipped: true }`) immediately and streams progress via SSE, so the
+ * POST itself is fast. The bound is generous but finite so a genuinely wedged
+ * worker resolves the install gate (as a failure) rather than blocking the
+ * first turn forever.
  */
 const INSTALL_POST_TIMEOUT_MS = 180_000;
 
@@ -1092,14 +1092,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     });
 
     try {
-      // Generous timeout: a fast-install cache HIT holds the response open
-      // while the worker materializes `node_modules` (seconds for large
-      // trees). A MISS / non-cacheable set returns `{ started: true }` fast.
-      // We still bound it so a wedged worker resolves the gate (as a failure)
-      // via the catch below instead of hanging the user's first turn forever.
+      // The worker returns `{ started: true }` (or `{ skipped: true }`) fast
+      // and streams completion via SSE. We still bound the POST so a wedged
+      // worker resolves the gate (as a failure) via the catch below instead of
+      // hanging the user's first turn forever.
       const result = await workerInstall(this.workerUrl, commands, {
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
-      }) as { skipped?: boolean; started?: boolean; completed?: boolean; ok?: boolean };
+      }) as { skipped?: boolean; started?: boolean; ok?: boolean };
       if (result.skipped) {
         this.emitMessage({
           type: "install_status",
@@ -1108,21 +1107,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         });
         this.signalInstallComplete();
         return { ok: true };
-      }
-      if (result.completed) {
-        // Fast-install cache HIT — the worker resolved the install fully and
-        // reported the outcome in THIS HTTP response. Settle the gate directly
-        // from the response so completion never depends on the SSE-delivered
-        // `install_done` event (which on the fast path can be consumed before
-        // the resolver is armed, deadlocking the first turn — docs/162).
-        const ok = result.ok !== false;
-        this.emitMessage({
-          type: "install_status",
-          sessionId: this.sessionId,
-          status: ok ? "complete" : "error",
-        });
-        this.signalInstallComplete(ok);
-        return { ok };
       }
       // Started — wait for SSE-delivered install_done / install_error to
       // resolve the completion promise with the success/failure outcome.

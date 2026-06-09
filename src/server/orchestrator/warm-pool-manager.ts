@@ -289,17 +289,14 @@ export async function runPreInstall(workspaceDir: string, workerUrl: string, ses
   if (commands.length === 0) return;
 
   try {
-    // Generous timeout: a fast-install cache HIT holds the response open while
-    // the worker materializes `node_modules` and returns `{ completed: true }`
-    // (docs/162). The default 10s bound is too tight for a large tree.
+    // The worker returns `{ started: true }` / `{ skipped: true }` fast and
+    // streams completion via SSE; we poll /install/status below. The timeout
+    // only bounds the POST itself, kept generous so a slow daemon doesn't trip
+    // it.
     const res = await workerInstall(workerUrl, commands, { timeoutMs: 180_000 }) as
-      { skipped?: boolean; started?: boolean; completed?: boolean; ok?: boolean };
+      { skipped?: boolean; started?: boolean; ok?: boolean };
     if (res.skipped) {
       console.log(`[warm:install:${sessionId}] Pre-install skipped (marker present)`);
-      return;
-    }
-    if (res.completed) {
-      console.log(`[warm:install:${sessionId}] Pre-install ${res.ok === false ? "failed" : "complete"} (fast path)`);
       return;
     }
     if (!res.started) return;

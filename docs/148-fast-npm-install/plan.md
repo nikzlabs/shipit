@@ -4,6 +4,17 @@ description: Make per-session `npm install` near-instant by sharing a materializ
 
 # Fast `npm install` in session containers
 
+> **SUPERSEDED (docs/183 Phase 1).** The lockfile-keyed `node_modules` copy
+> store described here (`nm-store.ts`) has been **deleted**. It only ever
+> accelerated a narrow allowlist of single-lockfile npm/Yarn/pnpm commands, paid
+> a full physical `node_modules` copy per session, and forced lockfile detection
+> — exactly the constraints the [overlay rolling base](../183-overlay-dep-store/plan.md)
+> removes by overlaying the **whole workspace** (ecosystem-agnostic, no keys, no
+> lockfile detection). The retained pieces (`runtimeKey`/`detectLibc` runtime
+> fingerprint, `tuneNpmInstall`) now live in
+> `src/server/session/install-runtime.ts`. The download cache (`/dep-cache`,
+> docs/075) is unaffected. This doc is kept for historical context only.
+
 ## Problem
 
 Every session that needs dependencies pays for `agent.install` (typically `npm install`).

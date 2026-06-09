@@ -53,17 +53,7 @@ import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
 import { registerPresentFilesRoutes } from "./present-view.js";
-import {
-  computeStoreKey,
-  fastInstallDisabled,
-  findLockfile,
-  isCacheableInstall,
-  materialize,
-  nmStoreRoot,
-  populateStore,
-  runtimeKey,
-  tuneNpmInstall,
-} from "./nm-store.js";
+import { tuneNpmInstall } from "./install-runtime.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -73,13 +63,6 @@ export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
 /** Factory function that creates an AgentProcess from an agent ID. */
 export type WorkerAgentFactory = (agentId: AgentId) => AgentProcess;
-
-/**
- * Resolved fast-install plan for a cacheable single-command install: where the
- * materialized `node_modules` store lives and the tuned command to run on a
- * miss. Produced by {@link SessionWorker.computeFastPath}.
- */
-interface FastPathPlan { storeKey: string; storeDir: string; tunedCommand: string }
 
 export interface SessionWorkerDeps {
   /** Factory for creating agent processes. */
@@ -675,34 +658,11 @@ export class SessionWorker extends EventEmitter {
       // resync path doesn't surface a stale outcome from a prior install.
       this._lastInstallResult = null;
 
-      // Fast path (docs/148 + docs/162 fast-install gate race): a cache HIT is
-      // resolved SYNCHRONOUSLY inside this request and reported in the HTTP
-      // response (`{ completed: true }`), so the orchestrator settles its
-      // install gate directly from the response. Completion of a hit must NOT
-      // depend on the SSE-delivered `install_done` event: on the fast path that
-      // event can be broadcast within a few ms — before/at the same tick as the
-      // orchestrator arms its gate resolver or its SSE handshake completes — and
-      // be consumed while the resolver is null, leaving the gate (and the user's
-      // first turn) blocked forever. A MISS falls through to the streamed real
-      // install exactly as before (returns `{ started: true }`, completes via
-      // SSE).
-      let fast: FastPathPlan | null = null;
-      try {
-        fast = this.computeFastPath(commands);
-      } catch {
-        fast = null;
-      }
-      if (fast) {
-        const materialized = await this.tryMaterializeFromStore(fast).catch(() => false);
-        if (materialized) {
-          this.finishInstallOk(markerDir, markerFile);
-          return { completed: true, ok: true };
-        }
-      }
-
-      // Miss (or non-cacheable command set) — run the real install in the
-      // background; progress and completion stream via SSE.
-      void this.runRealInstallCommands(commands, fast, markerDir, markerFile);
+      // Run `agent.install` in the background; progress and completion stream
+      // via SSE (`install_done` / `install_error`). The lockfile-keyed copy
+      // store fast path (docs/148) was removed in docs/183 Phase 1 — the
+      // overlay rolling base will reclaim the install-extract cost instead.
+      void this.runRealInstallCommands(commands, markerDir, markerFile);
       return { started: true };
     });
 
@@ -1074,9 +1034,7 @@ export class SessionWorker extends EventEmitter {
 
   /**
    * Latch a successful install: write the marker, record the result, clear the
-   * running flag, and broadcast `install_done`. Shared by the synchronous
-   * fast-path HIT (handled inline in the /install handler) and the background
-   * real-install path.
+   * running flag, and broadcast `install_done`.
    *
    * State (`_lastInstallResult`, `_installRunning`) is updated BEFORE the
    * broadcast so an orchestrator that races to query `/install/status` right
@@ -1091,30 +1049,23 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Run the real (non-cached) install path, streaming output via SSE and
-   * writing the marker on success. Reached on a fast-path MISS (or a
-   * non-cacheable command set) — the synchronous cache-HIT path is handled
-   * inline in the /install handler so its completion is reported in the HTTP
-   * response rather than depending on the SSE `install_done` event.
+   * Run `agent.install`, streaming output via SSE and writing the marker on
+   * success. Each command is passed through {@link tuneNpmInstall} so a bare
+   * `npm install` lands fast on a warm download cache (`/dep-cache`, docs/075).
    *
-   * Fast path (docs/148): for a single bare `npm install|ci|i`, `yarn
-   * [install]`, or `pnpm install|i` against a workspace with exactly one
-   * lockfile, the handler first tries to copy in a previously-materialized
-   * `node_modules`. On a miss we land here: for a fast-path candidate we
-   * substitute the tuned command (Option E flags) so the populated store
-   * reflects what was actually built, then publish the resulting tree to the
-   * store via temp-dir + atomic rename (best-effort — a populate failure must
-   * not fail the install, the workspace already has a working `node_modules`).
+   * The lockfile-keyed copy-store fast path (docs/148) was removed in docs/183
+   * Phase 1: the overlay rolling base eliminates the install-extract cost
+   * generically (whole-workspace, ecosystem-agnostic) instead of copying a
+   * `node_modules` snapshot per session.
    */
   private async runRealInstallCommands(
     commands: string[],
-    fast: FastPathPlan | null,
     markerDir: string,
     markerFile: string,
   ): Promise<void> {
     try {
-      const resolvedCommands = fast ? [fast.tunedCommand] : commands;
-      for (const cmd of resolvedCommands) {
+      for (const rawCmd of commands) {
+        const cmd = tuneNpmInstall(rawCmd);
         const exitCode = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
           const message = `Command "${cmd}" exited with code ${exitCode}`;
@@ -1132,15 +1083,6 @@ export class SessionWorker extends EventEmitter {
         }
       }
 
-      if (fast) {
-        await this.tryPopulateStore(fast).catch((err: unknown) => {
-          console.warn(
-            `[install] populateStore failed for ${fast.storeKey}:`,
-            getErrorMessage(err),
-          );
-        });
-      }
-
       this.finishInstallOk(markerDir, markerFile);
     } catch (err) {
       const message = getErrorMessage(err);
@@ -1151,107 +1093,6 @@ export class SessionWorker extends EventEmitter {
         type: "install_error",
         data: { message },
       });
-    }
-  }
-
-  /**
-   * Decide whether the install request is a fast-path candidate. Returns
-   * the resolved store path + tuned command on success, or null when any
-   * gate fails (kill switch, non-cacheable command, multi-command sequence,
-   * 0 or multiple lockfiles).
-   */
-  private computeFastPath(commands: string[]): FastPathPlan | null {
-    if (fastInstallDisabled()) {
-      console.log("[install] fast path disabled via SHIPIT_FAST_INSTALL=disabled");
-      return null;
-    }
-    if (commands.length !== 1) return null;
-    const raw = commands[0];
-    if (!isCacheableInstall(raw)) return null;
-    const lockfile = findLockfile(this.workspaceDir);
-    if (!lockfile) return null;
-    const tunedCommand = tuneNpmInstall(raw);
-    const storeKey = computeStoreKey({
-      lockfile,
-      runtimeKey: runtimeKey(),
-      installCommand: tunedCommand,
-    });
-    const storeDir = path.join(nmStoreRoot(), storeKey);
-    return { storeKey, storeDir, tunedCommand };
-  }
-
-  /**
-   * Look up the store and materialize on hit. Returns true on a successful
-   * materialize (`node_modules` is ready, caller writes the marker).
-   * Returns false when there is no store, or when every rung of the
-   * materialize ladder fails — in either case the caller drops to a real
-   * install, which also self-heals by repopulating the store.
-   */
-  private async tryMaterializeFromStore(fast: FastPathPlan): Promise<boolean> {
-    let exists = false;
-    try {
-      const st = fs.statSync(fast.storeDir);
-      exists = st.isDirectory();
-    } catch {
-      exists = false;
-    }
-    if (!exists) {
-      console.log(`[install] fast-path miss storeKey=${fast.storeKey.slice(0, 12)}`);
-      return false;
-    }
-    const t0 = Date.now();
-    const dest = path.join(this.workspaceDir, "node_modules");
-    const result = await materialize(fast.storeDir, dest);
-    if (!result.ok) {
-      console.warn(
-        `[install] materialize failed storeKey=${fast.storeKey.slice(0, 12)} ` +
-          `error=${result.error ?? "unknown"} — falling back to real install`,
-      );
-      return false;
-    }
-    const ms = Date.now() - t0;
-    console.log(
-      `[install] fast-path hit storeKey=${fast.storeKey.slice(0, 12)} ` +
-        `strategy=${result.strategy} took=${ms}ms`,
-    );
-    this.broadcastSSE({
-      type: "install_log",
-      data: {
-        text: `[fast-install] restored node_modules from cache (${result.strategy}, ${ms}ms)\n`,
-        stream: "stdout",
-      },
-    });
-    return true;
-  }
-
-  /**
-   * Publish the freshly-installed `node_modules` to the store after a
-   * successful real install. No-op when `node_modules` doesn't exist
-   * (Yarn Berry/PnP layouts use `.pnp.cjs` instead).
-   */
-  private async tryPopulateStore(
-    fast: { storeKey: string; storeDir: string },
-  ): Promise<void> {
-    const src = path.join(this.workspaceDir, "node_modules");
-    try {
-      const st = await fsp.stat(src);
-      if (!st.isDirectory()) return;
-    } catch {
-      // No `node_modules` — Yarn Berry/PnP, or a lockfile-only no-op install.
-      return;
-    }
-    const t0 = Date.now();
-    const { published } = await populateStore(src, fast.storeDir);
-    const ms = Date.now() - t0;
-    if (published) {
-      console.log(
-        `[install] populated nm-store storeKey=${fast.storeKey.slice(0, 12)} took=${ms}ms`,
-      );
-    } else {
-      console.log(
-        `[install] nm-store already published for storeKey=${fast.storeKey.slice(0, 12)} ` +
-          `(raced another populate)`,
-      );
     }
   }
 
