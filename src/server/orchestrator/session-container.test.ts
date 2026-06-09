@@ -44,6 +44,10 @@ function createMockDocker() {
   let networkExists = false;
   let pingResult = true;
 
+  // docs/183 Phase 2 — track overlay volume create/remove for the mock.
+  const liveVolumes = new Set<string>();
+  const removedVolumes: string[] = [];
+
   const eventEmitter = new EventEmitter();
 
   const mockDocker = {
@@ -52,6 +56,23 @@ function createMockDocker() {
     _setNetworkExists: (v: boolean) => { networkExists = v; },
     _containers: containers,
     _eventEmitter: eventEmitter,
+    _liveVolumes: liveVolumes,
+    _removedVolumes: removedVolumes,
+
+    createVolume: vi.fn(async (opts: any) => {
+      liveVolumes.add(opts.Name);
+      return { Name: opts.Name };
+    }),
+    getVolume: vi.fn((name: string) => ({
+      inspect: vi.fn(async () => ({ Name: name, Mountpoint: `/var/lib/docker/volumes/${name}/_data` })),
+      remove: vi.fn(async () => {
+        if (!liveVolumes.has(name)) {
+          const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
+        }
+        liveVolumes.delete(name);
+        removedVolumes.push(name);
+      }),
+    })),
 
     ping: vi.fn(async () => {
       if (!pingResult) throw new Error("Cannot connect to Docker daemon");
@@ -302,6 +323,58 @@ describe("SessionContainerManager", () => {
       await expect(manager.create(buildConfig())).rejects.toThrow("image not found");
       expect(manager.get("test-session-1")).toBeUndefined();
       expect(manager.size).toBe(0);
+    });
+  });
+
+  // --- docs/183 Phase 2 — overlay sessions ---
+
+  describe("overlay session", () => {
+    const overlaySpec = {
+      volumeName: "shipit-test-session_overlay",
+      lowerdir: "/data/overlay-base/h1",
+      upperdir: "/data/sessions/test-session-1/upper",
+      workdir: "/data/sessions/test-session-1/work",
+    };
+
+    it("creates the per-session type=overlay volume and mounts it at /workspace root", async () => {
+      await manager.create(buildConfig({ overlaySpec }));
+
+      expect(mockDocker.createVolume).toHaveBeenCalledWith(
+        expect.objectContaining({
+          Name: overlaySpec.volumeName,
+          Driver: "local",
+          DriverOpts: expect.objectContaining({ type: "overlay", device: "overlay" }),
+        }),
+      );
+      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(true);
+
+      const call = mockDocker.createContainer.mock.calls[0][0];
+      const wsMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace");
+      expect(wsMount.Source).toBe(overlaySpec.volumeName);
+      expect(wsMount.VolumeOptions?.Subpath).toBeUndefined(); // mounted at root
+    });
+
+    it("removes the overlay volume when container creation fails (no leak)", async () => {
+      // Regression: createOverlayVolume must run inside the try block so a
+      // later failure removes the volume instead of leaking it.
+      mockDocker.createContainer.mockRejectedValueOnce(new Error("image not found"));
+
+      await expect(manager.create(buildConfig({ overlaySpec }))).rejects.toThrow("image not found");
+      expect(mockDocker._removedVolumes).toContain(overlaySpec.volumeName);
+      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(false);
+    });
+
+    it("removes the overlay volume on destroy", async () => {
+      await manager.create(buildConfig({ overlaySpec }));
+      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(true);
+
+      await manager.destroy("test-session-1");
+      expect(mockDocker._removedVolumes).toContain(overlaySpec.volumeName);
+    });
+
+    it("does not touch volumes for non-overlay sessions", async () => {
+      await manager.create(buildConfig());
+      expect(mockDocker.createVolume).not.toHaveBeenCalled();
     });
   });
 

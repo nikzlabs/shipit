@@ -178,6 +178,15 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
 - [ ] Publish/flatten from a worker-exported merged-workspace snapshot, not the host upperdir
       alone, so lowerdir-only source/dependency files are preserved in the next base.
 - [ ] **Cold start:** build base v0 from empty under the existing repo trust gate (docs/178).
+- [ ] **Wire the overlay-base GC live source + honor its contract** (the Phase 2 sweep
+      `sweepOrphanedOverlayBases` is gated on this — see code review). Two hard requirements,
+      else the mtime fallback can reap a live base out from under a mount: (a) **publish must
+      stamp the top-level `overlay-base/<hash>` dir** (atomic temp-dir + rename over the path, or
+      `fs.utimes`) on every advance — the scope-hash is stable across commits, so nested-only
+      writes leave the dir's own mtime stale; (b) `DiskJanitorDeps.liveOverlayScopeHashes` must
+      return a **complete, authoritative** snapshot of every base any *resumable* (not just
+      running) session could mount, accounting for the startup-timing window before reconciliation
+      repopulates the registry.
 
 ### Phase 4 — Session lifecycle integration
 

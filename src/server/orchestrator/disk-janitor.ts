@@ -164,6 +164,15 @@ export interface DiskJanitorDeps {
    * extension the plan warns against). The live-scope-hash registry is built in
    * Phase 3 when sessions record their base scope; until then this is omitted and
    * the overlay-base sweep is skipped (no bases exist on disk yet anyway).
+   *
+   * **Completeness is a hard requirement.** The returned set must be an
+   * authoritative snapshot of every base referenced by any *resumable* session
+   * (not just currently-running containers) — an incomplete set lets the mtime
+   * fallback reap a live base. The janitor runs at orchestrator startup, when
+   * reconciliation may not have repopulated the registry yet, so the Phase 3
+   * provider must either wait for that or err toward over-reporting live hashes.
+   * See `sweepOrphanedOverlayBases` for the matching mtime-stamp requirement on
+   * the publish path.
    */
   liveOverlayScopeHashes?: () => Set<string>;
   /**
@@ -691,14 +700,28 @@ async function sweepDeadNmStores(
  *      referenced). Removing a base while a live overlay mount uses it as its
  *      read-only lower is undefined behavior, so a live base is always kept.
  *   2. The dir's mtime is older than `days`. This is the safety net for bases we
- *      can't positively confirm live (mirrors `sweepStaleNmStores`'s mtime guard):
- *      a base published seconds ago by a session whose mount the registry hasn't
- *      observed yet is still young, so it survives.
+ *      can't positively confirm live (same age-guard shape as `sweepOrphanedCaches`
+ *      / `sweepArchivedWorkspaces`): a base published seconds ago by a session
+ *      whose mount the registry hasn't observed yet is still young, so it survives.
  *
  * The repo-url `liveHashes` set used by `sweepOrphanedCaches` is deliberately NOT
  * reused: an overlay-base scope-hash keys on `(repo, runtime fingerprint)`, so it
  * never appears in a repo-url-keyed set — a naive extension would delete every
  * live base on the first run.
+ *
+ * **Phase 3 contract (must hold before this sweep is wired live):** the
+ * scope-hash is STABLE across commits, so `overlay-base/<hash>/` is one long-lived
+ * directory that rolls forward. POSIX only bumps a directory's own mtime on a
+ * direct-child change, so guard #2 is a sound liveness proxy ONLY if every base
+ * advance rewrites the TOP-LEVEL `overlay-base/<hash>` entry (publish into a temp
+ * dir then atomic rename over the path, or `fs.utimes` the dir) — otherwise a
+ * continuously-live base whose deps changed only in nested paths keeps an old
+ * top-level mtime and could be reaped if it is also (transiently) absent from the
+ * live set. And `liveScopeHashes` MUST be a COMPLETE, authoritative snapshot of
+ * every base any resumable session could mount (not just currently-running
+ * containers); the janitor runs at startup, exactly when in-flight reconciliation
+ * may not have repopulated the registry, so an incomplete set there is the worst
+ * case. See `DiskJanitorDeps.liveOverlayScopeHashes`.
  */
 async function sweepOrphanedOverlayBases(
   stateDir: string,
@@ -721,7 +744,9 @@ async function sweepOrphanedOverlayBases(
     const full = path.join(dir, entry);
     let mtimeMs: number;
     try {
-      const st = await fs.stat(full);
+      // lstat, not stat: a symlink named like a scope-hash must never be treated
+      // as a base dir (and never have its target followed).
+      const st = await fs.lstat(full);
       if (!st.isDirectory()) continue;
       mtimeMs = st.mtimeMs;
     } catch {

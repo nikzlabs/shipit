@@ -326,15 +326,12 @@ export async function createContainer(
     );
   }
 
-  // docs/183 Phase 2 — overlay session: have the daemon create the per-session
-  // `local` `type=overlay` volume (serialized inside createOverlayVolume to dodge
-  // the overlay2 EBUSY hazard) BEFORE the container references it. The daemon
-  // performs the `mount -t overlay` as it builds the container, so the merged
-  // `/workspace` is present by construction. Non-overlay sessions skip this
-  // entirely — `config.overlaySpec` is undefined and the path is unchanged.
-  if (config.overlaySpec) {
-    await createOverlayVolume(deps.docker, config.overlaySpec, deps.baseLabels());
-  }
+  // docs/183 Phase 2 — overlay session: mount the per-session `type=overlay`
+  // volume at `/workspace`. We only need its NAME here for buildMounts; the
+  // volume itself is created inside the try block below — right before the
+  // container references it — so any throw between here and container start
+  // (e.g. buildEnv rejecting a misconfigured docker-proxy) can't leak a
+  // just-created volume. Non-overlay sessions skip this entirely.
   const overlayWorkspaceVolume = config.overlaySpec?.volumeName;
 
   const { binds, mounts, workspaceDir } = buildMounts(
@@ -424,6 +421,15 @@ export async function createContainer(
   const shortId = config.sessionId.slice(0, 12);
 
   try {
+    // docs/183 Phase 2 — create the per-session `local` `type=overlay` volume
+    // (serialized inside createOverlayVolume to dodge the overlay2 EBUSY hazard)
+    // right before the container references it; the daemon performs the
+    // `mount -t overlay` as it builds the container. Kept INSIDE the try so any
+    // later failure removes it via the catch below (`sc.overlayVolumeName`).
+    if (config.overlaySpec) {
+      await createOverlayVolume(deps.docker, config.overlaySpec, deps.baseLabels());
+    }
+
     // Remove any leftover container with the same name (e.g. from a crash)
     await removeStaleContainer(deps.docker, `agent-${shortId}`);
 
