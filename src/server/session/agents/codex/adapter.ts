@@ -184,14 +184,24 @@ function fileChangeKindLabel(kind: unknown): string {
 }
 
 /**
- * The unified diff for a single file change. Per the Codex App Server v2 schema
- * (`FileUpdateChange`, CLI 0.132.x — verified via `generate-json-schema`), every
- * change carries a top-level `diff` string: adds render as all-`+` lines, deletes
- * as all-`-`, updates as a standard hunk diff. Returns undefined only if the field
- * is absent, so the UI degrades to a plain path + label line.
+ * The display diff for a single file change. Codex App Server 0.136.0 requires a
+ * top-level `diff` string, but runtime verification showed add changes carry raw
+ * file content there while `turn/diff/updated` carries the full unified diff.
+ * Normalize raw add/delete content into the compact +/- shape DiffBlock expects.
  */
-function extractUnifiedDiff(change: { diff?: string }): string | undefined {
-  return typeof change.diff === "string" && change.diff ? change.diff : undefined;
+function normalizeFileChangeDiff(change: { diff?: string }, kind: string): string | undefined {
+  if (typeof change.diff !== "string" || !change.diff) return undefined;
+  if (kind === "add" && !looksLikeUnifiedDiff(change.diff)) {
+    return contentToAddedDiff(change.diff) || undefined;
+  }
+  if (kind === "delete" && !looksLikeUnifiedDiff(change.diff)) {
+    return contentToDeletedDiff(change.diff) || undefined;
+  }
+  return change.diff;
+}
+
+function looksLikeUnifiedDiff(diff: string): boolean {
+  return /^(?:diff --git |@@|--- |\+\+\+ |\+|-)/m.test(diff);
 }
 
 function contentToAddedDiff(content: string): string {
@@ -199,6 +209,13 @@ function contentToAddedDiff(content: string): string {
   const withoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
   if (!withoutFinalNewline) return "";
   return withoutFinalNewline.split("\n").map((line) => `+${line}`).join("\n");
+}
+
+function contentToDeletedDiff(content: string): string {
+  if (!content) return "";
+  const withoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
+  if (!withoutFinalNewline) return "";
+  return withoutFinalNewline.split("\n").map((line) => `-${line}`).join("\n");
 }
 
 function summarizeCodexSubagentPrompt(prompt: unknown): string {
@@ -1081,7 +1098,7 @@ export class CodexAdapter
           return {
             path: c.path,
             kind,
-            diff: extractUnifiedDiff(c) ?? this.synthesizeAddedFileDiff(c.path, kind),
+            diff: normalizeFileChangeDiff(c, kind) ?? this.synthesizeAddedFileDiff(c.path, kind),
           };
         });
         this.emitAssistant([

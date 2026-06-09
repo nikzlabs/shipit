@@ -199,12 +199,14 @@ diffs in chat, matching Claude's Edit/Write. Each change is normalized to
 `{ path, kind, diff }`. The wire shape is the v2 `FileUpdateChange` (verified
 against `codex app-server generate-json-schema`, CLI 0.132.x):
 
-- **`diff`** is a **top-level unified-diff string** — always present. `update` is
-  a standard hunk diff, `add` is all-`+` lines, `delete` is all-`-`.
-  `extractUnifiedDiff()` returns it. Some app-server builds have emitted
-  path-only `add` changes; for that case the adapter reads the just-written file
-  from the session workspace and synthesizes the all-`+` diff so chat write
-  blocks still show line counts and the clickable diff affordance.
+- **`diff`** is a **top-level string** — required by the 0.136.0 schema. Runtime
+  verification against `codex-cli 0.136.0` showed completed `fileChange` items
+  for new files carry raw file content here, while `turn/diff/updated` carries
+  the full unified diff. The adapter normalizes raw `add`/`delete` content into
+  all-`+` / all-`-` lines so chat write blocks show line counts and the clickable
+  diff affordance. Some app-server builds have emitted path-only `add` changes;
+  for that case the adapter reads the just-written file from the session
+  workspace and synthesizes the same all-`+` display diff.
 - **`kind`** is an **internally-tagged** enum object — `{ type: "add" }`,
   `{ type: "delete" }`, or `{ type: "update", move_path: string | null }` — **not**
   the plain string the field name suggests. Interpolating this object raw was the
@@ -214,12 +216,15 @@ against `codex app-server generate-json-schema`, CLI 0.132.x):
 ```
 Codex item (FileUpdateChange):
   { type: "fileChange", id: "fc-1", changes: [
-      { path: "src/a.ts", diff: "@@ -1 +1 @@\n-a\n+b", kind: { type: "update", move_path: null } } ]}
+      { path: "src/a.ts", diff: "@@ -1 +1 @@\n-a\n+b", kind: { type: "update", move_path: null } },
+      { path: "src/new.md", diff: "# New\ncontent\n", kind: { type: "add" } } ]}
 
 AgentEvent (tool_use):
   { type: "tool_use", id: "fc-1", name: "apply_patch", input: {
-      files: ["src/a.ts"],
-      changes: [{ path: "src/a.ts", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b" }] }}
+      files: ["src/a.ts", "src/new.md"],
+      changes: [
+        { path: "src/a.ts", kind: "update", diff: "@@ -1 +1 @@\n-a\n+b" },
+        { path: "src/new.md", kind: "add", diff: "+# New\n+content" }] }}
 ```
 
 The client's `ToolUseItem` renders one `DiffBlock` per change; `DiffBlock`'s
