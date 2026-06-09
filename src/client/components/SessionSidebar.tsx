@@ -408,10 +408,10 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           className="flex-1 min-w-0 text-left"
         >
           <p
-            className={`truncate leading-snug ${
+            className={`truncate leading-snug inline-block max-w-full border-y-[1.5px] py-px rounded ${
               needsAttention
-                ? "inline-block max-w-full border-[1.5px] border-(--color-attention) rounded px-1.5 py-px"
-                : ""
+                ? "border-x-[1.5px] border-(--color-attention) px-1.5"
+                : "border-y-transparent"
             }`}
           >
             {session.title}

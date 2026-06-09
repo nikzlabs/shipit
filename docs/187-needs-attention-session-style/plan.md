@@ -81,16 +81,21 @@ worth the per-theme token work.
 border was removed and the attention signal moved onto the title:
 
 ```tsx
-// SessionItem, the title <p>
-needsAttention
-  ? "inline-block max-w-full border-[1.5px] border-(--color-attention) rounded px-1.5 py-px"
-  : ""
+// SessionItem, the title <p> — the vertical border + py-px are ALWAYS present
+// (transparent when unflagged) so row height never changes; only the left/right
+// edges, color, and horizontal padding appear on attention.
+`truncate leading-snug inline-block max-w-full border-y-[1.5px] py-px rounded ${
+  needsAttention ? "border-x-[1.5px] border-(--color-attention) px-1.5" : "border-y-transparent"
+}`
 ```
 
 `inline-block max-w-full` lets the border hug the title yet still truncate with an
-ellipsis on long names; `border-(--color-attention)` reuses the existing per-theme
-token, so it works in all 14 themes with **no new tokens** and leaves the gray
-selected-row fill untouched.
+ellipsis on long names. The top/bottom border (1.5px) and `py-px` are applied to
+every title — transparent when not flagged — so a session flipping into the
+attention state doesn't change the row height. On attention the left/right edges
+plus `px-1.5` complete the pill. `border-(--color-attention)` reuses the existing
+per-theme token, so it works in all 14 themes with **no new tokens** and leaves the
+gray selected-row fill untouched.
 
 ## Key files
 
