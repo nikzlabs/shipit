@@ -28,8 +28,6 @@ import {
   speakVoice,
 } from "./services/voice.js";
 import { TtsCache } from "./voice/index.js";
-import { routeVoiceNote } from "./voice/voice-note-router.js";
-import type { VoiceNoteContext } from "../shared/types/voice-note-types.js";
 
 export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const { credentialStore, authManager } = deps;
@@ -183,8 +181,17 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
   });
 
   // Built-in voice_note tool write-back. The mcp-voice-bridge → worker
-  // `/agent-ops/voice/note` relays here with the trusted session id. The
-  // router fans out to the native and/or webhook sinks per the user setting.
+  // `/agent-ops/voice/note` relays here with the trusted session id.
+  //
+  // docs/163 — delivery (the native card + the webhook) is driven entirely by
+  // the orchestrator's OBSERVATION of the `voice_note` tool call in the agent
+  // event stream (`agent-listeners.ts`): the card is built from the tool INPUT,
+  // and observation is guaranteed and on the same fast channel as the rest of
+  // the turn. This relay therefore does NOT deliver — it exists only to give
+  // the agent's MCP tool call a return value. We report whether an active
+  // runner exists to receive the note (a torn-down turn can't); a subagent's
+  // call isn't observed at the top level and so won't render — by design, a
+  // subagent shouldn't be paging the user.
   app.post<{
     Params: { sessionId: string };
     Body: { summary?: string; needsAttention?: boolean; context?: unknown };
@@ -197,40 +204,9 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
         reply.code(400).send({ error: "summary is required" });
         return;
       }
-      const needsAttention = request.body?.needsAttention === true;
-      const context = sanitizeVoiceContext(request.body?.context);
 
       const runner = deps.runnerRegistry.get(sessionId);
-      if (!runner) {
-        // No active runner (turn already torn down) — acknowledge so the agent
-        // isn't blocked; there is nothing to deliver to.
-        return { delivered: false };
-      }
-
-      try {
-        const result = await routeVoiceNote(
-          { summary, needsAttention, ...(context ? { context } : {}) },
-          { runner, sessionId, credentialStore, source: "authored" },
-        );
-        return { delivered: result.native || result.webhook };
-      } catch (err) {
-        handleError(reply, err, "Failed to deliver voice note");
-      }
+      return { delivered: !!runner };
     },
   );
-}
-
-/**
- * Keep only the known display-only context fields, all strings. The agent
- * supplies this; we don't trust arbitrary shapes onto the webhook / WS message.
- */
-function sanitizeVoiceContext(input: unknown): VoiceNoteContext | undefined {
-  if (!input || typeof input !== "object") return undefined;
-  const src = input as Record<string, unknown>;
-  const out: VoiceNoteContext = {};
-  for (const key of ["repo", "prUrl", "prTitle", "sessionName"] as const) {
-    const v = src[key];
-    if (typeof v === "string" && v.trim()) out[key] = v;
-  }
-  return Object.keys(out).length > 0 ? out : undefined;
 }

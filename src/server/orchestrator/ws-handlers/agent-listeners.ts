@@ -9,7 +9,11 @@ import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
-import { hasAuthoredVoiceNoteThisTurn } from "../voice/voice-note-router.js";
+import {
+  hasAuthoredVoiceNoteThisTurn,
+  sanitizeVoiceContext,
+  VOICE_NOTE_TOOL_NAME,
+} from "../voice/voice-note-router.js";
 import { emitChatCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
@@ -1009,14 +1013,46 @@ export function wireAgentListeners(
         runner.chatMessageGroups = groups;
       }
 
+      // docs/163 — authored voice note: this OBSERVATION is the sole deliverer
+      // of the card (and webhook). The card is built entirely from the tool
+      // INPUT, and observation is guaranteed and rides the same fast channel as
+      // the rest of the turn — so the bridge → worker → orchestrator HTTP relay
+      // is reduced to a pure ack (it no longer delivers). That fixes the lag:
+      // when the agent batches `voice_note` with AskUserQuestion / ExitPlanMode
+      // (a parallel tool call), the relay fired late — the CLI is mid-interrupt
+      // — so the card used to trail the question dialog by a couple of seconds.
+      // Delivering here also sets the authored flag synchronously so the derived
+      // nudge below is suppressed even in the same-message case. Subagent calls
+      // carry `parentToolUseId` and returned early above, so they aren't
+      // observed and won't render — by design (a subagent shouldn't page the
+      // user).
+      if (runner && deps.deliverVoiceNote) {
+        const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
+        const input = (voiceCall?.input ?? {}) as {
+          summary?: unknown;
+          needsAttention?: unknown;
+          context?: unknown;
+        };
+        const summary = typeof input.summary === "string" ? input.summary.trim() : "";
+        if (voiceCall && summary) {
+          const context = sanitizeVoiceContext(input.context);
+          deps.deliverVoiceNote(
+            { summary, needsAttention: input.needsAttention === true, ...(context ? { context } : {}) },
+            runner,
+            "authored",
+          );
+        }
+      }
+
       // docs/163 — source observation for the voice-note router. A top-level
       // AskUserQuestion / ExitPlanMode interrupt always needs the user, so it
       // should reach a hands-free user as a spoken headline. Authored-first:
       // if the agent already authored a headline via the built-in `voice_note`
       // tool this turn, ShipIt uses that and suppresses this derived nudge.
       // Derivation is the fallback floor only — never leave the user silent.
-      // (Gated on the authored flag, which the bridge route sets synchronously;
-      // the per-turn cap in the router backstops any rare same-message overlap.)
+      // (Gated on the authored flag, set synchronously above when the authored
+      // call is observed, and by the bridge route; the per-turn cap in the
+      // router backstops any rare overlap.)
       if (runner && deps.deliverVoiceNote && !hasAuthoredVoiceNoteThisTurn(runner)) {
         const ask = toolBlocks.find(isWellFormedAskUserQuestion);
         const plan = toolBlocks.find((t) => t.name === "ExitPlanMode");

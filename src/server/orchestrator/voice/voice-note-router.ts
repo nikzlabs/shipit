@@ -28,6 +28,7 @@ import { emitChatCard } from "../chat-card-persistence.js";
 import type {
   VoiceNotePayload,
   VoiceNoteSource,
+  VoiceNoteContext,
 } from "../../shared/types/voice-note-types.js";
 import { VOICE_WEBHOOK_BODY_VERSION } from "../../shared/types/voice-note-types.js";
 import { getErrorMessage } from "../../shared/utils.js";
@@ -37,6 +38,16 @@ import { getErrorMessage } from "../../shared/utils.js";
  * are downgraded to silent so an over-narrating agent can't spam the user.
  */
 export const MAX_ATTENTION_NOTES_PER_TURN = 3;
+
+/**
+ * The namespaced name of the built-in `voice_note` tool as it appears in the
+ * agent event stream (`mcp__<server>__<tool>`, server `shipit-voice`). The
+ * orchestrator matches this to deliver an authored note's native card the
+ * instant it OBSERVES the call — without waiting for the slower bridge → worker
+ * → orchestrator HTTP relay (see `agent-listeners.ts`). Keep in sync with
+ * `mcp-voice-bridge.ts` (`name: "shipit-voice"`, tool `"voice_note"`).
+ */
+export const VOICE_NOTE_TOOL_NAME = "mcp__shipit-voice__voice_note";
 
 interface VoiceTurnState {
   /** True once an *authored* note (the built-in tool) routed this turn. */
@@ -58,6 +69,23 @@ function stateFor(runner: object): VoiceTurnState {
     turnStates.set(runner, s);
   }
   return s;
+}
+
+/**
+ * Keep only the known display-only context fields, all strings. The agent
+ * supplies this (via the tool input or the relay body); we don't trust
+ * arbitrary shapes onto the webhook / WS message. Shared by the HTTP relay
+ * route and the event-stream observation so both sanitize identically.
+ */
+export function sanitizeVoiceContext(input: unknown): VoiceNoteContext | undefined {
+  if (!input || typeof input !== "object") return undefined;
+  const src = input as Record<string, unknown>;
+  const out: VoiceNoteContext = {};
+  for (const key of ["repo", "prUrl", "prTitle", "sessionName"] as const) {
+    const v = src[key];
+    if (typeof v === "string" && v.trim()) out[key] = v;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Reset per-turn voice state. Called from `resetRunnerTurnState`. */

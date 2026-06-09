@@ -292,6 +292,55 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
+    it("delivers the authored card the instant the voice_note tool call is observed", () => {
+      const deliverVoiceNote = vi.fn();
+      const { agent, runner } = wire({ deliverVoiceNote });
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [
+          {
+            type: "tool_use",
+            id: "v1",
+            name: "mcp__shipit-voice__voice_note",
+            input: { summary: "Big finding — your call on the direction.", needsAttention: true, context: { repo: "acme/app" } },
+          },
+        ],
+      } satisfies AgentEvent);
+
+      expect(deliverVoiceNote).toHaveBeenCalledTimes(1);
+      const [payload, , source] = deliverVoiceNote.mock.calls[0];
+      expect(source).toBe("authored");
+      expect(payload.summary).toBe("Big finding — your call on the direction.");
+      expect(payload.needsAttention).toBe(true);
+      expect(payload.context).toEqual({ repo: "acme/app" });
+      runner.dispose({ force: true });
+    });
+
+    it("authored voice_note batched with AskUserQuestion: emits one card (authored) and suppresses the derived nudge", () => {
+      // The reported bug's exact shape — a parallel tool call. The card must
+      // ride the same fast event-stream channel as the dialog (not the slow
+      // relay), and the authored headline must win over the derived one.
+      const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
+      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source });
+      const { agent, runner } = wire({ deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"] });
+
+      const cards: { headline: string }[] = [];
+      runner.on("message", (m) => { if (m.type === "voice_note") cards.push({ headline: m.headline }); });
+
+      agent.emit("event", {
+        type: "agent_assistant",
+        content: [
+          { type: "tool_use", id: "v1", name: "mcp__shipit-voice__voice_note", input: { summary: "Authored headline.", needsAttention: true } },
+          { type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ header: "direction", question: "Which way?" }] } },
+        ],
+      } satisfies AgentEvent);
+
+      expect(cards).toHaveLength(1);
+      expect(cards[0].headline).toBe("Authored headline.");
+      runner.dispose({ force: true });
+    });
+
     it("suppresses the derived headline when an authored note already fired this turn", async () => {
       const deliverVoiceNote = vi.fn();
       const { agent, runner } = wire({ deliverVoiceNote });
