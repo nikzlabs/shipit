@@ -91,6 +91,13 @@ export interface Tracker {
   // orchestrator-side; only the result returns to the caller. Each method
   // throws on an unconfigured tracker (callers check `isConfigured()` first).
 
+  /**
+   * Create a new issue in the bound scope (Linear team / GitHub session repo)
+   * and return it (docs/187). The created issue's id is the undo target — undo
+   * cancels/closes it rather than deleting (GitHub can't delete via REST).
+   */
+  createIssue(input: { title: string; body: string }): Promise<TrackerIssue>;
+
   /** Add a comment to an issue. Returns the created comment (id used for undo). */
   addComment(id: string, body: string): Promise<TrackerComment>;
 

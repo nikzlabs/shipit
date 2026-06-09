@@ -15,6 +15,7 @@ import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import {
   getIssueForTracker,
+  createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
@@ -196,6 +197,9 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
     if (method === "POST" && u.endsWith("/issues/42/comments")) {
       return ghResponse({ id: 9001, html_url: `${issue.html_url}#c`, body: "noted" });
     }
+    if (method === "POST" && u.endsWith("/issues")) {
+      return ghResponse({ ...issue, number: 7, html_url: "https://github.com/octocat/hello-world/issues/7", ...JSON.parse(init?.body as string) });
+    }
     if (method === "DELETE" && u.endsWith("/issues/comments/9001")) return ghResponse(null, 204);
     if (method === "PATCH" && u.endsWith("/issues/42")) {
       return ghResponse({ ...issue, ...JSON.parse(init?.body as string) });
@@ -204,10 +208,87 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
   });
 }
 
+/** A Linear GraphQL stub routing by query substring (IssueStates / issueUpdate). */
+function linearFetch(states: { id: string; name: string; type: string; position: number }[]) {
+  const node = {
+    id: "uuid-1", identifier: "SHI-9", title: "New doc", url: "https://linear.app/x/SHI-9",
+    priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null,
+    team: { states: { nodes: states } },
+  };
+  return vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+    const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+    if (query.includes("IssueStates")) {
+      return jsonResponse({ data: { issue: { id: "uuid-1", team: { states: { nodes: states } } } } });
+    }
+    if (query.includes("issueUpdate")) {
+      return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+    }
+    throw new Error(`linearFetch: no route for "${query.trim().slice(0, 30)}"`);
+  });
+}
+
+/** Pull the `issueUpdate` mutation's `input` from a linearFetch call list. */
+function lastIssueUpdateInput(fetchImpl: ReturnType<typeof linearFetch>): Record<string, unknown> {
+  const call = fetchImpl.mock.calls.find(
+    ([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"),
+  )!;
+  return JSON.parse(call[1]?.body as string).variables.input;
+}
+
 describe("issue write services (docs/177)", () => {
   let store: CredentialStore;
   beforeEach(() => {
     store = tmpStore();
+  });
+
+  it("create: files an issue and returns a create undo snapshot (docs/187)", async () => {
+    const out = await createIssueForTracker(store, "github", "New doc", "tracks docs/187", ghFetch(), GH);
+    expect(out.verb).toBe("create");
+    expect(out.summary).toContain("octocat/hello-world#7");
+    expect(out.undo).toEqual({ kind: "create" });
+    expect(out.issue.id).toBe("7");
+  });
+
+  it("create: rejects an unconfigured tracker with a 409 ServiceError", async () => {
+    await expect(
+      createIssueForTracker(store, "linear", "x", ""),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("undo: create → cancels the issue (close as not_planned)", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "42", undo: { kind: "create" } },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ state: "closed", state_reason: "not_planned" });
+  });
+
+  it("undo: create on Linear cancels via the team's canceled state", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam({ id: "team-1", key: "SHI", name: "ShipIt" });
+    const fetchImpl = linearFetch([
+      { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
+      { id: "s-done", name: "Done", type: "completed", position: 1 },
+      { id: "s-cancel", name: "Canceled", type: "canceled", position: 2 },
+    ]);
+    await undoIssueWrite(store, { tracker: "linear", issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
+    expect(lastIssueUpdateInput(fetchImpl)).toEqual({ stateId: "s-cancel" });
+  });
+
+  it("undo: create on Linear falls back to completed when the team has no canceled state", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam({ id: "team-1", key: "SHI", name: "ShipIt" });
+    const fetchImpl = linearFetch([
+      { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
+      { id: "s-done", name: "Done", type: "completed", position: 1 },
+    ]);
+    await undoIssueWrite(store, { tracker: "linear", issueId: "uuid-1", undo: { kind: "create" } }, fetchImpl);
+    // No canceled state → the first setStatus throws, the service retries with completed.
+    expect(lastIssueUpdateInput(fetchImpl)).toEqual({ stateId: "s-done" });
   });
 
   it("comment: writes and returns a delete-comment undo snapshot", async () => {

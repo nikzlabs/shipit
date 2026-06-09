@@ -183,10 +183,11 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
   // Tracker-neutral issue access (docs/175 read + docs/177 write)
   //
-  // These back the `shipit issue view|list|comment|edit|status|assign` shim
-  // subcommands. The worker injects the trusted SESSION_ID; the orchestrator
+  // These back the `shipit issue view|list|create|comment|edit|status|assign`
+  // shim subcommands. The worker injects the trusted SESSION_ID; the orchestrator
   // resolves GitHub to the session's own repo (Linear is workspace-wide). Issue
-  // CREATION stays out (human-gated, docs/164) — there is no create route here.
+  // creation is do-then-surface (docs/187), like the other writes — undo cancels
+  // the created issue. (ShipIt *bug* filing stays human-gated; that's docs/164.)
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/issue/view?tracker=&id= — single issue (read)
@@ -211,6 +212,12 @@ export function registerAgentOpsRoutes(
       const qs = params.toString() ? `?${params.toString()}` : "";
       return relay("GET", `/issue/list${qs}`, undefined, reply);
     },
+  );
+
+  // POST /agent-ops/issue/create { tracker, title, body } (docs/187)
+  app.post<{ Body: { tracker?: string; title?: string; body?: string } }>(
+    "/agent-ops/issue/create",
+    async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
 
   // POST /agent-ops/issue/comment { tracker, id, body }

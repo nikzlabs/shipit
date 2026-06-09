@@ -17,6 +17,7 @@ import {
   listTrackers,
   listIssuesForTracker,
   getIssueForTracker,
+  createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
@@ -231,7 +232,7 @@ export async function registerIssueRoutes(
   //
   // The read routes (`issue/view`, `issue/list`) are registered above (docs/175).
   // These are the do-then-surface WRITE routes: `shipit issue
-  // comment/edit/status/assign` → worker `/agent-ops/issue/*` → here. The worker
+  // create/comment/edit/status/assign` → worker `/agent-ops/issue/*` → here. The worker
   // injects the trusted SESSION_ID; GitHub resolves to the session's own repo,
   // Linear is workspace-wide. Tokens stay in `CredentialStore`; only the result
   // (and the undo snapshot, on the persisted card) returns to the container.
@@ -271,10 +272,12 @@ export async function registerIssueRoutes(
       sendServiceError(reply, err, fallback);
       return;
     }
+    // For a create the issue id isn't known until the tracker assigns it, so
+    // fall back to the created issue's id (the undo target).
     const card: IssueWriteCard = {
       cardId: `issue-write-${randomUUID()}`,
       tracker: trackerId as TrackerId,
-      issueId,
+      issueId: issueId || outcome.issue.id,
       identifier: outcome.issue.identifier,
       title: outcome.issue.title,
       ...(outcome.issue.url ? { url: outcome.issue.url } : {}),
@@ -294,6 +297,23 @@ export async function registerIssueRoutes(
     );
     return { ok: true, cardId: card.cardId, summary: card.summary, identifier: card.identifier, ...(card.url ? { url: card.url } : {}) };
   }
+
+  // POST /api/sessions/:sessionId/issue/create { tracker, title, body } (docs/187)
+  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; title?: string; body?: string } }>(
+    "/api/sessions/:sessionId/issue/create",
+    async (request, reply) => {
+      const { tracker, title, body } = request.body ?? {};
+      if (!tracker || !title?.trim()) {
+        reply.code(400).send({ error: "tracker and title are required" });
+        return;
+      }
+      // The issue id is assigned by the tracker, so pass "" and let handleWrite
+      // stamp the card's issueId from the created issue.
+      return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", (github) =>
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", trackerFetchImpl, github),
+      );
+    },
+  );
 
   // POST /api/sessions/:sessionId/issue/comment { tracker, id, body }
   app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; body?: string } }>(

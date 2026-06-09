@@ -417,6 +417,15 @@ The recognized frontmatter fields are `issue`, `title`, and `description` — al
 ---
 ```
 
+### Keep the tracker in sync when you touch a design doc
+
+Whenever you create or materially update a `docs/NNN-*` design doc, sync its tracker item in the same turn. Use the tracker-neutral `shipit issue` command (see `src/server/shipit-docs/issues.md`) — not `gh issue`, `gh api`, or a Linear MCP.
+
+- **Doc has an `issue:` pointer (Linear *or* GitHub).** Post a comment on that issue summarizing what changed in the doc and why: `shipit issue comment <pointer> --body-file - <<'EOF' … EOF`. The pointer's shape selects the tracker; pass it verbatim. This applies equally to GitHub-attached docs — comment, don't open a second tracker item.
+- **Doc has no `issue:` pointer.** Create a Linear issue to track it, then cross-link — all in the same turn (docs/187). Run `shipit issue create --title "<doc title>" --body-file - <<'EOF' … EOF` (it defaults to Linear; the body should summarize the doc and link back to its path). The command prints the new issue's identifier and URL on stdout, so read that URL and write it into the doc's `issue:` frontmatter (full URL, no title slug) in the same turn. Creation is do-then-surface — a provenance card with Undo (which cancels the issue) is posted automatically; you don't propose-and-wait. If Linear isn't connected, the command says so — surface that to the user rather than falling back to a GitHub issue.
+
+This rule is specific to the ShipIt repo and deliberately lives here, not in `src/server/shipit-docs/design-docs.md` — that file ships to every repo edited inside ShipIt, and those projects don't necessarily want their docs wired to a tracker this way.
+
 A `checklist.md` can exist alongside any doc — it tracks remaining work items and drives the Active/Done grouping. When the work is finished, mark all checklist items complete (`[x]`).
 
 When a doc describes UI whose layout is load-bearing (filters, tables, responsive breakpoints), commit the prototype into the feature folder as a sibling of `plan.md` — `mockup.html`, `mockup.svg`, or a `mocks/` subdir for several. Prefer self-contained, static artifacts (one HTML file with inline CSS, or SVG) so they open with no build step and stay diffable; `.png` screenshots are an acceptable supplement but aren't diffable, so keep HTML/SVG as the source of truth. Link the mock from `plan.md` with a short "Visual reference" note so a reader lands on the picture. The `present` tool's tab is ephemeral and never touches the repo; committed mocks are reviewable in PRs, render in the file tree, and survive across sessions.

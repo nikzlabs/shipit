@@ -253,6 +253,15 @@ export class GitHubTracker implements Tracker {
 
   // ---- Writes (docs/177) ----------------------------------------------------
 
+  async createIssue(input: { title: string; body: string }): Promise<TrackerIssue> {
+    const ref = this.requireRepo();
+    const node = await this.api<GitHubIssueNode>("POST", "issues", {
+      title: input.title,
+      body: input.body,
+    });
+    return toTrackerIssue(node, ref);
+  }
+
   async addComment(id: string, body: string): Promise<TrackerComment> {
     const data = await this.api<{ id: number; html_url?: string; body?: string }>(
       "POST",

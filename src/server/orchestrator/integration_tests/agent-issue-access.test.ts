@@ -170,14 +170,16 @@ describe("Integration: agent issue access (docs/175)", () => {
       exit: (code) => { exitCode = code; throw new Error("__shim_exit__"); },
     };
     const call = async (
-      _method: "GET" | "POST" | "PATCH",
+      method: "GET" | "POST" | "PATCH",
       reqPath: string,
+      body?: unknown,
     ): Promise<{ status: number; body: Record<string, unknown> }> => {
       // /agent-ops/issue/view?... → /api/sessions/:id/issue/view?...
       const suffix = reqPath.replace(/^\/agent-ops\/issue/, "");
       const res = await app.inject({
-        method: "GET",
+        method,
         url: `/api/sessions/${sessionId}/issue${suffix}`,
+        ...(body !== undefined ? { payload: body as object } : {}),
       });
       return { status: res.statusCode, body: res.json() as Record<string, unknown> };
     };
@@ -292,10 +294,15 @@ describe("Integration: agent issue access (docs/175)", () => {
     ]);
   });
 
-  it("rejects issue creation with a docs pointer (writes land via docs/177, but create stays human-gated)", async () => {
-    const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x"]);
+  it("accepts `issue create` and brokers it to the create route (docs/187 — no longer human-gated)", async () => {
+    // The shim no longer gates creation; it relays POST /agent-ops/issue/create →
+    // the orchestrator create route. This harness has no active runner, so the
+    // route declines with 409 — which proves the call reached it rather than being
+    // rejected at the shim with the old "does not support" message.
+    const { stderr, exitCode } = await runIssueShim(["issue", "create", "--title", "x", "--tracker", "github"]);
+    expect(stderr).not.toContain("does not support");
     expect(exitCode).not.toBe(0);
-    expect(stderr).toContain("does not support `shipit issue create`");
-    expect(stderr).toContain("/shipit-docs/issues.md");
+    // The 409 from the create route (no active runner) — proof it reached the broker.
+    expect(stderr).toContain("Session is not active");
   });
 });
