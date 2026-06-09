@@ -462,7 +462,7 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
   });
 
-  it("prunes stale nm-store snapshots by mtime under tracked repos (docs/148)", async () => {
+  it("reclaims the dead nm-store subtree wholesale under tracked repos (docs/183)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -473,38 +473,32 @@ describe("runDiskJanitor", () => {
     repoStore.setReady(liveRepo);
 
     const nmRoot = path.join(tmpDir, "dep-cache", liveHash, "nm-store");
-    fs.mkdirSync(nmRoot, { recursive: true });
-
-    // Fresh storeKey — within retention.
-    const freshDir = path.join(nmRoot, "fresh-store-key");
-    fs.mkdirSync(freshDir, { recursive: true });
-
-    // Stale storeKey — mtime backdated past the cutoff.
+    // Several leftover storeKey dirs of varying age — all dead, all removed.
+    fs.mkdirSync(path.join(nmRoot, "fresh-store-key"), { recursive: true });
     const staleDir = path.join(nmRoot, "stale-store-key");
     fs.mkdirSync(staleDir, { recursive: true });
     const backdated = new Date(Date.now() - 30 * 86_400_000);
     fs.utimesSync(staleDir, backdated, backdated);
+    fs.mkdirSync(path.join(nmRoot, ".tmp-deadbeef-store-key"), { recursive: true });
 
-    // In-progress populate temp dir — should be preserved regardless of age.
-    const tmpPopulate = path.join(nmRoot, ".tmp-deadbeef-store-key");
-    fs.mkdirSync(tmpPopulate, { recursive: true });
-    fs.utimesSync(tmpPopulate, backdated, backdated);
+    // The rest of the dep-cache (download cache) for the live repo must survive.
+    const depCacheKept = path.join(tmpDir, "dep-cache", liveHash, "_cacache");
+    fs.mkdirSync(depCacheKept, { recursive: true });
 
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      nmStoreDays: 14,
       runDocker: () => Promise.resolve(""),
     });
 
+    // The whole nm-store dir is gone (one dir removed), the download cache stays.
     expect(result.nmStoresRemoved).toBe(1);
-    expect(fs.existsSync(freshDir)).toBe(true);
-    expect(fs.existsSync(staleDir)).toBe(false);
-    expect(fs.existsSync(tmpPopulate)).toBe(true);
+    expect(fs.existsSync(nmRoot)).toBe(false);
+    expect(fs.existsSync(depCacheKept)).toBe(true);
   });
 
-  it("nm-store pruning is disabled when nmStoreDays <= 0", async () => {
+  it("nm-store sweep is a no-op when there is no nm-store dir", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -514,21 +508,17 @@ describe("runDiskJanitor", () => {
     repoStore.add(liveRepo);
     repoStore.setReady(liveRepo);
 
-    const staleDir = path.join(tmpDir, "dep-cache", liveHash, "nm-store", "ancient");
-    fs.mkdirSync(staleDir, { recursive: true });
-    const backdated = new Date(Date.now() - 365 * 86_400_000);
-    fs.utimesSync(staleDir, backdated, backdated);
+    // Live repo with a download cache but no nm-store subtree.
+    fs.mkdirSync(path.join(tmpDir, "dep-cache", liveHash, "_cacache"), { recursive: true });
 
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      nmStoreDays: 0,
       runDocker: () => Promise.resolve(""),
     });
 
     expect(result.nmStoresRemoved).toBe(0);
-    expect(fs.existsSync(staleDir)).toBe(true);
   });
 
   it("continues with workspace + cache sweeps when the volume sweep fails", async () => {

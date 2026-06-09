@@ -35,8 +35,8 @@ RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-ve
 # `pnpm install` / `yarn install` with command-not-found. ShipIt never picks the
 # package manager: corepack reads each repo's `packageManager` field and fetches
 # the pinned version, mirroring the lockfile-decides convention used for Python
-# (uv/poetry/pip) below and the npm/yarn/pnpm cache + fast-install paths in
-# nm-store.ts / container-lifecycle.ts. NOTE: corepack is bundled with Node 24
+# (uv/poetry/pip) below and the npm/yarn/pnpm download cache in
+# container-lifecycle.ts. NOTE: corepack is bundled with Node 24
 # but Node has signaled it may unbundle it in a future major — if a base-image
 # bump removes it, replace this with an explicit `npm i -g pnpm yarn` install.
 RUN corepack enable

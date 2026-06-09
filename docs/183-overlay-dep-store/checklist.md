@@ -71,22 +71,29 @@ per fresh session — a conscious, temporary regression until overlay lands.
 
 ### Phase 1 — Delete the nm-store fast path (FIRST)
 
-- [ ] **Remove the copy store + its gate wiring.** Delete `materialize`/`populateStore`,
+- [x] **Remove the copy store + its gate wiring.** Deleted `materialize`/`populateStore`,
       `findLockfile`, `isCacheableInstall`, `computeStoreKey`, `LOCKFILE_NAMES`, the store-dir
-      constant + `FAST_INSTALL`/`NM_STORE` env, and the worker install-gate plumbing that calls
-      them (`tryMaterializeFromStore`, store-key compute, populate)
-      ([nm-store.ts](../../src/server/session/nm-store.ts),
-      [session-worker.ts](../../src/server/session/session-worker.ts) install gate).
-- [ ] **Keep what overlay/plain-install reuse:** relocate `runtimeKey`/`detectLibc` to a shared
-      module (overlay base scope reuses it as the runtime fingerprint); keep `tuneNpmInstall`
-      (`--prefer-offline --no-audit --no-fund` helps the plain install on a warm download cache).
-- [ ] **Simplify the worker install path** to: valid `.shipit/.install-done` marker → skip;
-      else run `agent.install` (tuned) → write marker. Download cache (`/dep-cache`, docs/075)
-      stays; it's a separate subtree.
-- [ ] **Cleanup:** drop nm-store writes; add a one-time `disk-janitor` sweep of
-      `/dep-cache/nm-store` to reclaim space (~2.4 GB observed). Delete `nm-store.test.ts` and
-      rewrite/remove `fast-install-gate.test.ts` for the simplified gate.
-- [ ] Mark [148-fast-npm-install](../148-fast-npm-install/plan.md) **superseded**.
+      constant + `FAST_INSTALL`/`NM_STORE` env, and the worker install-gate plumbing that called
+      them (`computeFastPath`, `tryMaterializeFromStore`, `tryPopulateStore`, the `FastPathPlan`
+      type, and the synchronous `{ completed: true }` HTTP-response path + the matching runner
+      branch). `nm-store.ts` removed entirely
+      ([session-worker.ts](../../src/server/session/session-worker.ts) install gate,
+      [container-session-runner.ts](../../src/server/orchestrator/container-session-runner.ts),
+      [warm-pool-manager.ts](../../src/server/orchestrator/warm-pool-manager.ts)).
+- [x] **Keep what overlay/plain-install reuse:** relocated `runtimeKey`/`detectLibc` (overlay
+      base scope reuses them as the runtime fingerprint) and `tuneNpmInstall`
+      (`--prefer-offline --no-audit --no-fund` helps the plain install on a warm download cache)
+      into [install-runtime.ts](../../src/server/session/install-runtime.ts).
+- [x] **Simplify the worker install path** to: valid `.shipit/.install-done` marker → skip;
+      else run `agent.install` (each command tuned via `tuneNpmInstall`) → write marker. Download
+      cache (`/dep-cache`, docs/075) stays; it's a separate subtree.
+- [x] **Cleanup:** dropped nm-store writes; turned the disk-janitor's mtime-based
+      `sweepStaleNmStores` into a one-time wholesale `sweepDeadNmStores` of
+      `dep-cache/<hash>/nm-store` (~2.4 GB observed), removing the `DISK_JANITOR_NM_STORE_DAYS`
+      knob. Deleted `nm-store.test.ts`, replaced `fast-install-gate.test.ts` with
+      `install-gate.test.ts` (keeps the docs/162 first-connect resync backstop), and replaced the
+      worker's fast-path tests with a plain-install marker-skip test.
+- [x] Mark [148-fast-npm-install](../148-fast-npm-install/plan.md) **superseded**.
 
 ### Phase 2 — Daemon-overlay mount subsystem
 

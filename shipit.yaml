@@ -7,9 +7,10 @@ agent:
   memory: 6144
   cpu: 2.0
   pids: 4096
-  # Keep this as a bare package-manager command so the session worker's
-  # lockfile-keyed node_modules cache can materialize deps instead of
-  # re-running the install. Shell wrappers intentionally bypass that fast path.
+  # Keep this as a bare package-manager command: the session worker tunes a
+  # bare `npm install` with `--prefer-offline --no-audit --no-fund` so it lands
+  # fast on the warm download cache (/dep-cache). Shell wrappers bypass that
+  # tuning.
   install: npm install
 # ShipIt-in-ShipIt (feature 118): tells the outer orchestrator to start the
 # `dev` Compose service when this repo is opened. Without this line the

@@ -890,7 +890,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   if (!isTestMode) {
     const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
     const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
-    const nmStoreDays = parseFloat(process.env.DISK_JANITOR_NM_STORE_DAYS ?? "14");
     // Pace between destructive ops so the (fire-and-forget) sweep drips out
     // instead of bursting `docker` spawns + git pushes that contend with a
     // concurrent agent start for the Docker daemon / bare-cache git layer. This
@@ -908,7 +907,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
-      nmStoreDays: Number.isFinite(nmStoreDays) ? nmStoreDays : 14,
       paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
