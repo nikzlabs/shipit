@@ -100,6 +100,14 @@ now prints this guidance instead of a raw `grep` error.
    (non-WSL) kernel. Repeat on the prod-equivalent host to be definitive.
 3. **Cost not yet measured:** open question #1 also asks to *size* the mount —
    time a few mount/unmount cycles on the real host.
+4. **macOS substrate not yet tested.** Docker Desktop's Linux VM + its
+   volume-backing fs differ from WSL2 and from a bare VPS. Run
+   `prototype/run-in-docker.sh` (spike inside a privileged container, scratch on
+   a named volume) on a Mac to confirm overlayfs works on that fs and the
+   native-ext4-not-FUSE upperdir requirement holds. This run also closes #1
+   (inotify) since it installs `inotify-tools`.
+
+> **macOS run output:** _(paste `run-in-docker.sh` summary here)_
 
 <details><summary>Full WSL2 run output</summary>
 

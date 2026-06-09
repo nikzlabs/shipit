@@ -63,3 +63,20 @@ inotify incl. copy-up events (file-watcher pattern), and **teardown ordering**
 
 **Run it on the prod-equivalent ext4 host and paste the summary into
 `../FINDINGS.md`** to close open questions #1, #2, and #4.
+
+### macOS (and the inotify check) — `run-in-docker.sh`
+
+On macOS the mount happens inside Docker Desktop's Linux VM, on the fs that backs
+Docker **named volumes** — not the host. To test *that* substrate (and run the
+previously-skipped inotify check in one go):
+
+```
+bash docs/183-overlay-dep-store/prototype/run-in-docker.sh
+```
+
+It runs `host-overlay-spike.sh` inside a `--privileged` Linux container with the
+scratch dir on a Docker named volume (VM-native ext4), installing `git` +
+`inotify-tools` first. `--privileged` is a stand-in for however the orchestrator
+eventually gets mount capability — it validates the substrate, not the
+production mechanism (see `../FINDINGS.md`). Works on any Docker host, so it's
+also the easiest way to get the inotify result on Linux.
