@@ -321,6 +321,15 @@ export class CodexAdapter
    */
   private streamedAgentItems = new Set<string>();
 
+  /**
+   * Tool-use ids already surfaced to ShipIt's chat model this turn. Codex App
+   * Server v2 does not consistently send `item/started` for every tool shape
+   * (notably MCP/dynamic tools can be completed-only), so completed handlers
+   * synthesize the missing tool_use before the result. This set prevents a
+   * duplicate card when both phases arrive.
+   */
+  private emittedToolUseIds = new Set<string>();
+
   /** Latest token usage from `thread/tokenUsage/updated`, surfaced at turn end. */
   private lastTokenUsage: CodexTokenUsage | null = null;
 
@@ -367,6 +376,7 @@ export class CodexAdapter
   run(params: AgentRunParams): void {
     this.turnStartTime = Date.now();
     this.cwd = params.cwd;
+    this.emittedToolUseIds.clear();
 
     // Check binary exists before attempting spawn
     try {
@@ -1049,10 +1059,9 @@ export class CodexAdapter
 
       case "commandExecution": {
         if (phase === "started") {
-          this.emitAssistant([
-            { type: "tool_use", id, name: "shell", input: { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd } },
-          ]);
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
         } else {
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
           const out = item.aggregatedOutput ?? "";
           const exit = item.exitCode;
           const content =
@@ -1084,6 +1093,7 @@ export class CodexAdapter
             input: { files: changes.map((c) => c.path), changes },
           },
         ]);
+        this.emittedToolUseIds.add(id);
         const summary = changes.map((c) => `${c.kind} ${c.path}`).join("\n");
         this.emitToolResult(id, summary || "applied");
         return;
@@ -1102,17 +1112,18 @@ export class CodexAdapter
         // tool_use here would duplicate the bridge's card, and emitting a
         // tool_result would flip it to "answered" and disable the options.
         if (isAskUserQuestionTool(item.tool)) return;
-        if (phase === "started") {
-          let input: Record<string, unknown> = {};
-          if (item.arguments) {
-            try {
-              input = JSON.parse(item.arguments) as Record<string, unknown>;
-            } catch {
-              input = { raw: item.arguments };
-            }
+        let input: Record<string, unknown> = {};
+        if (item.arguments) {
+          try {
+            input = JSON.parse(item.arguments) as Record<string, unknown>;
+          } catch {
+            input = { raw: item.arguments };
           }
-          this.emitAssistant([{ type: "tool_use", id, name: item.tool ?? "tool", input }]);
+        }
+        if (phase === "started") {
+          this.emitToolUseOnce(id, item.tool ?? "tool", input);
         } else {
+          this.emitToolUseOnce(id, item.tool ?? "tool", input);
           const payload = item.result ?? item.error ?? "";
           this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
         }
@@ -1127,30 +1138,26 @@ export class CodexAdapter
         // the `submit_review_comments` MCP tool, mapped above.
         if (phase === "started") {
           if (item.tool === "spawn_agent") {
-            this.emitAssistant([
-              {
-                type: "tool_use",
-                id,
-                name: "Agent",
-                input: {
-                  agent: item.receiverThreadId ?? item.newThreadId,
-                  subagent_type: "Codex",
-                  description: summarizeCodexSubagentPrompt(item.prompt),
-                  prompt: item.prompt,
-                },
-              },
-            ]);
+            this.emitToolUseOnce(id, "Agent", {
+              agent: item.receiverThreadId ?? item.newThreadId,
+              subagent_type: "Codex",
+              description: summarizeCodexSubagentPrompt(item.prompt),
+              prompt: item.prompt,
+            });
             return;
           }
-          this.emitAssistant([
-            {
-              type: "tool_use",
-              id,
-              name: item.tool ?? "collab",
-              input: { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt },
-            },
-          ]);
+          this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
         } else {
+          if (item.tool === "spawn_agent") {
+            this.emitToolUseOnce(id, "Agent", {
+              agent: item.receiverThreadId ?? item.newThreadId,
+              subagent_type: "Codex",
+              description: summarizeCodexSubagentPrompt(item.prompt),
+              prompt: item.prompt,
+            });
+          } else {
+            this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
+          }
           this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
         }
         break;
@@ -1186,6 +1193,13 @@ export class CodexAdapter
   /** Emit an assistant event with the given content blocks. */
   private emitAssistant(content: AgentContentBlock[]): void {
     this.emit("event", { type: "agent_assistant", content } as AgentEvent);
+  }
+
+  /** Emit one tool_use block for a Codex item id, synthesizing starts as needed. */
+  private emitToolUseOnce(id: string, name: string, input: Record<string, unknown>): void {
+    if (this.emittedToolUseIds.has(id)) return;
+    this.emittedToolUseIds.add(id);
+    this.emitAssistant([{ type: "tool_use", id, name, input }]);
   }
 
   /** Emit a tool-result event for the given tool_use id. */

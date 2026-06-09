@@ -444,7 +444,7 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("annotates a failed commandExecution with its exit code", async () => {
+  it("synthesizes a shell tool_use for a completed-only commandExecution", async () => {
     await createAndInit("Run a failing command");
     events.length = 0;
 
@@ -459,10 +459,21 @@ describe("CodexAdapter", () => {
     });
 
     await vi.waitFor(() => {
-      expect(events.length).toBe(1);
+      expect(events.length).toBe(2);
     });
 
     expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "call-002",
+          name: "shell",
+          input: { command: "", cwd: undefined },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
       type: "agent_tool_result",
       content: [{ type: "tool_result", tool_use_id: "call-002", content: "boom\n[exit code: 1]" }],
     });
@@ -1039,6 +1050,77 @@ describe("CodexAdapter", () => {
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
       content: [{ type: "tool_use", id: "call-other-1", name: "shipit-review__submit_review_comments" }],
+    });
+  });
+
+  it("synthesizes an MCP tool_use for a completed-only tool call", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "mcpToolCall",
+        id: "web-1",
+        tool: "WebSearch",
+        arguments: JSON.stringify({ query: "Pixi.js v8 release notes" }),
+        result: "search results",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toEqual({
+      type: "agent_assistant",
+      content: [
+        {
+          type: "tool_use",
+          id: "web-1",
+          name: "WebSearch",
+          input: { query: "Pixi.js v8 release notes" },
+        },
+      ],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "web-1", content: "search results" }],
+    });
+  });
+
+  it("does not duplicate MCP tool_use when started and completed both arrive", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "dynamicToolCall",
+        id: "fetch-1",
+        tool: "WebFetch",
+        arguments: JSON.stringify({ url: "https://example.com" }),
+      },
+    });
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "dynamicToolCall",
+        id: "fetch-1",
+        tool: "WebFetch",
+        arguments: JSON.stringify({ url: "https://example.com" }),
+        result: "example summary",
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(events.length).toBe(2);
+    });
+
+    expect(events[0]).toMatchObject({
+      type: "agent_assistant",
+      content: [{ type: "tool_use", id: "fetch-1", name: "WebFetch" }],
+    });
+    expect(events[1]).toEqual({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "fetch-1", content: "example summary" }],
     });
   });
 
