@@ -18,6 +18,9 @@ COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent
 RUN --mount=type=cache,target=/root/.npm \
     (cd /opt/agent-cli && npm ci --ignore-scripts && npm rebuild @anthropic-ai/claude-code)
 ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
+RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
+ && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
+ && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
 WORKDIR /app
 
