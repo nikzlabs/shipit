@@ -31,11 +31,13 @@ rolling-base logic first; the host mount stays the gating risk.
       mechanism. Nice-to-have: prod (non-WSL) kernel run + mount/unmount timing — see
       `FINDINGS.md`
 - [ ] Confirm host kernel/fs support overlayfs lowerdir sharing on the prod VPS (ext4)
-- [~] Prove **cross-container mount propagation** for the sidecar design: the sidecar's overlay
-      mount must be visible to a separate session container via the shared named volume.
-      Spike written (`prototype/propagation-spike.sh`, ladder + per-host verdict); **run on
-      bare-Linux/VPS AND Docker Desktop** (verdict can differ) — the real remaining
-      feasibility check, see `FINDINGS.md`
+- [x] Prove **cross-container mount propagation** for the sidecar design (`propagation-spike.sh`):
+      the sidecar's overlay mount reaches a separate session container **iff the daemon host has
+      shared mount propagation** and the mount lands under a **dedicated self-bind `rshared`
+      mountpoint**. **Docker Desktop/Mac: works with no setup (proven).** Bare docker-ce-in-WSL2:
+      private `/`, fails (runtime `make-rshared` not honored) → that install falls back to copy.
+      Requirement = documented host prerequisite, not a portability blocker. Remaining: one
+      confirming run on a systemd VPS (expected pass). See `FINDINGS.md`.
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)
 - [ ] Confirm git fast-forward behaves on the overlay and the source diff in the upper

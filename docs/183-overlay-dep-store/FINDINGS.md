@@ -271,16 +271,36 @@ on a real Linux host / VPS, configure dockerd with shared propagation at startup
 the sidecar design works on VPS; if not, the mechanism needs rethinking even
 there.
 
-- Bare Linux / VPS (with daemon-level shared propagation): _(paste rung A2 verdict)_
-- Docker Desktop (Mac/Win): _(paste verdict — expected to share WSL2's limitation)_
+- **Docker Desktop (Mac, arm64, docker 29.5.3): WORKS by default.** Rung A2
+  (host-mountpoint `:rshared`) reported **PROPAGATED ✓ on the FIRST attempt,
+  before any host setup** — the LinuxKit VM mounts `/` **shared** by default, so
+  the sidecar's `:rshared` bind is accepted with no provisioning. Rung A3 also
+  passes. Verdict: "Cross-container propagation ACHIEVED."
+- Bare Linux / VPS (systemd): _(worth one confirming run; systemd sets `/` rshared
+  at boot, so expected to behave like Docker Desktop — pass with no setup)_
 
-**Design implication (reopened):** if propagation is VPS-only (or needs a daemon
-config local installs can't guarantee), the sidecar mechanism is **not portable**
-as the sole path. Options: (A) adopt sidecar on VPS + **fall back to the copy
-substrate (today's nm-store) on local/WSL/Desktop**; (B) switch to a mechanism
-that needs **no cross-namespace propagation** (Docker volume plugin / daemon
-performs the mount); (C) overlay only where propagation is verified, copy
-everywhere else (graceful degradation). Decision pending.
+**Corrected conclusion — the requirement is "daemon host `/` is a shared mount,"
+not a platform.** The differentiator across the two runs was purely the daemon
+host's default mount propagation:
+
+| Daemon host | `/` default | Propagation |
+|---|---|---|
+| Docker Desktop (Mac) | shared | ✅ proven, no setup |
+| systemd Linux VPS | shared (boot) | ✅ very likely (confirm) |
+| native docker-ce in a bare WSL2 distro | private | ❌ — needs daemon-level shared propagation; a *runtime* `make-rshared` is NOT honored |
+
+So the WSL2 failure was a **daemon-default** issue (private `/`), not a broken
+mechanism. The sidecar design is **feasible on every documented target that
+provides shared propagation** — Docker Desktop (proven) and systemd VPS (the
+always-on target) both do by default; the only gap is a bare docker-ce-in-WSL2
+daemon, where it must be configured (`MountFlags=shared` + restart) or that
+install falls back to the copy substrate.
+
+**Design implication (largely resolved):** require **shared mount propagation on
+the daemon host** as a documented prerequisite (the VPS provisioner guarantees
+it; Docker Desktop has it). Keep the copy substrate (today's nm-store) as a
+**graceful fallback** only where propagation isn't available (bare-WSL docker-ce),
+detected at startup. The portability concern is now narrow, not fundamental.
 
 **Implication for the design:** the sidecar must run on a daemon host whose root
 (or at least the Docker data subtree) is a **shared mount**. On a VPS this is a
@@ -311,3 +331,14 @@ volume-backing fs that mirrors where ShipIt's `workspace` actually lives.
 Still nice-to-have, not blocking: a run on the **prod VPS** (non-WSL/non-Desktop)
 kernel and **mount/unmount timing**. Net: **green to proceed to building the
 orchestrator-owned mount lifecycle**, whose first job is mechanism (1)+(2).
+
+**Update — cross-container propagation resolved (the sidecar's real dependency).**
+`prototype/propagation-spike.sh` proved the sidecar's overlay mount can reach a
+separate session container **iff the daemon host provides shared mount
+propagation**: **Docker Desktop (Mac) works with no setup** (proven), a systemd
+VPS is expected to (boot default), and only a **bare docker-ce-in-WSL2 daemon**
+(private `/`) lacks it — there the install **falls back to the copy substrate**.
+So the requirement is a documented host prerequisite, not a portability blocker.
+The mount must land under a **dedicated self-bind `rshared` mountpoint** the
+daemon sees (not just a dir on `/`). See the propagation-verdicts section above
+for the full WSL2-vs-Mac evidence.

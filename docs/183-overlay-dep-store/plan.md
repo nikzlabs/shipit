@@ -193,6 +193,19 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
     to reason about. It has no network surface. *(Rejected: ephemeral per-operation
     `--privileged` container — correctness would lean on mount propagation outliving the
     container, a known footgun, plus per-op spawn latency.)*
+  - **Prerequisite — shared mount propagation on the daemon host** (validated by
+    [`prototype/propagation-spike.sh`](./prototype/propagation-spike.sh)). For the sidecar's
+    overlay mount to reach a *separate* session container, it must mount under a **shared
+    mountpoint** the daemon sees — a dedicated self-bind dir marked `rshared`
+    (`mount --bind D D && mount --make-rshared D`). This requires the daemon host's mount
+    tree to support shared propagation: **Docker Desktop (Mac) provides it by default
+    (proven — propagation works with no setup); a systemd Linux VPS sets `/` rshared at boot
+    (expected to work, confirm once).** A **bare docker-ce-in-WSL2 daemon defaults to private
+    `/` and does not honor a *runtime* `make-rshared`** — it needs daemon-level config
+    (`MountFlags=shared` + restart) or that install **falls back to the copy substrate**
+    (today's `nm-store`), detected at startup. So the requirement is "shared propagation on the
+    daemon host," documented as a prerequisite; overlay is not lost where it's absent, it
+    degrades to copy.
 - **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
   `upper`/`work`/`merged` live under the session subtree (`sessions/{uuid}/`); the shared base
   (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
