@@ -63,8 +63,9 @@ per fresh session — a conscious, temporary regression until overlay lands.
       concurrent sessions over one read-only base with no EBUSY. **Decision: adopt daemon-overlay,
       drop the privileged sidecar + the propagation prerequisite (and the startup probe / re-arm /
       unmount-ordering they implied).** **All four documented targets are overlay-eligible.**
-- [ ] Confirm `volume-driver-overlay-spike.sh` once on a **Linux/VPS** daemon (expected to pass
-      trivially — daemon-side overlay is standard there).
+- [x] Confirm `volume-driver-overlay-spike.sh` once on a **Linux/VPS** daemon — satisfied by the
+      prod-VPS production-layout run recorded under Phase 2 (`shipit-16gb`, Ubuntu 24.04, docker
+      29.5.2, PASS=7/7).
 - [x] Decide host-mount mechanism, helper shape, storage layout, propagation prerequisite, and
       fallback (plan §4). See `FINDINGS.md` for evidence + live 31,396-file / ~24s measurement.
 
@@ -173,8 +174,46 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       dependency edits before publish (`child-sessions.ts`).
 - [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
       only respects **live** mounts, not archived sessions.
-- [ ] Production-wire compose bind-mount over the merged dir + file watcher (behavior already
-      verified in Phase 0).
+- [x] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
+      `prototype/shared-volume-spike.sh` proves concurrent first-use of **one** per-session
+      `type=overlay` volume mounted into the agent `docker run` **and** ≥2 service containers:
+      **(a)** the upperdir backs **exactly one** overlay superblock (one daemon mount + bind-share,
+      not N — the decisive check); **(b)** cold-race trials with **zero**
+      `EBUSY`/`upperdir is in-use`; **(c)** the HMR **polling** substrate — the agent's writes are
+      visible (fresh content + updated mtime) to a *service* container (dev servers poll;
+      cross-container inotify is a non-gating data point that, as expected, did not fire);
+      **(d)** teardown↔startup overlap leaves the merged view intact. **Matrix complete — PASS=8/8
+      on all three hosts:** Docker Desktop/Windows-WSL2 (amd64, 25 trials), Docker Desktop/Mac
+      (arm64, 25 trials), prod VPS `shipit-16gb` (Ubuntu 24.04/**ext4**, 50 trials). See
+      [`FINDINGS.md`](./FINDINGS.md). **Open Q #4 resolved.**
+- [ ] **Wire the shared overlay volume into compose + the agent container** (Open Q #4 mechanism is
+      proven — this is the wiring; full design in plan §4 "Compose/preview wiring"). Steps:
+  - [ ] Add an `overlayVolumeName(session)` resolver → `shipit-<sessionId[:12]>_overlay` for
+        overlay-eligible sessions, `undefined` otherwise. All branches below key off it; non-overlay
+        sessions stay byte-for-byte unchanged.
+  - [ ] **Agent container — `buildMounts` signature change (not a value swap):** `buildMounts`
+        reuses its single `workspaceVolume` param for `/workspace`, `/uploads`, AND `/dep-cache`, so
+        passing the overlay name would wrongly repoint all three. Add a distinct
+        `overlayWorkspaceVolume` argument applied to `/workspace` **only** (mounted at the volume
+        root, no subpath). `/uploads` + `/dep-cache` keep the `shipit-workspace` state volume,
+        `/credentials` keeps `credentialsVolume`.
+  - [ ] **Compose services:** pass `workspaceVolume = <overlay name>` and **`workspaceSubpath = ""`**
+        to `generateComposeOverride` (`service-manager.ts`) for overlay sessions. No generator code
+        change — `rewriteVolumes` + the `shipit-workspace`→`{name, external:true}` alias do the rest;
+        empty subpath roots every service mount at the merged tree.
+  - [ ] **Ordering:** ensure the Phase-2 subsystem `docker volume create`s the overlay volume before
+        the agent container starts and before `docker compose up` (compose references it `external`).
+  - [ ] **Secrets:** for overlay sessions prefer the out-of-workspace `serviceEnvFiles` mode (absolute
+        path) for env files, and give the `x-shipit-secrets` entrypoint-script mount the same
+        out-of-workspace / worker-written treatment so it doesn't depend on host-readable workspace.
+  - [ ] **Tests:** compose-generator unit test — an overlay-session override points every workspace
+        mount at the overlay volume rooted at the merged tree and **never** references the
+        `shipit-workspace` storage subpath (`sessions/<id>/…`) or the `overlay-base/` tree;
+        `buildMounts` test — overlay session mounts the overlay volume at `/workspace` root while
+        `/dep-cache` etc. stay on the state volume; integration — an overlay session's preview service
+        boots and sees `node_modules` from the lowerdir.
+  - [ ] Wire the file watcher over the merged mount (the agent-container file-tree watcher is
+        same-namespace inotify — already covered; just confirm it points at `/workspace`).
 - [ ] Route production file/doc/git/compose/watcher/post-turn flows through the workspace-view
       resolver so the UI, PR/diff data, rollback/rebase/push/pull, and auto-commit operate on
       the same merged tree the agent sees.

@@ -125,3 +125,28 @@ mounts (the `upperdir in-use` / EBUSY case). Proven on Docker Desktop/Windows-WS
 (see the daemon-overlay section in `../FINDINGS.md`). **Remaining "confirm-before-build":
 run it on a Linux/VPS daemon** (the un-run axis) to settle the production layout on
 a non-Docker-Desktop daemon; paste the summary into `../FINDINGS.md`.
+
+### One shared overlay volume across N containers (compose/preview) — `shared-volume-spike.sh`
+
+`volume-driver-overlay-spike.sh` tests two **distinct** overlay volumes that share
+one read-only lower (each its own upper). The compose/preview path (plan Open Q #4)
+needs the opposite: **one** per-session `type=overlay` volume mounted into the agent
+container **and** every compose dev-server service — the case where Docker's volume
+**refcount** must perform `mount -t overlay` once and bind-share `_data` into the
+rest. That's the one unproven bit behind overlay-session previews.
+
+```
+COLD_TRIALS=50 bash docs/183-overlay-dep-store/prototype/shared-volume-spike.sh
+```
+
+Mounts one shared overlay volume into 3 concurrent unprivileged containers and
+asserts: **exactly one** overlay superblock backs all of them (read from the daemon
+namespace's `/proc/1/mountinfo` via a `--pid=host` probe — the decisive check), a
+cold-race loop (`COLD_TRIALS`, default 25, fresh volume each) with **zero** EBUSY /
+`upperdir is in-use`, the HMR **polling** substrate (a service container sees the
+agent's fresh writes + updated mtime — dev servers poll because inotify doesn't
+cross the container namespace, so cross-container inotify is recorded as a
+non-gating data point, not a pass/fail), and a teardown↔startup overlap. **Cannot run inside a
+session container** (no `docker.sock` by design) — run on the prod VPS (ext4),
+Docker Desktop/Mac, and Docker Desktop/Windows-WSL2, and paste each summary into
+`../FINDINGS.md`. Green on all three retires Open Q #4.
