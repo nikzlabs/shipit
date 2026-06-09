@@ -103,6 +103,50 @@
   resolves as before). Regression test added in `marketplace.test.ts` +
   `skill-scan.test.ts`.
 
+## v1c — Repo-selected install via dedicated session + PR (2026-06-09 revision)
+
+Supersedes v1a's session-bound install destination. See the plan.md
+"2026-06-09 — Design revision" section. v1a's catalog browse, Monaco preview,
+install marker, and writer logic are all reused; only the install *destination*
+and the surface's session-awareness change.
+
+### Backend
+- [ ] App-wide, repo-targeted install endpoint (e.g.
+  `POST /api/plugins/install { marketplaceId, pluginName, repoId }`) that
+  spawns a dedicated repo-backed session, runs `installPlugin()` in its
+  workspace, and opens a PR. Reuses the existing writer untouched.
+- [ ] Wire skill-install session creation through the existing session-creation
+  machinery (one session per install, fresh branch, repo-backed).
+- [ ] Open the install PR (title "Install <plugin> skill") via the existing
+  PR-creation path.
+- [ ] Drop the now-unneeded coupling: `runner.running` install gate, per-session
+  rebind, and the `killAgent` "pick up new skills" reload (only needed for the
+  superseded in-session write). Keep the per-workspace mutex dormant for the
+  future in-workspace option.
+- [ ] Retain the v1a session-scoped install route for the future in-workspace
+  destination (do not delete).
+
+### Client
+- [ ] Skills tab decoupled from the active session (no `hasActiveSession`
+  binding, no per-session catalog/install-gate).
+- [ ] Repository picker in the install sheet (source: connected repos /
+  RepoStore). Empty-state when no repo is connectable.
+- [ ] Install action calls the app-wide repo-targeted endpoint; success surfaces
+  the new session + its PR (sidebar entry / PR card), not an in-session toast.
+- [ ] Dialog laid out to accommodate the future destination selector
+  ("Open as PR" vs "Install into this workspace") without rework.
+
+### Tests
+- [ ] Service/integration test: repo-targeted install spawns a session, writes
+  the skill, and opens a PR; current session is untouched.
+- [ ] Component test: repo picker renders, empty-state when no repo, install
+  disabled until a repo is selected.
+
+### Future (deferred, same dialog)
+- [ ] In-workspace install as an explicit destination option (reinstates v1a's
+  in-session write behind a user-selected choice; reactivates the mutex +
+  reload path for that branch only).
+
 ## v1b — Codex support
 
 Tracked but out of scope for this branch. Requires the v0 spikes that were

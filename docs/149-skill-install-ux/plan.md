@@ -27,6 +27,82 @@ against Claude CLI 2.1.140 — both `/<plugin>:<skill>` and natural-language
 invocation resolve correctly against `.claude/skills/<plugin>__<skill>/`
 with frontmatter `name: <plugin>:<skill>`.
 
+## 2026-06-09 — Design revision: install is repo-selected and runs in its own session + PR
+
+**Supersedes the session-bound install model of v1a.** v1a shipped install as
+a mutation of *the active session's* workspace: the Skills tab was session-aware
+(catalog, install destination, and the install-button gate all keyed off the
+current session — see the now-superseded "Session switch with the Skills tab
+open", the `runner.running` install gate, and "Pick up new skills" below), and
+`installPlugin()` wrote `SKILL.md` into that session's `.claude/skills/` and
+auto-committed **onto the session's working branch**.
+
+That is the wrong mental model. Settings is an app-wide surface; a user opening
+Settings → Skills does not expect it to act on — let alone commit to — whatever
+session they happen to be in. Landing an install commit on the current working
+branch, interleaved with unrelated work, is a surprise side effect.
+
+**New model — a skill install is a repo change, so it gets its own session →
+own branch → own PR, exactly like any other change.** Concretely:
+
+1. **Settings → Skills is app-wide, never session-bound.** It does not read or
+   mutate the active session. The install-button `runner.running` gate, the
+   per-session re-bind on session switch, and the in-session "pick up new
+   skills" reload (`killAgent` / next-turn respawn) are all **removed** — they
+   only existed because install mutated the live session. The Skills tab no
+   longer cares which session is active.
+2. **The install sheet has an explicit repository picker.** The user chooses
+   the destination repo from their connected repos (RepoStore); nothing is
+   inferred from the current session. No selectable repo (e.g. a purely
+   standalone context with no connected repo) ⇒ the PR-install path is
+   unavailable, because there is nowhere to open a PR. (The future in-workspace
+   option below is the escape hatch for that case.)
+3. **One dedicated session per install.** On Install, the orchestrator spawns a
+   fresh repo-backed session on a new branch for the selected repo, runs the
+   existing `installPlugin()` writer in *that* session's workspace (SKILL.md +
+   `.shipit-installed.json` marker + path-scoped commit — writer logic
+   unchanged), and opens a PR titled e.g. *"Install <plugin> skill"*. The
+   session appears in the sidebar; the user reviews and merges the PR like any
+   other change. **One install = one branch = one PR** (no batching/rolling
+   session — decided 2026-06-09).
+4. **The current session is untouched, and the skill is not live in it until
+   the PR merges.** Accepted trade: v1a gave instant availability ("invoke it
+   on your next message") at the cost of a surprise commit on your branch; this
+   model gives a clean, reviewable, isolated install at the cost of the skill
+   only becoming usable once its PR is merged and the skill lands on a branch
+   you clone/pull. This matches how *every* repo change in ShipIt works.
+5. **Concurrency machinery mostly dissolves.** The per-workspace install mutex,
+   the `postTurnCommit()` lock coordination, and the `runner.running` gate
+   (v1a's entire "install / turn relationship" section) existed because install
+   raced the *active* session's running agent on a shared workspace + git index.
+   With install in its own freshly-spawned session there is no such contention —
+   the install session has its own workspace and runs no user turn. Path-scoped
+   commit is kept for hygiene but is no longer load-bearing. (The mutex stays
+   relevant only if/when the in-workspace option below reintroduces same-session
+   installs.)
+
+**Future (same dialog) — in-workspace install as an explicit destination
+option.** The install sheet will later offer a destination choice rather than a
+single hard-wired behavior: **"Open as PR (new session)"** (this revision's
+default) vs. **"Install into this workspace"** (v1a's direct in-session write,
+now an explicit opt-in for the case where the user *does* want the skill live in
+the session they're in right now). Designing the picker as a destination
+selector — repo for the PR path, or "this workspace" — keeps both paths as
+sibling options instead of one being a hidden default. Deferred; the dialog
+layout should accommodate it from the start.
+
+**Route reshaping implied.** v1a's session-scoped
+`POST /api/sessions/:id/plugins/install` becomes (or is joined by) an app-wide,
+repo-targeted endpoint that internally creates a session + PR — shape TBD in the
+implementation plan (e.g. `POST /api/plugins/install { marketplaceId,
+pluginName, repoId }`). The catalog browse/preview routes
+(`api-routes-marketplace.ts`) are unaffected. The v1a session-scoped route is
+retained for the future in-workspace destination.
+
+The rest of this doc (catalog data model, install marker semantics, Monaco
+preview, trust posture) is unchanged by this revision; only the *destination*
+of the write and the *session-awareness* of the surface change.
+
 ## Summary
 
 Both Claude Code and Codex CLI shipped first-class skill/plugin browse-and-install
