@@ -526,3 +526,51 @@ nice-to-have measurement, not a gate).
 > non-Docker-Desktop Linux daemon.
 > **Docker Desktop / Windows (scratch-sibling layout):** PASS=7 FAIL=0 (docker
 > 29.4.1) — earlier run; the mechanism on that daemon is already proven.
+
+## Open question #4 — one shared `type=overlay` volume across N containers (compose/preview) → **PROVEN on Docker Desktop/Windows-WSL2 (the decisive host); VPS + Mac pending**
+
+`volume-driver-overlay-spike.sh` proved daemon-overlay for a single consumer and for
+two **distinct** volumes sharing one read-only lower. The compose/preview path needs
+the opposite and untested case: **one** per-session `type=overlay` volume mounted into
+the agent container **and** every separate compose dev-server service — the path that
+depends on Docker's volume **refcount** performing `mount -t overlay` once and
+bind-sharing `_data` into the rest (not a second overlay over the same upper, which the
+kernel rejects). [`prototype/shared-volume-spike.sh`](./prototype/shared-volume-spike.sh)
+settles it.
+
+**Status: PROVEN on the decisive host — Docker Desktop/Windows-WSL2** (`docker-desktop`,
+docker 29.4.1, linux/amd64). **PASS=8 FAIL=0, cold-trials=25:**
+
+1. 3 containers mounted the **same** overlay volume concurrently — no EBUSY / `upperdir
+   is in-use`.
+2. **The decisive check — exactly ONE overlay superblock backs all 3 containers**
+   (read from the daemon namespace's `/proc/1/mountinfo` via a `--pid=host` probe). This
+   confirms Docker did a single `mount -t overlay` + bind-shared `_data`, *not* N
+   independent overlay mounts — which is exactly why the kernel's shared-upperdir error
+   can't fire.
+3. Writes are coherent across containers (agent ↔ service see each other's files); a
+   service reads lowerdir content through the merged view.
+4. **HMR polling substrate** — a service container sees the agent's fresh writes + an
+   updated mtime through the shared mount (what `usePolling`/`WATCHPACK_POLLING` reads).
+5. **25 cold-race trials** (fresh `volume rm`+create each, racing first-mount): **0**
+   mount errors.
+6. Teardown↔startup overlap: a new consumer mounted cleanly while another was stopping;
+   merged view intact; still one superblock.
+
+**Empirically confirms the polling design:** cross-container inotify did **not** fire
+(the non-gating data point) — exactly as predicted. The mount-namespace boundary between
+the agent and a separate dev-server container blocks native inotify, so HMR polls; the
+gate is the write/mtime coherence in (4), which passed. ShipIt's own file-tree watcher
+(chokidar/inotify) is unaffected — it runs in the agent container, same namespace as the
+mount.
+
+**Significance.** This is green on the very host where the rejected sidecar/propagation
+approach died, so the shared-volume compose/preview mechanism is proven on the hardest
+target. Remaining: re-run on the **prod VPS (ext4)** and **Docker Desktop/Mac** to
+complete the matrix; green on both retires Open Q #4 and unblocks the compose-generator
+wiring (point overlay-session services at the per-session overlay volume by subpath).
+
+> **Docker Desktop / Windows-WSL2 run:** PASS=8 FAIL=0, daemon `docker-desktop`
+> (Docker Desktop), docker 29.4.1, linux/amd64, cold-trials=25. "SHARED type=overlay
+> VOLUME ACROSS N CONTAINERS WORKS — one daemon overlay mount, bind-shared into every
+> consumer, no EBUSY." Cross-container inotify did not fire (expected; HMR polls).

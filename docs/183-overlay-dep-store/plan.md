@@ -477,8 +477,9 @@ delivery under the daemon-overlay mechanism — see below).
    late-but-older publisher correctly declines (ancestry, not wall-clock); a force-pushed
    default branch does not wait for impossible old-lineage ancestry and instead starts a clean
    generation.
-4. **Compose + file watcher over the merged dir.** ⚠️ **Substrate confirmed; design decided;
-   one multi-container spike pending.** The Phase-0 spike proved the *filesystem* behavior —
+4. **Compose + file watcher over the merged dir.** ⚠️ **Design decided; spike PASS=8/8 on the
+   decisive host (Docker Desktop/Windows-WSL2) — VPS + Mac pending to complete the matrix.** The
+   Phase-0 spike proved the *filesystem* behavior —
    bind-mounting the overlay **merged** dir reads through to the base and writes reach the upper,
    and `inotify` over the overlay sees both plain creates and copy-up modifies (Docker Desktop/Mac
    named-volume substrate, `run-in-docker.sh`, 21/21 incl. inotify; bind-mount-corroborated on
@@ -538,9 +539,12 @@ delivery under the daemon-overlay mechanism — see below).
    > and it polls. So the spike gates previews on **read-through + write/mtime coherence**, not on
    > inotify crossing a container boundary. Run all of it on the full matrix — prod systemd VPS (ext4), Docker
    Desktop/Mac, Docker Desktop/Windows-WSL2 — since EBUSY is kernel/storage-driver-dependent. Green
-   = 1 overlay mount + 0 errors across 50 cold-race trials × 3 hosts + clean teardown overlap; that
-   retires the blocker and the rest is ordinary wiring. Until then, previews/dev-servers are **not**
-   covered for overlay sessions — a Phase 4 gate.
+   = 1 overlay mount + 0 errors across the cold-race trials × 3 hosts + clean teardown overlap; that
+   retires the blocker and the rest is ordinary wiring. **Docker Desktop/Windows-WSL2 is already
+   green (PASS=8/8, 25 cold-race trials, 0 EBUSY, single superblock confirmed — the decisive host
+   where the rejected sidecar approach failed; see [`FINDINGS.md`](./FINDINGS.md)); VPS + Mac
+   remain.** Until the matrix is complete, previews/dev-servers are **not** yet covered for overlay
+   sessions — a Phase 4 gate.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
