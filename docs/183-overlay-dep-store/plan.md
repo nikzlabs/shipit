@@ -309,6 +309,32 @@ periodic clean-rebuild schedule is needed.
 - **Bad-base gate:** advance the base **only when the install exits 0**. A non-zero install
   still serves the current session's tree but is never published as the base.
 
+## Implementation phases
+
+Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Phase 1 deletes
+nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
+on top of the simplified install path.
+
+0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate (WSL2 +
+   Docker Desktop/Mac), cross-container propagation, and the §4 design decisions are settled.
+1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
+   `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
+   becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
+   [148](../148-fast-npm-install/plan.md) superseded. *Interim:* fast-path-eligible repos pay a
+   full install per fresh session until Phase 3 — a conscious, temporary regression.
+2. **Host-mount sidecar subsystem** — the long-lived privileged sidecar (mount/unmount over a
+   unix socket, dedicated self-bind `rshared` mountpoint), orchestrator wiring, the startup
+   shared-propagation probe (overlay vs plain-install fallback), `disk-janitor`/archive teardown
+   ordering, and the VPS propagation + mount-cost confirmation.
+3. **Rolling-base logic wired to the real install** — per-`(repo, runtime fingerprint)` scope,
+   base in the dep-cache subtree + per-session upper/work/merged, the stamped marker, the publish
+   commit-ancestry CAS, the exit-0 gate, depth-cap flatten, `.git` exclusion, cold-start v0.
+4. **Session lifecycle integration** — on-activation install → publish rule, eligibility
+   exclusions (Ops source-pin / non-default / user-edited), re-derive on unarchive, compose +
+   watcher production wiring.
+5. **Measure & tune** — warm-vs-cold install timing on the containerized path, set the depth cap,
+   optional manifest-fingerprint skip.
+
 ## Open questions
 
 These are now mostly **empirical / feasibility** items to settle in the prototype — the
