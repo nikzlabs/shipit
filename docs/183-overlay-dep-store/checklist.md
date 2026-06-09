@@ -173,16 +173,23 @@ overlay through a `local` `type=overlay` volume. No privileged sidecar, no propa
       dependency edits before publish (`child-sessions.ts`).
 - [ ] **Re-derive on unarchive** (persist source/metadata only; re-clone + reinstall) so base GC
       only respects **live** mounts, not archived sessions.
-- [ ] **Give compose service containers the merged view** (Open Q #4 — reopened). The Phase 0
-      spike only proved the filesystem behavior **within a single container's namespace** (the
-      model §4 rejected); under daemon-overlay the merged tree is the agent container's per-session
-      `type=overlay` volume, while compose dev-servers are separate containers that today mount a
-      Subpath of `shipit-workspace` — which for an overlay session is the **upperdir** (no
-      `node_modules`, no lowerdir source), so the dev server fails to start. Design + prove (a
-      multi-container spike) mounting the **same** per-session `type=overlay` volume into each
-      compose service, reconciled with the kernel's `upperdir is in-use by another mount` rule (one
-      shared daemon overlay mount, not a second overlay over the same upper). **Overlay-session
-      preview support is gated on this spike.** Then wire the file watcher over that merged mount.
+- [ ] **Spike: shared `type=overlay` volume across agent + compose containers** (Open Q #4 gate).
+      Extend `prototype/volume-driver-overlay-spike.sh` to prove concurrent first-use of **one**
+      per-session `type=overlay` volume mounted into the agent `docker run` **and** a `docker
+      compose up` of ≥2 services. Assert: **(a)** the upperdir appears **exactly once** as an
+      `overlay` mount in the daemon host's `/proc/self/mountinfo` (one mount, not N — the decisive
+      check); **(b)** ~50 cold-race trials (`volume rm`+create each iteration, no inter-start
+      delay) with **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`; **(c)** a write
+      in the agent container is visible in a service container and `inotify` fires in a service
+      container (HMR path); **(d)** teardown↔startup overlap leaves the merged view intact. Run on
+      prod systemd VPS (ext4) + Docker Desktop/Mac + Docker Desktop/Windows-WSL2. **Overlay-session
+      preview support is gated on this spike going green.**
+- [ ] **Wire the shared overlay volume into compose** (after the spike). For overlay-eligible
+      sessions, point `opts.workspaceVolume` at the per-session overlay volume name
+      (`shipit-<sessionId[:12]>_overlay`) instead of `shipit-workspace` so `rewriteVolumes` +
+      the `external: true` declaration give every service the merged view by subpath
+      (`compose-generator.ts`). Ensure no service mounts an `overlay-base/` lowerdir subpath or a
+      bare-upperdir subpath. Then wire the file watcher over that merged mount.
 - [ ] Route production file/doc/git/compose/watcher/post-turn flows through the workspace-view
       resolver so the UI, PR/diff data, rollback/rebase/push/pull, and auto-commit operate on
       the same merged tree the agent sees.

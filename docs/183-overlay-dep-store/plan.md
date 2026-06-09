@@ -477,28 +477,56 @@ delivery under the daemon-overlay mechanism — see below).
    late-but-older publisher correctly declines (ancestry, not wall-clock); a force-pushed
    default branch does not wait for impossible old-lineage ancestry and instead starts a clean
    generation.
-4. **Compose + file watcher over the merged dir.** ⚠️ **Substrate confirmed; multi-container
-   delivery still open under the daemon-overlay mechanism.** The spike proved the *filesystem*
-   behavior — bind-mounting the overlay **merged** dir reads through to the base and writes reach
-   the upper, and `inotify` over the overlay sees both plain creates and copy-up modifies
-   (Docker Desktop/Mac named-volume substrate, `run-in-docker.sh`, 21/21 incl. inotify;
-   bind-mount-corroborated on WSL2). **But that spike mounted the merged dir within a single
-   container's mount namespace** — the model §4 *rejected*. Under the adopted daemon-overlay
-   mechanism the merged tree exists only as the per-session `local` `type=overlay` volume the
-   daemon mounts into the **agent** container. Compose **dev-server services are separate
-   containers**, and today they mount the workspace as a **Subpath of the shared
-   `shipit-workspace` volume** (`entry.volume = { subpath }`,
+4. **Compose + file watcher over the merged dir.** ⚠️ **Substrate confirmed; design decided;
+   one multi-container spike pending.** The Phase-0 spike proved the *filesystem* behavior —
+   bind-mounting the overlay **merged** dir reads through to the base and writes reach the upper,
+   and `inotify` over the overlay sees both plain creates and copy-up modifies (Docker Desktop/Mac
+   named-volume substrate, `run-in-docker.sh`, 21/21 incl. inotify; bind-mount-corroborated on
+   WSL2). **But that spike mounted the merged dir within a single container's mount namespace** —
+   the model §4 *rejected*. Under the adopted daemon-overlay mechanism the merged tree exists only
+   as the per-session `local` `type=overlay` volume the daemon mounts into the **agent** container,
+   while compose **dev-server services are separate containers** that today mount the workspace as
+   a **Subpath of the shared `shipit-workspace` volume** (`entry.volume = { subpath }`,
    [compose-generator.ts:492-518](../../src/server/orchestrator/compose-generator.ts#L492-L518)).
    For an overlay session that subpath resolves to the session's **upperdir**, so a vite/next dev
-   server would see a workspace with **no `node_modules` and no lowerdir source** and fail to
-   start. The plan needs an explicit mechanism for giving compose service containers the **same
-   merged view** — e.g. every compose service mounts the **same per-session `type=overlay`
-   volume** at `/workspace` instead of a `shipit-workspace` Subpath. That has to be reconciled
-   with the kernel's `upperdir is in-use by another mount` constraint (§4): two containers must
-   share **one** daemon overlay mount of that volume, not each construct a second overlay over the
-   same upper. Until that is specified and proven (a multi-container, single-overlay-volume spike),
-   previews/dev-servers are **not** covered for overlay sessions — this is a Phase 4 blocker, not a
-   resolved item.
+   server would see a workspace with **no `node_modules` and no lowerdir source** and fail to start.
+
+   **Decided solution — one shared overlay volume, not one per container.** Do **not** give each
+   compose service its own `type=overlay` volume (that *would* trip the kernel's `upperdir is
+   in-use by another mount` rule). Instead make the per-session `type=overlay` volume the agent
+   already mounts (`shipit-<sessionId[:12]>_overlay`, §4 GC) *be* the `shipit-workspace`-equivalent
+   the compose stack mounts too: declared `external: true` and mounted **by subpath** into every
+   service, exactly as `shipit-workspace` is today (compose-generator.ts:651-655). This is not a
+   new sharing pattern — ShipIt **already** shares one `external` named volume across the agent
+   container and every service by subpath; the only changed variable is that the shared volume is
+   now `type=overlay`. Docker's `local` driver refcounts named volumes: the daemon runs
+   `mount -t overlay` **once** on first use (onto the volume's `_data`), then **bind-mounts that
+   already-mounted `_data`** into every subsequent container — it does **not** issue a second
+   overlay mount. One shared volume ⇒ one overlay mount ⇒ the `upperdir is in-use` error is
+   structurally impossible, and all containers get a coherent merged view (the dev server sees the
+   agent's edits and vice-versa — what HMR needs). The compose-generator change is small: for
+   overlay-eligible sessions, point `opts.workspaceVolume` at the per-session overlay volume name
+   instead of `shipit-workspace`; `rewriteVolumes`, the `external: true` declaration, and subpath
+   resolution are all unchanged. Services must mount **only** that merged volume — never an
+   `overlay-base/` lowerdir subpath (the §4 read-only-lower rule) and never a bare-upperdir subpath.
+
+   **The one unproven bit + how it's proven.** The new variable is *concurrent first-use* of a
+   `type=overlay` volume: the agent `docker run` and `docker compose up` can race on the volume's
+   first mount, which is the overlay2 EBUSY window §4 flags. Docker's per-volume store lock should
+   already serialize this (it does for every `local` volume), but it must be shown empirically for
+   `type=overlay` on every target. The gating spike (extends `volume-driver-overlay-spike.sh`):
+   **(a)** after bring-up, assert the upperdir appears **exactly once** as an `overlay` mount in
+   the daemon host's `/proc/self/mountinfo` (the decisive check — one mount, not N); **(b)** loop
+   ~50× from a cold `volume rm`+create each iteration, launching agent + ≥2 services with no
+   inter-start delay, asserting **zero** `EBUSY`/`device or resource busy`/`upperdir is in-use`;
+   **(c)** assert a write in the agent container is visible in a service container and `inotify`
+   fires in a service container (HMR path) — not just within one namespace; **(d)** exercise the
+   teardown↔startup overlap (stop the last container while starting a new one) and confirm the
+   merged view survives. Run all of it on the full matrix — prod systemd VPS (ext4), Docker
+   Desktop/Mac, Docker Desktop/Windows-WSL2 — since EBUSY is kernel/storage-driver-dependent. Green
+   = 1 overlay mount + 0 errors across 50 cold-race trials × 3 hosts + clean teardown overlap; that
+   retires the blocker and the rest is ordinary wiring. Until then, previews/dev-servers are **not**
+   covered for overlay sessions — a Phase 4 gate.
 
 *Resolved this iteration (see Decisions): concurrency (installs run into each session's own
 upper — no serialization needed; base publishes restricted to exit-0 pre-user installs whose
