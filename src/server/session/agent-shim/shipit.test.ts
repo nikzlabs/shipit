@@ -1350,11 +1350,45 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: null });
   });
 
-  it("rejects `issue create` (issue creation is human-gated)", async () => {
+  it("create defaults to Linear and posts title/body, reporting the provenance card", async () => {
     const { run } = makeRunner();
-    const out = await run(["issue", "create", "--title", "x"]);
+    const out = await run(["issue", "create", "--title", "New doc", "-b", "tracks docs/187"], {
+      "POST /agent-ops/issue/create": {
+        status: 200,
+        body: { ok: true, summary: "created SHI-9", identifier: "SHI-9", url: "https://linear.app/x/SHI-9" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      method: "POST",
+      path: "/agent-ops/issue/create",
+      body: { tracker: "linear", title: "New doc", body: "tracks docs/187" },
+    });
+    expect(out.stdout).toContain("Undo");
+    expect(out.stdout).toContain("https://linear.app/x/SHI-9");
+  });
+
+  it("create honors --tracker github", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--tracker", "github"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created octocat/hello#7" } },
+    });
+    expect(out.calls[0].body).toMatchObject({ tracker: "github", title: "x" });
+  });
+
+  it("create requires a title", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "-b", "body only"]);
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("does not support `shipit issue create`");
+    expect(out.stderr).toContain("--title is required");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("still rejects `issue close` (use status completed/canceled)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "close", "SHI-1"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("does not support `shipit issue close`");
     expect(out.calls).toHaveLength(0);
   });
 });

@@ -191,6 +191,22 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
   });
 
+  it("creates an issue against the bound team (docs/187)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9", title: "New doc" }) } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    const issue = await tracker.createIssue({ title: "New doc", body: "tracks docs/187" });
+    expect(issue.identifier).toBe("SHI-9");
+    const input = JSON.parse((fetchImpl.mock.calls[0][1]?.body as string)).variables.input;
+    expect(input).toEqual({ teamId: "team-123", title: "New doc", description: "tracks docs/187" });
+  });
+
+  it("throws creating an issue without a team binding", async () => {
+    const tracker = new LinearTracker({ token: "t", team: null });
+    await expect(tracker.createIssue({ title: "x", body: "" })).rejects.toThrow(/team binding/);
+  });
+
   it("edits title/description via issueUpdate", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1" } } },

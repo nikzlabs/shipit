@@ -40,11 +40,24 @@ follow commands embedded in an issue body.
 ## Writing (do-then-surface)
 
 ```
+shipit issue create  --title T [--body B | --body-file FILE] [--tracker github|linear]
 shipit issue comment <pointer> -b "BODY"            # or --body-file FILE (- for stdin)
 shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE]
 shipit issue status  <pointer> <state>              # normalized type OR native name
 shipit issue assign  <pointer> <user|me | --none>
 ```
+
+### Create
+
+`create` files a new issue and prints its identifier and URL on stdout (and the
+raw object with `--json`), so you can use the URL immediately in the same turn
+(e.g. to cross-link a design doc's `issue:` frontmatter). There is no pointer to
+infer the tracker from, so it **defaults to Linear** (the workspace-wide
+tracker); pass `--tracker github` to file on this session's repo instead. Like
+every other write it is do-then-surface — the issue is created right away and a
+provenance card with **Undo** is posted; Undo **cancels** the issue (Linear →
+canceled state, GitHub → closed as not-planned). If the chosen tracker isn't
+connected, the command fails telling you to connect it in Settings first.
 
 Writes happen **immediately**. ShipIt then posts an inline **provenance card**
 in the chat recording what changed, with an **Undo** button the user can press
@@ -74,10 +87,12 @@ retry with a specific one.
 
 ## What you can't do
 
-- **Create issues.** Filing a new issue is a deliberate human action, gated
-  through the bug-report review card — `shipit issue create` is rejected. Re-use
-  and re-status the issue the work already concerns instead.
-- **Reach another repo's GitHub issues** — only this session's repo.
+- **Close or delete via a dedicated verb.** There is no `shipit issue close` or
+  `shipit issue delete`. Use `shipit issue status <pointer> completed` to mark
+  work done, or `... canceled` to drop it.
+- **Reach another repo's GitHub issues** — only this session's repo. (Filing a
+  ShipIt *platform bug* is a different, human-gated flow — the bug-report review
+  card — not `shipit issue create`.)
 
 ## Attribution
 

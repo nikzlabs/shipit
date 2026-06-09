@@ -43,9 +43,10 @@ Supported subcommands:
   shipit session archive <id> [--json]
   shipit session help
 
-Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177):
+Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
   shipit issue view      <pointer> [--tracker github|linear] [--json]
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--json]
+  shipit issue create    --title T [--body B | --body-file FILE] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
   shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--tracker T] [--json]
   shipit issue status    <pointer> <state> [--tracker T] [--json]
@@ -54,7 +55,8 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   A <pointer> is whatever the user/doc gave you — SHI-28, owner/repo#42, or an
   issue URL; the tracker is inferred from its shape. Writes are do-then-surface:
   the change is made immediately and an inline provenance card with an Undo
-  button is posted in the chat. Creating issues is NOT supported (human-gated).
+  button is posted in the chat. 'create' defaults to Linear (no pointer to infer
+  from); Undo cancels the new issue.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -1231,15 +1233,14 @@ function formatError(
 //
 // `shipit issue` is the ONE issue interface, identical across GitHub and Linear
 // (the tracker is inferred from the pointer shape via the shared parseIssueRef).
-// Read = view/list; write = comment/edit/status/assign. Issue CREATION stays
-// human-gated (docs/164) and is rejected here, like `shipit session delete`.
+// Read = view/list; write = create/comment/edit/status/assign. Creation is
+// do-then-surface (docs/187) — the issue is created immediately and a provenance
+// card with Undo (which cancels it) is posted. Only destructive verbs are gated.
 // ---------------------------------------------------------------------------
 
 const REJECTED_ISSUE_SUBCOMMANDS = new Set([
-  "create", // human-gated via the bug-filing review card (docs/164); never agent-driven.
-  "new",    // alias the agent might reach for — same gate.
   "delete", // destructive; not part of the agent's surface.
-  "close",  // use `shipit issue status <pointer> closed` instead.
+  "close",  // use `shipit issue status <pointer> completed` (or `canceled`) instead.
 ]);
 
 /**
@@ -1439,6 +1440,41 @@ function reportWrite(res: { status: number; body: Record<string, unknown> }, dep
   success(deps.io, lines.join("\n"));
 }
 
+async function handleIssueCreate(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--title": "title",
+      "-t": "title",
+      "-b": "body",
+      "--body": "body",
+      "-F": "bodyFile",
+      "--body-file": "bodyFile",
+      "--tracker": "tracker",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit issue create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const title = parsed.values.title;
+  if (!title?.trim()) {
+    fail(deps.io, "shipit issue create: --title is required.");
+  }
+  // No pointer to infer from, so default to Linear (the workspace-wide tracker,
+  // and the design-doc convention). Pass `--tracker github` to file on the
+  // session's repo instead.
+  const tracker = (parsed.values.tracker ?? "linear").toLowerCase();
+  if (!VALID_TRACKERS.has(tracker)) {
+    fail(deps.io, `shipit issue create: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
+  }
+  const body = (await readIssueBody(parsed.values, deps)) ?? "";
+  const res = await deps.call("POST", "/agent-ops/issue/create", { tracker, title, body }, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to create issue"), 1);
+  }
+  reportWrite(res, deps, parsed.booleans.has("json"));
+}
+
 async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "-b": "body", "--body": "body", "-F": "bodyFile", "--body-file": "bodyFile", "--tracker": "tracker" },
@@ -1530,6 +1566,7 @@ const ISSUE_HANDLERS: Record<
 > = {
   view: handleIssueView,
   list: handleIssueList,
+  create: handleIssueCreate,
   comment: handleIssueComment,
   edit: handleIssueEdit,
   status: handleIssueStatus,
@@ -1659,9 +1696,9 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
 }
 
 /**
- * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 write).
- * Issue creation is rejected with a pointer to the human-gated bug-filing flow;
- * everything else maps to a read (view/list) or a do-then-surface write.
+ * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 +
+ * docs/187 write). Reads map to view/list; writes (create/comment/edit/status/
+ * assign) are do-then-surface. Only destructive verbs (close/delete) are gated.
  */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -1673,8 +1710,8 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
     fail(
       io,
       `${SHIM_NAME} does not support \`shipit issue ${sub}\`. ` +
-        "Creating/closing/deleting issues is not an agent action — filing a new issue is human-gated " +
-        "via the bug-report review card. Use `shipit issue status <pointer> completed` to mark work done.\n" +
+        "Use `shipit issue status <pointer> completed` to mark work done, or " +
+        "`shipit issue status <pointer> canceled` to drop it — there is no close/delete.\n" +
         "See /shipit-docs/issues.md.",
     );
   }

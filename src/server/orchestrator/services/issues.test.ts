@@ -15,6 +15,7 @@ import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import {
   getIssueForTracker,
+  createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
   setIssueStatusForTracker,
@@ -196,6 +197,9 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
     if (method === "POST" && u.endsWith("/issues/42/comments")) {
       return ghResponse({ id: 9001, html_url: `${issue.html_url}#c`, body: "noted" });
     }
+    if (method === "POST" && u.endsWith("/issues")) {
+      return ghResponse({ ...issue, number: 7, html_url: "https://github.com/octocat/hello-world/issues/7", ...JSON.parse(init?.body as string) });
+    }
     if (method === "DELETE" && u.endsWith("/issues/comments/9001")) return ghResponse(null, 204);
     if (method === "PATCH" && u.endsWith("/issues/42")) {
       return ghResponse({ ...issue, ...JSON.parse(init?.body as string) });
@@ -208,6 +212,32 @@ describe("issue write services (docs/177)", () => {
   let store: CredentialStore;
   beforeEach(() => {
     store = tmpStore();
+  });
+
+  it("create: files an issue and returns a create undo snapshot (docs/187)", async () => {
+    const out = await createIssueForTracker(store, "github", "New doc", "tracks docs/187", ghFetch(), GH);
+    expect(out.verb).toBe("create");
+    expect(out.summary).toContain("octocat/hello-world#7");
+    expect(out.undo).toEqual({ kind: "create" });
+    expect(out.issue.id).toBe("7");
+  });
+
+  it("create: rejects an unconfigured tracker with a 409 ServiceError", async () => {
+    await expect(
+      createIssueForTracker(store, "linear", "x", ""),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("undo: create → cancels the issue (close as not_planned)", async () => {
+    const fetchImpl = ghFetch();
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "42", undo: { kind: "create" } },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string)).toEqual({ state: "closed", state_reason: "not_planned" });
   });
 
   it("comment: writes and returns a delete-comment undo snapshot", async () => {

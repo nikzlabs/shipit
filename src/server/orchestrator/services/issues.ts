@@ -160,6 +160,35 @@ async function loadIssueOr404(tracker: Tracker, id: string): Promise<TrackerIssu
   return issue;
 }
 
+/**
+ * Create a new issue in the tracker's bound scope (docs/187). Unlike the other
+ * writes there is no prior state to snapshot — the undo target is the new
+ * issue's own id, and undo cancels/closes it. The route stamps `card.issueId`
+ * from `outcome.issue.id`.
+ */
+export async function createIssueForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  title: string,
+  body: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<IssueWriteOutcome> {
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  let issue: TrackerIssue;
+  try {
+    issue = await tracker.createIssue({ title, body });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return {
+    issue: issue!,
+    verb: "create",
+    summary: `created ${issue!.identifier}`,
+    undo: { kind: "create" },
+  };
+}
+
 /** Add a comment; undo deletes it by the returned comment id. */
 export async function commentOnIssueForTracker(
   credentialStore: CredentialStore,
@@ -298,6 +327,11 @@ export async function undoIssueWrite(
       case "assignee":
         // raw: replay the exact prior id (or null → unassign), no re-resolution.
         await tracker.setAssignee(card.issueId, card.undo.previousAssigneeId, { raw: true });
+        return;
+      case "create":
+        // No prior state to restore — cancel the issue we created. `canceled`
+        // resolves to Linear's canceled state / GitHub close-as-not_planned.
+        await tracker.setStatus(card.issueId, "canceled");
     }
   } catch (err) {
     toResolutionServiceError(err);

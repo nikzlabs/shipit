@@ -1,44 +1,40 @@
 # Checklist
 
-Direct agent issue creation via `shipit issue create`, do-then-surface (reuses the docs/177 `IssueWriteCard`/undo stack).
+Direct agent issue creation via `shipit issue create`, do-then-surface (reuses the docs/177 `IssueWriteCard`/undo stack). **Implemented.**
 
-## Decisions to confirm first
-- [ ] Undo on Linear: cancel-state vs. archive (leaning cancel)
-- [ ] Default tracker when both Linear + GitHub are configured (require `--tracker`?)
+## Decisions (resolved)
+- [x] Undo on Linear: **cancel** (Linear canceled state / GitHub close-as-not_planned)
+- [x] Default tracker: **Linear**, with `--tracker github` to override
 
 ## Tracker layer
-- [ ] `createIssue` on the `Tracker` interface (`trackers/tracker.ts`)
-- [ ] Linear adapter `issueCreate` against the bound team
-- [ ] GitHub adapter `createIssue` (POST issues) on the session repo
-- [ ] Undo reverse-writes: Linear cancel/archive, GitHub close-as-not_planned
+- [x] `createIssue` on the `Tracker` interface (`trackers/tracker.ts`)
+- [x] Linear adapter `issueCreate` against the bound team
+- [x] GitHub adapter `createIssue` (POST issues) on the session repo
+- [x] Undo reverse-write: `setStatus(issueId, "canceled")` (Linear cancel / GitHub not_planned)
 
 ## Brokering
-- [ ] `createIssueForTracker()` service (`services/issues.ts`)
-- [ ] Extend `undoIssueWrite` for the `create` verb
-- [ ] `POST /api/sessions/:id/issue/create` route (`api-routes-issues.ts`)
-- [ ] `POST /agent-ops/issue/create` relay (`agent-ops-routes.ts`)
+- [x] `createIssueForTracker()` service (`services/issues.ts`)
+- [x] Extend `undoIssueWrite` for the `create` verb
+- [x] `POST /api/sessions/:id/issue/create` route (`api-routes-issues.ts`)
+- [x] `POST /agent-ops/issue/create` relay (`agent-ops-routes.ts`)
 
 ## Shim
-- [ ] `shipit issue create` verb (parse `--title`, `--body`/`--body-file`, `--tracker`, `--json`)
-- [ ] Remove `"create"` from `REJECTED_ISSUE_SUBCOMMANDS`
-- [ ] Unconfigured-tracker refusal message
+- [x] `shipit issue create` verb (parse `--title`, `--body`/`--body-file`, `--tracker`, `--json`)
+- [x] Remove `"create"`/`"new"` from `REJECTED_ISSUE_SUBCOMMANDS`
+- [x] Unconfigured-tracker refusal (orchestrator 409/connect message surfaced)
 
 ## Types & persistence
-- [ ] `IssueWriteVerb += "create"`
-- [ ] `IssueWriteUndo += { kind: "create"; issueId }`
-- [ ] Verify chat-history round-trip + rehydration for the `create` verb (mostly inherited)
-
-## Client
-- [ ] Issue-write card: `create` verb label + "Canceled" undone state
+- [x] `IssueWriteVerb += "create"`
+- [x] `IssueWriteUndo += { kind: "create" }`
+- [x] Persistence/client inherited (card stored as JSON; rendered generically — no migration)
 
 ## Docs / prompt
-- [ ] `src/server/shipit-docs/issues.md` — document `create`; drop the "can't create" line
-- [ ] `CLAUDE.md` — rewrite the design-doc no-issue branch to direct creation
+- [x] `src/server/shipit-docs/issues.md` — document `create`; drop the "can't create" line
+- [x] `CLAUDE.md` — no-issue branch now creates + cross-links directly
 
 ## Tests
-- [ ] Shim: `create` happy path (stdout identifier/url) + unconfigured refusal
-- [ ] Linear adapter: create + undo (cancel)
-- [ ] GitHub adapter: create + undo (close-as-not_planned)
-- [ ] Service: `createIssueForTracker` + `undoIssueWrite` create branch
-- [ ] Route relay forwards tracker/title/body
-- [ ] History round-trip for a `create` provenance card
+- [x] Shim: `create` defaults to Linear + posts; `--tracker github`; requires title; `close` still rejected
+- [x] Linear adapter: create (+ no-team guard)
+- [x] GitHub adapter: create (POST issues)
+- [x] Service: `createIssueForTracker` + `undoIssueWrite` create branch (cancel)
+- [x] Integration: `issue create` no longer gated, reaches the create route

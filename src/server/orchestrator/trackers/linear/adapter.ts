@@ -260,6 +260,25 @@ export class LinearTracker implements Tracker {
     return data.issue.id;
   }
 
+  async createIssue(input: { title: string; body: string }): Promise<TrackerIssue> {
+    if (!this.team) {
+      throw new Error("Linear is not configured (missing team binding)");
+    }
+    const data = await this.gql<{ issueCreate: { success: boolean; issue: LinearIssueNode | null } }>(
+      `mutation IssueCreate($input: IssueCreateInput!) {
+        issueCreate(input: $input) {
+          success
+          issue { ${ISSUE_FIELDS} }
+        }
+      }`,
+      { input: { teamId: this.team.id, title: input.title, description: input.body } },
+    );
+    if (!data.issueCreate.success || !data.issueCreate.issue) {
+      throw new Error("Linear rejected the issue create");
+    }
+    return toTrackerIssue(data.issueCreate.issue);
+  }
+
   async addComment(id: string, body: string): Promise<TrackerComment> {
     const issueId = await this.resolveUuid(id);
     const data = await this.gql<{

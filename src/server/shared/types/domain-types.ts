@@ -320,8 +320,8 @@ export interface TrackerComment {
   body: string;
 }
 
-/** Which kind of issue write a provenance card records (docs/177). */
-export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee";
+/** Which kind of issue write a provenance card records (docs/177, docs/187). */
+export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create";
 
 /**
  * The minimal snapshot a do-then-surface write captures so it can be undone as
@@ -334,7 +334,10 @@ export type IssueWriteUndo =
   | { kind: "comment"; commentId: string }
   | { kind: "edit"; previousTitle?: string; previousDescription?: string }
   | { kind: "status"; previousStatus: string }
-  | { kind: "assignee"; previousAssigneeId: string | null };
+  | { kind: "assignee"; previousAssigneeId: string | null }
+  // docs/187 — a just-created issue has no prior state to restore; undo cancels
+  // it (Linear → canceled state, GitHub → close as not_planned) by `card.issueId`.
+  | { kind: "create" };
 
 /** Undo lifecycle of a write provenance card. */
 export type IssueWriteUndoState = "available" | "undoing" | "undone" | "failed";

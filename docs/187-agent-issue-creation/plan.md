@@ -174,29 +174,37 @@ actor end-to-end within one turn.
 | `docs/170` tracker registry | **Extended** with the create mutation in the Linear adapter (and GitHub). |
 | `docs/164` user bug filing | **Unchanged and distinct.** Bug-filing stays a redacted, human-gated, outbound-to-public consent card. This is internal-tracker creation, do-then-surface. The two no longer share the "all creation is human-gated" premise — that premise is narrowed to the bug-filing case it was really about. |
 
-## Open questions
+## Resolved decisions
 
-- **Undo semantics on Linear:** cancel-state vs. archive. Archive hides the issue;
-  cancel keeps it visible as canceled. Leaning **cancel** (visible, honest, and
-  symmetric with GitHub's close-as-not_planned).
-- **Default tracker when both Linear and GitHub are configured.** For the design-doc
-  rule it's Linear by the `CLAUDE.md` convention; for the generic verb, default to
-  the deployment's bound tracker and require `--tracker` when ambiguous.
-- **Should `shipit issue create` echo a confirmation hint** when the agent didn't
-  pass `--tracker` and both are configured, to avoid filing on the wrong tracker?
+- **Undo cancels (not archive).** Linear → `canceled` state, GitHub → close as
+  `not_planned`. Visible, honest ("Canceled SHI-28"), and symmetric across
+  trackers. Implemented via `tracker.setStatus(card.issueId, "canceled")` in the
+  `create` undo branch.
+- **`create` defaults to Linear.** There's no pointer to infer a tracker from, and
+  Linear is the workspace-wide tracker and the design-doc convention. `--tracker
+  github` files on the session's repo instead. An unconfigured tracker fails with a
+  "connect it in Settings" message rather than silently filing elsewhere.
 
-## Key files (anticipated)
+## Status — implemented
 
-- `src/server/orchestrator/trackers/tracker.ts` — add `createIssue` to the interface.
-- `src/server/orchestrator/trackers/linear/adapter.ts` — `issueCreate` mutation against the bound team + `cancelIssue`-style undo.
-- `src/server/orchestrator/trackers/github/adapter.ts` — `createIssue` (POST issues) on the session repo + close-as-not_planned undo.
-- `src/server/orchestrator/services/issues.ts` — `createIssueForTracker()`; extend `undoIssueWrite` for the `create` verb.
-- `src/server/orchestrator/api-routes-issues.ts` — session-scoped `POST /issue/create` route.
+Shipped in this PR. The `create` verb extends the docs/177 `IssueWriteCard` (new
+`IssueWriteVerb` member + `{ kind: "create" }` undo), so persistence, rehydration,
+and the client card are inherited with no migration. Coverage: Linear/GitHub
+adapter `createIssue`, the `createIssueForTracker` service + `create` undo branch,
+the shim `create` verb (defaults to Linear, requires `--title`), and the
+shim→relay→route slice asserting create is no longer gated.
+
+## Key files
+
+- `src/server/orchestrator/trackers/tracker.ts` — `createIssue` on the interface.
+- `src/server/orchestrator/trackers/linear/adapter.ts` — `issueCreate` mutation against the bound team.
+- `src/server/orchestrator/trackers/github/adapter.ts` — `createIssue` (POST issues) on the session repo.
+- `src/server/orchestrator/services/issues.ts` — `createIssueForTracker()`; `undoIssueWrite` `create` branch (cancel).
+- `src/server/orchestrator/api-routes-issues.ts` — session-scoped `POST /issue/create` route (card `issueId` falls back to the created issue's id).
 - `src/server/session/agent-ops-routes.ts` — `POST /agent-ops/issue/create` relay.
-- `src/server/session/agent-shim/shipit.ts` — `shipit issue create` verb; remove `"create"` from `REJECTED_ISSUE_SUBCOMMANDS`.
-- `src/server/shared/types/domain-types.ts` — `IssueWriteVerb += "create"`, `IssueWriteUndo += { kind: "create"; issueId }`.
-- `chat-history.ts`, `database.ts`, `session-data.ts`, `issue-write-store.ts` — inherited; verify the `create` verb round-trips and rehydrates.
-- `src/client/components/` issue-write card — new `create` verb label + "Canceled" undone state.
-- `src/server/shipit-docs/issues.md` — document `shipit issue create`; drop the "can't create" line.
-- `CLAUDE.md` — rewrite the design-doc no-issue branch to direct creation.
-- Tests: shim (`shipit.test.ts` create happy-path + unconfigured), adapters (Linear/GitHub create + undo), service (`issues.test.ts`), route relay, and a history round-trip for the `create` verb.
+- `src/server/session/agent-shim/shipit.ts` — `shipit issue create` verb; `create`/`new` removed from `REJECTED_ISSUE_SUBCOMMANDS`.
+- `src/server/shared/types/domain-types.ts` — `IssueWriteVerb += "create"`, `IssueWriteUndo += { kind: "create" }`.
+- Persistence/client (`chat-history.ts`, `issue-write-store.ts`, `IssueWriteCard.tsx`) — **inherited unchanged**: the card persists as JSON and renders `Agent {summary}` generically, so the new verb needs no migration or component change.
+- `src/server/shipit-docs/issues.md` — documents `shipit issue create`; drops the "can't create" line.
+- `CLAUDE.md` — design-doc no-issue branch now creates + cross-links directly.
+- Tests: `shipit.test.ts` (create defaults/validation), Linear/GitHub adapter create, `issues.test.ts` (create + undo-cancel), `agent-issue-access.test.ts` (gate-removed slice).

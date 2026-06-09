@@ -197,6 +197,19 @@ describe("GitHubTracker writes (docs/177)", () => {
       ...over,
     });
 
+  it("creates an issue on the session repo (POST issues) (docs/187)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      issueResponse({ number: 7, title: "New doc", html_url: "https://github.com/octocat/hello-world/issues/7" }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    const issue = await tracker.createIssue({ title: "New doc", body: "tracks docs/187" });
+    expect(issue.identifier).toBe("octocat/hello-world#7");
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/issues");
+    expect(init?.method).toBe("POST");
+    expect(JSON.parse(init?.body as string)).toEqual({ title: "New doc", body: "tracks docs/187" });
+  });
+
   it("adds a comment and returns its id for undo", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ id: 555, html_url: "https://github.com/octocat/hello-world/issues/42#c", body: "hi" }),
