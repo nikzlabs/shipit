@@ -1858,7 +1858,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           }
           case "start_service": return serviceHandlers.handleStartService(ctx, msg);
           case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
-          case "subscribe_service_logs": { serviceHandlers.handleSubscribeServiceLogs(ctx, msg); return; }
+          case "subscribe_service_logs": return serviceHandlers.handleSubscribeServiceLogs(ctx, msg);
           case "send_message": {
             // docs/146 — WS-typed user input resets the auto-resolve attempt
             // budget. Only fired from the dispatch switch (not inside the
