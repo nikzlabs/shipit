@@ -239,7 +239,7 @@ export function AppLayout({
               MobileTabBar visible and interactive while the session list is open. */}
           <div className="relative flex flex-col flex-1 min-h-0">
             <div className="flex flex-col flex-1 min-h-0">
-              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="flex flex-col flex-1 min-h-0 bg-(--color-bg-secondary)">{rightPanel}</div>}
+              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="surface-panel flex flex-col flex-1 min-h-0">{rightPanel}</div>}
             </div>
             {mobileSidebarOpen && (
               <div className="absolute inset-0 z-40 flex" role="dialog" aria-label="Sessions">
@@ -310,7 +310,7 @@ export function AppLayout({
             {!showHomeScreen && (
               <>
                 <ResizeHandle isDragging={isDragging} onMouseDown={onMouseDown} onTouchStart={onTouchStart} />
-                <div className={`min-w-0 flex flex-col bg-(--color-bg-secondary) ${isDragging ? "pointer-events-none" : ""}`} style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
+                <div className={`surface-panel min-w-0 flex flex-col ${isDragging ? "pointer-events-none" : ""}`} style={{ width: `${(1 - fraction) * 100}%` }}>{rightPanel}</div>
               </>
             )}
           </div>

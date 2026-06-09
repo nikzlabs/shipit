@@ -1302,7 +1302,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex flex-col h-[100dvh] bg-(--color-bg-primary) text-(--color-text-primary)">
+    <div className="surface-app flex flex-col h-[100dvh] text-(--color-text-primary)">
       <AuthOverlayContainer
         authUrl={authUrl}
         showOnboarding={showOnboarding}

@@ -1178,7 +1178,7 @@ export function SessionSidebar({
 
   if (collapsed && !mobile) {
     return (
-      <div className="flex flex-col w-10 h-full shrink-0 bg-(--color-bg-primary) border-r border-(--color-border-primary) items-center py-2 gap-2">
+      <div className="surface-sidebar flex flex-col w-10 h-full shrink-0 border-r border-(--color-border-primary) items-center py-2 gap-2">
         <WithTooltip label="Expand sidebar" side="right">
         <Button
           variant="ghost"
@@ -1230,7 +1230,7 @@ export function SessionSidebar({
   return (
     <div className={`flex h-full min-h-0 ${mobile ? "w-full min-w-0" : "shrink-0"}`}>
     <div
-      className={`flex flex-col h-full bg-(--color-bg-primary) ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
+      className={`surface-sidebar flex flex-col h-full ${mobile ? "min-w-0 flex-1" : "border-r border-(--color-border-primary)"} min-h-0`}
       style={mobile ? undefined : { width }}
     >
       {/* Top bar — desktop only. On mobile the drawer is toggled open/closed
