@@ -136,15 +136,26 @@ and the surface's session-awareness change.
   the future in-workspace destination (not deleted).
 
 ### Client
-- [x] Skills tab install decoupled from the active session — Discover + install
-  no longer read `hasActiveSession`/`sessionId`. (Installed sub-tab kept as a
-  current-session convenience view; app-wide Installed/uninstall-as-PR deferred,
-  see Future.)
+- [x] Skills tab is **Discover-only**, fully decoupled from the active session
+  (no `hasActiveSession`/`sessionId`). The Installed sub-tab, the uninstall
+  button, `SubTabButton`/`InstalledList`, and the store's
+  `installed`/`fetchInstalled`/`uninstall`/`install` actions were removed.
 - [x] Repository picker in the install sheet (`SkillInstallSheet.tsx`), sourced
   from the app-wide `useRepoStore`, defaulted to the active repo. Empty-state
   when no repo; install disabled until a ready repo is selected.
 - [x] `useSkillsStore.installToRepo()` calls the app-wide endpoint; success toast
   points the user at the new session + PR number.
+
+### Uninstall — intentionally not a feature (2026-06-09)
+- [x] **No uninstall UI, route, or service.** Removing a marketplace skill is a
+  plain "delete the `<plugin>__<skill>/` dir + commit" the user asks the agent
+  to do (CLAUDE.md §5). Removed: the `DELETE /api/sessions/:id/plugins/...`
+  route, `GET /api/sessions/:id/plugins`, `uninstallPlugin` +
+  `scanInstalledPlugins` (`marketplace.ts`), `InstalledPluginInfo` type, and the
+  matching tests. Install keeps its UI because it adds value the agent can't
+  replicate cheaply (catalog discovery, preview-before-consent, namespaced
+  flat-dir write). `src/server/shipit-docs/skills.md` updated to tell the agent
+  removal = delete the directory.
 
 ### Tests
 - [x] `services/install-session.test.ts` — repo-targeted install spawns a
@@ -157,9 +168,8 @@ and the surface's session-awareness change.
 ### Future (deferred, same dialog)
 - [ ] In-workspace install as an explicit destination option (reinstates v1a's
   in-session write behind a user-selected choice; reactivates the mutex +
-  reload path for that branch only).
-- [ ] App-wide Installed sub-tab + uninstall-as-PR (today's Installed view is
-  still scoped to the current session).
+  reload path for that branch only). The session-scoped `POST /api/sessions/:id/
+  plugins/install` route is retained as the seam for this.
 
 ## v1b — Codex support
 

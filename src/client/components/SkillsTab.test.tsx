@@ -1,10 +1,13 @@
 /**
- * Component tests for SkillsTab (docs/149).
+ * Component tests for SkillsTab (docs/149 v1c).
  *
  * Exercises:
- *  - Discover sub-tab renders the seeded catalog's plugin list.
- *  - Switching to Installed shows ShipIt-managed entries.
+ *  - Discover renders the seeded catalog's plugin list.
+ *  - The install sheet's repo picker + repo-targeted install (app-wide route,
+ *    NOT the session-scoped route).
+ *  - Install is disabled when no repository is available.
  *  - Codex agent shows the v1b "Claude-only for now" empty state.
+ *  - Per-marketplace fetch-failed Retry row.
  *
  * Stubs fetch via a tiny capture-and-respond double (same shape as
  * McpServerSettings.test.tsx). Monaco mount is mocked because the install
@@ -16,7 +19,6 @@ import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/re
 import { SkillsTab } from "./SkillsTab.js";
 import { useSkillsStore } from "../stores/skills-store.js";
 import { useUiStore } from "../stores/ui-store.js";
-import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import type { MarketplaceInfo, PluginInfo, RepoInfo } from "../../server/shared/types.js";
 
@@ -80,11 +82,21 @@ const fakeRepo: RepoInfo = {
   status: "ready",
 };
 
-describe("SkillsTab (docs/149)", () => {
+/** Seed the catalog routes shared by most tests. */
+function catalogRoutes(fake: FakeFetch): FakeFetch {
+  fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
+  fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
+    plugins: [fakePlugin],
+    marketplace: fakeMarketplace,
+  }));
+  fake.on("GET", /\/skills\/hello$/, () => ({ content: "# hello skill" }));
+  return fake;
+}
+
+describe("SkillsTab (docs/149 v1c)", () => {
   beforeEach(() => {
     useSkillsStore.getState().reset();
     useUiStore.setState({ activeAgentId: "claude" });
-    useSessionStore.setState({ sessionId: "test-session" });
     useRepoStore.setState({ repos: [fakeRepo], activeRepoUrl: fakeRepo.url });
   });
 
@@ -95,18 +107,9 @@ describe("SkillsTab (docs/149)", () => {
   });
 
   it("renders the Discover list from the seeded catalog", async () => {
-    const fake = new FakeFetch();
-    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({
-      marketplaces: [fakeMarketplace],
-    }));
-    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
-      plugins: [fakePlugin],
-      marketplace: fakeMarketplace,
-    }));
-    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
-    fake.install();
+    catalogRoutes(new FakeFetch()).install();
 
-    render(<SkillsTab hasActiveSession />);
+    render(<SkillsTab />);
 
     await waitFor(() => {
       expect(screen.getByTestId("skills-discover-list")).toBeInTheDocument();
@@ -116,53 +119,8 @@ describe("SkillsTab (docs/149)", () => {
     expect(screen.getByTestId("skills-install-demo-plugin")).toBeInTheDocument();
   });
 
-  it("Installed sub-tab lists ShipIt-managed installs", async () => {
-    const fake = new FakeFetch();
-    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({
-      marketplaces: [fakeMarketplace],
-    }));
-    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
-      plugins: [fakePlugin],
-      marketplace: fakeMarketplace,
-    }));
-    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({
-      plugins: [
-        {
-          marketplaceId: "claude-plugins-official",
-          pluginName: "demo-plugin",
-          skillName: "hello",
-          version: "head",
-          installedAt: new Date().toISOString(),
-          directory: "/ws/.claude/skills/demo-plugin__hello",
-        },
-      ],
-    }));
-    fake.install();
-
-    render(<SkillsTab hasActiveSession />);
-
-    await waitFor(() => {
-      expect(screen.getByTestId("skills-subtab-installed")).toBeInTheDocument();
-    });
-    fireEvent.click(screen.getByTestId("skills-subtab-installed"));
-
-    await waitFor(() => {
-      expect(screen.getByTestId("skills-installed-list")).toBeInTheDocument();
-    });
-    expect(screen.getByText("demo-plugin")).toBeInTheDocument();
-    expect(screen.getByText(/\/demo-plugin:hello/)).toBeInTheDocument();
-    expect(screen.getByTestId("skills-uninstall-demo-plugin")).toBeInTheDocument();
-  });
-
   it("install sheet targets a repo and posts a repo-scoped install (no session route)", async () => {
-    const fake = new FakeFetch();
-    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
-    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
-      plugins: [fakePlugin],
-      marketplace: fakeMarketplace,
-    }));
-    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
-    fake.on("GET", /\/skills\/hello$/, () => ({ content: "# hello skill" }));
+    const fake = catalogRoutes(new FakeFetch());
     fake.on("POST", /\/api\/plugins\/install$/, () => ({
       sessionId: "new-install-session",
       branch: "shipit/install-demo-plugin-abc",
@@ -171,7 +129,7 @@ describe("SkillsTab (docs/149)", () => {
     }));
     fake.install();
 
-    render(<SkillsTab hasActiveSession />);
+    render(<SkillsTab />);
 
     await waitFor(() => {
       expect(screen.getByTestId("skills-install-demo-plugin")).toBeInTheDocument();
@@ -186,8 +144,7 @@ describe("SkillsTab (docs/149)", () => {
 
     fireEvent.click(screen.getByTestId("skill-install-confirm"));
 
-    // It hits the app-wide repo-targeted route with the selected repo, NOT the
-    // session-scoped install route.
+    // It hits the app-wide repo-targeted route, NOT a session-scoped route.
     await waitFor(() => {
       expect(fake.calls.some((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"))).toBe(true);
     });
@@ -198,17 +155,9 @@ describe("SkillsTab (docs/149)", () => {
 
   it("disables install when no repository is available", async () => {
     useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
-    const fake = new FakeFetch();
-    fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [fakeMarketplace] }));
-    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
-      plugins: [fakePlugin],
-      marketplace: fakeMarketplace,
-    }));
-    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
-    fake.on("GET", /\/skills\/hello$/, () => ({ content: "# hello skill" }));
-    fake.install();
+    catalogRoutes(new FakeFetch()).install();
 
-    render(<SkillsTab hasActiveSession />);
+    render(<SkillsTab />);
     await waitFor(() => {
       expect(screen.getByTestId("skills-install-demo-plugin")).toBeInTheDocument();
     });
@@ -222,7 +171,7 @@ describe("SkillsTab (docs/149)", () => {
 
   it("shows the Claude-only empty state when the active agent is Codex", () => {
     useUiStore.setState({ activeAgentId: "codex" });
-    render(<SkillsTab hasActiveSession />);
+    render(<SkillsTab />);
     expect(screen.getByText(/Skill discovery and install/i)).toBeInTheDocument();
     expect(screen.getByText(/Codex support is/i)).toBeInTheDocument();
   });
@@ -235,14 +184,10 @@ describe("SkillsTab (docs/149)", () => {
     };
     const fake = new FakeFetch();
     fake.on("GET", /\/api\/marketplaces\?agent=claude/, () => ({ marketplaces: [failed] }));
-    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
-      plugins: [],
-      marketplace: failed,
-    }));
-    fake.on("GET", /\/api\/sessions\/[^/]+\/plugins$/, () => ({ plugins: [] }));
+    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({ plugins: [], marketplace: failed }));
     fake.install();
 
-    render(<SkillsTab hasActiveSession />);
+    render(<SkillsTab />);
 
     await waitFor(() => {
       expect(screen.getByText(/connection refused/)).toBeInTheDocument();

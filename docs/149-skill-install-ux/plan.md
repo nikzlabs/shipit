@@ -128,6 +128,18 @@ instance with a local fallback); client `SkillInstallSheet.tsx` (repo picker),
 `quickCreatePr` (both push+create; `agentCreatePr` takes a fixed title/body with
 no LLM round-trip, the better fit for a no-turn flow).
 
+**Uninstall is intentionally not a ShipIt feature (2026-06-09).** Removing a
+marketplace skill is just "delete the `<plugin>__<skill>/` directory and commit"
+— a plain agent task under CLAUDE.md §5 (chat is the input surface, the agent is
+the actor). Install earns its dedicated UI because it adds value the agent can't
+replicate cheaply: catalog **discovery**, **preview-before-consent** (the trust
+gate), and the fiddly namespaced flat-dir **write**. Uninstall has none of that
+delta. So the Skills tab is **Discover-only**: the Installed sub-tab, the
+uninstall verb, the `DELETE`/`GET` plugin routes, `uninstallPlugin`,
+`scanInstalledPlugins`, and `InstalledPluginInfo` were all removed.
+`src/server/shipit-docs/skills.md` tells the agent that removal = delete the
+directory.
+
 ## Summary
 
 Both Claude Code and Codex CLI shipped first-class skill/plugin browse-and-install

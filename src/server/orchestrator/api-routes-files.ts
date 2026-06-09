@@ -25,8 +25,6 @@ import {
   MAX_UPLOAD_FILES_PER_REQUEST,
   ServiceError,
   installPlugin,
-  uninstallPlugin,
-  scanInstalledPlugins,
   withWorkspaceLock,
   getCatalogCacheRoot,
   ensureCatalogCloned,
@@ -426,20 +424,12 @@ export async function registerFileRoutes(
   //      respawns with the new skills picked up.
 
   if (marketplaceStore) {
-    // GET /api/sessions/:id/plugins — installed plugin rows for the Installed sub-tab.
-    app.get<{ Params: { id: string } }>(
-      "/api/sessions/:id/plugins",
-      async (request, reply) => {
-        const dir = resolveSessionDir(sessionManager, request.params.id, reply);
-        if (!dir) return;
-        const session = sessionManager.get(request.params.id);
-        const agentId = session?.agentId ?? defaultAgentId;
-        const installed = await scanInstalledPlugins(dir, agentId, agentRegistry);
-        return { plugins: installed };
-      },
-    );
-
-    // POST /api/sessions/:id/plugins/install — install a plugin from a catalog.
+    // POST /api/sessions/:id/plugins/install — session-scoped install. Retained
+    // as the seam for a future "install into this workspace" destination option
+    // (docs/149). The primary install path is the app-wide, repo-targeted
+    // `POST /api/plugins/install` (api-routes-marketplace.ts), which opens a PR.
+    // There is deliberately NO uninstall route: removing a skill is a plain
+    // "delete the dir + commit" the user asks the agent to do (CLAUDE.md §5).
     app.post<{
       Params: { id: string };
       Body: { marketplaceId?: unknown; pluginName?: unknown };
@@ -526,59 +516,5 @@ export async function registerFileRoutes(
         reply.code(500).send({ error: getErrorMessage(err) });
       }
     });
-
-    // DELETE /api/sessions/:id/plugins/:marketplaceId/:pluginName — uninstall.
-    app.delete<{
-      Params: { id: string; marketplaceId: string; pluginName: string };
-    }>(
-      "/api/sessions/:id/plugins/:marketplaceId/:pluginName",
-      async (request, reply) => {
-        const dir = resolveSessionDir(sessionManager, request.params.id, reply);
-        if (!dir) return;
-        const session = sessionManager.get(request.params.id);
-        const agentId = session?.agentId ?? defaultAgentId;
-
-        const runner = runnerRegistry.get(request.params.id) as
-          | { running?: boolean } | undefined;
-        if (runner?.running) {
-          reply.code(409).send({
-            error: "Agent is working — uninstall will become available when it's done.",
-          });
-          return;
-        }
-
-        try {
-          const git = deps.createGitManager(dir);
-          const result = await withWorkspaceLock(dir, async () => {
-            return uninstallPlugin({
-              workspaceDir: dir,
-              agentId,
-              marketplaceId: request.params.marketplaceId,
-              pluginName: request.params.pluginName,
-              git,
-              agentRegistry,
-            });
-          });
-          // Force respawn so any persistent agent drops the removed skills.
-          try {
-            await killAgent({
-              sessionManager,
-              containerManager: deps.containerManager ?? null,
-              runnerRegistry,
-              defaultAgentId: deps.defaultAgentId,
-            }, request.params.id);
-          } catch (err) {
-            console.warn("[marketplace] post-uninstall killAgent failed:", getErrorMessage(err));
-          }
-          return result;
-        } catch (err) {
-          if (err instanceof ServiceError) {
-            reply.code(err.statusCode).send({ error: err.message });
-            return;
-          }
-          reply.code(500).send({ error: getErrorMessage(err) });
-        }
-      },
-    );
   }
 }

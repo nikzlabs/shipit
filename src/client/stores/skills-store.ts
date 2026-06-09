@@ -1,43 +1,31 @@
 /**
  * Skills store — Settings → Skills tab state (docs/149).
  *
- * Holds the catalog list (Discover sub-tab) and per-session installed
- * plugin rows (Installed sub-tab). Skills *invocation* (the `/`-autocomplete
- * fed by `services/skills.ts`) lives in its own per-session fetch on the
- * client side; this store is for the *management* surface only.
+ * Holds the catalog list (Discover) and the repo-targeted install action. The
+ * tab is app-wide: catalogs are shared across sessions, and install spawns its
+ * own dedicated session + PR (it never touches the active session). Skills
+ * *invocation* (the `/`-autocomplete fed by `services/skills.ts`) lives in its
+ * own per-session fetch; this store is the *management* surface only.
  *
- * Catalog data is app-wide (one set of marketplaces shared across every
- * session) but Discover filters by the active session's agent so a Claude
- * session never sees a Codex catalog. The store keeps per-marketplace plugin
- * lists in a map keyed by marketplace id, so switching the active agent
- * just re-reads the relevant catalogs without re-fetching unrelated ones.
+ * There is no install-list or uninstall here: removing a marketplace skill is a
+ * plain "delete the dir + commit" the user asks the agent to do (CLAUDE.md §5).
  */
 
 import { create } from "zustand";
-import type {
-  InstalledPluginInfo,
-  MarketplaceInfo,
-  PluginInfo,
-} from "../../server/shared/types.js";
-import { useFileStore } from "./file-store.js";
-import { useUiStore } from "./ui-store.js";
+import type { MarketplaceInfo, PluginInfo } from "../../server/shared/types.js";
 
 interface SkillsState {
   marketplaces: MarketplaceInfo[];
   /** Plugin list per marketplace id (already filtered by the server). */
   pluginsByMarketplace: Record<string, PluginInfo[]>;
-  /** Installed plugins for the current session (re-fetched on session switch). */
-  installed: InstalledPluginInfo[];
   /** True while a network request is in flight. */
   loading: boolean;
-  /** Last error surfaced from a fetch / install / uninstall call, if any. */
+  /** Last error surfaced from a fetch / install call, if any. */
   error: string | null;
 
   fetchMarketplaces: (agentId: string) => Promise<void>;
   fetchPlugins: (marketplaceId: string) => Promise<void>;
   refreshMarketplace: (marketplaceId: string) => Promise<void>;
-  fetchInstalled: (sessionId: string) => Promise<void>;
-  install: (sessionId: string, marketplaceId: string, pluginName: string) => Promise<void>;
   /**
    * docs/149 v1c — repo-targeted install. Spawns a dedicated session that
    * installs the skill and opens a PR, leaving the current session untouched.
@@ -48,7 +36,6 @@ interface SkillsState {
     marketplaceId: string,
     pluginName: string,
   ) => Promise<InstallToRepoResult>;
-  uninstall: (sessionId: string, marketplaceId: string, pluginName: string) => Promise<void>;
   reset: () => void;
 }
 
@@ -62,7 +49,6 @@ export interface InstallToRepoResult {
 const initialState = {
   marketplaces: [] as MarketplaceInfo[],
   pluginsByMarketplace: {} as Record<string, PluginInfo[]>,
-  installed: [] as InstalledPluginInfo[],
   loading: false,
   error: null as string | null,
 };
@@ -125,41 +111,6 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     }
   },
 
-  fetchInstalled: async (sessionId) => {
-    try {
-      const data = await jsonOrThrow<{ plugins: InstalledPluginInfo[] }>(
-        await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/plugins`),
-      );
-      set({ installed: data.plugins });
-    } catch (err) {
-      set({ error: (err as Error).message });
-    }
-  },
-
-  install: async (sessionId, marketplaceId, pluginName) => {
-    set({ loading: true, error: null });
-    try {
-      await jsonOrThrow(
-        await fetch(`/api/sessions/${encodeURIComponent(sessionId)}/plugins/install`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ marketplaceId, pluginName }),
-        }),
-      );
-      await get().fetchInstalled(sessionId);
-      // Refresh the composer's `/`-autocomplete cache so the new skill is
-      // invokable on the next message without a page reload.
-      await useFileStore.getState()
-        .fetchSkills(sessionId, useUiStore.getState().activeAgentId)
-        .catch(() => {});
-    } catch (err) {
-      set({ error: (err as Error).message });
-      throw err;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
   installToRepo: async (repoUrl, marketplaceId, pluginName) => {
     set({ loading: true, error: null });
     try {
@@ -171,27 +122,6 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
         }),
       );
       return data;
-    } catch (err) {
-      set({ error: (err as Error).message });
-      throw err;
-    } finally {
-      set({ loading: false });
-    }
-  },
-
-  uninstall: async (sessionId, marketplaceId, pluginName) => {
-    set({ loading: true, error: null });
-    try {
-      await jsonOrThrow(
-        await fetch(
-          `/api/sessions/${encodeURIComponent(sessionId)}/plugins/${encodeURIComponent(marketplaceId)}/${encodeURIComponent(pluginName)}`,
-          { method: "DELETE" },
-        ),
-      );
-      await get().fetchInstalled(sessionId);
-      await useFileStore.getState()
-        .fetchSkills(sessionId, useUiStore.getState().activeAgentId)
-        .catch(() => {});
     } catch (err) {
       set({ error: (err as Error).message });
       throw err;
