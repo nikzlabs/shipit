@@ -176,9 +176,8 @@ genuinely new subsystem and the gating unknown for the whole proposal.
 
 #### Host-mount design decisions (decided — see [`FINDINGS.md`](./FINDINGS.md))
 
-After the spikes confirmed the substrate, the gate became a design problem. The mechanism is
-decided; the one item still pending empirical confirmation is **propagation on the prod VPS**
-(see the prerequisite bullet):
+After the spikes confirmed the substrate, the gate became a design problem, now settled —
+including propagation on the prod VPS (proven, see the prerequisite bullet):
 
 - **Mount mechanism — privileged helper driven via `docker.sock`.** The orchestrator stays
   **unprivileged**; it uses the `docker.sock` it already holds (already root-on-host-equivalent)
@@ -208,12 +207,11 @@ decided; the one item still pending empirical confirmation is **propagation on t
       every Mac/Windows local install silently drops to the slow fallback. Phase 2's startup
       probe must therefore **re-verify (and, if needed, re-arm) propagation on each daemon/VM
       start**, not assume a one-time setup persists.
-    - **systemd Linux VPS — expected but NOT yet confirmed.** systemd sets `/` rshared at
-      boot, so the VPS (the always-on production target and the #1 install target) is
-      *expected* to behave like Docker Desktop — but `propagation-spike.sh` rung A2 has
-      **never actually run on the prod VPS**. This is an **open blocker**, not an expectation:
-      until it passes there, overlay-on-VPS is unproven, which matters because Phase 1 deletes
-      nm-store before the overlay path lands (see Implementation phases).
+    - **systemd Linux VPS — proven on prod, no setup.** `propagation-spike.sh` rung A2 ran on
+      the prod VPS (systemd, docker 29.5.2, linux/amd64) and reported PROPAGATED on the plain
+      run — systemd mounts `/` rshared at boot, so the `:rshared` bind is accepted with no
+      provisioning, identical to Docker Desktop. The always-on #1 install target is confirmed;
+      the open blocker that gated the Phase 1 nm-store deletion is **closed**.
     - **Bare docker-ce-in-WSL2 — does not work via any runtime fix.** Defaults to private `/`
       and does not honor a *runtime* `make-rshared` (proven: every spike rung rejected). Needs
       daemon-level config (`MountFlags=shared` + restart) or that install **falls back to a
@@ -338,21 +336,17 @@ Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Pha
 nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
 on top of the simplified install path.
 
-0. **Prototypes & decisions** *(mostly done — one open blocker)* — rolling-base logic (33/33),
-   overlay substrate (WSL2 + Docker Desktop/Mac), and the §4 design *shape* are settled.
-   **Still open:** cross-container propagation is proven **only on Docker Desktop/Mac** — it has
-   **not run on the prod VPS** (the always-on, #1 install target), so overlay-on-VPS is unproven.
-   Run `propagation-spike.sh` rung A2 on the prod VPS and confirm PROPAGATED **before relying on
-   the overlay path in production**.
+0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
+   (WSL2 + Docker Desktop/Mac), and the §4 design are settled. Cross-container propagation is
+   proven on **both** overlay-eligible targets: Docker Desktop/Mac and the **prod systemd VPS**
+   (`propagation-spike.sh` rung A2 PROPAGATED, plain run, docker 29.5.2). Bare docker-ce-in-WSL2
+   is the only target without it → plain-install fallback.
 1. **Delete the nm-store fast path** — remove the copy store + its gate wiring; keep
    `runtimeKey`/`detectLibc` (overlay reuses it) and `tuneNpmInstall`; the worker install path
    becomes marker-skip-or-plain-`agent.install` (download cache stays). Mark
    [148](../148-fast-npm-install/plan.md) superseded. *Interim:* fast-path-eligible repos pay a
-   full install per fresh session until Phase 3 — a conscious, temporary regression. **Risk to
-   weigh:** if the Phase 0 VPS propagation check fails, overlay never lands on the VPS and this
-   "temporary" regression becomes **permanent on the primary target**. Confirm VPS propagation
-   (Phase 0) before — or concurrently with — landing this deletion, so the regression has a known
-   end date.
+   full install per fresh session until Phase 3 — a conscious, temporary regression with a known
+   end date now that overlay is proven on the prod VPS.
 2. **Host-mount sidecar subsystem** — the long-lived privileged sidecar (mount/unmount over a
    unix socket, dedicated self-bind `rshared` mountpoint), orchestrator wiring, the startup
    shared-propagation probe that **re-verifies/re-arms propagation on every daemon/VM start**

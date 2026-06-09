@@ -264,20 +264,26 @@ so it's not new.
     daemons.**
 
 **Decisive next test (manual, host-level — cannot be scripted from a container):**
-on a real Linux host / VPS, configure dockerd with shared propagation at startup
-(`MountFlags=shared` in the docker systemd unit, or `mount --make-rshared /`
-*before* the daemon starts) + restart docker, then run `propagation-spike.sh`
-(plain, no `--with-host-setup`) and check rung **A2**. If it reports PROPAGATED,
-the sidecar design works on VPS; if not, the mechanism needs rethinking even
-there.
+on a real Linux host / VPS, run `propagation-spike.sh` (plain, no
+`--with-host-setup`) and check rung **A2**. → **DONE — PROPAGATED on the prod VPS
+(systemd, docker 29.5.2) with no dockerd reconfiguration at all** (systemd's
+boot-default `/` rshared was already sufficient; the `MountFlags=shared` step this
+note anticipated turned out unnecessary on a stock systemd VPS). The sidecar
+design works on the VPS.
 
 - **Docker Desktop (Mac, arm64, docker 29.5.3): WORKS by default.** Rung A2
   (host-mountpoint `:rshared`) reported **PROPAGATED ✓ on the FIRST attempt,
   before any host setup** — the LinuxKit VM mounts `/` **shared** by default, so
   the sidecar's `:rshared` bind is accepted with no provisioning. Rung A3 also
   passes. Verdict: "Cross-container propagation ACHIEVED."
-- Bare Linux / VPS (systemd): _(worth one confirming run; systemd sets `/` rshared
-  at boot, so expected to behave like Docker Desktop — pass with no setup)_
+- **Bare Linux / VPS (systemd; docker 29.5.2, linux/amd64): WORKS by default —
+  CONFIRMED on the prod VPS.** Rung A2 (host-mountpoint `:rshared`) reported
+  **PROPAGATED ✓ on the plain run, no `--with-host-setup`** — systemd sets `/`
+  rshared at boot, so the sidecar's `:rshared` bind is accepted with no
+  provisioning, identical to Docker Desktop/Mac. A0/A1 not-propagated (the
+  expected baselines). Verdict: "Cross-container propagation ACHIEVED via
+  host-mountpoint :rshared (sidecar pattern)." **This closes the prod-VPS open
+  blocker.**
 
 **Corrected conclusion — the requirement is "daemon host `/` is a shared mount,"
 not a platform.** The differentiator across the two runs was purely the daemon
@@ -286,7 +292,7 @@ host's default mount propagation:
 | Daemon host | `/` default | Propagation |
 |---|---|---|
 | Docker Desktop (Mac) | shared | ✅ proven, no setup |
-| systemd Linux VPS | shared (boot) | ⚠️ expected, **NOT yet run — open release blocker** |
+| systemd Linux VPS (docker 29.5.2) | shared (boot) | ✅ **proven on prod, no setup** (rung A2 PROPAGATED, plain run) |
 | native docker-ce in a bare WSL2 distro | private | ❌ — needs daemon-level shared propagation; a *runtime* `make-rshared` is NOT honored |
 
 So the WSL2 failure was a **daemon-default** issue (private `/`), not a broken
@@ -365,29 +371,28 @@ volume-backing fs that mirrors where ShipIt's `workspace` actually lives.
    bind it into a sibling session container (daemon-host fs / VM-native ext4),
    not the orchestrator container's private fs.
 
-**Open blocker (not nice-to-have): cross-container propagation on the prod VPS.**
-Propagation is proven **only on Docker Desktop/Mac**; rung A2 of
-`propagation-spike.sh` has **never run on the prod VPS** (the always-on, #1
-install target). It is *expected* to pass (systemd sets `/` rshared at boot) but
-is **unconfirmed**, so overlay-on-VPS is unproven. This gates the build: Phase 1
-deletes nm-store before overlay lands, so if VPS propagation fails the "temporary"
-regression becomes **permanent on the primary target**. Confirm VPS propagation
-before — or concurrently with — relying on the overlay path in production.
-Still genuinely nice-to-have (non-blocking): **mount/unmount timing**. Net:
-**proceed to building the orchestrator-owned mount lifecycle** (whose first job is
-mechanism (1)+(2)) **while treating the VPS propagation run as a release gate**,
-not an afterthought.
+**Cross-container propagation on the prod VPS — CONFIRMED (blocker cleared).**
+Rung A2 of `propagation-spike.sh` ran on the prod VPS (systemd, docker 29.5.2,
+linux/amd64) and reported **PROPAGATED ✓ on the plain run, no host setup** —
+proving the sidecar's `:rshared` mechanism on the always-on #1 install target.
+Propagation is now proven on **both** containerized targets that get overlay
+(Docker Desktop/Mac + systemd VPS); only bare docker-ce-in-WSL2 lacks it (→
+plain-install fallback). The Phase 1 nm-store deletion therefore has a guaranteed
+end date on prod. Still genuinely nice-to-have (non-blocking): **mount/unmount
+timing**. Net: **proceed to building the orchestrator-owned mount lifecycle**
+(whose first job is mechanism (1)+(2)).
 
 **Update — cross-container propagation resolved (the sidecar's real dependency).**
 `prototype/propagation-spike.sh` proved the sidecar's overlay mount can reach a
 separate session container **iff the daemon host provides shared mount
-propagation**: **Docker Desktop (Mac) works with no setup** (proven), a systemd
-VPS is *expected* to (boot default) **but this is unconfirmed — an open blocker,
-see Net decision**, and only a **bare docker-ce-in-WSL2 daemon** (private `/`)
-lacks it — there the install **falls back to a plain full `agent.install`** (no
-copy store; `nm-store` is removed, the download cache keeps it fast). So the
-requirement is a documented host prerequisite; it is not a *portability* blocker,
-but the prod-VPS confirmation is a *release* blocker.
+propagation**: **Docker Desktop (Mac) works with no setup** (proven) and a
+**systemd VPS works with no setup** (proven on prod — docker 29.5.2, rung A2
+PROPAGATED on the plain run); only a **bare docker-ce-in-WSL2 daemon** (private
+`/`) lacks it — there the install **falls back to a plain full `agent.install`**
+(no copy store; `nm-store` is removed, the download cache keeps it fast). So the
+requirement is a documented host prerequisite, satisfied by default on both
+overlay-eligible targets; the prod-VPS confirmation that was an open release
+blocker is now **closed**.
 The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.

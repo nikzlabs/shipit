@@ -40,11 +40,10 @@ per fresh session — a conscious, temporary regression until overlay lands.
       works **iff the daemon host has shared propagation** + a dedicated self-bind `rshared`
       mountpoint. Docker Desktop/Mac ✓ no setup; bare docker-ce-in-WSL2 ✗ (→ plain-install
       fallback). Requirement = documented host prerequisite, not a portability blocker.
-- [ ] **OPEN BLOCKER — confirm propagation on the prod VPS.** Run `propagation-spike.sh` rung A2
-      on the always-on systemd VPS (the #1 install target) and confirm PROPAGATED. Expected to
-      pass (systemd sets `/` rshared at boot) but **never actually run there** — until it does,
-      overlay-on-VPS is unproven and the Phase 1 nm-store deletion's "temporary" regression has
-      no guaranteed end date on the primary target.
+- [x] **Confirm propagation on the prod VPS** — `propagation-spike.sh` rung A2 ran on the prod
+      systemd VPS (docker 29.5.2, linux/amd64) and reported **PROPAGATED on the plain run, no
+      host setup**. Overlay-on-VPS proven; the Phase 1 nm-store regression now has a guaranteed
+      end date on the primary target.
 - [ ] **OPEN — confirm Docker Desktop propagation survives a VM restart.** The LinuxKit VM is
       recreated routinely; if it returns with `/` private, local Mac/Windows installs silently
       drop to the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
