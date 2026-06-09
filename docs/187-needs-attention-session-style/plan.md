@@ -75,27 +75,42 @@ three are theme-proof with no new tokens and don't touch the selected-row fill. 
 A/D for a clean low-cost change; reach for C (title fill) only if a bolder signal is
 worth the per-theme token work.
 
-## Decision — implemented: D1 · outline pill
+## Decision — implemented: edge gradient wash
 
-**D1 (title outline pill)** was chosen and implemented. The old both-edges row
-border was removed and the attention signal moved onto the title:
+After trying the title treatments (which all reshape the title box and disturbed
+the row layout), we moved to a **row-level** signal that leaves every element where
+it is. The implemented choice is the **edge gradient wash** (#4 on the creative
+board, [mocks/creative-directions.html](./mocks/creative-directions.html)): a soft
+amber gradient fades in from the row's left edge and dissolves by ~60%.
 
 ```tsx
-// SessionItem, the title <p> — the outline is a box-shadow RING, not a border,
-// so it sits outside the layout box and adds zero height. Unflagged titles are
-// left completely plain (original height); the flagged row doesn't grow either.
-needsAttention
-  ? "inline-block max-w-full rounded px-1.5 shadow-[0_0_0_1.5px_var(--color-attention)]"
-  : ""
+// SessionItem — applied as an inline backgroundImage on the row div
+const attentionWash = needsAttention
+  ? `linear-gradient(90deg, color-mix(in srgb, var(--color-attention) 18%, transparent), ${
+      isCurrent ? "var(--color-bg-secondary)" : "transparent"
+    } 60%)`
+  : undefined;
+// ...
+<div ... style={attentionWash ? { backgroundImage: attentionWash } : undefined}>
 ```
 
-Using `box-shadow` (a 1.5px ring) instead of a `border` is what keeps row heights
-constant: a border would add to the box and grow the row, but a box-shadow is
-painted outside the layout box and horizontal `px-1.5` doesn't affect height — so
-both unflagged and flagged rows keep the original height. `inline-block max-w-full`
-preserves ellipsis truncation. The ring color reuses the existing per-theme
-`--color-attention`, so it works in all 14 themes with **no new tokens** and leaves
-the gray selected-row fill untouched.
+Why this shape:
+- **No layout impact.** It's purely a background, so the PR badge, title, CI icon,
+  timestamp, auto-merge icon, and ⋮ menu all stay exactly where they are.
+- **Coexists with selection.** The gradient's far stop is the selected-row gray
+  (`--color-bg-secondary`) when the row is current, so a selected + needs-attention
+  row washes from amber into its own selection fill instead of fighting it; for a
+  non-selected row the far stop is `transparent` so the card background shows.
+- **No new tokens.** `color-mix(in srgb, var(--color-attention) 18%, transparent)`
+  derives the translucent amber from the existing per-theme `--color-attention`, so
+  it adapts across all 14 themes (amber-600 in light, amber-500 in dark) with no
+  theme-file edits.
+
+Note: because the CI-pending status glyph also uses amber (`--color-warning` ==
+`--color-attention`), the wash shares that hue. It reads as a row-level state
+rather than a glyph, so they don't conflict in practice, but if we want a sharper
+distinction later the **reason chip** / **notification dot** ideas on the creative
+board are the shape/position-based alternatives.
 
 ## Key files
 
@@ -121,3 +136,7 @@ the gray selected-row fill untouched.
 - **[mocks/title-across-themes.html](./mocks/title-across-themes.html)** — light vs dark
   for the title-fill, explaining the per-theme token pair.
 - **[mocks/title-outline.html](./mocks/title-outline.html)** — family D, light + dark, shape options.
+- **[mocks/creative-directions.html](./mocks/creative-directions.html)** — content/motion/texture
+  ideas (reason chip, notification dot, bell, gradient wash, shimmer, dog-ear, wavy
+  underline, marching ants) drawn on a faithful replica of the real session row
+  (PR badge, CI status, auto-merge, ⋮). **#4 edge gradient wash was implemented.**

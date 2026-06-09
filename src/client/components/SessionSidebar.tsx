@@ -345,6 +345,18 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
+  // docs/187 — "edge gradient wash": a needs-attention session is marked by a
+  // soft amber gradient fading in from the row's left edge and dissolving by
+  // ~60%. The far stop is the selected-row gray when this row is current (so the
+  // wash blends into the selection fill) and transparent otherwise, so it never
+  // collides with the selected background. `color-mix` derives the translucent
+  // amber from the per-theme `--color-attention`, so no new tokens are needed.
+  const attentionWash = needsAttention
+    ? `linear-gradient(90deg, color-mix(in srgb, var(--color-attention) 18%, transparent), ${
+        isCurrent ? "var(--color-bg-secondary)" : "transparent"
+      } 60%)`
+    : undefined;
+
   return (
     <div
       data-testid={indented ? "session-item-indented" : "session-item"}
@@ -359,6 +371,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
             : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
+      style={attentionWash ? { backgroundImage: attentionWash } : undefined}
       title={attentionReason ?? undefined}
     >
       {hasChildren && (
@@ -408,11 +421,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           className="flex-1 min-w-0 text-left"
         >
           <p
-            className={`truncate leading-snug ${
-              needsAttention
-                ? "inline-block max-w-full rounded px-1.5 shadow-[0_0_0_1.5px_var(--color-attention)]"
-                : ""
-            }`}
+            className="truncate leading-snug"
           >
             {session.title}
           </p>
