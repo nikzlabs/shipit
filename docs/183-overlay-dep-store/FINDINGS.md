@@ -294,13 +294,18 @@ mechanism. The sidecar design is **feasible on every documented target that
 provides shared propagation** — Docker Desktop (proven) and systemd VPS (the
 always-on target) both do by default; the only gap is a bare docker-ce-in-WSL2
 daemon, where it must be configured (`MountFlags=shared` + restart) or that
-install falls back to the copy substrate.
+install falls back to a plain full `agent.install` (no copy store).
 
 **Design implication (largely resolved):** require **shared mount propagation on
 the daemon host** as a documented prerequisite (the VPS provisioner guarantees
-it; Docker Desktop has it). Keep the copy substrate (today's nm-store) as a
-**graceful fallback** only where propagation isn't available (bare-WSL docker-ce),
-detected at startup. The portability concern is now narrow, not fundamental.
+it; Docker Desktop has it). Where propagation isn't available (bare-WSL
+docker-ce), **fall back to a plain full `agent.install`** — *not* a copy store.
+`nm-store` is **removed entirely**, not retained: the existing download cache
+(`/dep-cache`, docs/075) is a separate subtree, so a plain install is already
+fast (local tarballs, no network), and nm-store's materialization adds nothing
+the overlay base doesn't do better. Exactly two paths remain: overlay (warm,
+near-no-op) or plain full install (correct everywhere). The portability concern
+is now narrow, not fundamental.
 
 **Implication for the design:** the sidecar must run on a daemon host whose root
 (or at least the Docker data subtree) is a **shared mount**. On a VPS this is a
@@ -337,8 +342,10 @@ orchestrator-owned mount lifecycle**, whose first job is mechanism (1)+(2).
 separate session container **iff the daemon host provides shared mount
 propagation**: **Docker Desktop (Mac) works with no setup** (proven), a systemd
 VPS is expected to (boot default), and only a **bare docker-ce-in-WSL2 daemon**
-(private `/`) lacks it — there the install **falls back to the copy substrate**.
-So the requirement is a documented host prerequisite, not a portability blocker.
+(private `/`) lacks it — there the install **falls back to a plain full
+`agent.install`** (no copy store; `nm-store` is removed, the download cache keeps
+it fast). So the requirement is a documented host prerequisite, not a portability
+blocker.
 The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.

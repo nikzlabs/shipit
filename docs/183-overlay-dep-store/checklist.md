@@ -36,8 +36,10 @@ rolling-base logic first; the host mount stays the gating risk.
       shared mount propagation** and the mount lands under a **dedicated self-bind `rshared`
       mountpoint**. **Docker Desktop/Mac: works with no setup (proven).** Bare docker-ce-in-WSL2:
       private `/`, fails (runtime `make-rshared` not honored) → that install falls back to copy.
-      Requirement = documented host prerequisite, not a portability blocker. Remaining: one
-      confirming run on a systemd VPS (expected pass). See `FINDINGS.md`.
+      Requirement = documented host prerequisite, not a portability blocker. Where overlay is
+      unavailable, fall back to a **plain full `agent.install`** (NOT a copy store — see the
+      nm-store removal item; the download cache keeps it fast). Remaining: one confirming run on
+      a systemd VPS (expected pass). See `FINDINGS.md`.
 - [ ] Make `disk-janitor` aware of live overlay mounts before teardown
 - [ ] Verify the host-mount route stays within the containment model (docs/172)
 - [ ] Confirm git fast-forward behaves on the overlay and the source diff in the upper
@@ -77,6 +79,13 @@ rolling-base logic first; the host mount stays the gating risk.
 - [x] Verify compose bind-mounts using the overlay merged dir + `inotify` file watcher work
       — confirmed on Docker Desktop/Mac (`prototype/run-in-docker.sh`, 21/21 incl. inotify
       create + copy-up) and bind-mount-corroborated on WSL2
-- [ ] Remove/retire the node_modules-specific `nm-store` copy store once the base supersedes it
+- [ ] **Remove `nm-store` entirely** (not kept as a fallback): delete the copy store and all its
+      machinery — `materialize`/`populateStore`, `findLockfile`, `isCacheableInstall`,
+      `computeStoreKey`, the store-key plumbing in the worker install gate
+      ([nm-store.ts](../../src/server/session/nm-store.ts), [148](../148-fast-npm-install/plan.md)).
+      Where overlay is unavailable the worker just runs `agent.install` as it does today,
+      warmed by the **download cache** (`/dep-cache`, docs/075) which is a separate subtree and
+      stays. Two paths only: overlay or plain full install. (`runtimeKey`/runtime-fingerprint
+      logic is reused by the overlay base scope, so keep that part.)
 - [ ] Optional/future: detection-free manifest fingerprint to skip no-op installs — only if
       measurements call for it

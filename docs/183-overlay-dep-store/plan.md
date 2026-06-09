@@ -202,10 +202,18 @@ After the spikes confirmed the substrate, the gate became a design problem, now 
     (proven — propagation works with no setup); a systemd Linux VPS sets `/` rshared at boot
     (expected to work, confirm once).** A **bare docker-ce-in-WSL2 daemon defaults to private
     `/` and does not honor a *runtime* `make-rshared`** — it needs daemon-level config
-    (`MountFlags=shared` + restart) or that install **falls back to the copy substrate**
-    (today's `nm-store`), detected at startup. So the requirement is "shared propagation on the
+    (`MountFlags=shared` + restart) or that install **falls back to a plain full
+    `agent.install`**, detected at startup. So the requirement is "shared propagation on the
     daemon host," documented as a prerequisite; overlay is not lost where it's absent, it
-    degrades to copy.
+    degrades to a normal install.
+  - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
+    unavailable the fallback is simply running `agent.install` into the workspace as today,
+    warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))
+    — which is a *separate* subtree from `nm-store`, so a plain install still pulls tarballs
+    locally with no network. The `nm-store` materialization (`tar`/`cp -a`, lockfile detection,
+    command allowlist, store keying) adds nothing the overlay base doesn't do better and is
+    **deleted entirely** ([nm-store.ts](../../src/server/session/nm-store.ts)), leaving exactly
+    two paths: overlay (warm, near-no-op) or plain full install (correct everywhere).
 - **Storage layout — single workspace volume, base in the dep-cache subtree.** Per-session
   `upper`/`work`/`merged` live under the session subtree (`sessions/{uuid}/`); the shared base
   (lowerdir) lives under the per-repo **dep-cache** subtree — already cross-session shared,
