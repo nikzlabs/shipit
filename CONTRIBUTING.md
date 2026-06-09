@@ -12,11 +12,11 @@ Three-layer system: browser → orchestrator → session containers.
 
 ```
 ┌──────────────┐     ┌──────────────────────────────┐     ┌─────────────────────────┐
-│   Browser    │     │     Orchestrator Container    │     │  Session Container(s)   │
+│   Browser    │     │     Orchestrator Container   │     │  Session Container(s)   │
 │  (React SPA) │◄───►│  Fastify + WebSocket + SSE   │◄───►│  Agent CLI, terminal,   │
-│              │     │  Routes, services, managers   │     │  preview server, files  │
+│              │     │  Routes, services, managers  │     │  preview server, files  │
 └──────────────┘     └──────────────────────────────┘     └─────────────────────────┘
-     WS + SSE              HTTP proxy to containers            HTTP + SSE back
+    WS + SSE             HTTP proxy to containers               HTTP + SSE back
 ```
 
 - **Browser** — React 19 SPA with Zustand stores, dual-channel communication (per-session WebSocket + global SSE)
