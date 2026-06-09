@@ -310,7 +310,27 @@ no-overlay edge (Mac Desktop + VPS get overlay). Exactly two paths remain:
 overlay (warm, near-no-op) or plain full install (baseline). The portability
 concern is narrow, not fundamental.
 
-> **Caveat on the 24s measurement:** it came from a **dogfood** session, which
+**Live measurement — production ShipIt session on the ShipIt repo (the real
+containerized path).** Inspected from inside such a session:
+
+- Download cache **working**: `npm_config_cache=/dep-cache/npm`, an ext4 mount
+  with **2.4 GB** of cached tarballs → installs are **not** network-bound.
+- nm-store fast path **engaging**: install is bare `npm install` (qualifies),
+  single `package-lock.json`, store has 5 populated keys (2.4 GB).
+- `node_modules` = **473 MB across 31,396 files**. The **~24s is the `cp -a`/tar
+  materialization of those ~31k tiny files** — nm-store working *as designed*,
+  and exactly the "remaining per-session cost (tens of thousands of tiny file
+  writes)" the plan calls out.
+- That 24s is the **fresh-session** cost (no `.install-done` marker yet). A
+  re-activation with `main` unchanged hits the marker and **skips install (~0)**.
+
+So the caching is not broken — **materialization is the bottleneck**, and
+31,396 files / ~24s is live proof. **Overlay replaces that copy with a ~0 mount**
+(mount the base read-only, run `npm install` as a near-no-op up-to-date check).
+This is the strongest empirical case for the feature, captured on the exact path
+it targets.
+
+> **Earlier dogfood caveat (separate, still true):** a dogfood session, which
 > runs in `RUNTIME_MODE=local` (docs/118) — in-process, **no container**, so (a)
 > **no overlay** there ever (overlay is containerized-only), and (b) the shared
 > download-cache env (`npm_config_cache=/dep-cache/...`, wired via container
