@@ -58,13 +58,26 @@ own branch → own PR, exactly like any other change.** Concretely:
    unavailable, because there is nowhere to open a PR. (The future in-workspace
    option below is the escape hatch for that case.)
 3. **One dedicated session per install.** On Install, the orchestrator spawns a
-   fresh repo-backed session on a new branch for the selected repo, runs the
-   existing `installPlugin()` writer in *that* session's workspace (SKILL.md +
-   `.shipit-installed.json` marker + path-scoped commit — writer logic
-   unchanged), and opens a PR titled e.g. *"Install <plugin> skill"*. The
-   session appears in the sidebar; the user reviews and merges the PR like any
-   other change. **One install = one branch = one PR** (no batching/rolling
-   session — decided 2026-06-09).
+   fresh repo-backed session on a new branch for the selected repo, then runs
+   the existing `installPlugin()` writer in *that* session's workspace (SKILL.md
+   + `.shipit-installed.json` marker + path-scoped commit — writer logic
+   unchanged). **Opening the PR is new glue, not reused machinery.**
+   `installPlugin()` only makes a *local* commit (`GitManager.commitPaths()`);
+   it does not push or open a PR. The existing auto-PR path
+   (`emitPrLifecycleAfterCommit`, `services/pr-lifecycle.ts`) is the wrong
+   primitive here: it only auto-creates when the global `autoCreatePr` setting
+   **and** GitHub auth are both on, and otherwise emits a viewer-gated "ready"
+   card — and the freshly-spawned install session has no WS viewer, so the
+   "ready" card goes nowhere. Every other session-creation surface only gets a
+   PR because it dispatches a first *agent turn* whose post-turn flow
+   pushes + creates the PR; the install flow runs **no agent turn**. So after
+   `installPlugin()` commits, the install flow must call `quickCreatePr()`
+   (`services/github.ts` — it pushes the branch *and* creates the PR) **directly
+   and unconditionally**, independent of the `autoCreatePr` toggle and not via
+   the viewer-gated lifecycle card, with a title like *"Install <plugin>
+   skill"*. The session appears in the sidebar; the user reviews and merges the
+   PR like any other change. **One install = one branch = one PR** (no
+   batching/rolling session — decided 2026-06-09).
 4. **The current session is untouched, and the skill is not live in it until
    the PR merges.** Accepted trade: v1a gave instant availability ("invoke it
    on your next message") at the cost of a surprise commit on your branch; this

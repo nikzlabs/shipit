@@ -117,8 +117,12 @@ and the surface's session-awareness change.
   workspace, and opens a PR. Reuses the existing writer untouched.
 - [ ] Wire skill-install session creation through the existing session-creation
   machinery (one session per install, fresh branch, repo-backed).
-- [ ] Open the install PR (title "Install <plugin> skill") via the existing
-  PR-creation path.
+- [ ] After `installPlugin()`'s local commit, open the PR by calling
+  `quickCreatePr()` (`services/github.ts` — pushes branch + creates PR)
+  directly and unconditionally (title "Install <plugin> skill"). Do NOT rely on
+  `emitPrLifecycleAfterCommit` / the `autoCreatePr` toggle — that path is
+  viewer-gated and the headless install session has no WS viewer, so it would
+  silently produce no PR.
 - [ ] Drop the now-unneeded coupling: `runner.running` install gate, per-session
   rebind, and the `killAgent` "pick up new skills" reload (only needed for the
   superseded in-session write). Keep the per-workspace mutex dormant for the
