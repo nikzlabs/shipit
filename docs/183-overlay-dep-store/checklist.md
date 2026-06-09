@@ -51,6 +51,14 @@ per fresh session — a conscious, temporary regression until overlay lands.
       the slow fallback. Either prove persistence or rely on the Phase 2 re-arm probe.
 - [ ] **OPEN (nice-to-have) — classify native docker-ce-in-WSL2** (no Docker Desktop): run the
       spike to confirm whether `MountFlags=shared` makes it overlay-eligible or it too falls back.
+- [ ] **OPEN (mechanism re-decision, gates Phase 2) — daemon-performed overlay via the `local`
+      volume driver.** Run [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
+      on **Docker Desktop/Windows-WSL2** (decisive) + a Linux/VPS host. It mounts a `type=overlay`
+      local volume (daemon does the mount → no propagation) into unprivileged containers and
+      checks merged visibility, copy-up isolation, base immutability, and concurrent shared-lower
+      mounts. **If Windows passes, prefer this over the privileged sidecar** — it removes the
+      sidecar subsystem + the propagation prerequisite and makes Docker Desktop/Windows
+      overlay-eligible. Decide the §4 mechanism from the result before building Phase 2.
 - [x] Decide host-mount mechanism, helper shape, storage layout, propagation prerequisite, and
       fallback (plan §4). See `FINDINGS.md` for evidence + live 31,396-file / ~24s measurement.
 

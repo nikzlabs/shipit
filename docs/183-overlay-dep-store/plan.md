@@ -229,6 +229,18 @@ including propagation on the prod VPS (proven, see the prerequisite bullet):
     prerequisite, detected at startup; overlay is not lost where it's absent, it degrades to a
     plain install. Overlay-eligible (proven): VPS + Docker Desktop/Mac. No-overlay fallback
     (confirmed): Docker Desktop/Windows.
+
+    > **⚠ This mechanism may be superseded — alternative under investigation.** The propagation
+    > prerequisite (and the whole privileged sidecar) exists only because a sidecar's overlay
+    > mount must reach a separate container's namespace. Docker's **`local` volume driver** can
+    > instead have the **daemon perform the `mount -t overlay`** (`type=overlay`,
+    > `o=lowerdir=…,upperdir=…,workdir=…`) as it constructs the session container — so the merged
+    > view is in the container by construction, with **no propagation in the path**. If proven,
+    > this **drops the sidecar + the propagation prerequisite and makes Docker Desktop/Windows
+    > work too**. Demonstrated upstream (docker/for-linux#1206) but not yet run for the ShipIt
+    > pattern — spike: [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh),
+    > evidence + caveats in [`FINDINGS.md`](./FINDINGS.md). Settle this **before** building the
+    > Phase 2 sidecar.
   - **No copy-store fallback — `nm-store` is removed, not retained.** Where overlay is
     unavailable the fallback is simply running `agent.install` into the workspace as today,
     warmed by the **existing download cache** (`/dep-cache`, [075](../075-shared-dependency-cache/plan.md))

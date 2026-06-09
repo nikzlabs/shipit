@@ -431,3 +431,55 @@ no-overlay target, not the "narrow edge" an earlier draft claimed.
 The mount must land under a **dedicated self-bind `rshared` mountpoint** the
 daemon sees (not just a dir on `/`). See the propagation-verdicts section above
 for the full WSL2-vs-Mac evidence.
+
+## Alternative mechanism — daemon-performed overlay via the `local` volume driver (UNDER INVESTIGATION)
+
+**Motivation: kill the propagation dependency that fails on Docker Desktop/Windows.**
+The sidecar design's hard part is making a privileged helper's overlay mount
+*propagate* into the daemon's namespace. That propagation is what Docker
+Desktop's WSL2 backend rejects. Web research surfaced a mechanism that avoids
+propagation entirely: Docker's **`local` volume driver wraps `mount(8)`** and
+accepts `type` / `device` / `o=` options, including **`type=overlay`**. When a
+container mounts such a volume, the **daemon itself runs `mount -t overlay`** as
+it constructs the container, so the merged view is in the container's mount
+namespace **by construction** — there is no cross-container propagation in the
+path. Demonstrated working in [docker/for-linux#1206](https://github.com/docker/for-linux/issues/1206):
+
+```
+--mount type=volume,dst=/workspace,volume-driver=local,\
+  volume-opt=type=overlay,volume-opt=device=overlay,\
+  "volume-opt=o=lowerdir=<base>,upperdir=<up>,workdir=<wk>"
+```
+
+The commas inside `o=` are handled by quoting that one `volume-opt`. lower/upper/
+work must be **absolute daemon-host paths** — computable exactly as the
+propagation spike did (`docker volume inspect -f '{{.Mountpoint}}'`). This fits
+ShipIt's model: the orchestrator already holds `docker.sock`, stays unprivileged,
+and our containers need no `CAP_SYS_ADMIN`.
+
+**If it holds, it's strictly better than the sidecar:** it removes the
+privileged-sidecar subsystem *and* the shared-propagation prerequisite, and —
+critically — should make overlay work on **Docker Desktop/Windows-WSL2** (the
+user's setup), where the sidecar mechanism is confirmed dead.
+
+**Caveats to respect (from the moby issue tracker):**
+- The kernel (≥4.13) errors `upperdir is in-use by another mount` if two overlays
+  **share an `upperdir`**. Our design already gives each session its own upper;
+  a **shared read-only `lowerdir`** across sessions is fine.
+- `error creating overlay mount … device or resource busy` is a known overlay2
+  hazard under **parallel** container creation — serialize the create/mount.
+- Standard overlay rules: `workdir` empty + same fs as `upperdir`.
+
+**Status: PROMISING LEAD, NOT YET PROVEN for our case.** Documented + demonstrated
+upstream and it removes the failing dependency by construction, but not yet run on
+Docker Desktop/Windows for the ShipIt pattern (shared RO base + per-session upper).
+Spike written: [`prototype/volume-driver-overlay-spike.sh`](./prototype/volume-driver-overlay-spike.sh)
+— seeds a shared base + two per-session uppers, mounts daemon-overlay volumes into
+two **unprivileged** containers, checks merged visibility, copy-up isolation, base
+immutability, and concurrent shared-lower mounts (the EBUSY case). **Run it on
+Docker Desktop/Windows-WSL2** (the decisive host) and a Linux/VPS host; paste both
+summaries here. If Windows passes, revisit the §4 mechanism decision: prefer the
+volume-driver overlay over the privileged sidecar.
+
+> **Docker Desktop / Windows-WSL2 run:** _(paste `volume-driver-overlay-spike.sh` summary here)_
+> **Linux / VPS run:** _(paste summary here)_

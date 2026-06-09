@@ -98,3 +98,27 @@ Desktop/WSL2), it runs a ladder of propagation setups — plain volume bind
 pattern — and reports per rung whether container B sees the overlay-merged
 content, ending with a verdict. **Run on BOTH a bare-Linux/VPS host and Docker
 Desktop; the verdict can differ** — paste both into `../FINDINGS.md`.
+
+Result so far: VPS ✅ and Docker Desktop/**Mac** ✅, but Docker Desktop/**Windows
+(WSL2 backend)** ✗ — propagation is rejected with no user-applicable fix. That
+failure motivated the next spike.
+
+### Daemon-performed overlay, no propagation — `volume-driver-overlay-spike.sh`
+
+The sidecar's whole difficulty is *propagation*. Docker's `local` volume driver
+sidesteps it: with `--opt type=overlay --opt o=lowerdir=…,upperdir=…,workdir=…`
+the **daemon** performs the overlay mount as it builds the container, so the
+merged view is in the container by construction — no propagation, no privileged
+sidecar, no `CAP_SYS_ADMIN` in our containers.
+
+```
+bash docs/183-overlay-dep-store/prototype/volume-driver-overlay-spike.sh
+```
+
+Seeds a shared read-only base + two per-session uppers, mounts daemon-overlay
+volumes into two **unprivileged** containers, and checks merged visibility,
+copy-up isolation, base immutability, and concurrent shared-lower mounts (the
+`upperdir in-use` / EBUSY case). **The decisive run is Docker Desktop/Windows-WSL2**
+(where `propagation-spike.sh` fails); also run a Linux/VPS host. Paste both
+summaries into `../FINDINGS.md`. If Windows passes, this likely **replaces** the
+sidecar design — see the "Alternative mechanism" section in `../FINDINGS.md`.
