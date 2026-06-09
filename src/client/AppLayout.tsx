@@ -239,7 +239,7 @@ export function AppLayout({
               MobileTabBar visible and interactive while the session list is open. */}
           <div className="relative flex flex-col flex-1 min-h-0">
             <div className="flex flex-col flex-1 min-h-0">
-              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="surface-panel flex flex-col flex-1 min-h-0">{rightPanel}</div>}
+              {(showHomeScreen && !showNewSessionView) || mobilePanel === "chat" ? <div data-chat-panel className="surface-chat flex flex-col flex-1 min-h-0">{chatPanel}</div> : <div className="surface-panel flex flex-col flex-1 min-h-0">{rightPanel}</div>}
             </div>
             {mobileSidebarOpen && (
               <div className="absolute inset-0 z-40 flex" role="dialog" aria-label="Sessions">
@@ -304,7 +304,7 @@ export function AppLayout({
             onCreateNewRepo={onCreateNewRepo}
           />
           <div ref={containerRef} className="flex flex-1 min-h-0 overflow-hidden">
-            <div data-chat-panel className={`flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
+            <div data-chat-panel className={`surface-chat flex flex-col min-w-0 ${showHomeScreen ? "" : "border-r border-(--color-border-primary)"}`} style={{ width: showHomeScreen ? "100%" : `${fraction * 100}%` }}>
               {chatPanel}
             </div>
             {!showHomeScreen && (

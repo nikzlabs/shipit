@@ -38,43 +38,37 @@ html, body {
   overscroll-behavior: none;
 }
 
-/* ── Structural depth: a faint wash on LARGE surfaces only ──
-   The app shell, sidebar, and side panel get a barely-perceptible gradient so
-   the big regions read with a little depth. Cards, inputs, and bubbles stay
-   flat (they use --color-bg-tertiary and are intentionally untouched). The
-   gradients are derived from each theme's own tokens via color-mix, so all
-   themes adapt automatically with no per-theme edits. Keep the mix percentages
-   low — this should whisper, not shine. */
-.surface-app {
+/* ── Structural depth: a contained gradient on each LARGE section ──
+   Every big region carries its OWN top-anchored vertical gradient — there is
+   no glow on the app root that would bleed across the header/sidebar/content
+   seams. The stops are neutral surface steps from the active theme
+   (tertiary → primary, or tertiary → secondary for the side panel), so the
+   depth is the surface's own color shifting, never a foreign chromatic tint.
+   tertiary↔primary is the widest neutral swing the tokens offer, so it stays
+   legible on both the near-black dark themes and the low-contrast light themes.
+   Cards, inputs, and bubbles stay flat and are intentionally untouched. */
+.surface-chat {
   background-color: var(--color-bg-primary);
-  background-image:
-    /* faint cool/brand glow from top-center for character */
-    radial-gradient(
-      100% 70% at 50% -15%,
-      color-mix(in srgb, var(--color-accent) 14%, transparent) 0%,
-      transparent 50%
-    ),
-    /* lift the top of the page toward the card color so the depth is legible */
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--color-bg-tertiary) 75%, var(--color-bg-primary)) 0%,
-      var(--color-bg-primary) 55%
-    );
+  background-image: linear-gradient(
+    180deg,
+    var(--color-bg-tertiary) 0%,
+    var(--color-bg-primary) 45%
+  );
 }
 .surface-sidebar {
   background-color: var(--color-bg-primary);
   background-image: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--color-bg-tertiary) 60%, var(--color-bg-primary)) 0%,
-    var(--color-bg-primary) 60%
+    var(--color-bg-tertiary) 0%,
+    var(--color-bg-primary) 55%
   );
 }
 .surface-panel {
   background-color: var(--color-bg-secondary);
   background-image: linear-gradient(
     180deg,
-    color-mix(in srgb, var(--color-bg-tertiary) 90%, var(--color-bg-secondary)) 0%,
-    var(--color-bg-secondary) 60%
+    var(--color-bg-tertiary) 0%,
+    var(--color-bg-secondary) 55%
   );
 }
 
