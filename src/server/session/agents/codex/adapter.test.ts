@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { CodexAdapter, unwrapShellCommand } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
+import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
 /**
  * To test the CodexAdapter without spawning a real process, we mock child_process.spawn.
@@ -68,6 +69,9 @@ let fakeProc: FakeChildProcess;
 let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
 
 vi.mock("node:child_process", () => ({
+  execFile: (_cmd: string, _args: string[], cb: (error: Error | null, stdout: string, stderr: string) => void) => {
+    cb(null, "/usr/local/bin/codex\n", "");
+  },
   spawn: (_cmd: string, _args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
     fakeProc = new FakeChildProcess();
     lastSpawnEnv = options.env;
@@ -149,7 +153,12 @@ describe("CodexAdapter", () => {
     expect(adapter.capabilities.supportsSystemPrompt).toBe(true);
     expect(adapter.capabilities.supportsPermissionModes).toBe(false);
     expect(adapter.capabilities.toolNames).toContain("shell");
-    expect(adapter.capabilities.toolNames).toContain("file_write");
+    expect(adapter.capabilities.toolNames).toContain("commandExecution");
+    expect(adapter.capabilities.toolNames).toContain("fileChange");
+    expect(adapter.capabilities.toolNames).toContain("apply_patch");
+    expect(adapter.capabilities.toolNames).not.toContain("file_write");
+    expect(adapter.capabilities.toolNames).not.toContain("file_read");
+    expect(adapter.capabilities.toolNames).not.toContain("file_edit");
     expect(adapter.capabilities.models).toContain("gpt-5.4");
     // 125 — chat-native AI review requires a subagent primitive plus custom
     // MCP tool registration; Codex ships both (model-invoked `spawn_agent`
@@ -318,7 +327,7 @@ describe("CodexAdapter", () => {
       agentId: "codex",
       sessionId: "thread-abc-123",
       model: "gpt-5.5",
-      tools: ["shell", "file_write", "file_read", "file_edit", "AskUserQuestion"],
+      tools: [...CODEX_TOOL_NAMES],
     });
   });
 

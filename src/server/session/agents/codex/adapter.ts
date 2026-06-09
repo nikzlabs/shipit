@@ -34,6 +34,7 @@ import {
   PLAYWRIGHT_MCP_ARGS,
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
+import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -263,11 +264,10 @@ export class CodexAdapter
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
-    // `AskUserQuestion` isn't a Codex-native tool — it's the ShipIt-managed MCP
-    // bridge (docs/147, registered in writeMcpConfig below) that lets Codex ask
-    // structured questions in any mode. Advertised here so agent_init reports it
-    // and the UI/history recognize it like Claude's native one.
-    toolNames: ["shell", "file_write", "file_read", "file_edit", "AskUserQuestion"],
+    // Current Codex app-server surface ShipIt handles: shell command items,
+    // file-change/apply-patch items, MCP/dynamic tools, subagent collaboration,
+    // web/image/tool-discovery items, and ShipIt's ask bridge.
+    toolNames: [...CODEX_TOOL_NAMES],
     // Mirror of agent-registry.ts. Verified against the ChatGPT
     // `/backend-api/codex/models` endpoint — every entry returned for a
     // Plus plan with `visibility: list` and `supported_in_api: true`,

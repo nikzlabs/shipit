@@ -20,7 +20,7 @@ import { GitManager } from "../../shared/git.js";
 import { SessionManager } from "../sessions.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
-import { AgentRegistry } from "../../shared/agent-registry.js";
+import { AgentRegistry, CODEX_TOOL_NAMES } from "../../shared/agent-registry.js";
 import type { FastifyInstance } from "fastify";
 import type { WsServerMessage } from "../../shared/types.js";
 import type {
@@ -52,7 +52,7 @@ class FakeCodexProcess extends EventEmitter<AgentProcessEvents> implements Agent
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
-    toolNames: ["shell", "file_write", "file_read", "file_edit"],
+    toolNames: [...CODEX_TOOL_NAMES],
     models: ["codex-mini-latest", "o4-mini"],
     supportsReview: false,
     supportsSteering: false,
@@ -302,7 +302,7 @@ describe("Integration: Codex agent — defaultAgentId=codex message flow", () =>
       agentId: "codex",
       sessionId: "codex-thread-001",
       model: "codex-mini-latest",
-      tools: ["shell", "file_write"],
+      tools: ["shell", "apply_patch"],
     });
 
     // Client should receive the agent_event (skip log_entry etc.)

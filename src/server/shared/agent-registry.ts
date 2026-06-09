@@ -34,6 +34,66 @@ const execFileAsync = promisify(execFile);
  */
 export const CLAUDE_MODELS = ["sonnet", "haiku", "claude-opus-4-8"];
 
+export const CLAUDE_TOOL_NAMES = [
+  "Agent",
+  "AskUserQuestion",
+  "Bash",
+  "CronCreate",
+  "CronDelete",
+  "CronList",
+  "Edit",
+  "EnterPlanMode",
+  "EnterWorktree",
+  "ExitPlanMode",
+  "ExitWorktree",
+  "Glob",
+  "Grep",
+  "ListMcpResourcesTool",
+  "LSP",
+  "Monitor",
+  "NotebookEdit",
+  "PowerShell",
+  "PushNotification",
+  "Read",
+  "ReadMcpResourceTool",
+  "RemoteTrigger",
+  "ScheduleWakeup",
+  "SendMessage",
+  "ShareOnboardingGuide",
+  "Skill",
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskStop",
+  "TaskUpdate",
+  "TeamCreate",
+  "TeamDelete",
+  "TodoWrite",
+  "ToolSearch",
+  "WaitForMcpServers",
+  "WebFetch",
+  "WebSearch",
+  "Workflow",
+  "Write",
+] as const;
+
+export const CODEX_TOOL_NAMES = [
+  "shell",
+  "commandExecution",
+  "fileChange",
+  "apply_patch",
+  "mcpToolCall",
+  "dynamicToolCall",
+  "collabToolCall",
+  "spawn_agent",
+  "Agent",
+  "webSearch",
+  "imageView",
+  "view_image",
+  "tool_search",
+  "AskUserQuestion",
+] as const;
+
 export interface AgentInfo {
   id: AgentId;
   name: string;
@@ -55,7 +115,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsSystemPrompt: true,
       supportsPermissionModes: true,
       supportedPermissionModes: CLAUDE_PERMISSION_MODES,
-      toolNames: ["Read", "Write", "Edit", "Bash", "Glob", "Grep"],
+      toolNames: [...CLAUDE_TOOL_NAMES],
       models: CLAUDE_MODELS,
       supportsReview: true,
       supportsSteering: true,
@@ -74,7 +134,7 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportsSystemPrompt: true,
       supportsPermissionModes: false,
       supportedPermissionModes: [],
-      toolNames: ["shell", "file_write", "file_read", "file_edit"],
+      toolNames: [...CODEX_TOOL_NAMES],
       // Verified against the ChatGPT backend's `/backend-api/codex/models`
       // endpoint (ChatGPT Plus plan, codex CLI 0.131.0): these are every
       // model with `visibility: list` and `supported_in_api: true`. Ordering
