@@ -4,12 +4,21 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 
 # 088 — User MCP Server Integration
 
+> **Update (docs/190): Linear removed as a built-in one-click OAuth provider.**
+> Linear-as-MCP overlapped confusingly with the native Linear *issue-tracker*
+> integration (docs/170 — Settings → Issues, the sanctioned `shipit issue`
+> path), so the branded "Connect with Linear" button and the `linear_oauth`
+> registry entry were deleted. **Notion is now the sole seeded OAuth provider.**
+> Linear-as-MCP is still fully reachable manually (Settings → MCP Servers → add
+> `https://mcp.linear.app/mcp`, Option A/B below); it just isn't a first-class
+> button anymore. The OAuth descriptions below that say "Connect with Linear"
+> are retained as historical record of the original Phase-2 design.
+
 > **Status: done (Phases 1 & 2 landed and verified).** API-key/token auth,
 > stdio + HTTP transports, tool allowlisting, crash detection, and native
-> OAuth (Linear + Notion, with RFC 7591 dynamic client registration via the
+> OAuth (Notion, with RFC 7591 dynamic client registration via the
 > `docs/139-mcp-dynamic-client-registration/` follow-up) are all shipped and
-> covered by tests. Linear and Notion are confirmed working end-to-end for
-> Claude and Codex-backed sessions.
+> covered by tests, for Claude and Codex-backed sessions.
 > Remaining work is **Phase 3 — Advanced features** only (server sharing,
 > per-repo config, marketplace, base-image pre-install, multi-instance OAuth);
 > each is separate future scope and will get its own doc when picked up.

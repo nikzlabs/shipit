@@ -35,14 +35,6 @@ import { _clearDiscoveryCache } from "./mcp-oauth-discovery.js";
 import { ServiceError } from "./types.js";
 
 /**
- * A `fetch` stub that fails all discovery probes (404) so a flow falls back to
- * the registry endpoints. Use for Linear (no DCR) tests where we only care
- * about the authorize URL / state.
- */
-const discoveryFails404: typeof fetch = async () =>
-  new Response("not found", { status: 404 });
-
-/**
  * Build a `fetch` stub that serves the Notion DCR discovery chain + a
  * registration response, recording every request URL. Token exchange is left
  * to the caller's `handleOAuthCallback` fetch.
@@ -123,29 +115,12 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   });
 
   describe("startOAuthFlow", () => {
-    it("returns an authorize URL with PKCE + state and persists flow state", async () => {
-      const result = await startOAuthFlow({
-        source: "linear_oauth",
-        stateStore,
-        redirectUri: REDIRECT,
-        credentialStore: store,
-        env: { LINEAR_OAUTH_CLIENT_ID: "test-client-id" },
-        fetchImpl: discoveryFails404,
-      });
-      const url = new URL(result.authorizeUrl);
-      expect(url.origin + url.pathname).toBe("https://linear.app/oauth/authorize");
-      expect(url.searchParams.get("response_type")).toBe("code");
-      expect(url.searchParams.get("client_id")).toBe("test-client-id");
-      expect(url.searchParams.get("redirect_uri")).toBe(REDIRECT);
-      expect(url.searchParams.get("code_challenge_method")).toBe("S256");
-      expect(url.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]+$/);
-      expect(url.searchParams.get("state")).toBe(result.state);
-      // Scopes are joined with spaces
-      expect(url.searchParams.get("scope")).toContain("read");
-      // State store now has the flow
-      expect(stateStore.size()).toBe(1);
-    });
-
+    // The PKCE authorize-URL + state-persistence happy path is covered by the
+    // DCR test below ("discovers endpoints, registers a client, …"), which is
+    // the shape every currently-seeded provider (Notion) uses. The old
+    // no-DCR / operator-env-required variant (Linear) was removed with the
+    // Linear preset (docs/190); that code path still exists in startOAuthFlow
+    // for a future no-DCR provider but is no longer exercised by a fixture.
     it("throws 404 for unknown provider", async () => {
       await expect(
         startOAuthFlow({
@@ -154,27 +129,8 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
           redirectUri: REDIRECT,
           credentialStore: store,
           env: {},
-          fetchImpl: discoveryFails404,
         }),
       ).rejects.toThrow(ServiceError);
-    });
-
-    it("throws 400 when no client id, no DCR endpoint, and no env var (Linear)", async () => {
-      try {
-        await startOAuthFlow({
-          source: "linear_oauth",
-          stateStore,
-          redirectUri: REDIRECT,
-          credentialStore: store,
-          env: {},
-          fetchImpl: discoveryFails404,
-        });
-        throw new Error("expected throw");
-      } catch (err) {
-        expect(err).toBeInstanceOf(ServiceError);
-        expect((err as ServiceError).statusCode).toBe(400);
-        expect((err as ServiceError).message).toContain("LINEAR_OAUTH_CLIENT_ID");
-      }
     });
   });
 
@@ -193,10 +149,17 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       // Authorize URL points at the *discovered* endpoint.
       expect(url.origin + url.pathname).toBe("https://mcp.notion.com/authorize");
       expect(url.searchParams.get("client_id")).toBe("dcr_cid");
+      // PKCE challenge + opaque state present and self-consistent.
+      expect(url.searchParams.get("response_type")).toBe("code");
+      expect(url.searchParams.get("code_challenge_method")).toBe("S256");
+      expect(url.searchParams.get("code_challenge")).toMatch(/^[A-Za-z0-9_-]+$/);
+      expect(url.searchParams.get("state")).toBe(result.state);
       // Registration was performed.
       expect(urls).toContain("https://mcp.notion.com/register");
       // Client cached for reuse.
       expect(store.getMcpOAuthClient("notion_oauth")?.clientId).toBe("dcr_cid");
+      // Flow state persisted for the callback to consume.
+      expect(stateStore.size()).toBe(1);
     });
 
     it("reuses a cached registered client and skips /register", async () => {
@@ -259,22 +222,24 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
 
   describe("handleOAuthCallback", () => {
     it("exchanges code for tokens and persists with obtainedAt stamped", async () => {
+      const { fetchImpl } = makeNotionDiscoveryFetch({ clientId: "dcr_cid" });
       const { state } = await startOAuthFlow({
-        source: "linear_oauth",
+        source: "notion_oauth",
         stateStore,
         redirectUri: REDIRECT,
         credentialStore: store,
-        env: { LINEAR_OAUTH_CLIENT_ID: "cid" },
-        fetchImpl: discoveryFails404,
+        env: {},
+        fetchImpl,
       });
 
-      const fakeFetch: typeof fetch = async (input: unknown, init: unknown) => {
+      const exchangeFetch: typeof fetch = async (input: unknown, init: unknown) => {
         const body = ((init as { body?: string })?.body ?? "") as string;
         const params = new URLSearchParams(body);
-        expect(input).toBe("https://api.linear.app/oauth/token");
+        // Exchanges at the DISCOVERED token endpoint, with the DCR client id.
+        expect(input).toBe("https://mcp.notion.com/token");
         expect(params.get("grant_type")).toBe("authorization_code");
         expect(params.get("code")).toBe("the-code");
-        expect(params.get("client_id")).toBe("cid");
+        expect(params.get("client_id")).toBe("dcr_cid");
         expect(params.get("code_verifier")).toBeTruthy();
         return new Response(
           JSON.stringify({
@@ -292,14 +257,14 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         input: { state, code: "the-code" },
         stateStore,
         credentialStore: store,
-        fetchImpl: fakeFetch,
+        fetchImpl: exchangeFetch,
       });
-      expect(result.source).toBe("linear_oauth");
-      const persisted = store.getMcpOAuthTokens("linear_oauth");
+      expect(result.source).toBe("notion_oauth");
+      const persisted = store.getMcpOAuthTokens("notion_oauth");
       expect(persisted?.accessToken).toBe("at_abc");
       expect(persisted?.refreshToken).toBe("rt_abc");
       expect(persisted?.scope).toBe("read write");
-      expect(persisted?.clientId).toBe("cid");
+      expect(persisted?.clientId).toBe("dcr_cid");
       expect(persisted?.obtainedAt).toBeTruthy();
       // expires_in: 3600 → expiresAt ~ now + 1h
       expect(persisted?.expiresAt).toBeGreaterThan(Date.now() + 30 * 60 * 1000);
@@ -352,13 +317,14 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
     });
 
     it("propagates a non-2xx response with body content in the error", async () => {
+      const { fetchImpl } = makeNotionDiscoveryFetch({ clientId: "dcr_cid" });
       const { state } = await startOAuthFlow({
-        source: "linear_oauth",
+        source: "notion_oauth",
         stateStore,
         redirectUri: REDIRECT,
         credentialStore: store,
-        env: { LINEAR_OAUTH_CLIENT_ID: "cid" },
-        fetchImpl: discoveryFails404,
+        env: {},
+        fetchImpl,
       });
       const fakeFetch: typeof fetch = async () =>
         new Response('{"error":"invalid_grant"}', { status: 400 });
@@ -375,7 +341,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
 
   describe("refreshOAuthTokens", () => {
     it("uses the stored refresh token and persists the new access token", async () => {
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "old",
         refreshToken: "rt1",
         clientId: "cid",
@@ -384,7 +350,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       const fakeFetch: typeof fetch = async (input: unknown, init: unknown) => {
         const body = ((init as { body?: string })?.body ?? "") as string;
         const params = new URLSearchParams(body);
-        expect(input).toBe("https://api.linear.app/oauth/token");
+        expect(input).toBe("https://mcp.notion.com/token");
         expect(params.get("grant_type")).toBe("refresh_token");
         expect(params.get("refresh_token")).toBe("rt1");
         return new Response(
@@ -398,14 +364,14 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
         );
       };
       const next = await refreshOAuthTokens({
-        source: "linear_oauth",
+        source: "notion_oauth",
         credentialStore: store,
         fetchImpl: fakeFetch,
       });
       expect(next.accessToken).toBe("new_at");
       // Old refresh token carries forward when provider didn't reissue.
       expect(next.refreshToken).toBe("rt1");
-      const persisted = store.getMcpOAuthTokens("linear_oauth");
+      const persisted = store.getMcpOAuthTokens("notion_oauth");
       expect(persisted?.accessToken).toBe("new_at");
       expect(persisted?.refreshToken).toBe("rt1");
     });
@@ -435,13 +401,13 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
     });
 
     it("throws when no refresh token is on file", async () => {
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "x",
         clientId: "cid",
       });
       await expect(
         refreshOAuthTokens({
-          source: "linear_oauth",
+          source: "notion_oauth",
           credentialStore: store,
           fetchImpl: (async () => new Response("{}")) as typeof fetch,
         }),
@@ -462,7 +428,10 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   describe("refreshExpiredMcpOAuthTokens", () => {
     it("only refreshes tokens within the safety margin; reports both buckets", async () => {
       const now = 1_700_000_000_000;
-      store.setMcpOAuthTokens("linear_oauth", {
+      // A safe token (outside the margin) is skipped before its source is ever
+      // validated against the registry, so it can use any source id; an
+      // in-margin token IS refreshed, so it must be a real provider (notion).
+      store.setMcpOAuthTokens("sentry_oauth", {
         accessToken: "fresh",
         refreshToken: "rt-fresh",
         clientId: "cid",
@@ -491,7 +460,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       expect(result.refreshed).toEqual(["notion_oauth"]);
       expect(result.failed).toEqual([]);
       expect(calls).toBe(1);
-      expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("fresh");
+      expect(store.getMcpOAuthTokens("sentry_oauth")?.accessToken).toBe("fresh");
       expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("rotated");
     });
 
@@ -512,7 +481,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
     });
 
     it("records failed sources without throwing", async () => {
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "x",
         // No refresh token — refresh path is going to fail.
         clientId: "cid",
@@ -524,7 +493,7 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
       });
       expect(result.refreshed).toEqual([]);
       expect(result.failed).toHaveLength(1);
-      expect(result.failed[0].source).toBe("linear_oauth");
+      expect(result.failed[0].source).toBe("notion_oauth");
     });
   });
 
@@ -573,18 +542,18 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   });
 
   describe("listMcpOAuthProviders + disconnectMcpOAuth", () => {
-    it("includes both connected and disconnected providers", () => {
-      store.setMcpOAuthTokens("linear_oauth", {
+    it("reports a provider's connection state and scope from stored tokens", () => {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "x",
         clientId: "cid",
         scope: "read",
       });
       const list = listMcpOAuthProviders(store);
-      const linear = list.find((p) => p.provider.id === "linear_oauth");
       const notion = list.find((p) => p.provider.id === "notion_oauth");
-      expect(linear?.status.connected).toBe(true);
-      expect(linear?.status.scope).toBe("read");
-      expect(notion?.status.connected).toBe(false);
+      expect(notion?.status.connected).toBe(true);
+      expect(notion?.status.scope).toBe("read");
+      // Linear was removed as a built-in OAuth provider (docs/190).
+      expect(list.find((p) => p.provider.id === "linear_oauth")).toBeUndefined();
     });
 
     it("a cached registered client alone does NOT show as connected", () => {
@@ -626,21 +595,21 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
   describe("InMemoryOAuthStateStore TTL", () => {
     it("evicts expired entries on read", () => {
       stateStore.put("s1", {
-        source: "linear_oauth",
+        source: "notion_oauth",
         codeVerifier: "v",
         redirectUri: REDIRECT,
         clientId: "cid",
-        authorizationEndpoint: "https://linear.app/oauth/authorize",
-        tokenEndpoint: "https://api.linear.app/oauth/token",
+        authorizationEndpoint: "https://mcp.notion.com/authorize",
+        tokenEndpoint: "https://mcp.notion.com/token",
         createdAt: Date.now() - 11 * 60 * 1000, // older than 10min TTL
       });
       stateStore.put("s2", {
-        source: "linear_oauth",
+        source: "notion_oauth",
         codeVerifier: "v",
         redirectUri: REDIRECT,
         clientId: "cid",
-        authorizationEndpoint: "https://linear.app/oauth/authorize",
-        tokenEndpoint: "https://api.linear.app/oauth/token",
+        authorizationEndpoint: "https://mcp.notion.com/authorize",
+        tokenEndpoint: "https://mcp.notion.com/token",
         createdAt: Date.now(),
       });
       // s1 should be gone after eviction
@@ -650,12 +619,12 @@ describe("services/mcp-oauth (docs/088 Phase 2, docs/139 DCR)", () => {
 
     it("take is single-use", () => {
       stateStore.put("s", {
-        source: "linear_oauth",
+        source: "notion_oauth",
         codeVerifier: "v",
         redirectUri: REDIRECT,
         clientId: "cid",
-        authorizationEndpoint: "https://linear.app/oauth/authorize",
-        tokenEndpoint: "https://api.linear.app/oauth/token",
+        authorizationEndpoint: "https://mcp.notion.com/authorize",
+        tokenEndpoint: "https://mcp.notion.com/token",
         createdAt: Date.now(),
       });
       expect(stateStore.take("s")).toBeTruthy();

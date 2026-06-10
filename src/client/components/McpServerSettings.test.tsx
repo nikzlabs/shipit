@@ -281,24 +281,24 @@ describe("McpServerSettings (docs/088)", () => {
     // statuses on the same provider — green "Connected" up top, red "failed —
     // authentication required" down below. The reconciled card shows a single
     // "Authentication required" badge and a Reconnect CTA.
-    const linearServer: McpServerConfig = {
-      name: "linear",
+    const notionServer: McpServerConfig = {
+      name: "notion",
       type: "http",
-      url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: "Bearer $platform:linear_oauth" },
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
       enabled: true,
     };
     const fake = new FakeFetch();
-    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [linearServer] }));
+    fake.on("GET", /^\/api\/mcp-servers$/, () => ({ servers: [notionServer] }));
     fake.on("GET", /\/oauth\/providers$/, () => ({
       providers: [
         {
-          id: "linear_oauth",
-          label: "Linear",
-          description: "Connect to your Linear workspace.",
-          mcpUrl: "https://mcp.linear.app/mcp",
-          defaultServerName: "linear",
-          status: { source: "linear_oauth", connected: true },
+          id: "notion_oauth",
+          label: "Notion",
+          description: "Connect to your Notion workspace.",
+          mcpUrl: "https://mcp.notion.com/mcp",
+          defaultServerName: "notion",
+          status: { source: "notion_oauth", connected: true },
         },
       ],
     }));
@@ -306,13 +306,13 @@ describe("McpServerSettings (docs/088)", () => {
 
     render(<McpServerSettings hasActiveSession={true} />);
     await waitFor(() => {
-      expect(screen.getByTestId("mcp-oauth-linear_oauth")).toBeInTheDocument();
+      expect(screen.getByTestId("mcp-oauth-notion_oauth")).toBeInTheDocument();
     });
 
     // Simulate the worker emitting needs-auth for the managed server.
-    useMcpStore.getState().applyStatus("linear", "failed", "authentication required");
+    useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
 
-    const card = await waitFor(() => screen.getByTestId("mcp-oauth-linear_oauth"));
+    const card = await waitFor(() => screen.getByTestId("mcp-oauth-notion_oauth"));
     await waitFor(() => {
       expect(within(card).getByText(/Authentication required/)).toBeInTheDocument();
     });
@@ -330,11 +330,11 @@ describe("McpServerSettings (docs/088)", () => {
     // White-box: connectProvider() calls clearStatus(defaultServerName) after a
     // successful OAuth round-trip so the card flips back to plain "Connected"
     // immediately instead of waiting for the next CLI init event.
-    useMcpStore.getState().applyStatus("linear", "failed", "authentication required");
-    expect(useMcpStore.getState().statuses.linear).toBeDefined();
+    useMcpStore.getState().applyStatus("notion", "failed", "authentication required");
+    expect(useMcpStore.getState().statuses.notion).toBeDefined();
 
-    useMcpStore.getState().clearStatus("linear");
-    expect(useMcpStore.getState().statuses.linear).toBeUndefined();
+    useMcpStore.getState().clearStatus("notion");
+    expect(useMcpStore.getState().statuses.notion).toBeUndefined();
 
     // Clearing a name that isn't tracked is a no-op (no throw).
     useMcpStore.getState().clearStatus("never-existed");

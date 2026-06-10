@@ -275,11 +275,11 @@ describe("mcp-store (docs/088)", () => {
       fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({
         providers: [
           {
-            id: "linear_oauth",
-            label: "Linear",
-            mcpUrl: "https://mcp.linear.app/mcp",
-            defaultServerName: "linear",
-            status: { source: "linear_oauth", connected: false },
+            id: "notion_oauth",
+            label: "Notion",
+            mcpUrl: "https://mcp.notion.com/mcp",
+            defaultServerName: "notion",
+            status: { source: "notion_oauth", connected: false },
           },
         ],
       }));
@@ -290,7 +290,7 @@ describe("mcp-store (docs/088)", () => {
       expect(oauthLoading).toBe(false);
       expect(oauthError).toBeNull();
       expect(oauthProviders).toHaveLength(1);
-      expect(oauthProviders[0].id).toBe("linear_oauth");
+      expect(oauthProviders[0].id).toBe("notion_oauth");
     });
 
     it("fetchOAuthProviders() defends against missing providers field", async () => {
@@ -317,21 +317,21 @@ describe("mcp-store (docs/088)", () => {
 
     it("disconnectOAuth() round-trips a DELETE and refreshes the provider list", async () => {
       const fake = new FakeFetch();
-      fake.on("DELETE", "/api/mcp-servers/oauth/linear_oauth", () => ({ deleted: true }));
+      fake.on("DELETE", "/api/mcp-servers/oauth/notion_oauth", () => ({ deleted: true }));
       fake.on("GET", "/api/mcp-servers/oauth/providers", () => ({
         providers: [
           {
-            id: "linear_oauth",
-            label: "Linear",
-            mcpUrl: "https://mcp.linear.app/mcp",
-            defaultServerName: "linear",
-            status: { source: "linear_oauth", connected: false },
+            id: "notion_oauth",
+            label: "Notion",
+            mcpUrl: "https://mcp.notion.com/mcp",
+            defaultServerName: "notion",
+            status: { source: "notion_oauth", connected: false },
           },
         ],
       }));
       fake.install();
 
-      await useMcpStore.getState().disconnectOAuth("linear_oauth");
+      await useMcpStore.getState().disconnectOAuth("notion_oauth");
       // The fetch fake recorded both the DELETE and the follow-up GET.
       const methods = fake.calls.map((c) => c.method);
       expect(methods).toContain("DELETE");

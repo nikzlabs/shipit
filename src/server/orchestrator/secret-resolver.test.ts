@@ -67,13 +67,13 @@ describe("collectMcpAgentEnv (docs/088)", () => {
         collectMcpAgentEnv(
           stub({
             mcpOAuth: {
-              linear_oauth: { accessToken: "lin_at" },
+              sentry_oauth: { accessToken: "sntry_at" },
               notion_oauth: { accessToken: "ntn_at" },
             },
           }),
         ),
       ).toEqual({
-        MCP_PLATFORM_LINEAR_OAUTH: "lin_at",
+        MCP_PLATFORM_SENTRY_OAUTH: "sntry_at",
         MCP_PLATFORM_NOTION_OAUTH: "ntn_at",
       });
     });
@@ -83,12 +83,12 @@ describe("collectMcpAgentEnv (docs/088)", () => {
         collectMcpAgentEnv(
           stub({
             agentEnv: { mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz" },
-            mcpOAuth: { linear_oauth: { accessToken: "lin_at" } },
+            mcpOAuth: { notion_oauth: { accessToken: "ntn_at" } },
           }),
         ),
       ).toEqual({
         mcp__sentry__SENTRY_AUTH_TOKEN: "sntrys_xyz",
-        MCP_PLATFORM_LINEAR_OAUTH: "lin_at",
+        MCP_PLATFORM_NOTION_OAUTH: "ntn_at",
       });
     });
 

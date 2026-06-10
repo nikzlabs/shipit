@@ -56,12 +56,12 @@ interface CredentialData {
   mcpServers?: Record<string, McpServerConfig>;
   /**
    * MCP OAuth tokens (docs/088 Phase 2) keyed by provider source id
-   * (e.g. `"linear_oauth"`). Tokens are written here after a successful
+   * (e.g. `"notion_oauth"`). Tokens are written here after a successful
    * OAuth exchange and read into the agent's MCP env by
    * `collectMcpAgentEnv()` (refreshed lazily via `refreshExpiredMcpOAuthTokens()`
    * at startup / before each agent turn). Per provider registry, the source
    * id is uppercased into the env var name the worker substitutes for
-   * `$platform:<id>` placeholders (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
+   * `$platform:<id>` placeholders (`notion_oauth` → `MCP_PLATFORM_NOTION_OAUTH`).
    */
   mcpOAuth?: Record<string, OAuthTokens>;
   /**
