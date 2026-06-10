@@ -584,7 +584,7 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
 
   it("rotates a token within the safety margin via the injected fetch", async () => {
     // Token is 1 minute from expiry — well inside the 5-minute safety margin.
-    store.setMcpOAuthTokens("linear_oauth", {
+    store.setMcpOAuthTokens("notion_oauth", {
       accessToken: "stale",
       refreshToken: "rt-1",
       clientId: "cid",
@@ -603,12 +603,12 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
     await runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch });
 
     expect(calls).toBe(1);
-    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("fresh");
+    expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("fresh");
   });
 
   it("leaves a fresh token untouched", async () => {
     // 1 hour from expiry — safely outside the safety margin.
-    store.setMcpOAuthTokens("linear_oauth", {
+    store.setMcpOAuthTokens("notion_oauth", {
       accessToken: "fresh",
       refreshToken: "rt-1",
       clientId: "cid",
@@ -622,11 +622,11 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
     await runMcpOAuthStartupRefresh({ credentialStore: store, fetchImpl: fakeFetch });
 
     // Token still in place, unchanged.
-    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("fresh");
+    expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("fresh");
   });
 
   it("swallows refresh failures so startup is never blocked", async () => {
-    store.setMcpOAuthTokens("linear_oauth", {
+    store.setMcpOAuthTokens("notion_oauth", {
       accessToken: "stale",
       refreshToken: "rt-1",
       clientId: "cid",
@@ -643,7 +643,7 @@ describe("runMcpOAuthStartupRefresh (docs/088 Phase 2)", () => {
 
     // Stale token left in place so the worker can still surface a meaningful
     // `mcp_server_status` failure when the first MCP tool call lands.
-    expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("stale");
+    expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("stale");
   });
 
   it("is a no-op when no OAuth tokens are persisted", async () => {

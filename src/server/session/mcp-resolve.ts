@@ -37,8 +37,8 @@ export interface McpResolveResult {
  *   `/\$platform:([a-z][a-z0-9_]*)/g`        → `env[MCP_PLATFORM_<UPPER>]`
  *
  * Both substitutions are **substring** — `"Bearer $secret:mcp__x__TOKEN"`
- * keeps the literal `Bearer ` prefix; `"Bearer $platform:linear_oauth"`
- * looks up `MCP_PLATFORM_LINEAR_OAUTH`. The orchestrator-side writer
+ * keeps the literal `Bearer ` prefix; `"Bearer $platform:notion_oauth"`
+ * looks up `MCP_PLATFORM_NOTION_OAUTH`. The orchestrator-side writer
  * (`collectMcpAgentEnv()` in `secret-resolver.ts`) is responsible for
  * populating `MCP_PLATFORM_*` env vars from `CredentialStore.mcpOAuth`
  * before this resolver runs.

@@ -4,12 +4,21 @@ description: Connect user MCP servers (Linear, Notion, Sentry, etc.) to the inne
 
 # 088 — User MCP Server Integration
 
+> **Update (docs/190): Linear removed as a built-in one-click OAuth provider.**
+> Linear-as-MCP overlapped confusingly with the native Linear *issue-tracker*
+> integration (docs/170 — Settings → Issues, the sanctioned `shipit issue`
+> path), so the branded "Connect with Linear" button and the `linear_oauth`
+> registry entry were deleted. **Notion is now the sole seeded OAuth provider.**
+> Linear-as-MCP is still fully reachable manually (Settings → MCP Servers → add
+> `https://mcp.linear.app/mcp`, Option A/B below); it just isn't a first-class
+> button anymore. The OAuth descriptions below that say "Connect with Linear"
+> are retained as historical record of the original Phase-2 design.
+
 > **Status: done (Phases 1 & 2 landed and verified).** API-key/token auth,
 > stdio + HTTP transports, tool allowlisting, crash detection, and native
-> OAuth (Linear + Notion, with RFC 7591 dynamic client registration via the
+> OAuth (Notion, with RFC 7591 dynamic client registration via the
 > `docs/139-mcp-dynamic-client-registration/` follow-up) are all shipped and
-> covered by tests. Linear and Notion are confirmed working end-to-end for
-> Claude and Codex-backed sessions.
+> covered by tests, for Claude and Codex-backed sessions.
 > Remaining work is **Phase 3 — Advanced features** only (server sharing,
 > per-repo config, marketplace, base-image pre-install, multi-instance OAuth);
 > each is separate future scope and will get its own doc when picked up.
@@ -157,34 +166,39 @@ Each MCP server definition consists of:
 | `headers` | http only | HTTP headers for connection (e.g., auth tokens) |
 | `enabled` | no | Boolean, defaults to `true`. Allows disabling without deleting. |
 
-### Concrete example: Linear
+### Concrete example: Sentry
 
-Linear supports two MCP integration modes, both covered by this design:
+A typical third-party MCP server supports two integration modes, both covered by
+this design (Sentry shown here; Linear is configured the same way manually — see
+docs/190 on why it is no longer a built-in one-click provider):
 
 **Option A — Self-hosted stdio server (API key auth)**
 
-User generates a personal API key in Linear (Settings > Account > Security & Access), then configures:
+User generates an auth token in Sentry (Settings → Auth Tokens), then configures:
 
 ```json
 {
-  "name": "linear",
+  "name": "sentry",
   "type": "stdio",
   "command": "npx",
-  "args": ["-y", "@anthropic-ai/linear-mcp"],
-  "env": { "LINEAR_API_KEY": "<pasted token>" },
+  "args": ["-y", "@sentry/mcp-server"],
+  "env": { "SENTRY_AUTH_TOKEN": "<pasted token>" },
   "enabled": true
 }
 ```
 
-**Option B — Linear's hosted remote server (OAuth or Bearer token)**
+**Option B — Hosted remote server (Bearer token)**
 
-Linear hosts a managed MCP server at `https://mcp.linear.app/mcp` using Streamable HTTP transport with OAuth 2.1:
+Sentry hosts a managed MCP server at `https://mcp.sentry.dev/mcp` using Streamable
+HTTP transport. Paste a token as a Bearer header (a hosted server that supports
+one-click OAuth instead exposes a "Connect" button — see the seeded providers in
+`mcp-oauth-providers.ts`):
 
 ```json
 {
-  "name": "linear",
+  "name": "sentry",
   "type": "http",
-  "url": "https://mcp.linear.app/mcp",
+  "url": "https://mcp.sentry.dev/mcp",
   "headers": { "Authorization": "Bearer <token>" },
   "enabled": true
 }

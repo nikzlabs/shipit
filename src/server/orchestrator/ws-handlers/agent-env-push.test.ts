@@ -72,7 +72,7 @@ describe("selectAgentEnvForPush — compose-less regime", () => {
     const credentialStore = makeFakeCredentialStore({
       agentEnv: { OPENAI_API_KEY: "sk-test" },
       oauthTokens: {
-        linear_oauth: { accessToken: "linear-bearer-xyz" },
+        sentry_oauth: { accessToken: "sentry-bearer-xyz" },
         notion_oauth: { accessToken: "notion-bearer-abc" },
       },
     });
@@ -81,7 +81,7 @@ describe("selectAgentEnvForPush — compose-less regime", () => {
       credentialStore,
     });
     expect(result.OPENAI_API_KEY).toBe("sk-test");
-    expect(result.MCP_PLATFORM_LINEAR_OAUTH).toBe("linear-bearer-xyz");
+    expect(result.MCP_PLATFORM_SENTRY_OAUTH).toBe("sentry-bearer-xyz");
     expect(result.MCP_PLATFORM_NOTION_OAUTH).toBe("notion-bearer-abc");
   });
 
@@ -101,14 +101,14 @@ describe("selectAgentEnvForPush — compose-less regime", () => {
         // shape behind. The worker resolver has nothing to substitute, so
         // we must not push an empty MCP_PLATFORM_* key (which would shadow
         // a future successful refresh's value).
-        linear_oauth: { accessToken: "" },
+        notion_oauth: { accessToken: "" },
       },
     });
     const result = selectAgentEnvForPush({
       serviceManager: null,
       credentialStore,
     });
-    expect(result.MCP_PLATFORM_LINEAR_OAUTH).toBeUndefined();
+    expect(result.MCP_PLATFORM_NOTION_OAUTH).toBeUndefined();
   });
 });
 
@@ -117,7 +117,7 @@ describe("selectAgentEnvForPush — compose regime", () => {
     const serviceManager = makeFakeServiceManager({
       DATABASE_URL: "postgres://compose-declared",
       mcp__linear__LINEAR_API_KEY: "lin-token",
-      MCP_PLATFORM_LINEAR_OAUTH: "linear-bearer-xyz",
+      MCP_PLATFORM_NOTION_OAUTH: "notion-bearer-xyz",
     });
     const credentialStore = makeFakeCredentialStore({
       // CredentialStore values must be IGNORED in compose mode — the snapshot
@@ -133,7 +133,7 @@ describe("selectAgentEnvForPush — compose regime", () => {
     expect(result).toEqual({
       DATABASE_URL: "postgres://compose-declared",
       mcp__linear__LINEAR_API_KEY: "lin-token",
-      MCP_PLATFORM_LINEAR_OAUTH: "linear-bearer-xyz",
+      MCP_PLATFORM_NOTION_OAUTH: "notion-bearer-xyz",
     });
   });
 
