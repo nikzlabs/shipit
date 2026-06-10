@@ -192,10 +192,80 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(await tracker.addComment("SHI-1", "hi")).toEqual({ id: "c1", url: "http://c", body: "hi" });
   });
 
+  it("enriches a created comment with author + timestamp when present", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueId", data: { issue: { id: "uuid-1" } } },
+      {
+        match: "commentCreate",
+        data: {
+          commentCreate: {
+            success: true,
+            comment: {
+              id: "c2",
+              url: "http://c2",
+              body: "hi",
+              createdAt: "2026-06-01T00:00:00.000Z",
+              user: { name: "nik", displayName: "Nik", avatarUrl: "http://a" },
+            },
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    expect(await tracker.addComment("SHI-1", "hi")).toEqual({
+      id: "c2",
+      url: "http://c2",
+      body: "hi",
+      createdAt: "2026-06-01T00:00:00.000Z",
+      author: { name: "Nik", avatarUrl: "http://a" },
+    });
+  });
+
   it("deletes a comment", async () => {
     const fetchImpl = routerFetch([{ match: "commentDelete", data: { commentDelete: { success: true } } }]);
     const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
+  });
+
+  it("lists an issue's comments oldest-first with author + timestamp (docs/189)", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "IssueComments",
+        data: {
+          issue: {
+            comments: {
+              nodes: [
+                {
+                  id: "c1",
+                  body: "First",
+                  url: "http://c1",
+                  createdAt: "2026-06-01T00:00:00.000Z",
+                  user: { name: "nik", displayName: "Nik", avatarUrl: "http://a" },
+                },
+                { id: "c2", body: "Second (no author)", url: null, createdAt: null, user: null },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    expect(await tracker.listComments("SHI-1")).toEqual([
+      {
+        id: "c1",
+        body: "First",
+        url: "http://c1",
+        createdAt: "2026-06-01T00:00:00.000Z",
+        author: { name: "Nik", avatarUrl: "http://a" },
+      },
+      { id: "c2", body: "Second (no author)" },
+    ]);
+  });
+
+  it("throws listComments when no token is configured", async () => {
+    await expect(new LinearTracker({ token: null, team: TEAM }).listComments("SHI-1")).rejects.toThrow(
+      /not configured/,
+    );
   });
 
   it("creates an issue against the bound team (docs/187)", async () => {

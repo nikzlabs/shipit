@@ -10,4 +10,9 @@
 - [x] Tests: server route, store flow, `IssueDetail`, card open, row open
 - [x] Committed `mockup.html` visual reference
 - [ ] Manual verification in the running app (open from list + from a chat card)
-- [ ] Follow-up: comments thread in the detail view (needs `Tracker.listComments`)
+- [x] Follow-up: comments thread in the detail view (`Tracker.listComments`, `GET`/`POST /api/issue/comments`, read + post inline)
+  - [x] `Tracker.listComments` on Linear + GitHub adapters; `TrackerComment` carries author + `createdAt`
+  - [x] `GET /api/issue/comments` (thread) + `POST /api/issue/comments` (user post, no provenance card)
+  - [x] issues-store: `comments` state, `fetchComments`/`postComment`
+  - [x] `IssueDetail`: comment thread + composer
+  - [x] Tests: adapters, services, route, store, component

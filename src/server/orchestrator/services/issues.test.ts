@@ -15,6 +15,8 @@ import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import {
   getIssueForTracker,
+  listIssueCommentsForTracker,
+  addIssueCommentForTracker,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -179,6 +181,76 @@ describe("getIssueForTracker (docs/175)", () => {
 });
 
 /** A GitHub REST stub routing on method + path tail. */
+describe("issue comment read/post services (docs/189 follow-up)", () => {
+  function ghCommentsFetch() {
+    return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      const method = init?.method ?? "GET";
+      if (method === "GET" && u.includes("/issues/42/comments")) {
+        return ghResponse([
+          {
+            id: 1,
+            body: "First",
+            html_url: "https://github.com/octocat/hello-world/issues/42#c1",
+            created_at: "2026-06-01T00:00:00Z",
+            user: { login: "octocat", avatar_url: "http://a" },
+          },
+        ]);
+      }
+      if (method === "POST" && u.endsWith("/issues/42/comments")) {
+        return ghResponse({
+          id: 2,
+          body: JSON.parse(init?.body as string).body,
+          html_url: "https://github.com/octocat/hello-world/issues/42#c2",
+          created_at: "2026-06-02T00:00:00Z",
+          user: { login: "octocat", avatar_url: "http://a" },
+        });
+      }
+      throw new Error(`unexpected ${method} ${u}`);
+    });
+  }
+
+  it("listIssueCommentsForTracker returns the thread for a configured tracker", async () => {
+    const out = await listIssueCommentsForTracker(tmpStore(), "github", "42", ghCommentsFetch(), GH);
+    expect(out.comments).toEqual([
+      {
+        id: "1",
+        body: "First",
+        url: "https://github.com/octocat/hello-world/issues/42#c1",
+        createdAt: "2026-06-01T00:00:00Z",
+        author: { name: "octocat", avatarUrl: "http://a" },
+      },
+    ]);
+  });
+
+  it("listIssueCommentsForTracker 400s for an unconfigured tracker", async () => {
+    await expect(
+      listIssueCommentsForTracker(tmpStore(), "github", "42", ghCommentsFetch(), {
+        token: null,
+        repo: null,
+      }),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("addIssueCommentForTracker posts and returns the created comment", async () => {
+    const out = await addIssueCommentForTracker(tmpStore(), "github", "42", "Posted inline", ghCommentsFetch(), GH);
+    expect(out.comment.body).toBe("Posted inline");
+    expect(out.comment.author).toEqual({ name: "octocat", avatarUrl: "http://a" });
+  });
+
+  it("addIssueCommentForTracker 400s on an empty body", async () => {
+    await expect(
+      addIssueCommentForTracker(tmpStore(), "github", "42", "   ", ghCommentsFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("addIssueCommentForTracker 409s for an unconnected tracker", async () => {
+    await expect(
+      addIssueCommentForTracker(tmpStore(), "github", "42", "hi", ghCommentsFetch(), { token: null, repo: null }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+});
+
 function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
   const issue = {
     id: 1,

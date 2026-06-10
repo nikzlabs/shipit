@@ -3,6 +3,9 @@ import type {
   GetIssueResult,
   IssuePriorityLevel,
   ListIssuesResult,
+  ListIssueCommentsResult,
+  PostIssueCommentResult,
+  TrackerComment,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
@@ -119,6 +122,16 @@ interface IssuesState {
   detailLoading: boolean;
   detailError: string | null;
 
+  /**
+   * The open issue's comment thread (docs/189 follow-up). `null` means "not
+   * fetched yet" (the view shows a loading hint), distinct from `[]` ("no
+   * comments"). Fetched alongside the detail when an issue opens, independently
+   * so the description paints without waiting on the thread.
+   */
+  comments: TrackerComment[] | null;
+  commentsLoading: boolean;
+  commentsError: string | null;
+
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
@@ -126,6 +139,14 @@ interface IssuesState {
   openIssue: (ref: OpenIssueRef) => Promise<void>;
   /** Re-fetch the open issue (refresh button inside the detail view). */
   fetchDetail: () => Promise<void>;
+  /** Fetch the open issue's comment thread. */
+  fetchComments: () => Promise<void>;
+  /**
+   * Post a user-authored comment on the open issue. Appends the created comment
+   * to the thread on success. Returns an error message on failure, or null on
+   * success (so the calling component can surface it inline).
+   */
+  postComment: (body: string) => Promise<string | null>;
   /** Close the detail view and return to the list. */
   closeIssue: () => void;
   setQuery: (query: string) => void;
@@ -182,6 +203,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   detail: null,
   detailLoading: false,
   detailError: null,
+  comments: null,
+  commentsLoading: false,
+  commentsError: null,
 
   setActiveTracker: (id) =>
     set((state) => ({
@@ -270,9 +294,14 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       detail: ref.seed ?? null,
       detailError: null,
       detailLoading: true,
+      // Reset the thread for the newly-opened issue; fetchComments repopulates.
+      comments: null,
+      commentsError: null,
+      commentsLoading: true,
       filters: pruneFilters(state.filters, state.issuesByTracker[ref.tracker] ?? []),
     }));
-    await get().fetchDetail();
+    // Independent fetches — the description shouldn't wait on the thread.
+    await Promise.all([get().fetchDetail(), get().fetchComments()]);
   },
 
   fetchDetail: async () => {
@@ -302,7 +331,74 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
-  closeIssue: () => set({ selected: null, detail: null, detailError: null, detailLoading: false }),
+  fetchComments: async () => {
+    const sel = get().selected;
+    if (!sel) return;
+    set({ commentsLoading: true, commentsError: null });
+    try {
+      const params = sessionIdParam();
+      const res = await fetch(
+        `/api/issue/comments?tracker=${encodeURIComponent(sel.tracker)}&id=${encodeURIComponent(sel.id)}${params ? `&${params}` : ""}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const body = (await res.json().catch(() => ({}))) as Partial<ListIssueCommentsResult> & { error?: string };
+      // Drop a stale response superseded by a newer openIssue (fast card clicks).
+      const current = get().selected;
+      if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
+      if (!res.ok) {
+        set({ commentsLoading: false, commentsError: body.error ?? `Failed to load comments (${res.status})` });
+        return;
+      }
+      set({ commentsLoading: false, comments: body.comments ?? [], commentsError: null });
+    } catch (err) {
+      const current = get().selected;
+      if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
+      set({ commentsLoading: false, commentsError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  postComment: async (body) => {
+    const sel = get().selected;
+    if (!sel) return "No issue is open";
+    const trimmed = body.trim();
+    if (!trimmed) return "A comment can't be empty";
+    try {
+      const res = await fetch(`/api/issue/comments`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({
+          tracker: sel.tracker,
+          id: sel.id,
+          body: trimmed,
+          ...(useSessionStore.getState().sessionId ? { sessionId: useSessionStore.getState().sessionId } : {}),
+        }),
+      });
+      const data = (await res.json().catch(() => ({}))) as Partial<PostIssueCommentResult> & { error?: string };
+      if (!res.ok || !data.comment) {
+        return data.error ?? `Failed to post comment (${res.status})`;
+      }
+      // Append to the open thread (guarding against a mid-flight issue switch).
+      const comment = data.comment;
+      const current = get().selected;
+      if (current?.id === sel.id && current?.tracker === sel.tracker) {
+        set((state) => ({ comments: [...(state.comments ?? []), comment] }));
+      }
+      return null;
+    } catch (err) {
+      return err instanceof Error ? err.message : String(err);
+    }
+  },
+
+  closeIssue: () =>
+    set({
+      selected: null,
+      detail: null,
+      detailError: null,
+      detailLoading: false,
+      comments: null,
+      commentsError: null,
+      commentsLoading: false,
+    }),
 
   setQuery: (query) => set((state) => ({ filters: { ...state.filters, query } })),
 
@@ -341,6 +437,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       detail: null,
       detailLoading: false,
       detailError: null,
+      comments: null,
+      commentsLoading: false,
+      commentsError: null,
     }),
 }));
 

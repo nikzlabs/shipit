@@ -17,6 +17,8 @@ import {
   listTrackers,
   listIssuesForTracker,
   getIssueForTracker,
+  listIssueCommentsForTracker,
+  addIssueCommentForTracker,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -170,6 +172,59 @@ export async function registerIssueRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to read issue: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/issue/comments?tracker=&id=[&sessionId=] — the comment thread for
+  // the inline detail view (docs/189 follow-up). Public read, like GET /api/issue:
+  // Linear is workspace-wide; `sessionId` only scopes the GitHub tracker to the
+  // session's repo. Emits no transcript card.
+  app.get<{ Querystring: { tracker?: string; id?: string; sessionId?: string } }>(
+    "/api/issue/comments",
+    async (request, reply) => {
+      const trackerId = request.query.tracker ?? "linear";
+      const github = resolveGitHubContext(request.query.sessionId);
+      try {
+        return await listIssueCommentsForTracker(
+          credentialStore,
+          trackerId,
+          request.query.id ?? "",
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read comments: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/issue/comments { tracker, id, body, sessionId? } — a user posting a
+  // comment from the inline detail view (docs/189 follow-up). Unlike the agent's
+  // session-scoped comment write, this is the user's own action: it surfaces NO
+  // provenance card and has no undo. Returns the created comment so the client
+  // appends it to the open thread. `sessionId` only scopes the GitHub tracker.
+  app.post<{ Body: { tracker?: string; id?: string; body?: string; sessionId?: string } }>(
+    "/api/issue/comments",
+    async (request, reply) => {
+      const { tracker, id, body, sessionId } = request.body ?? {};
+      if (!tracker || !id || !body?.trim()) {
+        reply.code(400).send({ error: "tracker, id and body are required" });
+        return;
+      }
+      const github = resolveGitHubContext(sessionId);
+      try {
+        return await addIssueCommentForTracker(credentialStore, tracker, id, body, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to post comment: ${getErrorMessage(err)}` });
       }
     },
   );

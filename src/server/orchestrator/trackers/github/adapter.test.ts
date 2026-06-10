@@ -277,6 +277,60 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(init?.method).toBe("POST");
   });
 
+  it("enriches a created comment with author + timestamp when present", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse({
+        id: 556,
+        html_url: "https://github.com/octocat/hello-world/issues/42#c2",
+        body: "hi",
+        created_at: "2026-06-01T00:00:00Z",
+        user: { login: "octocat", avatar_url: "http://a" },
+      }),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    expect(await tracker.addComment("42", "hi")).toEqual({
+      id: "556",
+      url: "https://github.com/octocat/hello-world/issues/42#c2",
+      body: "hi",
+      createdAt: "2026-06-01T00:00:00Z",
+      author: { name: "octocat", avatarUrl: "http://a" },
+    });
+  });
+
+  it("lists an issue's comments with author + timestamp (docs/189)", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse([
+        {
+          id: 1,
+          body: "First",
+          html_url: "http://c1",
+          created_at: "2026-06-01T00:00:00Z",
+          user: { login: "octocat", avatar_url: "http://a" },
+        },
+        { id: 2, body: "Second", html_url: "http://c2", created_at: "2026-06-02T00:00:00Z", user: null },
+      ]),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    expect(await tracker.listComments("42")).toEqual([
+      {
+        id: "1",
+        body: "First",
+        url: "http://c1",
+        createdAt: "2026-06-01T00:00:00Z",
+        author: { name: "octocat", avatarUrl: "http://a" },
+      },
+      { id: "2", body: "Second", url: "http://c2", createdAt: "2026-06-02T00:00:00Z" },
+    ]);
+    const [url] = fetchImpl.mock.calls[0];
+    expect(url).toContain("/repos/octocat/hello-world/issues/42/comments");
+  });
+
+  it("throws listComments when unconfigured", async () => {
+    await expect(new GitHubTracker({ token: null, repo: null }).listComments("42")).rejects.toThrow(
+      /not configured/,
+    );
+  });
+
   it("deletes a comment (DELETE issues/comments/:id, 204)", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) => new Response(null, { status: 204 }));
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
