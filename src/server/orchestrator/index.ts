@@ -49,6 +49,7 @@ import {
   createPrStatusPoller,
   createLogBuffer,
   wireEventHandlers,
+  markProviderAccountUnauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -92,6 +93,7 @@ export {
   createPrStatusPoller,
   createLogBuffer,
   wireEventHandlers,
+  markProviderAccountUnauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -571,6 +573,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
     claudeOAuthRefresherRef.ref = refresher;
     refresher.start();
+    refresher.on("account_unauthenticated", (accountId: string) => {
+      markProviderAccountUnauthenticated({
+        agentId: "claude",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
     // to this event for its own bookkeeping; EventEmitter supports multiple
     // handlers so the two coexist without ordering constraints.

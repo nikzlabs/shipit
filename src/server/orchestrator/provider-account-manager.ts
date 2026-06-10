@@ -144,7 +144,7 @@ export class ProviderAccountManager {
   }
 
   hasAnyAuthForProvider(provider: AgentId): boolean {
-    if (this.list(provider).length > 0) return true;
+    if (this.list(provider).some((account) => account.status === "ready")) return true;
     if (provider === "claude") {
       return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
     }
