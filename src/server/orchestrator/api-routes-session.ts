@@ -21,6 +21,7 @@ import {
   listAllSessions,
   unarchiveSession,
   renameSession,
+  setSessionPinned,
   archiveSession,
   deleteSession,
   applyTemplate,
@@ -287,6 +288,42 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to rename session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pin — pin (make persistent) a session
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, true);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to pin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // DELETE /api/sessions/:id/pin — unpin a session
+  app.delete<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, false);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to unpin session: ${getErrorMessage(err)}` });
       }
     },
   );

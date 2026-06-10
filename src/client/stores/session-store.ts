@@ -137,6 +137,12 @@ interface SessionState {
    * session list so other tabs reconcile.
    */
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
+  /**
+   * docs/110 — pin/unpin a session. Pinning makes it persistent (top of its repo
+   * group, always visible, immune to disk reclamation). Optimistic; the
+   * authoritative `session_list` SSE broadcast reconciles.
+   */
+  setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
   setAuthUrl: (url: string | null) => void;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
@@ -309,6 +315,32 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       }
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
+      patch(prev); // revert
+    }
+  },
+
+  setPinned: async (sessionId, pinned) => {
+    const patch = (value: string | undefined) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, pinnedAt: value } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.pinnedAt;
+    patch(pinned ? new Date().toISOString() : undefined); // optimistic
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pin`, {
+        method: pinned ? "POST" : "DELETE",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        console.error("[session-store] Pin toggle failed:", data.error);
+        patch(prev); // revert
+      }
+      // On success the server broadcasts session_list, which reconciles ordering.
+    } catch (err) {
+      console.error("[session-store] Pin toggle failed:", err);
       patch(prev); // revert
     }
   },

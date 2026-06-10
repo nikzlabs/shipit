@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: document.body style during drag (DOM sync)
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, DownloadSimpleIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, MicrophoneIcon, PencilSimpleIcon, PlusIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, CloudArrowDownIcon, DotsSixVerticalIcon, DownloadSimpleIcon, GithubLogoIcon, GitMergeIcon, HardDrivesIcon, LightningIcon, ListBulletsIcon, MicrophoneIcon, PencilSimpleIcon, PlusIcon, PushPinIcon, SidebarSimpleIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
@@ -337,6 +337,15 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     window.dispatchEvent(new CustomEvent("shipit:restore-rewind", { detail: { sessionId: session.id } }));
   }, [session.id]);
 
+  // docs/110 — toggle the pin (persistent) flag. Pinning sticks the session to
+  // the top of its repo group and exempts it from sidebar demotion + disk
+  // reclamation; the store optimistically updates and the server broadcasts the
+  // reconciled session_list.
+  const isPinned = !!session.pinnedAt;
+  const handleTogglePin = useCallback(() => {
+    void useSessionStore.getState().setPinned(session.id, !session.pinnedAt);
+  }, [session.id, session.pinnedAt]);
+
   // The overflow trigger is always visible on the active row, on touch
   // devices, and while the menu itself is open. On inactive desktop rows it
   // hover-reveals so it doesn't add visual noise to the long sidebar list.
@@ -431,6 +440,9 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           </p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <SessionStatusDot sessionId={session.id} />
+            {isPinned && (
+              <PushPinIcon size={ICON_SIZE.XS} weight="fill" className="text-(--color-accent) shrink-0" />
+            )}
             {session.kind === "ops" && (
               <span className="text-[9px] font-semibold uppercase tracking-wide text-(--color-text-tertiary) border border-(--color-border-secondary) rounded px-1 leading-tight shrink-0">
                 ops
@@ -464,6 +476,10 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                 <DropdownMenuItem onSelect={startEditing} disabled={disabled}>
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
                   Rename
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={handleTogglePin} disabled={disabled}>
+                  <PushPinIcon size={ICON_SIZE.SM} weight={isPinned ? "fill" : "regular"} />
+                  {isPinned ? "Unpin" : "Pin to top"}
                 </DropdownMenuItem>
                 {onArchive && (
                   <DropdownMenuItem onSelect={() => onArchive(session.id)} disabled={disabled}>
@@ -869,15 +885,40 @@ function RepoGroup({
               // group (merged OR closed-without-merge). The session list is
               // already sorted (active first, then resolved by resolve time
               // desc), so iterating in order keeps each group sorted.
+              // docs/110 — pinned (persistent) sessions form a sub-section
+              // pinned to the top of the repo group, ordered by pinnedAt desc
+              // (most-recently-pinned first). They render with their broods via
+              // pushTree and are skipped in the Active/Resolved split below so a
+              // pin always outranks both recency and the resolved demotion.
+              const isTopLevel = (s: SessionInfo): boolean =>
+                !s.parentSessionId || orphanedChildren.has(s.id);
+              const isPinnedTop = (s: SessionInfo): boolean =>
+                !!s.pinnedAt && !s.userArchived && isTopLevel(s);
+              const pinned: React.ReactElement[] = [];
+              for (const s of sessions
+                .filter(isPinnedTop)
+                .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""))) {
+                pushTree(s, pinned);
+              }
               const active: React.ReactElement[] = [];
               const resolved: React.ReactElement[] = [];
               for (const s of sessions) {
                 // Skip children that we render beneath their parent.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+                if (isPinnedTop(s)) continue; // rendered in the pinned sub-section
                 pushTree(s, isRecentlyResolvedForGroup(s) ? resolved : active);
               }
               return (
                 <>
+                  {pinned.length > 0 && (
+                    <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
+                      <PushPinIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-tertiary)" />
+                      <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+                        Pinned
+                      </span>
+                    </div>
+                  )}
+                  {pinned}
                   {active}
                   {resolved.length > 0 && (
                     <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>

@@ -351,6 +351,47 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/110: setPinned / archive clears pin", () => {
+    it("sets and clears pinnedAt", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.get("sess-1")?.pinnedAt).toBeUndefined();
+
+      const pinned = mgr.setPinned("sess-1", "2024-06-01T00:00:00.000Z");
+      expect(pinned?.pinnedAt).toBe("2024-06-01T00:00:00.000Z");
+      expect(mgr.get("sess-1")?.pinnedAt).toBe("2024-06-01T00:00:00.000Z");
+
+      const unpinned = mgr.setPinned("sess-1", null);
+      expect(unpinned?.pinnedAt).toBeUndefined();
+    });
+
+    it("returns null for an unknown session", () => {
+      const mgr = new SessionManager(dbManager);
+      expect(mgr.setPinned("nope", "2024-06-01T00:00:00.000Z")).toBeNull();
+    });
+
+    it("does NOT touch disk_tier when pinning (forward-looking guarantee)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setDiskTier("sess-1", "light");
+      mgr.setPinned("sess-1", "2024-06-01T00:00:00.000Z");
+      // Pinning records the pin but must not lie about what's on disk.
+      expect(mgr.get("sess-1")?.diskTier).toBe("light");
+    });
+
+    it("clears the pin when the session is archived (can't be hidden AND persistent)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setPinned("sess-1", "2024-06-01T00:00:00.000Z");
+
+      expect(mgr.archive("sess-1")).toBe(true);
+      const s = mgr.get("sess-1");
+      expect(s?.pinnedAt).toBeUndefined();
+      expect(s?.userArchived).toBe(true);
+      expect(s?.diskTier).toBe("evicted");
+    });
+  });
+
   describe("session deletion cascade", () => {
     it("deleteSession cascades to chat history and usage", () => {
       const sessions = new SessionManager(dbManager);
@@ -601,6 +642,18 @@ describe("SessionManager", () => {
     it("excludes user-archived sessions from the result", () => {
       const sessions = [active("a"), { ...active("b"), userArchived: true }];
       expect(filterVisibleInSidebar(sessions).map((s) => s.id)).toEqual(["a"]);
+    });
+
+    it("docs/110: keeps a pinned session even when it is beyond the merged cap", () => {
+      const sessions = [
+        // m1 is the oldest merge (would drop past a cap of 3) but is pinned.
+        { ...merged("m1", "2024-01-01 09:00:00"), pinnedAt: "2024-06-01T00:00:00.000Z" },
+        merged("m2", "2024-01-02 09:00:00"),
+        merged("m3", "2024-01-03 09:00:00"),
+        merged("m4", "2024-01-04 09:00:00"),
+      ];
+      const visible = filterVisibleInSidebar(sessions, 3).map((s) => s.id).sort();
+      expect(visible).toEqual(["m1", "m2", "m3", "m4"]);
     });
 
     it("archiving a visible merged session does not promote a demoted one", () => {
