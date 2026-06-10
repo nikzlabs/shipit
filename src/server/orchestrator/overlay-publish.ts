@@ -89,10 +89,17 @@ export interface OverlayPublishArgs {
   installOk: boolean;
 }
 
-/** Per-dep-dir result — the publish CAS outcome, or `"error"` if the dir's pull/extract/publish threw. */
+/**
+ * Per-dep-dir result — the publish CAS outcome, `"error"` if the dir's
+ * pull/extract/publish threw, or `"skipped-empty"` if the exported snapshot
+ * contained nothing (an empty dep dir is never a useful base — and an empty
+ * snapshot is the signature of a session whose merged view is broken or whose
+ * install was wrongly skipped; publishing it would poison the scope for every
+ * future session, observed live in docs/183 measurement).
+ */
 export interface DepDirPublishOutcome {
   depDir: string;
-  outcome: PublishOutcome | "error";
+  outcome: PublishOutcome | "error" | "skipped-empty";
   error?: string;
   /**
    * docs/183 — overlay depth of this dep dir's base after the publish (from the
@@ -158,6 +165,17 @@ export async function publishDepDirOverlayBases(
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
       const stream = await fetchSnapshot(args.workerUrl, depDir);
       await extract(stream, tmpDir);
+      // Never publish an empty snapshot. A legitimate post-install dep dir is
+      // never empty (npm/pnpm always materialize at least a lockfile shadow);
+      // an empty export means the worker's merged view was empty or broken —
+      // e.g. a wrongly-skipped install over a fresh overlay, or the readdir
+      // breakage a base swap inflicts on live same-scope mounts. Publishing it
+      // would install an empty base under the scope's pointer, which the
+      // equal-commit skip then makes permanent. Decline instead.
+      if (fs.readdirSync(tmpDir).length === 0) {
+        outcomes.push({ depDir, outcome: "skipped-empty" });
+        continue;
+      }
       const res = await publishBase({
         stateDir: deps.stateDir,
         scope: { ...scope, depDir },

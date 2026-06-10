@@ -221,6 +221,20 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(baseContentFor("src/vendored")).toBeNull();
   });
 
+  it("declines to publish an empty snapshot (no base, no pointer)", async () => {
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        // The export yields a valid-but-empty archive — the signature of a
+        // broken/empty merged view. Nothing may be published from it.
+        extract: async (stream) => { for await (const _ of stream) { /* drain */ } },
+      }),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty" }]);
+    expect(pointerFor("node_modules")).toBeNull();
+    expect(baseContentFor("node_modules")).toBeNull();
+  });
+
   it("records a per-dir error without aborting the other dirs", async () => {
     workspaceDir = makeWorkspace(["node_modules", "packages/app/node_modules"], {
       shipitDepDirs: ["node_modules", "packages/app/node_modules"],
