@@ -24,7 +24,8 @@ import {
   perSessionCredentialsDir,
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
-import { createOverlayVolume, removeOverlayVolume, type OverlaySpec } from "./overlay-volume.js";
+import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
+import type { DepDirOverlaySpec } from "./overlay-session.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -87,7 +88,7 @@ export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
   credentialsVolume: string | undefined,
-  overlayWorkspaceVolume?: string,
+  overlayDepSpecs?: DepDirOverlaySpec[],
 ): MountSpec {
   const binds: string[] = [];
   const mounts: MountSpec["mounts"] = [];
@@ -96,20 +97,12 @@ export function buildMounts(
   // It may be the same as sessionDir (legacy) or a subdirectory (new layout).
   const hostWorkspaceDir = config.workspaceDir ?? config.sessionDir;
 
-  if (overlayWorkspaceVolume) {
-    // docs/183 Phase 2 — overlay session: mount the per-session `type=overlay`
-    // volume AT ITS ROOT (no subpath). The daemon-merged tree *is* the volume
-    // root, so there is no `sessions/<id>/workspace` storage subpath to prepend.
-    // `/uploads` and `/dep-cache` below deliberately keep using `workspaceVolume`
-    // (the `shipit-workspace` state volume) — the overlay volume has no
-    // `sessions/<id>/uploads` or `dep-cache/<hash>` subtree, and an
-    // overlay-backed `/dep-cache` would break cross-session cache sharing.
-    mounts.push({
-      Type: "volume",
-      Source: overlayWorkspaceVolume,
-      Target: CONTAINER_WORKSPACE_DIR,
-    });
-  } else if (workspaceVolume) {
+  // The workspace mount is ALWAYS the normal host clone (source + `.git`,
+  // authoritative). docs/183 dep-dir design: even for overlay sessions
+  // `/workspace` stays this mount — each declared dep dir is overlaid via its own
+  // nested `/workspace/<dep-dir>` mount appended at the end of this function, not
+  // by replacing the workspace root.
+  if (workspaceVolume) {
     const relPath = hostWorkspaceDir.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
@@ -190,6 +183,24 @@ export function buildMounts(
         Target: m.target,
         ReadOnly: true,
         BindOptions: { CreateMountpoint: false },
+      });
+    }
+  }
+
+  // docs/183 dep-dir design — mount each declared dep dir's per-session
+  // `type=overlay` volume at `/workspace/<dep-dir>`, NESTED under the workspace
+  // mount above. The daemon performs the `mount -t overlay` as it builds the
+  // container, so the merged dep view lands at the nested target by construction
+  // (proven across the host matrix — prototype/nested-overlay-spike.sh, 3/3).
+  // Absent/empty for non-overlay sessions → byte-for-byte unchanged. Docker
+  // orders mounts by destination depth, so the parent `/workspace` mount always
+  // lands before these children regardless of array order.
+  if (overlayDepSpecs) {
+    for (const spec of overlayDepSpecs) {
+      mounts.push({
+        Type: "volume",
+        Source: spec.volumeName,
+        Target: spec.mountPath,
       });
     }
   }
@@ -326,19 +337,17 @@ export async function createContainer(
     );
   }
 
-  // docs/183 Phase 2 — overlay session: mount the per-session `type=overlay`
-  // volume at `/workspace`. We only need its NAME here for buildMounts; the
-  // volume itself is created inside the try block below — right before the
-  // container references it — so any throw between here and container start
-  // (e.g. buildEnv rejecting a misconfigured docker-proxy) can't leak a
-  // just-created volume. Non-overlay sessions skip this entirely.
-  const overlayWorkspaceVolume = config.overlaySpec?.volumeName;
-
+  // docs/183 dep-dir design — the per-session `type=overlay` volumes (one per
+  // declared dep dir) are mounted nested at `/workspace/<dep-dir>`. buildMounts
+  // only needs each volume's NAME + mount target; the volumes themselves are
+  // created inside the try block below — right before the container references
+  // them — so any throw between here and container start can't leak a
+  // just-created volume. Non-overlay sessions pass no specs and skip this.
   const { binds, mounts, workspaceDir } = buildMounts(
     config,
     deps.workspaceVolume,
     deps.credentialsVolume,
-    overlayWorkspaceVolume,
+    config.overlaySpecs,
   );
 
   const env = buildEnv(
@@ -412,22 +421,24 @@ export async function createContainer(
       cpuQuota: config.cpuQuota,
       pidsLimit: config.pidsLimit,
     } : undefined,
-    // docs/183 Phase 2 — recorded so destroyContainer can `docker volume rm` the
-    // per-session overlay volume on teardown (and the failure path below).
-    overlayVolumeName: config.overlaySpec?.volumeName,
+    // docs/183 dep-dir design — recorded so destroyContainer can `docker volume
+    // rm` each per-session overlay volume on teardown (and the failure path below).
+    overlayVolumeNames: config.overlaySpecs?.map((s) => s.volumeName),
   };
   deps.containers.set(config.sessionId, sc);
 
   const shortId = config.sessionId.slice(0, 12);
 
   try {
-    // docs/183 Phase 2 — create the per-session `local` `type=overlay` volume
-    // (serialized inside createOverlayVolume to dodge the overlay2 EBUSY hazard)
-    // right before the container references it; the daemon performs the
+    // docs/183 dep-dir design — create each per-session `local` `type=overlay`
+    // volume (serialized inside createOverlayVolume to dodge the overlay2 EBUSY
+    // hazard) right before the container references them; the daemon performs the
     // `mount -t overlay` as it builds the container. Kept INSIDE the try so any
-    // later failure removes it via the catch below (`sc.overlayVolumeName`).
-    if (config.overlaySpec) {
-      await createOverlayVolume(deps.docker, config.overlaySpec, deps.baseLabels());
+    // later failure removes them via the catch below (`sc.overlayVolumeNames`).
+    if (config.overlaySpecs) {
+      for (const spec of config.overlaySpecs) {
+        await createOverlayVolume(deps.docker, spec, deps.baseLabels());
+      }
     }
 
     // Remove any leftover container with the same name (e.g. from a crash)
@@ -498,11 +509,13 @@ export async function createContainer(
         // Container reference invalid
       }
     }
-    // docs/183 Phase 2 — drop the per-session overlay volume we created above so a
-    // failed create doesn't leak it. The disk-janitor orphan-volume sweep is the
-    // backstop, but reclaim eagerly here.
-    if (sc.overlayVolumeName) {
-      await removeOverlayVolume(deps.docker, sc.overlayVolumeName);
+    // docs/183 dep-dir design — drop every per-session overlay volume we created
+    // above so a failed create doesn't leak them. The disk-janitor orphan-volume
+    // sweep is the backstop, but reclaim eagerly here.
+    if (sc.overlayVolumeNames) {
+      for (const name of sc.overlayVolumeNames) {
+        await removeOverlayVolume(deps.docker, name);
+      }
     }
     throw err;
   }
@@ -649,12 +662,15 @@ export async function destroyContainer(
     // Container may already be gone
   }
 
-  // docs/183 Phase 2 — drop the per-session overlay volume after the container is
-  // gone. The daemon unmounts the overlay on container stop, so this is a plain
-  // `docker volume rm` with no manual unmount-ordering. The shared read-only base
-  // (lowerdir) lives in its own `overlay-base/<hash>/` subtree and is NOT touched.
-  if (sc.overlayVolumeName) {
-    await removeOverlayVolume(deps.docker, sc.overlayVolumeName);
+  // docs/183 dep-dir design — drop every per-session overlay volume after the
+  // container is gone. The daemon unmounts each overlay on container stop, so this
+  // is a plain `docker volume rm` with no manual unmount-ordering. The shared
+  // read-only bases (lowerdirs) live in their own `overlay-base/<hash>/` subtrees
+  // and are NOT touched.
+  if (sc.overlayVolumeNames) {
+    for (const name of sc.overlayVolumeNames) {
+      await removeOverlayVolume(deps.docker, name);
+    }
   }
 
   sc.status = "stopped";
@@ -684,8 +700,8 @@ export function buildContainerConfig(
     opsSession?: boolean;
     /** docs/128 — allow-listed read-only host mounts; applied only when opsSession. */
     hostMounts?: HostMount[];
-    /** docs/183 Phase 2 — overlay dep store spec; absent for non-overlay sessions. */
-    overlaySpec?: OverlaySpec;
+    /** docs/183 dep-dir design — one overlay spec per declared dep dir; absent for non-overlay sessions. */
+    overlaySpecs?: DepDirOverlaySpec[];
   },
 ): ContainerConfig {
   return {
@@ -711,6 +727,6 @@ export function buildContainerConfig(
     dockerAccess: opts.opsSession ? false : opts.dockerAccess,
     opsSession: opts.opsSession,
     hostMounts: opts.opsSession ? opts.hostMounts : undefined,
-    overlaySpec: opts.overlaySpec,
+    overlaySpecs: opts.overlaySpecs,
   };
 }
