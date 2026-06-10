@@ -239,11 +239,11 @@ export function IssueDetail({
         <div className="shrink-0 border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
           <Button
             variant="secondary"
-            size="md"
+            size="sm"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-            className="w-full inline-flex items-center justify-center gap-1.5"
+            className="inline-flex items-center gap-1.5"
           >
             <RocketLaunchIcon size={ICON_SIZE.SM} />
             Start session from this issue
