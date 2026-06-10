@@ -34,53 +34,64 @@ The user asked for **full persistence** and that **the exact same code path serv
 
 ## Design
 
+### Why files, not SQLite
+
+The first cut of this doc proposed a `container_logs` table in the shared `.shipit.db`. We rejected it: dev-server logs can be thousands of lines/sec, and every line is an `INSERT` + append-time prune that **serialises against chat-history / usage / session-metadata writes on the same database**. WAL helps readers, but a single writer still bottlenecks, and we'd be paying durability/transaction overhead for data that is fundamentally a scratch ring buffer. Log volume should never be able to slow down the metadata that actually needs ACID guarantees.
+
+So logs live in **per-session append-only files** instead. Plain `fs.appendFile` to a dedicated fd is far cheaper than a transactional INSERT, contends with nothing, and rotates with a simple file swap.
+
+### Where the files live
+
+Per-session log files sit in a `logs/` directory **alongside** the git checkout, not inside it:
+
+```
+sessions/{sessionId}/
+  workspace/            ← the git checkout (auto-committed, watched, in the file tree)
+  logs/                 ← NEW: durable log backlog (host-side, never committed, never watched)
+    agent.jsonl         ← the Logs-tab channel (structured entries)
+    service-<name>.log  ← one raw-text file per preview service
+```
+
+This placement is deliberate:
+- **Outside `workspace/`** → never picked up by `git add -A` (auto-commit) and never appears in the file watcher / file tree. Putting logs *inside* the checkout was rejected: `.shipit/` only stays out of git by ShipIt actively maintaining each repo's `.gitignore` (`github-ci-fix.ts`), which is unreliable for imported repos — a real risk of committing logs.
+- **Host-side, outside the container** → survives container destruction, idle eviction, and orchestrator restart (the original durability requirement). It is *not* in the agent's `/workspace`.
+- **Under the session dir** → naturally scoped to one session and removable with it (see Lifecycle).
+
 ### One store: `LogStore`
 
-A new `LogStore` (`src/server/orchestrator/log-store.ts`), backed by a dedicated SQLite table in the existing `.shipit.db` (the same durable store that already survives every event above — chat history, sessions, usage all live there). Choosing SQLite over per-session files means we inherit the existing migration machinery, WAL durability, and the disk-janitor/session-deletion hooks already keyed by `sessionId`.
+A new `LogStore` (`src/server/orchestrator/log-store.ts`) owns these files behind a single API consumed identically by the agent path and the service path:
 
 ```ts
 type LogChannel = string; // "agent" | `service:${name}`
 
-interface LogLine {
-  sessionId: string;
-  channel: LogChannel;
-  seq: number;        // monotonic per (session, channel), assigned on append
-  ts: string;         // ISO timestamp
-  source: string;     // agent: "stderr"|"stdout"|"server"|"preview"|"install"; service: "" 
-  text: string;       // one entry (agent) or one streamed chunk (service)
-}
-
 class LogStore {
-  append(sessionId, channel, source, text): void;        // INSERT + prune-on-write
-  snapshotEntries(sessionId, channel, maxLines): LogLine[];  // structured replay (agent)
-  snapshotText(sessionId, channel, maxBytes): string;        // concatenated replay (service)
-  clear(sessionId, channel): void;                       // DELETE one channel
-  remove(sessionId): void;                               // DELETE all channels for a session
+  constructor(sessionsRoot: string);
+  append(sessionId, channel, line): void;                   // O(1) append to the channel's fd
+  snapshotEntries(sessionId, channel, maxLines): WsLogEntry[]; // structured replay (agent / JSONL)
+  snapshotText(sessionId, channel, maxBytes): string;          // concatenated replay (service / raw)
+  clear(sessionId, channel): void;                          // truncate the channel file(s)
+  remove(sessionId): void;                                  // rm -rf sessions/{id}/logs
 }
 ```
 
-The **same** `append` / `snapshot` / `clear` / `remove` methods serve both surfaces; only the two thin snapshot accessors differ in shape (array of entries for the structured Logs tab; concatenated string for the xterm service panel) and both read the identical table.
+Only the two snapshot accessors differ in shape — `snapshotEntries` parses JSONL back into `WsLogEntry[]` for the structured, source-filtered Logs tab; `snapshotText` concatenates raw bytes for the xterm service panel. `append`, `clear`, and `remove` are byte-for-byte the same code for both channels.
 
-### Schema (new migration in `database.ts`)
+- **Agent channel** (`agent.jsonl`): each appended line is a JSON object `{ ts, source, text }` where `source` ∈ `stderr|stdout|server|preview|install`. `snapshotEntries` reads the tail and `JSON.parse`s each line into a `WsLogEntry`.
+- **Service channel** (`service-<name>.log`): raw `docker compose logs -f` chunk text, appended verbatim (ANSI preserved for the xterm panel; the HTTP route strips ANSI as it does today). `snapshotText` returns the tail bytes.
 
-```sql
-CREATE TABLE container_logs (
-  session_id TEXT NOT NULL,
-  channel    TEXT NOT NULL,
-  seq        INTEGER NOT NULL,
-  ts         TEXT NOT NULL,
-  source     TEXT NOT NULL DEFAULT '',
-  text       TEXT NOT NULL,
-  PRIMARY KEY (session_id, channel, seq)
-);
-CREATE INDEX idx_container_logs_lookup ON container_logs (session_id, channel, seq);
-```
+### Retention via file rotation (no per-write prune)
 
-**Retention / pruning** runs on append (cheap, amortized): keep at most `MAX_AGENT_ENTRIES` (e.g. 5 000) rows per agent channel and at most `MAX_SERVICE_BYTES` (e.g. 1 MB) per service channel, deleting the lowest-`seq` rows beyond the cap. Byte accounting for the service cap is tracked per `(session, channel)` so we prune by total text length, mirroring today's `MAX_LOG_BUFFER` semantics.
+Each channel is size-capped with **two-file rotation**, which keeps appends O(1) and confines trimming to the (rare) rotation moment — no read-modify-write on the hot path:
+
+- Track the active file's size in memory. On append, if it would exceed the cap, rename `agent.jsonl → agent.jsonl.1` (replacing any prior `.1`) and start a fresh active file.
+- A snapshot reads `.1` then the active file and returns the last `maxLines` / `maxBytes`.
+- Caps: `MAX_AGENT_BYTES` and `MAX_SERVICE_BYTES` per channel (e.g. ~1 MB each). Worst-case disk per channel is `2 × cap`. (Exact values in Open Questions.)
+
+This is strictly cheaper than the rejected SQLite `INSERT`+prune-every-write, and bounds disk without a background timer.
 
 ### Integration — agent container (the Logs tab)
 
-`broadcastLog` is already the single choke point every agent-log producer funnels through (agent stdout/stderr, "Agent process started/exited", container-creation failures, preview errors, install output, idle-dispose notices, user-interrupt, stack errors — full producer list in §"Producers"). We change `createLogBuffer` so `broadcastLog` writes through to `LogStore.append(sessionId, "agent", source, text)` instead of (or in addition to) the in-memory array.
+`broadcastLog` is already the single choke point every agent-log producer funnels through (agent stdout/stderr, "Agent process started/exited", container-creation failures, preview errors, install output, idle-dispose notices, user-interrupt, stack errors — full producer list in §"Producers"). We change `createLogBuffer` so `broadcastLog` writes the entry through to `LogStore.append(sessionId, "agent", { ts, source, text })` (JSONL) instead of (or in addition to) the in-memory array.
 
 On WS connect (`index.ts` ~line 1684), replace the `getLogBuffer(sessionId)` replay with `LogStore.snapshotEntries(sessionId, "agent", MAX_AGENT_ENTRIES)`. The existing `clear_logs`-then-replay handshake (so reconnecting viewers replace rather than append) is unchanged — it just replays from the durable store.
 
@@ -94,12 +105,15 @@ In `ServiceManager.streamLogs`, the `handleData` chunk handler that appends to `
 
 `logBuffers.clear()` on reconcile/stop no longer loses user-visible history, because the durable copy lives in `LogStore`. We stop treating the in-memory ring as the backlog source.
 
-### Lifecycle & retention
+### Lifecycle & cleanup
 
-- **Append-time prune** keeps each channel bounded (above).
-- **`clear_logs` / service clear** → `LogStore.clear(session, channel)`.
-- **Session archive / delete / full reset** → `LogStore.remove(sessionId)`, wired next to the existing `removeLogBuffer` / chat-history cleanup call sites.
-- **Disk janitor** (`disk-janitor.ts`): add a sweep that deletes `container_logs` rows for sessions no longer present in the session manager (mirrors the orphan-volume / orphan-cache sweeps). Logs for a live-but-idle-evicted session are **kept** — that's the whole point.
+The user's ask was that logs be "automatically cleaned up eventually." Three layers deliver that:
+
+- **Rotation** caps each channel's footprint continuously (above) — steady-state disk is bounded without anything else running.
+- **Session archive / delete / full reset** → `LogStore.remove(sessionId)` (`rm -rf sessions/{id}/logs`), wired next to the existing `fs.rm(session.workspaceDir, …)` call (`index.ts` archive path, ~line 490) and `removeLogBuffer` cleanup. Note the existing cleanup removes the `workspace/` checkout but leaves the `sessions/{id}` parent, so the `logs/` sibling needs its own explicit removal — this is the one new wiring point the file location costs us.
+- **Disk janitor** (`disk-janitor.ts`): add a `logs/` sweep alongside the existing orphan-workspace / orphan-cache sweeps — delete `sessions/{id}/logs` for any `{id}` not present in the session manager. Safety net for archives where the explicit `remove` didn't run (unclean shutdown), exactly like the orphan-workspace sweep it sits next to.
+
+Logs for a **live-but-idle-evicted** session are intentionally **kept** (the session still exists; only its container was reclaimed) — that's the whole point of moving off the in-RAM buffers.
 
 ### Client
 
@@ -111,29 +125,29 @@ No structural client changes. The agent Logs tab and `ServiceLogViewer` already 
 
 ## Testing
 
-- `log-store.test.ts` — append/snapshot round-trip (both shapes), per-channel isolation, prune-at-cap (entries and bytes), `clear` vs `remove`, monotonic `seq`.
-- Extend `terminal-logs-relay.test.ts` — agent logs survive a simulated orchestrator "restart" (new `LogStore` over the same DB) and replay on a fresh connect; cross-session non-leak still holds; `clear_logs` empties the durable store.
-- Service path — `service-manager` test: streamed chunks land in the store; `snapshotLogs` reads the store; reconcile/`logBuffers.clear()` does **not** drop the durable backlog.
+- `log-store.test.ts` — append/snapshot round-trip (both shapes), per-channel isolation, rotation at cap (`.1` swap, snapshot spans both files), `clear` (truncate) vs `remove` (rm dir), JSONL parse tolerance for a torn last line.
+- Extend `terminal-logs-relay.test.ts` — agent logs survive a simulated orchestrator "restart" (new `LogStore` over the same `sessions/{id}/logs` dir) and replay on a fresh connect; cross-session non-leak still holds; `clear_logs` empties the durable file.
+- Service path — `service-manager` test: streamed chunks land in the channel file; `snapshotLogs` reads the file; reconcile/`logBuffers.clear()` does **not** drop the durable backlog.
 - No-duplicate-on-reconnect: replaying a larger backlog after a reconnect doesn't double-render (client idempotency).
 
 ## Migration / rollout
 
-- One additive migration (new table + index) — no backfill; pre-existing in-memory logs are simply not retroactively persisted.
-- Behind no flag by default; the in-memory ring buffers can be kept transiently during rollout but the durable store is the replay source of truth. (Open question below.)
+- No DB migration. The `logs/` directory is created lazily on first append; pre-existing in-memory logs are simply not retroactively persisted.
+- The in-memory rings can be kept transiently during rollout but the durable files are the replay source of truth. (Open question below.)
 
 ## Open questions
 
-1. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; delete `createLogBuffer`'s array (the Map becomes a thin shim over `LogStore`).
-2. **Retention caps** — confirm `MAX_AGENT_ENTRIES` (5 000?) and `MAX_SERVICE_BYTES` (1 MB/service?) and whether service retention should be line-count instead of bytes.
-3. **DB volume** — high-frequency dev-server logging means frequent INSERT+prune. Validate WAL throughput; if it's a problem, batch appends (e.g. coalesce service chunks on a short timer) before the first write.
+1. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; collapse `createLogBuffer`'s array into a thin shim over `LogStore`.
+2. **Retention caps** — confirm `MAX_AGENT_BYTES` / `MAX_SERVICE_BYTES` (~1 MB/channel?), and whether the agent cap should be line-count rather than bytes.
+3. **Write batching** — append per line is fine for the agent channel; for chatty services consider coalescing `-f` chunks on a short timer (or relying on the OS write buffer) so we don't `appendFile` on every tiny chunk. Validate before optimising.
+4. **fd lifecycle** — keep a long-lived append fd per active channel (fast, but must close on session dispose / rotate), or open-append-close per write (simpler, slightly slower). Leaning long-lived with close-on-dispose.
 
 ## Key files
 
-- `src/server/orchestrator/log-store.ts` *(new)* — the store.
-- `src/server/shared/database.ts` — `container_logs` migration.
+- `src/server/orchestrator/log-store.ts` *(new)* — the file-backed store (`sessions/{id}/logs/`, two-file rotation).
 - `src/server/orchestrator/app-lifecycle.ts` — `createLogBuffer` → write-through to `LogStore`.
-- `src/server/orchestrator/index.ts` — WS-connect replay from `LogStore`.
-- `src/server/orchestrator/service-manager.ts` — `streamLogs` append + `snapshotLogs` read from `LogStore`; `--since` backfill.
+- `src/server/orchestrator/index.ts` — WS-connect replay from `LogStore`; `LogStore.remove` on archive/delete.
+- `src/server/orchestrator/service-manager.ts` — `streamLogs` append + `snapshotLogs` read from `LogStore`; `--since` backfill. (`ServiceManager` is constructed with the session dir, so it can resolve `logs/`.)
 - `src/server/orchestrator/ws-handlers/service-handlers.ts`, `api-routes-preview.ts` — unchanged call shape; now durable underneath.
-- `src/server/orchestrator/disk-janitor.ts` — orphan-session log sweep.
-- session archive/delete/full-reset paths — `LogStore.remove(sessionId)`.
+- `src/server/orchestrator/disk-janitor.ts` — orphan-session `logs/` sweep.
+- `src/server/orchestrator/session-dir-factory.ts` — reference for `sessions/{id}` layout (logs are a sibling of `workspace/`).
