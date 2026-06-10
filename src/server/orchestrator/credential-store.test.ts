@@ -244,13 +244,13 @@ describe("CredentialStore", () => {
   describe("mcpOAuth", () => {
     it("setMcpOAuthTokens persists and stamps obtainedAt", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "at_xyz",
         refreshToken: "rt_xyz",
         clientId: "cid",
         expiresAt: 1_700_000_000_000,
       });
-      const got = store.getMcpOAuthTokens("linear_oauth");
+      const got = store.getMcpOAuthTokens("notion_oauth");
       expect(got?.accessToken).toBe("at_xyz");
       expect(got?.refreshToken).toBe("rt_xyz");
       expect(got?.clientId).toBe("cid");
@@ -260,59 +260,59 @@ describe("CredentialStore", () => {
 
     it("preserves a caller-supplied obtainedAt", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "x",
         obtainedAt: "2024-01-01T00:00:00.000Z",
       });
-      expect(store.getMcpOAuthTokens("linear_oauth")?.obtainedAt).toBe(
+      expect(store.getMcpOAuthTokens("notion_oauth")?.obtainedAt).toBe(
         "2024-01-01T00:00:00.000Z",
       );
     });
 
     it("returns a defensive copy from get", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
-      const got = store.getMcpOAuthTokens("linear_oauth")!;
+      store.setMcpOAuthTokens("notion_oauth", { accessToken: "x" });
+      const got = store.getMcpOAuthTokens("notion_oauth")!;
       got.accessToken = "mutated";
-      expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("x");
+      expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("x");
     });
 
     it("getAllMcpOAuthTokens returns a fresh per-entry copy", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.setMcpOAuthTokens("sentry_oauth", { accessToken: "x" });
       store.setMcpOAuthTokens("notion_oauth", { accessToken: "y" });
       const all = store.getAllMcpOAuthTokens();
-      all.linear_oauth.accessToken = "mutated";
-      expect(store.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("x");
-      expect(Object.keys(all).sort()).toEqual(["linear_oauth", "notion_oauth"]);
+      all.sentry_oauth.accessToken = "mutated";
+      expect(store.getMcpOAuthTokens("sentry_oauth")?.accessToken).toBe("x");
+      expect(Object.keys(all).sort()).toEqual(["notion_oauth", "sentry_oauth"]);
     });
 
     it("deleteMcpOAuthTokens removes a single source", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.setMcpOAuthTokens("sentry_oauth", { accessToken: "x" });
       store.setMcpOAuthTokens("notion_oauth", { accessToken: "y" });
-      store.deleteMcpOAuthTokens("linear_oauth");
-      expect(store.getMcpOAuthTokens("linear_oauth")).toBeUndefined();
+      store.deleteMcpOAuthTokens("sentry_oauth");
+      expect(store.getMcpOAuthTokens("sentry_oauth")).toBeUndefined();
       expect(store.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("y");
     });
 
     it("survives a reload from disk", () => {
       const dir = createTmpDir();
       const store = new CredentialStore(dir);
-      store.setMcpOAuthTokens("linear_oauth", {
+      store.setMcpOAuthTokens("notion_oauth", {
         accessToken: "at_xyz",
         refreshToken: "rt_xyz",
       });
       const reloaded = new CredentialStore(dir);
-      expect(reloaded.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("at_xyz");
-      expect(reloaded.getMcpOAuthTokens("linear_oauth")?.refreshToken).toBe("rt_xyz");
+      expect(reloaded.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("at_xyz");
+      expect(reloaded.getMcpOAuthTokens("notion_oauth")?.refreshToken).toBe("rt_xyz");
     });
 
     it("clear() wipes mcpOAuth tokens too", () => {
       const store = new CredentialStore(createTmpDir());
-      store.setMcpOAuthTokens("linear_oauth", { accessToken: "x" });
+      store.setMcpOAuthTokens("notion_oauth", { accessToken: "x" });
       store.clear();
-      expect(store.getMcpOAuthTokens("linear_oauth")).toBeUndefined();
+      expect(store.getMcpOAuthTokens("notion_oauth")).toBeUndefined();
     });
   });
 
@@ -344,10 +344,10 @@ describe("CredentialStore", () => {
     it("deleteMcpOAuthClient removes only the targeted client", () => {
       const store = new CredentialStore(createTmpDir());
       store.setMcpOAuthClient("notion_oauth", { clientId: "n", registeredAt: 1 });
-      store.setMcpOAuthClient("linear_oauth", { clientId: "l", registeredAt: 1 });
+      store.setMcpOAuthClient("sentry_oauth", { clientId: "l", registeredAt: 1 });
       store.deleteMcpOAuthClient("notion_oauth");
       expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
-      expect(store.getMcpOAuthClient("linear_oauth")?.clientId).toBe("l");
+      expect(store.getMcpOAuthClient("sentry_oauth")?.clientId).toBe("l");
     });
 
     it("clear() wipes registered clients too", () => {

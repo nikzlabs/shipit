@@ -111,6 +111,17 @@ export interface SessionInfo {
    * promoted to Active forever.
    */
   lastViewedAt?: string;
+  /**
+   * docs/110 — pinned session. ISO timestamp set when the user pins the session;
+   * presence is the pin flag, the value orders pins (most-recently-pinned first)
+   * within a repo group. A pin makes the session **persistent**: it sticks to the
+   * top of its repo group in the sidebar, is exempt from the merged top-N view cap
+   * (`filterVisibleInSidebar`) so it never silently drops out of the list, and is
+   * immune to automatic disk-tier descent (`canAutoDescend`) so its workspace is
+   * never reclaimed. Cleared by an explicit user archive — a session can't be both
+   * hidden and persistent.
+   */
+  pinnedAt?: string;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */
@@ -318,7 +329,14 @@ export interface TrackerIssue {
   availableStatuses?: { name: string; type?: string }[];
 }
 
-/** A comment created on an issue (docs/177 — agent issue writes). */
+/**
+ * A comment on an issue. Returned by a write (`addComment`, docs/177 — only `id`
+ * is consulted there, for undo) AND by the read path that powers the inline
+ * comment thread (`listComments`, docs/189 follow-up). The author + timestamp
+ * are optional because a freshly-created comment from a write doesn't always
+ * carry them, but `listComments` and the enriched `addComment` populate them so
+ * the thread can render avatar/author/relative-date rows.
+ */
 export interface TrackerComment {
   /** Tracker-internal comment id. Used to undo (delete) the comment. */
   id: string;
@@ -326,10 +344,41 @@ export interface TrackerComment {
   url?: string;
   /** The comment body that was posted. */
   body: string;
+  /** Comment author, for the thread row. Absent when the tracker omits it. */
+  author?: { name: string; avatarUrl?: string };
+  /** ISO-8601 creation time, for the relative-date label. */
+  createdAt?: string;
 }
 
 /** Which kind of issue write a provenance card records (docs/177, docs/187). */
 export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create";
+
+/**
+ * docs/189 — the human-readable "what changed" values the redesigned write card
+ * renders on its second line. Display-only and verb-specific: the client reads
+ * the field that matches `IssueWriteCard.verb`. Distinct from `undo` (the
+ * reverse-write snapshot, captured for replay, not display). Every field is
+ * optional — the card degrades to its first line when absent (pre-docs/189
+ * cards, or a `create`, which has no "before").
+ */
+export interface IssueWriteContent {
+  /** comment → a clipped preview of the posted comment body. */
+  comment?: string;
+  /** edit → the title transition, present only when the title was edited. */
+  title?: { before: string; after: string };
+  /** edit → true when the description was among the edited fields. */
+  descriptionChanged?: boolean;
+  /**
+   * edit → a faint one-liner for label/priority changes (e.g.
+   * "priority → High · labels: security, bug"), so a labels/priority-only edit
+   * still shows what changed rather than rendering an empty second line.
+   */
+  attrs?: string;
+  /** status → the native status names of the transition. */
+  status?: { from: string; to: string };
+  /** assignee → the new assignee's display name, or null when unassigned. */
+  assignee?: string | null;
+}
 
 /**
  * The minimal snapshot a do-then-surface write captures so it can be undone as
@@ -382,10 +431,21 @@ export interface IssueWriteCard {
   /** Human one-liner, e.g. "commented on SHI-28", "set #42 → Closed". */
   summary: string;
   /**
+   * docs/189 — display-only "what changed" values for the card's second line
+   * (comment preview, title/status/assignee deltas). Optional: absent on
+   * pre-docs/189 cards and on a `create`; for a labels/priority-only edit only
+   * `content.attrs` is set. NOT consulted by undo — that is `undo`.
+   */
+  content?: IssueWriteContent;
+  /**
    * Whose identity the write is attributed to. GitHub writes use the acting
    * user's own token (`"user"`); Linear writes use the deployment-wide PAT, so
    * they are attributed to the workspace PAT owner (`"workspace"`), NOT the
    * acting user — the card must not claim per-user authorship for Linear.
+   *
+   * docs/189 — retained in the data model (cheap, useful for a future audit
+   * log) but no longer rendered: the card is self-evidently the agent's, so
+   * spelling out the backing identity carries no actionable information.
    */
   attribution: "user" | "workspace";
   undo: IssueWriteUndo;
@@ -474,6 +534,26 @@ export interface ListIssuesResult {
 export interface GetIssueResult {
   tracker: TrackerInfo;
   issue: TrackerIssue;
+}
+
+/**
+ * Response shape for `GET /api/issue/comments?tracker=&id=` — the comment thread
+ * rendered inline in the issue detail view (docs/189 follow-up). Oldest-first,
+ * the order a reader expects in a discussion.
+ */
+export interface ListIssueCommentsResult {
+  comments: TrackerComment[];
+}
+
+/**
+ * Response shape for `POST /api/issue/comments` — a user posting a comment from
+ * the inline detail view. Returns the created comment (enriched with author +
+ * timestamp) so the client appends it to the thread without a full refetch.
+ * Distinct from the agent's do-then-surface comment write, which returns an
+ * `IssueWriteOutcome` and leaves a provenance card in the transcript.
+ */
+export interface PostIssueCommentResult {
+  comment: TrackerComment;
 }
 
 /**

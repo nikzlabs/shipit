@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import { IssueDetail } from "./IssueDetail.js";
 import type { IssueSelection } from "../stores/issues-store.js";
-import type { TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
+import type { TrackerComment, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 /**
  * Tests for the inline single-issue detail view (docs/189): it paints the
@@ -43,9 +43,13 @@ function baseProps() {
     error: null as string | null,
     info: INFO,
     canStart: true,
+    comments: [] as TrackerComment[] | null,
+    commentsLoading: false,
+    commentsError: null as string | null,
     onBack: vi.fn(),
     onRefresh: vi.fn(),
     onStartSession: vi.fn(),
+    onPostComment: vi.fn(async () => null as string | null),
   };
 }
 
@@ -96,5 +100,62 @@ describe("IssueDetail (docs/189)", () => {
   it("renders an empty-description placeholder", () => {
     render(<IssueDetail {...baseProps()} detail={makeIssue({ description: undefined })} />);
     expect(screen.getByText("No description.")).toBeInTheDocument();
+  });
+});
+
+describe("IssueDetail comments (docs/189 follow-up)", () => {
+  const COMMENT: TrackerComment = {
+    id: "c-1",
+    body: "First reply on the thread.",
+    author: { name: "Reviewer" },
+    createdAt: "2026-06-01T00:00:00.000Z",
+  };
+
+  it("renders the comment thread with author and body", () => {
+    render(<IssueDetail {...baseProps()} comments={[COMMENT]} />);
+    expect(screen.getByText("Reviewer")).toBeInTheDocument();
+    expect(screen.getByText("First reply on the thread.")).toBeInTheDocument();
+    // The count chip reflects the thread length.
+    expect(screen.getByText("· 1")).toBeInTheDocument();
+  });
+
+  it("shows a loading hint until the thread is fetched (comments null)", () => {
+    render(<IssueDetail {...baseProps()} comments={null} commentsLoading />);
+    expect(screen.getByText("Loading comments…")).toBeInTheDocument();
+  });
+
+  it("shows the empty state when the thread has no comments", () => {
+    render(<IssueDetail {...baseProps()} comments={[]} />);
+    expect(screen.getByText("No comments yet.")).toBeInTheDocument();
+  });
+
+  it("surfaces a fetch error for the thread", () => {
+    render(<IssueDetail {...baseProps()} comments={null} commentsError="Linear unreachable" />);
+    expect(screen.getByText("Linear unreachable")).toBeInTheDocument();
+  });
+
+  it("posts a comment and clears the draft on success", async () => {
+    const props = baseProps();
+    render(<IssueDetail {...props} />);
+    const input = screen.getByTestId("issue-comment-input") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Looks good to me" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Comment$/i }));
+    await waitFor(() => expect(props.onPostComment).toHaveBeenCalledWith("Looks good to me"));
+    await waitFor(() => expect(input.value).toBe(""));
+  });
+
+  it("keeps the draft and shows an error when posting fails", async () => {
+    const props = { ...baseProps(), onPostComment: vi.fn(async () => "Posting failed") };
+    render(<IssueDetail {...props} />);
+    const input = screen.getByTestId("issue-comment-input") as HTMLTextAreaElement;
+    fireEvent.change(input, { target: { value: "Draft survives" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Comment$/i }));
+    await waitFor(() => expect(screen.getByText("Posting failed")).toBeInTheDocument());
+    expect(input.value).toBe("Draft survives");
+  });
+
+  it("disables the Comment button for an empty draft", () => {
+    render(<IssueDetail {...baseProps()} />);
+    expect(screen.getByRole("button", { name: /^Comment$/i })).toBeDisabled();
   });
 });

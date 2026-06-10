@@ -89,6 +89,14 @@ export interface Tracker {
   /** Fetch a single issue by tracker-internal id, or null if not found. */
   getIssue(id: string): Promise<TrackerIssue | null>;
 
+  /**
+   * List an issue's comments, oldest-first, for the inline comment thread
+   * (docs/189 follow-up). Each comment carries its author + creation time so the
+   * thread renders avatar/author/relative-date rows. Throws on an unconfigured
+   * tracker (callers check `isConfigured()` first).
+   */
+  listComments(id: string): Promise<TrackerComment[]>;
+
   // ---- Writes (docs/177) ----------------------------------------------------
   // Mutations go through the same adapter that does reads. Tokens stay
   // orchestrator-side; only the result returns to the caller. Each method

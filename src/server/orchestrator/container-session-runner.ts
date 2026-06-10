@@ -1455,18 +1455,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             content?: string;
             mimeType?: string;
             title?: string;
+            filePath?: string;
+            inWorkspace?: boolean;
             createdAt?: string;
           };
           if (
             typeof evt.presentId === "string"
             && typeof evt.content === "string"
             && typeof evt.mimeType === "string"
+            && typeof evt.filePath === "string"
+            && typeof evt.inWorkspace === "boolean"
           ) {
             const entry: PresentStateEntry = {
               presentId: evt.presentId,
               content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
+              filePath: evt.filePath,
+              inWorkspace: evt.inWorkspace,
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
@@ -1478,6 +1484,8 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               content: entry.content,
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
+              filePath: entry.filePath,
+              inWorkspace: entry.inWorkspace,
               createdAt: entry.createdAt,
             });
           }

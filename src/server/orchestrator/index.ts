@@ -64,7 +64,10 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
-import { liveOverlayScopeHashes, depDirsForSession } from "./overlay-session.js";
+import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled } from "./overlay-session.js";
+import { publishDepDirOverlayBases } from "./overlay-publish.js";
+import type { ContainerSessionRunner } from "./container-session-runner.js";
+import type { SessionInfo } from "../shared/types.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -405,6 +408,24 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // flows through the per-provider auth managers (built just above).
   providerAccountManager.attachAuthManagers(authManagers);
 
+  // docs/183 Phase 4b — runner-adapting publish-after-install hook. Closes over
+  // the orchestrator-visible `stateDir` (same dir the disk-janitor sweeps) plus
+  // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
+  // HTTP-agnostic. Cheap flag gate first so a flag-off session never awaits worker
+  // readiness. Inert unless `OVERLAY_DEP_STORE` is on.
+  const publishOverlayBases = async ({ runner, session, installOk }: {
+    runner: ContainerSessionRunner;
+    session: SessionInfo;
+    installOk: boolean;
+  }): Promise<void> => {
+    if (!isOverlayEnabled() || !session.remoteUrl) return;
+    await runner.whenWorkerReady();
+    await publishDepDirOverlayBases(
+      { session, workerUrl: runner.getWorkerUrl(), installOk },
+      { stateDir, createRepoGit, getBareCacheDir },
+    );
+  };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -415,6 +436,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
     ensureAgentTokenFresh,
+    publishOverlayBases,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),

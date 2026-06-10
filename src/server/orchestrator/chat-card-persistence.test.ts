@@ -6,39 +6,57 @@ import type { WsServerMessage } from "../shared/types.js";
 
 /**
  * The anti-footgun contract: a transcript card emitted via `emitChatCard` is
- * ALWAYS also recorded for in-band persistence, so it can't ship emit-only and
- * vanish on a session switch / reload (the recurring bug behind docs/163 +
- * docs/164). A fresh fake runner per test is one isolated "turn".
+ * ALWAYS also recorded for in-band persistence AND persisted to chat history
+ * immediately, so it can't ship emit-only or flicker out on a mid-turn reconnect
+ * (the recurring bug behind docs/163 + docs/164 + docs/191). A fresh fake runner
+ * per test is one isolated "turn".
  */
 function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
   runner: SessionRunnerInterface;
   emitted: WsServerMessage[];
+  persisted: { sessionId: string; messages: PersistedMessage[] }[];
+  chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void };
 } {
   const emitted: WsServerMessage[] = [];
+  const persisted: { sessionId: string; messages: PersistedMessage[] }[] = [];
+  const chatHistoryManager = {
+    replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
+      persisted.push({ sessionId, messages }),
+  };
   const runner = {
     emitMessage: (m: WsServerMessage) => emitted.push(m),
     chatMessageGroups: groups,
     recordedCards: [],
+    steeredMessages: [],
   } as unknown as SessionRunnerInterface;
-  return { runner, emitted };
+  return { runner, emitted, persisted, chatHistoryManager };
 }
 
 describe("chat-card-persistence", () => {
-  it("emitChatCard both emits the WS message AND records it for persistence", () => {
-    const { runner, emitted } = fakeRunner([{ text: "did a thing", toolUse: [] }]);
+  it("emitChatCard emits the WS message, records it, AND persists the turn immediately", () => {
+    const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "did a thing", toolUse: [] }]);
 
     emitChatCard(
       runner,
       { type: "voice_note", sessionId: "s1", id: "v1", headline: "hi", needsAttention: false, kind: "authored", createdAt: "t" },
       { role: "assistant", text: "", voiceNote: { id: "v1", headline: "hi", needsAttention: false, kind: "authored", createdAt: "t" } },
+      { chatHistoryManager, sessionId: "s1" },
     );
 
     // Emitted live for attached viewers...
     expect(emitted).toHaveLength(1);
     expect(emitted[0]).toMatchObject({ type: "voice_note", id: "v1" });
-    // ...AND recorded for in-band persistence so a reload keeps it.
+    // ...recorded for in-band interleaving...
     expect(runner.recordedCards).toHaveLength(1);
     expect(runner.recordedCards[0].message).toMatchObject({ role: "assistant", voiceNote: { id: "v1" } });
+    // ...AND persisted to chat history in the SAME call (docs/191), so a
+    // mid-turn reconnect's loadSessionHistory snapshot already contains the
+    // card — no flicker-out-then-back window.
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0].sessionId).toBe("s1");
+    expect(persisted[0].messages.find((m) => (m as { voiceNote?: unknown }).voiceNote)).toMatchObject({
+      voiceNote: { id: "v1" },
+    });
   });
 
   it("anchors the card after the persistable assistant groups produced so far", () => {
@@ -55,8 +73,10 @@ describe("chat-card-persistence", () => {
   });
 
   it("emitNoticeInTurn emits + records a notice with a shared id (docs/138)", () => {
-    const { runner, emitted } = fakeRunner([{ text: "x", toolUse: [] }]);
-    emitNoticeInTurn(runner, "s1", "Guarded mode unavailable.", "warn");
+    const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "x", toolUse: [] }]);
+    emitNoticeInTurn(runner, "s1", "Guarded mode unavailable.", chatHistoryManager, "warn");
+    // Persisted immediately too, like every other in-turn card (docs/191).
+    expect(persisted).toHaveLength(1);
 
     expect(emitted).toHaveLength(1);
     const ws = emitted[0] as { type: string; id?: string; message?: string; level?: string };
@@ -64,8 +84,8 @@ describe("chat-card-persistence", () => {
     expect(ws.id).toMatch(/^notice-/);
     // Recorded in-band; the persisted row carries the SAME id for reload dedup.
     expect(runner.recordedCards).toHaveLength(1);
-    const persisted = runner.recordedCards[0].message;
-    expect(persisted).toMatchObject({ role: "assistant", notice: true, noticeLevel: "warn", noticeId: ws.id });
+    const recorded = runner.recordedCards[0].message;
+    expect(recorded).toMatchObject({ role: "assistant", notice: true, noticeLevel: "warn", noticeId: ws.id });
   });
 
   it("emitNoticePostTurn emits AND appends to history with a shared id", () => {

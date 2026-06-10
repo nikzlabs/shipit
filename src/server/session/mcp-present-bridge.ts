@@ -69,7 +69,7 @@ const inputSchema = {
     title: {
       type: "string",
       description:
-        "Short display title shown in the carousel header (e.g. 'Architecture Diagram', 'Sales Chart v2'). Optional.",
+        "Short human-friendly name for the artifact, shown as the heading in the Present tab above the file path (e.g. 'Architecture Diagram', 'Sales Chart v2'). Optional — without it the header falls back to the file's name.",
     },
     replaceId: {
       type: "string",

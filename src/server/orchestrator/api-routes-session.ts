@@ -21,6 +21,8 @@ import {
   listAllSessions,
   unarchiveSession,
   renameSession,
+  setSessionPinned,
+  reorderSessionPins,
   archiveSession,
   deleteSession,
   applyTemplate,
@@ -287,6 +289,61 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to rename session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pin — pin (make persistent) a session
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, true);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to pin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // DELETE /api/sessions/:id/pin — unpin a session
+  app.delete<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, false);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to unpin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/pin-order — reorder a repo's pinned sessions (docs/110 Phase 2)
+  app.post<{ Body: { remoteUrl: string; ids: string[] } }>(
+    "/api/sessions/pin-order",
+    async (request, reply) => {
+      try {
+        const { remoteUrl, ids } = request.body;
+        const { sessions } = reorderSessionPins(sessionManager, remoteUrl, ids);
+        deps.sseBroadcast("session_list", { sessions });
+        return { sessions };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder pins: ${getErrorMessage(err)}` });
       }
     },
   );
@@ -658,8 +715,9 @@ export async function registerSessionRoutes(
         // via a `session_spawned` event, recorded in-band with the spawning
         // turn so it survives a session switch / full reload (not just a WS
         // reconnect). The agent ran `shipit session create` as a tool call, so
-        // the card lands at its true transcript position and the following
-        // tool-result boundary flushes it to history via buildTurnMessages.
+        // the card lands at its true transcript position; `emitChatCard`
+        // persists the in-progress turn immediately (docs/191), so it's durable
+        // the instant it fires rather than at the next tool-result boundary.
         const parentRunner = deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
           const spawnedSession = {
@@ -673,6 +731,7 @@ export async function registerSessionRoutes(
             parentRunner,
             { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
             { role: "assistant", text: "", spawnedSession },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
           );
         }
 
@@ -725,6 +784,7 @@ export async function registerSessionRoutes(
             parentRunner,
             { type: "session_spawn_failed", sessionId: request.params.parentId, ...spawnFailed },
             { role: "assistant", text: "", spawnFailed },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
           );
         }
 

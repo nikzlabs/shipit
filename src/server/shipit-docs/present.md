@@ -47,8 +47,11 @@ There is no separate flag — pick the directory that matches your intent.
   `image/svg+xml`, `.md`/`.markdown` → `text/markdown`, `.png` → `image/png`,
   `.jpg`/`.jpeg` → `image/jpeg`, `.gif` → `image/gif`, `.webp` →
   `image/webp`. Unknown extensions fall back to `text/plain`.
-- **`title`** — a short label for the carousel header (e.g. "Sales Chart v2").
-  Optional but helpful when you present multiple artifacts in a session.
+- **`title`** — a short human-friendly **name** for the artifact, shown as the
+  heading in the Present tab (e.g. "Sales Chart v2"). The tab header always
+  shows the **full file path** beneath it; `title` is the friendly name on top.
+  Optional — without it the header uses the file's name — but helpful when you
+  present multiple artifacts in a session.
 - **`replaceId`** — pass a previous `present` call's `presentId` to revise that
   entry in place. Edit the file, then call `present` again with the same
   `replaceId` so the user isn't flipping between stale versions.

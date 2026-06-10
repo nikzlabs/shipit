@@ -1,6 +1,6 @@
 /**
  * Chat-card persistence — the single, correct way to put a card into the chat
- * transcript so it survives a session switch AND a full reload (docs/164).
+ * transcript so it survives a session switch AND a full reload (docs/164, docs/191).
  *
  * Background: `runner.emitMessage()` is *transport only*. It broadcasts to
  * attached viewers and buffers into the per-turn turn-event log (replayed on a
@@ -11,26 +11,165 @@
  * and bug-report cards (docs/164) each shipped emit-only first and had to be
  * retrofitted.
  *
- * `emitChatCard` removes the footgun: a single call both emits the WS message and
- * records the card for in-band turn persistence, so you cannot emit a transcript
- * card without persisting it. The card is recorded on the runner anchored by
- * `afterGroupIndex` (how many persistable assistant groups exist so far), and
- * `buildTurnMessages` re-interleaves it at that position on every in-progress
- * rebuild — landing it where the tool fired instead of letting an out-of-band
- * `append` float it above the whole turn on reload.
+ * `emitChatCard` removes the footgun. A single call does three things atomically:
+ *   1. emits the WS message (live render),
+ *   2. records the card on the runner anchored by `afterGroupIndex` (so
+ *      `buildTurnMessages` re-interleaves it at its true transcript position on
+ *      every rebuild, instead of an out-of-band `append` floating it above the
+ *      whole turn), and
+ *   3. **persists the in-progress turn immediately** via `persistTurnInProgress`.
+ *
+ * Step 3 is what makes the invariant "a card appears ⇔ it is in session history"
+ * hold the instant the card fires — not at the next tool-result boundary. The
+ * old design only *recorded* the card and relied on a later `buildTurnMessages`
+ * rebuild to flush it; between firing and that boundary the card lived only in
+ * the live client array + `recordedCards`, so a mid-turn `loadSessionHistory`
+ * (any WS reconnect) replaced the transcript with a DB snapshot lacking the card
+ * and it flickered out, reappearing only once the turn finalized (docs/191 — the
+ * "commented on issue card disappears then reappears" bug). Persisting inside the
+ * primitive means no call site can defer or forget it.
+ *
+ * Because `emitChatCard` requires a persist context (`chatHistoryManager` +
+ * `sessionId`), a card simply cannot be emitted without also being persisted —
+ * the type system enforces it.
  *
  * Transient signals (spinners, `preview_status`, queue counts) stay on plain
  * `emitMessage` — only persist what belongs in the scrollback.
  *
  * Lives in its own module (not `session-runner` / `agent-listeners`) so the
  * voice-note router can import it as a value without recreating the import cycle
- * those modules have with each other.
+ * those modules have with each other. The turn-rebuild helpers
+ * (`buildTurnMessages` / `persistTurnInProgress`) live here too — co-located with
+ * `recordChatCard` because they share the `recordedCards` interleaving contract —
+ * and are re-exported from `agent-listeners.ts` for its existing importers.
  */
 
 import { randomUUID } from "node:crypto";
 import type { WsServerMessage, WsSystemNotice } from "../shared/types.js";
-import type { SessionRunnerInterface } from "./session-runner.js";
+import type {
+  SessionRunnerInterface,
+  ChatMessageGroup,
+  SteeredMessage,
+  RecordedChatCard,
+} from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
+
+/**
+ * Minimal chat-history surface the card/turn persistence needs: just the
+ * in-progress replace. Kept structural so non-WS callers and tests can pass a
+ * stub without the full `ChatHistoryManager`.
+ */
+export interface InProgressPersister {
+  replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
+}
+
+/**
+ * The durable-write context every transcript card carries: where to write
+ * (`chatHistoryManager`) and which session (`sessionId`, captured at turn
+ * start). Required by `emitChatCard` so a card can't be emitted without being
+ * persisted in the same call.
+ */
+export interface CardPersistCtx {
+  chatHistoryManager: InProgressPersister;
+  sessionId: string;
+}
+
+/**
+ * Build the ordered list of in-progress messages for a turn, interleaving any
+ * live-steered user messages (docs/140) and recorded chat cards (voice notes
+ * docs/163, bug-report cards docs/164, issue cards docs/177/188, …) at their
+ * true position among the assistant message groups.
+ *
+ * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
+ * list, so the assistant rows are reborn with fresh (higher) ids on every
+ * call. A steered user message — or a recorded card — persisted out-of-band
+ * (via `append`) keeps its original early id and therefore collapses up next
+ * to the turn's first user message on reload. Folding both into the same
+ * rebuilt batch — anchored by `afterGroupIndex` (the count of persistable
+ * groups when the steer / card arrived) — keeps them at the exact spot they
+ * occurred. An end-of-turn card lands where the tool was issued instead of
+ * floating above the whole turn.
+ *
+ * When `inProgress` is true the rows participate in the next delete/reinsert
+ * cycle; the final (agent_result) call passes false so the rows are written
+ * permanently before `finalizeInProgress`.
+ */
+export function buildTurnMessages(
+  groups: ChatMessageGroup[],
+  steered: SteeredMessage[],
+  recordedCards: RecordedChatCard[],
+  opts: { inProgress: boolean },
+): PersistedMessage[] {
+  const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
+  const out: PersistedMessage[] = [];
+  const flag = opts.inProgress ? { inProgress: true as const } : {};
+
+  const persistedSteer = (s: SteeredMessage): PersistedMessage => ({
+    role: "user",
+    text: s.text,
+    images: s.images,
+    files: s.files,
+    uploadPaths: s.uploadPaths,
+    ...flag,
+  });
+
+  const persistedCard = (c: RecordedChatCard): PersistedMessage => ({
+    ...c.message,
+    ...flag,
+  });
+
+  // At a given anchor, emit steered user messages first, then chat cards — so a
+  // card recorded after the user's last steer renders below it.
+  const emitAnchoredAt = (index: number) => {
+    for (const s of steered) {
+      if (s.afterGroupIndex === index) out.push(persistedSteer(s));
+    }
+    for (const c of recordedCards) {
+      if (c.afterGroupIndex === index) out.push(persistedCard(c));
+    }
+  };
+
+  for (let i = 0; i < persistable.length; i++) {
+    emitAnchoredAt(i);
+    const g = persistable[i];
+    out.push({
+      role: "assistant",
+      text: g.text,
+      toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
+      toolResults: g.toolResults?.length ? g.toolResults : undefined,
+      subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
+      ...flag,
+    });
+  }
+  // Steers / cards anchored at or beyond the final group count land after
+  // everything. The `>=` clamp guards against an anchor that outran the
+  // persistable groups (e.g. the anchoring group never produced persistable
+  // content). This is the common case for an end-of-turn card.
+  for (const s of steered) {
+    if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
+  }
+  for (const c of recordedCards) {
+    if (c.afterGroupIndex >= persistable.length) out.push(persistedCard(c));
+  }
+  return out;
+}
+
+/**
+ * Persist the current turn's groups + steered messages + recorded cards as the
+ * in-progress set. Shared by the steer handler (so a mid-turn injection is saved
+ * immediately), the tool-result boundary in `wireAgentListeners`, and
+ * `emitChatCard` (so a side-channel card is durable the instant it fires).
+ */
+export function persistTurnInProgress(
+  chatHistoryManager: InProgressPersister,
+  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
+  sessionId: string,
+): void {
+  chatHistoryManager.replaceInProgress(
+    sessionId,
+    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: true }),
+  );
+}
 
 /**
  * Record a chat card on the runner, anchored after the assistant groups that
@@ -38,8 +177,9 @@ import type { PersistedMessage } from "./chat-history.js";
  * `runner.recordedCards` and re-interleaves each at `afterGroupIndex` on every
  * in-progress rebuild. Same mechanism as `recordSteeredMessage`.
  *
- * Prefer `emitChatCard` — it pairs this with the WS emit so the two can't drift.
- * Use `recordChatCard` directly only when the WS emit is genuinely separate.
+ * Prefer `emitChatCard` — it pairs this with the WS emit AND the durable persist
+ * so the three can't drift. Use `recordChatCard` directly only when the WS emit
+ * and persist are genuinely handled separately by the caller.
  */
 export function recordChatCard(
   runner: Pick<SessionRunnerInterface, "chatMessageGroups" | "recordedCards">,
@@ -50,20 +190,32 @@ export function recordChatCard(
 }
 
 /**
- * Emit a transcript card AND record it for persistence in one call. `wsMessage`
- * is the live WS payload (carries its own `type` + `sessionId`); `persisted` is
- * the `PersistedMessage` row to interleave into chat history (typically
- * `{ role: "assistant", text: "", <cardField>: ... }`). Lifecycle transitions on
- * an already-persisted card (e.g. filed/failed) patch the DB row in place via
- * the relevant `ChatHistoryManager` method — they are not re-recorded here.
+ * Emit a transcript card, record it for interleaving, AND persist the
+ * in-progress turn — all in one call. `wsMessage` is the live WS payload
+ * (carries its own `type` + `sessionId`); `persisted` is the `PersistedMessage`
+ * row to interleave into chat history (typically
+ * `{ role: "assistant", text: "", <cardField>: ... }`); `persist` is the durable
+ * write context (`chatHistoryManager` + `sessionId`).
+ *
+ * Persisting here (step 3 — see the module docstring) is what guarantees the
+ * card is in session history the instant it appears, closing the reconnect
+ * window that made cards flicker out and back (docs/191). Lifecycle transitions
+ * on an already-persisted card (e.g. filed/failed, undone) patch the DB row in
+ * place via the relevant `ChatHistoryManager` method — they are not re-recorded
+ * here.
  */
 export function emitChatCard(
-  runner: Pick<SessionRunnerInterface, "emitMessage" | "chatMessageGroups" | "recordedCards">,
+  runner: Pick<
+    SessionRunnerInterface,
+    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+  >,
   wsMessage: WsServerMessage,
   persisted: PersistedMessage,
+  persist: CardPersistCtx,
 ): void {
   runner.emitMessage(wsMessage);
   recordChatCard(runner, persisted);
+  persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
 }
 
 /**
@@ -90,16 +242,21 @@ function buildSystemNotice(
  * Emit + persist a system notice that fires WITHIN a turn (e.g. a guarded-mode
  * banner on `agent_init`, a blocked-actions summary on `agent_result`). Recorded
  * in-band via `emitChatCard` so `buildTurnMessages` interleaves it at its true
- * transcript position when it flushes the turn.
+ * transcript position when it flushes the turn, and persisted immediately so it
+ * survives a mid-turn reconnect.
  */
 export function emitNoticeInTurn(
-  runner: Pick<SessionRunnerInterface, "emitMessage" | "chatMessageGroups" | "recordedCards">,
+  runner: Pick<
+    SessionRunnerInterface,
+    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+  >,
   sessionId: string,
   message: string,
+  chatHistoryManager: InProgressPersister,
   level: "info" | "warn" = "info",
 ): void {
   const { ws, persisted } = buildSystemNotice(sessionId, message, level);
-  emitChatCard(runner, ws, persisted);
+  emitChatCard(runner, ws, persisted, { chatHistoryManager, sessionId });
 }
 
 /**

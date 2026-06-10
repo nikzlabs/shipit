@@ -400,10 +400,36 @@ export async function executeAgentTurn(
     }
   };
 
-  const emitFinishedIfIdle = (): void => {
+  // The SSE `session_agent_finished` broadcast is a pure UI signal aimed at
+  // OTHER tabs/viewers — the active viewer already learned `running=false` over
+  // its per-session WS the instant agent-listeners flipped the flag. We fire it
+  // as soon as the turn is idle, BEFORE the post-turn commit/PR work, so a
+  // backgrounded or second tab's sidebar drops the session's "running" state
+  // (and re-derives its true attention reason) without waiting out the
+  // potentially multi-second git/PR flow. Without this split the SSE lagged the
+  // WS by the whole commit duration, leaving other tabs stale on completion.
+  // Guarded by `running` so a back-to-back queued turn that `tryDrain` just
+  // started suppresses a spurious finished→started flicker.
+  const broadcastFinishedIfIdle = (): void => {
     if (runner?.running) return;
     deps.listenerDeps.sseBroadcast("session_agent_finished", { sessionId });
+  };
+
+  // The runner "idle" event drives auto-remediation (CI fix / conflict
+  // resolve), so it must fire only AFTER the post-turn commit/PR work has
+  // landed — else a remediation turn could kick off against a pre-commit tree.
+  // Kept separate from the SSE broadcast above for exactly this reason.
+  const signalIdleIfIdle = (): void => {
+    if (runner?.running) return;
     runner?.onAgentFinished();
+  };
+
+  // Combined helper for paths with no post-turn commit between the drain and
+  // the finish (the streaming abnormal-exit `done` path): the SSE signal and
+  // the idle event fire together.
+  const emitFinishedIfIdle = (): void => {
+    broadcastFinishedIfIdle();
+    signalIdleIfIdle();
   };
 
   // agent_result is the canonical turn-ended signal. For streaming the resident
@@ -425,8 +451,9 @@ export async function executeAgentTurn(
       // so the streaming `done` handler's drain — added for the abnormal-exit
       // case below — can't double-drain after this normal end-of-turn drain.
       await tryDrain();
+      broadcastFinishedIfIdle();
       await runCommitAndPr();
-      emitFinishedIfIdle();
+      signalIdleIfIdle();
     } else {
       trySyncToken();
       await tryDrain();
@@ -518,11 +545,13 @@ export async function executeAgentTurn(
     }
 
     // Non-streaming: drain first (clears queued visual state before the slow
-    // commit), then commit/PR, then finished. All guarded so a prior
+    // commit), broadcast the finished SSE so other tabs update promptly, then
+    // commit/PR, then signal idle (remediation) last. All guarded so a prior
     // agent_result that already drained/synced makes these no-ops.
     await tryDrain();
+    broadcastFinishedIfIdle();
     await runCommitAndPr();
-    emitFinishedIfIdle();
+    signalIdleIfIdle();
     // docs/169 — hand control back to a multi-turn driver (rebase loop) and
     // clear the system-turn flag, after all post-turn work has settled.
     finishTurn();

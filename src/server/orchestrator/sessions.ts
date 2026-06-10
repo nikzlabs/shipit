@@ -43,6 +43,8 @@ interface SessionRow {
   last_turn_errored: number;
   /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
   auto_fix_ci_paused: number;
+  /** docs/110 — ISO instant the session was pinned (persistent); NULL = not pinned. */
+  pinned_at: string | null;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -176,7 +178,10 @@ export function filterVisibleInSidebar(
   return sessions.filter(
     (s) =>
       !s.userArchived &&
-      (!resolvedAt(s) || reopenedAfterResolve(s) || topResolvedIds.has(s.id) || exemptFromCap(s)),
+      // docs/110 — a pinned (persistent) session is always visible: like the
+      // parent/child exemption, a pin overrides the merged top-N view cap so a
+      // pinned session never silently drops out of the sidebar.
+      (!!s.pinnedAt || !resolvedAt(s) || reopenedAfterResolve(s) || topResolvedIds.has(s.id) || exemptFromCap(s)),
   );
 }
 
@@ -222,6 +227,7 @@ export class SessionManager {
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
+    if (row.pinned_at) info.pinnedAt = row.pinned_at;
     return info;
   }
 
@@ -356,8 +362,11 @@ export class SessionManager {
    * — it is no longer read by application code.
    */
   archive(id: string): boolean {
+    // docs/110 — clear any pin on archive: a session can't be both hidden and
+    // persistent. This also keeps the disk-janitor's pinned guards sound, since
+    // an archived (evicted) session is never simultaneously pinned.
     const result = this.db.prepare(
-      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted' WHERE id = ?",
+      "UPDATE sessions SET user_archived = 1, disk_tier = 'evicted', pinned_at = NULL WHERE id = ?",
     ).run(id);
     return result.changes > 0;
   }
@@ -489,6 +498,45 @@ export class SessionManager {
    */
   setDiskTier(id: string, tier: "hot" | "light" | "evicted"): void {
     this.db.prepare("UPDATE sessions SET disk_tier = ? WHERE id = ?").run(tier, id);
+  }
+
+  /**
+   * docs/110 — pin or unpin a session. Pass an ISO timestamp to pin (the value
+   * orders pins within a repo group, most-recent first) or null to unpin.
+   * Forward-looking: this only records the pin — the session's current disk tier
+   * is left untouched (flipping it to `hot` here would lie about the on-disk
+   * checkout). From this point `canAutoDescend` keeps a pinned session from being
+   * reclaimed; selecting an already-reclaimed session still restores it the
+   * normal way. Returns the updated session, or null if not found.
+   */
+  setPinned(id: string, pinnedAt: string | null): SessionInfo | null {
+    const result = this.db.prepare(
+      "UPDATE sessions SET pinned_at = ? WHERE id = ?",
+    ).run(pinnedAt, id);
+    if (result.changes === 0) return null;
+    return this.get(id) ?? null;
+  }
+
+  /**
+   * docs/110 Phase 2 — reorder a repo's pinned sessions to match `ids`. Pins
+   * sort by `pinned_at` descending, so we rewrite `pinned_at` to a strictly
+   * decreasing sequence anchored at `now`: `ids[0]` gets the largest stamp and
+   * lands on top. Spaced 1s apart so the order is unambiguous and a subsequently
+   * pinned session (stamped at a later `now`) still floats above the set.
+   * Defensive: only rows that are currently pinned AND belong to `remoteUrl` are
+   * touched, so a stale or cross-repo id from the client is ignored. All updates
+   * run in one transaction. Returns the refreshed sidebar list.
+   */
+  reorderPins(remoteUrl: string, ids: string[], now = Date.now()): SessionInfo[] {
+    const apply = this.db.transaction((orderedIds: string[]) => {
+      orderedIds.forEach((id, i) => {
+        this.db.prepare(
+          "UPDATE sessions SET pinned_at = ? WHERE id = ? AND remote_url = ? AND pinned_at IS NOT NULL",
+        ).run(new Date(now - i * 1000).toISOString(), id, remoteUrl);
+      });
+    });
+    apply(ids);
+    return this.list();
   }
 
   /**

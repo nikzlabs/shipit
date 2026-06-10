@@ -13,6 +13,7 @@ import { describe, expect, it, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import simpleGit from "simple-git";
 
 import {
   buildOverlaySpecs,
@@ -22,6 +23,7 @@ import {
   liveOverlayScopeHashes,
   overlayRuntimeKey,
   resolveOverlayScope,
+  validDepDirsForOverlay,
 } from "./overlay-session.js";
 import { overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -194,5 +196,62 @@ describe("depDirsForSession", () => {
 
   it("defaults to [node_modules] when there is no shipit.yaml", () => {
     expect(depDirsForSession({ workspaceDir: workspace() })).toEqual(["node_modules"]);
+  });
+});
+
+describe("validDepDirsForOverlay", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  async function repo(opts: { gitignore?: string; dirs?: string[] } = {}): Promise<string> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-validate-"));
+    tmpDirs.push(dir);
+    await simpleGit(dir).init();
+    if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
+    for (const d of opts.dirs ?? []) fs.mkdirSync(path.join(dir, d), { recursive: true });
+    return dir;
+  }
+
+  it("keeps a git-ignored dep dir whose parent exists", async () => {
+    const dir = await repo({ gitignore: "node_modules\n" });
+    expect(await validDepDirsForOverlay(["node_modules"], dir)).toEqual(["node_modules"]);
+  });
+
+  it("drops a dep dir that is tracked source (not git-ignored)", async () => {
+    const dir = await repo({ gitignore: "node_modules\n", dirs: ["src"] });
+    // `src` exists and is committed-style source — not ignored → must not be overlaid.
+    expect(await validDepDirsForOverlay(["src"], dir)).toEqual([]);
+  });
+
+  it("drops a dep dir whose parent directory does not exist", async () => {
+    const dir = await repo({ gitignore: "node_modules\n" });
+    // packages/app was never created → no real parent to nest the overlay onto.
+    expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([]);
+  });
+
+  it("keeps a nested dep dir when its parent exists and it is ignored", async () => {
+    const dir = await repo({ gitignore: "node_modules\n", dirs: ["packages/app"] });
+    expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([
+      "packages/app/node_modules",
+    ]);
+  });
+
+  it("filters a mixed list to only the valid dep dirs", async () => {
+    const dir = await repo({ gitignore: "node_modules\n", dirs: ["src", "packages/app"] });
+    const got = await validDepDirsForOverlay(
+      ["node_modules", "src", "packages/app/node_modules", "packages/missing/node_modules"],
+      dir,
+    );
+    expect(got).toEqual(["node_modules", "packages/app/node_modules"]);
+  });
+
+  it("returns [] for an empty input and for a non-git directory (conservative)", async () => {
+    const dir = await repo({ gitignore: "node_modules\n" });
+    expect(await validDepDirsForOverlay([], dir)).toEqual([]);
+    const nonGit = fs.mkdtempSync(path.join(os.tmpdir(), "overlay-nongit-"));
+    tmpDirs.push(nonGit);
+    fs.mkdirSync(path.join(nonGit, "node_modules"));
+    expect(await validDepDirsForOverlay(["node_modules"], nonGit)).toEqual([]);
   });
 });

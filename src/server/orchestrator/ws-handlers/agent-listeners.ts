@@ -1,8 +1,8 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, RecordedChatCard, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
-import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
+import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
@@ -14,9 +14,17 @@ import {
   sanitizeVoiceContext,
   VOICE_NOTE_TOOL_NAME,
 } from "../voice/voice-note-router.js";
-import { emitChatCard, emitNoticeInTurn } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
+
+// `buildTurnMessages` / `persistTurnInProgress` now live in
+// `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
+// the `recordedCards` interleaving contract, and so `emitChatCard` can persist
+// without an import cycle). Re-exported here so existing importers
+// (send-message, dispatch-steering, agent-execution, tests) keep their
+// `./agent-listeners.js` import path unchanged.
+export { buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
 
 /**
  * Context-light dependency set for `wireAgentListeners`. Lifted out of the
@@ -201,86 +209,6 @@ export function stampToolDurations(
 }
 
 /**
- * Build the ordered list of in-progress messages for a turn, interleaving any
- * live-steered user messages (docs/140) and recorded chat cards (voice notes
- * docs/163, bug-report cards docs/164, …) at their true position among the
- * assistant message groups.
- *
- * `replaceInProgress` deletes every `in_progress=1` row and re-inserts this
- * list, so the assistant rows are reborn with fresh (higher) ids on every
- * call. A steered user message — or a recorded card — persisted out-of-band
- * (via `append`) keeps its original early id and therefore collapses up next
- * to the turn's first user message on reload. Folding both into the same
- * rebuilt batch — anchored by `afterGroupIndex` (the count of persistable
- * groups when the steer / card arrived) — keeps them at the exact spot they
- * occurred. An end-of-turn card lands where the tool was issued instead of
- * floating above the whole turn.
- *
- * When `inProgress` is true the rows participate in the next delete/reinsert
- * cycle; the final (agent_result) call passes false so the rows are written
- * permanently before `finalizeInProgress`.
- */
-export function buildTurnMessages(
-  groups: ChatMessageGroup[],
-  steered: SteeredMessage[],
-  recordedCards: RecordedChatCard[],
-  opts: { inProgress: boolean },
-): PersistedMessage[] {
-  const persistable = groups.filter((g) => g.text || g.toolUse.length > 0);
-  const out: PersistedMessage[] = [];
-  const flag = opts.inProgress ? { inProgress: true as const } : {};
-
-  const persistedSteer = (s: SteeredMessage): PersistedMessage => ({
-    role: "user",
-    text: s.text,
-    images: s.images,
-    files: s.files,
-    uploadPaths: s.uploadPaths,
-    ...flag,
-  });
-
-  const persistedCard = (c: RecordedChatCard): PersistedMessage => ({
-    ...c.message,
-    ...flag,
-  });
-
-  // At a given anchor, emit steered user messages first, then chat cards — so a
-  // card recorded after the user's last steer renders below it.
-  const emitAnchoredAt = (index: number) => {
-    for (const s of steered) {
-      if (s.afterGroupIndex === index) out.push(persistedSteer(s));
-    }
-    for (const c of recordedCards) {
-      if (c.afterGroupIndex === index) out.push(persistedCard(c));
-    }
-  };
-
-  for (let i = 0; i < persistable.length; i++) {
-    emitAnchoredAt(i);
-    const g = persistable[i];
-    out.push({
-      role: "assistant",
-      text: g.text,
-      toolUse: g.toolUse.length > 0 ? g.toolUse : undefined,
-      toolResults: g.toolResults?.length ? g.toolResults : undefined,
-      subagentEvents: g.subagentEvents?.length ? g.subagentEvents : undefined,
-      ...flag,
-    });
-  }
-  // Steers / cards anchored at or beyond the final group count land after
-  // everything. The `>=` clamp guards against an anchor that outran the
-  // persistable groups (e.g. the anchoring group never produced persistable
-  // content). This is the common case for an end-of-turn card.
-  for (const s of steered) {
-    if (s.afterGroupIndex >= persistable.length) out.push(persistedSteer(s));
-  }
-  for (const c of recordedCards) {
-    if (c.afterGroupIndex >= persistable.length) out.push(persistedCard(c));
-  }
-  return out;
-}
-
-/**
  * Record a live-steered user message on the runner, anchored after the
  * assistant groups that have produced persistable content so far. The anchor
  * is what `buildTurnMessages` uses to re-interleave the message at its true
@@ -308,22 +236,6 @@ export function recordSteeredMessage(
   // (via this path) during one user-send — the suspected double-bubble cause.
   console.log(
     `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
-  );
-}
-
-/**
- * Persist the current turn's groups + steered messages + recorded cards as the
- * in-progress set. Shared by the steer handler (so a mid-turn injection is saved
- * immediately) and the tool-result boundary in `wireAgentListeners`.
- */
-export function persistTurnInProgress(
-  chatHistoryManager: { replaceInProgress(sessionId: string, messages: PersistedMessage[]): void },
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[]; recordedCards: RecordedChatCard[] },
-  sessionId: string,
-): void {
-  chatHistoryManager.replaceInProgress(
-    sessionId,
-    buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: true }),
   );
 }
 
@@ -773,6 +685,7 @@ export function wireAgentListeners(
           runner,
           { type: "compaction_card", sessionId: turnSessionId, card },
           { role: "assistant", text: "", compaction: card },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
       }
       return;
@@ -893,6 +806,7 @@ export function wireAgentListeners(
             runner,
             turnSessionId,
             "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
+            deps.chatHistoryManager,
             "warn",
           );
         }
@@ -1035,11 +949,6 @@ export function wireAgentListeners(
       // carry `parentToolUseId` and returned early above, so they aren't
       // observed and won't render — by design (a subagent shouldn't page the
       // user).
-      // Count recorded cards before delivery so we can detect whether either
-      // observation below recorded a new voice-note card this event and, if so,
-      // persist the in-progress turn immediately (see the note after the derived
-      // block).
-      const recordedCardsBefore = runner?.recordedCards.length ?? 0;
 
       if (runner && deps.deliverVoiceNote) {
         const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
@@ -1086,27 +995,11 @@ export function wireAgentListeners(
         }
       }
 
-      // docs/163 — persist the in-progress turn the instant a voice-note card is
-      // recorded, mirroring the live-steer handler (a steer is "saved
-      // immediately" via persistTurnInProgress). `deliverVoiceNote` only
-      // *records* the card on the runner (emit + recordedCards); the card isn't
-      // written to chat history until `buildTurnMessages` runs at a boundary.
-      // Without an eager persist, the card lives only in the live client array
-      // and the recordedCards accumulator until the NEXT tool-result / agent_result
-      // boundary — a window that widens when the agent keeps replying (pure-text
-      // replies don't hit a tool-result boundary). A `loadSessionHistory` in that
-      // window (any WS reconnect — mobile bg/fg, network blip, ShipIt restart)
-      // replaces the live transcript with a DB snapshot that lacks the card, so
-      // the card vanishes until a later reload finalizes the turn. Persisting now
-      // makes it durable immediately — and it's the same in-band recordedCards
-      // path, so it stays anchored at its true position (no reload-reorder).
-      if (
-        runner
-        && opts.capturedSessionId
-        && runner.recordedCards.length > recordedCardsBefore
-      ) {
-        persistTurnInProgress(deps.chatHistoryManager, runner, opts.capturedSessionId);
-      }
+      // The voice-note card's durable persist is owned by `routeVoiceNote` →
+      // `emitChatCard` (docs/191): emitting a card now also persists the
+      // in-progress turn in the same call, so there's no window where the card
+      // lives only in the live array + `recordedCards`. No separate eager
+      // persist is needed here.
 
       // AskUserQuestion blocking: the Claude CLI in `-p` (headless) mode has no
       // way to actually wait for a real user answer — without `--input-format
@@ -1290,6 +1183,7 @@ export function wireAgentListeners(
           turnSessionId,
           `Guarded mode blocked ${count} action${count === 1 ? "" : "s"} (${blockedTools}) as potentially unsafe. ` +
             "Rephrase with a narrower scope, run the command yourself, or switch to auto mode for this action.",
+          deps.chatHistoryManager,
           "warn",
         );
       }

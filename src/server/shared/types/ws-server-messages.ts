@@ -1039,8 +1039,12 @@ export interface WsPresentContentMessage {
   content: string;
   /** "text/html", "image/svg+xml", "text/markdown", "image/png", etc. */
   mimeType: string;
-  /** Optional display title for the carousel header. */
+  /** Optional display title (the artifact's name) for the carousel header. */
   title?: string;
+  /** The path the agent presented (`present`'s `file` arg), shown in the header. */
+  filePath: string;
+  /** Whether `filePath` resolves inside the workspace (already tracked → hide Save). */
+  inWorkspace: boolean;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
 }
@@ -1064,6 +1068,8 @@ export interface PresentStateEntry {
   content: string;
   mimeType: string;
   title?: string;
+  filePath: string;
+  inWorkspace: boolean;
   createdAt: string;
 }
 

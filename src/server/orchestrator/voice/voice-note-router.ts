@@ -24,7 +24,7 @@
 
 import type { CredentialStore } from "../credential-store.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import { emitChatCard } from "../chat-card-persistence.js";
+import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
 import type {
   VoiceNotePayload,
   VoiceNoteSource,
@@ -106,6 +106,12 @@ export interface RouteVoiceNoteDeps {
   runner: SessionRunnerInterface;
   sessionId: string;
   credentialStore: CredentialStore;
+  /**
+   * Chat-history sink so the native card is persisted in-band the instant it
+   * fires (docs/191). `emitChatCard` writes the in-progress turn through this,
+   * closing the reconnect window where the card would otherwise flicker out.
+   */
+  chatHistoryManager: InProgressPersister;
   /** Where this note came from (authored / derived). */
   source: VoiceNoteSource;
   /** Injectable for tests; defaults to the global fetch. */
@@ -154,7 +160,7 @@ export async function routeVoiceNote(
   payload: VoiceNotePayload,
   deps: RouteVoiceNoteDeps,
 ): Promise<RouteVoiceNoteResult> {
-  const { runner, sessionId, credentialStore, source } = deps;
+  const { runner, sessionId, credentialStore, source, chatHistoryManager } = deps;
   const id = (deps.idFactory ?? defaultId)();
   const nowIso = (deps.now ?? (() => new Date().toISOString()))();
 
@@ -191,16 +197,18 @@ export async function routeVoiceNote(
       kind: source,
       createdAt: nowIso,
     };
-    // Emit AND persist in one call (docs/163). Voice notes arrive off the
-    // agent-event stream, so `buildTurnMessages` never captures them on its own;
-    // `emitChatCard` records the card on the runner (anchored after the
+    // Emit AND persist in one call (docs/163, docs/191). Voice notes arrive off
+    // the agent-event stream, so `buildTurnMessages` never captures them on its
+    // own; `emitChatCard` records the card on the runner (anchored after the
     // persistable groups so far) so it folds into the turn's rebuilt batch and
     // lands where the tool was issued instead of floating above the whole turn
-    // on reload — and it can't be emit-only (the recurring ephemeral-card bug).
+    // on reload — and it persists the in-progress turn immediately, so it can't
+    // be emit-only and can't flicker out on a mid-turn reconnect.
     emitChatCard(
       runner,
       { type: "voice_note", sessionId, ...voiceNote },
       { role: "assistant", text: "", voiceNote },
+      { chatHistoryManager, sessionId },
     );
     result.native = true;
   }

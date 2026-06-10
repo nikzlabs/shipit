@@ -23,7 +23,9 @@
  * is behavior-preserving.
  */
 
+import fs from "node:fs";
 import path from "node:path";
+import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
 import { overlayScopeHash, overlayVolumeName, overlayBaseDir, type OverlaySpec } from "./overlay-volume.js";
@@ -201,5 +203,38 @@ export function depDirsForSession(session: Pick<SessionInfo, "workspaceDir">): s
     return resolveShipitConfig(session.workspaceDir).agent.depDirs;
   } catch {
     return [...DEFAULT_DEP_DIRS];
+  }
+}
+
+/**
+ * Contextual dep-dir validation against the host clone (docs/183 Phase 3b) — the
+ * checks the pure config parser (Phase 1) couldn't make because it has no
+ * workspace/git context. Keep a declared dep dir only when **both** hold:
+ *
+ *  - its **parent directory exists** in the clone — so the daemon nests the overlay
+ *    onto a real parent (the spike showed it will `mkdir -p` an absent parent, but
+ *    we must not rely on that — an invented parent means the source tree the user
+ *    expects at that path simply isn't there); and
+ *  - the path is **git-ignored** — i.e. a build artifact, never tracked source.
+ *    Overlaying a tracked path would shadow real committed source with a foreign or
+ *    empty base, corrupting the working tree.
+ *
+ * A dropped dir just falls back to a plain install for that path — never fatal. Any
+ * error (not a git repo, git failure) drops ALL dep dirs (conservative → plain
+ * install), so a broken clone can never silently overlay the wrong thing.
+ */
+export async function validDepDirsForOverlay(
+  depDirs: string[],
+  workspaceDir: string,
+): Promise<string[]> {
+  if (depDirs.length === 0) return [];
+  // Parent must exist on disk (dirname of `node_modules` is `.` → the workspace root).
+  const parentExists = depDirs.filter((d) => fs.existsSync(path.join(workspaceDir, path.dirname(d))));
+  if (parentExists.length === 0) return [];
+  try {
+    const ignored = new Set(await simpleGit(workspaceDir).checkIgnore(parentExists));
+    return parentExists.filter((d) => ignored.has(d));
+  } catch {
+    return [];
   }
 }

@@ -87,11 +87,11 @@ store** — values the user entered in **Settings → Secrets**, keyed by the
 declared `name`. To give a service a credential, the user sets a secret of the
 same name.
 
-> **MCP OAuth tokens reach the agent through a separate path.** Connecting
-> Linear / Notion under Settings → MCP Servers wires the token into the
-> *agent's* MCP servers via the `$platform:<id>` placeholder (resolved from the
-> `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server into their
-> own agent — distinct from compose-service secret resolution.
+> **MCP OAuth tokens reach the agent through a separate path.** Connecting a
+> one-click provider (e.g. Notion) under Settings → MCP Servers wires the token
+> into the *agent's* MCP servers via the `$platform:<id>` placeholder (resolved
+> from the `MCP_PLATFORM_<ID>` env var). That is the user wiring an MCP server
+> into their own agent — distinct from compose-service secret resolution.
 
 ### Field reference
 

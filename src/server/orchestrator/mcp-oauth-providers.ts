@@ -11,7 +11,7 @@
  * and document it in `src/server/shipit-docs/secrets.md`. The provider id is
  * the user-visible string in `$platform:<id>` placeholders and gets
  * uppercased into the env var name the worker substitutes for the
- * placeholder (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
+ * placeholder (`notion_oauth` → `MCP_PLATFORM_NOTION_OAUTH`).
  *
  * Endpoints are fallback-only. The live flow drives authorize / token /
  * registration endpoints from discovery (RFC 8414) starting at `mcpUrl` (see
@@ -30,8 +30,10 @@
  * subsequent connect. Operators can short-circuit registration by setting
  * `<ID>_OAUTH_CLIENT_ID` (and optionally `<ID>_OAUTH_CLIENT_SECRET`) on the
  * orchestrator process — useful when a provider has rate limits on dynamic
- * registration, doesn't support it (Linear), or when the operator has gone
- * through the manual application flow.
+ * registration, doesn't support it at all, or when the operator has gone
+ * through the manual application flow. (The `clientIdEnv` / no-registration
+ * path is retained for such providers even though every currently-seeded
+ * provider supports dynamic registration; see docs/190.)
  */
 
 import type { McpOAuthProviderConfig } from "../shared/types/mcp-types.js";
@@ -41,24 +43,12 @@ import type { McpOAuthProviderConfig } from "../shared/types/mcp-types.js";
  * the "Connect with…" button row in Settings.
  */
 export const MCP_OAUTH_PROVIDERS: readonly McpOAuthProviderConfig[] = [
-  {
-    id: "linear_oauth",
-    label: "Linear",
-    description:
-      "Connect to your Linear workspace so the agent can read and file issues, search teams, and update project status.",
-    // Public Linear endpoints — verified against the Linear OAuth 2.0 docs
-    // (https://developers.linear.app/docs/oauth/authentication).
-    authorizationEndpoint: "https://linear.app/oauth/authorize",
-    tokenEndpoint: "https://api.linear.app/oauth/token",
-    // Linear does not currently support RFC 7591 dynamic registration —
-    // operators must create an OAuth application in Linear's settings and
-    // set LINEAR_OAUTH_CLIENT_ID (+ optional LINEAR_OAUTH_CLIENT_SECRET).
-    clientIdEnv: "LINEAR_OAUTH_CLIENT_ID",
-    clientSecretEnv: "LINEAR_OAUTH_CLIENT_SECRET",
-    scopes: ["read", "write", "issues:create", "comments:create"],
-    mcpUrl: "https://mcp.linear.app/mcp",
-    defaultServerName: "linear",
-  },
+  // Linear was removed as a built-in one-click OAuth provider (docs/190): it
+  // overlapped confusingly with the native Linear issue-tracker integration
+  // (docs/170 — Settings → Issues), which renders issues inline and is the
+  // sanctioned `shipit issue` path. Linear-as-MCP is still reachable manually
+  // (Settings → MCP Servers → add `https://mcp.linear.app/mcp`); it just isn't
+  // a first-class branded button anymore.
   {
     id: "notion_oauth",
     label: "Notion",

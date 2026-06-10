@@ -37,6 +37,7 @@ import {
   writeComposeOverride,
   type ComposeOverrideOptions,
   type ComposeService,
+  type OverlayDepDirVolume,
 } from "./compose-generator.js";
 import {
   ServiceSecretsResolver,
@@ -174,6 +175,15 @@ export interface ServiceManagerOptions {
    * setups, which fall back to the legacy workspace `.shipit/.env.<svc>` path.
    */
   serviceEnvDir?: string;
+  /**
+   * docs/183 Phase 5 — per-session overlay dep-dir volumes for an overlay-eligible
+   * session. Forwarded into `generateComposeOverride` so services that share the
+   * workspace also mount the same dep-dir overlay volumes nested at
+   * `<service-target>/<dep-dir>`. Resolved lazily via {@link setOverlayDepDirs}
+   * (the populator is async), so the constructor value is just the initial seed.
+   * Empty/absent → no overlay mounts.
+   */
+  overlayDepDirs?: OverlayDepDirVolume[];
 }
 
 // ---------------------------------------------------------------------------
@@ -220,6 +230,8 @@ export class ServiceManager extends EventEmitter {
   private readonly composeQuery: ComposeQuery;
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
+  /** docs/183 Phase 5 — per-session overlay dep-dir volumes (set lazily; see setOverlayDepDirs). */
+  private overlayDepDirs: OverlayDepDirVolume[];
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
@@ -284,6 +296,7 @@ export class ServiceManager extends EventEmitter {
     this.composeQuery = opts.composeQuery ?? defaultComposeQuery;
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
+    this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
@@ -346,6 +359,17 @@ export class ServiceManager extends EventEmitter {
         this.handleNonZeroExit(name, exitCode);
       },
     });
+  }
+
+  /**
+   * docs/183 Phase 5 — set the per-session overlay dep-dir volumes used when
+   * generating the compose override. Resolved lazily by `setupServiceManager`
+   * (the populator is async — it inspects the workspace state volume) and set
+   * before the first `start()`, so both override-generation paths pick it up.
+   * `[]` (the default / flag-off case) leaves the override byte-for-byte unchanged.
+   */
+  setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
+    this.overlayDepDirs = overlayDepDirs;
   }
 
   /**
@@ -610,6 +634,7 @@ export class ServiceManager extends EventEmitter {
       userNamedVolumes,
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
+      ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
     const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
     writeComposeOverride(this.workspaceDir, overrideContent);
@@ -926,6 +951,7 @@ export class ServiceManager extends EventEmitter {
         ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
         ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
+        ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
         dockerSecrets: dockerSecretsBuild,
       };
       const overrideContent = generateComposeOverride(parsedServices, overrideOpts);

@@ -8,6 +8,7 @@ import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
+import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
@@ -263,6 +264,9 @@ async function createContainerForRunner(opts: {
   /** docs/128 — true when the session's server-side `kind === "ops"`. Enables
    *  the privileged journal mounts + read-only Docker proxy wiring. */
   opsSession?: boolean;
+  /** docs/183 — session identity (remote + kind) used to resolve overlay-dep-store
+   *  eligibility + specs. Absent → no overlay (the unchanged path). */
+  session?: Pick<SessionInfo, "remoteUrl" | "kind">;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
@@ -286,6 +290,12 @@ async function createContainerForRunner(opts: {
 
   try {
     if (opts.destroyExisting) await mgr.destroy(sessionId);
+    // docs/183 dep-dir design — resolve per-dep-dir overlay specs (flag-gated;
+    // [] when off / ineligible / nothing overlay-worthy). The byte-for-byte
+    // unchanged path returns [], so non-overlay sessions are untouched.
+    const overlaySpecs = opts.session
+      ? await mgr.prepareOverlaySpecs({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
+      : [];
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
@@ -293,6 +303,7 @@ async function createContainerForRunner(opts: {
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
       opsSession: opts.opsSession,
+      overlaySpecs,
     });
     const createStart = Date.now();
     const sc = await mgr.create(config);
@@ -414,6 +425,7 @@ export function buildRunnerFactory(
           depCacheDir: o.depCacheDir,
           destroyExisting: false,
           opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
+          session: sessionManager?.get(o.sessionId),
           failureContext: "from standby fallback",
           broadcastLog,
           oomBreaker,
@@ -440,6 +452,7 @@ export function buildRunnerFactory(
       depCacheDir: o.depCacheDir,
       destroyExisting: !!existing,
       opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
+      session: sessionManager?.get(o.sessionId),
       broadcastLog,
       oomBreaker,
     });

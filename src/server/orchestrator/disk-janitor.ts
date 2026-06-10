@@ -355,9 +355,14 @@ async function sweepOrphanCredentialDirs(
 
   const tracked = new Set(sessionManager.allIds());
   const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  // docs/110 — defense-in-depth: never sweep a pinned (persistent) session's
+  // credentials. Such a session is already tracked-and-not-archived, so the
+  // check below keeps it; this makes the persistence invariant explicit.
+  const pinned = new Set(sessionManager.listAll().filter((s) => s.pinnedAt).map((s) => s.id));
 
   let removed = 0;
   for (const entry of entries) {
+    if (pinned.has(entry)) continue;
     // Keep dirs for sessions that are still tracked AND not archived.
     if (tracked.has(entry) && !archived.has(entry)) continue;
     const full = path.join(root, entry);
@@ -577,6 +582,10 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
+    // docs/110 — defensive: never sweep a pinned (persistent) session. Archive
+    // clears the pin, so a pinned session is never in `listArchived()` to begin
+    // with; this guard states the invariant in code rather than relying on it.
+    if (session.pinnedAt) continue;
     // Defensive: never sweep a session without a remoteUrl — even though
     // the product guarantees every session has one, a stale row from a
     // prior schema or a test fixture could land here, and deleting the
@@ -1190,6 +1199,12 @@ function diskIdleAgeMs(s: SessionInfo, now: number): number {
  * the checkout, so it skips the clean-tree guard handled inline at `evicted`.)
  */
 function canAutoDescend(s: SessionInfo, runnerRegistry: SessionRunnerRegistry): boolean {
+  // docs/110 — a pinned (persistent) session is never auto-reclaimed. This is the
+  // single chokepoint for BOTH the age-based descent and the disk-pressure LRU
+  // descent, so this one guard makes a pin immune to all automatic tier demotion;
+  // its workspace is never dropped or wiped. (Explicit user archive still evicts,
+  // but archive clears the pin first — see SessionManager.archive.)
+  if (s.pinnedAt) return false;
   const runner = runnerRegistry.get(s.id);
   if (runner?.running) return false;
   if (runner && runner.viewerCount > 0) return false;

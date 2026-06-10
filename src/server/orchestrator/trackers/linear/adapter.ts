@@ -138,6 +138,36 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   };
 }
 
+/** A Linear comment node (subset we consume) — author lives under `user`. */
+interface LinearCommentNode {
+  id: string;
+  body: string;
+  url?: string | null;
+  createdAt?: string | null;
+  user?: { name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
+}
+
+const COMMENT_FIELDS = `
+  id
+  body
+  url
+  createdAt
+  user { name displayName avatarUrl }
+`;
+
+function toTrackerComment(node: LinearCommentNode): TrackerComment {
+  const authorName = node.user?.displayName ?? node.user?.name ?? undefined;
+  return {
+    id: node.id,
+    body: node.body,
+    ...(node.url ? { url: node.url } : {}),
+    ...(node.createdAt ? { createdAt: node.createdAt } : {}),
+    ...(authorName
+      ? { author: { name: authorName, ...(node.user?.avatarUrl ? { avatarUrl: node.user.avatarUrl } : {}) } }
+      : {}),
+  };
+}
+
 const ISSUE_FIELDS = `
   id
   identifier
@@ -283,6 +313,23 @@ export class LinearTracker implements Tracker {
     return data.issue ? toTrackerIssue(data.issue) : null;
   }
 
+  async listComments(id: string): Promise<TrackerComment[]> {
+    if (!this.token) {
+      throw new Error("Linear is not configured (missing token)");
+    }
+    const data = await this.gql<{
+      issue: { comments: { nodes: LinearCommentNode[] } } | null;
+    }>(
+      `query IssueComments($id: String!) {
+        issue(id: $id) {
+          comments(first: 100) { nodes { ${COMMENT_FIELDS} } }
+        }
+      }`,
+      { id },
+    );
+    return (data.issue?.comments.nodes ?? []).map(toTrackerComment);
+  }
+
   // ---- Writes (docs/177) ----------------------------------------------------
 
   /** Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it. */
@@ -336,12 +383,12 @@ export class LinearTracker implements Tracker {
   async addComment(id: string, body: string): Promise<TrackerComment> {
     const issueId = await this.resolveUuid(id);
     const data = await this.gql<{
-      commentCreate: { success: boolean; comment: { id: string; url?: string | null; body: string } | null };
+      commentCreate: { success: boolean; comment: LinearCommentNode | null };
     }>(
       `mutation AddComment($issueId: String!, $body: String!) {
         commentCreate(input: { issueId: $issueId, body: $body }) {
           success
-          comment { id url body }
+          comment { ${COMMENT_FIELDS} }
         }
       }`,
       { issueId, body },
@@ -350,7 +397,7 @@ export class LinearTracker implements Tracker {
     if (!data.commentCreate.success || !comment) {
       throw new Error("Linear rejected the comment");
     }
-    return { id: comment.id, body: comment.body, ...(comment.url ? { url: comment.url } : {}) };
+    return toTrackerComment(comment);
   }
 
   async deleteComment(commentId: string): Promise<void> {

@@ -81,34 +81,99 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
 
 #### Phase 3b — Spec populator + flag-gated wiring (first phase that mounts)
 
-- [ ] Add the populator (`prepareOverlaySpecs`): resolve eligibility + base scope from `SessionInfo`,
-      read the session's `agent.dep-dirs`, resolve the state-volume daemon-host mountpoint
-      (`resolveVolumeMountpoint`), call `buildOverlaySpecs`, and populate `ContainerConfig.overlaySpecs`.
-      Wire it into the container-creation path (manager / app-lifecycle); flag-off → no specs → unchanged.
-- [ ] **Contextual dep-dir validation (deferred from Phase 1).** The host clone now exists. Before
-      building specs, drop a declared dep dir whose **parent doesn't exist** or that **points at tracked
-      (non-gitignored) source**. A dropped dir falls back to a plain install for that path; never fatal.
-- [ ] Integration test (fake Docker, flag on): N volumes created + mounted at the right nested subpaths;
-      a non-overlay / flag-off session is unchanged.
-- [ ] **Validate the recursive file-tree watcher descends into the nested submount** (same-namespace
-      inotify across a mount boundary) — the one item the nested-overlay spike deliberately did not
-      cover. See `host-overlay-spike.sh`'s inotify rung; this is where the nested mount first exists.
+- [x] Added `SessionContainerManager.prepareOverlaySpecs`: resolves eligibility + base scope
+      (`resolveOverlayScope`) from `SessionInfo`, reads the session's `agent.dep-dirs`
+      (`depDirsForSession`), validates against the clone, resolves the state-volume daemon-host
+      mountpoint (`resolveVolumeMountpoint`), and calls `buildOverlaySpecs`. Returns `[]` when the flag
+      is off / session ineligible / no state volume / nothing overlay-worthy.
+- [x] Wired into the container-creation path: `createContainerForRunner` (app-lifecycle) calls
+      `prepareOverlaySpecs` and threads the result through `buildConfigForWorkspace({ overlaySpecs })`
+      → `buildConfig` → the 3a plumbing. Both call sites pass the session (`sessionManager.get`).
+      Flag-off → `[]` → byte-for-byte unchanged.
+- [x] **Contextual dep-dir validation (deferred from Phase 1)** — `validDepDirsForOverlay`: keep a dep
+      dir only if its **parent exists** on the clone AND it is **git-ignored** (an artifact, not tracked
+      source — `simpleGit.checkIgnore`). Any error (non-git dir, git failure) drops all (conservative).
+      A dropped dir falls back to a plain install for that path; never fatal.
+- [x] Tests: `validDepDirsForOverlay` (ignored-kept, tracked-source-dropped, missing-parent-dropped,
+      nested, mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
+      at the mountpoint, tracked-source→[], no-state-volume→[]); **end-to-end** populator →
+      `buildConfigForWorkspace` → `create` mounts the volume nested at `/workspace/node_modules`.
+- [ ] **(host-gated) Validate the recursive file-tree watcher descends into the nested submount**
+      (same-namespace inotify across a mount boundary) — the one item the nested-overlay spike
+      deliberately did not cover. Needs a running container on real overlay; see `host-overlay-spike.sh`'s
+      inotify rung. Not verifiable in-environment (no real Docker overlay), like the host spikes.
 
-### Phase 4 — Snapshot + publish, per dep dir
+### Phase 4 — Snapshot + publish, per dep dir (split into 4a/4b)
 
-- [ ] Worker exports **per-dep-dir** (not the whole merged tree).
-- [ ] Orchestrator pulls each export and publishes per `(session, dep-dir)` via the existing
-      `overlay-base.ts` `publishBase` CAS (reused unchanged — only the caller/granularity is new); re-add
-      the publish-after-install hook, per dep dir. Eligibility unchanged (exit-0 pre-user install whose
-      source base is the remote default commit).
-- [ ] Tests: a per-dir publish advances only the matching scope; cross-dir isolation; ineligible skips.
+Like Phase 3, this is two coherent units: the dep-dir snapshot producer + transport (4a, inert) and the
+publish-after-install orchestration + wiring (4b).
+
+#### Phase 4a — Per-dep-dir snapshot producer + transport (inert)
+
+- [x] Worker producer `dep-snapshot.ts`: `safeDepDirRelpath` (defense-in-depth subpath validation),
+      `depSnapshotTarArgs`/`createDepSnapshotTar` — tar a **single dep dir's CONTENTS** (`-C
+      <root>/<depDir> .`) so extraction lands them directly as base contents. No `.git` exclusion (a dep
+      dir has no top-level repo `.git`).
+- [x] Worker endpoint `GET /workspace/dep-snapshot?path=<dep-dir>` — validates the path, 404s a missing
+      dir, streams the tar (destroys the stream on a tar failure so a truncated archive isn't trusted).
+- [x] Orchestrator transport `overlay-snapshot.ts`: `extractTarStream` (`tar -x` into a temp dir;
+      rejects on non-zero exit / source error — never a partial base; **sync mkdir** so a small buffered
+      producer stream can't reach EOF before the pipe attaches) + `fetchDepSnapshotStream` (thin fetch
+      glue). Split so extraction is HTTP-free / unit-testable.
+- [x] Tests: `safeDepDirRelpath` (accept/normalize + reject absolute/root/escape); `depSnapshotTarArgs`
+      contents-layout; `createDepSnapshotTar` real tar round-trip (nested file + symlink verbatim) +
+      missing-dir rejects; `extractTarStream` round-trip + dest-mkdir + invalid-tar rejects (builds its
+      own tar to respect the orchestrator↛session import boundary).
+- *Inert: no caller pulls/extracts/publishes yet (4b wires it).*
+
+#### Phase 4b — Publish-after-install orchestration + wiring
+
+- [x] `overlay-publish.ts` → `publishDepDirOverlayBases(args, deps)`: after an eligible install (exit-0,
+      pre-user, source==remote default), for each declared dep dir runs `fetchDepSnapshotStream` →
+      `extractTarStream` to a temp dir → `publishBase` with the per-dep-dir scope `(repo, runtime, dep-dir)`
+      and the bare-cache `isAncestor` + `currentDefaultCommit`. Reuses the `overlay-base.ts` CAS unchanged
+      — only the caller/granularity is new. HTTP/tar/oracle glue is injected so the orchestration is
+      unit-testable; a per-dir failure is recorded (`"error"`) and never aborts the others. Eligibility:
+      `commit` from the worker's merged HEAD (`fetchWorkspaceHeadCommit`, added to `overlay-snapshot.ts`),
+      `currentDefaultCommit` from the bare cache, `sourceIsDefaultBranch = commit === currentDefaultCommit`,
+      `preUserInstall = true` at this setup-install seam (documented residual: uncommitted dep edits while
+      HEAD still equals the default tip — hardened in Phase 7).
+- [x] Wired into the install-completion seam: `setupServiceManager` calls an optional `publishOverlayBases`
+      hook once after its install promise resolves (placed before the compose/adoption branches so
+      compose-less projects publish too); the hook is threaded through `RunnerRegistryDeps` → `setupDeps`.
+      `index.ts` constructs the runner-adapting wrapper (closes over `stateDir` + `createRepoGit` +
+      `getBareCacheDir`, awaits `whenWorkerReady()`, reads `getWorkerUrl()`), gated by a cheap
+      `isOverlayEnabled()` check first so a flag-off session never awaits worker readiness. Best-effort: a
+      publish throw is caught and logged, never affecting the install/session.
+- [x] Tests (`overlay-publish.test.ts`, 10): default-dir created base; per-dir publish into its own scope
+      + cross-dir isolation (distinct scope hashes, each base holds only its own snapshot); flag-off → no
+      publish; ineligible (no remoteUrl / ops) → no publish; install-failed → skipped-ineligible (no base);
+      head-commit unresolvable → skipped; source≠default → skipped-ineligible (no base); tracked-source dep
+      dir dropped while the ignored one publishes; per-dir error isolated from healthy dirs.
 
 ### Phase 5 — Compose services at dep-dir subpaths
 
-- [ ] `generateComposeOverride` appends nested overlay mounts into services that need a dep dir, at the
-      same `<service-target>/<dep-dir>` subpaths (reuse the shared-volume refcount pattern proven by
-      `shared-volume-spike.sh`), instead of rooting the whole service workspace at an overlay.
-- [ ] Compose-generator unit tests (mounts at subpaths, never at the storage root or `overlay-base/`).
+- [x] `generateComposeOverride` gained an `overlayDepDirs` option (`{ depDir, volumeName }[]`). For each
+      service that bind-mounts the workspace (or a subdir of it) it now **keeps** the normal
+      `shipit-workspace` mount and **appends** one `type: volume` overlay mount per dep dir reachable
+      through that mount, targeted at `<service-target>/<dep-dir-relative-to-the-mounted-source>` — the
+      shared-volume refcount pattern, NOT the rejected root-the-service-at-overlay approach. Helpers:
+      `volumeSourceTarget` (short/long form), `depDirWithinMount` (subdir reachability + relative path),
+      `overlayMountsForService` (per-mount fan-out, target de-dup). Each referenced volume is declared
+      `external: true` (daemon owns the overlay volume); unused volumes are not declared. A direct
+      dep-dir mount whose target collides is replaced by the overlay (no duplicate-target).
+- [x] Wired through `ServiceManager`: new `overlayDepDirs` option + `setOverlayDepDirs()` setter (the
+      populator is async), threaded into both `generateComposeOverride` call sites. `setupServiceManager`
+      resolves the specs via `containerManager.prepareOverlaySpecs` in the async start path (before the
+      first `start()`) and calls the setter — `prepareOverlaySpecs` returns `[]` with no Docker call when
+      the flag is off / session ineligible, so the override is byte-for-byte unchanged for non-overlay
+      sessions.
+- [x] Compose-generator unit tests (7, `compose-generator.test.ts`): root-mount nesting + workspace mount
+      preserved + external declaration; one mount per dep dir; subdir-mount mapping + outside-mount dep dir
+      skipped + only-used-volume-declared; overlay mount targets the volume root (no subpath) and the
+      override never references `overlay-base/` or the `shipit-workspace` storage subpath for a dep dir;
+      no overlay mount on a service without a workspace mount; absent `overlayDepDirs` → unchanged;
+      direct dep-dir mount replaced (no duplicate target).
 
 ### Phase 6 — Disk cleanup retargeting (GC correctness — the gate to enabling the flag)
 

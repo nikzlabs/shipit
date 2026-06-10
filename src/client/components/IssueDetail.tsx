@@ -17,22 +17,27 @@
  * seed fields the opener already had (`selection`), so a click feels instant.
  */
 
+import { useState } from "react";
 import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
   CaretLeftIcon,
+  ChatCircleIcon,
   RocketLaunchIcon,
   TagIcon,
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
+import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { MarkdownContent } from "./message-markdown.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type {
   IssuePriorityLevel,
+  TrackerComment,
   TrackerInfo,
   TrackerIssue,
 } from "../../server/shared/types.js";
@@ -47,9 +52,15 @@ export interface IssueDetailProps {
   info?: TrackerInfo;
   /** Whether a repo is available to seed a session on. */
   canStart: boolean;
+  /** The open issue's comment thread; null until the fetch lands. */
+  comments: TrackerComment[] | null;
+  commentsLoading: boolean;
+  commentsError: string | null;
   onBack: () => void;
   onRefresh: () => void;
   onStartSession: (issue: TrackerIssue) => void;
+  /** Post a user comment; resolves to an error message, or null on success. */
+  onPostComment: (body: string) => Promise<string | null>;
 }
 
 const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
@@ -107,9 +118,13 @@ export function IssueDetail({
   error,
   info,
   canStart,
+  comments,
+  commentsLoading,
+  commentsError,
   onBack,
   onRefresh,
   onStartSession,
+  onPostComment,
 }: IssueDetailProps) {
   // Prefer the hydrated issue; fall back to the seed fields the opener supplied
   // so the header/title paint before the fetch resolves.
@@ -230,20 +245,28 @@ export function IssueDetail({
             ) : (
               <p className="text-sm text-(--color-text-tertiary) italic">No description.</p>
             )}
+
+            {/* Comment thread + composer (docs/189 follow-up). */}
+            <IssueComments
+              comments={comments}
+              loading={commentsLoading}
+              error={commentsError}
+              onPost={onPostComment}
+            />
           </article>
         )}
       </div>
 
       {/* Footer action — seed a session from this issue (mirrors the list row). */}
       {detail && (
-        <div className="shrink-0 border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
+        <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
           <Button
             variant="secondary"
-            size="md"
+            size="sm"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-            className="w-full inline-flex items-center justify-center gap-1.5"
+            className="inline-flex items-center gap-1.5"
           >
             <RocketLaunchIcon size={ICON_SIZE.SM} />
             Start session from this issue
@@ -251,6 +274,132 @@ export function IssueDetail({
         </div>
       )}
     </div>
+  );
+}
+
+/** Round avatar with a single-letter fallback when the tracker omits an image. */
+function CommentAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }) {
+  if (avatarUrl) {
+    return <img src={avatarUrl} alt="" className="size-5 shrink-0 rounded-full object-cover" loading="lazy" />;
+  }
+  return (
+    <div className="size-5 shrink-0 rounded-full bg-(--color-bg-tertiary) text-(--color-text-tertiary) flex items-center justify-center text-[10px] font-semibold uppercase">
+      {name.charAt(0) || "?"}
+    </div>
+  );
+}
+
+function IssueCommentItem({ comment }: { comment: TrackerComment }) {
+  const name = comment.author?.name ?? "Unknown";
+  return (
+    <li className="flex gap-2">
+      <CommentAvatar name={name} avatarUrl={comment.author?.avatarUrl} />
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-1.5 text-xs">
+          <span className="font-medium text-(--color-text-primary)">{name}</span>
+          {comment.createdAt && (
+            <span className="text-(--color-text-tertiary)">{formatRelativeDate(comment.createdAt)}</span>
+          )}
+        </div>
+        <div className="text-sm text-(--color-text-secondary)">
+          <MarkdownContent text={comment.body} />
+        </div>
+      </div>
+    </li>
+  );
+}
+
+/**
+ * The issue's comment thread + a composer to post one inline (docs/189
+ * follow-up). Mirrors the PR detail tab's Conversation section: the user reads
+ * and replies without leaving ShipIt. A posted comment is the user's own action,
+ * so it lands in the thread directly (no chat provenance card).
+ */
+function IssueComments({
+  comments,
+  loading,
+  error,
+  onPost,
+}: {
+  comments: TrackerComment[] | null;
+  loading: boolean;
+  error: string | null;
+  onPost: (body: string) => Promise<string | null>;
+}) {
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [postError, setPostError] = useState<string | null>(null);
+
+  const handleSubmit = async () => {
+    const body = draft.trim();
+    if (!body || submitting) return;
+    setSubmitting(true);
+    setPostError(null);
+    const err = await onPost(body);
+    setSubmitting(false);
+    if (err) {
+      setPostError(err);
+      return;
+    }
+    setDraft("");
+  };
+
+  // null = not fetched yet (show a hint); [] = genuinely empty.
+  const loadingThread = comments === null && loading;
+  const list = comments ?? [];
+
+  return (
+    <section className="mt-5 pt-4 border-t border-(--color-border-secondary)">
+      <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
+        <ChatCircleIcon size={ICON_SIZE.SM} />
+        Comments
+        {list.length > 0 && <span className="text-(--color-text-tertiary)">· {list.length}</span>}
+      </h3>
+
+      {error ? (
+        <Banner variant="error" className="rounded-md text-left text-xs">
+          {error}
+        </Banner>
+      ) : loadingThread ? (
+        <p className="text-sm text-(--color-text-tertiary) italic">Loading comments…</p>
+      ) : list.length === 0 ? (
+        <p className="text-sm text-(--color-text-tertiary) italic">No comments yet.</p>
+      ) : (
+        <ul className="flex flex-col gap-3">
+          {list.map((c) => (
+            <IssueCommentItem key={c.id} comment={c} />
+          ))}
+        </ul>
+      )}
+
+      {postError && (
+        <Banner variant="error" className="mt-3 rounded-md text-left text-xs">
+          {postError}
+        </Banner>
+      )}
+
+      <div className="mt-3 flex flex-col gap-2">
+        <textarea
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          placeholder="Add a comment…"
+          rows={3}
+          disabled={submitting}
+          data-testid="issue-comment-input"
+          className="w-full resize-y rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) placeholder:text-(--color-text-tertiary) focus:border-(--color-border-focus) focus:outline-none disabled:opacity-50"
+        />
+        <div className="flex justify-end">
+          <Button
+            variant="primary"
+            size="md"
+            onClick={() => void handleSubmit()}
+            disabled={submitting || draft.trim().length === 0}
+          >
+            {submitting ? "Posting…" : "Comment"}
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }
 

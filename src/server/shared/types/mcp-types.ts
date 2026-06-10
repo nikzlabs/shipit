@@ -69,19 +69,21 @@ export type McpTestResult =
 
 // ---- Phase 2: MCP OAuth (docs/088-mcp-integration §"Phase 2") ----
 //
-// For hosted MCP servers (Linear, Notion) the user clicks "Connect" instead
+// For hosted MCP servers (e.g. Notion) the user clicks "Connect" instead
 // of pasting a Bearer token. The orchestrator runs an OAuth 2.1 + PKCE flow,
 // stores the resulting tokens in `CredentialStore.mcpOAuth`, and the server
 // config references the access token via `$platform:<source_id>` placeholders
 // resolved by the session worker against `MCP_PLATFORM_<UPPER_UNDERSCORED>`
 // env vars (the env vars themselves arrive via 087's agent-env transport).
+// (Linear was removed as a built-in one-click provider in docs/190; it stays
+// connectable as a manual MCP server.)
 //
 // One connection per provider per account. Multi-instance (e.g. multiple
-// Linear workspaces) is Phase 3.
+// workspaces of the same provider) is Phase 3.
 
 /**
  * OAuth tokens persisted in `CredentialStore.mcpOAuth` keyed by provider source
- * id (e.g. "linear_oauth"). Token rotation happens lazily in the resolver:
+ * id (e.g. "notion_oauth"). Token rotation happens lazily in the resolver:
  * whenever a `resolve()` call finds `expiresAt < now + safetyMargin`, the
  * resolver swaps the refresh token for a new access token, persists, and
  * returns the new access token.
@@ -141,7 +143,7 @@ export interface McpOAuthProviderConfig {
   /**
    * Source id used in `$platform:<id>` placeholders and in stored token keys.
    * Must match `[a-z][a-z0-9_]*` so it can be uppercased into a valid env var
-   * name (`linear_oauth` → `MCP_PLATFORM_LINEAR_OAUTH`).
+   * name (`notion_oauth` → `MCP_PLATFORM_NOTION_OAUTH`).
    */
   id: string;
   /** Human-readable label for the Settings UI. */
@@ -174,7 +176,7 @@ export interface McpOAuthProviderConfig {
   registrationEndpoint?: string;
   /**
    * Env var name that may carry a pre-allocated client_id (e.g.
-   * `LINEAR_OAUTH_CLIENT_ID`). Checked before falling back to dynamic
+   * `NOTION_OAUTH_CLIENT_ID`). Checked before falling back to dynamic
    * registration.
    */
   clientIdEnv?: string;

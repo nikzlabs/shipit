@@ -61,6 +61,9 @@ export function IssuesPanel({
   const detail = useIssuesStore((s) => s.detail);
   const detailLoading = useIssuesStore((s) => s.detailLoading);
   const detailError = useIssuesStore((s) => s.detailError);
+  const comments = useIssuesStore((s) => s.comments);
+  const commentsLoading = useIssuesStore((s) => s.commentsLoading);
+  const commentsError = useIssuesStore((s) => s.commentsError);
 
   // Derived, memoized so references stay stable across renders (React #185).
   const filteredIssues = useMemo(() => {
@@ -117,9 +120,17 @@ export function IssuesPanel({
         error={detailError}
         info={info}
         canStart={Boolean(effectiveRepoUrl)}
+        comments={comments}
+        commentsLoading={commentsLoading}
+        commentsError={commentsError}
         onBack={() => useIssuesStore.getState().closeIssue()}
-        onRefresh={() => void useIssuesStore.getState().fetchDetail()}
+        onRefresh={() => {
+          // Refresh re-fetches both the issue body and its comment thread.
+          void useIssuesStore.getState().fetchDetail();
+          void useIssuesStore.getState().fetchComments();
+        }}
         onStartSession={handleStartSession}
+        onPostComment={(body) => useIssuesStore.getState().postComment(body)}
       />
     );
   }

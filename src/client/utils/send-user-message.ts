@@ -46,5 +46,22 @@ export function sendUserMessage({ bubble, activity, dispatch }: SendUserMessageO
   session.setMessages((prev) => [...prev, bubble]);
   session.setIsLoading(true);
   session.setActivity({ label: activity });
+  // Optimistically mark this session as running so the sidebar drops its
+  // "needs attention" marker the instant the user sends — without waiting for
+  // the `session_agent_started` SSE round-trip. The attention reason derives
+  // from `activeRunnerSessions.has(sessionId)` (see useAttentionInfo); until
+  // the server echoes back, the session would otherwise still read as "Waiting
+  // for your input". The server-pushed `session_agent_started` / `session_status`
+  // events and the periodic `active_runners` snapshot reconcile this set, so an
+  // optimistic add self-heals if the turn never actually starts.
+  const activeSessionId = session.sessionId;
+  if (activeSessionId) {
+    session.setActiveRunnerSessions((prev) => {
+      if (prev.has(activeSessionId)) return prev;
+      const next = new Set(prev);
+      next.add(activeSessionId);
+      return next;
+    });
+  }
   dispatch();
 }

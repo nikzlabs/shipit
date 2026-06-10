@@ -364,7 +364,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
       <div>
         <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
         <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-          Connect your own Model Context Protocol servers (Linear, Sentry, Notion, …) so the
+          Connect your own Model Context Protocol servers (Sentry, Notion, …) so the
           agent can use their tools. Configured once per account — available in every session.
         </p>
       </div>
@@ -666,7 +666,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
             <input
               className={inputClass}
               value={form.name}
-              placeholder="linear"
+              placeholder="sentry"
               onChange={(e) => updateForm({ name: e.target.value })}
             />
           </label>
@@ -701,7 +701,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                 <input
                   className={inputClass}
                   value={form.args}
-                  placeholder="-y @anthropic-ai/linear-mcp"
+                  placeholder="-y @sentry/mcp-server"
                   onChange={(e) => updateForm({ args: e.target.value })}
                 />
               </label>
@@ -712,7 +712,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                 <input
                   className={inputClass}
                   value={form.npmPackage}
-                  placeholder="@anthropic-ai/linear-mcp"
+                  placeholder="@sentry/mcp-server"
                   onChange={(e) => updateForm({ npmPackage: e.target.value })}
                 />
               </label>
@@ -723,7 +723,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
               <input
                 className={inputClass}
                 value={form.url}
-                placeholder="https://mcp.linear.app/mcp"
+                placeholder="https://mcp.sentry.dev/mcp"
                 onChange={(e) => updateForm({ url: e.target.value })}
               />
             </label>
@@ -738,7 +738,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                 <input
                   className={inputClass}
                   value={row.key}
-                  placeholder={form.type === "stdio" ? "LINEAR_API_KEY" : "Authorization"}
+                  placeholder={form.type === "stdio" ? "SENTRY_AUTH_TOKEN" : "Authorization"}
                   onChange={(e) => setKv(idx, { key: e.target.value })}
                 />
                 <input

@@ -6,7 +6,7 @@ import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { WsLogEntry } from "../shared/types.js";
+import type { WsLogEntry, SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
@@ -259,6 +259,17 @@ export function setupServiceManager(
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
+    /**
+     * docs/183 Phase 4b — publish-after-install hook. Called once after this
+     * session's `agent.install` resolves to publish each declared dep dir's
+     * merged snapshot as the next rolling overlay base. Optional + inert unless
+     * `OVERLAY_DEP_STORE` is on and the session is overlay-eligible.
+     */
+    publishOverlayBases?: (args: {
+      runner: ContainerSessionRunner;
+      session: SessionInfo;
+      installOk: boolean;
+    }) => Promise<void>;
   },
 ): void {
   const {
@@ -274,6 +285,7 @@ export function setupServiceManager(
     serviceEnvDir,
     broadcastLog,
     credentialStore,
+    publishOverlayBases,
   } = deps;
   const session = sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
@@ -329,6 +341,26 @@ export function setupServiceManager(
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
       return { ok: false };
     });
+  }
+
+  // docs/183 Phase 4b — once install resolves, publish each declared dep dir's
+  // merged snapshot as the next rolling overlay base. Placed here (before the
+  // compose/adoption branches) so it runs for every session, including projects
+  // with no compose stack that still install deps. Best-effort and fully gated:
+  // the hook no-ops unless `OVERLAY_DEP_STORE` is on and the session is
+  // overlay-eligible, and a publish failure never affects the install or session.
+  if (installPromise && publishOverlayBases && session && runner instanceof ContainerSessionRunner) {
+    const p = installPromise;
+    const r = runner;
+    const s = session;
+    void (async () => {
+      const res = await p;
+      try {
+        await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+      } catch (err) {
+        console.error(`[overlay-publish:${r.sessionId}] publish failed:`, getErrorMessage(err));
+      }
+    })();
   }
 
   // docs/088 — install npm packages for enabled stdio MCP servers at session
@@ -518,6 +550,26 @@ export function setupServiceManager(
     // Gate on any prior runner's pending compose-stop for this session.
     // Bounded to avoid hanging start() forever if `compose down` wedges.
     await awaitComposeStop(composeStopPromises, runner.sessionId);
+    // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
+    // them to the manager BEFORE the first start(), so compose services that
+    // share the workspace also mount each dep dir's overlay volume nested at
+    // `<service-target>/<dep-dir>`. `prepareOverlaySpecs` returns [] (with no
+    // Docker call) when the flag is off / the session is ineligible, so this is
+    // inert and the override is byte-for-byte unchanged for non-overlay sessions.
+    if (containerManager && session && runner instanceof ContainerSessionRunner) {
+      try {
+        const specs = await containerManager.prepareOverlaySpecs({
+          sessionId: runner.sessionId,
+          workspaceDir,
+          session,
+        });
+        if (specs.length > 0) {
+          mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+        }
+      } catch (err) {
+        console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
+      }
+    }
     try {
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);

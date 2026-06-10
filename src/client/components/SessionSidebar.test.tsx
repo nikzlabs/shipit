@@ -600,6 +600,134 @@ describe("SessionSidebar", () => {
     });
   });
 
+  describe("docs/110: pinned sub-section", () => {
+    it("renders a 'Pinned' subheader below New session and above active sessions", () => {
+      const sessions = [
+        baseSession({
+          id: "s-active",
+          title: "Active work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-02-01T00:00:00.000Z",
+          lastUsedAt: "2024-02-01T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-pinned",
+          title: "Pinned work",
+          remoteUrl: repoA.url,
+          createdAt: "2024-01-01T00:00:00.000Z", // older → would sort below if unpinned
+          lastUsedAt: "2024-01-01T00:00:00.000Z",
+          pinnedAt: "2024-06-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      const newSession = screen.getByText("New session");
+      const header = screen.getByText("Pinned");
+      const pinned = screen.getByText("Pinned work");
+      const active = screen.getByText("Active work");
+      // New session → Pinned header → pinned row → active row.
+      expect(newSession.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(header.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(pinned.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("keeps a pinned session above active even though it is older (pin outranks recency)", () => {
+      const sessions = [
+        baseSession({
+          id: "s-pinned",
+          title: "Old but pinned",
+          remoteUrl: repoA.url,
+          createdAt: "2020-01-01T00:00:00.000Z",
+          lastUsedAt: "2020-01-01T00:00:00.000Z",
+          pinnedAt: "2024-06-01T00:00:00.000Z",
+        }),
+        baseSession({
+          id: "s-new",
+          title: "Brand new",
+          remoteUrl: repoA.url,
+          createdAt: "2024-05-01T00:00:00.000Z",
+          lastUsedAt: "2024-05-01T00:00:00.000Z",
+        }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const pinned = screen.getByText("Old but pinned");
+      const newer = screen.getByText("Brand new");
+      expect(pinned.compareDocumentPosition(newer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("does not render a 'Pinned' subheader when nothing is pinned", () => {
+      const sessions = [baseSession({ id: "s1", title: "Just active", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByText("Pinned")).toBeNull();
+    });
+
+    it("separates pinned from active sessions with a divider", () => {
+      const sessions = [
+        baseSession({ id: "s-active", title: "Active work", remoteUrl: repoA.url }),
+        baseSession({ id: "s-pinned", title: "Pinned work", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const divider = screen.getByTestId("pinned-divider");
+      const pinned = screen.getByText("Pinned work");
+      const active = screen.getByText("Active work");
+      // Pinned row → divider → active row.
+      expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(divider.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("omits the divider when there are pins but no active or resolved sessions", () => {
+      const sessions = [
+        baseSession({ id: "p-only", title: "Only pin", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByTestId("pinned-divider")).toBeNull();
+    });
+
+    it("makes pinned rows draggable only when there is more than one pin", () => {
+      const onePin = [
+        baseSession({ id: "p1", title: "Solo pin", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
+      ];
+      const { rerender } = render(<SessionSidebar {...defaultProps} sessions={onePin} />);
+      expect(screen.getByText("Solo pin").closest('[draggable="true"]')).toBeNull();
+
+      const twoPins = [
+        ...onePin,
+        baseSession({ id: "p2", title: "Second pin", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      rerender(<SessionSidebar {...defaultProps} sessions={twoPins} />);
+      expect(screen.getByText("Solo pin").closest('[draggable="true"]')).not.toBeNull();
+      expect(screen.getByText("Second pin").closest('[draggable="true"]')).not.toBeNull();
+    });
+
+    it("dragging one pin onto another calls reorderPins with the new order", () => {
+      const reorderSpy = vi.fn().mockResolvedValue(undefined);
+      useSessionStore.setState({ reorderPins: reorderSpy });
+      const sessions = [
+        baseSession({ id: "p-top", title: "Top pin", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
+        baseSession({ id: "p-bottom", title: "Bottom pin", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+
+      const top = screen.getByText("Top pin").closest('[draggable="true"]')!;
+      const bottom = screen.getByText("Bottom pin").closest('[draggable="true"]')!;
+
+      // Minimal DataTransfer that round-trips setData → getData.
+      const data: Record<string, string> = {};
+      const dataTransfer = {
+        setData: (k: string, v: string) => { data[k] = v; },
+        getData: (k: string) => data[k] ?? "",
+        effectAllowed: "",
+        dropEffect: "",
+      };
+      fireEvent.dragStart(top, { dataTransfer });
+      fireEvent.dragOver(bottom, { dataTransfer, clientY: 1000 }); // lower half → "after"
+      fireEvent.drop(bottom, { dataTransfer });
+
+      // p-top moved below p-bottom → new top-first order.
+      expect(reorderSpy).toHaveBeenCalledWith(repoA.url, ["p-bottom", "p-top"]);
+    });
+  });
+
   describe("docs/161: disk-tier badge", () => {
     it("shows a 'stored' indicator on an evicted (not user-archived) session", () => {
       const sessions = [

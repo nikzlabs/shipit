@@ -74,6 +74,47 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
+      // Comment thread (`listComments`) — backs GET /api/issue/comments.
+      if (query.includes("IssueComments")) {
+        return jsonResponse({
+          data: {
+            issue: {
+              comments: {
+                nodes: [
+                  {
+                    id: "c1",
+                    body: "First reply",
+                    url: "https://linear.app/x/issue/SHI-1#c1",
+                    createdAt: "2026-06-01T00:00:00.000Z",
+                    user: { name: "nik", displayName: "Nik", avatarUrl: "http://a" },
+                  },
+                ],
+              },
+            },
+          },
+        });
+      }
+      // Resolve a key → UUID before a comment mutation (`addComment`).
+      if (query.includes("IssueId")) {
+        return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      }
+      // Create a comment (`addComment`) — backs POST /api/issue/comments.
+      if (query.includes("AddComment")) {
+        return jsonResponse({
+          data: {
+            commentCreate: {
+              success: true,
+              comment: {
+                id: "c2",
+                body: "Posted from the UI",
+                url: "https://linear.app/x/issue/SHI-1#c2",
+                createdAt: "2026-06-02T00:00:00.000Z",
+                user: { name: "nik", displayName: "Nik", avatarUrl: "http://a" },
+              },
+            },
+          },
+        });
+      }
       // Single-issue fetch (`getIssue`) — backs GET /api/issue (docs/189).
       if (query.includes("query Issue(")) {
         return jsonResponse({
@@ -271,6 +312,58 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(res.statusCode).toBe(400);
     // No GraphQL call fires for an unconfigured tracker.
     expect(trackerFetch).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/issue/comments returns the Linear comment thread", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear&id=SHI-1" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { comments: { id: string; body: string; author?: { name: string } }[] };
+    expect(body.comments).toEqual([
+      {
+        id: "c1",
+        body: "First reply",
+        url: "https://linear.app/x/issue/SHI-1#c1",
+        createdAt: "2026-06-01T00:00:00.000Z",
+        author: { name: "Nik", avatarUrl: "http://a" },
+      },
+    ]);
+  });
+
+  it("GET /api/issue/comments 400s when the tracker is unconfigured", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/issue/comments?tracker=linear&id=SHI-1" });
+    expect(res.statusCode).toBe(400);
+    expect(trackerFetch).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/issue/comments posts a user comment and returns it (no provenance card)", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/comments",
+      payload: { tracker: "linear", id: "SHI-1", body: "Posted from the UI" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { comment: { id: string; body: string; author?: { name: string } } };
+    expect(body.comment.id).toBe("c2");
+    expect(body.comment.body).toBe("Posted from the UI");
+    expect(body.comment.author).toEqual({ name: "Nik", avatarUrl: "http://a" });
+  });
+
+  it("POST /api/issue/comments 400s without a body", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/comments",
+      payload: { tracker: "linear", id: "SHI-1", body: "   " },
+    });
+    expect(res.statusCode).toBe(400);
   });
 
   it("GET /api/issue reads a GitHub issue scoped to the session repo", async () => {

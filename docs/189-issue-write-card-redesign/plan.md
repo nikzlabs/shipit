@@ -61,8 +61,15 @@ action attaches to it. The `attribution` field **stays in the data model**
 - **Line 1 — verb + identifier:** an explicit verb word does the disambiguation,
   not the icon alone: **Commented on** · **Edited** · **Set status of** ·
   **Assigned** + the bold identifier. (`Set status of`, not `Moved` — "moved"
-  reads as moved-to-another-project.) The identifier is no longer duplicated; the
-  deep link collapses to a bare ⧉ icon.
+  reads as moved-to-another-project.) The identifier is no longer duplicated.
+- **The whole card is the open affordance.** There is no separate open/deep-link
+  glyph: clicking anywhere on the card (or Enter/Space when focused) opens the
+  issue in ShipIt's inline detail view. Undo is the one nested action and stops
+  propagation so it doesn't also open. *(Anchoring to the specific comment within
+  the detail view is a follow-up — the inline `IssueDetail` doesn't render an
+  issue's comments yet, so there's nothing to anchor to. Until it does, opening
+  the issue inline is the right behavior rather than linking out, per principle
+  §4.)*
 - **Issue title** renders faint under line 1, so you know *which* issue without
   the link-out.
 - **Line 2 — the actual change**, verb-specific:
@@ -92,10 +99,12 @@ display values for line 2 don't exist on the card yet.
   stash the human-readable display values onto the outcome alongside it. The
   comment body is available at call time (`body`) but currently discarded — keep
   a clipped preview.
-- **Persistence** — flow the new `content` field through `chat-history.ts`
-  `toRow`/`fromRow` (+ a `database.ts` migration), and extend the docs/188 guard
-  contract: add the field to `EVERY_OPTIONAL_FIELD_MESSAGE` and the
-  history round-trip + no-duplicate-on-replay tests.
+- **Persistence** — no schema change needed: the whole `IssueWriteCard` is
+  serialized into the single `issue_write` JSON column, so `content` rides
+  through `chat-history.ts` `toRow`/`fromRow` with no new column or migration.
+  Extend the docs/188 guard contract instead: add `content` to the
+  `EVERY_OPTIONAL_FIELD_MESSAGE` write card (so the serialization round-trip
+  exercises it) and add a focused line-2 round-trip test.
 - **Client** — rewrite `IssueWriteCard.tsx` to the two-line layout; remove the
   `attribution` string; add the speech-bubble/verb mapping. `issueWrite` stays in
   `CARD_MESSAGE_FIELDS` (already there).

@@ -158,22 +158,22 @@ describe("resolveMcpServer (docs/088)", () => {
   });
 
   describe("$platform: placeholders (docs/088 Phase 2)", () => {
-    it("resolves $platform:linear_oauth against MCP_PLATFORM_LINEAR_OAUTH", () => {
+    it("resolves $platform:notion_oauth against MCP_PLATFORM_NOTION_OAUTH", () => {
       const config: McpServerConfig = {
-        name: "linear",
+        name: "notion",
         type: "http",
-        url: "https://mcp.linear.app/mcp",
-        headers: { Authorization: "Bearer $platform:linear_oauth" },
+        url: "https://mcp.notion.com/mcp",
+        headers: { Authorization: "Bearer $platform:notion_oauth" },
         enabled: true,
       };
       const { resolved, missing } = resolveMcpServer(config, {
-        MCP_PLATFORM_LINEAR_OAUTH: "lin_oauth_xyz",
+        MCP_PLATFORM_NOTION_OAUTH: "ntn_oauth_xyz",
       });
       expect(missing).toEqual([]);
       expect(resolved).toEqual({
         type: "http",
-        url: "https://mcp.linear.app/mcp",
-        headers: { Authorization: "Bearer lin_oauth_xyz" },
+        url: "https://mcp.notion.com/mcp",
+        headers: { Authorization: "Bearer ntn_oauth_xyz" },
       });
     });
 
@@ -196,19 +196,19 @@ describe("resolveMcpServer (docs/088)", () => {
         type: "http",
         url: "https://example.com/mcp",
         headers: {
-          Authorization: "Bearer $platform:linear_oauth",
+          Authorization: "Bearer $platform:notion_oauth",
           "X-Extra": "scheme=$secret:mcp__x__SCHEME",
         },
         enabled: true,
       };
       const { resolved, missing } = resolveMcpServer(config, {
-        MCP_PLATFORM_LINEAR_OAUTH: "lin_xyz",
+        MCP_PLATFORM_NOTION_OAUTH: "ntn_xyz",
         mcp__x__SCHEME: "abc",
       });
       expect(missing).toEqual([]);
       expect(resolved).toMatchObject({
         headers: {
-          Authorization: "Bearer lin_xyz",
+          Authorization: "Bearer ntn_xyz",
           "X-Extra": "scheme=abc",
         },
       });
@@ -222,7 +222,7 @@ describe("resolveMcpServer (docs/088)", () => {
         name: "x",
         type: "http",
         url: "https://example.com/mcp",
-        headers: { Authorization: "Bearer $platform:LINEAR_OAUTH" },
+        headers: { Authorization: "Bearer $platform:NOTION_OAUTH" },
         enabled: true,
       };
       const { resolved, missing } = resolveMcpServer(config, {});
@@ -231,7 +231,7 @@ describe("resolveMcpServer (docs/088)", () => {
       expect(resolved).toEqual({
         type: "http",
         url: "https://example.com/mcp",
-        headers: { Authorization: "Bearer $platform:LINEAR_OAUTH" },
+        headers: { Authorization: "Bearer $platform:NOTION_OAUTH" },
       });
     });
   });

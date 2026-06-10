@@ -350,23 +350,23 @@ describe("MCP route OAuth refresh retry", () => {
   it("extracts platform sources from nested MCP config placeholders", () => {
     expect(
       extractPlatformSourcesFromMcpConfig({
-        headers: { Authorization: "Bearer $platform:linear_oauth" },
+        headers: { Authorization: "Bearer $platform:sentry_oauth" },
         args: ["--token=$platform:notion_oauth"],
       }),
-    ).toEqual(["linear_oauth", "notion_oauth"]);
+    ).toEqual(["sentry_oauth", "notion_oauth"]);
   });
 
   it("refreshes a rejected OAuth token, pushes agent env, and retries the test once", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-mcp-refresh-route-"));
     const credentialStore = new CredentialStore(tmpDir);
-    credentialStore.setMcpServer("linear", {
-      name: "linear",
+    credentialStore.setMcpServer("notion", {
+      name: "notion",
       type: "http",
-      url: "https://mcp.linear.app/mcp",
-      headers: { Authorization: "Bearer $platform:linear_oauth" },
+      url: "https://mcp.notion.com/mcp",
+      headers: { Authorization: "Bearer $platform:notion_oauth" },
       enabled: true,
     });
-    credentialStore.setMcpOAuthTokens("linear_oauth", {
+    credentialStore.setMcpOAuthTokens("notion_oauth", {
       accessToken: "old_access",
       refreshToken: "refresh_1",
       clientId: "client_1",
@@ -382,8 +382,8 @@ describe("MCP route OAuth refresh retry", () => {
       async proxyMcpTest() {
         attempts += 1;
         if (attempts === 1) return { ok: false, error: "HTTP 401 Unauthorized" };
-        return pushed.at(-1)?.MCP_PLATFORM_LINEAR_OAUTH === "new_access"
-          ? { ok: true, tools: [{ name: "linear_search" }] }
+        return pushed.at(-1)?.MCP_PLATFORM_NOTION_OAUTH === "new_access"
+          ? { ok: true, tools: [{ name: "notion_search" }] }
           : { ok: false, error: "still stale" };
       },
     };
@@ -411,13 +411,13 @@ describe("MCP route OAuth refresh retry", () => {
     });
 
     try {
-      const res = await app.inject({ method: "POST", url: "/api/mcp-servers/linear/test" });
+      const res = await app.inject({ method: "POST", url: "/api/mcp-servers/notion/test" });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ ok: true, tools: [{ name: "linear_search" }] });
+      expect(res.json()).toEqual({ ok: true, tools: [{ name: "notion_search" }] });
       expect(attempts).toBe(2);
-      expect(credentialStore.getMcpOAuthTokens("linear_oauth")?.accessToken).toBe("new_access");
+      expect(credentialStore.getMcpOAuthTokens("notion_oauth")?.accessToken).toBe("new_access");
       expect(pushed).toHaveLength(1);
-      expect(pushed[0].MCP_PLATFORM_LINEAR_OAUTH).toBe("new_access");
+      expect(pushed[0].MCP_PLATFORM_NOTION_OAUTH).toBe("new_access");
     } finally {
       await app.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });
