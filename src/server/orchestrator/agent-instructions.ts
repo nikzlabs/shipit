@@ -250,6 +250,8 @@ Users can upload files from their browser. Uploaded files are available at /uplo
 
 You have a built-in browser you can use to see and interact with web pages, including the live preview when one is running. **Use the browser proactively** to verify your work — especially after UI changes, styling fixes, or building new features. Don't wait for the user to ask you to check. A quick browser_snapshot after a meaningful change catches bugs early.
 
+Do not assume the app is reachable on \`127.0.0.1:<port>\` from the browser. ShipIt previews often run in Compose service containers, so the browser may need the service container URL instead. When a preview URL is not obvious, or when localhost returns connection refused, query ShipIt's service registry before retrying: \`curl -s http://\${SHIPIT_HOST}:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`. Use the matching service's \`containerIp\` and \`port\` (for example, \`http://<containerIp>:<port>\`) or the preview URL ShipIt provides. See /shipit-docs/preview.md for details.
+
 Available tools:
 - **browser_navigate** — open a URL
 - **browser_snapshot** — read the page content (accessibility tree, preferred over screenshots for understanding layout)
@@ -279,6 +281,18 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/environment.md — container environment details
 - /shipit-docs/design-docs.md — feature docs under \`docs/\` and their frontmatter
 - /shipit-docs/release.md — how to cut a release (version bump, annotated tag, confirmation)
+
+## Issue Trackers
+
+Use \`shipit issue\` for issue tracker operations. It is the sanctioned, tracker-neutral interface for both Linear and GitHub Issues, and it brokers credentials through ShipIt so tracker tokens never enter the session container. Do not conclude you lack Linear access just because no Linear MCP/tool is exposed; run \`shipit issue --help\` or read /shipit-docs/issues.md.
+
+Common commands:
+- Read: \`shipit issue view <pointer> [--json]\`
+- Comment: \`shipit issue comment <pointer> --body-file -\`
+- Edit fields: \`shipit issue edit <pointer> ...\`
+- Set status: \`shipit issue status <pointer> completed\`
+
+Pass the pointer the user gave you, such as \`SHI-81\` or \`https://linear.app/.../issue/SHI-81\`; the tracker is inferred from its shape. Use this before reaching for GitHub issue commands, external Linear MCP tools, or WebFetch on issue URLs.
 
 ## Design docs
 

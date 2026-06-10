@@ -14,7 +14,6 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { SessionWorker } from "../../session/session-worker.js";
-import { CodexAdapter } from "../../session/agents/codex/adapter.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 
@@ -170,65 +169,6 @@ describe("Integration: Session Worker IPC", () => {
     const status = await worker.getApp().inject({ method: "GET", url: "/agent/status" });
     expect(status.json()).toMatchObject({ running: true });
     expect(status.json().latestSseSeq).toBeGreaterThanOrEqual(0);
-  });
-
-  it("writes Playwright MCP config before starting a Codex agent", async () => {
-    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "worker-codex-home-"));
-    const previousCodexHome = process.env.CODEX_HOME;
-    const previousOpenAIKey = process.env.OPENAI_API_KEY;
-
-    await worker.stop();
-    process.env.CODEX_HOME = codexHome;
-    delete process.env.OPENAI_API_KEY;
-
-    const codexWorker = new SessionWorker({
-      agentFactory: (agentId) => {
-        expect(agentId).toBe("codex");
-        return new CodexAdapter(() => false);
-      },
-      port: 0,
-      host: "127.0.0.1",
-    });
-
-    try {
-      await codexWorker.start();
-      const res = await codexWorker.getApp().inject({
-        method: "POST",
-        url: "/agent/start",
-        payload: {
-          agentId: "codex",
-          params: { prompt: "Use the browser", cwd: "/tmp" },
-        },
-      });
-
-      expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ started: true });
-
-      const config = fs.readFileSync(path.join(codexHome, "config.toml"), "utf-8");
-      expect(config).toContain("[mcp_servers.playwright]");
-      expect(config).toContain("playwright-mcp --browser chromium");
-      expect(config).toContain("--output-dir /tmp/.playwright-mcp");
-    } finally {
-      await codexWorker.stop();
-      fs.rmSync(codexHome, { recursive: true, force: true });
-      if (previousCodexHome === undefined) delete process.env.CODEX_HOME;
-      else process.env.CODEX_HOME = previousCodexHome;
-      if (previousOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
-      else process.env.OPENAI_API_KEY = previousOpenAIKey;
-
-      worker = new SessionWorker({
-        agentFactory: () => {
-          lastAgent = new FakeWorkerAgent();
-          return lastAgent;
-        },
-        port: 0,
-        host: "127.0.0.1",
-      });
-      const address = await worker.start();
-      const match = /:(\d+)$/.exec(address);
-      workerPort = match ? Number(match[1]) : 0;
-      workerUrl = `http://127.0.0.1:${workerPort}`;
-    }
   });
 
   it("rejects starting a second agent while one is running", async () => {

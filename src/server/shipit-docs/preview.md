@@ -176,7 +176,13 @@ out of the box.
 You have headless Chrome available via Playwright MCP. Use these tools to
 verify your work:
 
-- **browser_navigate** — open the preview URL (provided in your system prompt)
+- **browser_navigate** — open the preview URL. Do not assume
+  `127.0.0.1:<port>` works from the browser: previews often run in Compose
+  service containers. If the URL is unclear or localhost refuses the
+  connection, first inspect ShipIt's service registry:
+  `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
+  Use the service's `containerIp` + `port` (for example
+  `http://<containerIp>:<port>`) or the preview URL ShipIt provides.
 - **browser_snapshot** — read page content as an accessibility tree (preferred
   for understanding layout)
 - **browser_click** / **browser_type** — interact with elements
@@ -197,8 +203,11 @@ If the project doesn't have a docker-compose.yml, see
 ## Troubleshooting
 
 - **Preview not loading**: Check that docker-compose.yml has the correct
-  command and port. Verify the service is running with
-  `docker compose ps` from the terminal.
+  command and port. Verify the service is running with ShipIt's service
+  registry:
+  `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
+  For browser verification, prefer the returned `containerIp` + `port` over
+  guessing `localhost`.
 - **Port not detected**: Ensure `ports` is set in docker-compose.yml.
 - **Connection refused**: The dev server may need a moment to start. Ensure it
   binds to `0.0.0.0` (set `HOST=0.0.0.0` in the compose environment).
