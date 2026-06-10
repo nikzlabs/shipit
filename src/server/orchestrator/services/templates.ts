@@ -65,15 +65,20 @@ export async function createRepoWithTemplate(
     await scaffoldGit.autoCommit(`Initial setup: ${template.name}`);
     await scaffoldGit.push("origin", "main");
 
-    // 3. Create the shared cache as a *bare* clone of the now-populated remote
-    //    — identical to the add-by-URL path (api-routes-session.ts). A bare
-    //    cache can be fetched/refreshed cleanly; the previous implementation
-    //    `git init`'d this dir as a non-bare working tree with `main` checked
+    // 3. Create the shared cache as a *bare* repo. Bare-clone from the local
+    //    scaffold — which already holds the pushed history — instead of
+    //    re-downloading from the remote we just pushed to, then repoint origin
+    //    at the real remote for future fetches. The result matches the
+    //    add-by-URL path (a bare cache with `main` and origin = the GitHub URL)
+    //    without a redundant network round-trip. The previous implementation
+    //    `git init`'d this dir as a *non-bare* working tree with `main` checked
     //    out, which made every later cache fetch fail with "refusing to fetch
     //    into branch 'refs/heads/main' checked out" (docs/192).
     const repoDir = getSharedRepoDir(cloneUrl);
     await fs.mkdir(repoDir, { recursive: true });
-    await createRepoGit(repoDir).cloneBare(cloneUrl);
+    const cacheGit = createRepoGit(repoDir);
+    await cacheGit.cloneBare(scaffoldDir);
+    await cacheGit.setRemoteUrl(cloneUrl);
   } finally {
     await fs.rm(scaffoldDir, { recursive: true, force: true });
   }

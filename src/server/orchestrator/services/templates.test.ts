@@ -195,33 +195,10 @@ describe("applyTemplate (service) — ops session", () => {
 describe("createRepoWithTemplate (service) — bare cache", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
-  let savedGitConfigEnv: Record<string, string | undefined> = {};
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tmpl-repo-test-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
-
-    // Neutralize any ambient command-line-level git config injected by the dev
-    // sandbox (e.g. `safe.bareRepository=explicit` via GIT_CONFIG_COUNT/KEY/VALUE).
-    // Those override even GIT_CONFIG_GLOBAL and would make git refuse to operate
-    // inside the freshly-cloned *bare* cache ("fatal: not in a git directory"),
-    // which production containers never set. Snapshot and clear them so the test
-    // runs git in the same pristine config as production.
-    savedGitConfigEnv = {};
-    const count = Number.parseInt(process.env.GIT_CONFIG_COUNT ?? "", 10);
-    const clearEnv = (key: string): void => {
-      savedGitConfigEnv[key] = process.env[key];
-      Reflect.deleteProperty(process.env, key);
-    };
-    clearEnv("GIT_CONFIG_COUNT");
-    clearEnv("GIT_CONFIG_PARAMETERS");
-    if (Number.isInteger(count)) {
-      for (let i = 0; i < count; i += 1) {
-        clearEnv(`GIT_CONFIG_KEY_${i}`);
-        clearEnv(`GIT_CONFIG_VALUE_${i}`);
-      }
-    }
-
     initGlobalGitConfig(path.join(tmpDir, "credentials"));
     setGitIdentity("Test User", "test@test.com");
   });
@@ -229,10 +206,6 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
   afterEach(() => {
     if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
     else delete process.env.GIT_CONFIG_GLOBAL;
-    for (const [key, value] of Object.entries(savedGitConfigEnv)) {
-      if (value !== undefined) process.env[key] = value;
-      else Reflect.deleteProperty(process.env, key);
-    }
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
@@ -284,6 +257,13 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
       .toString()
       .trim();
     expect(localHelper).toBe("");
+
+    // … and origin repointed at the real remote, not the throwaway scaffold dir
+    // (which is deleted — a stale origin would break every future cache fetch).
+    const originUrl = execSync("git config --get remote.origin.url", { cwd: cacheDir })
+      .toString()
+      .trim();
+    expect(originUrl).toBe(originDir);
 
     // The remote actually received the scaffold push on main.
     const originLog = execSync("git log --format=%s main", { cwd: originDir }).toString();
