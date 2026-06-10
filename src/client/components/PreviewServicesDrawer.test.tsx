@@ -3,26 +3,15 @@ import { render, cleanup, fireEvent, screen } from "@testing-library/react";
 import { PreviewServicesDrawer } from "./PreviewServicesDrawer.js";
 import { usePreviewStore, type ManagedServiceState } from "../stores/preview-store.js";
 
-// xterm has no DOM/canvas in jsdom — mock it (mirrors InteractiveTerminal.test.tsx).
-const terminalInstances: { write: ReturnType<typeof vi.fn>; dispose: ReturnType<typeof vi.fn> }[] = [];
-vi.mock("@xterm/xterm", () => {
-  class MockTerminal {
-    write = vi.fn();
-    dispose = vi.fn();
-    loadAddon = vi.fn();
-    open = vi.fn();
-    constructor() { terminalInstances.push(this); }
-  }
-  return { Terminal: MockTerminal };
-});
-vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit = vi.fn(); } }));
-vi.mock("@xterm/addon-web-links", () => ({ WebLinksAddon: class { activate = vi.fn(); } }));
-
-vi.stubGlobal("ResizeObserver", class {
-  observe = vi.fn();
-  disconnect = vi.fn();
-  unobserve = vi.fn();
-});
+// LogView owns an xterm.js instance (no DOM/canvas in jsdom). These tests are
+// about the drawer (list, selection, toolbar, restart) — stub LogView to a
+// marker that echoes its channel so we can assert it mounts for the selected
+// service when the preview tab is active.
+vi.mock("./LogView.js", () => ({
+  LogView: ({ channel }: { channel: string }) => (
+    <div data-testid="log-view" data-channel={channel} />
+  ),
+}));
 
 function svc(over: Partial<ManagedServiceState> & { name: string }): ManagedServiceState {
   return { status: "running", preview: "auto", ...over };
@@ -30,15 +19,12 @@ function svc(over: Partial<ManagedServiceState> & { name: string }): ManagedServ
 
 const baseProps = () => ({
   active: true,
-  lastMessage: null as MessageEvent | null,
-  drainMessages: () => [] as MessageEvent[],
   send: vi.fn(),
   onSendToAgent: vi.fn(),
   onSelectPreviewPort: vi.fn(),
 });
 
 beforeEach(() => {
-  terminalInstances.length = 0;
   localStorage.clear();
   // The preview store is a module singleton; reset the lifted drawer flag so
   // a prior test's expand doesn't leak into the next case.
@@ -68,7 +54,7 @@ describe("PreviewServicesDrawer", () => {
     expect(screen.getByText("web")).toBeInTheDocument();
   });
 
-  it("drills into a service's log view and mounts the xterm viewer when active", () => {
+  it("drills into a service's log view and mounts the LogView when active", () => {
     const services = [svc({ name: "web", port: 3000 })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
@@ -76,16 +62,17 @@ describe("PreviewServicesDrawer", () => {
     // Log toolbar affordances appear...
     expect(screen.getByRole("button", { name: "Back to services" })).toBeInTheDocument();
     expect(screen.getByText("Send to Agent")).toBeInTheDocument();
-    // ...and the (mocked) terminal was instantiated.
-    expect(terminalInstances.length).toBe(1);
+    // ...and the LogView mounted on the service channel.
+    const view = screen.getByTestId("log-view");
+    expect(view.getAttribute("data-channel")).toBe("service:web");
   });
 
-  it("does NOT mount xterm in the log view when the preview tab is inactive", () => {
+  it("does NOT mount the LogView when the preview tab is inactive", () => {
     const services = [svc({ name: "web", port: 3000 })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} active={false} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
     fireEvent.click(screen.getByRole("button", { name: "web" }));
-    expect(terminalInstances.length).toBe(0);
+    expect(screen.queryByTestId("log-view")).toBeNull();
   });
 
   it("clicking a service's port chip pivots the preview port", () => {

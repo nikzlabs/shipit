@@ -1,4 +1,4 @@
-import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
@@ -52,7 +52,7 @@ export interface AgentListenerDeps {
   /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
   /** Append a line to the per-session log buffer. */
-  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (source: LogSource, text: string) => void;
   /** Model the caller wants the turn to start with (before agent_init confirms). */
   getSelectedModel: () => string | undefined;
   /** Optional: push a fresh rate-limit snapshot (any agent) to the subscription badge. */

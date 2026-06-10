@@ -6,8 +6,10 @@ import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { WsLogEntry, SessionInfo } from "../shared/types.js";
+import type { LogSource, SessionInfo } from "../shared/types.js";
+import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { agentLogAppend } from "./log-emit.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
@@ -24,16 +26,11 @@ import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-p
 export function handleStackError(
   runner: SessionRunnerInterface,
   err: Error,
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
 ): void {
   const text = `[compose] Stack error: ${err.message}`;
   if (broadcastLog) broadcastLog(runner.sessionId, "server", text);
-  runner.emitMessage({
-    type: "log_entry",
-    source: "server",
-    text,
-    timestamp: new Date().toISOString(),
-  });
+  runner.emitMessage(agentLogAppend("server", text));
   runner.emitMessage({
     type: "stack_error",
     sessionId: runner.sessionId,
@@ -67,7 +64,7 @@ export function adoptExistingServiceManager(
     /** Same map as in setupServiceManager — see RunnerRegistryDeps doc. */
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
-    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
     installPromise: Promise<{ ok: boolean }> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
@@ -257,7 +254,9 @@ export function setupServiceManager(
      * outside the agent's workspace mount. Passed to `ServiceManager`.
      */
     serviceEnvDir?: string;
-    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
+    logStore?: LogStore;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
     /**
@@ -284,6 +283,7 @@ export function setupServiceManager(
     secretStore,
     dockerSecretsConfig,
     serviceEnvDir,
+    logStore,
     broadcastLog,
     credentialStore,
     publishOverlayBases,
@@ -477,6 +477,7 @@ export function setupServiceManager(
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(serviceEnvDir ? { serviceEnvDir } : {}),
+    ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network

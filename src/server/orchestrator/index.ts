@@ -7,7 +7,9 @@ import fs from "node:fs/promises";
 import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
+import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
+import { LogStore } from "./log-store.js";
+import { agentLogAppend } from "./log-emit.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
@@ -211,7 +213,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { sseClients, sseBroadcast } = createSSE();
 
   // ---- Log buffer ----
-  const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
+  // Durable per-session log store (docs/192) — backs both the agent "Logs" tab
+  // and the preview-service log panels so history survives orchestrator
+  // restart, idle eviction, and container destruction. The in-memory ring in
+  // createLogBuffer stays as a hot, synchronous cache for diagnostics.
+  const logStore = new LogStore(sessionsRoot);
+  const { getLogBuffer, clearLogBuffer, removeLogBuffer, broadcastLog } = createLogBuffer(logStore);
+  // docs/192 — drop a session's durable logs dir + in-memory ring when it goes
+  // away for good (archive / delete / full reset). The disk-janitor sweep is
+  // the startup backstop for paths that don't call this.
+  const removeSessionLogs = (sid: string): void => {
+    logStore.remove(sid);
+    removeLogBuffer(sid);
+  };
 
   // ---- OOM circuit breaker ----
   // One process-local instance shared between the health monitor (which
@@ -439,6 +453,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     publishOverlayBases,
+    logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
@@ -938,6 +953,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       sessionManager,
       repoStore,
       stateDir,
+      sessionsRoot,
       credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
@@ -1109,6 +1125,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // this and the route derives the per-session CLI runner.
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
+    removeSessionLogs,
     agentFactory,
     oomBreaker,
     loopDetector,
@@ -1373,7 +1390,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // replay paths (`terminal_start` handler + `onSseOpen`) that prefix
         // with `\x1bc` to keep xterm.js renderer state coherent.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
-          if (buffered.type === "log_entry") continue;
+          // Agent log lines are re-seeded by the `log_snapshot` above, so skip
+          // the buffered `log_append`s here to avoid duplicating the backlog.
+          if (buffered.type === "log_append") continue;
           if (buffered.type === "terminal_output") continue;
           if (buffered.type === "terminal_exit") continue;
           if (buffered.type === "terminal_reconnecting") continue;
@@ -1521,14 +1540,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
                 : `Auto-push failed: ${errMsg}`;
               broadcastLog(runner.sessionId, "server", text);
-              runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+              runner.emitMessage(agentLogAppend("server", text));
               return;
             }
             const text = errMsg.includes("workflow")
               ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
               : `Auto-push failed: ${errMsg}`;
             broadcastLog(runner.sessionId, "server", text);
-            runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+            runner.emitMessage(agentLogAppend("server", text));
           }
         }, autoPushDebounceMs));
       };
@@ -1609,13 +1628,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // this connection belongs to this session, so it goes into THIS
       // session's buffer only. This is what isolates one session's terminal
       // panel from another session's logs.
-      const sessionBroadcastLog = (source: WsLogEntry["source"], text: string) => {
-        broadcastLog(sessionId, source, text); // per-session buffer
-        const entry: WsLogEntry = { type: "log_entry", source, text, timestamp: new Date().toISOString() };
+      const sessionBroadcastLog = (source: LogSource, text: string) => {
+        broadcastLog(sessionId, source, text); // per-session buffer + durable store
+        const msg = agentLogAppend(source, text);
         if (attachedRunner) {
-          attachedRunner.emitMessage(entry);
+          attachedRunner.emitMessage(msg);
         } else {
-          send(entry);
+          send(msg);
         }
       };
 
@@ -1667,6 +1686,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         ensureAgentTokenFresh,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
+        logStore,
+        removeSessionLogs,
       };
 
       // Auto-activate the session on connect
@@ -1676,14 +1697,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Replay only THIS session's buffered entries so a newly-connected
       // viewer doesn't see logs that belong to other sessions.
       //
-      // Send `clear_logs` first so reconnecting viewers replace their local
-      // terminal store with the server buffer (the source of truth) instead
-      // of appending the replay on top of the entries they already have.
-      // Without this, every WS reconnect (network blip, tab visibility flip,
-      // session re-attach) would duplicate the buffered log lines in the UI.
-      send({ type: "clear_logs" });
-      const logBuffer = getLogBuffer(sessionId);
-      for (const entry of logBuffer) { send(entry); }
+      // Re-seed the agent Logs channel from the durable store (docs/192) on
+      // every WS (re)connect. A single `log_snapshot` REPLACES the client
+      // model wholesale — so a reconnect can't duplicate the backlog (the old
+      // `clear_logs` + per-entry replay dance is gone), and the snapshot
+      // survives orchestrator restart / idle eviction / container destruction,
+      // which is what fixes "logs only from the moment I attached". Agent
+      // entries are written synchronously (see LogStore.appendEntry), so the
+      // file is always complete and current and this can't race a just-emitted
+      // line. `<LogView>` also subscribes on mount; both paths send the same
+      // idempotent snapshot. Live lines then arrive via `sessionBroadcastLog`.
+      send({
+        type: "log_snapshot",
+        channel: "agent",
+        records: logStore.snapshotEntries(sessionId, "agent").map(
+          (e): WsLogRecord => ({ ts: e.ts, source: (e.source || undefined) as LogSource | undefined, text: e.text }),
+        ),
+      });
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
       // Send preview_status after the log buffer so it's the last
@@ -1749,7 +1779,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);
-          case "clear_logs": { terminalHandlers.handleClearLogs(ctx); return; }
+          case "subscribe_logs": return serviceHandlers.handleSubscribeLogs(ctx, msg);
+          case "log_clear": { serviceHandlers.handleLogClear(ctx, msg); return; }
           case "set_agent": {
             const agentId = msg.agentId;
             // docs/138 — once the session has taken its first turn the agent is
@@ -1896,7 +1927,6 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           }
           case "start_service": return serviceHandlers.handleStartService(ctx, msg);
           case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
-          case "subscribe_service_logs": return serviceHandlers.handleSubscribeServiceLogs(ctx, msg);
           case "send_message": {
             // docs/146 — WS-typed user input resets the auto-resolve attempt
             // budget. Only fired from the dispatch switch (not inside the

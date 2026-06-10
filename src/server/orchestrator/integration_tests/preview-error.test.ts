@@ -52,7 +52,7 @@ function makeFakeRegistry(runners: Record<string, SessionRunnerInterface>): Sess
 }
 
 describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
-  it("emits preview_error + log_entry on first error", () => {
+  it("emits preview_error + log_append on first error", () => {
     const { runner, emitted } = makeFakeRunner("sess-1");
     const report = createPreviewErrorReporter(makeFakeRegistry({ "sess-1": runner }));
 
@@ -60,7 +60,7 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
 
     const types = emitted.map((m) => m.type);
     expect(types).toContain("preview_error");
-    expect(types).toContain("log_entry");
+    expect(types).toContain("log_append");
 
     const previewErr = emitted.find((m) => m.type === "preview_error");
     expect(previewErr).toMatchObject({
@@ -71,10 +71,13 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
       upgrade: false,
     });
 
-    const logEntry = emitted.find((m) => m.type === "log_entry");
-    expect(logEntry).toMatchObject({
-      source: "preview",
-      text: expect.stringContaining("Preview unreachable on port 5173") as string,
+    const logAppend = emitted.find((m) => m.type === "log_append");
+    expect(logAppend).toMatchObject({
+      channel: "agent",
+      records: [{
+        source: "preview",
+        text: expect.stringContaining("Preview unreachable on port 5173") as string,
+      }],
     });
   });
 
@@ -84,9 +87,11 @@ describe("createPreviewErrorReporter (docs/124 §1.5)", () => {
 
     report("sess-2", 5173, "ECONNRESET", true);
 
-    const logEntry = emitted.find((m) => m.type === "log_entry");
-    expect(logEntry).toMatchObject({
-      text: expect.stringContaining("Preview HMR unreachable on port 5173") as string,
+    const logAppend = emitted.find((m) => m.type === "log_append");
+    expect(logAppend).toMatchObject({
+      records: [{
+        text: expect.stringContaining("Preview HMR unreachable on port 5173") as string,
+      }],
     });
   });
 

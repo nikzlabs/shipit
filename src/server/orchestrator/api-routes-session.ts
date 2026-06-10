@@ -360,6 +360,7 @@ export async function registerSessionRoutes(
           request.params.id,
           deps.pruneSessionVolumes,
           deps.containerManager,
+          deps.removeSessionLogs,
         );
         return result;
       } catch (err) {
@@ -954,6 +955,7 @@ export async function registerSessionRoutes(
           request.params.childId,
           deps.pruneSessionVolumes,
           deps.containerManager,
+          deps.removeSessionLogs,
         );
         deps.sseBroadcast("session_list", { sessions: result.sessions });
         return { archived: true, sessions: result.sessions };
@@ -1151,7 +1153,7 @@ export async function registerSessionRoutes(
           // Forced — user is removing the repo, so the warm session is
           // explicitly being torn down regardless of agent state.
           if (runner) runner.dispose({ force: true });
-          deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager);
+          deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs);
         }
         removeRepo(deps.repoStore, url);
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

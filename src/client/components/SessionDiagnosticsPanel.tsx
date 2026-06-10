@@ -70,7 +70,6 @@ interface RunnerDiagnostic {
 }
 
 interface LogEntry {
-  type: "log_entry";
   source: "stderr" | "stdout" | "server" | "preview" | "install";
   text: string;
   timestamp: string;

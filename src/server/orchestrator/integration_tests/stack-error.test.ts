@@ -14,7 +14,7 @@ import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
 import { handleStackError } from "../app-lifecycle.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
-import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
+import type { WsServerMessage, LogSource } from "../../shared/types.js";
 
 function makeFakeRunner(sessionId: string): {
   runner: SessionRunnerInterface;
@@ -51,8 +51,8 @@ function makeFakeRunner(sessionId: string): {
 describe("handleStackError (docs/124 §1.1)", () => {
   it("broadcasts a server log entry", () => {
     const { runner } = makeFakeRunner("sess-1");
-    const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
-    const broadcastLog = (sid: string, source: WsLogEntry["source"], text: string) => {
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
+    const broadcastLog = (sid: string, source: LogSource, text: string) => {
       calls.push({ sid, source, text });
     };
 
@@ -66,13 +66,13 @@ describe("handleStackError (docs/124 §1.1)", () => {
     });
   });
 
-  it("emits both a log_entry and stack_error WS message to attached viewers", () => {
+  it("emits both a log_append and stack_error WS message to attached viewers", () => {
     const { runner, emitted } = makeFakeRunner("sess-2");
 
     handleStackError(runner, new Error("daemon unreachable"));
 
     const types = emitted.map((m) => m.type);
-    expect(types).toContain("log_entry");
+    expect(types).toContain("log_append");
     expect(types).toContain("stack_error");
 
     const stackErr = emitted.find((m) => m.type === "stack_error");
@@ -82,11 +82,14 @@ describe("handleStackError (docs/124 §1.1)", () => {
       message: "daemon unreachable",
     });
 
-    const logEntry = emitted.find((m) => m.type === "log_entry");
-    expect(logEntry).toMatchObject({
-      type: "log_entry",
-      source: "server",
-      text: expect.stringContaining("Stack error: daemon unreachable") as string,
+    const logAppend = emitted.find((m) => m.type === "log_append");
+    expect(logAppend).toMatchObject({
+      type: "log_append",
+      channel: "agent",
+      records: [{
+        source: "server",
+        text: expect.stringContaining("Stack error: daemon unreachable") as string,
+      }],
     });
   });
 

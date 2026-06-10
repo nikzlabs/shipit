@@ -47,11 +47,3 @@ export async function handleTerminalResize(ctx: ConnectionCtx & RunnerCtx, msg: 
   await runner.resizeTerminalOnWorker(cols, rows);
 }
 
-export function handleClearLogs(ctx: ConnectionCtx & RunnerCtx): void {
-  ctx.clearLogBuffer();
-  // Also clear the runner's terminal output buffer
-  const runner = resolveRunner(ctx);
-  if (runner) {
-    runner.clearTerminalOutputBuffer();
-  }
-}

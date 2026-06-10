@@ -28,6 +28,7 @@ import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { ServiceError } from "./types.js";
+import { agentLogAppend } from "../log-emit.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
@@ -222,7 +223,7 @@ async function tryForcePush(
         ? "Force push failed: your GitHub token needs the `workflow` scope to push GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
         : `Force push failed: ${errMsg}`;
       runner.emitMessage({ type: "github_push_result", success: false, message: text });
-      runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+      runner.emitMessage(agentLogAppend("server", text));
     }
     return false;
   }
