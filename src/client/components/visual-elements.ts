@@ -6,6 +6,37 @@ export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "ExitPl
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
 
+/**
+ * docs/188 — single source of truth for inline-card message fields that ride on
+ * an otherwise-empty (no text, no tools) message, where the card field IS the
+ * content. This list is load-bearing on TWO axes, and that's the whole point:
+ *
+ *   1. RENDER — `buildVisualElements` derives `hasCardContent` from it, so a
+ *      field listed here keeps its empty-text carrier message instead of being
+ *      dropped before render (the recurring "card renders live but never shows"
+ *      / "vanishes" bug — issue-write, compaction, issue-ref all hit this).
+ *   2. PERSIST — `chat-history.test.ts` asserts every field here is exercised by
+ *      the serialization round-trip contract, which fails unless the field has a
+ *      DB column + `toRow`/`fromRow` wiring. So a card added here that ships
+ *      emit-only turns CI red.
+ *
+ * Adding a transcript card? Add its field here. That single edit is what makes
+ * it render, and it forces the persistence guard to prove it survives a reload.
+ * (Cards that ride on a message carrying its own `text` — e.g. `userReview` on
+ * the user's prompt bubble — are NOT listed; they already pass `hasVisibleContent`.)
+ */
+export const CARD_MESSAGE_FIELDS = [
+  "agentReview",
+  "voiceNote",
+  "bugReport",
+  "issueWrite",
+  "issueRef",
+  "compaction",
+  "spawnedSession",
+  "spawnFailed",
+  "forkChild",
+] as const satisfies readonly (keyof ChatMessage)[];
+
 export type VisualElement =
   | { kind: "message"; index: number; hideTools: boolean }
   | { kind: "tool-group"; items: { tool: ToolUseBlock; result?: ToolResultBlock; isLast: boolean }[]; streaming: boolean; messageIndices: number[] }
@@ -43,21 +74,12 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
     const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
-    // Inline cards (docs/151 review, docs/163 voice note, docs/164 bug report,
-    // docs/177 issue write, docs/178 compaction, session spawn success/failure,
-    // fork child) ride on a message whose `text` is empty and which carries no
+    // Inline cards ride on a message whose `text` is empty and which carries no
     // tools — the card field IS the content. Such a message must still emit a
     // `message` element, otherwise the grouping layer silently drops it and the
-    // card never renders.
-    const hasCardContent =
-      msg.agentReview !== undefined
-      || msg.voiceNote !== undefined
-      || msg.bugReport !== undefined
-      || msg.issueWrite !== undefined
-      || msg.compaction !== undefined
-      || msg.spawnedSession !== undefined
-      || msg.spawnFailed !== undefined
-      || msg.forkChild !== undefined;
+    // card never renders (the recurring "card vanishes" bug, docs/188). Driven
+    // by the single CARD_MESSAGE_FIELDS list below so adding a card is one edit.
+    const hasCardContent = CARD_MESSAGE_FIELDS.some((f) => msg[f] !== undefined);
 
     if (canGroupTools) {
       // Emit a bubble only if the message has visible non-tool content.

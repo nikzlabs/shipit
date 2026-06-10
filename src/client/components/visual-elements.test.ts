@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS } from "./visual-elements.js";
+import { buildVisualElements, STANDALONE_TOOLS, SUBAGENT_TOOLS, CARD_MESSAGE_FIELDS } from "./visual-elements.js";
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 // Helper to build a minimal tool use block
@@ -76,6 +76,7 @@ describe("buildVisualElements", () => {
       },
       { name: "bugReport", msg: card({ bugReport: { cardId: "b1" } }) },
       { name: "issueWrite", msg: card({ issueWrite: { cardId: "iw1" } }) },
+      { name: "issueRef", msg: card({ issueRef: { cardId: "ir1", tracker: "github", identifier: "o/r#1", title: "T", createdAt: "2026-06-01T00:00:00.000Z" } }) },
       { name: "compaction", msg: card({ compaction: { id: "c1", createdAt: "2026-06-01T00:00:00.000Z" } }) },
       {
         name: "spawnedSession",
@@ -101,6 +102,18 @@ describe("buildVisualElements", () => {
         expect(elements).toEqual([{ kind: "message", index: 0, hideTools: false }]);
       });
     }
+
+    // docs/188 — the render-side guard: EVERY field in the single
+    // CARD_MESSAGE_FIELDS source of truth must keep its empty-text carrier
+    // message (hasCardContent is derived from this list). A new card added to
+    // the list but not rendering would fail here; a card NOT added to the list
+    // won't render on an empty-text message at all, which the author hits in dev.
+    it.each([...CARD_MESSAGE_FIELDS])("emits a message element for an empty-text %s card (CARD_MESSAGE_FIELDS guard)", (field) => {
+      // hasCardContent only checks `!== undefined`, so a stub value suffices.
+      const msg = { role: "assistant", text: "", [field]: {} } as unknown as ChatMessage;
+      const elements = buildVisualElements([msg]);
+      expect(elements).toEqual([{ kind: "message", index: 0, hideTools: false }]);
+    });
 
     it("still emits no element for a genuinely empty assistant message", () => {
       // Guard the fix: empty text + no tools + no card must remain dropped.

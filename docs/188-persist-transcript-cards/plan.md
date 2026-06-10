@@ -74,6 +74,35 @@ voiceNote/compaction.
 - `src/client/components/visual-elements.ts` — `hasCardContent` allow-list (the render-drop
   bug fixed in the same effort for `issueWrite` + `compaction`).
 
+## Preventing regressions (the self-enforcing contract)
+
+Documentation alone didn't stop this bug class — it recurred ~6 times despite the
+CLAUDE.md doctrine. The real fix is making a forgotten step fail CI. There are two
+failure modes, each with a guard:
+
+- **Mode 1 — emit-only (never persisted).** A card uses `runner.emitMessage` instead of
+  `emitChatCard`, gets no column → vanishes on reload.
+- **Mode 2 — persisted but dropped at render.** `buildVisualElements`'s `hasCardContent`
+  omits the field → the empty-text carrier message is discarded before render.
+
+The lever is a **single source of truth**, `CARD_MESSAGE_FIELDS` in
+`client/components/visual-elements.ts`:
+
+1. `hasCardContent` is *derived* from it (`CARD_MESSAGE_FIELDS.some(...)`), so adding a card
+   to the list IS what makes it render — closing Mode 2 structurally. A field not in the
+   list won't render on an empty-text message, which the author hits immediately in dev.
+2. `chat-history.test.ts` enumerates the list and asserts each field appears in
+   `EVERY_OPTIONAL_FIELD_MESSAGE`, which must deep-equal after `append`→`load`. Chain:
+   **in the list ⇒ in the contract message ⇒ survives reload ⇒ has a column + toRow/fromRow.**
+   A card shipping emit-only fails here, naming the field — closing Mode 1.
+3. `visual-elements.test.ts` asserts every list entry keeps its carrier message (render half).
+
+`CARD_MESSAGE_FIELDS` is typed `satisfies readonly (keyof ChatMessage)[]`, so a typo'd entry
+fails typecheck. This guard immediately caught a **live regression**: `main`'s `issueRef`
+card (`shipit issue view`, also docs/188-era) had shipped with the Mode-2 bug — appended as
+an empty-text message but absent from `hasCardContent`, so it never rendered. Adding it to
+`CARD_MESSAGE_FIELDS` fixed it.
+
 ## Related docs
 
 - `docs/117-agent-spawned-sessions/`, `docs/138-claude-auto-mode-classifier/`,
