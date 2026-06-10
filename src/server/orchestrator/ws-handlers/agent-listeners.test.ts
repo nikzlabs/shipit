@@ -322,7 +322,7 @@ describe("wireAgentListeners", () => {
       // relay), and the authored headline must win over the derived one.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
-        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source });
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager: { replaceInProgress: () => {} } });
       const { agent, runner } = wire({ deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"] });
 
       const cards: { headline: string }[] = [];
@@ -351,8 +351,6 @@ describe("wireAgentListeners", () => {
       // replies hit no tool-result boundary). Fix: persist in-progress eagerly,
       // mirroring the live-steer handler, so the card is durable immediately.
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
-      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
-        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source });
       const replaceInProgress = vi.fn();
       const chatHistoryManager = {
         replaceInProgress,
@@ -360,6 +358,8 @@ describe("wireAgentListeners", () => {
         updateLastMessage: vi.fn(() => null),
         indexOfMessageId: vi.fn(() => -1),
       } as unknown as AgentListenerDeps["chatHistoryManager"];
+      const deliverVoiceNote = (payload: { summary: string; needsAttention: boolean }, r: SessionRunner, source: "authored" | "ask" | "plan") =>
+        void routeVoiceNote(payload, { runner: r, sessionId: "session-1", credentialStore, source, chatHistoryManager });
       const { agent, runner } = wire({
         deliverVoiceNote: deliverVoiceNote as unknown as AgentListenerDeps["deliverVoiceNote"],
         chatHistoryManager,
@@ -412,7 +412,7 @@ describe("wireAgentListeners", () => {
       const credentialStore = { getVoiceDeliveryMode: () => "native", getVoiceWebhook: () => null } as unknown as CredentialStore;
       await routeVoiceNote(
         { summary: "I have a question coming up.", needsAttention: true },
-        { runner, sessionId: "session-1", credentialStore, source: "authored" },
+        { runner, sessionId: "session-1", credentialStore, source: "authored", chatHistoryManager: { replaceInProgress: () => {} } },
       );
 
       agent.emit("event", {

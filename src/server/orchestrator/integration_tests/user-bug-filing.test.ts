@@ -16,7 +16,7 @@ import {
   createTestSession,
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
-import type { ChatHistoryManager, PersistedBugReport, PersistedMessage } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedBugReport } from "../chat-history.js";
 import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -194,10 +194,11 @@ describe("Integration: user bug filing", () => {
     });
     const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
 
-    // Simulate the proposing turn finalizing the recorded card into chat history
-    // (in production `buildTurnMessages` does this at the tool-result boundary).
-    const runner = (app as unknown as { runnerRegistry: { get(id: string): { recordedCards: { message: PersistedMessage }[] } | undefined } }).runnerRegistry.get(sessionId);
-    histMgr.append(sessionId, runner!.recordedCards[0].message);
+    // `emitChatCard` already persisted the card in-band the instant it fired
+    // (docs/191) — no manual append needed. Finalize the in-progress rows to
+    // simulate the proposing turn ending (in production `agent_result` →
+    // `finalizeInProgress` does this), which is when the user clicks Submit.
+    histMgr.finalizeInProgress(sessionId);
 
     // It replays on attach (reload rebuilds from this history).
     const historyBefore = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });

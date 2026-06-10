@@ -33,7 +33,7 @@ import {
   createTestSession,
 } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
-import type { WsIssueRefCard } from "../../shared/types.js";
+import type { WsIssueRefCard, WsIssueWriteCard } from "../../shared/types.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -60,7 +60,11 @@ describe("Integration: issue read navigation card (docs/188)", () => {
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("ghp_test_token");
 
-    const trackerFetch = vi.fn(async (url: string) => {
+    const trackerFetch = vi.fn(async (url: string, init?: { method?: string }) => {
+      // POST a comment → return the created comment (with id, for the undo snapshot).
+      if (/\/issues\/\d+\/comments$/.test(url) && init?.method === "POST") {
+        return jsonResponse({ id: 9001, html_url: "https://github.com/octocat/hello-world/issues/42#issuecomment-9001", body: "looks good" }, 201);
+      }
       if (/\/issues\/\d+/.test(url)) {
         return jsonResponse({
           id: 1,
@@ -152,6 +156,42 @@ describe("Integration: issue read navigation card (docs/188)", () => {
     // Three reads, one card — the agent re-checking an issue shouldn't spam the
     // transcript.
     expect(runnerRecordedCards()).toHaveLength(1);
+
+    client.close();
+  });
+
+  it("persists the write card to history the instant it fires — no reconnect-clobber window (docs/191)", async () => {
+    // Regression for the reported "commented on issue card disappears then
+    // reappears" bug. The write card is emitted off the HTTP relay mid-turn; it
+    // used to only be RECORDED on the runner and not written to chat history
+    // until the next tool-result boundary. A `loadSessionHistory` in that window
+    // (any WS reconnect) replaced the live transcript with a DB snapshot lacking
+    // the card, so it flickered out and back. `emitChatCard` now persists the
+    // in-progress turn in the same call, so the card is in `/history`
+    // immediately — here we assert that WITHOUT ever sending a tool-result.
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/issue/comment`,
+      payload: { tracker: "github", id: "42", body: "looks good" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const card = (await client.receiveType("issue_write_card")) as WsIssueWriteCard;
+    expect(card.card.verb).toBe("comment");
+    expect(card.card.summary).toContain("commented on");
+
+    // No boundary, no turn finalize — just read history straight away. The card
+    // must already be there (the fix). Before docs/191 this was empty.
+    const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const writeCards = (history.json() as { messages: { issueWrite?: { cardId: string; undoState: string } }[] }).messages
+      .map((m) => m.issueWrite)
+      .filter(Boolean);
+    expect(writeCards).toHaveLength(1);
+    expect(writeCards[0]?.cardId).toBe(card.card.cardId);
+    expect(writeCards[0]?.undoState).toBe("available");
 
     client.close();
   });

@@ -106,6 +106,7 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
             createdAt,
           },
           { role: "assistant", text: "", bugReport: persistedCard },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId },
         );
 
         return {

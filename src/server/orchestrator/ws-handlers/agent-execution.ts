@@ -359,6 +359,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId: runner.sessionId,
         credentialStore: ctx.credentialStore,
         source,
+        chatHistoryManager: ctx.chatHistoryManager,
       }),
   };
 

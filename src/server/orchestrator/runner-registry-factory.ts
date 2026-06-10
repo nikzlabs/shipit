@@ -285,6 +285,7 @@ export function createRunnerRegistry(
                   sessionId: runner.sessionId,
                   credentialStore,
                   source,
+                  chatHistoryManager,
                 }),
             }
           : {}),
