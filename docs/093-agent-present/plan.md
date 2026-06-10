@@ -4,6 +4,16 @@ description: Let the agent display visual artifacts (HTML, SVG, charts, markdown
 
 # Agent Present — lightweight content display without full preview
 
+> **Update (docs/188):** the `present` tool is now **file-based** — the agent
+> writes a file and presents it by path (`present({ file })`), instead of passing
+> an inline `content` string. The MIME type is inferred from the extension. A
+> file written under the workspace is **tracked** (committed + in the file tree)
+> *and* rendered in the Present tab; a file under `/tmp` stays ephemeral. The
+> inline `content` parameter described below is superseded; everything
+> downstream of the `PresentBuffer` (rendering, sandboxing, `present_state`
+> replay, Save to project, the docs/170 `viewUrl` screenshot loop) is unchanged.
+> See `docs/188-present-from-file/plan.md`.
+
 ## Problem
 
 Today, to show the user *anything* visual — an HTML prototype, an SVG diagram, a rendered markdown doc — the agent must spin up a full Docker Compose dev server. This is heavyweight: it requires a `docker-compose.yml`, a running process, port detection, and the preview proxy pipeline. For many common cases ("here's a quick diagram", "here's the landing page mockup", "here's a chart of the data") this is massive overkill.

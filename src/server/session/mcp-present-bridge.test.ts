@@ -66,9 +66,19 @@ describe("mcp-present-bridge", () => {
     const schema = tool.inputSchema;
     expect(schema.type).toBe("object");
     const props = schema.properties as Record<string, unknown>;
-    expect(Object.keys(props).sort()).toEqual(["content", "mimeType", "replaceId", "title"]);
-    // `content` is the only required field; mimeType/title/replaceId are optional.
-    expect(schema.required).toEqual(["content"]);
+    expect(Object.keys(props).sort()).toEqual(["file", "mimeType", "replaceId", "title"]);
+    // `file` is the only required field; mimeType/title/replaceId are optional.
+    expect(schema.required).toEqual(["file"]);
+  });
+
+  it("advertises server instructions that steer the agent to reach for present", async () => {
+    // Both Claude's tool search and Codex's BM25 index rank deferred MCP tools
+    // on the server instructions, so they must be present and mention the
+    // visual-artifact trigger (docs/188).
+    const instructions = bridge.client.getInstructions();
+    expect(typeof instructions).toBe("string");
+    expect(instructions).toMatch(/present/i);
+    expect(instructions).toMatch(/diagram|chart|mockup|visual/i);
   });
 
   it("CallTool forwards args to the worker and relays { status, presentId }", async () => {
@@ -78,7 +88,7 @@ describe("mcp-present-bridge", () => {
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { content: "<p>hi</p>", mimeType: "text/html" },
+      arguments: { file: "chart.html", mimeType: "text/html" },
     });
 
     // Forwarded as a JSON POST to the worker's submit broker.
@@ -88,7 +98,7 @@ describe("mcp-present-bridge", () => {
     expect(init?.method).toBe("POST");
     expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("application/json");
     expect(JSON.parse(init?.body as string)).toEqual({
-      content: "<p>hi</p>",
+      file: "chart.html",
       mimeType: "text/html",
       title: undefined,
       replaceId: undefined,
@@ -114,7 +124,7 @@ describe("mcp-present-bridge", () => {
     const result = await bridge.client.callTool({
       name: "present",
       arguments: {
-        content: "<svg/>",
+        file: "diagram.svg",
         mimeType: "image/svg+xml",
         title: "Diagram v2",
         replaceId: "pres_123",
@@ -136,7 +146,7 @@ describe("mcp-present-bridge", () => {
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { content: "<p>x</p>" },
+      arguments: { file: "x.html" },
     });
 
     const content = result.content as { type: string; text: string }[];
@@ -152,7 +162,7 @@ describe("mcp-present-bridge", () => {
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { content: "x".repeat(100) },
+      arguments: { file: "huge.html" },
     });
 
     expect(result.isError).toBe(true);
@@ -166,7 +176,7 @@ describe("mcp-present-bridge", () => {
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { content: "<p>x</p>" },
+      arguments: { file: "x.html" },
     });
 
     expect(result.isError).toBe(true);
@@ -179,7 +189,7 @@ describe("mcp-present-bridge", () => {
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { content: "<p>x</p>" },
+      arguments: { file: "x.html" },
     });
 
     expect(result.isError).toBe(true);

@@ -33,6 +33,55 @@ export interface RenderedPresentDocument {
   body: string | Buffer;
 }
 
+/**
+ * Infer a presentation MIME type from a file's extension (docs/188). The
+ * `present` tool is file-based — the agent writes a file and presents it by
+ * path — so the worker derives the MIME from the extension rather than asking
+ * the agent to pass one. Returns `""` for unrecognized extensions; the caller
+ * falls back to `text/plain` (which renders as escaped preformatted text).
+ *
+ * Kept in sync with the renderer below and the client's `PresentationContent`
+ * branch list: html/svg/markdown render rich, image/* serve as bytes, anything
+ * else is plain text.
+ */
+export function inferPresentMimeType(filePath: string): string {
+  const ext = /\.([a-z0-9]+)$/.exec(filePath.toLowerCase())?.[1];
+  switch (ext) {
+    case "html":
+    case "htm":
+      return "text/html";
+    case "svg":
+      return "image/svg+xml";
+    case "md":
+    case "markdown":
+      return "text/markdown";
+    case "png":
+      return "image/png";
+    case "jpg":
+    case "jpeg":
+      return "image/jpeg";
+    case "gif":
+      return "image/gif";
+    case "webp":
+      return "image/webp";
+    case "txt":
+    case "text":
+      return "text/plain";
+    default:
+      return "";
+  }
+}
+
+/**
+ * True when a presentation of this MIME type is binary and must be read from
+ * disk as raw bytes (then encoded as a `data:` URI for the buffer/WS pipeline).
+ * SVG is excluded — it is XML markup served and rendered as text.
+ */
+export function isBinaryPresentMime(mimeType: string): boolean {
+  const lower = mimeType.toLowerCase();
+  return lower.startsWith("image/") && lower !== "image/svg+xml";
+}
+
 const HEAD =
   "<!doctype html><html><head><meta charset=\"utf-8\">" +
   "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"></head>";

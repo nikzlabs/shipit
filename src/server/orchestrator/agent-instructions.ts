@@ -260,6 +260,12 @@ Available tools:
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
+## Showing visual work
+
+When you produce a **self-contained visual artifact** — a diagram, chart, mockup, rendered markdown doc, comparison view, or a quick HTML/SVG prototype — **show it with the \`present\` tool** instead of only describing it in chat or writing a file you never surface. It renders in the dedicated Present tab with no dev server. Reach for it proactively, the same way you use the browser to verify UI work; don't wait to be asked.
+
+Write the file first, then \`present({ file })\`. Put it under \`/tmp\` for a throwaway (never enters git) or into the workspace to keep it tracked and committed — either way it renders. If the \`present\` tool isn't already loaded, it's an MCP tool you can discover via tool search. Full details: /shipit-docs/present.md.
+
 ${pullRequestsSection}
 ${releasesSection}
 ${parallelSessionsSection}
@@ -269,6 +275,7 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/shipit-yaml.md — shipit.yaml reference (agent config, compose path)
 - /shipit-docs/compose.md — how to write docker-compose.yml for ShipIt
 - /shipit-docs/preview.md — preview system and browser tools
+- /shipit-docs/present.md — the \`present\` tool: render a file in the Present tab + the screenshot-verify loop
 - /shipit-docs/environment.md — container environment details
 - /shipit-docs/design-docs.md — feature docs under \`docs/\` and their frontmatter
 - /shipit-docs/release.md — how to cut a release (version bump, annotated tag, confirmation)

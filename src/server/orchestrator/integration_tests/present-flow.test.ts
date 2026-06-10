@@ -22,6 +22,9 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import type { AgentProcess, AgentProcessEvents, AgentId, AgentRunParams, PermissionMode } from "../../shared/types.js";
 import type {
   WsServerMessage,
@@ -76,19 +79,51 @@ async function waitFor(fn: () => boolean, timeoutMs = 3000, label = "condition")
   throw new Error(`waitFor(${label}) timed out after ${timeoutMs}ms`);
 }
 
-/** POST a present submission to the worker; returns the worker's response body. */
+/** Pick a file extension that infers (or matches) the given MIME type. */
+function extForMime(mimeType: string | undefined): string {
+  switch (mimeType) {
+    case "text/plain":
+      return "txt";
+    case "image/svg+xml":
+      return "svg";
+    case undefined:
+    case "text/html":
+    default:
+      return "html";
+  }
+}
+
+/**
+ * Write the artifact to a temp file and POST its absolute path to the worker's
+ * file-based submit broker (docs/188). The worker reads the file back into the
+ * `content` field, so downstream assertions on `content` still hold. `mimeType`
+ * is forwarded only when explicitly set (it overrides extension inference);
+ * omitting it exercises the inference path.
+ */
 async function submitPresent(
   workerUrl: string,
   body: { content: string; mimeType?: string; title?: string; replaceId?: string },
 ): Promise<{ presentId: string; status: string }> {
+  const filePath = path.join(tmpDir, `artifact-${fileCounter++}.${extForMime(body.mimeType)}`);
+  await writeFile(filePath, body.content, "utf8");
   const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      file: filePath,
+      ...(body.mimeType !== undefined ? { mimeType: body.mimeType } : {}),
+      ...(body.title !== undefined ? { title: body.title } : {}),
+      ...(body.replaceId !== undefined ? { replaceId: body.replaceId } : {}),
+    }),
   });
   expect(res.ok).toBe(true);
   return (await res.json()) as { presentId: string; status: string };
 }
+
+/** Temp dir holding the artifact files each submission writes. */
+let tmpDir: string;
+/** Monotonic counter so each submission writes a uniquely-named file. */
+let fileCounter = 0;
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -102,6 +137,8 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
   let messages: WsServerMessage[];
 
   beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), "present-flow-"));
+    fileCounter = 0;
     worker = new SessionWorker({
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
@@ -129,6 +166,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
   afterEach(async () => {
     runner.dispose({ force: true });
     await worker.stop();
+    await rm(tmpDir, { recursive: true, force: true });
     await new Promise((r) => setTimeout(r, 50));
   });
 
@@ -170,11 +208,22 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     });
   });
 
-  it("defaults mimeType to text/html when omitted", async () => {
+  it("infers text/html from the .html extension when mimeType is omitted", async () => {
     const { presentId } = await submitPresent(workerUrl, { content: "<p>no mime</p>" });
     await waitFor(() => presentContentMsgs().length >= 1, 3000, "present_content");
     const msg = presentContentMsgs().find((m) => m.presentId === presentId)!;
     expect(msg.mimeType).toBe("text/html");
+  });
+
+  it("rejects a submit whose file does not exist", async () => {
+    const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file: path.join(tmpDir, "does-not-exist.html") }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error?: string };
+    expect(body.error).toContain("Could not read file");
   });
 
   it("revises in place via replaceId and clears the superseded id", async () => {
