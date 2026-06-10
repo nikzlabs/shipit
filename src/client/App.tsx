@@ -815,6 +815,19 @@ export default function App() {
     [],
   );
 
+  // docs/189 — open an issue's inline detail view from a chat card (the agent's
+  // read/write cards). Switches the right panel to the Issues tab (and reveals
+  // it on mobile), then loads the issue into the master-detail view. The
+  // rightTab change also fires the fetch-on-open effect below for the list.
+  const handleOpenIssue = useCallback(
+    (ref: { tracker: "linear" | "github"; id?: string; identifier: string; title?: string; url?: string }) => {
+      useUiStore.getState().setRightTab("issues");
+      useUiStore.getState().setMobilePanel("preview");
+      void useIssuesStore.getState().openIssue(ref);
+    },
+    [],
+  );
+
   // Fetch-on-open for the Issues tab (docs/170): trackers (for the sub-tabs)
   // then the active list. This lives in an effect rather than handleTabChange
   // because a page reload restores rightTab from localStorage WITHOUT going
@@ -1268,6 +1281,7 @@ export default function App() {
               send({ type: "submit_bug_report", cardId, title, body })
             }
             onUndoIssueWrite={(cardId) => send({ type: "undo_issue_write", cardId })}
+            onOpenIssue={handleOpenIssue}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}
           />
           {/*

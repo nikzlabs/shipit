@@ -465,6 +465,18 @@ export interface ListIssuesResult {
 }
 
 /**
+ * Response shape for `GET /api/issue?tracker=&id=` (docs/189 — the inline
+ * single-issue detail view). The read-only sibling of {@link ListIssuesResult}:
+ * one fully-hydrated issue (description, labels, `availableStatuses`) plus the
+ * tracker info that frames it. Unlike the agent's `issue/view` route this is the
+ * UI's own fetch — it emits no transcript card.
+ */
+export interface GetIssueResult {
+  tracker: TrackerInfo;
+  issue: TrackerIssue;
+}
+
+/**
  * A pointer to a tracker issue used to seed a ShipIt session (docs/156 +
  * docs/170). The downstream `headless-sessions.create({ issueRef })` derives
  * the branch and the first agent prompt from this. Kept deliberately small so

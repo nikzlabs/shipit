@@ -17,8 +17,8 @@
  */
 
 import {
-  ArrowSquareOutIcon,
   ArrowUUpLeftIcon,
+  CaretRightIcon,
   CheckCircleIcon,
   PencilSimpleIcon,
   WarningIcon,
@@ -26,13 +26,16 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import type { TrackerId } from "../../server/shared/types.js";
 
 export interface IssueWriteCardProps {
   cardId: string;
   onUndo?: (cardId: string) => void;
+  /** Open the inline detail view for this issue (docs/189). */
+  onOpen?: (ref: { tracker: TrackerId; identifier: string; title?: string; url?: string }) => void;
 }
 
-export function IssueWriteCard({ cardId, onUndo }: IssueWriteCardProps) {
+export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) {
   const card = useIssueWriteStore((s) => s.cards[cardId]);
   if (!card) return null;
 
@@ -72,17 +75,25 @@ export function IssueWriteCard({ cardId, onUndo }: IssueWriteCardProps) {
         )}
       </div>
 
-      {card.url && (
-        <a
-          href={card.url}
-          target="_blank"
-          rel="noreferrer"
-          className="shrink-0 inline-flex items-center gap-1 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-        >
-          <ArrowSquareOutIcon size={ICON_SIZE.XS} />
-          {card.identifier}
-        </a>
-      )}
+      <button
+        type="button"
+        onClick={() =>
+          onOpen?.({
+            // Derive the lookup id from the display identifier (uniform across
+            // trackers) rather than `card.issueId`, which for GitHub is the undo
+            // target, not a valid `getIssue` key. See `issueLookupId`.
+            tracker: card.tracker,
+            identifier: card.identifier,
+            ...(card.title ? { title: card.title } : {}),
+            ...(card.url ? { url: card.url } : {}),
+          })
+        }
+        title={`Open ${card.identifier} in ShipIt`}
+        className="shrink-0 inline-flex items-center gap-1 rounded px-1 py-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors cursor-pointer"
+      >
+        {card.identifier}
+        <CaretRightIcon size={ICON_SIZE.XS} />
+      </button>
 
       {!undone && (
         <Button

@@ -1,6 +1,6 @@
 import {
   ArrowClockwiseIcon,
-  ArrowSquareOutIcon,
+  CaretRightIcon,
   CheckCircleIcon,
   PlugIcon,
   RocketLaunchIcon,
@@ -41,6 +41,8 @@ export interface IssuesViewerProps {
   onSelectTracker: (id: TrackerId) => void;
   onRefresh: () => void;
   onToggleIncludeDone: () => void;
+  /** Open the inline detail view for a row (docs/189). */
+  onOpenIssue: (issue: TrackerIssue) => void;
   onStartSession: (issue: TrackerIssue) => void;
   /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
@@ -121,30 +123,45 @@ const ROW_GRID =
 function IssueRow({
   issue,
   canStart,
+  onOpenIssue,
   onStartSession,
 }: {
   issue: TrackerIssue;
   canStart: boolean;
+  onOpenIssue: (issue: TrackerIssue) => void;
   onStartSession: (issue: TrackerIssue) => void;
 }) {
   return (
-    <div className={`${ROW_GRID} px-3 py-2.5 hover:bg-(--color-bg-hover) transition-colors`}>
-      {/* Issue identifier — links to the issue in the tracker (escape hatch). */}
-      <a
-        href={issue.url}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={(e) => e.stopPropagation()}
-        title={`Open ${issue.identifier} in the tracker`}
-        className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) hover:text-(--color-text-secondary) self-start min-w-0"
-      >
+    // The whole row opens the inline detail view (docs/189) — the deep link to
+    // the tracker now lives only inside that view, not on the row. A div with a
+    // button role (not a <button>) so the nested "Start session" button is legal.
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={`Open ${issue.identifier}: ${issue.title}`}
+      onClick={() => onOpenIssue(issue)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onOpenIssue(issue);
+        }
+      }}
+      className={`${ROW_GRID} group px-3 py-2.5 cursor-pointer hover:bg-(--color-bg-hover) transition-colors focus:outline-none focus-visible:bg-(--color-bg-hover)`}
+    >
+      {/* Issue identifier — plain label; the row click (not this) opens detail. */}
+      <span className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) self-start min-w-0">
         <span className="truncate">{shortIdentifier(issue.identifier)}</span>
-        <ArrowSquareOutIcon size={ICON_SIZE.XS} className="shrink-0" />
-      </a>
+      </span>
 
       {/* Title (+ optional description preview), wraps to two lines. */}
       <div className="[grid-area:title] min-w-0">
-        <div className="text-sm text-(--color-text-primary) line-clamp-2">{issue.title}</div>
+        <div className="flex items-start gap-1 text-sm text-(--color-text-primary)">
+          <span className="line-clamp-2">{issue.title}</span>
+          <CaretRightIcon
+            size={ICON_SIZE.XS}
+            className="mt-0.5 shrink-0 text-(--color-text-tertiary) opacity-0 group-hover:opacity-100 transition-opacity"
+          />
+        </div>
         {issue.description && (
           <div className="text-[11px] text-(--color-text-tertiary) line-clamp-1 mt-0.5">
             {issue.description}
@@ -179,7 +196,10 @@ function IssueRow({
         size="sm"
         disabled={!canStart}
         title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-        onClick={() => onStartSession(issue)}
+        onClick={(e) => {
+          e.stopPropagation();
+          onStartSession(issue);
+        }}
         className="[grid-area:action] w-full md:w-auto justify-self-stretch md:justify-self-end inline-flex items-center gap-1.5 self-start"
       >
         <RocketLaunchIcon size={ICON_SIZE.SM} />
@@ -222,6 +242,7 @@ export function IssuesViewer({
   onSelectTracker,
   onRefresh,
   onToggleIncludeDone,
+  onOpenIssue,
   onStartSession,
   onConnect,
   onSetQuery,
@@ -385,6 +406,7 @@ export function IssuesViewer({
                   key={issue.id}
                   issue={issue}
                   canStart={canStart}
+                  onOpenIssue={onOpenIssue}
                   onStartSession={onStartSession}
                 />
               ))}

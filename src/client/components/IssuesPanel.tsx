@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { IssuesViewer } from "./IssuesViewer.js";
+import { IssueDetail } from "./IssueDetail.js";
 import {
   distinctAssignees,
   distinctStatuses,
@@ -56,6 +57,10 @@ export function IssuesPanel({
   const error = useIssuesStore((s) => s.error);
   const filters = useIssuesStore((s) => s.filters);
   const includeDone = useIssuesStore((s) => s.includeDone);
+  const selected = useIssuesStore((s) => s.selected);
+  const detail = useIssuesStore((s) => s.detail);
+  const detailLoading = useIssuesStore((s) => s.detailLoading);
+  const detailError = useIssuesStore((s) => s.detailError);
 
   // Derived, memoized so references stay stable across renders (React #185).
   const filteredIssues = useMemo(() => {
@@ -100,6 +105,25 @@ export function IssuesPanel({
     onStartSession(issue);
   };
 
+  // Master-detail (docs/189): a selected issue replaces the list with the
+  // inline detail view. The list state stays mounted in the store, so the back
+  // button returns to the same filtered scroll position the user left.
+  if (selected) {
+    return (
+      <IssueDetail
+        selection={selected}
+        detail={detail}
+        loading={detailLoading}
+        error={detailError}
+        info={info}
+        canStart={Boolean(effectiveRepoUrl)}
+        onBack={() => useIssuesStore.getState().closeIssue()}
+        onRefresh={() => void useIssuesStore.getState().fetchDetail()}
+        onStartSession={handleStartSession}
+      />
+    );
+  }
+
   return (
     <IssuesViewer
       trackers={trackers}
@@ -118,6 +142,16 @@ export function IssuesPanel({
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}
+      onOpenIssue={(issue) =>
+        void useIssuesStore.getState().openIssue({
+          tracker: activeTracker,
+          id: issue.id,
+          identifier: issue.identifier,
+          title: issue.title,
+          ...(issue.url ? { url: issue.url } : {}),
+          seed: issue,
+        })
+      }
       onStartSession={handleStartSession}
       onConnect={onConnect}
       onSetQuery={(q) => useIssuesStore.getState().setQuery(q)}

@@ -145,6 +145,35 @@ export async function registerIssueRoutes(
     },
   );
 
+  // GET /api/issue?tracker=&id=[&sessionId=] — fetch one fully-hydrated issue
+  // for the inline detail view (docs/189). The UI's own read path: unlike the
+  // agent's session-scoped `issue/view`, it surfaces NO transcript card and is
+  // global (Linear is workspace-wide; `sessionId` only scopes the GitHub tracker
+  // to that session's repo, exactly like `GET /api/issues`). `id` is the
+  // tracker-native lookup id — a Linear key/UUID or a bare GitHub issue number.
+  app.get<{ Querystring: { tracker?: string; id?: string; sessionId?: string } }>(
+    "/api/issue",
+    async (request, reply) => {
+      const trackerId = request.query.tracker ?? "linear";
+      const github = resolveGitHubContext(request.query.sessionId);
+      try {
+        return await getIssueForTracker(
+          credentialStore,
+          trackerId,
+          request.query.id ?? "",
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read issue: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // ---------------------------------------------------------------------------
   // Session-scoped agent read path (docs/175 — `shipit issue view/list`).
   //

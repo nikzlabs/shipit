@@ -74,6 +74,25 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
+      // Single-issue fetch (`getIssue`) — backs GET /api/issue (docs/189).
+      if (query.includes("query Issue(")) {
+        return jsonResponse({
+          data: {
+            issue: {
+              id: "a",
+              identifier: "SHI-1",
+              title: "Urgent",
+              url: "https://linear.app/x/issue/SHI-1",
+              description: "The body of the issue.",
+              priority: 1,
+              priorityLabel: "Urgent",
+              state: { name: "In Progress", type: "started" },
+              assignee: { displayName: "Nik" },
+              team: { states: { nodes: [{ id: "s1", name: "Todo", type: "unstarted", position: 0 }] } },
+            },
+          },
+        });
+      }
       return jsonResponse({ data: {} });
     });
 
@@ -230,6 +249,57 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   it("rejects an unknown tracker with 404", async () => {
     const res = await app.inject({ method: "GET", url: "/api/issues?tracker=jira" });
     expect(res.statusCode).toBe(404);
+  });
+
+  // docs/189 — the inline single-issue detail view's own read path.
+  it("GET /api/issue returns one fully-hydrated Linear issue", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear&id=SHI-1" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { tracker: TrackerInfo; issue: TrackerIssue };
+    expect(body.issue.identifier).toBe("SHI-1");
+    expect(body.issue.description).toBe("The body of the issue.");
+    expect(body.issue.status).toEqual({ name: "In Progress", type: "started" });
+    // `getIssue` hydrates the team's workflow states for the status picker.
+    expect(body.issue.availableStatuses).toEqual([{ name: "Todo", type: "unstarted" }]);
+  });
+
+  it("GET /api/issue 400s when the tracker is unconfigured", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/issue?tracker=linear&id=SHI-1" });
+    expect(res.statusCode).toBe(400);
+    // No GraphQL call fires for an unconfigured tracker.
+    expect(trackerFetch).not.toHaveBeenCalled();
+  });
+
+  it("GET /api/issue reads a GitHub issue scoped to the session repo", async () => {
+    await githubAuthManager.setToken("ghp_test_token");
+    sessionManager.track("gh-sess", "GH session");
+    sessionManager.setRemoteUrl("gh-sess", "https://github.com/octocat/hello-world.git");
+
+    trackerFetch.mockImplementationOnce(async () =>
+      jsonResponse({
+        id: 1,
+        number: 42,
+        title: "An open issue",
+        html_url: "https://github.com/octocat/hello-world/issues/42",
+        body: "GitHub body",
+        state: "open",
+        labels: ["P1"],
+        assignee: null,
+      }),
+    );
+
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/issue?tracker=github&id=42&sessionId=gh-sess",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { tracker: TrackerInfo; issue: TrackerIssue };
+    expect(body.issue.identifier).toBe("octocat/hello-world#42");
+    expect(body.issue.description).toBe("GitHub body");
+    expect(body.issue.priority.level).toBe("high");
   });
 
   it("never echoes the stored token back to the client", async () => {
