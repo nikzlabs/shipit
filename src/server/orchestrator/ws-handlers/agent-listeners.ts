@@ -986,6 +986,16 @@ export function wireAgentListeners(
         runner.accumulatedToolUse = [...runner.accumulatedToolUse, ...toolBlocks];
       }
 
+      // Claude can enter plan mode by calling EnterPlanMode during an otherwise
+      // auto/default turn. In streaming mode that mutates the resident CLI
+      // process, so the orchestrator's applied-mode bookkeeping must follow it;
+      // otherwise approving the later ExitPlanMode card looks like auto→auto
+      // and we skip the set_permission_mode(undefined) control request that
+      // releases the process from plan mode.
+      if (runner && toolBlocks.some((t) => t.name === "EnterPlanMode")) {
+        runner.appliedPermissionMode = "plan";
+      }
+
       // Track message groups for chat history (split at tool-result boundaries)
       if ((text || toolBlocks.length > 0) && runner) {
         const groups = runner.chatMessageGroups;
@@ -994,7 +1004,7 @@ export function wireAgentListeners(
         // Without this, ExitPlanMode ends up in a separate message group with
         // empty text when the agent does research between writing the plan and
         // calling ExitPlanMode.
-        const STANDALONE_MERGE = new Set(["ExitPlanMode", "AskUserQuestion"]);
+        const STANDALONE_MERGE = new Set(["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]);
         const isStandaloneOnly = !text && toolBlocks.length > 0
           && toolBlocks.every((t) => STANDALONE_MERGE.has(t.name));
         if (runner.needsNewMessageGroup && isStandaloneOnly && groups.length > 0) {

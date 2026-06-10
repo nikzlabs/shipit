@@ -534,6 +534,47 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("tracks autonomous EnterPlanMode so accepting the plan can release the streaming process", async () => {
+    // Regression: when the model called EnterPlanMode during an auto/default
+    // streaming turn, the CLI process became plan-pinned but
+    // runner.appliedPermissionMode stayed undefined. Clicking PlanApproval sent
+    // the usual auto-mode follow-up (permissionMode omitted), which looked like
+    // no mode change to the orchestrator, so it skipped the
+    // setPermissionMode(undefined) request and the process stayed in plan mode.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Plan if needed" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("autonomous-plan-session");
+    expect(claude.lastPermissionMode).toBeUndefined();
+    expect(claude.permissionModeCalls).toEqual([]);
+
+    claude.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{
+          type: "tool_use",
+          id: "enter-plan-1",
+          name: "EnterPlanMode",
+          input: {},
+        }],
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    client.send({ type: "send_message", text: "Execute the plan you just described." });
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Execute the plan you just described." });
+
+    expect(claude.stdinData).toContain("Execute the plan you just described.");
+    expect(claude.permissionModeCalls).toEqual([undefined]);
+    expect(claude.killed).toBe(false);
+
+    client.close();
+  });
+
   it("does NOT push setPermissionMode for a steered message when the mode is unchanged", async () => {
     // Sending another message mid-turn in the same mode must not spam the CLI
     // with a redundant set_permission_mode control_request (mirrors the

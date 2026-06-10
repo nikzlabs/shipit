@@ -166,6 +166,21 @@ describe("buildVisualElements", () => {
       expect(elements[2].kind).toBe("tool-group");
     });
 
+    it("keeps EnterPlanMode messages standalone", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Bash")]),
+        toolMsg([tool("t2", "EnterPlanMode")]),
+        toolMsg([tool("t3", "Grep")]),
+      ]);
+      expect(elements).toHaveLength(3);
+      expect(elements[0].kind).toBe("tool-group");
+      expect(elements[1]).toMatchObject({ kind: "standalone-tool", messageIndex: 1 });
+      if (elements[1].kind === "standalone-tool") {
+        expect(elements[1].tool.name).toBe("EnterPlanMode");
+      }
+      expect(elements[2].kind).toBe("tool-group");
+    });
+
     it("keeps TodoWrite messages standalone", () => {
       const elements = buildVisualElements([
         toolMsg([tool("t1", "Bash")]),
@@ -176,8 +191,8 @@ describe("buildVisualElements", () => {
       expect(elements[1]).toMatchObject({ kind: "message", index: 1, hideTools: false });
     });
 
-    it("STANDALONE_TOOLS contains exactly AskUserQuestion, TodoWrite, and ExitPlanMode", () => {
-      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "ExitPlanMode"]));
+    it("STANDALONE_TOOLS contains exactly AskUserQuestion, TodoWrite, EnterPlanMode, and ExitPlanMode", () => {
+      expect(STANDALONE_TOOLS).toEqual(new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]));
     });
 
     it("SUBAGENT_TOOLS contains exactly Task, Skill, and Agent", () => {

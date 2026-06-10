@@ -1,6 +1,7 @@
 import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/types.js";
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
+import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
@@ -44,6 +45,10 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
       session.setActivity({ label: "Thinking..." });
     }
 
+    if (!parentToolUseId && toolUseBlocks.some((t) => t.name === "EnterPlanMode")) {
+      useSettingsStore.getState().setPermissionMode(session.sessionId, "plan");
+    }
+
     if (!parentToolUseId && (textBlocks || toolUseBlocks.length > 0)) {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
@@ -54,7 +59,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         // Without this, the PlanApproval card renders in an empty bubble
         // disconnected from the plan text when the agent does research
         // (Read, Grep, etc.) between writing the plan and calling ExitPlanMode.
-        const STANDALONE_MERGE = new Set(["ExitPlanMode", "AskUserQuestion"]);
+        const STANDALONE_MERGE = new Set(["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]);
         const isStandaloneOnly = !textBlocks && toolUseBlocks.length > 0
           && toolUseBlocks.every((t) => STANDALONE_MERGE.has(t.name));
         const forceMerge = isStandaloneOnly
