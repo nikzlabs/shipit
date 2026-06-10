@@ -41,29 +41,35 @@ below). No empirical unknowns remain; the work from here is mechanical.
 
 ### Phase 2 — Spec shape: scope key + `buildOverlaySpec` → N specs + GC live-set
 
-- [ ] Extend the base scope key to `(repo, runtime fingerprint, dep-dir relpath)` —
-      `overlayScopeHash` / `resolveOverlayScope` gain the relpath.
-- [ ] Reintroduce `buildOverlaySpec` returning **N** `OverlaySpec` (one per declared dep dir from
-      Phase 1): `lowerdir = overlay-base/<scope-hash>`, per-session upper/work, mount target
-      `/workspace/<dep-dir>`. Resolve dep dirs against the **pre-container host clone** so the parent
-      dir is real — the daemon *will* `mkdir -p` an absent parent (proven by the spike) but prod must
-      not rely on that.
-- [ ] **Contextual dep-dir validation (deferred from Phase 1).** Against the host clone, drop a declared
-      dep dir whose **parent doesn't exist** or that **points at tracked (non-gitignored) source** — the
-      checks the pure config parser couldn't make. A dropped dir falls back to a plain install for that
-      path; never fatal.
-- [ ] Update `liveOverlayScopeHashes` to enumerate one scope-hash per *(resumable session × declared
-      dep dir)* — **folded in here** (it is the same scope-key change) so the GC contract stays honest
-      at every intermediate merge.
-- [ ] Unit tests: config + session → N specs with correct paths/scopes; live-set retains all
-      per-dep-dir bases of a live session.
-- *Inert: specs aren't wired into container creation yet.*
+- [x] Extended the base scope key to `(repo, runtime fingerprint, dep-dir relpath)` — `overlayScopeHash`
+      gains an optional `depDir` (omitting it reproduces the legacy 2-arg hash byte-for-byte, so the
+      single-base publish CAS is untouched); `OverlayScope.depDir` added + threaded through
+      `scopeHashOf`. `overlayVolumeName` gains a per-dep-dir discriminator
+      (`shipit-<id>_overlay-<depHash8>`, still sweep-regex-matchable).
+- [x] Added `buildOverlaySpecs` → **N** `DepDirOverlaySpec` (one per declared dep dir): each with its
+      own `lowerdir = overlay-base/<scope-hash>`, per-session `upper`/`work` under
+      `sessions/<id>/overlay/<scope-hash>/` (so no two dep dirs share an upperdir), `mountPath =
+      /workspace/<dep-dir>`, and per-dep-dir scope. Pure (no Docker/fs) — takes the state-volume
+      mountpoint + dep dirs; the volume create/mount is Phase 3.
+- [x] Updated `liveOverlayScopeHashes` to enumerate one scope-hash per *(resumable session × declared
+      dep dir)* via an injected `resolveDepDirs`; added `depDirsForSession` (reads each session's
+      `agent.dep-dirs`) and wired it at the disk-janitor call site in `index.ts`. Still returns ∅ when
+      the flag is off (no config reads while inert).
+- [x] Unit tests: `buildOverlaySpecs` (per-dep-dir paths/scope/mount, distinct base/upper/volume per
+      dir, empty-list); per-`(session × dep dir)` live-set incl. the legacy-hash-must-not-appear guard;
+      `overlayScopeHash`/`overlayVolumeName` dep-dir behavior + backward compat; `depDirsForSession`.
+- *Inert: `buildOverlaySpecs` has no production caller yet (Phase 3 wires it); the live-set is ∅ while
+  the flag is off.*
 
 ### Phase 3 — Mount wiring: create + mount N overlay volumes
 
 - [ ] Container creation creates the N overlay volumes (Phase-2 specs) and `buildMounts` mounts each at
       its `/workspace/<dep-dir>` subpath, nested under the workspace mount. First phase that mounts when
       the flag is on; the flag-off path is byte-for-byte unchanged.
+- [ ] **Contextual dep-dir validation (deferred from Phase 1).** This is the right phase — the host
+      clone now exists. Before building specs, drop a declared dep dir whose **parent doesn't exist** or
+      that **points at tracked (non-gitignored) source** — the checks the pure config parser couldn't
+      make. A dropped dir falls back to a plain install for that path; never fatal.
 - [ ] Integration test (fake Docker): N volumes created + mounted at the right subpaths; a non-overlay
       session is unchanged.
 - [ ] **Validate the recursive file-tree watcher descends into the nested submount** (same-namespace

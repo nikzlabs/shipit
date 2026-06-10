@@ -56,7 +56,7 @@ import { OVERLAY_BASE_SUBDIR, overlayBaseDir, overlayScopeHash } from "./overlay
 // Scope + pointer types
 // ---------------------------------------------------------------------------
 
-/** The `(repo, runtime fingerprint)` pair a rolling base is keyed on. */
+/** The `(repo, runtime fingerprint[, dep-dir])` key a rolling base is keyed on. */
 export interface OverlayScope {
   /** Canonical remote URL of the repo (same value `repoUrlToHash` consumes). */
   repoUrl: string;
@@ -66,6 +66,13 @@ export interface OverlayScope {
    * compiled native addons/wheels is never reused across incompatible runtimes.
    */
   runtimeKey: string;
+  /**
+   * Declared dependency directory (relative path, e.g. `node_modules`) this base
+   * holds, under the dep-dir design (docs/183). Each dep dir gets its own base.
+   * Optional for backward compatibility: when absent the scope hashes to the
+   * legacy `(repo, runtime)` identity (the single-base publish CAS path).
+   */
+  depDir?: string;
 }
 
 /** Persisted pointer for one scope's current rolling base. */
@@ -186,7 +193,7 @@ function writeBasePointer(stateDir: string, pointer: BasePointer): void {
 }
 
 function scopeHashOf(scope: OverlayScope): string {
-  return overlayScopeHash(scope.repoUrl, scope.runtimeKey);
+  return overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir);
 }
 
 // ---------------------------------------------------------------------------

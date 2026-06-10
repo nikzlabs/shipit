@@ -23,8 +23,10 @@
  * is behavior-preserving.
  */
 
+import path from "node:path";
 import type { SessionInfo } from "../shared/types.js";
-import { overlayScopeHash } from "./overlay-volume.js";
+import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
+import { overlayScopeHash, overlayVolumeName, overlayBaseDir, type OverlaySpec } from "./overlay-volume.js";
 import type { OverlayScope } from "./overlay-base.js";
 
 // ---------------------------------------------------------------------------
@@ -78,13 +80,72 @@ export function overlayRuntimeKey(env: NodeJS.ProcessEnv = process.env): string 
   return `${imageId}|${process.arch}`;
 }
 
-/** The `(repo, runtime)` scope for an eligible session, or null if ineligible. */
+/** The `(repo, runtime)` base scope for an eligible session, or null if ineligible. */
 export function resolveOverlayScope(
   session: Pick<SessionInfo, "remoteUrl" | "kind">,
   env: NodeJS.ProcessEnv = process.env,
 ): OverlayScope | null {
   if (!isOverlayEligible(session, env)) return null;
   return { repoUrl: session.remoteUrl, runtimeKey: overlayRuntimeKey(env) };
+}
+
+// ---------------------------------------------------------------------------
+// Per-dep-dir overlay specs (docs/183 dep-dir design)
+// ---------------------------------------------------------------------------
+
+/**
+ * One overlay mount for one declared dep dir. Extends the daemon volume params
+ * (`OverlaySpec`) with where it mounts in the container and which `(repo, runtime,
+ * dep-dir)` scope it belongs to — everything Phase 3 (container wiring) and Phase 4
+ * (per-dep-dir publish) need.
+ */
+export interface DepDirOverlaySpec extends OverlaySpec {
+  /** The declared dep dir this overlay backs, relative to the workspace (e.g. `node_modules`). */
+  depDir: string;
+  /** Container path this volume mounts at — `/workspace/<depDir>`, nested under the workspace mount. */
+  mountPath: string;
+  /** Per-dep-dir scope (the base scope extended with `depDir`). */
+  scope: OverlayScope;
+  /** `overlayScopeHash(repo, runtime, depDir)` — the base dir + GC identity for this dep dir. */
+  scopeHash: string;
+}
+
+/**
+ * Build **N** overlay specs — one per declared dep dir — for an eligible session.
+ * Pure: given the base `(repo, runtime)` scope, the dep dirs (from `agent.dep-dirs`),
+ * and the daemon-host mountpoint of the workspace **state** volume (where the
+ * `overlay-base/` and `sessions/` subtrees live), it composes the absolute
+ * lowerdir/upperdir/workdir paths and the `/workspace/<dep-dir>` mount target. No
+ * Docker, no filesystem — the volume create/mount itself is Phase 3.
+ *
+ * Each dep dir gets its own base (`overlay-base/<scopeHash>`, scopeHash keyed on the
+ * dep-dir relpath) and its own per-session upper/work under
+ * `sessions/<id>/overlay/<scopeHash>/` — so two dep dirs never share an upperdir
+ * (the kernel forbids it) and a runtime change rotates the scope (and thus the upper)
+ * for free.
+ */
+export function buildOverlaySpecs(args: {
+  sessionId: string;
+  scope: Pick<OverlayScope, "repoUrl" | "runtimeKey">;
+  depDirs: string[];
+  /** Absolute daemon-host mountpoint of the workspace state volume (`shipit-workspace`). */
+  volumeMountpoint: string;
+}): DepDirOverlaySpec[] {
+  const { sessionId, scope, depDirs, volumeMountpoint } = args;
+  return depDirs.map((depDir) => {
+    const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
+    const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, "overlay", scopeHash);
+    return {
+      volumeName: overlayVolumeName(sessionId, depDir),
+      lowerdir: overlayBaseDir(volumeMountpoint, scopeHash),
+      upperdir: path.join(sessionOverlayDir, "upper"),
+      workdir: path.join(sessionOverlayDir, "work"),
+      depDir,
+      mountPath: path.posix.join("/workspace", depDir),
+      scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
+      scopeHash,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -96,19 +157,21 @@ export function resolveOverlayScope(
  * the authoritative liveness source the disk-janitor's `sweepOrphanedOverlayBases`
  * needs (plan §4: an mtime fallback alone could reap a base out from under a live
  * mount). A session is resumable unless it has been disk-evicted/archived; we
- * include every non-evicted repo-backed session (its base would be re-mounted on
+ * include every non-evicted repo-backed session (its bases would be re-mounted on
  * resume) for the current runtime fingerprint. Returns an empty set when the
  * feature is off, so the janitor sweep stays inert until a deployment opts in.
  *
- * NOTE (dep-dir pivot): under the dep-dir design there are N bases per session
- * (one per declared dep dir), so the scope key — and therefore this enumeration —
- * gains the dep-dir relpath. Tracked in the "Disk cleanup retargeting" checklist
- * phase; until then this emits one scope-hash per session (correct for the
- * single-base model, an under-count once dep dirs land — must be fixed before the
- * flag is enabled).
+ * Under the dep-dir design there are **N bases per session** — one per declared dep
+ * dir — so the live-set enumerates `(session × dep dir)`: for each resumable session
+ * we resolve its declared dep dirs (`resolveDepDirs`, normally each session's
+ * `agent.dep-dirs`) and add `overlayScopeHash(repo, runtime, depDir)` for each. The
+ * resolver is injected so this stays pure and unit-testable; it is only consulted
+ * when the feature is on (the flag gate short-circuits first, so no config reads
+ * happen while the store is off).
  */
 export function liveOverlayScopeHashes(
   sessions: SessionInfo[],
+  resolveDepDirs: (session: SessionInfo) => string[],
   env: NodeJS.ProcessEnv = process.env,
 ): Set<string> {
   const live = new Set<string>();
@@ -118,7 +181,25 @@ export function liveOverlayScopeHashes(
     if (!s.remoteUrl) continue;
     if (s.kind === "ops") continue;
     if (s.diskTier === "evicted") continue;
-    live.add(overlayScopeHash(s.remoteUrl, runtimeKey));
+    for (const depDir of resolveDepDirs(s)) {
+      live.add(overlayScopeHash(s.remoteUrl, runtimeKey, depDir));
+    }
   }
   return live;
+}
+
+/**
+ * Concrete `resolveDepDirs` for `liveOverlayScopeHashes` — a session's declared
+ * `agent.dep-dirs` (read from its workspace `shipit.yaml`). Falls back to the
+ * default `[node_modules]` if the config can't be read, and to `[]` if the session
+ * has no workspace dir on disk (nothing to mount). Kept here (not inline at the
+ * wiring site) so the fs coupling is localized and testable.
+ */
+export function depDirsForSession(session: Pick<SessionInfo, "workspaceDir">): string[] {
+  if (!session.workspaceDir) return [];
+  try {
+    return resolveShipitConfig(session.workspaceDir).agent.depDirs;
+  } catch {
+    return [...DEFAULT_DEP_DIRS];
+  }
 }
