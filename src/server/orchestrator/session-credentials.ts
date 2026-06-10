@@ -615,7 +615,7 @@ function materializeLeakedSubtreeSymlinks(
 
   for (const rel of AGENT_CREDENTIAL_PATHS[agentId]) {
     const dst = path.join(sessionDir, rel);
-    let dstStat: fs.Stats | null = null;
+    let dstStat: fs.Stats;
     try {
       dstStat = fs.lstatSync(dst);
     } catch {

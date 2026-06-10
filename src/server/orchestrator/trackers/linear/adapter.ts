@@ -175,7 +175,7 @@ async function linearGraphql<T>(
       body: JSON.stringify({ query, variables }),
     });
   } catch (err) {
-    throw new Error(`Linear request failed: ${err instanceof Error ? err.message : String(err)}`);
+    throw new Error(`Linear request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
   }
   if (res.status === 401 || res.status === 403) {
     throw new Error("Linear rejected the API token (401/403). Re-connect Linear with a valid API key.");

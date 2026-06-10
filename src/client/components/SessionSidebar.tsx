@@ -1012,7 +1012,7 @@ export function SessionSidebar({
       .filter(([url, group]) => !knownUrls.has(url) && group.length > 0)
       .sort(([a], [b]) => a.localeCompare(b))
       .map(([url, group]) => {
-        let label = "Other sessions";
+        let label: string;
         if (url === "") {
           label = "Local sessions";
         } else {

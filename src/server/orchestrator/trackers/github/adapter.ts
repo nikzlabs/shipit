@@ -242,7 +242,7 @@ export class GitHubTracker implements Tracker {
         { headers: githubHeaders(this.token) },
       );
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     if (res.status === 404) return null;
     this.assertOk(res);
@@ -359,7 +359,7 @@ export class GitHubTracker implements Tracker {
         { headers: githubHeaders(this.token!) },
       );
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     this.assertOk(res);
     const nodes = (await res.json()) as { name?: string | null }[];
@@ -388,7 +388,7 @@ export class GitHubTracker implements Tracker {
     try {
       res = await this.fetchImpl("https://api.github.com/user", { headers: githubHeaders(this.token) });
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     this.assertOk(res);
     const data = (await res.json()) as { login: string };
@@ -414,7 +414,7 @@ export class GitHubTracker implements Tracker {
     try {
       res = await this.fetchImpl(`https://api.github.com/repos/${ref.owner}/${ref.repo}/${path}`, init);
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     if (res.status === 401 || res.status === 403) {
       throw new Error("GitHub rejected the token (401/403). Re-connect GitHub with a valid token.");
@@ -433,7 +433,7 @@ export class GitHubTracker implements Tracker {
     try {
       res = await this.fetchImpl(url, { headers: githubHeaders(this.token!) });
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     this.assertOk(res);
     return (await res.json()) as GitHubIssueNode[];

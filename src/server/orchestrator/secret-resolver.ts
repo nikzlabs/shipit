@@ -435,7 +435,7 @@ export function writePerServiceEnvFiles(opts: {
   // Remove stale `.env.<svc>` files for services that no longer declare secrets.
   // We only sweep files we own (the `.env.` prefix) and leave `.env.agent`
   // alone (Phase 3 owns it).
-  let existing: string[] = [];
+  let existing: string[];
   try {
     existing = fs.readdirSync(shipitDir);
   } catch {
@@ -511,7 +511,7 @@ export function writeServiceEnvFilesToRoot(opts: {
 
   // Sweep stale `.env.<svc>` files for services that no longer declare secrets,
   // so a service can't re-pick up a leftover file from a previous compose def.
-  let existing: string[] = [];
+  let existing: string[];
   try {
     existing = fs.readdirSync(sessionDir);
   } catch {
@@ -551,7 +551,7 @@ export function writeServiceEnvFilesToRoot(opts: {
  */
 export function sweepWorkspaceServiceEnvFiles(workspaceDir: string): void {
   const shipitDir = path.join(workspaceDir, ".shipit");
-  let existing: string[] = [];
+  let existing: string[];
   try {
     existing = fs.readdirSync(shipitDir);
   } catch {
@@ -723,7 +723,7 @@ export function writeIsolatedSecretFiles(opts: {
   // Sweep stale files — names that were previously written but aren't in
   // the current values map. Keeps Docker from referencing a file with
   // outdated content.
-  let existing: string[] = [];
+  let existing: string[];
   try {
     existing = fs.readdirSync(sessionDir);
   } catch {
