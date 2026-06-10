@@ -116,6 +116,7 @@ import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.j
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
+import { readBasePointerByHash } from "./overlay-base.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -823,7 +824,18 @@ async function sweepOrphanedOverlayBases(
 
   let removed = 0;
   for (const entry of entries) {
-    if (liveScopeHashes.has(entry)) continue; // live base — never remove.
+    if (liveScopeHashes.has(entry)) {
+      // Live scope — never remove the scope dir, but reap its STALE generations.
+      // Bases are immutable `g<N>` children (overlay-base.ts): each publish
+      // creates the next generation and moves the pointer, so superseded
+      // generations (and crash-orphaned `.tmp-*` copies) accumulate. A non-
+      // current generation older than the cutoff can have no live mount left
+      // (no session container plausibly outlives the cutoff without recreate,
+      // which re-pins the current generation). `g0` — the tiny empty cold-start
+      // lowerdir — is always kept: cold mounts pin it and it costs nothing.
+      removed += await sweepStaleBaseGenerations(stateDir, path.join(dir, entry), entry, cutoffMs, paceMs);
+      continue;
+    }
     const full = path.join(dir, entry);
     let mtimeMs: number;
     try {
@@ -841,6 +853,57 @@ async function sweepOrphanedOverlayBases(
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
       console.log(`[disk-janitor] removed stale overlay base ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+/**
+ * Reap superseded generations inside one LIVE scope dir. Keeps the pointer's
+ * current generation and `g0` (the empty cold-start lowerdir) unconditionally;
+ * any other `g<N>` / `.tmp-*` child older than the cutoff is removed. See the
+ * call site in `sweepOrphanedOverlayBases` for the liveness argument.
+ */
+async function sweepStaleBaseGenerations(
+  stateDir: string,
+  scopeDir: string,
+  scopeHash: string,
+  cutoffMs: number,
+  paceMs: number,
+): Promise<number> {
+  let children: string[];
+  try {
+    children = await fs.readdir(scopeDir);
+  } catch {
+    return 0;
+  }
+  const currentGen = readBasePointerByHash(stateDir, scopeHash)?.generation ?? null;
+
+  let removed = 0;
+  for (const child of children) {
+    const isTmp = child.startsWith(".tmp-");
+    const genMatch = /^g(\d+)$/.exec(child);
+    if (!isTmp && !genMatch) continue; // unknown entry — never touch.
+    if (genMatch) {
+      const gen = Number(genMatch[1]);
+      if (gen === 0) continue; // empty cold-start lowerdir — always kept.
+      if (currentGen !== null && gen === currentGen) continue; // current base.
+    }
+    const full = path.join(scopeDir, child);
+    try {
+      const st = await fs.lstat(full);
+      if (!st.isDirectory()) continue;
+      if (st.mtimeMs >= cutoffMs) continue; // young — a mount may still pin it.
+    } catch {
+      continue;
+    }
+    try {
+      await sleep(paceMs);
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed stale overlay base generation ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }

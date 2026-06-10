@@ -240,7 +240,14 @@ export async function spawnChildSession(
   // claim accepts up to ~6 minutes of bare-cache staleness for latency, but a
   // child spawned moments after a merge must see the merged commit on `main`,
   // not the pre-merge snapshot the cache happens to hold.
-  const claimed = await claimService.claim(claimUrl, { forceFetch: true });
+  // `excludeSessionIds` keeps the claim from handing back the calling parent
+  // itself: an ungraduated parent is a valid reuse-path hit, and "claiming" it
+  // would hard-reset the parent's live workspace and self-parent the session
+  // (whose findChildren cycle then blows the recursive archive's stack).
+  const claimed = await claimService.claim(claimUrl, {
+    forceFetch: true,
+    excludeSessionIds: [parentSessionId],
+  });
   const newSessionId = claimed.sessionId;
   const newWorkspaceDir = claimed.workspaceDir;
 

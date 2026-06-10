@@ -102,6 +102,7 @@ describe("buildMounts — overlay session (docs/183)", () => {
       mountPath: "/workspace/node_modules",
       scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
       scopeHash: "h1",
+      generation: 0,
     },
     {
       volumeName: "shipit-sess-1abc234_overlay-bbbbbbbb",
@@ -112,6 +113,7 @@ describe("buildMounts — overlay session (docs/183)", () => {
       mountPath: "/workspace/packages/app/node_modules",
       scope: { repoUrl: "r", runtimeKey: "rt", depDir: "packages/app/node_modules" },
       scopeHash: "h2",
+      generation: 0,
     },
   ];
 

@@ -668,3 +668,96 @@ resolve dep dirs against the host clone so the parent dir is real (the daemon wi
 an absent parent, which we do **not** want to rely on); **(2)** still validate separately —
 the recursive file-tree watcher descending into the nested submount (same-namespace inotify
 across a mount boundary), via `host-overlay-spike.sh`'s inotify rung.
+
+## Live end-to-end on real Docker (2026-06-10, local dev stack, Docker Desktop/WSL2) — five defects found + fixed
+
+First-ever live exercise of the merged Phases 1–7 (the cloud agent that built them had no
+real Docker). Setup: local dev stack (`docker/local/dev/compose.yml`) with
+`OVERLAY_DEP_STORE=1`, test repos `template-vue` (npm, ~50 pkgs / 66 MB) and `tanks`.
+Every defect below was observed live, root-caused, and fixed behind the flag (one PR each):
+
+1. **The flag never reached the orchestrator** (PR #1230). Neither the dev compose nor the
+   VPS compose forwarded `OVERLAY_DEP_STORE` into the `shipit` service env, so
+   `isOverlayEnabled()` was always false — exporting the flag on the host (what the
+   measurement runbook instructed) silently no-oped. Both stacks now pass
+   `OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}` through (default empty = off).
+
+2. **Compose referenced overlay volumes that were never provisioned** (PR #1231). The
+   compose path re-derived eligibility instead of consulting actual provisioned state, so a
+   session whose agent container predated the flag flip had its whole `compose up` fail with
+   `external volume "shipit-<id12>_overlay-<hash8>" not found`. Compose now waits for the
+   container (`whenWorkerReady`) and mounts only volumes that exist (`requireProvisioned`).
+
+3. **Cold overlay mounts always failed with ENOENT** (PR #1232). Nothing created the
+   `lowerdir`/`upperdir`/`workdir` before the daemon's `mount -t overlay`: a cold scope has
+   no published base dir, and the per-session upper/work dirs were created nowhere. Every
+   overlay container create failed → the merged Phases 3–7 had never actually mounted on a
+   real daemon. Specs now carry orchestrator-visible `orchDirs`, mkdir'd at create.
+
+4. **Stale marker + fresh overlay = dep-less session AND a poisoned shared base**
+   (PR #1234). A warm session's clone carried `.shipit/.install-done` from a pre-overlay
+   install; the recreated container mounted an EMPTY overlay over the (hidden) deps; the
+   marker still matched → `/install` skipped → `install_ok=true` → the publish hook tarred
+   the empty merged view and published it as `created:d1g1`. The equal-commit skip then made
+   the empty base permanent. Observed twice (template-vue and tanks scopes, both bases 4 KB).
+   Fixes: the worker gate distrusts a marker when any declared dep dir is an empty overlay
+   mount (`/proc/self/mounts` detection), and the publish declines empty snapshots
+   (`skipped-empty` — verified live blocking the poisoning when an old broken container was
+   claimed again).
+
+5. **The publish swap broke every live same-scope mount** (PR #1235). The atomic
+   rename-over-the-scope-path design assumed pinned lowerdir inodes leave in-flight sessions
+   unaffected. Isolated spike (privileged alpine, tmpfs, kernel 6.6):
+
+   ```
+   before swap: readdir=2 lookup=a
+   after swap:  readdir=0 lookup=a
+   ```
+
+   Unlinking a mounted lowerdir breaks merged-**readdir** (returns empty) while path lookups
+   still resolve — observed live as three containers whose `node_modules` enumerated empty
+   with 66 MB uppers (vite resolved fine; `ls`/`npm`/`tar` saw nothing — which is also what
+   fed defect 4's empty snapshots). Bases are now **immutable generations**
+   (`overlay-base/<hash>/g<N>`): a publish materializes the next generation beside the
+   previous and moves only the pointer; the janitor reaps superseded generations after the
+   age cutoff.
+
+Also attributable from this run, no code change:
+
+- **`npm warn tar TAR_ENTRY_ERROR ENOENT` during installs** has two non-overlay-specific
+  sources: (a) the template's dev service (`command: sh -c "npm install && npm run dev"`)
+  re-running npm over the same shared `node_modules` the agent's `agent.install` populated
+  (two npm processes racing one dir — pre-overlay behavior too), and (b) post-defect-5
+  broken-readdir views confusing npm's reify. Benign `warn`-level noise in case (a);
+  case (b) is eliminated by generational bases.
+- **`ETXTBSY` on `esbuild` postinstall**: the dev service's npm install exec'd a binary the
+  agent-side install had just written through the shared overlay; the service exited 1 and
+  (because the install-running gate had already closed) latched to `error` instead of
+  retrying. A manual restart succeeded (`vite ready in 258 ms` through the overlay). Worth a
+  follow-up on the service retry window; not overlay-specific.
+- **Spawn self-claim + archive recursion** (PR #1236, not overlay-related): `shipit session
+  create` from an ungraduated session claimed the calling parent itself (self-parented
+  session), and the archive cascade had no cycle guard → "Maximum call stack size exceeded".
+
+### Measured (template-vue, npm, warm npm cache, Docker Desktop/WSL2)
+
+All three runbook scenarios were driven live after the fixes (including the base-hit
+marker pre-stamp, PR #1239):
+
+| Scenario | install_ms | outcome | per-session upper | notes |
+|---|---|---|---|---|
+| Marker-skip (no overlay work) | ~220–970 | — | — | floor is worker roundtrips, not "tens of ms" |
+| Cold (empty g0 lower, full npm install) | 2209–3296 | `created:d1g1` | 66 MB | base materialized 75 MB `g1` + pointer w/ marker stamp |
+| **`main` unchanged, BEFORE pre-stamp** | 2605 | `skipped-equal` | **66 MB** | full reinstall + full copy-up — zero benefit (the gap) |
+| **`main` unchanged, AFTER pre-stamp** | npm skipped | `skipped-equal:d1g1` | **1.1 MB** | standby pre-install: `pre-stamped … (base-hit)` → skip in **25 ms** (was ~4 s); deps served from the shared `g1` lowerdir; the residual upper is the dev service's no-op npm pass |
+| `main` advanced (+1 dep on default) | 5640 | `advanced:d2g2` | 1.2 MB | pre-stamp correctly declined (commit mismatch); npm ran a true **delta** over `g1`; `g2` published beside `g1` (generational) |
+| Broken-readdir standby re-claimed | 1211 | `skipped-empty` | — | C5 guard declining the poison — by design |
+
+Headline: the warm path went from "full install + 66 MB per session" to "no npm at all +
+~1 MB per session" (≈60× per-session disk for same-commit sessions), and the advanced path
+does delta-only work. Still open: the **depth sweep 1→16** (needs a sequence of dep-changing
+default-branch pushes; nothing measured so far stresses `DEFAULT_DEPTH_CAP=16` — d2 showed no
+degradation) and a **flag-off control on a large repo** (template-vue's install is small
+enough that cold-with-overlay ≈ plain install; the canary should measure a ~30 k-file repo).
+Note for operators: never delete a live scope's current generation by hand — that replicates
+the readdir breakage on every session pinning it (the janitor's keep-rules encode this).

@@ -207,6 +207,39 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       change needed (the overlay is transparent to the agent; escalation behavior is unchanged when the
       flag is off).
 
+### Phase 7.5 — Live hardening on real Docker (2026-06-10; see FINDINGS.md "Live end-to-end")
+
+The first live run of Phases 1–7 on a real daemon (local dev stack, flag on) found five
+defects — including three that made the feature inoperable or actively harmful. All fixed
+behind the flag, one PR each; FINDINGS.md has the full forensics.
+
+- [x] **Flag passthrough** — dev + VPS compose forward `OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}`
+      (PR #1230; the orchestrator reads its own process env, so without this the documented
+      opt-in silently no-oped).
+- [x] **Compose mounts only provisioned volumes** — `prepareOverlaySpecs({ requireProvisioned })`
+      + `whenWorkerReady` ordering; a pre-flag container no longer fails the whole `compose up`
+      with "external volume not found" (PR #1231).
+- [x] **Overlay dir provisioning** — specs carry orchestrator-visible `orchDirs`; container
+      create mkdirs lower/upper/work before `createOverlayVolume` (cold mounts ENOENT'd
+      before this — no overlay container had ever started on a real daemon) (PR #1232).
+- [x] **Marker/overlay coordination + empty-snapshot guard** — the worker `/install` gate
+      distrusts a matching marker when a declared dep dir is an empty overlay mount; the
+      publish declines empty snapshots (`skipped-empty`). Kills the observed
+      skip-over-empty-overlay → publish-empty-base poisoning chain (PR #1234).
+- [x] **Generational bases** — `overlay-base/<hash>/g<N>`, immutable; publish never renames
+      over a mounted lowerdir (spike-proven: that breaks merged-readdir for every live
+      same-scope mount); janitor reaps superseded generations (PR #1235).
+- [x] **Base-hit marker pre-stamp** (PR #1239) — the pointer records the publisher's worker
+      runtimeKey + install commands; container creation pre-stamps `.shipit/.install-done`
+      when every dep dir's pointer matches the clone's HEAD, pinned generation, and commands.
+      Verified live: standby pre-install dropped from ~4 s to a 25 ms marker-skip, and the
+      per-session upper from 66 MB to ~1.1 MB; the advanced scenario correctly declines the
+      stamp and delta-installs (1.2 MB upper, `advanced:d2g2`).
+- [ ] **(follow-up) Dev-service install race** — `ETXTBSY`/`TAR_ENTRY_ERROR` noise when a
+      compose service's own `npm install` runs over the same shared dep dir right after
+      `agent.install`; the service can latch to `error` after the install gate closes.
+      Consider extending the gate past the publish snapshot, or a one-shot retry.
+
 ### Phase 7 — Enable path + measure & tune
 
 - [x] **Wired the overlay-spec into the warm-pool standby path** (`warm-pool-manager.ts`): the standby is
@@ -222,13 +255,17 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       standby (flag off). `warm-sessions` + `standby-container` integration suites stay green.
 - [ ] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
       (`main` unchanged / `main`-advanced / cold; separate network from extract/link). Set the final depth
-      cap from measurement. Not doable in the dev sandbox (no real Docker overlay). **Instrumentation is now
-      in place** (flag-gated): the orchestrator prints a greppable `[overlay-measure] session=… repo=…
-      install_ok=… install_ms=… dirs=<depDir>:<outcome>:d<depth>g<generation>,…` line per overlay session
-      (install wall-clock + per-dep-dir publish outcome + overlay depth), and
-      [`prototype/measure-warm-install.md`](./prototype/measure-warm-install.md) is the runbook (scenarios,
-      a grep/awk tabulator, the network-vs-extract split, and the depth-cap derivation). `DEFAULT_DEPTH_CAP
-      = 16`, overridable via `publishBase`'s `depthCap`.
+      cap from measurement. **Instrumentation is in place** (flag-gated): the orchestrator prints a
+      greppable `[overlay-measure] session=… repo=… install_ok=… install_ms=…
+      dirs=<depDir>:<outcome>:d<depth>g<generation>,…` line per overlay session, and
+      [`prototype/measure-warm-install.md`](./prototype/measure-warm-install.md) is the runbook.
+      **Live numbers (2026-06-10, local Docker Desktop/WSL2 — full table in FINDINGS.md):**
+      cold `created:d1g1` 2.2–3.3 s / 66 MB upper; `main` unchanged with the pre-stamp = npm
+      skipped entirely (~1.1 MB upper, standby pre-install 25 ms); `main` advanced =
+      delta-only (`advanced:d2g2`, 1.2 MB upper). Still open (canary-scale): the **depth
+      sweep 1→16** and a **flag-off control on a large (~30 k-file) repo** — template-vue is
+      too small to show the extract/link saving. `DEFAULT_DEPTH_CAP = 16` — d2 showed no
+      degradation; no data contradicts 16.
 - [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
       invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
       complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately

@@ -28,8 +28,9 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
-import { overlayScopeHash, overlayVolumeName, overlayBaseDir, type OverlaySpec } from "./overlay-volume.js";
-import type { OverlayScope } from "./overlay-base.js";
+import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
+import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
+import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 
 // ---------------------------------------------------------------------------
 // Feature flag + eligibility
@@ -110,6 +111,27 @@ export interface DepDirOverlaySpec extends OverlaySpec {
   scope: OverlayScope;
   /** `overlayScopeHash(repo, runtime, depDir)` — the base dir + GC identity for this dep dir. */
   scopeHash: string;
+  /**
+   * The base generation this mount pins as its lowerdir (`g<N>`; 0 = the empty
+   * cold-start dir). Recorded so post-create steps (the marker pre-stamp) can
+   * verify the pointer they read describes the SAME base the daemon actually
+   * mounted — a publish racing container creation moves the pointer's
+   * generation, and stamping from the newer pointer would claim deps the
+   * pinned (older) lowerdir doesn't hold.
+   */
+  generation: number;
+  /**
+   * The same lower/upper/work dirs as the daemon-host paths above, but as
+   * **orchestrator-visible** paths (under the orchestrator's state dir, which is
+   * the same volume the daemon mountpoint resolves to). The daemon's
+   * `mount -t overlay` fails with ENOENT unless all three dirs exist, and
+   * nothing else creates them — a cold scope has no published base (so no
+   * `overlay-base/<hash>/`), and the per-session `upper`/`work` dirs are born
+   * here. Container creation mkdirs these right before creating the volume.
+   * Absent when the populator has no orchestrator state dir (unit-test/mock
+   * configurations).
+   */
+  orchDirs?: { lowerdir: string; upperdir: string; workdir: string };
 }
 
 /**
@@ -132,20 +154,51 @@ export function buildOverlaySpecs(args: {
   depDirs: string[];
   /** Absolute daemon-host mountpoint of the workspace state volume (`shipit-workspace`). */
   volumeMountpoint: string;
+  /**
+   * Orchestrator-visible root of the SAME state volume (the orchestrator's
+   * `stateDir`, e.g. `/workspace`). When provided, each spec carries
+   * `orchDirs` — the lower/upper/work dirs as paths the orchestrator can
+   * `mkdir` before the daemon mounts the overlay (see `DepDirOverlaySpec.orchDirs`).
+   */
+  stateRoot?: string;
+  /**
+   * Resolve the current base generation for a per-dep-dir scope hash — normally
+   * backed by `readBasePointer` (the pointer's `generation`). Bases are
+   * generational (`overlay-base/<hash>/g<N>`, see `overlayBaseGenDir`): a mount
+   * pins ONE immutable generation, chosen here at spec-build time. Defaults to
+   * `0` — the empty cold-start generation, created on demand at container
+   * create — when absent or when the resolver has no pointer.
+   */
+  generationForScope?: (scopeHash: string) => number;
 }): DepDirOverlaySpec[] {
-  const { sessionId, scope, depDirs, volumeMountpoint } = args;
+  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot } = args;
+  const generationForScope = args.generationForScope ?? (() => 0);
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
+    const generation = generationForScope(scopeHash);
     const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, "overlay", scopeHash);
+    const orchSessionOverlayDir = stateRoot
+      ? path.join(stateRoot, "sessions", sessionId, "overlay", scopeHash)
+      : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),
-      lowerdir: overlayBaseDir(volumeMountpoint, scopeHash),
+      lowerdir: overlayBaseGenDir(volumeMountpoint, scopeHash, generation),
       upperdir: path.join(sessionOverlayDir, "upper"),
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
       mountPath: path.posix.join("/workspace", depDir),
       scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
       scopeHash,
+      generation,
+      ...(stateRoot && orchSessionOverlayDir
+        ? {
+            orchDirs: {
+              lowerdir: overlayBaseGenDir(stateRoot, scopeHash, generation),
+              upperdir: path.join(orchSessionOverlayDir, "upper"),
+              workdir: path.join(orchSessionOverlayDir, "work"),
+            },
+          }
+        : {}),
     };
   });
 }
@@ -237,4 +290,97 @@ export async function validDepDirsForOverlay(
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// Base-hit marker pre-stamp (the "main unchanged ≈ skip" closer)
+// ---------------------------------------------------------------------------
+
+/**
+ * Write a `.shipit/.install-done` marker into a FRESH clone whose overlay
+ * mounts a base that already holds the right deps — so the worker's `/install`
+ * gate skips and a "main unchanged" session pays ~0 instead of a full install.
+ *
+ * Measured before this existed (FINDINGS.md): a same-commit session over a
+ * populated 66 MB base still ran a full npm install (2.6 s) AND copy-up'd the
+ * entire tree into its private upper — the marker lives in the host clone, not
+ * the base, so a fresh clone never has one.
+ *
+ * The stamp is written ONLY when every condition the worker gate would check is
+ * provably satisfied by the mounted base:
+ *  - no marker exists yet (never clobber a real one — a mismatched existing
+ *    marker must keep forcing a reinstall);
+ *  - the session's HEAD equals EVERY mounted dep dir's pointer commit (the base
+ *    holds exactly this commit's install);
+ *  - each pointer still names the generation the mount actually pinned (a
+ *    publish racing container creation advances the pointer; stamping from the
+ *    newer pointer would claim deps the pinned older lowerdir doesn't hold);
+ *  - the pointer carries the publisher's marker stamp (worker runtime key +
+ *    install commands), the commands equal this session's `agent.install`, and
+ *    all dep dirs agree on the runtime key.
+ *
+ * Anything off → no stamp → the worker gate misses → a real install runs (the
+ * always-safe fallback). The worker gate stays the single decision point: it
+ * re-derives its own runtime key and re-checks the overlay-emptiness
+ * contradiction (overlay-dep-check.ts), so a wrong pre-stamp can only ever be
+ * as harmful as a stale-but-matching marker — which those checks catch.
+ *
+ * Called from container creation AFTER the container started (the mount is
+ * pinned, so the generation re-read is race-correct) and BEFORE the runner's
+ * worker URL resolves (so `/install` cannot observe a half-written marker).
+ */
+export async function preStampInstallMarker(args: {
+  /** Orchestrator-visible state dir holding `overlay-base-meta/` (pointers). */
+  stateDir: string;
+  /** The session's host clone (where `.shipit/.install-done` lives). */
+  workspaceDir: string;
+  /** The overlay specs the container was created with. */
+  specs: DepDirOverlaySpec[];
+  /** Pointer reader — injected for tests; defaults to the real by-hash read. */
+  readPointer?: (stateDir: string, scopeHash: string) => BasePointer | null;
+}): Promise<boolean> {
+  const { stateDir, workspaceDir, specs } = args;
+  if (specs.length === 0) return false;
+  const readPointer = args.readPointer ?? readBasePointerByHash;
+
+  const markerFile = path.join(workspaceDir, ".shipit", ".install-done");
+  if (fs.existsSync(markerFile)) return false;
+
+  let head: string;
+  try {
+    head = (await simpleGit(workspaceDir).revparse(["HEAD"])).trim();
+  } catch {
+    return false;
+  }
+  if (!head) return false;
+
+  let installCommands: string[];
+  try {
+    installCommands = resolveShipitConfig(workspaceDir).agent.install;
+  } catch {
+    return false;
+  }
+  if (installCommands.length === 0) return false;
+
+  let runtimeKey: string | null = null;
+  for (const spec of specs) {
+    const ptr = readPointer(stateDir, spec.scopeHash);
+    if (ptr?.commit !== head || !ptr.marker) return false;
+    if (ptr.generation !== spec.generation) return false;
+    const cmds = ptr.marker.installCommands;
+    if (cmds.length !== installCommands.length || !cmds.every((c, i) => c === installCommands[i])) {
+      return false;
+    }
+    if (runtimeKey === null) runtimeKey = ptr.marker.runtimeKey;
+    else if (runtimeKey !== ptr.marker.runtimeKey) return false;
+  }
+  if (!runtimeKey) return false;
+
+  const marker = makeMarker(
+    { sourceCommit: head, runtimeKey, installCommands },
+    new Date().toISOString(),
+  );
+  fs.mkdirSync(path.dirname(markerFile), { recursive: true });
+  fs.writeFileSync(markerFile, serializeMarker(marker));
+  return true;
 }

@@ -13,7 +13,7 @@ import {
 } from "./overlay-publish.js";
 import { readBasePointer, type OverlayScope } from "./overlay-base.js";
 import { overlayRuntimeKey } from "./overlay-session.js";
-import { overlayBaseDir, overlayScopeHash } from "./overlay-volume.js";
+import { overlayScopeHash } from "./overlay-volume.js";
 
 /**
  * Phase 4b (docs/183) — publish-after-install orchestration. The worker pull and
@@ -62,7 +62,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       createRepoGit: () => oracle,
       getBareCacheDir: (url: string) => path.join(tmpDir, "cache", encodeURIComponent(url)),
       env,
-      fetchHeadCommit: () => Promise.resolve(HEAD),
+      fetchHeadInfo: () => Promise.resolve({ commit: HEAD, runtimeKey: "img|x64|glibc|node24" }),
       fetchSnapshot: (_url, depDir) => Promise.resolve(Readable.from([Buffer.from(depDir)])),
       extract: async (stream, destDir) => {
         const chunks: Buffer[] = [];
@@ -75,8 +75,10 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   }
 
   function baseContentFor(depDir: string): string | null {
-    const scopeHash = overlayScopeHash(REPO_URL, runtimeKey, depDir);
-    const f = path.join(overlayBaseDir(stateDir, scopeHash), "content");
+    // Bases are generational — the pointer names the current generation's dir.
+    const ptr = pointerFor(depDir);
+    if (!ptr) return null;
+    const f = path.join(ptr.baseDir, "content");
     return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
   }
 
@@ -109,6 +111,37 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(baseContentFor("node_modules")).toBe("node_modules");
   });
 
+  it("records the publisher's marker stamp on the pointer when installCommands are provided", async () => {
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install"],
+      },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(pointerFor("node_modules")?.marker).toEqual({
+      runtimeKey: "img|x64|glibc|node24",
+      installCommands: ["npm install"],
+    });
+  });
+
+  it("omits the pointer marker when the worker reports no runtime key", async () => {
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install"],
+      },
+      depsWith({ fetchHeadInfo: () => Promise.resolve({ commit: HEAD, runtimeKey: null }) }),
+    );
+    expect(out[0].outcome).toBe("created");
+    expect(pointerFor("node_modules")?.marker).toBeUndefined();
+  });
+
   it("publishes each declared dep dir into its OWN scope (cross-dir isolation)", async () => {
     workspaceDir = makeWorkspace(["node_modules", "packages/app/node_modules"], {
       shipitDepDirs: ["node_modules", "packages/app/node_modules"],
@@ -137,7 +170,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       isAncestor: (a, b) => Promise.resolve(a === c1 && b === c2),
       resolveDefaultBranchCommit: () => Promise.resolve(head),
     };
-    const deps = depsWith({ createRepoGit: () => oracle2, fetchHeadCommit: () => Promise.resolve(head) });
+    const deps = depsWith({ createRepoGit: () => oracle2, fetchHeadInfo: () => Promise.resolve({ commit: head, runtimeKey: "img|x64|glibc|node24" }) });
     const session = { remoteUrl: REPO_URL, kind: undefined, workspaceDir };
 
     const first = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
@@ -185,7 +218,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   it("skips when the worker head-commit can't be resolved", async () => {
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
-      depsWith({ fetchHeadCommit: () => Promise.resolve(null) }),
+      depsWith({ fetchHeadInfo: () => Promise.resolve(null) }),
     );
     expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
     expect(pointerFor("node_modules")).toBeNull();
@@ -219,6 +252,20 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("src/vendored")).toBeNull();
+  });
+
+  it("declines to publish an empty snapshot (no base, no pointer)", async () => {
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith({
+        // The export yields a valid-but-empty archive — the signature of a
+        // broken/empty merged view. Nothing may be published from it.
+        extract: async (stream) => { for await (const _ of stream) { /* drain */ } },
+      }),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-empty" }]);
+    expect(pointerFor("node_modules")).toBeNull();
+    expect(baseContentFor("node_modules")).toBeNull();
   });
 
   it("records a per-dir error without aborting the other dirs", async () => {

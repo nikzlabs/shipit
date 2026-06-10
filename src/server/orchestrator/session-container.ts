@@ -47,7 +47,8 @@ import {
   validDepDirsForOverlay,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import { resolveVolumeMountpoint } from "./overlay-volume.js";
+import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
+import { readBasePointerByHash } from "./overlay-base.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -240,6 +241,15 @@ export interface SessionContainerManagerOpts {
    * is passed as WORKSPACE_DIR env var.
    */
   workspaceVolume?: string;
+  /**
+   * Orchestrator-visible root of the workspace state volume (the app's
+   * `stateDir`, `/workspace` in containerized runtime). Needed by the overlay
+   * dep store (docs/183) to create each overlay's lower/upper/work dirs before
+   * the daemon mounts them — the spec's own paths are daemon-host paths the
+   * orchestrator container cannot reach. Optional: without it, overlay specs
+   * carry no `orchDirs` and creation relies on the dirs already existing.
+   */
+  stateDir?: string;
   /** Docker named volume for credentials. */
   credentialsVolume?: string;
   /** Stack name for labelling containers (e.g. "shipit-dev", "shipit-prod"). */
@@ -506,6 +516,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private workerPort: number;
   private skipHealthCheck: boolean;
   private workspaceVolume?: string;
+  private stateDir?: string;
   private credentialsVolume?: string;
   private stackName?: string;
   private dockerImageName?: string;
@@ -540,6 +551,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.workerPort = opts.workerPort ?? DEFAULT_WORKER_PORT;
     this.skipHealthCheck = opts.skipHealthCheck ?? false;
     this.workspaceVolume = opts.workspaceVolume;
+    this.stateDir = opts.stateDir;
     this.credentialsVolume = opts.credentialsVolume;
     this.stackName = opts.stackName;
     this.dockerImageName = opts.dockerImageName;
@@ -587,6 +599,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
+      stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),
     };
@@ -961,6 +974,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
+    /**
+     * Keep only specs whose overlay volume already exists on the daemon. The
+     * compose path passes `true`: it consumes the specs as `external` volume
+     * references, and the volumes are created at agent-container-create time —
+     * so a container built before the flag was enabled (or whose provisioning
+     * failed) has none, and referencing them would fail the whole `compose up`.
+     * Creation paths omit this (they are about to create the volumes).
+     */
+    requireProvisioned?: boolean;
   }): Promise<DepDirOverlaySpec[]> {
     const scope = resolveOverlayScope(opts.session);
     if (!scope) return [];
@@ -969,7 +991,33 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
     if (valid.length === 0) return [];
     const volumeMountpoint = await resolveVolumeMountpoint(this.docker, this.workspaceVolume);
-    return buildOverlaySpecs({ sessionId: opts.sessionId, scope, depDirs: valid, volumeMountpoint });
+    const stateDir = this.stateDir;
+    const specs = buildOverlaySpecs({
+      sessionId: opts.sessionId,
+      scope,
+      depDirs: valid,
+      volumeMountpoint,
+      stateRoot: stateDir,
+      // Pin each mount to the scope's CURRENT base generation (bases are
+      // immutable `g<N>` dirs — see overlay-base.ts). No pointer / no stateDir
+      // → generation 0, the empty cold-start lowerdir.
+      generationForScope: stateDir
+        ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
+        : undefined,
+    });
+    if (!opts.requireProvisioned) return specs;
+    const provisioned: DepDirOverlaySpec[] = [];
+    for (const spec of specs) {
+      if (await volumeExists(this.docker, spec.volumeName)) {
+        provisioned.push(spec);
+      } else {
+        console.warn(
+          `[overlay:${opts.sessionId}] skipping compose mount for ${spec.depDir}: ` +
+          `volume ${spec.volumeName} is not provisioned (agent container predates the overlay enable?)`,
+        );
+      }
+    }
+    return provisioned;
   }
 
   // --- Dispose ---

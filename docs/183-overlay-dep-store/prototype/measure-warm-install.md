@@ -8,9 +8,16 @@ canary / staging VPS), not the dev sandbox.
 ## Prerequisites
 
 - A deployment with `OVERLAY_DEP_STORE=1` set on the orchestrator (the canary). Everything below
-  is inert with the flag off.
+  is inert with the flag off. Both the VPS compose and the local dev compose pass the flag
+  through from the host env (`OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}`) — export it **before**
+  `docker compose up`, and verify it actually landed:
+  `docker inspect <orch> --format '{{range .Config.Env}}{{println .}}{{end}}' | grep OVERLAY`.
+  (The orchestrator reads its own process env; a flag exported only in your shell does nothing.)
 - Shell access to the orchestrator's logs (`docker logs <orch>` / `journalctl`), where the
   instrumentation line below is printed.
+- The local dev stack (`docker/local/dev/compose.yml`) on Docker Desktop/WSL2 **is** a valid
+  measurement host — the daemon performs real overlay mounts there (proven live 2026-06-10);
+  "not the dev sandbox" in the original phrasing meant the cloud agent's Docker-less sandbox.
 
 ## The instrumentation line
 
@@ -22,7 +29,8 @@ orchestrator prints one greppable line (only when overlay is active for that ses
 ```
 
 - **`install_ms`** — orchestrator-observed wall-clock from install kickoff to resolve. A
-  marker-skip ("deps already materialized") resolves in ~tens of ms; a real install takes
+  marker-skip ("deps already materialized") resolves in ~0.2–1 s (worker HTTP roundtrips
+  dominate, not the marker check — measured live 2026-06-10); a real install takes
   seconds. Duration alone separates a no-op from a materialize.
 - **`<outcome>`** — the publish CAS result per dep dir: `created` (first base), `advanced`
   (incremental, depth++), `flattened` (depth cap hit → clean rebuild), `skipped-equal` (deps
@@ -48,7 +56,7 @@ install is what the feature buys.
 | Scenario | How to produce | Expect |
 |---|---|---|
 | **Cold** | New repo (no base for the scope), first session | `install_ms` = full; `outcome=created d1g1` |
-| **`main` unchanged** | A second session for the same repo at the same default-branch commit | `install_ms` ≈ marker-skip (tens of ms); `outcome=skipped-equal` |
+| **`main` unchanged** | A second session for the same repo at the same default-branch commit | `install_ms` ≈ marker-skip (~0.2–1 s); `outcome=skipped-equal`. **Today this still pays a full install** — the marker lives in the host clone, not the base; see the base-hit pre-stamp follow-up in `checklist.md`. |
 | **`main` advanced** | Push a commit that changes a dep, then a fresh session | `install_ms` = delta install; `outcome=advanced d<n>` |
 
 The headline saving is **cold/advanced install_ms with the flag on vs off** — overlay removes the

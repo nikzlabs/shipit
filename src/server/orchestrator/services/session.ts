@@ -309,7 +309,16 @@ export async function archiveSession(
    * backstop for paths that don't pass this.
    */
   removeSessionLogs?: (sessionId: string) => void,
+  /**
+   * Sessions already being archived by this cascade. Guards the recursion
+   * against parent-link cycles — a self-parented session (produced live by the
+   * spawn-claims-its-own-parent bug this commit also fixes) made the cascade
+   * recurse forever ("Maximum call stack size exceeded"), turning a corrupt
+   * link into an unarchivable session.
+   */
+  inProgress = new Set<string>(),
 ): Promise<{ sessions: SessionInfo[] }> {
+  inProgress.add(sessionId);
   // Cascade to children first. A spawned child is an independent session
   // (own workspace, branch, container) but it references the parent via
   // `parent_session_id`; leaving children alive after the parent disappears
@@ -318,6 +327,7 @@ export async function archiveSession(
   // never archived automatically (see `markMergedAndPruneExcess`) — they only
   // go away via explicit action on the child, or this cascade from the parent.
   for (const child of sessionManager.findChildren(sessionId)) {
+    if (inProgress.has(child.id)) continue; // cycle / already in this cascade
     await archiveSession(
       sessionManager,
       runnerRegistry,
@@ -326,6 +336,7 @@ export async function archiveSession(
       pruneVolumes,
       containerManager,
       removeSessionLogs,
+      inProgress,
     );
   }
 

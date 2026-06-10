@@ -88,6 +88,12 @@ export interface ContainerSetupDeps {
   deps: AppDeps;
   isTestMode: boolean;
   credentialsDir: string;
+  /**
+   * Orchestrator-visible state dir (the same volume `WORKSPACE_VOLUME` names).
+   * Threaded into `SessionContainerManager` so the overlay dep store (docs/183)
+   * can create each overlay's lower/upper/work dirs before the daemon mounts them.
+   */
+  stateDir?: string;
   sessionManager: SessionManager;
   /**
    * Runtime mode. When `"local"`, container construction is skipped entirely
@@ -130,6 +136,7 @@ export async function setupContainerManager(
     // Production mode: Docker is required
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
+      stateDir: setupDeps.stateDir,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
     });

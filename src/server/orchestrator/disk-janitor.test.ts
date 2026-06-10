@@ -1203,6 +1203,55 @@ describe("runDiskJanitor", () => {
     expect(result.overlayBasesRemoved).toBe(1);
   });
 
+  it("reaps stale superseded generations inside a LIVE scope, keeping g0 + the current generation", async () => {
+    // Generational bases (overlay-base.ts): a live scope dir is never removed,
+    // but superseded `g<N>` children and crash-orphaned `.tmp-*` copies age out.
+    // The pointer's current generation and `g0` (the empty cold-start lowerdir)
+    // are kept unconditionally; young non-current generations survive too (a
+    // long-running container may still pin one).
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const hash = "aaaaaaaaaaaaaaaa";
+    const scopeDir = path.join(tmpDir, "overlay-base", hash);
+    const mkGen = (name: string, ageDays: number) => {
+      const d = path.join(scopeDir, name);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "marker"), "x");
+      const t = Date.now() / 1000 - ageDays * 86_400;
+      fs.utimesSync(d, t, t);
+      return d;
+    };
+    const g0 = mkGen("g0", 99);          // cold-start lowerdir → always kept
+    const g1 = mkGen("g1", 99);          // superseded + old → REMOVE
+    const g2 = mkGen("g2", 1);           // superseded but young → keep
+    const g3 = mkGen("g3", 99);          // current per pointer → keep despite age
+    const tmp = mkGen(".tmp-g4-ab12", 99); // crash-orphaned copy → REMOVE
+    // Pointer names g3 as current.
+    const metaDir = path.join(tmpDir, "overlay-base-meta");
+    fs.mkdirSync(metaDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(metaDir, `${hash}.json`),
+      JSON.stringify({ scopeHash: hash, commit: "c".repeat(40), depth: 2, generation: 3, baseDir: g3, updatedAt: "2026-06-01T00:00:00Z" }),
+    );
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      liveOverlayScopeHashes: () => new Set([hash]),
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(g0)).toBe(true);
+    expect(fs.existsSync(g1)).toBe(false);
+    expect(fs.existsSync(g2)).toBe(true);
+    expect(fs.existsSync(g3)).toBe(true);
+    expect(fs.existsSync(tmp)).toBe(false);
+    expect(fs.existsSync(scopeDir)).toBe(true);
+    expect(result.overlayBasesRemoved).toBe(2);
+  });
+
   it("reclaims ALL N per-dep-dir orphan overlay volumes and preserves a live session's N", async () => {
     // The dep-dir design names overlay volumes `shipit-<id12>_overlay-<hash8>`,
     // one per declared dep dir. The existing `^shipit-([a-f0-9-]{12})_` orphan

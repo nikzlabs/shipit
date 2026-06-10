@@ -13,6 +13,7 @@ import { agentLogAppend } from "./log-emit.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
+import { isOverlayEligible } from "./overlay-session.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -269,6 +270,9 @@ export function setupServiceManager(
       runner: ContainerSessionRunner;
       session: SessionInfo;
       installOk: boolean;
+      /** The exact `agent.install` commands the install ran — recorded on the
+       *  base pointer for the base-hit marker pre-stamp (docs/183). */
+      installCommands?: string[];
     }) => Promise<DepDirPublishOutcome[]>;
   },
 ): void {
@@ -361,7 +365,12 @@ export function setupServiceManager(
     void (async () => {
       const res = await p;
       try {
-        const outcomes = await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+        const outcomes = await publishOverlayBases({
+          runner: r,
+          session: s,
+          installOk: res.ok,
+          installCommands,
+        });
         // docs/183 — emit one greppable measurement line per overlay session so the
         // warm-vs-cold + depth-cap data can be tabulated off service logs. A
         // non-empty outcome list means overlay was active (flag on + eligible), so
@@ -572,18 +581,37 @@ export function setupServiceManager(
     // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
     // them to the manager BEFORE the first start(), so compose services that
     // share the workspace also mount each dep dir's overlay volume nested at
-    // `<service-target>/<dep-dir>`. `prepareOverlaySpecs` returns [] (with no
-    // Docker call) when the flag is off / the session is ineligible, so this is
-    // inert and the override is byte-for-byte unchanged for non-overlay sessions.
-    if (containerManager && session && runner instanceof ContainerSessionRunner) {
+    // `<service-target>/<dep-dir>`. The `isOverlayEligible` pre-gate is a pure
+    // env+session check, so for flag-off / ineligible sessions this block is
+    // inert and the override (and compose start timing) is byte-for-byte
+    // unchanged.
+    //
+    // The override references each overlay volume as `external: true`, and the
+    // volumes are created at agent-container-create time — so compose may only
+    // mount what that container was actually built with. Re-deriving
+    // eligibility here can disagree with the provisioned state (observed live:
+    // a container created before OVERLAY_DEP_STORE was enabled has no overlay
+    // volumes, and the recomputed reference failed the whole `compose up` with
+    // "external volume not found"). `whenWorkerReady()` orders us after
+    // container creation (volumes are created just before the container — and
+    // dispose also resolves it, hence the `disposed` re-check), then
+    // `requireProvisioned` keeps only specs whose volume really exists.
+    if (
+      containerManager && session && runner instanceof ContainerSessionRunner &&
+      isOverlayEligible(session)
+    ) {
       try {
-        const specs = await containerManager.prepareOverlaySpecs({
-          sessionId: runner.sessionId,
-          workspaceDir,
-          session,
-        });
-        if (specs.length > 0) {
-          mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+        await runner.whenWorkerReady();
+        if (!runner.disposed) {
+          const specs = await containerManager.prepareOverlaySpecs({
+            sessionId: runner.sessionId,
+            workspaceDir,
+            session,
+            requireProvisioned: true,
+          });
+          if (specs.length > 0) {
+            mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+          }
         }
       } catch (err) {
         console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));

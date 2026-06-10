@@ -25,6 +25,11 @@ services:
       - DOCKER_NETWORK=shipit-dev
       - SESSION_WORKER_IMAGE=shipit-session-worker:dev
       - DOCKER_STACK=shipit-dev
+      # Overlay dep store (docs/183) — opt-in passthrough. The orchestrator reads
+      # OVERLAY_DEP_STORE from its own process env, so without this line a flag
+      # set in the host shell never reaches the container. Empty (= off) unless
+      # the operator exports OVERLAY_DEP_STORE=1 before `docker compose up`.
+      - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
     networks:
       - shipit-dev
 

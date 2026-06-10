@@ -64,7 +64,8 @@ import {
   parseMarker,
   serializeMarker,
   type InstallMarkerStamp,
-} from "./install-marker.js";
+} from "../shared/install-marker.js";
+import { overlayBackedEmptyDepDirs } from "./overlay-dep-check.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
@@ -666,7 +667,22 @@ export class SessionWorker extends EventEmitter {
         installCommands: commands,
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
-        return { skipped: true, reason: "marker" };
+        // docs/183 — a matching marker is only trustworthy if the overlay-backed
+        // dep dirs actually hold content. The marker lives in the host clone;
+        // the deps live in the overlay. A container recreated with the overlay
+        // flag newly on mounts an EMPTY overlay over previously-installed deps,
+        // and skipping here would leave the session dep-less AND let the publish
+        // hook capture the empty view as the scope's shared base. Non-overlay
+        // sessions have no overlay mount at a dep dir, so this returns [] and
+        // the gate behaves exactly as before.
+        const contradicted = overlayBackedEmptyDepDirs(this.workspaceDir);
+        if (contradicted.length === 0) {
+          return { skipped: true, reason: "marker" };
+        }
+        console.warn(
+          `[install] marker matched but overlay-backed dep dir(s) are empty: ` +
+          `${contradicted.join(", ")} — treating as a miss and reinstalling`,
+        );
       }
       // Stale / legacy / mismatched marker — whiteout it before reinstalling so
       // a partial reinstall can never leave an old stamp claiming success.
@@ -709,6 +725,11 @@ export class SessionWorker extends EventEmitter {
     // `git rev-parse HEAD` in the same merged `/workspace` the agent sees.
     app.get("/workspace/head-commit", async () => ({
       commit: await this.readSourceCommit(),
+      // docs/183 — the worker-side runtime fingerprint. The publish path records
+      // it on the base pointer so a later same-commit session can be pre-stamped
+      // with a marker the /install gate accepts (the gate compares against THIS
+      // value, not the orchestrator-side scope key).
+      runtimeKey: runtimeKey(),
     }));
 
     // docs/183 Phase 4 — stream a single dep dir's merged contents as a tar so the

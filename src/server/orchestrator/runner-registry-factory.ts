@@ -232,6 +232,7 @@ export interface RunnerRegistryDeps {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
+    installCommands?: string[];
   }) => Promise<DepDirPublishOutcome[]>;
 }
 

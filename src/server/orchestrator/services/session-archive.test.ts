@@ -208,4 +208,43 @@ describe("archiveSession container teardown", () => {
     expect(sessionManager.get(sessionId)?.archived).toBe(true);
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
+
+  it("archives a self-parented session without infinite recursion", async () => {
+    // A live bug (spawn's claim handed back the calling parent itself) produced
+    // a session whose parent_session_id is its own id. The child cascade then
+    // recursed forever — "Maximum call stack size exceeded" — making the
+    // session unarchivable. The in-progress guard must break the cycle.
+    const workspaceDir = path.join(tmpDir, "ws");
+    const sessionId = makeSession(workspaceDir);
+    sessionManager.setParentSession(sessionId, sessionId);
+
+    const result = await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      sessionId,
+    );
+
+    expect(sessionManager.get(sessionId)?.archived).toBe(true);
+    expect(result.sessions).toBeDefined();
+  });
+
+  it("archives a two-session parent cycle without infinite recursion", async () => {
+    const wsA = path.join(tmpDir, "ws-a");
+    const wsB = path.join(tmpDir, "ws-b");
+    fs.mkdirSync(wsA, { recursive: true });
+    fs.mkdirSync(wsB, { recursive: true });
+    sessionManager.track("sess-a", "A", wsA);
+    sessionManager.setRemoteUrl("sess-a", remoteUrl);
+    sessionManager.track("sess-b", "B", wsB);
+    sessionManager.setRemoteUrl("sess-b", remoteUrl);
+    // a → parent b, b → parent a (mutual cycle).
+    sessionManager.setParentSession("sess-a", "sess-b");
+    sessionManager.setParentSession("sess-b", "sess-a");
+
+    await archiveSession(sessionManager, runnerRegistry, getBareCacheDir, "sess-a");
+
+    expect(sessionManager.get("sess-a")?.archived).toBe(true);
+    expect(sessionManager.get("sess-b")?.archived).toBe(true);
+  });
 });
