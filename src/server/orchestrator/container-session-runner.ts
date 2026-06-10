@@ -1462,13 +1462,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             typeof evt.presentId === "string"
             && typeof evt.content === "string"
             && typeof evt.mimeType === "string"
+            && typeof evt.filePath === "string"
           ) {
             const entry: PresentStateEntry = {
               presentId: evt.presentId,
               content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
-              ...(evt.filePath !== undefined ? { filePath: evt.filePath } : {}),
+              filePath: evt.filePath,
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
@@ -1480,7 +1481,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               content: entry.content,
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
-              ...(entry.filePath !== undefined ? { filePath: entry.filePath } : {}),
+              filePath: entry.filePath,
               createdAt: entry.createdAt,
             });
           }

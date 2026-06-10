@@ -117,16 +117,14 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
         )}
         <div className="flex flex-col min-w-0 flex-1">
           <div className="text-sm font-medium text-(--color-text-primary) truncate">
-            {active.title ?? basename(active.filePath) ?? `Presentation ${safeIndex + 1}`}
+            {active.title ?? basename(active.filePath)}
           </div>
-          {active.filePath && (
-            <div
-              className="text-xs text-(--color-text-tertiary) font-mono truncate"
-              title={active.filePath}
-            >
-              {active.filePath}
-            </div>
-          )}
+          <div
+            className="text-xs text-(--color-text-tertiary) font-mono truncate"
+            title={active.filePath}
+          >
+            {active.filePath}
+          </div>
         </div>
         <Button
           variant="ghost"
@@ -417,14 +415,14 @@ export function suggestDownloadName(title: string | undefined, mimeType: string)
 }
 
 /**
- * Last path segment of a presented file path, for the header's primary label
- * when the agent didn't pass a title. Returns undefined for an empty/missing
- * path so the caller can fall back to "Presentation N".
+ * Last path segment of a presented file path, used as the header's primary
+ * label when the agent didn't pass a title. The path is always present (the
+ * worker validates `present`'s `file` arg is non-empty), so this returns the
+ * segment — or the whole path for a degenerate slashes-only input.
  */
-function basename(filePath: string | undefined): string | undefined {
-  if (!filePath) return undefined;
+function basename(filePath: string): string {
   const segment = filePath.replace(/\/+$/, "").split("/").pop();
-  return segment && segment.length > 0 ? segment : undefined;
+  return segment && segment.length > 0 ? segment : filePath;
 }
 
 export function mimeTypeToExtension(mimeType: string): string {

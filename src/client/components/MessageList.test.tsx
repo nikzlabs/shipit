@@ -902,6 +902,7 @@ describe("MessageList", () => {
           content: "<h1>chart</h1>",
           mimeType: "text/html",
           title: "Sales Chart",
+          filePath: "/tmp/chart.html",
           createdAt: "2026-05-31T00:00:00.000Z",
         },
         {
@@ -909,6 +910,7 @@ describe("MessageList", () => {
           content: "<h1>other</h1>",
           mimeType: "text/html",
           title: "Other",
+          filePath: "/tmp/other.html",
           createdAt: "2026-05-31T00:00:01.000Z",
         },
       ]);
@@ -954,6 +956,7 @@ describe("MessageList", () => {
           content: "<h1>bare</h1>",
           mimeType: "text/html",
           title: "Bare Object",
+          filePath: "/tmp/bare.html",
           createdAt: "2026-05-31T00:00:00.000Z",
         },
       ]);

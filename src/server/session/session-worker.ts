@@ -885,9 +885,6 @@ export class SessionWorker extends EventEmitter {
           content,
           mimeType: resolvedMime,
           ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
-          // Surface the path the agent presented (verbatim — relative or
-          // absolute) so the Present tab header can show its origin.
-          filePath: file,
           ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
         });
       } catch (err) {
@@ -906,7 +903,10 @@ export class SessionWorker extends EventEmitter {
           content: result.entry.content,
           mimeType: result.entry.mimeType,
           ...(result.entry.title !== undefined ? { title: result.entry.title } : {}),
-          ...(result.entry.filePath !== undefined ? { filePath: result.entry.filePath } : {}),
+          // The presented path (verbatim — relative or absolute), shown in the
+          // Present tab header. `file` is validated non-empty above, so the
+          // field is always present downstream.
+          filePath: file,
           createdAt: result.entry.createdAt,
         },
       });

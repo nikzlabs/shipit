@@ -16,6 +16,7 @@ function seedPresentations() {
       content: "<h1>One</h1>",
       mimeType: "text/html",
       title: "One",
+      filePath: "/tmp/one.html",
       createdAt: "2026-05-31T00:00:00.000Z",
     },
     {
@@ -23,6 +24,7 @@ function seedPresentations() {
       content: "<h1>Two</h1>",
       mimeType: "text/html",
       title: "Two",
+      filePath: "/tmp/two.html",
       createdAt: "2026-05-31T00:00:01.000Z",
     },
   ]);
@@ -48,6 +50,7 @@ describe("PresentPane", () => {
         content: "<h1>One</h1>",
         mimeType: "text/html",
         title: "One",
+        filePath: "/tmp/one.html",
         createdAt: "2026-05-31T00:00:00.000Z",
       },
     ]);

@@ -1042,7 +1042,7 @@ export interface WsPresentContentMessage {
   /** Optional display title (the artifact's name) for the carousel header. */
   title?: string;
   /** The path the agent presented (`present`'s `file` arg), shown in the header. */
-  filePath?: string;
+  filePath: string;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
 }
@@ -1066,7 +1066,7 @@ export interface PresentStateEntry {
   content: string;
   mimeType: string;
   title?: string;
-  filePath?: string;
+  filePath: string;
   createdAt: string;
 }
 
