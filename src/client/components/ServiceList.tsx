@@ -129,7 +129,7 @@ export function ServiceList({
         return (
           <div
             key={svc.name}
-            className="group relative rounded-lg bg-(--color-bg-tertiary) border border-(--color-border-primary) hover:border-(--color-border-secondary) transition-[border-color] duration-(--duration-fast) overflow-hidden"
+            className="group relative rounded-lg bg-(--color-bg-tertiary) border-y border-r border-(--color-border-primary) hover:border-(--color-border-secondary) transition-[border-color] duration-(--duration-fast) overflow-hidden"
           >
             <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${railColor[svc.status]}`} aria-hidden />
 
