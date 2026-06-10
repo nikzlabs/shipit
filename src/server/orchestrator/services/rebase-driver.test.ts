@@ -367,8 +367,8 @@ describe("rebase-driver: runRebaseFlow", () => {
         expect(pushResult.success).toBe(false);
         expect(pushResult.message).toMatch(/Force push failed/);
       }
-      const logEntry = messages.find((m) => m.type === "log_entry");
-      expect(logEntry).toBeDefined();
+      const logAppend = messages.find((m) => m.type === "log_append");
+      expect(logAppend).toBeDefined();
     } finally {
       forcePushSpy.mockRestore();
     }

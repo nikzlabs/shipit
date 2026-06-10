@@ -11,6 +11,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { agentLogAppend } from "./log-emit.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 
 export async function registerPreviewRoutes(
@@ -81,7 +82,7 @@ export async function registerPreviewRoutes(
         // Also emit to the session's runner so connected WS viewers receive it
         const runner = deps.runnerRegistry.get(request.params.id);
         if (runner) {
-          runner.emitMessage({ type: "log_entry", source: "preview", text, timestamp: new Date().toISOString() });
+          runner.emitMessage(agentLogAppend("preview", text));
         }
         reply.code(204).send();
       } catch (err) {

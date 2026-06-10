@@ -1,22 +1,12 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: scroll event listener + DOM scrollIntoView (browser API subscription + DOM sync)
-import { useEffect, useRef, useMemo } from "react";
 import { Button } from "./ui/button.js";
 import { SessionHealthStrip } from "./SessionHealthStrip.js";
-import { useTerminalStore } from "../stores/terminal-store.js";
-
-export type LogSource = "stderr" | "stdout" | "server" | "preview" | "install";
-
-export interface LogEntry {
-  id: number;
-  source: LogSource;
-  text: string;
-  timestamp: string;
-}
+import { LogView } from "./LogView.js";
+import type { WsClientMessage } from "../../server/shared/types.js";
 
 export type TerminalMode = "logs" | "shell";
 
 export interface TerminalPanelProps {
-  entries: LogEntry[];
+  /** Clears the agent log channel (sends `log_clear` server-side). */
   onClear: () => void;
   /** Current sub-tab. */
   terminalMode: TerminalMode;
@@ -24,6 +14,8 @@ export interface TerminalPanelProps {
   onTerminalModeChange: (mode: TerminalMode) => void;
   /** Render prop for the shell sub-tab content (InteractiveTerminal). */
   shellContent: React.ReactNode;
+  /** WS sender — forwarded to the agent `<LogView>` so it can subscribe. */
+  send: (msg: WsClientMessage) => void;
   /**
    * Active session ID, used by the health strip to poll
    * `/api/sessions/:id/container/health`. When undefined, the strip
@@ -38,77 +30,13 @@ export interface TerminalPanelProps {
   onReconnectWs: () => void;
 }
 
-const SOURCE_COLORS: Record<LogEntry["source"], string> = {
-  stderr: "text-(--color-error)",
-  stdout: "text-(--color-text-primary)",
-  server: "text-(--color-text-link)",
-  preview: "text-(--color-autofix)",
-  install: "text-(--color-success)",
-};
-
-const SOURCE_LABELS: Record<LogEntry["source"], string> = {
-  stderr: "err",
-  stdout: "out",
-  server: "srv",
-  preview: "pre",
-  install: "ins",
-};
-
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    return d.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
-  } catch {
-    return "";
-  }
-}
-
-const ALL_SOURCES: LogSource[] = ["stderr", "stdout", "server", "preview", "install"];
-
-const FILTER_COLORS: Record<LogSource, { active: string; inactive: string }> = {
-  stderr: { active: "bg-(--color-error-subtle) text-(--color-error)", inactive: "text-(--color-text-secondary) hover:text-(--color-error)" },
-  stdout: { active: "bg-(--color-bg-tertiary) text-(--color-text-primary)", inactive: "text-(--color-text-secondary) hover:text-(--color-text-primary)" },
-  server: { active: "bg-(--color-accent-subtle) text-(--color-text-link)", inactive: "text-(--color-text-secondary) hover:text-(--color-text-link)" },
-  preview: { active: "bg-(--color-autofix)/15 text-(--color-autofix)", inactive: "text-(--color-text-secondary) hover:text-(--color-autofix)" },
-  install: { active: "bg-(--color-success-subtle) text-(--color-success)", inactive: "text-(--color-text-secondary) hover:text-(--color-success)" },
-};
-
-export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeChange, shellContent, sessionId, onReconnectWs }: TerminalPanelProps) {
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const containerRef = useRef<HTMLDivElement>(null);
-  const autoScrollRef = useRef(true);
-  const hiddenSources = useTerminalStore((s) => s.hiddenSources);
-  const toggleSource = useTerminalStore((s) => s.toggleSource);
-
-  const filteredEntries = useMemo(
-    () => hiddenSources.size === 0 ? entries : entries.filter((e) => !hiddenSources.has(e.source)),
-    [entries, hiddenSources],
-  );
-
-  // Track whether user has scrolled up (disable auto-scroll)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-
-    const handleScroll = () => {
-      const { scrollTop, scrollHeight, clientHeight } = container;
-      // Consider "at bottom" if within 40px of the end
-      autoScrollRef.current = scrollHeight - scrollTop - clientHeight < 40;
-    };
-
-    container.addEventListener("scroll", handleScroll);
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
-
-  // Auto-scroll when new entries arrive
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (autoScrollRef.current) {
-      bottomRef.current?.scrollIntoView({ behavior: "instant" });
-    }
-  }, [filteredEntries.length]);
-
+/**
+ * Bottom panel with a Logs / Shell sub-tab switcher. The Logs tab is the
+ * unified `<LogView channel="agent">` (docs/192) — full durable backlog, ANSI,
+ * scrollback, and a search box (the old per-source filter chips are gone). The
+ * Shell tab is the interactive PTY.
+ */
+export function TerminalPanel({ onClear, terminalMode, onTerminalModeChange, shellContent, send, sessionId, onReconnectWs }: TerminalPanelProps) {
   return (
     <div className="flex flex-col h-full">
       {/* Session health strip — diagnostics + recovery actions */}
@@ -116,95 +44,42 @@ export function TerminalPanel({ entries, onClear, terminalMode, onTerminalModeCh
 
       {/* Header with sub-tab switcher */}
       <div className="flex items-center justify-between px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
-        <div className="flex items-center gap-2">
-          {/* Sub-tab switcher */}
-          <div className="flex items-center gap-0.5 rounded bg-(--color-bg-tertiary) p-0.5" role="tablist" aria-label="Terminal mode">
-            <button
-              role="tab"
-              aria-selected={terminalMode === "logs"}
-              onClick={() => onTerminalModeChange("logs")}
-              className={`px-2 py-0.5 rounded font-medium transition-colors ${
-                terminalMode === "logs"
-                  ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
-                  : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
-              }`}
-            >
-              Logs
-            </button>
-            <button
-              role="tab"
-              aria-selected={terminalMode === "shell"}
-              onClick={() => onTerminalModeChange("shell")}
-              className={`px-2 py-0.5 rounded font-medium transition-colors ${
-                terminalMode === "shell"
-                  ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
-                  : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
-              }`}
-            >
-              Shell
-            </button>
-          </div>
-
-          {/* Log source filters — only shown in logs mode */}
-          {terminalMode === "logs" && (
-            <div className="flex items-center gap-1" role="group" aria-label="Filter log sources">
-              {ALL_SOURCES.map((source) => {
-                const active = !hiddenSources.has(source);
-                const colors = FILTER_COLORS[source];
-                return (
-                  <button
-                    key={source}
-                    onClick={() => toggleSource(source)}
-                    className={`px-1.5 py-0.5 rounded transition-colors ${active ? colors.active : colors.inactive}`}
-                    title={`${active ? "Hide" : "Show"} ${SOURCE_LABELS[source]} logs`}
-                    aria-pressed={active}
-                  >
-                    {SOURCE_LABELS[source]}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+        <div className="flex items-center gap-0.5 rounded bg-(--color-bg-tertiary) p-0.5" role="tablist" aria-label="Terminal mode">
+          <button
+            role="tab"
+            aria-selected={terminalMode === "logs"}
+            onClick={() => onTerminalModeChange("logs")}
+            className={`px-2 py-0.5 rounded font-medium transition-colors ${
+              terminalMode === "logs"
+                ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
+                : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
+            }`}
+          >
+            Logs
+          </button>
+          <button
+            role="tab"
+            aria-selected={terminalMode === "shell"}
+            onClick={() => onTerminalModeChange("shell")}
+            className={`px-2 py-0.5 rounded font-medium transition-colors ${
+              terminalMode === "shell"
+                ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
+                : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
+            }`}
+          >
+            Shell
+          </button>
         </div>
         {terminalMode === "logs" && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onClear}
-            title="Clear terminal output"
-          >
+          <Button variant="ghost" size="sm" onClick={onClear} title="Clear logs">
             Clear
           </Button>
         )}
       </div>
 
       {/* Tab content — both tabs stay mounted to preserve xterm.js state */}
-      <div
-        ref={containerRef}
-        className={`flex-1 overflow-auto bg-(--color-bg-primary) font-mono text-xs leading-5 p-2 ${terminalMode !== "logs" ? "hidden" : ""}`}
-      >
-        {filteredEntries.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-(--color-text-tertiary) text-sm font-sans">
-            {entries.length === 0
-              ? "No output yet. Agent logs will appear here."
-              : "No logs match the current filter."}
-          </div>
-        ) : (
-          filteredEntries.map((entry) => (
-            <div key={entry.id} className="flex gap-2 hover:bg-(--color-bg-hover)">
-              <span className="text-(--color-text-tertiary) shrink-0 select-none">
-                {formatTime(entry.timestamp)}
-              </span>
-              <span className={`shrink-0 select-none ${SOURCE_COLORS[entry.source]}`}>
-                [{SOURCE_LABELS[entry.source]}]
-              </span>
-              <span className="text-(--color-text-primary) whitespace-pre-wrap break-all">
-                {entry.text}
-              </span>
-            </div>
-          ))
-        )}
-        <div ref={bottomRef} />
+      <div className={`flex-1 min-h-0 ${terminalMode !== "logs" ? "hidden" : ""}`}>
+        <LogView channel="agent" showSource send={send} />
       </div>
       <div className={`flex-1 min-h-0 ${terminalMode !== "shell" ? "hidden" : ""}`}>
         {shellContent}

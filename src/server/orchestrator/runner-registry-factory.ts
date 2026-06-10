@@ -12,7 +12,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
-import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
+import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
@@ -118,7 +118,7 @@ export interface RunnerRegistryDeps {
    * land in the user-visible Logs view rather than the orchestrator's
    * stdout. See docs/124-session-rescue-and-diagnostics §1.1.
    */
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * docs/149 — credentials root used by the post-system-turn finalize hook
    * (writes a CLI-rotated OAuth token back to the orchestrator source).
@@ -283,7 +283,7 @@ export function createRunnerRegistry(
         usageManager,
         authManager,
         sseBroadcast,
-        broadcastLog: (source: WsLogEntry["source"], text: string) =>
+        broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
         ...(authManagers ? { authManagers } : {}),

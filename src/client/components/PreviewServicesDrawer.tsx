@@ -12,10 +12,11 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { ServiceList } from "./ServiceList.js";
-import { ServiceLogViewer } from "./ServiceLogViewer.js";
+import { LogView } from "./LogView.js";
 import { buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
 import { usePreviewStore, type ManagedServiceState } from "../stores/preview-store.js";
-import type { WsClientMessage, WsServerMessage } from "../../server/shared/types.js";
+import { useLogStore } from "../stores/log-store.js";
+import type { WsClientMessage } from "../../server/shared/types.js";
 
 /** API host for container-mode subdomain URLs (e.g. "localhost:3001"). */
 const API_HOST = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
@@ -98,8 +99,6 @@ interface PreviewServicesDrawerProps {
   /** Whether the Preview tab is currently visible — gates xterm mount so the
    *  log viewer never opens against a zero-size (hidden) container. */
   active: boolean;
-  lastMessage: MessageEvent | null;
-  drainMessages: () => MessageEvent[];
   send: (msg: WsClientMessage) => void;
   onSendToAgent: (serviceName: string, status: string, logs: string) => void;
   /** Pivot the preview iframe to a service's port (clicking its `:port` chip). */
@@ -120,8 +119,6 @@ export function PreviewServicesDrawer({
   services,
   sessionId,
   active,
-  lastMessage,
-  drainMessages,
   send,
   onSendToAgent,
   onSelectPreviewPort,
@@ -131,34 +128,6 @@ export function PreviewServicesDrawer({
   const [height, setHeight] = useState(loadHeight);
   const [selectedService, setSelectedService] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
-
-  // --- Plain-text log accumulation for "Send to Agent" (mirrors the old
-  //     ServicesPanel: track the selected service's recent lines as they
-  //     stream so the button has something to ship). ---
-  const plainLinesRef = useRef<string[]>([]);
-  const prevSelectedServiceRef = useRef(selectedService);
-  const prevLastMessageRef = useRef(lastMessage);
-
-  if (prevSelectedServiceRef.current !== selectedService) {
-    prevSelectedServiceRef.current = selectedService;
-    plainLinesRef.current = [];
-  }
-
-  if (lastMessage !== prevLastMessageRef.current) {
-    prevLastMessageRef.current = lastMessage;
-    if (lastMessage && selectedService) {
-      let parsed: WsServerMessage | null = null;
-      try { parsed = JSON.parse(lastMessage.data as string) as WsServerMessage; } catch { /* ignore */ }
-      if (parsed) {
-        if (parsed.type === "service_log_buffer" && parsed.name === selectedService) {
-          plainLinesRef.current = parsed.buffer.split("\n").slice(-MAX_PLAIN_LINES);
-        }
-        if (parsed.type === "service_log" && parsed.name === selectedService) {
-          plainLinesRef.current = [...plainLinesRef.current, ...parsed.text.split("\n")].slice(-MAX_PLAIN_LINES);
-        }
-      }
-    }
-  }
 
   // Derive effective selection — if the service disappeared, treat as deselected.
   const effectiveService = selectedService && services.some((s) => s.name === selectedService) ? selectedService : null;
@@ -171,7 +140,12 @@ export function PreviewServicesDrawer({
   const handleSendToAgent = useCallback(() => {
     if (!effectiveService) return;
     const svc = services.find((s) => s.name === effectiveService);
-    onSendToAgent(effectiveService, svc?.status ?? "unknown", plainLinesRef.current.join("\n").trim());
+    // Pull the selected service's recent lines straight from the log-store
+    // (docs/192) — the same model `<LogView>` renders, so "Send to Agent"
+    // ships exactly what's on screen, no separate accumulation.
+    const recs = useLogStore.getState().channels[`service:${effectiveService}`]?.records ?? [];
+    const text = recs.map((r) => r.text).join("").split("\n").slice(-MAX_PLAIN_LINES).join("\n").trim();
+    onSendToAgent(effectiveService, svc?.status ?? "unknown", text);
   }, [effectiveService, services, onSendToAgent]);
 
   // --- Restart = client-orchestrated stop → start. Sending both at once would
@@ -369,12 +343,7 @@ export function PreviewServicesDrawer({
         <div className="flex-1 min-h-0 flex flex-col">
           {effectiveService ? (
             active ? (
-              <ServiceLogViewer
-                serviceName={effectiveService}
-                lastMessage={lastMessage}
-                drainMessages={drainMessages}
-                send={send}
-              />
+              <LogView channel={`service:${effectiveService}`} send={send} />
             ) : (
               <div className="flex-1" style={{ backgroundColor: "#030712" }} />
             )

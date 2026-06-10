@@ -51,13 +51,14 @@ export class TestClient {
       const msg = JSON.parse((data as Buffer).toString()) as WsServerMessage;
       // Auto-skip informational messages that tests don't care about.
       //
-      // `clear_logs` is sent by the server at the start of every WS connect so
-      // reconnecting viewers replace their local terminal state with the
-      // server log buffer (otherwise the buffer replay duplicates entries on
-      // top of the entries the client already has). Tests don't need to see
-      // it — auto-skip so existing receive-order assertions still hold.
+      // The server seeds the agent Logs channel with a `log_snapshot` at the
+      // start of every WS connect (docs/192 — it RESETS the client model, so a
+      // reconnect can't duplicate the backlog). When the session has no logs
+      // yet the snapshot is empty; auto-skip those so existing receive-order
+      // assertions still hold. A non-empty snapshot (the terminal-logs-relay
+      // tests) is left for the test to assert on.
       if (msg.type === "compose_not_configured") return;
-      if (msg.type === "clear_logs") return;
+      if (msg.type === "log_snapshot" && msg.records.length === 0) return;
       const waiter = this.waiters.shift();
       if (waiter) {
         waiter(msg);
@@ -139,14 +140,14 @@ export class TestClient {
     return msgs;
   }
 
-  /** Get the next message that is NOT a log_entry or agent_event — useful for tests that predate the terminal and multi-agent features. */
+  /** Get the next message that is NOT a log message or agent_event — useful for tests that predate the terminal and multi-agent features. */
   async receiveSkipLogs(timeoutMs = 3000): Promise<WsServerMessage> {
     const deadline = Date.now() + timeoutMs;
     while (true) {
       const remaining = deadline - Date.now();
       if (remaining <= 0) throw new Error("receiveSkipLogs() timed out");
       const msg = await this.receive(remaining);
-      if (msg.type !== "log_entry" && msg.type !== "agent_event") return msg;
+      if (msg.type !== "log_append" && msg.type !== "log_snapshot" && msg.type !== "agent_event") return msg;
     }
   }
 

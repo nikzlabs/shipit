@@ -10,7 +10,7 @@ import type {
   WsPrStatus,
   WsPrLifecycleUpdate,
 } from "./github-types.js";
-import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
+import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogSnapshot, WsLogAppend } from "./terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
 import type { SubscriptionLimitsMap } from "./usage-limits-types.js";
 import type { VoiceNoteSource } from "./voice-note-types.js";
@@ -475,22 +475,6 @@ export interface WsServiceList {
     preview: ComposeServicePreviewMode;
     error?: string;
   }[];
-}
-
-/** Server → Client: log output from a compose service. */
-export interface WsServiceLog {
-  type: "service_log";
-  sessionId: string;
-  name: string;
-  text: string;
-}
-
-/** Server → Client: buffered log replay for a compose service. */
-export interface WsServiceLogBuffer {
-  type: "service_log_buffer";
-  sessionId: string;
-  name: string;
-  buffer: string;
 }
 
 // ---- Rebase messages (server → client) ----
@@ -1265,7 +1249,8 @@ export type WsServerMessage =
   | WsDocContent
   | WsFileTree
   | WsFileContent
-  | WsLogEntry
+  | WsLogSnapshot
+  | WsLogAppend
   | WsUsageStats
   | WsUsageUpdate
   | WsTurnUsageUpdate
@@ -1291,7 +1276,6 @@ export type WsServerMessage =
   | WsAgentInterrupted
   | WsContainerRestarting
   | WsFullResetComplete
-  | WsClearLogs
   | WsTurnDiff
   | WsSessionStatus
   | WsSessionAgentStarted
@@ -1313,8 +1297,6 @@ export type WsServerMessage =
   | WsSessionSpawnFailed
   | WsServiceStatus
   | WsServiceList
-  | WsServiceLog
-  | WsServiceLogBuffer
   | WsServiceOom
   | WsSessionMemoryExhausted
   | WsPreviewError

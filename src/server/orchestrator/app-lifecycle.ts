@@ -30,7 +30,7 @@ import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
+import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { listAgents } from "./services/settings.js";
@@ -225,7 +225,7 @@ export interface RunnerFactoryDeps {
    * also land in `recentLogs`, so a copied diagnostic preserves the
    * failure history.
    */
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * OOM circuit breaker, shared with `setupContainerHealthMonitoring`.
    * When tripped for a session, container creation is refused with a
@@ -271,7 +271,7 @@ async function createContainerForRunner(opts: {
   session?: Pick<SessionInfo, "remoteUrl" | "kind">;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** OOM circuit breaker — when tripped, creation is refused. */
   oomBreaker?: SessionOomCircuitBreaker;
 }): Promise<void> {
@@ -470,7 +470,7 @@ export interface MissingContainerReconcilerDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
   /** Per-session log ring writer. Required — the whole point is to leave a breadcrumb. */
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * Resolves a session's workspace dir + Docker limits, used to re-adopt a
    * live-but-untracked container before force-disposing its runner. Same
@@ -797,20 +797,19 @@ const MAX_LOG_ENTRIES = 500;
  * every other session's terminal panel.
  */
 export function createLogBuffer(logStore?: LogStore): {
-  getLogBuffer: (sessionId: string) => WsLogEntry[];
+  getLogBuffer: (sessionId: string) => LogRingEntry[];
   clearLogBuffer: (sessionId: string) => void;
   removeLogBuffer: (sessionId: string) => void;
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
 } {
-  const buffers = new Map<string, WsLogEntry[]>();
+  const buffers = new Map<string, LogRingEntry[]>();
 
   const broadcastLog = (
     sessionId: string,
-    source: WsLogEntry["source"],
+    source: LogSource,
     text: string,
   ) => {
-    const entry: WsLogEntry = {
-      type: "log_entry",
+    const entry: LogRingEntry = {
       source,
       text,
       timestamp: new Date().toISOString(),

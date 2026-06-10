@@ -154,9 +154,10 @@ describe("Integration: persistent session runners", () => {
     // Finish Claude
     claude.finish("test-session-id");
 
-    // Client2 should receive the exit log entry (session_agent_finished is SSE-only)
+    // Client2 should receive the exit log record (session_agent_finished is SSE-only)
     const finished = await drainUntil(client2, (m) =>
-      m.type === "log_entry" && (m).text?.includes("exited"),
+      m.type === "log_append" && m.channel === "agent" &&
+      m.records?.some((r: { text?: string }) => r.text?.includes("exited")),
     );
     expect(finished).toBeTruthy();
 
