@@ -15,6 +15,10 @@ permissions:
 jobs:
   labeler:
     name: Label PR by changed paths
+    # Match CI's public-repo posture: skip fork/external PRs entirely so the
+    # pull_request_target workflow never spends write permissions on untrusted
+    # contributor branches.
+    if: github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
       - uses: actions/labeler@v5.0.0

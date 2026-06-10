@@ -1358,6 +1358,11 @@ describe("ServiceManager install-running retry gate", () => {
     const web = mgr.getService("web");
     expect(web?.status).toBe("starting");
     expect(web?.error).toBeUndefined();
+
+    // This assertion intentionally leaves an install-window backoff retry
+    // pending. Dispose the manager so the real timer cannot leak into later
+    // fake-timer tests and create an unbounded retry chain.
+    await mgr.stop();
   });
 
   it("marks error when install has already finished", async () => {
@@ -2092,7 +2097,7 @@ services:
     // Gate opens → first boot (webUps→1) crashes 127 → bounded post-gate
     // retry. The retry's `up` (webUps→2) flips `ps` to running → recovered.
     mgr.setInstallRunning(false);
-    await vi.runAllTimersAsync();
+    await vi.advanceTimersByTimeAsync(1_000);
 
     expect(mgr.getService("web")?.status).toBe("running");
     expect(webUps).toBeGreaterThanOrEqual(2);
@@ -2110,8 +2115,11 @@ services:
     // Service is genuinely broken — every boot crashes 127.
     setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 127 }));
     mgr.setInstallRunning(false);
-    // Run every backoff retry to exhaustion.
-    await vi.runAllTimersAsync();
+    // Run the bounded post-gate backoff slots to exhaustion without draining
+    // unrelated timers that may exist elsewhere in the test process.
+    for (const delay of [1_000, 2_000, 4_000, 8_000, 10_000]) {
+      await vi.advanceTimersByTimeAsync(delay);
+    }
 
     const web = mgr.getService("web");
     expect(web?.status).toBe("error");
