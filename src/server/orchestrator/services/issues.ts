@@ -149,6 +149,18 @@ function toResolutionServiceError(err: unknown): never {
   throw new ServiceError(502, err instanceof Error ? err.message : String(err));
 }
 
+/**
+ * A short " (priority: High, labels: security, bug)" suffix for a write summary,
+ * so the provenance card reflects the labels/priority that were set (SHI-92).
+ * Empty when the issue has no labels and no explicit priority.
+ */
+function describeAttrs(issue: TrackerIssue): string {
+  const parts: string[] = [];
+  if (issue.priority.level !== "none") parts.push(`priority: ${issue.priority.label}`);
+  if (issue.labels && issue.labels.length > 0) parts.push(`labels: ${issue.labels.join(", ")}`);
+  return parts.length > 0 ? ` (${parts.join("; ")})` : "";
+}
+
 async function loadIssueOr404(tracker: Tracker, id: string): Promise<TrackerIssue> {
   let issue: TrackerIssue | null;
   try {
@@ -171,20 +183,26 @@ export async function createIssueForTracker(
   trackerId: string,
   title: string,
   body: string,
+  opts: { labels?: string[]; priority?: string } = {},
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
   let issue: TrackerIssue;
   try {
-    issue = await tracker.createIssue({ title, body });
+    issue = await tracker.createIssue({
+      title,
+      body,
+      ...(opts.labels && opts.labels.length > 0 ? { labels: opts.labels } : {}),
+      ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+    });
   } catch (err) {
     toResolutionServiceError(err);
   }
   return {
     issue: issue!,
     verb: "create",
-    summary: `created ${issue!.identifier}`,
+    summary: `created ${issue!.identifier}${describeAttrs(issue!)}`,
     undo: { kind: "create" },
   };
 }
@@ -214,20 +232,37 @@ export async function commentOnIssueForTracker(
   };
 }
 
-/** Edit title and/or description; snapshot the prior values for undo. */
+/**
+ * Edit title, description, labels, and/or priority; snapshot the prior values
+ * for undo. Labels are ADDITIVE (SHI-92): the requested names are merged into
+ * the issue's existing labels rather than replacing them, so editing labels can
+ * never silently drop a label the agent didn't mention. The adapter's
+ * `updateIssue({ labels })` is a wholesale replace, so we pass it the merged
+ * set; undo restores the prior set by replacing back to it.
+ */
 export async function updateIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   id: string,
-  patch: { title?: string; description?: string },
+  patch: { title?: string; description?: string; labels?: string[]; priority?: string },
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
   const prior = await loadIssueOr404(tracker, id);
+  // Merge requested labels into the existing set (additive, de-duped).
+  const mergedLabels =
+    patch.labels !== undefined
+      ? [...(prior.labels ?? []), ...patch.labels.filter((l) => !(prior.labels ?? []).includes(l))]
+      : undefined;
   let updated: TrackerIssue;
   try {
-    updated = await tracker.updateIssue(id, patch);
+    updated = await tracker.updateIssue(id, {
+      ...(patch.title !== undefined ? { title: patch.title } : {}),
+      ...(patch.description !== undefined ? { description: patch.description } : {}),
+      ...(mergedLabels !== undefined ? { labels: mergedLabels } : {}),
+      ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+    });
   } catch (err) {
     toResolutionServiceError(err);
   }
@@ -235,11 +270,23 @@ export async function updateIssueForTracker(
     kind: "edit",
     ...(patch.title !== undefined ? { previousTitle: prior.title } : {}),
     ...(patch.description !== undefined ? { previousDescription: prior.description ?? "" } : {}),
+    ...(patch.labels !== undefined ? { previousLabels: prior.labels ?? [] } : {}),
+    ...(patch.priority !== undefined ? { previousPriority: prior.priority.level } : {}),
   };
-  const changed = [patch.title !== undefined ? "title" : null, patch.description !== undefined ? "description" : null]
+  const changed = [
+    patch.title !== undefined ? "title" : null,
+    patch.description !== undefined ? "description" : null,
+    patch.labels !== undefined ? "labels" : null,
+    patch.priority !== undefined ? "priority" : null,
+  ]
     .filter(Boolean)
     .join(" & ");
-  return { issue: updated!, verb: "edit", summary: `edited ${changed || "issue"} on ${updated!.identifier}`, undo };
+  return {
+    issue: updated!,
+    verb: "edit",
+    summary: `edited ${changed || "issue"} on ${updated!.identifier}${describeAttrs(updated!)}`,
+    undo,
+  };
 }
 
 /** Set status (normalized type or native name); snapshot the prior native name. */
@@ -319,6 +366,10 @@ export async function undoIssueWrite(
         await tracker.updateIssue(card.issueId, {
           ...(card.undo.previousTitle !== undefined ? { title: card.undo.previousTitle } : {}),
           ...(card.undo.previousDescription !== undefined ? { description: card.undo.previousDescription } : {}),
+          // Replace the label set back to the prior one, and re-apply the prior
+          // priority level (SHI-92). previousLabels is the exact set to restore.
+          ...(card.undo.previousLabels !== undefined ? { labels: card.undo.previousLabels } : {}),
+          ...(card.undo.previousPriority !== undefined ? { priority: card.undo.previousPriority } : {}),
         });
         return;
       case "status":

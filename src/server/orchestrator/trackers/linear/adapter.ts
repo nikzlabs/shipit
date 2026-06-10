@@ -68,6 +68,15 @@ interface LinearStateNode {
   position?: number | null;
 }
 
+/** The five normalized priority levels Linear's numeric field maps onto. */
+const LINEAR_PRIORITY_BY_LEVEL: Record<IssuePriorityLevel, number> = {
+  urgent: 1,
+  high: 2,
+  medium: 3,
+  low: 4,
+  none: 0,
+};
+
 interface LinearIssueNode {
   id: string;
   identifier: string;
@@ -76,6 +85,7 @@ interface LinearIssueNode {
   description?: string | null;
   priority: number;
   priorityLabel?: string | null;
+  labels?: { nodes: { name: string }[] } | null;
   state?: { name: string; type?: string } | null;
   assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
   /** Only fetched by `getIssue` (the team's workflow states) — drives `availableStatuses`. */
@@ -84,6 +94,7 @@ interface LinearIssueNode {
 
 function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   const assigneeName = node.assignee?.displayName ?? node.assignee?.name ?? undefined;
+  const labels = (node.labels?.nodes ?? []).map((l) => l.name).filter(Boolean);
   const states = node.team?.states?.nodes
     ?.slice()
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
@@ -95,6 +106,7 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     url: node.url,
     ...(node.description ? { description: node.description } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
+    ...(labels.length > 0 ? { labels } : {}),
     ...(node.state ? { status: { name: node.state.name, ...(node.state.type ? { type: node.state.type } : {}) } } : {}),
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatarUrl ? { avatarUrl: node.assignee.avatarUrl } : {}) } }
@@ -112,6 +124,7 @@ const ISSUE_FIELDS = `
   description
   priority
   priorityLabel
+  labels { nodes { name } }
   state { name type }
   assignee { id name displayName avatarUrl }
 `;
@@ -260,9 +273,28 @@ export class LinearTracker implements Tracker {
     return data.issue.id;
   }
 
-  async createIssue(input: { title: string; body: string }): Promise<TrackerIssue> {
+  async createIssue(input: {
+    title: string;
+    body: string;
+    labels?: string[];
+    priority?: string;
+  }): Promise<TrackerIssue> {
     if (!this.team) {
       throw new Error("Linear is not configured (missing team binding)");
+    }
+    const createInput: Record<string, unknown> = {
+      teamId: this.team.id,
+      title: input.title,
+      description: input.body,
+    };
+    // Resolve label names → ids and the priority value → Linear's numeric field
+    // BEFORE the mutation, so an unknown label/priority fails cleanly with the
+    // candidate list and never half-creates the issue (SHI-92).
+    if (input.labels && input.labels.length > 0) {
+      createInput.labelIds = await this.resolveLabelIds(input.labels);
+    }
+    if (input.priority !== undefined) {
+      createInput.priority = resolveLinearPriority(input.priority);
     }
     const data = await this.gql<{ issueCreate: { success: boolean; issue: LinearIssueNode | null } }>(
       `mutation IssueCreate($input: IssueCreateInput!) {
@@ -271,7 +303,7 @@ export class LinearTracker implements Tracker {
           issue { ${ISSUE_FIELDS} }
         }
       }`,
-      { input: { teamId: this.team.id, title: input.title, description: input.body } },
+      { input: createInput },
     );
     if (!data.issueCreate.success || !data.issueCreate.issue) {
       throw new Error("Linear rejected the issue create");
@@ -307,11 +339,19 @@ export class LinearTracker implements Tracker {
     if (!data.commentDelete.success) throw new Error("Linear rejected the comment delete");
   }
 
-  async updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue> {
+  async updateIssue(
+    id: string,
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+  ): Promise<TrackerIssue> {
     const issueId = await this.resolveUuid(id);
     const input: Record<string, unknown> = {};
     if (patch.title !== undefined) input.title = patch.title;
     if (patch.description !== undefined) input.description = patch.description;
+    // `labelIds` replaces Linear's label set wholesale — the service hands us the
+    // already-merged set (SHI-92). Resolve names → ids first so a bad name aborts
+    // before the mutation runs.
+    if (patch.labels !== undefined) input.labelIds = await this.resolveLabelIds(patch.labels);
+    if (patch.priority !== undefined) input.priority = resolveLinearPriority(patch.priority);
     return this.runIssueUpdate(issueId, input);
   }
 
@@ -358,6 +398,43 @@ export class LinearTracker implements Tracker {
       throw new Error("Linear rejected the issue update");
     }
     return toTrackerIssue(data.issueUpdate.issue);
+  }
+
+  /**
+   * Resolve label display names → Linear `IssueLabel` ids. Labels are matched by
+   * exact (case-insensitive) name against the workspace's labels; an unknown or
+   * ambiguous name throws {@link TrackerResolutionError} (`kind: "label"`) with
+   * the available label names, mirroring assignee resolution. We deliberately do
+   * NOT create a missing label on demand — that would let a typo spawn a stray
+   * label (SHI-92).
+   */
+  private async resolveLabelIds(names: string[]): Promise<string[]> {
+    const data = await this.gql<{ issueLabels: { nodes: { id: string; name: string }[] } }>(
+      `query IssueLabels { issueLabels(first: 250) { nodes { id name } } }`,
+      {},
+    );
+    const available = data.issueLabels.nodes;
+    const ids: string[] = [];
+    for (const raw of names) {
+      const needle = raw.trim().toLowerCase();
+      const matches = available.filter((l) => l.name.toLowerCase() === needle);
+      if (matches.length === 1) {
+        if (!ids.includes(matches[0].id)) ids.push(matches[0].id);
+      } else if (matches.length === 0) {
+        throw new TrackerResolutionError(
+          `No Linear label matches "${raw}".`,
+          "label",
+          available.map((l) => l.name).slice(0, 50),
+        );
+      } else {
+        throw new TrackerResolutionError(
+          `"${raw}" is ambiguous — it matches multiple Linear labels.`,
+          "label",
+          matches.map((l) => l.name),
+        );
+      }
+    }
+    return ids;
   }
 
   /** Resolve `"me"` / displayName / email / name → an `assigneeId`. */
@@ -420,5 +497,26 @@ export function resolveLinearStateId(status: string, states: LinearStateNode[]):
     `Unknown status "${status}" for this Linear team.`,
     "status",
     states.map((s) => s.name),
+  );
+}
+
+/**
+ * Resolve a `--priority` argument to Linear's numeric priority field (SHI-92).
+ * Accepts a normalized level (`urgent|high|medium|low|none`) OR a native Linear
+ * priority name (`Urgent`/`High`/`Medium`/`Low`/`None`/`No priority`), both
+ * case-insensitively. An unmatched value throws {@link TrackerResolutionError}
+ * (`kind: "priority"`) listing the accepted values.
+ */
+export function resolveLinearPriority(value: string): number {
+  const wanted = value.trim().toLowerCase();
+  if (wanted in LINEAR_PRIORITY_BY_LEVEL) {
+    return LINEAR_PRIORITY_BY_LEVEL[wanted as IssuePriorityLevel];
+  }
+  // Native names, including Linear's "No priority" label for the 0 bucket.
+  if (wanted === "no priority") return LINEAR_PRIORITY_BY_LEVEL.none;
+  throw new TrackerResolutionError(
+    `Unknown priority "${value}" for Linear.`,
+    "priority",
+    ["urgent", "high", "medium", "low", "none"],
   );
 }

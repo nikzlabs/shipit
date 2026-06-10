@@ -277,6 +277,30 @@ describe("ChatHistoryManager", () => {
       expect(loaded[0].issueWrite).toEqual(msg.issueWrite);
     });
 
+    it("round-trips an edit card's label/priority undo snapshot (SHI-92)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-edit",
+          tracker: "linear",
+          issueId: "SHI-9",
+          identifier: "SHI-9",
+          title: "Doc",
+          verb: "edit",
+          summary: "edited labels & priority on SHI-9 (priority: High; labels: security)",
+          attribution: "workspace",
+          undo: { kind: "edit", previousLabels: ["backend"], previousPriority: "low" },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", msg);
+      const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
+      expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
+    });
+
     it("findIssueWriteCard recovers the tracker + undo snapshot by id", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", { role: "user", text: "comment please" });

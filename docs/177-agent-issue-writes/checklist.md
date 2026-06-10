@@ -48,6 +48,17 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Assignee resolution: me / name / not-found-candidates / unassign
 - [x] Card persistence, undo, no-duplicate-on-replay (chat-history + service + client store + shim)
 
+## Labels + priority on create/edit (SHI-92)
+- [x] `Tracker.createIssue`/`updateIssue` accept `labels?`/`priority?`; `TrackerResolutionError.kind` adds `label`/`priority`; `TrackerIssue.labels?`
+- [x] Linear: `resolveLabelIds` (via `issueLabels`) → `labelIds`; `resolveLinearPriority` (normalized/native → numeric); labels on the read fields
+- [x] GitHub: `resolveLabels` validates against `GET .../labels` (reject unknown + candidates); `--priority` rejected (no native field); labels on read
+- [x] Service: `createIssueForTracker` opts `{labels,priority}`; `updateIssueForTracker` additive label merge + `previousLabels`/`previousPriority` snapshot; `undoIssueWrite` edit restores them; summary reflects attrs
+- [x] Routes + relay carry `labels`/`priority`; write response returns resolved `labels`/`priority` for `--json`
+- [x] Shim: `parseFlags` gains `arrays` (repeatable); `--label`/`--priority` on `create`+`edit`; GitHub-priority + invalid-priority rejection; help text
+- [x] Docs: `shipit-docs/issues.md` Labels + Priority sections; per-tracker priority behavior documented
+- [x] Tests: adapter (label resolution, priority mapping, rejections), service (additive edit, undo, gh-priority 422), shim (flag parsing, gh-priority reject, --json), chat-history round-trip
+
 ## Deferred
 - [ ] Jira adapter (transitions-based status) when the tracker lands
 - [ ] Tracker-specific richness (projects/cycles/documents) — not via the interface
+- [ ] GitHub `priority:<value>` label mapping (SHI-92 option b) — deferred; `--priority` rejects on GitHub for now

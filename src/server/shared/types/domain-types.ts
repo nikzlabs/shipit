@@ -289,6 +289,14 @@ export interface TrackerIssue {
   /** Issue body / description (markdown). Used to seed the session prompt. */
   description?: string;
   priority: IssuePriority;
+  /**
+   * The issue's labels, by display name (SHI-92). Both trackers support labels
+   * natively — Linear's issue labels, GitHub's REST labels. Surfaced so the
+   * agent's `--json` output and the provenance card reflect what was set, and so
+   * a label edit can snapshot the prior set for undo. Absent when the issue has
+   * no labels.
+   */
+  labels?: string[];
   /** Workflow state, e.g. { name: "In Progress", type: "started" }. */
   status?: { name: string; type?: string };
   assignee?: { name: string; avatarUrl?: string };
@@ -332,7 +340,16 @@ export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "creat
  */
 export type IssueWriteUndo =
   | { kind: "comment"; commentId: string }
-  | { kind: "edit"; previousTitle?: string; previousDescription?: string }
+  // SHI-92 — an edit may also change labels/priority; the prior label set and
+  // prior priority level are snapshotted so undo restores them (the prior labels
+  // replace the post-edit set; the prior priority level is re-applied).
+  | {
+      kind: "edit";
+      previousTitle?: string;
+      previousDescription?: string;
+      previousLabels?: string[];
+      previousPriority?: string;
+    }
   | { kind: "status"; previousStatus: string }
   | { kind: "assignee"; previousAssigneeId: string | null }
   // docs/187 — a just-created issue has no prior state to restore; undo cancels
