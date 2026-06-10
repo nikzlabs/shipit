@@ -66,6 +66,13 @@ services:
       # WIP stays on the gentle clock.
       - DISK_IDLE_EVICT_MERGED_MS=172800000    # merged-PR sessions: evict 2d after last touch
       - SHIPIT_MANAGED_UPDATES=true
+      # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.
+      # The orchestrator reads OVERLAY_DEP_STORE from its own process env;
+      # without this line, exporting the flag on the host (per the runbook in
+      # docs/183-overlay-dep-store/prototype/measure-warm-install.md) silently
+      # no-ops. Empty (= off, the default) unless the operator exports
+      # OVERLAY_DEP_STORE=1 before bringing the stack up.
+      - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
     networks:
       - shipit
     logging:
