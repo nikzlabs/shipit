@@ -2,6 +2,7 @@ import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { CredentialStore } from "./credential-store.js";
+import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
@@ -51,23 +52,79 @@ export interface GitHubRepoResult {
  * Validates a GitHub PAT by calling the GitHub API.
  * Returns user info on success, null on failure.
  */
-export async function validateGitHubToken(
-  token: string,
-): Promise<{ username: string; avatarUrl: string; id: number; displayName: string | null } | null> {
+/** User profile returned by a successful `GET /user`. */
+export interface GitHubUserInfo {
+  username: string;
+  avatarUrl: string;
+  id: number;
+  displayName: string | null;
+}
+
+/**
+ * Result of probing a token against `GET /user`. The three states are
+ * deliberately distinct so callers never conflate "GitHub says this token is
+ * bad" with "GitHub didn't answer":
+ *
+ *   - `valid`        — 200 with a user profile; the token works.
+ *   - `invalid`      — 401; GitHub explicitly rejected the credential.
+ *   - `indeterminate`— anything else (5xx, 403/429 rate-limit, network error,
+ *                      DNS failure, timeout, a GitHub outage status page). The
+ *                      token's validity is *unknown*; it must NOT be cleared on
+ *                      this signal, or a GitHub outage would silently log every
+ *                      user out.
+ */
+export type GitHubTokenCheck =
+  | { status: "valid"; user: GitHubUserInfo }
+  | { status: "invalid" }
+  | { status: "indeterminate"; detail: string };
+
+/**
+ * Probe a token against `GET /user` and classify the outcome. This is the
+ * primitive callers should use when an answer of "couldn't tell" must be
+ * handled differently from "definitely bad" — most importantly, before
+ * clearing a stored token. Only an explicit HTTP 401 proves the token is
+ * invalid; everything else is `indeterminate` and the token is preserved.
+ */
+export async function checkGitHubToken(token: string): Promise<GitHubTokenCheck> {
+  let res: Response;
   try {
-    const res = await fetch("https://api.github.com/user", {
+    res = await fetch("https://api.github.com/user", {
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "User-Agent": "ShipIt",
       },
     });
-    if (!res.ok) return null;
-    const data = (await res.json()) as { login: string; avatar_url: string; id: number; name: string | null };
-    return { username: data.login, avatarUrl: data.avatar_url, id: data.id, displayName: data.name };
-  } catch {
-    return null;
+  } catch (err) {
+    // Network failure, DNS, TLS, timeout — we never reached GitHub, so the
+    // token's state is unknown. Preserve it.
+    return { status: "indeterminate", detail: `network error: ${getErrorMessage(err)}` };
   }
+  if (res.ok) {
+    const data = (await res.json()) as { login: string; avatar_url: string; id: number; name: string | null };
+    return {
+      status: "valid",
+      user: { username: data.login, avatarUrl: data.avatar_url, id: data.id, displayName: data.name },
+    };
+  }
+  // 401 is the ONLY status that proves the credential itself is bad. 403/429
+  // are rate-limit / abuse responses, 5xx is a GitHub-side outage, and any
+  // other status is unexpected — none of them mean "this token is invalid",
+  // so we report `indeterminate` and leave the stored token in place.
+  if (res.status === 401) return { status: "invalid" };
+  return { status: "indeterminate", detail: `HTTP ${res.status}` };
+}
+
+/**
+ * Backwards-compatible thin wrapper around {@link checkGitHubToken} that
+ * returns the user profile on success and `null` otherwise. Use this only when
+ * the caller genuinely treats "invalid" and "couldn't reach GitHub" the same
+ * way (e.g. populating optional profile fields). When a `null` would lead to
+ * *clearing* a token, call `checkGitHubToken` instead and branch on the state.
+ */
+export async function validateGitHubToken(token: string): Promise<GitHubUserInfo | null> {
+  const result = await checkGitHubToken(token);
+  return result.status === "valid" ? result.user : null;
 }
 
 export class GitHubAuthManager extends EventEmitter {
@@ -150,15 +207,22 @@ export class GitHubAuthManager extends EventEmitter {
       return false;
     }
 
-    const userInfo = await validateGitHubToken(trimmed);
-    if (!userInfo) {
-      this.emit("auth_failed", "Invalid GitHub token");
+    const check = await checkGitHubToken(trimmed);
+    if (check.status !== "valid") {
+      // Distinguish a rejected token from an unreachable GitHub so the user
+      // knows whether to fix their token or just retry once the outage clears.
+      // Either way we don't store an unverified token.
+      const message =
+        check.status === "invalid"
+          ? "Invalid GitHub token"
+          : `Couldn't reach GitHub to verify the token (${check.detail}) — check your connection and try again`;
+      this.emit("auth_failed", message);
       return false;
     }
 
     this._token = trimmed;
-    this._username = userInfo.username;
-    this._avatarUrl = userInfo.avatarUrl;
+    this._username = check.user.username;
+    this._avatarUrl = check.user.avatarUrl;
 
     // Persist token
     this.credentialStore.setGithubToken(trimmed);
@@ -176,7 +240,7 @@ export class GitHubAuthManager extends EventEmitter {
     }
 
     // Set global git identity from GitHub profile
-    this.setGitIdentityFromGitHub(userInfo);
+    this.setGitIdentityFromGitHub(check.user);
 
     this.emit("auth_complete");
     return true;
@@ -289,21 +353,25 @@ export class GitHubAuthManager extends EventEmitter {
   /**
    * Mark the current token as invalid — the orchestrator just got a
    * "Authentication failed" / "Invalid username or token" back from a git
-   * push, fetch, or pull. Verifies the token against `GET /user` first:
-   * if the token is still globally valid, the failure is repo-specific
-   * (e.g. a fine-grained PAT whose scope doesn't include this repo) and
-   * the stored token is preserved. Only when the verification call also
-   * fails do we clear credentials and emit `token_invalid` so the SSE
-   * layer (wired in `app-lifecycle.ts`) can push the new auth state to
-   * every connected client and surface a toast. Returns `false`
-   * (without emitting) when no token is currently stored — that path
-   * keeps the call idempotent if multiple git operations fail at once.
+   * push, fetch, or pull. Verifies the token against `GET /user` first via
+   * `checkGitHubToken`, which separates "GitHub says the token is bad" from
+   * "GitHub didn't answer". We clear credentials and emit `token_invalid`
+   * (so the SSE layer wired in `app-lifecycle.ts` can push the new auth
+   * state to every client and surface a toast) ONLY on an explicit 401.
+   * A still-valid token (repo-specific scope failure) and an indeterminate
+   * result (5xx / rate-limit / network error / GitHub outage) both preserve
+   * the credential and return `false`. Also returns `false` (without
+   * emitting) when no token is stored — that keeps the call idempotent if
+   * multiple git operations fail at once.
    *
-   * The verification step is what stops a single per-repo 401 from
-   * dropping a working token: the original PR #506 cleared on the first
-   * git auth error, which (combined with the over-broad `isGitAuthError`
-   * match before that was tightened) wiped freshly-added tokens whenever
-   * a stale workspace clone couldn't authenticate.
+   * The verification step is what stops a single per-repo 401 — or a
+   * GitHub-wide outage — from dropping a working token: the original PR #506
+   * cleared on the first git auth error, which (combined with the over-broad
+   * `isGitAuthError` match before that was tightened) wiped freshly-added
+   * tokens whenever a stale workspace clone couldn't authenticate. The
+   * indeterminate branch closes the remaining gap where the verification
+   * call itself failed for reasons unrelated to the token (an outage takes
+   * down both the git operation and `GET /user`), which used to clear it.
    *
    * Calling this is preferable to plain `clearCredentials()` because it
    * gives the UI a reason string ("auto-push failed: …") to display, and
@@ -314,19 +382,35 @@ export class GitHubAuthManager extends EventEmitter {
   async markTokenInvalid(reason: string): Promise<boolean> {
     const token = this._token;
     if (!token) return false;
-    // Verify the token against the GitHub API. A successful `GET /user`
-    // proves the token is still valid for the authenticated user even if
-    // a per-repo git operation just failed — most often a fine-grained
-    // PAT whose repository scope doesn't include the failing repo.
-    // Preserve the token in that case.
-    const userInfo = await validateGitHubToken(token);
-    if (userInfo) {
+    // Verify the token against the GitHub API before clearing anything.
+    // `checkGitHubToken` distinguishes three outcomes, and only one of them
+    // justifies dropping the stored credential:
+    const check = await checkGitHubToken(token);
+    if (check.status === "valid") {
+      // A successful `GET /user` proves the token still works for the
+      // authenticated user even though a per-repo git operation failed —
+      // most often a fine-grained PAT whose repository scope doesn't include
+      // the failing repo. Preserve it.
       console.warn(
-        `[github-auth] Git auth error (${reason}) — but token is still valid for ${userInfo.username}; ` +
+        `[github-auth] Git auth error (${reason}) — but token is still valid for ${check.user.username}; ` +
           `treating as repo-specific (e.g. fine-grained PAT scope), not clearing credentials`,
       );
       return false;
     }
+    if (check.status === "indeterminate") {
+      // We couldn't reach GitHub to confirm (5xx, rate-limit, network error,
+      // or a GitHub outage). The git failure that triggered this could well
+      // be the *same* outage, so clearing the token now would log the user
+      // out for an external incident they didn't cause. Only the user may
+      // clear their token implicitly. Preserve it and let the next operation
+      // retry once GitHub recovers.
+      console.warn(
+        `[github-auth] Git auth error (${reason}) — could not verify token against GitHub ` +
+          `(${check.detail}); preserving credentials (likely a transient GitHub outage)`,
+      );
+      return false;
+    }
+    // check.status === "invalid": GitHub explicitly rejected the token (401).
     console.warn(`[github-auth] GitHub token invalidated (${reason}) — clearing credentials and notifying clients`);
     this.clearCredentials();
     this.emit("token_invalid", { reason });
@@ -824,15 +908,26 @@ export class GitHubAuthManager extends EventEmitter {
    */
   async loadUserInfo(): Promise<void> {
     if (!this._token) return;
-    const info = await validateGitHubToken(this._token);
-    if (info) {
-      this._username = info.username;
-      this._avatarUrl = info.avatarUrl;
+    const check = await checkGitHubToken(this._token);
+    if (check.status === "valid") {
+      this._username = check.user.username;
+      this._avatarUrl = check.user.avatarUrl;
       // Restore global git identity from GitHub profile
-      this.setGitIdentityFromGitHub(info);
-    } else {
-      // Token is invalid — clear it
+      this.setGitIdentityFromGitHub(check.user);
+    } else if (check.status === "invalid") {
+      // GitHub explicitly rejected the token (401) — it's genuinely dead, so
+      // clear it.
       this.clearCredentials();
+    } else {
+      // Indeterminate (5xx / rate-limit / network error / GitHub outage). We
+      // can't confirm the token is bad, and clearing it on boot during an
+      // outage would log the user out for an external incident. Keep the
+      // stored token; profile fields stay unpopulated until a later check
+      // succeeds. Only the user may clear their token implicitly.
+      console.warn(
+        `[github-auth] Could not verify stored GitHub token on load (${check.detail}); ` +
+          `keeping credentials (likely a transient GitHub outage)`,
+      );
     }
   }
 }
