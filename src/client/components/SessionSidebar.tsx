@@ -555,7 +555,7 @@ function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-1">
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -602,7 +602,7 @@ function OrphanSessionGroup({
           {label}
         </span>
       </div>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col gap-1">
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
@@ -785,7 +785,7 @@ function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} className="flex flex-col gap-0.5 pb-2">
+        <div ref={listRef} className="flex flex-col gap-1 pb-2">
           {/* New session row — matches SessionItem shape so it can render as selected */}
           <button
             type="button"
