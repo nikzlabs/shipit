@@ -121,7 +121,7 @@ export function ServiceList({
   if (services.length === 0) return null;
 
   return (
-    <div className="w-full max-w-2xl mx-auto flex flex-col gap-2">
+    <div className="w-full max-w-2xl flex flex-col gap-2">
       {services.map((svc) => {
         const isOom = !!svc.error && /oom/i.test(svc.error);
         const isError = svc.status === "error";

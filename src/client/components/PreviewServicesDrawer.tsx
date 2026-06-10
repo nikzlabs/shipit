@@ -310,7 +310,7 @@ export function PreviewServicesDrawer({
                 <span className="text-(--color-text-primary) font-semibold tabular-nums">{runningCount}</span> of {services.length} running
               </span>
             </div>
-            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+            <div className="flex items-center gap-1.5 shrink-0">
               {restartable.length > 0 && (
                 <ToolbarButton onClick={restartAll} title="Restart all running services">
                   <ArrowClockwiseIcon size={ICON_SIZE.XS} /> Restart all
