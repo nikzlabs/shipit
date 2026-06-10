@@ -23,7 +23,6 @@ import {
   ArrowSquareOutIcon,
   CaretLeftIcon,
   ChatCircleIcon,
-  RocketLaunchIcon,
   TagIcon,
   UserIcon,
   WarningCircleIcon,
@@ -31,6 +30,7 @@ import {
 import { Badge } from "./ui/badge.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
+import { StartSessionButton } from "./StartSessionButton.js";
 import { MarkdownContent } from "./message-markdown.js";
 import {
   IssuePriorityEditor,
@@ -300,17 +300,12 @@ export function IssueDetail({
       {/* Footer action — seed a session from this issue (mirrors the list row). */}
       {detail && (
         <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
-          <Button
-            variant="secondary"
-            size="sm"
+          <StartSessionButton
+            label="Start session from this issue"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-            className="inline-flex items-center gap-1.5"
-          >
-            <RocketLaunchIcon size={ICON_SIZE.SM} />
-            Start session from this issue
-          </Button>
+          />
         </div>
       )}
     </div>

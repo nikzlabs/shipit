@@ -3,12 +3,12 @@ import {
   CaretRightIcon,
   CheckCircleIcon,
   PlugIcon,
-  RocketLaunchIcon,
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
+import { StartSessionButton } from "./StartSessionButton.js";
 import { IssuesFilterBar } from "./IssuesFilterBar.js";
 import {
   IssuePriorityEditor,
@@ -307,23 +307,21 @@ function IssueRow({
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
-      {/* Wrapped in the shared first-line band so the 20px button centers on the
-          same baseline as the other cells (the row is `items-start`). */}
-      <div className={`[grid-area:action] ${FIRST_LINE} w-full md:w-auto justify-self-stretch md:justify-self-end`}>
-        <Button
-          variant="secondary"
-          size="sm"
+      {/* Wrapped in the shared first-line band so the button centers on the same
+          baseline as the other cells (the row is `items-start`). The cell fills
+          the action track and `justify-end` pushes the button to the track's
+          right edge — the same edge the `justify-self-end` header label sits on,
+          so "Action" lines up with the button regardless of the button's width. */}
+      <div className={`[grid-area:action] ${FIRST_LINE} w-full justify-end`}>
+        <StartSessionButton
           disabled={!canStart}
           title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
           onClick={(e) => {
             e.stopPropagation();
             onStartSession(issue);
           }}
-          className="w-full md:w-auto inline-flex items-center gap-1.5"
-        >
-          <RocketLaunchIcon size={ICON_SIZE.SM} />
-          Start session
-        </Button>
+          className="w-full md:w-auto"
+        />
       </div>
     </div>
   );

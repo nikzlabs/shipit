@@ -229,6 +229,8 @@ Client:
 - `src/client/components/IssuesViewer.tsx` (new).
 - `src/client/components/issue-label-color.ts` (new) — deterministic per-label
   dot color for the list label chips (see "List visual language" below).
+- `src/client/components/StartSessionButton.tsx` (new) — the shared "Start
+  session" CTA used by both the list rows and the detail footer (see below).
 - `src/client/stores/issues-store.ts` (new).
 
 ## List visual language (refresh)
@@ -277,8 +279,22 @@ rather than a flat text table:
   baseline; the title uses `min-h-6` instead so a two-line title still grows
   downward with its description + labels flowing below.
 
-Visual reference: presented as an inline before/after mockup during the redesign
-turn (not committed — the live component is the source of truth).
+- **"Start session" CTA.** Extracted to a shared `StartSessionButton` (used by
+  both the list rows and the detail footer so the treatment can't drift) on a new
+  `cta` Button variant: a subtle accent **tint at rest that fills to a solid
+  accent on hover** — calm enough to repeat on every row, where a solid primary
+  would be too loud — with a rocket that lifts off on hover. Sized to the
+  approved prototype (30px tall / 13px text / 8px radius) rather than the cramped
+  20px `sm`; the list action cell centers it on the row's first-line baseline
+  regardless of height. The `cta` variant's border is `color-mix`-derived from
+  `--color-accent` so it tracks every theme without a dedicated token. To make
+  the per-call sizing override reliable, `Button` now composes its variant/size
+  classes with the caller's `className` through `twMerge` (previously CVA just
+  concatenated, leaving conflicts to stylesheet order).
+
+Visual reference: the row before/after and the "Start session" button direction
+prototypes were presented as inline mockups during the redesign turns (not
+committed — the live components are the source of truth).
 
 ## Relationship to existing docs
 
