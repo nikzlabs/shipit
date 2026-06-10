@@ -58,7 +58,13 @@ describe("parseShipitConfig", () => {
     const config = parseShipitConfig({
       agent: { memory: 2048, cpu: 2.0, pids: 512, install: ["npm install"] },
     });
-    expect(config.agent).toEqual({ memory: 2048, cpu: 2.0, pids: 512, install: ["npm install"] });
+    expect(config.agent).toEqual({
+      memory: 2048,
+      cpu: 2.0,
+      pids: 512,
+      install: ["npm install"],
+      depDirs: ["node_modules"],
+    });
   });
 
   it("uses defaults for missing agent fields", () => {
@@ -121,6 +127,71 @@ describe("parseShipitConfig", () => {
 
   it("throws for invalid install type", () => {
     expect(() => parseShipitConfig({ agent: { install: 42 } })).toThrow("must be a string or array");
+  });
+
+  // ---- agent.dep-dirs (docs/183) ----
+
+  it("defaults dep-dirs to [node_modules] when absent", () => {
+    expect(parseShipitConfig({}).agent.depDirs).toEqual(["node_modules"]);
+    expect(parseShipitConfig({ agent: { memory: 2048 } }).agent.depDirs).toEqual(["node_modules"]);
+  });
+
+  it("parses a string dep-dirs as a single-element list", () => {
+    const config = parseShipitConfig({ agent: { "dep-dirs": "node_modules" } });
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("parses multiple dep-dirs and normalizes them", () => {
+    const config = parseShipitConfig({
+      agent: { "dep-dirs": ["node_modules", "./packages/app/node_modules", "vendor/bundle/"] },
+    });
+    expect(config.agent.depDirs).toEqual([
+      "node_modules",
+      "packages/app/node_modules",
+      "vendor/bundle",
+    ]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("de-duplicates dep-dirs after normalization", () => {
+    const config = parseShipitConfig({
+      agent: { "dep-dirs": ["node_modules", "./node_modules", "node_modules/"] },
+    });
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
+  });
+
+  it("treats an explicit empty dep-dirs list as opt-out (no overlay dirs)", () => {
+    const config = parseShipitConfig({ agent: { "dep-dirs": [] } });
+    expect(config.agent.depDirs).toEqual([]);
+    expect(config.warnings).toEqual([]);
+  });
+
+  it("drops absolute, glob, dot-dot, and root dep-dirs with a warning, keeping the valid ones", () => {
+    const config = parseShipitConfig({
+      agent: {
+        "dep-dirs": [
+          "node_modules", // valid
+          "/abs/node_modules", // absolute → dropped
+          "packages/*/node_modules", // glob → dropped
+          "../escape", // .. → dropped
+          ".", // root → dropped
+          "  ", // empty → dropped
+          42, // non-string → dropped
+        ],
+      },
+    });
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
+    // One warning per dropped entry (6 dropped).
+    expect(config.warnings.filter((w) => w.includes("agent.dep-dirs["))).toHaveLength(6);
+  });
+
+  it("falls back to the default for a wrong-typed dep-dirs value, with a warning", () => {
+    const config = parseShipitConfig({ agent: { "dep-dirs": 42 } });
+    expect(config.agent.depDirs).toEqual(["node_modules"]);
+    expect(config.warnings).toContain(
+      "`agent.dep-dirs` must be a string or a list of strings; using the default [node_modules].",
+    );
   });
 
   // ---- compose (string form) ----
@@ -224,6 +295,7 @@ describe("parseShipitConfig", () => {
       cpu: 2.0,
       pids: 2048,
       install: ["npm install", "npx prisma generate"],
+      depDirs: ["node_modules"],
     });
     expect(config.compose).toEqual({
       file: "docker/local/dev/compose.yml",

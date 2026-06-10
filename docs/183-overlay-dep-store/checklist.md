@@ -24,14 +24,20 @@ below). No empirical unknowns remain; the work from here is mechanical.
 
 ### Phase 1 — Config: read + validate `agent.dep-dirs`
 
-- [ ] Parse `agent.dep-dirs` (default `[node_modules]`) in the shipit-config parser; **literal relative
-      paths only, no globs**. Add the key to `KNOWN_AGENT_KEYS`.
-- [ ] Validate each entry — relative + inside the workspace + not the root + not a tracked
-      (non-gitignored) path; invalid/missing → skip that dir (plain install for it), never break the
-      session.
-- [ ] Document the key in `src/server/shipit-docs/shipit-yaml.md`.
-- [ ] Unit tests (default, multiple dirs, nested dir, each rejected-entry case).
-- *Inert: nothing reads the parsed value yet.*
+- [x] Parse `agent.dep-dirs` (default `[node_modules]`) in the shipit-config parser; **literal relative
+      paths only, no globs**. Added `depDirs` to `AgentConfig`/`AGENT_DEFAULTS` + `DEFAULT_DEP_DIRS`, the
+      key to `KNOWN_AGENT_KEYS`, and `parseDepDirs`/`normalizeDepDir` (string→[string], wrong-type→default
+      with a warning, explicit `[]`→opt-out).
+- [x] **Structural** validation of each entry — relative + not absolute + no glob + no `..` segment +
+      not the workspace root; invalid → dropped **with a warning** (never fatal); normalized +
+      de-duplicated. **Contextual** validation ("path exists as a dependency dir and isn't tracked
+      source") needs the host clone and is **deferred to Phase 2** (the parser is pure / has no
+      workspace/git context).
+- [x] Documented the key in `src/server/shipit-docs/shipit-yaml.md` (field table + a "Dependency
+      directories" subsection; noted it's parsed-but-gated until the overlay store is enabled).
+- [x] Unit tests (default, string form, multiple + normalized, de-dup, explicit `[]` opt-out, each
+      rejected-entry case, wrong-type fallback) — `shipit-config.test.ts`.
+- *Inert: nothing reads `agent.depDirs` yet.*
 
 ### Phase 2 — Spec shape: scope key + `buildOverlaySpec` → N specs + GC live-set
 
@@ -42,6 +48,10 @@ below). No empirical unknowns remain; the work from here is mechanical.
       `/workspace/<dep-dir>`. Resolve dep dirs against the **pre-container host clone** so the parent
       dir is real — the daemon *will* `mkdir -p` an absent parent (proven by the spike) but prod must
       not rely on that.
+- [ ] **Contextual dep-dir validation (deferred from Phase 1).** Against the host clone, drop a declared
+      dep dir whose **parent doesn't exist** or that **points at tracked (non-gitignored) source** — the
+      checks the pure config parser couldn't make. A dropped dir falls back to a plain install for that
+      path; never fatal.
 - [ ] Update `liveOverlayScopeHashes` to enumerate one scope-hash per *(resumable session × declared
       dep dir)* — **folded in here** (it is the same scope-key change) so the GC contract stays honest
       at every intermediate merge.
