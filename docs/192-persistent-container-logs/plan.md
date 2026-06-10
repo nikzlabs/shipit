@@ -21,15 +21,18 @@ The user asked for **full persistence** and that **the exact same code path serv
 
 ## Goals
 
+Unify the agent-container and service log paths **end to end** — storage, transport, and rendering — so they are one mechanism with per-channel parameters, not two parallel implementations.
+
 - A **single, durable log store** that both the agent-container log stream and every service log stream append to.
 - Logs survive **orchestrator restart, runner disposal, idle eviction, and container destruction**. They are removed only when the session itself is archived/deleted.
-- On attach (WS connect for the agent Logs tab; `subscribe_service_logs` / HTTP for a service), the backlog is replayed from this store — full retained history, not a slice that happened to survive in RAM.
-- One store class, one append/snapshot/clear/remove API, consumed identically by the agent path and the service path.
+- On attach, the backlog is replayed from this store — full retained history, not a slice that happened to survive in RAM.
+- One store class, one **channel-keyed transport** (one snapshot + append + clear message set, replacing both `log_entry`/`clear_logs` and `service_log*`), and **one read-only renderer** (`<LogView channel=… />`) used by both the terminal Logs tab and the service drawer.
 
 ## Non-goals
 
-- Unifying the **rendering**. The Logs tab renders structured, source-filtered entries (`WsLogEntry`); the service panel renders a raw xterm buffer. Those client components stay as-is. Only the **persistence + snapshot/replay layer** is shared.
-- Unbounded retention. We keep a bounded, pruned backlog per `(session, channel)`, not the complete forever-history of a chatty dev server.
+- Merging the two **UI locations**. The agent Logs tab lives in the bottom terminal panel; service logs live in the preview-services drawer. They keep their own mount points and placement — they just both mount the same `<LogView>` component pointed at different channels. (Unifying the *component* ≠ merging the *panels*.)
+- The **Shell** tab. That's a bidirectional interactive PTY (`InteractiveTerminal`), not a log view — out of scope.
+- Unbounded retention. We keep a bounded, rotated backlog per `(session, channel)`, not the complete forever-history of a chatty dev server.
 - Cross-session aggregation or a global log search UI.
 
 ## Design
@@ -89,19 +92,58 @@ Each channel is size-capped with **two-file rotation**, which keeps appends O(1)
 
 This is strictly cheaper than the rejected SQLite `INSERT`+prune-every-write, and bounds disk without a background timer.
 
+### Unified transport: one channel-keyed message set
+
+Today there are two parallel WS vocabularies — `log_entry` + `clear_logs` (agent) and `subscribe_service_logs` + `service_log_buffer` + `service_log` (services). We collapse both into one channel-keyed set built around a single record type:
+
+```ts
+type LogSource = "stderr" | "stdout" | "server" | "preview" | "install";
+interface WsLogRecord { ts: string; source?: LogSource; text: string }
+
+// client → server
+{ type: "subscribe_logs", channel: string }           // replaces subscribe_service_logs + (implicit) agent attach
+{ type: "log_clear",      channel: string }            // replaces clear_logs
+
+// server → client
+{ type: "log_snapshot", channel: string, records: WsLogRecord[] }  // replaces service_log_buffer + the connect-time replay
+{ type: "log_append",   channel: string, records: WsLogRecord[] }  // replaces log_entry + service_log
+```
+
+A record is the common denominator: **agent** records carry `source` (so the client can filter and color them); **service** records omit `source` and carry a raw `-f` chunk verbatim in `text` (ANSI preserved). One envelope, one append path, one clear path — the only per-channel difference is whether `source` is populated.
+
+The store's two snapshot accessors map cleanly: `snapshotEntries` → `WsLogRecord[]` with `source`; `snapshotText` → a single `WsLogRecord` (or a small batch) with raw `text` and no `source`.
+
+### Unified rendering: one `<LogView>` component
+
+Both surfaces render through a single read-only xterm component, replacing **both** `ServiceLogViewer` and the bespoke DOM list inside `TerminalPanel`:
+
+```tsx
+<LogView channel="agent" filterable sources={ALL_SOURCES} />   // bottom terminal "Logs" tab
+<LogView channel={`service:${name}`} />                        // preview-services drawer
+```
+
+`LogView` owns the xterm instance (the existing `ServiceLogViewer` theme/addons/fit logic, lifted verbatim), plus an in-memory `records[]` **model**:
+
+- On mount: `send({ type: "subscribe_logs", channel })`.
+- `log_snapshot` seeds the model and writes it; `log_append` pushes and writes incrementally; `log_clear` resets.
+- **Rendering a record:** agent records are written as `dim(HH:MM:SS) {sourceColor}[src]{reset} text` (so the agent tab finally renders ANSI color from CLI output, which the old DOM list stripped); service records write `text` raw.
+- **Source filtering** (the one capability that doesn't come free on a raw grid): when `filterable`, `LogView` renders the source chips and, on toggle, **clears and re-writes the xterm from the filtered model**. Cheap because the model is already in memory and bounded. Services don't pass `filterable`, so they get a plain terminal with no chips. This is the deliberate cost of unifying onto xterm — see Open Questions.
+
+This is a net **upgrade** for the agent Logs tab (true ANSI, terminal scrollback, web-links, copy) while keeping its timestamp/source/filter affordances, and it deletes the second renderer entirely.
+
 ### Integration — agent container (the Logs tab)
 
 `broadcastLog` is already the single choke point every agent-log producer funnels through (agent stdout/stderr, "Agent process started/exited", container-creation failures, preview errors, install output, idle-dispose notices, user-interrupt, stack errors — full producer list in §"Producers"). We change `createLogBuffer` so `broadcastLog` writes the entry through to `LogStore.append(sessionId, "agent", { ts, source, text })` (JSONL) instead of (or in addition to) the in-memory array.
 
-On WS connect (`index.ts` ~line 1684), replace the `getLogBuffer(sessionId)` replay with `LogStore.snapshotEntries(sessionId, "agent", MAX_AGENT_ENTRIES)`. The existing `clear_logs`-then-replay handshake (so reconnecting viewers replace rather than append) is unchanged — it just replays from the durable store.
+A `subscribe_logs { channel: "agent" }` (sent by `<LogView>` on mount, and re-sent on every WS reconnect) replies with a `log_snapshot` built from `LogStore.snapshotEntries(sessionId, "agent", …)`. This replaces the old connect-time `clear_logs` + per-entry replay loop in `index.ts` (~line 1684): the snapshot *is* the replace, so the reconnect-dedup problem the old handshake worked around disappears (a snapshot wholesale-seeds the client model).
 
-`clear_logs` → `LogStore.clear(sessionId, "agent")`.
+`log_clear { channel: "agent" }` → `LogStore.clear(sessionId, "agent")`.
 
 ### Integration — service containers (the log panels)
 
-In `ServiceManager.streamLogs`, the `handleData` chunk handler that appends to `logBuffers` also calls `LogStore.append(sessionId, "service:" + name, "", chunk)`. The live `emit("service_log", …)` path is unchanged (live streaming stays in-memory + WS).
+In `ServiceManager.streamLogs`, the `handleData` chunk handler that appends to `logBuffers` also calls `LogStore.append(sessionId, "service:" + name, chunk)`. The live emit becomes a `log_append { channel: "service:<name>", records: [{ ts, text: chunk }] }` (same envelope as the agent path) instead of the bespoke `service_log`.
 
-`ServiceManager.snapshotLogs(name)` (used by both `handleSubscribeServiceLogs` and the `/services/:name/logs` HTTP route) reads from `LogStore.snapshotText(sessionId, "service:" + name, MAX_SERVICE_BYTES)` as the source of truth. **Backfill on (re)start:** when a stream first starts, we still run `docker compose logs --since <lastPersistedTs>` once to capture lines Docker retained while the orchestrator was down, append them to the store, then attach the live `-f` follower — so an orchestrator restart doesn't punch a hole in service history.
+The `subscribe_logs { channel: "service:<name>" }` reply is a `log_snapshot` from `LogStore.snapshotText(...)`. Both `handleSubscribeServiceLogs` and the `/services/:name/logs` HTTP route read the store as the source of truth. **Backfill on (re)start:** when a stream first starts, we still run `docker compose logs --since <lastPersistedTs>` once to capture lines Docker retained while the orchestrator was down, append them to the store, then attach the live `-f` follower — so an orchestrator restart doesn't punch a hole in service history.
 
 `logBuffers.clear()` on reconcile/stop no longer loses user-visible history, because the durable copy lives in `LogStore`. We stop treating the in-memory ring as the backlog source.
 
@@ -117,7 +159,13 @@ Logs for a **live-but-idle-evicted** session are intentionally **kept** (the ses
 
 ### Client
 
-No structural client changes. The agent Logs tab and `ServiceLogViewer` already consume `log_entry` / `service_log_buffer` + live streams; they now simply receive a fuller backlog. We verify the existing `clear_logs`-replace + idempotent-append behavior still holds so a reconnect replaying a larger backlog doesn't duplicate.
+The client work is the rendering unification, not just a bigger backlog:
+
+- **New `LogView` component** (lifts `ServiceLogViewer`'s xterm setup) consuming the channel-keyed messages and owning the `records[]` model + filter rewrite. `ServiceLogViewer` is deleted.
+- **`TerminalPanel`** keeps its Logs/Shell sub-tab switcher and source chips, but the Logs content becomes `<LogView channel="agent" filterable />`; the DOM-list rendering and the `terminal-store` `LogEntry[]` array are removed (the model now lives in `LogView`).
+- **`PreviewServicesDrawer`** swaps `ServiceLogViewer` for `<LogView channel={"service:"+name} />`.
+- **Message handlers** (`hooks/message-handlers/`) collapse `log_entry` + the `service_log*` handlers into one `log_snapshot` / `log_append` / `log_clear` path keyed by channel.
+- Snapshot-seeds-the-model means a reconnect can't duplicate (the snapshot replaces the model), so the old `clear_logs`-first dance is no longer needed; we still test the reconnect path.
 
 ## Producers (agent channel) — must all keep flowing through `broadcastLog`
 
@@ -128,7 +176,8 @@ No structural client changes. The agent Logs tab and `ServiceLogViewer` already 
 - `log-store.test.ts` — append/snapshot round-trip (both shapes), per-channel isolation, rotation at cap (`.1` swap, snapshot spans both files), `clear` (truncate) vs `remove` (rm dir), JSONL parse tolerance for a torn last line.
 - Extend `terminal-logs-relay.test.ts` — agent logs survive a simulated orchestrator "restart" (new `LogStore` over the same `sessions/{id}/logs` dir) and replay on a fresh connect; cross-session non-leak still holds; `clear_logs` empties the durable file.
 - Service path — `service-manager` test: streamed chunks land in the channel file; `snapshotLogs` reads the file; reconcile/`logBuffers.clear()` does **not** drop the durable backlog.
-- No-duplicate-on-reconnect: replaying a larger backlog after a reconnect doesn't double-render (client idempotency).
+- No-duplicate-on-reconnect: a `log_snapshot` after reconnect replaces the model rather than appending (client idempotency).
+- `LogView` component test: snapshot seeds + writes; append writes incrementally; `log_clear` resets; for a `filterable` channel, toggling a source clears and re-writes from the filtered model; service channel renders no chips.
 
 ## Migration / rollout
 
@@ -137,10 +186,11 @@ No structural client changes. The agent Logs tab and `ServiceLogViewer` already 
 
 ## Open questions
 
-1. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; collapse `createLogBuffer`'s array into a thin shim over `LogStore`.
-2. **Retention caps** — confirm `MAX_AGENT_BYTES` / `MAX_SERVICE_BYTES` (~1 MB/channel?), and whether the agent cap should be line-count rather than bytes.
-3. **Write batching** — append per line is fine for the agent channel; for chatty services consider coalescing `-f` chunks on a short timer (or relying on the OS write buffer) so we don't `appendFile` on every tiny chunk. Validate before optimising.
-4. **fd lifecycle** — keep a long-lived append fd per active channel (fast, but must close on session dispose / rotate), or open-append-close per write (simpler, slightly slower). Leaning long-lived with close-on-dispose.
+1. **Source filtering on xterm — keep it (recommended) or drop it?** Unifying onto xterm means the agent tab's per-source chips can't toggle line visibility in place; we re-write the buffer from the in-memory filtered model on toggle. Recommended: **keep** it (it's genuinely useful and cheap with the model already in hand), behind a `filterable` prop services don't pass. Alternative: drop chips entirely for maximum simplicity — flag for a product call.
+2. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; collapse `createLogBuffer`'s array into a thin shim over `LogStore`.
+3. **Retention caps** — confirm `MAX_AGENT_BYTES` / `MAX_SERVICE_BYTES` (~1 MB/channel?), and whether the agent cap should be line-count rather than bytes.
+4. **Write batching** — append per line is fine for the agent channel; for chatty services consider coalescing `-f` chunks on a short timer (or relying on the OS write buffer) so we don't `appendFile` on every tiny chunk. Validate before optimising.
+5. **fd lifecycle** — keep a long-lived append fd per active channel (fast, but must close on session dispose / rotate), or open-append-close per write (simpler, slightly slower). Leaning long-lived with close-on-dispose.
 
 ## Key files
 
@@ -148,6 +198,11 @@ No structural client changes. The agent Logs tab and `ServiceLogViewer` already 
 - `src/server/orchestrator/app-lifecycle.ts` — `createLogBuffer` → write-through to `LogStore`.
 - `src/server/orchestrator/index.ts` — WS-connect replay from `LogStore`; `LogStore.remove` on archive/delete.
 - `src/server/orchestrator/service-manager.ts` — `streamLogs` append + `snapshotLogs` read from `LogStore`; `--since` backfill. (`ServiceManager` is constructed with the session dir, so it can resolve `logs/`.)
-- `src/server/orchestrator/ws-handlers/service-handlers.ts`, `api-routes-preview.ts` — unchanged call shape; now durable underneath.
+- `src/server/orchestrator/ws-handlers/service-handlers.ts` — `subscribe_service_logs`/`service_log*` → channel-keyed `subscribe_logs`/`log_*` handlers (shared with the agent channel).
+- `src/server/orchestrator/api-routes-preview.ts` — `/services/:name/logs` reads the store.
 - `src/server/orchestrator/disk-janitor.ts` — orphan-session `logs/` sweep.
 - `src/server/orchestrator/session-dir-factory.ts` — reference for `sessions/{id}` layout (logs are a sibling of `workspace/`).
+- `src/server/shared/types/ws-*-messages.ts` + `terminal-types.ts` — `WsLogRecord` + `subscribe_logs` / `log_snapshot` / `log_append` / `log_clear`; remove `log_entry` / `clear_logs` / `service_log*`.
+- `src/client/components/LogView.tsx` *(new)* — unified xterm renderer (replaces `ServiceLogViewer.tsx`, deleted).
+- `src/client/components/TerminalPanel.tsx`, `PreviewServicesDrawer.tsx` — mount `<LogView>`; drop the DOM list + `terminal-store` `LogEntry[]`.
+- `src/client/hooks/message-handlers/` — collapse log/service-log handlers into the channel-keyed path.
