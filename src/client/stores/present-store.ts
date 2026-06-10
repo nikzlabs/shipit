@@ -19,6 +19,8 @@ export interface Presentation {
   content: string;
   mimeType: string;
   title?: string;
+  /** Path the agent presented — shown in the Present tab header. */
+  filePath?: string;
   createdAt: string;
 }
 
@@ -33,7 +35,7 @@ interface PresentState {
   unseenCount: number;
 
   /** Apply a `present_content` WS message. */
-  addOrReplace: (p: { presentId: string; replaceId?: string; content: string; mimeType: string; title?: string; createdAt: string }) => void;
+  addOrReplace: (p: { presentId: string; replaceId?: string; content: string; mimeType: string; title?: string; filePath?: string; createdAt: string }) => void;
   /**
    * Apply a `present_state` WS message — a full snapshot replayed on viewer
    * attach. Replaces the list wholesale WITHOUT bumping the unseen badge or
@@ -74,6 +76,7 @@ export const usePresentStore = create<PresentState>((set) => ({
             content: p.content,
             mimeType: p.mimeType,
             ...(p.title !== undefined ? { title: p.title } : {}),
+            ...(p.filePath !== undefined ? { filePath: p.filePath } : {}),
             createdAt: p.createdAt,
           };
           return {
@@ -95,6 +98,7 @@ export const usePresentStore = create<PresentState>((set) => ({
           content: p.content,
           mimeType: p.mimeType,
           ...(p.title !== undefined ? { title: p.title } : {}),
+          ...(p.filePath !== undefined ? { filePath: p.filePath } : {}),
           createdAt: p.createdAt,
         };
         return {
@@ -110,6 +114,7 @@ export const usePresentStore = create<PresentState>((set) => ({
         content: p.content,
         mimeType: p.mimeType,
         ...(p.title !== undefined ? { title: p.title } : {}),
+        ...(p.filePath !== undefined ? { filePath: p.filePath } : {}),
         createdAt: p.createdAt,
       };
       const presentations = [...s.presentations, next];

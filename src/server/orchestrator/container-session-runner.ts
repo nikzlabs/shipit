@@ -1455,6 +1455,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             content?: string;
             mimeType?: string;
             title?: string;
+            filePath?: string;
             createdAt?: string;
           };
           if (
@@ -1467,6 +1468,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
+              ...(evt.filePath !== undefined ? { filePath: evt.filePath } : {}),
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
@@ -1478,6 +1480,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               content: entry.content,
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
+              ...(entry.filePath !== undefined ? { filePath: entry.filePath } : {}),
               createdAt: entry.createdAt,
             });
           }

@@ -60,6 +60,41 @@ describe("PresentPane", () => {
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
   });
 
+  it("shows the full file path beneath the title in the header", () => {
+    usePresentStore.getState().hydrate([
+      {
+        presentId: "pres_one",
+        content: "<h1>One</h1>",
+        mimeType: "text/html",
+        title: "Landing page",
+        filePath: "docs/mockups/landing.html",
+        createdAt: "2026-05-31T00:00:00.000Z",
+      },
+    ]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByText("Landing page")).toBeInTheDocument();
+    expect(screen.getByText("docs/mockups/landing.html")).toBeInTheDocument();
+  });
+
+  it("falls back to the file's basename as the heading when no title is given", () => {
+    usePresentStore.getState().hydrate([
+      {
+        presentId: "pres_one",
+        content: "<h1>One</h1>",
+        mimeType: "text/html",
+        filePath: "/tmp/sales-chart.html",
+        createdAt: "2026-05-31T00:00:00.000Z",
+      },
+    ]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByText("sales-chart.html")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/sales-chart.html")).toBeInTheDocument();
+  });
+
   it("navigates presentations with buttons and arrow keys", () => {
     seedPresentations();
     render(<PresentPane isActiveTab />);

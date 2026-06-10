@@ -115,8 +115,18 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             </button>
           </div>
         )}
-        <div className="text-sm font-medium text-(--color-text-primary) truncate flex-1">
-          {active.title ?? `Presentation ${safeIndex + 1}`}
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="text-sm font-medium text-(--color-text-primary) truncate">
+            {active.title ?? basename(active.filePath) ?? `Presentation ${safeIndex + 1}`}
+          </div>
+          {active.filePath && (
+            <div
+              className="text-xs text-(--color-text-tertiary) font-mono truncate"
+              title={active.filePath}
+            >
+              {active.filePath}
+            </div>
+          )}
         </div>
         <Button
           variant="ghost"
@@ -404,6 +414,17 @@ export function suggestDownloadName(title: string | undefined, mimeType: string)
     ? title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
     : "presentation";
   return `${base || "presentation"}.${ext}`;
+}
+
+/**
+ * Last path segment of a presented file path, for the header's primary label
+ * when the agent didn't pass a title. Returns undefined for an empty/missing
+ * path so the caller can fall back to "Presentation N".
+ */
+function basename(filePath: string | undefined): string | undefined {
+  if (!filePath) return undefined;
+  const segment = filePath.replace(/\/+$/, "").split("/").pop();
+  return segment && segment.length > 0 ? segment : undefined;
 }
 
 export function mimeTypeToExtension(mimeType: string): string {

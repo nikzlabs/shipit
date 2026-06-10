@@ -426,7 +426,7 @@ present({
   - SVG → iframe via `srcdoc` (wrapped in minimal HTML) or `<img src="data:image/svg+xml,...">`
   - Markdown → existing markdown renderer in a styled container
   - Images → `<img>` with data URI
-- **Presentation header**: `◀ 2/3 ▶` carousel nav, title, "Save" button, "Download" button, dismiss `✕` button.
+- **Presentation header**: `◀ 2/3 ▶` carousel nav, a two-line title block, "Save" button, "Download" button, dismiss `✕` button. The title block shows the artifact's **name** (the `title` arg, falling back to the file's basename, then `Presentation N`) on top and the **full presented file path** beneath it in a muted monospace line. The path is threaded end-to-end as `filePath`: the worker stores the verbatim `file` arg on the `PresentEntry`, broadcasts it on `present_content`, the runner caches it on `PresentStateEntry` (so the `present_state` replay carries it), and the client `present-store`/`PresentPane` render it. This replaced the old bare `Presentation N` heading, which gave the user no clue which file an artifact came from.
 - **Present store** (`src/client/stores/present-store.ts`): new Zustand store, separate from preview-store:
   ```typescript
   presentations: Array<{ presentId: string; content: string; mimeType: string; title?: string }>;

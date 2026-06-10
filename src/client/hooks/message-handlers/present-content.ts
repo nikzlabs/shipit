@@ -31,6 +31,7 @@ export const handlePresentContent: Handler<WsPresentContentMessage> = (_ctx, dat
     createdAt: data.createdAt,
     ...(data.replaceId !== undefined ? { replaceId: data.replaceId } : {}),
     ...(data.title !== undefined ? { title: data.title } : {}),
+    ...(data.filePath !== undefined ? { filePath: data.filePath } : {}),
   });
   const after = usePresentStore.getState().presentations.length;
   // First presentation to land in this session — surface the tab once. After

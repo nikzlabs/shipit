@@ -103,7 +103,7 @@ function extForMime(mimeType: string | undefined): string {
 async function submitPresent(
   workerUrl: string,
   body: { content: string; mimeType?: string; title?: string; replaceId?: string },
-): Promise<{ presentId: string; status: string }> {
+): Promise<{ presentId: string; status: string; filePath: string }> {
   const filePath = path.join(tmpDir, `artifact-${fileCounter++}.${extForMime(body.mimeType)}`);
   await writeFile(filePath, body.content, "utf8");
   const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
@@ -117,7 +117,8 @@ async function submitPresent(
     }),
   });
   expect(res.ok).toBe(true);
-  return (await res.json()) as { presentId: string; status: string };
+  const json = (await res.json()) as { presentId: string; status: string };
+  return { ...json, filePath };
 }
 
 /** Temp dir holding the artifact files each submission writes. */
@@ -178,7 +179,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
   }
 
   it("translates a worker submit into a present_content WS message and caches it", async () => {
-    const { presentId } = await submitPresent(workerUrl, {
+    const { presentId, filePath } = await submitPresent(workerUrl, {
       content: "<h1>Chart</h1>",
       mimeType: "text/html",
       title: "Sales Chart",
@@ -193,6 +194,8 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(msg.content).toBe("<h1>Chart</h1>");
     expect(msg.mimeType).toBe("text/html");
     expect(msg.title).toBe("Sales Chart");
+    // The presented file path rides through verbatim so the header can show it.
+    expect(msg.filePath).toBe(filePath);
     expect(typeof msg.createdAt).toBe("string");
     expect(msg.replaceId).toBeUndefined();
 
@@ -205,6 +208,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       content: "<h1>Chart</h1>",
       mimeType: "text/html",
       title: "Sales Chart",
+      filePath,
     });
   });
 

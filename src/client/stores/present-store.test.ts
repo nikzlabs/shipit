@@ -29,6 +29,11 @@ describe("present-store", () => {
     expect(unseenCount).toBe(1);
   });
 
+  it("carries filePath through onto the stored entry", () => {
+    usePresentStore.getState().addOrReplace(makePresent({ filePath: "docs/mockups/landing.html" }));
+    expect(usePresentStore.getState().presentations[0].filePath).toBe("docs/mockups/landing.html");
+  });
+
   it("replaces in-place when replaceId matches an existing entry", () => {
     usePresentStore.getState().addOrReplace(makePresent());
     usePresentStore.getState().addOrReplace(

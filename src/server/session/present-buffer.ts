@@ -20,6 +20,13 @@ export interface PresentEntry {
   content: string;
   mimeType: string;
   title?: string;
+  /**
+   * The path the agent presented (the `file` arg of the `present` call). Shown
+   * in the Present tab header so the user can see which file an artifact came
+   * from. Relative paths are workspace-relative; absolute paths (e.g. /tmp/…)
+   * are stored verbatim.
+   */
+  filePath?: string;
   createdAt: string;
   /** Cached byte length so eviction doesn't re-measure. */
   byteSize: number;
@@ -87,7 +94,7 @@ export class PresentBuffer {
    */
   put(
     presentId: string,
-    input: { content: string; mimeType: string; title?: string; replaceId?: string },
+    input: { content: string; mimeType: string; title?: string; filePath?: string; replaceId?: string },
   ): { entry: PresentEntry; evicted: string[] } {
     const byteSize = Buffer.byteLength(input.content, "utf8");
     if (byteSize > this.maxBytesPerEntry) {
@@ -102,6 +109,7 @@ export class PresentBuffer {
       content: input.content,
       mimeType: input.mimeType,
       ...(input.title !== undefined ? { title: input.title } : {}),
+      ...(input.filePath !== undefined ? { filePath: input.filePath } : {}),
       createdAt: new Date().toISOString(),
       byteSize,
     };
