@@ -269,6 +269,7 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/shipit-yaml.md — shipit.yaml reference (agent config, compose path)
 - /shipit-docs/compose.md — how to write docker-compose.yml for ShipIt
 - /shipit-docs/preview.md — preview system and browser tools
+- /shipit-docs/present.md — the \`present\` tool: render a file in the Present tab + the screenshot-verify loop
 - /shipit-docs/environment.md — container environment details
 - /shipit-docs/design-docs.md — feature docs under \`docs/\` and their frontmatter
 - /shipit-docs/release.md — how to cut a release (version bump, annotated tag, confirmation)

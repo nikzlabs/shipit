@@ -108,6 +108,26 @@ client's `PresentationContent` branch list.
 - `src/server/session/present-view.ts` — `inferPresentMimeType`,
   `isBinaryPresentMime` (new exported helpers).
 - `src/server/shipit-docs/present.md` — agent-facing docs rewritten file-based.
+- `src/server/orchestrator/agent-instructions.ts` — `present.md` added to the
+  system prompt's "Key docs" list so the agent can discover it (it was baked
+  into the image but unlinked).
+
+## Surfacing the tool to the agent (two surfaces, one job each)
+
+Guidance lives on two surfaces with different guarantees:
+
+- **Tool description** (`mcp-present-bridge.ts`) is the only thing guaranteed in
+  the agent's context when it calls `present` and receives `viewUrl`. So it
+  carries the action-critical trigger: write a file → present by path → navigate
+  `viewUrl` and screenshot to self-verify → revise with `replaceId`. It also
+  carries the new-API nuance that **the agent must screenshot `viewUrl`, not the
+  file directly** — now that the agent holds a real path, opening `file://`
+  would skip the markdown/SVG/image rendering and produce a misleading
+  screenshot. The description points to `present.md` for the rest rather than
+  inlining it (that text ships on every request).
+- **`present.md`** holds the full reference (step-by-step loop, MIME inference,
+  limits, examples). Previously orphaned; now linked from both the tool
+  description and the system prompt's docs list.
 - `src/server/session/mcp-present-bridge.test.ts`,
   `src/server/orchestrator/integration_tests/present-flow.test.ts` — updated to
   the file-based API (+ missing-file 400 coverage).

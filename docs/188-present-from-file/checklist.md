@@ -23,6 +23,12 @@
 - [x] `docs/188-present-from-file/plan.md` + this checklist
 - [x] Cross-reference from `docs/093-agent-present/plan.md`
 
+## Agent discoverability
+
+- [x] Tool description carries the screenshot-loop trigger + "screenshot `viewUrl`, not the file" nuance + pointer to `present.md`
+- [x] Make "screenshot `viewUrl`, not the file" explicit in `present.md`
+- [x] Add `present.md` to the system prompt's "Key docs" list (`agent-instructions.ts`) so it's discoverable
+
 ## Verification
 
 - [x] `inferPresentMimeType` unit coverage (via present-view.test.ts additions)

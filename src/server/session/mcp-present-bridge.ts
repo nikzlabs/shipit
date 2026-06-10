@@ -41,10 +41,13 @@ const TOOL_DESCRIPTION = [
   "presentation in-place (e.g. mockup v1 → v2) — edit the file and call again;",
   "omit it for a brand-new entry.",
   "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
-  "renders, navigate your browser to `viewUrl` and take a screenshot — then",
-  "fix any layout/contrast/clipping defects, edit the file, and call `present`",
-  "again with `replaceId` set to the same `presentId` to revise it in place.",
+  "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
+  "the file directly, because `viewUrl` applies the same rendering the user",
+  "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
+  "any layout/contrast/clipping defects, edit the file, and call `present` again",
+  "with `replaceId` set to the same `presentId` to revise in place.",
   "The file is capped at ~1 MB; larger artifacts will be rejected.",
+  "Full guide (screenshot loop, MIME inference, limits): /shipit-docs/present.md.",
 ].join(" ");
 
 const inputSchema = {

@@ -86,6 +86,12 @@ artifact renders in real Chromium, so what you screenshot is what the user sees.
 If a navigate returns 404, the presentation was evicted (the buffer keeps a
 bounded most-recent set) — just call `present` again to get a fresh URL.
 
+**Always screenshot `viewUrl`, never the file directly** (no `file://`, no
+opening the path in the browser). `viewUrl` runs the same renderer as the user's
+Present tab — it converts markdown to HTML, wraps SVG zero-margin, and decodes
+images. The raw file does none of that, so a screenshot of it would not match
+what the user sees and would defeat the point of the check.
+
 ## Limits
 
 - Single presentation: ~1 MB. Larger files are rejected with a clear error.
