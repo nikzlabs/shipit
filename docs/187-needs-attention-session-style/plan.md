@@ -86,22 +86,24 @@ amber gradient fades in from the row's left edge and dissolves by ~60%.
 ```tsx
 // SessionItem — applied as an inline backgroundImage on the row div
 const attentionWash = needsAttention
-  ? "linear-gradient(90deg, transparent, var(--color-attention-wash), transparent)"
+  ? "linear-gradient(90deg, transparent 72%, var(--color-attention-wash))"
   : undefined;
 // ...
 <div ... style={attentionWash ? { backgroundImage: attentionWash } : undefined}>
 ```
 
-The gradient **peaks in the row's center and fades to transparent on both sides**
-(an earlier left-edge version was changed to center-origin).
+The gradient is a **short amber glow built up only near the row's right edge**
+(transparent until ~72%, then ramping to the amber peak at the right). It sits
+behind the auto-merge / ⋮ area and pulls the eye right. (Earlier iterations — a
+left-edge wash, then a full-width center wash — were both rejected as too heavy /
+hard to see; right-edge + short reads as a compact accent.)
 
 Why this shape:
 - **No layout impact.** It's purely a background, so the PR badge, title, CI icon,
   timestamp, auto-merge icon, and ⋮ menu all stay exactly where they are.
-- **Coexists with selection.** Because both sides are transparent, the wash layers
-  over the row's own `background-color`: a selected + needs-attention row keeps its
-  gray selection fill at the edges with the amber blended in at the center — no
-  special-casing of `isCurrent` needed.
+- **Coexists with selection.** The transparent left portion layers over the row's
+  own `background-color`: a selected + needs-attention row keeps its gray selection
+  fill with the amber blended in at the right — no special-casing of `isCurrent`.
 - **Per-theme visibility via one new token.** A flat `color-mix` at 18% was nearly
   invisible on the near-black dark surface. Visibility is now driven by a single new
   token, **`--color-attention-wash`**, added to all 14 theme files: light themes use

@@ -346,14 +346,15 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
   // docs/187 — "edge gradient wash": a needs-attention session is marked by a
-  // soft amber gradient that peaks in the row's center and fades to transparent
-  // on both sides. Driven by the per-theme `--color-attention-wash` token, which
-  // carries a higher opacity in dark themes (the near-black surface needs it to
-  // read). Because the sides are transparent, the wash layers over the row's own
-  // background-color — so a selected row keeps its gray fill at the edges with the
-  // amber blended in at the center, no special-casing required.
+  // short, soft amber glow built up only near the row's right edge (transparent
+  // until ~72%, then ramping to the amber peak at the right). Sitting behind the
+  // auto-merge / ⋮ area, it pulls the eye right without touching the title. Driven
+  // by the per-theme `--color-attention-wash` token, which carries a higher opacity
+  // in dark themes (the near-black surface needs it to read). The transparent left
+  // portion layers over the row's own background-color, so a selected row keeps its
+  // gray fill with the amber blended in at the right — no special-casing required.
   const attentionWash = needsAttention
-    ? "linear-gradient(90deg, transparent, var(--color-attention-wash), transparent)"
+    ? "linear-gradient(90deg, transparent 72%, var(--color-attention-wash))"
     : undefined;
 
   return (
