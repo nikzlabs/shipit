@@ -85,7 +85,7 @@
     "@types/ws": "8.18.1",
     "@vitejs/plugin-react": "5.1.4",
     "eslint": "9.39.2",
-    "globals": "17.3.0",
+    "globals": "17.6.0",
     "jsdom": "28.1.0",
     "tailwindcss": "4.1.18",
     "tsx": "4.21.0",
