@@ -394,6 +394,8 @@ Two rules govern what goes into `package.json`. Both are enforced by `npm run ch
 
 When bumping a dependency, edit `package.json` to the new exact version, run `npm install` to refresh the lockfile, then run `npm run check-deps` before opening the PR.
 
+> **npm v12 (est. July 2026)** flips install hardening to deny-by-default: lifecycle scripts (`pre/post/install`, git/file/link `prepare`) won't run without an allowlist, and git/remote-tarball deps need `--allow-git` / `--allow-remote`. The exact-pin rule above already forbids git/tarball specifiers, so those two are pre-satisfied. The lifecycle-script change affects the main-app build (native deps like `better-sqlite3`, `node-pty`); the agent-CLI install is already compatible (`--ignore-scripts` + selective rebuild, `docs/141`). Readiness assessment and migration plan: `docs/188-npm-v12-readiness/plan.md`.
+
 ## Docs structure
 
 ```
