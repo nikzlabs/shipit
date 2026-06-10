@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createHeadlessSession } from "./session-actions.js";
+import { createHeadlessSession, resumeSessionInternal } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
@@ -85,5 +85,22 @@ describe("createHeadlessSession", () => {
       repoUrl: "https://github.com/acme/app.git",
       initialPrompt: "one more",
     })).rejects.toThrow("You already have 8 quick sessions running.");
+  });
+});
+
+describe("resumeSessionInternal", () => {
+  afterEach(() => {
+    useSessionStore.getState().reset();
+    useSessionStore.setState({ sessionId: undefined });
+  });
+
+  it("clears the transient compacting flag so it doesn't bleed into the switched-to session", () => {
+    // Outgoing session has a compaction in flight.
+    useSessionStore.setState({ sessionId: "session-a", compacting: true });
+
+    resumeSessionInternal("session-b");
+
+    expect(useSessionStore.getState().sessionId).toBe("session-b");
+    expect(useSessionStore.getState().compacting).toBe(false);
   });
 });
