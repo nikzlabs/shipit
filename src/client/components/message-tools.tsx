@@ -139,6 +139,17 @@ export function ToolUseItem({ tool, result, isLast, isStreaming, onAnswerQuestio
     );
   }
 
+  if (tool.name === "EnterPlanMode") {
+    return (
+      <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3" data-testid="plan-mode-entered">
+        <div className="flex items-center gap-2 text-sm text-(--color-text-primary)">
+          <ScrollIcon size={ICON_SIZE.SM} weight="fill" className="text-(--color-accent)" />
+          <span>Plan mode started.</span>
+        </div>
+      </div>
+    );
+  }
+
   if (tool.name === "ExitPlanMode") {
     return (
       <PlanApproval
