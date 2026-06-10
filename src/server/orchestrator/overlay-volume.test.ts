@@ -75,6 +75,32 @@ describe("overlay naming helpers", () => {
     expect(overlayScopeHash("ab", "c")).not.toBe(overlayScopeHash("a", "bc"));
   });
 
+  it("overlayScopeHash mixes in the dep dir, and omitting it reproduces the legacy hash", () => {
+    const repo = "https://github.com/o/r";
+    const rt = "img|x64";
+    // Omitting depDir is byte-for-byte the old 2-arg hash (publish CAS unaffected).
+    expect(overlayScopeHash(repo, rt, undefined)).toBe(overlayScopeHash(repo, rt));
+    // A dep dir produces a distinct base, and different dep dirs don't collide.
+    const nm = overlayScopeHash(repo, rt, "node_modules");
+    const pkg = overlayScopeHash(repo, rt, "packages/app/node_modules");
+    expect(nm).not.toBe(overlayScopeHash(repo, rt));
+    expect(nm).not.toBe(pkg);
+    expect(nm).toHaveLength(16);
+    // Not separator-confusable on the dep-dir boundary either.
+    expect(overlayScopeHash(repo, "a", "b")).not.toBe(overlayScopeHash(repo, "ab", ""));
+  });
+
+  it("overlayVolumeName with a dep dir is stable, distinct per dir, and still sweep-matchable", () => {
+    const sessionId = "abcdef012345-6789-...";
+    const nm = overlayVolumeName(sessionId, "node_modules");
+    const pkg = overlayVolumeName(sessionId, "packages/app/node_modules");
+    expect(nm).toMatch(/^shipit-abcdef012345_overlay-[a-f0-9]{8}$/);
+    expect(nm).toBe(overlayVolumeName(sessionId, "node_modules")); // stable
+    expect(nm).not.toBe(pkg); // distinct per dep dir
+    // Still matches the disk-janitor orphan-volume sweep regex.
+    expect(/^shipit-([a-f0-9-]{12})_/.exec(nm)?.[1]).toBe("abcdef012345");
+  });
+
   it("overlayBaseDir places the base under overlay-base/<hash>, not dep-cache", () => {
     const dir = overlayBaseDir("/workspace", "0123456789abcdef");
     expect(dir).toBe("/workspace/overlay-base/0123456789abcdef");

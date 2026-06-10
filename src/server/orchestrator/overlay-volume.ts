@@ -62,29 +62,48 @@ export const OVERLAY_MANAGED_LABEL = "shipit-managed";
 // ---------------------------------------------------------------------------
 
 /**
- * Per-session overlay volume name: `shipit-<sessionId[:12]>_overlay`.
- * Matches the disk-janitor orphan-volume regex (`^shipit-([a-f0-9-]{12})_`) so GC
- * is automatic — see OVERLAY_VOLUME_SUFFIX.
+ * Per-session overlay volume name. The dep-dir design (docs/183) mounts **N**
+ * overlay volumes per session — one per declared dep dir — so the name carries a
+ * stable per-dep-dir discriminator: `shipit-<sessionId[:12]>_overlay-<depHash8>`.
+ * Omitting `depDir` yields the legacy single-volume name (`shipit-<id>_overlay`),
+ * kept for the inert Phase-2 single-spec plumbing.
+ *
+ * Every form still matches the disk-janitor orphan-volume regex
+ * (`^shipit-([a-f0-9-]{12})_`) — the discriminator only extends the suffix — so a
+ * crash-orphaned per-dep-dir volume is swept automatically. See OVERLAY_VOLUME_SUFFIX.
  */
-export function overlayVolumeName(sessionId: string): string {
-  return `shipit-${sessionId.slice(0, 12)}${OVERLAY_VOLUME_SUFFIX}`;
+export function overlayVolumeName(sessionId: string, depDir?: string): string {
+  const base = `shipit-${sessionId.slice(0, 12)}${OVERLAY_VOLUME_SUFFIX}`;
+  if (depDir === undefined) return base;
+  return `${base}-${depDirDiscriminator(depDir)}`;
+}
+
+/** Short, filesystem/volume-name-safe discriminator for a dep-dir relpath. */
+export function depDirDiscriminator(depDir: string): string {
+  return crypto.createHash("sha256").update(depDir).digest("hex").slice(0, 8);
 }
 
 /**
  * Content-addressed scope hash for an overlay base, keyed on
- * `(repo, runtime fingerprint)`. The runtime fingerprint (`runtimeKey()` from
- * install-runtime.ts) describes ABI compatibility — image digest, arch, libc, Node
- * ABI — so a base with compiled native addons is never reused across incompatible
- * runtimes. 16 hex chars matches `repoUrlToHash`'s width.
+ * `(repo, runtime fingerprint[, dep-dir relpath])`. The runtime fingerprint
+ * (`runtimeKey()` from install-runtime.ts) describes ABI compatibility — image
+ * digest, arch, libc, Node ABI — so a base with compiled native addons is never
+ * reused across incompatible runtimes. Under the dep-dir design (docs/183) the
+ * scope also includes the dep-dir relpath, so each declared dep dir gets its own
+ * base. Omitting `depDir` reproduces the legacy `(repo, runtime)` hash byte-for-byte
+ * (no trailing field is mixed in), so the single-base publish CAS is unaffected.
+ * 16 hex chars matches `repoUrlToHash`'s width.
  */
-export function overlayScopeHash(repoUrl: string, runtimeKey: string): string {
-  return crypto
+export function overlayScopeHash(repoUrl: string, runtimeKey: string, depDir?: string): string {
+  const hash = crypto
     .createHash("sha256")
     .update(repoUrl)
     .update("\0")
-    .update(runtimeKey)
-    .digest("hex")
-    .slice(0, 16);
+    .update(runtimeKey);
+  if (depDir !== undefined) {
+    hash.update("\0").update(depDir);
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 /**
