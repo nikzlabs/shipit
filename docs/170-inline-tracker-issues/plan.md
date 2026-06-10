@@ -254,8 +254,11 @@ rather than a flat text table:
   grows slightly to reveal a "⌄" in its own color (the caret lives inside the
   `Badge`, collapsed to zero width until `group-hover/fe`); the status trigger
   slides out a subtle gray caret. `FieldEditor` gained a `chevron` prop so the
-  priority editor opts out of the shared sibling caret. Keyboard focus is
-  preserved via a `focus-visible` ring + the same caret reveal on focus.
+  priority editor opts out of the shared sibling caret. The reveal also latches
+  **while the menu is open** (`group-data-[state=open]/fe`, set by Radix on the
+  trigger) so opening the dropdown doesn't shrink the pill back and shift the
+  row. Keyboard focus is preserved via a `focus-visible` ring + the same caret
+  reveal on focus.
 - **Row polish.** Taller rows, `font-medium` titles, an accent left-edge bar that
   fades in on hover/focus, a hover-reveal caret that slides in, softer
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback

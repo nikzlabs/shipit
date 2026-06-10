@@ -90,7 +90,7 @@ export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority
   const caret = (
     <CaretDownIcon
       size={ICON_SIZE.XS}
-      className="shrink-0 max-w-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100"
+      className="shrink-0 max-w-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:ml-0.5 group-data-[state=open]/fe:max-w-3.5 group-data-[state=open]/fe:opacity-100"
     />
   );
   if (priority.level === "none") {
@@ -163,7 +163,7 @@ function FieldEditor({
           ) : chevron ? (
             <CaretDownIcon
               size={ICON_SIZE.XS}
-              className="shrink-0 max-w-0 overflow-hidden opacity-0 text-(--color-text-tertiary) transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100"
+              className="shrink-0 max-w-0 overflow-hidden opacity-0 text-(--color-text-tertiary) transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:ml-0.5 group-data-[state=open]/fe:max-w-3.5 group-data-[state=open]/fe:opacity-100"
             />
           ) : null}
         </button>
