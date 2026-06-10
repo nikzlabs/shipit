@@ -103,14 +103,39 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
       deliberately did not cover. Needs a running container on real overlay; see `host-overlay-spike.sh`'s
       inotify rung. Not verifiable in-environment (no real Docker overlay), like the host spikes.
 
-### Phase 4 — Snapshot + publish, per dep dir
+### Phase 4 — Snapshot + publish, per dep dir (split into 4a/4b)
 
-- [ ] Worker exports **per-dep-dir** (not the whole merged tree).
-- [ ] Orchestrator pulls each export and publishes per `(session, dep-dir)` via the existing
-      `overlay-base.ts` `publishBase` CAS (reused unchanged — only the caller/granularity is new); re-add
-      the publish-after-install hook, per dep dir. Eligibility unchanged (exit-0 pre-user install whose
-      source base is the remote default commit).
-- [ ] Tests: a per-dir publish advances only the matching scope; cross-dir isolation; ineligible skips.
+Like Phase 3, this is two coherent units: the dep-dir snapshot producer + transport (4a, inert) and the
+publish-after-install orchestration + wiring (4b).
+
+#### Phase 4a — Per-dep-dir snapshot producer + transport (inert)
+
+- [x] Worker producer `dep-snapshot.ts`: `safeDepDirRelpath` (defense-in-depth subpath validation),
+      `depSnapshotTarArgs`/`createDepSnapshotTar` — tar a **single dep dir's CONTENTS** (`-C
+      <root>/<depDir> .`) so extraction lands them directly as base contents. No `.git` exclusion (a dep
+      dir has no top-level repo `.git`).
+- [x] Worker endpoint `GET /workspace/dep-snapshot?path=<dep-dir>` — validates the path, 404s a missing
+      dir, streams the tar (destroys the stream on a tar failure so a truncated archive isn't trusted).
+- [x] Orchestrator transport `overlay-snapshot.ts`: `extractTarStream` (`tar -x` into a temp dir;
+      rejects on non-zero exit / source error — never a partial base; **sync mkdir** so a small buffered
+      producer stream can't reach EOF before the pipe attaches) + `fetchDepSnapshotStream` (thin fetch
+      glue). Split so extraction is HTTP-free / unit-testable.
+- [x] Tests: `safeDepDirRelpath` (accept/normalize + reject absolute/root/escape); `depSnapshotTarArgs`
+      contents-layout; `createDepSnapshotTar` real tar round-trip (nested file + symlink verbatim) +
+      missing-dir rejects; `extractTarStream` round-trip + dest-mkdir + invalid-tar rejects (builds its
+      own tar to respect the orchestrator↛session import boundary).
+- *Inert: no caller pulls/extracts/publishes yet (4b wires it).*
+
+#### Phase 4b — Publish-after-install orchestration + wiring
+
+- [ ] After an eligible install (exit-0, pre-user, source==remote default), for each declared dep dir:
+      `fetchDepSnapshotStream` → `extractTarStream` to a temp dir → `publishBase` with the per-dep-dir
+      scope `(repo, runtime, dep-dir)` and the bare-cache `isAncestor` + `currentDefaultCommit`. Reuses
+      the `overlay-base.ts` CAS unchanged — only the caller/granularity is new.
+- [ ] Wire the hook into the install-completion seam (`service-manager-setup.ts` install promise +
+      `index.ts` callback construction, as the stripped whole-workspace version did, but per dep dir).
+- [ ] Tests: a per-dir publish advances only the matching scope; cross-dir isolation; ineligible skips;
+      flag-off → no publish.
 
 ### Phase 5 — Compose services at dep-dir subpaths
 

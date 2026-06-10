@@ -65,6 +65,7 @@ import {
   serializeMarker,
   type InstallMarkerStamp,
 } from "./install-marker.js";
+import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -709,6 +710,26 @@ export class SessionWorker extends EventEmitter {
     app.get("/workspace/head-commit", async () => ({
       commit: await this.readSourceCommit(),
     }));
+
+    // docs/183 Phase 4 — stream a single dep dir's merged contents as a tar so the
+    // orchestrator can publish it as the next rolling base for that dep dir. The
+    // merged view exists only inside the container; this is the HTTP-only pull.
+    app.get<{ Querystring: { path?: string } }>("/workspace/dep-snapshot", async (request, reply) => {
+      const rel = safeDepDirRelpath(request.query.path ?? "");
+      if (!rel) return reply.code(400).send({ error: "invalid dep dir path" });
+      const full = path.join(this.workspaceDir, rel);
+      if (!fs.existsSync(full)) return reply.code(404).send({ error: `dep dir not found: ${rel}` });
+      const { stream, done } = createDepSnapshotTar(this.workspaceDir, rel);
+      // A non-zero tar exit means the piped archive is truncated; the consumer
+      // validates extraction, but destroy the stream so a truncated tar surfaces
+      // as a stream error rather than a silently-short archive.
+      done.catch((err: unknown) => {
+        console.warn(`[dep-snapshot] tar failed for ${rel}:`, err instanceof Error ? err.message : String(err));
+        stream.destroy(err instanceof Error ? err : new Error(String(err)));
+      });
+      reply.header("content-type", "application/x-tar");
+      return reply.send(stream);
+    });
 
     // --- MCP endpoints (docs/088-mcp-integration) ---
 
