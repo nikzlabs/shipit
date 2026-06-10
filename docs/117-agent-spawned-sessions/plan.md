@@ -59,9 +59,15 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
 
 What is **not** in Phase 1 + 2 + 3 (see the table below for tracking):
 
-- No persistence of the `SpawnedSessionCard` in chat history — the card is
-  re-rendered live via the turn-event buffer, and the child remains visible
-  in the sidebar via the existing `session_list` broadcast.
+- ~~No persistence of the `SpawnedSessionCard` in chat history~~ — **superseded.**
+  Both the spawned-session and spawn-failed cards are now persisted (recorded
+  in-band via `emitChatCard` on the session-create route, with `spawned_session`
+  / `spawn_failed` columns in `chat-history.ts`) so they survive a full reload /
+  session switch, not just a WS reconnect. The original rationale ("the child is
+  visible in the sidebar") didn't hold for the *failed* path (no sidebar row) and
+  left the parent transcript non-deterministic across reload. The live status
+  pill still derives from the session store; only the static payload persists.
+  Idempotent on the client by `childSessionId` / the server-generated `spawnFailed.id`.
 - No cross-repo spawns (`--repo other/name`) — Phase 4 (optional, deferred
   until there's user demand).
 

@@ -17,6 +17,7 @@
 
 import type { AgentId, AgentProcess } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -112,12 +113,13 @@ export async function runDispatchedTurn(
             `[turn] dispatched turn for ${runner.sessionId} exited (code ${code}) with no result — ` +
               `retrying (attempt ${noResultRetries}/${MAX_NO_RESULT_RETRIES})`,
           );
-          runner.emitMessage({
-            type: "system_notice",
-            sessionId: runner.sessionId,
-            level: "warn",
-            message: "The agent didn't start on the first attempt — retrying…",
-          });
+          emitNoticePostTurn(
+            (m) => runner.emitMessage(m),
+            deps.listenerDeps.chatHistoryManager,
+            runner.sessionId,
+            "The agent didn't start on the first attempt — retrying…",
+            "warn",
+          );
           await runOnce(attempt + 1);
           return true;
         }

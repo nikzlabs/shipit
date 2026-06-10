@@ -70,6 +70,12 @@ function clearQueuedMessages(ctx: RewindCtx, sessionId: string): void {
   const queuedCount = runner?.messageQueue.length ?? 0;
   if (queuedCount === 0 || !runner) return;
   runner.clearQueue();
+  // Deliberately emit-only (not persisted). This is transient action-feedback
+  // for a rewind the user is actively performing — and it fires here, BEFORE
+  // the branch-specific `saveMessages(truncated)` below, which would wipe any
+  // appended row anyway. The rewind's durable result (the truncated history and
+  // the "Code rolled back" notice that IS appended post-truncation) survives a
+  // reload; this "cleared N queued" footnote is a toast, not transcript content.
   runner.emitMessage({
     type: "system_notice",
     sessionId,

@@ -13,25 +13,31 @@ import type { Handler } from "./types.js";
  * from `useSessionStore` so the status pill stays current without us having
  * to wire a stream of follow-up events.
  *
- * The card is intentionally NOT persisted in chat history in v1 — the child
- * remains visible in the sidebar after reload via the existing
- * `session_list` broadcast, so a missing card after refresh is not data
- * loss. Phase 3 (when `wait`/`message`/`archive` ship) can revisit persistence.
+ * The card is persisted in chat history (recorded in-band on the server via
+ * `emitChatCard`), so it survives a session switch / full reload, not just a
+ * WS reconnect. Idempotent by `childSessionId`: the card is both persisted and
+ * buffered into the turn-event log, so a reconnect can deliver it twice (once
+ * from `loadSessionHistory`, once from the buffer replay) — skip the duplicate.
  */
 export const handleSessionSpawned: Handler<WsSessionSpawned> = (_ctx, data) => {
   const session = useSessionStore.getState();
-  session.setMessages((prev) => [
-    ...prev,
-    {
-      role: "assistant" as const,
-      text: "",
-      spawnedSession: {
-        childSessionId: data.childSessionId,
-        title: data.title,
-        ...(data.branch ? { branch: data.branch } : {}),
-        spawnedAt: data.spawnedAt,
-        ...(data.shipitFix ? { shipitFix: data.shipitFix } : {}),
-      },
-    },
-  ]);
+  if (session.messages.some((m) => m.spawnedSession?.childSessionId === data.childSessionId)) return;
+  session.setMessages((prev) =>
+    prev.some((m) => m.spawnedSession?.childSessionId === data.childSessionId)
+      ? prev
+      : [
+          ...prev,
+          {
+            role: "assistant" as const,
+            text: "",
+            spawnedSession: {
+              childSessionId: data.childSessionId,
+              title: data.title,
+              ...(data.branch ? { branch: data.branch } : {}),
+              spawnedAt: data.spawnedAt,
+              ...(data.shipitFix ? { shipitFix: data.shipitFix } : {}),
+            },
+          },
+        ],
+  );
 };

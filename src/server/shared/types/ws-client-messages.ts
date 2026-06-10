@@ -10,6 +10,13 @@ export interface WsSendMessage {
   files?: FileContextRef[];
   uploads?: UploadRef[];
   permissionMode?: PermissionMode;
+  /**
+   * Set when the message was started by the "Send comments" action on a file
+   * preview. The prompt text carries the comments (source of truth); this
+   * metadata is persisted onto the user row so the bubble rehydrates as a
+   * `UserReviewCard` instead of a plain text bubble after a reload.
+   */
+  userReview?: { filePaths: string[]; commentCount: number };
 }
 
 export interface WsAnswerQuestion {

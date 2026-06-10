@@ -809,6 +809,13 @@ export interface WsSystemNotice {
   message: string;
   /** Visual emphasis. `warn` for blocked-action / abort notices; `info` otherwise. */
   level?: "info" | "warn";
+  /**
+   * Stable id shared with the persisted chat row. Notices are now persisted (so
+   * they survive a full reload, not just a WS reconnect); the id lets the client
+   * dedupe a notice re-delivered by the turn-event buffer replay on reconnect
+   * against the copy `loadSessionHistory` rehydrated from the DB.
+   */
+  id?: string;
 }
 
 // ---- Rollback messages (server → client) ----
@@ -957,6 +964,12 @@ export interface WsSessionSpawnFailed {
   type: "session_spawn_failed";
   /** Parent session id — the runner that this event is emitted on. */
   sessionId: string;
+  /**
+   * Server-generated stable id. A failed spawn has no natural key (no child
+   * session was created), so this is what the client dedupes on when the
+   * turn-event buffer replays the card on reconnect against the persisted copy.
+   */
+  id: string;
   /** Human-readable error message, taken from the orchestrator's response body. */
   message: string;
   /** HTTP status code the spawn route returned (400, 404, 409, 429, 500…). */

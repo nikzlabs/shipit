@@ -492,6 +492,7 @@ export async function handleSendMessage(
     permissionMode: msg.permissionMode,
     isNewSession: !msg.sessionId,
     uploadPaths,
+    ...(msg.userReview ? { userReview: msg.userReview } : {}),
     reviewFilePath,
     compact: isCompactRequest,
   });

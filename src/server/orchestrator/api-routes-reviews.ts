@@ -10,6 +10,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
+import { emitChatCard } from "./chat-card-persistence.js";
 
 import {
   listFileReviews,
@@ -305,19 +306,27 @@ export async function registerReviewRoutes(
           dir,
           comments,
         );
-        // Broadcast a card-shaped event so the chat transcript shows the
-        // review happened and a reconnecting viewer replays it.
-        runner?.emitMessage({
-          type: "agent_review_added",
-          sessionId,
-          filePath,
-          reviewId: result.review.id,
-          fileType: result.review.fileType,
-          snapshotHash: result.review.snapshotHash,
-          findingCount: result.review.comments.length,
-          ...(result.review.summary ? { summary: result.review.summary } : {}),
-          createdAt: result.review.createdAt,
-        });
+        // Record a card-shaped event in-band with the turn so the chat
+        // transcript shows the review happened and it survives a session
+        // switch / full reload (not just a WS reconnect). The review snapshot
+        // and comments already persist in the agent_reviews tables; this
+        // persists the inline breadcrumb, keyed by reviewId for idempotency.
+        if (runner) {
+          const agentReview = {
+            reviewId: result.review.id,
+            filePath,
+            fileType: result.review.fileType,
+            snapshotHash: result.review.snapshotHash,
+            findingCount: result.review.comments.length,
+            ...(result.review.summary ? { summary: result.review.summary } : {}),
+            createdAt: result.review.createdAt,
+          };
+          emitChatCard(
+            runner,
+            { type: "agent_review_added", sessionId, ...agentReview },
+            { role: "assistant", text: "", agentReview },
+          );
+        }
         return {
           ok: true,
           reviewId: result.review.id,

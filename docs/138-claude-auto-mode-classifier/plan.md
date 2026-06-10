@@ -237,11 +237,17 @@ The abort only fires after the CLI's 3-consecutive / 20-total threshold, at whic
   turn having actually requested guarded mode (`opts.requestedPermissionMode === "guarded"` in
   the listener) — i.e. the post-downgrade effective mode, so a silently-downgraded turn
   doesn't trigger it either.
-- **Message shape & routing:** emit a single **system-style notice** (reuse the existing
-  inline notice/log message kind broadcast via `runner.emitMessage()` — NOT `ctx.send()`, so
-  every viewer sees it and it lands in the turn-event buffer for reconnects) summarizing the
+- **Message shape & routing:** emit a single **system-style notice** summarizing the
   denial reason(s) from `permission_denials[]` and offering next steps: rephrase, state a
-  narrower scope, or switch to `auto` for the action.
+  narrower scope, or switch to `auto` for the action. **Update:** `system_notice` bubbles
+  are now *persisted*, not emit-only — they previously survived a WS reconnect (via the
+  turn-event buffer) but vanished on a full reload, which made the transcript
+  non-deterministic. The guarded-mode notices fire within a turn, so they go through
+  `emitNoticeInTurn` (records in-band via `emitChatCard`); post-turn notices (e.g. the
+  unresolved-conflict warning) go through `emitNoticePostTurn` (append + emit). Each notice
+  carries a stable `id` so a buffer-replayed copy dedupes against the rehydrated one on the
+  client. Transient rewind action-feedback notices (queue-clear, rewind-to-start) stay
+  emit-only by design. Helpers live in `chat-card-persistence.ts`.
 - **Retry flow:** no auto-retry. The user re-sends (optionally after switching to `auto`);
   that is a **fresh turn**, consistent with how every other turn boundary works. We do not
   silently re-run in `auto`.

@@ -184,6 +184,7 @@ export async function registerGitHubRoutes(
           // flush, those edits wouldn't appear on the PR.
           sessionId: request.params.id,
           runnerRegistry: deps.runnerRegistry,
+          chatHistory: deps.chatHistoryManager,
         });
         if (deps.prStatusPoller && session.remoteUrl) {
           deps.prStatusPoller.trackSession(request.params.id, session.remoteUrl);

@@ -419,13 +419,15 @@ deletion and references this doc.
 ## Open questions
 
 1. **Should agent-review cards persist across container restarts the
-   same way chat history does?** Chat history is already persisted per
-   docs/095 (or whichever). The card is just a render of an
-   `agent_review` row, so as long as the row survives, the card does
-   too — but the rendering depends on the message being in the chat
-   history pipe. Worth confirming during implementation that the new
-   message type rehydrates correctly from persisted history, not just
-   live WS.
+   same way chat history does?** **Resolved: yes.** The card was initially
+   emit-only — it rendered live and survived a WS reconnect (turn-event
+   buffer) but vanished on a full reload, because the transcript rehydrates
+   only from persisted chat history. It is now recorded in-band via
+   `emitChatCard` on the review-submit route, with an `agent_review` column
+   in `chat-history.ts`, and rehydrates from history (the client handler
+   dedupes by `reviewId`). The underlying `agent_review` row already
+   persisted the snapshot + comments; this persists the inline breadcrumb so
+   §"The card stays in chat history forever" is now literally true.
 2. **Should the snapshot be content-addressed (one snapshot per hash,
    referenced N times) to dedupe?** Probably not v1 — the simplicity
    of "row owns its snapshot" outweighs the storage win at the volumes

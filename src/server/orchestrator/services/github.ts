@@ -15,6 +15,7 @@ import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
+import { emitNoticePostTurn } from "../chat-card-persistence.js";
 
 /**
  * Resolve owner/repo from a known remote URL or by reading git remotes.
@@ -419,6 +420,9 @@ export async function flushPendingTurnCommit(
   deps: {
     sessionId?: string;
     runnerRegistry?: SessionRunnerRegistry;
+    /** When provided, the conflict notice is persisted (append) as well as
+     * emitted, so it survives a reload — not just a reconnect. */
+    chatHistory?: ChatHistoryManager;
   },
 ): Promise<string | null> {
   const runner = deps.sessionId && deps.runnerRegistry
@@ -433,12 +437,12 @@ export async function flushPendingTurnCommit(
   const parentHash = await git.getHeadHash();
   const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
   if ((conflictedFiles.length > 0 || rebaseInProgress) && runner) {
-    runner.emitMessage({
-      type: "system_notice",
-      sessionId: runner.sessionId,
-      level: "warn",
-      message: formatUnresolvedConflictNotice({ conflictedFiles, rebaseInProgress }),
-    });
+    const message = formatUnresolvedConflictNotice({ conflictedFiles, rebaseInProgress });
+    if (deps.chatHistory) {
+      emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, runner.sessionId, message, "warn");
+    } else {
+      runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
   }
   if (!commitHash) return null;
 
@@ -487,6 +491,9 @@ export async function agentCreatePr(
     sessionId?: string;
     /** Runner registry — when provided alongside sessionId, enables mid-turn commit flush. */
     runnerRegistry?: SessionRunnerRegistry;
+    /** When provided, an unresolved-conflict notice from the pre-push flush is
+     * persisted (so it survives a reload), not just emitted. */
+    chatHistory?: ChatHistoryManager;
   },
 ): Promise<{
   number: number;
@@ -511,6 +518,7 @@ export async function agentCreatePr(
   await flushPendingTurnCommit(git, {
     sessionId: options.sessionId,
     runnerRegistry: options.runnerRegistry,
+    ...(options.chatHistory ? { chatHistory: options.chatHistory } : {}),
   });
 
   const head = await git.getCurrentBranch();

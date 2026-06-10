@@ -476,13 +476,28 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN auto_fix_ci_paused INTEGER NOT NULL DEFAULT 0");
   },
-  // docs/188 — persist the issue **read** navigation card (`shipit issue view`)
+  // persist the issue **read** navigation card (`shipit issue view`)
   // so it survives a session switch / full reload. Like the write card it
   // arrives off the agent-event stream and is recorded in-band via emitChatCard;
   // without this column the inline jump-to-issue card renders live but vanishes
   // on the next loadSessionHistory, which rebuilds from the DB.
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN issue_ref TEXT");
+  },
+  // docs/188 — persist the remaining at-rest transcript cards/notices so the chat
+  // survives a session switch / full reload identically to how it looked live.
+  // Previously these rendered live (and survived a WS reconnect via the turn-event
+  // buffer) but vanished on reload because the transcript rehydrates only from these
+  // message columns: spawned-session (docs/117) + spawn-failed cards, agent-review
+  // breadcrumbs (docs/151), the user "Send comments" review card, and a stable id
+  // for system_notice bubbles (docs/138) so a buffer-replayed notice dedupes
+  // against the persisted copy. All nullable — old rows decode as undefined.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN spawned_session TEXT");
+    db.exec("ALTER TABLE messages ADD COLUMN spawn_failed TEXT");
+    db.exec("ALTER TABLE messages ADD COLUMN agent_review TEXT");
+    db.exec("ALTER TABLE messages ADD COLUMN user_review TEXT");
+    db.exec("ALTER TABLE messages ADD COLUMN notice_id TEXT");
   },
 ];
 

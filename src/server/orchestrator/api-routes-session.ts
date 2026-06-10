@@ -5,9 +5,11 @@
  */
 
 import { mkdir, stat } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
+import { emitChatCard } from "./chat-card-persistence.js";
 
 import {
   getFileTree,
@@ -653,22 +655,25 @@ export async function registerSessionRoutes(
         // session_list SSE broadcast is owned by graduateSession (docs/156).
 
         // docs/117 Phase 2 — surface the spawn inline in the parent's chat
-        // via a `session_spawned` event. Routed through the parent runner's
-        // `emitMessage` so every attached viewer sees it AND it lands in the
-        // turn-event buffer (so a viewer that reconnects mid-turn sees the
-        // card too). The child shows up in the sidebar regardless via the
-        // session_list broadcast above; this event is the in-chat affordance.
+        // via a `session_spawned` event, recorded in-band with the spawning
+        // turn so it survives a session switch / full reload (not just a WS
+        // reconnect). The agent ran `shipit session create` as a tool call, so
+        // the card lands at its true transcript position and the following
+        // tool-result boundary flushes it to history via buildTurnMessages.
         const parentRunner = deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
-          parentRunner.emitMessage({
-            type: "session_spawned",
-            sessionId: request.params.parentId,
+          const spawnedSession = {
             childSessionId: result.sessionId,
             title: result.session.title,
             ...(result.branch ? { branch: result.branch } : {}),
             spawnedAt: result.session.createdAt,
             ...(shipitFixMeta ? { shipitFix: shipitFixMeta } : {}),
-          });
+          };
+          emitChatCard(
+            parentRunner,
+            { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
+            { role: "assistant", text: "", spawnedSession },
+          );
         }
 
         recordSpawnInvocation({
@@ -696,17 +701,18 @@ export async function registerSessionRoutes(
         // parent's chat alongside successful spawns. Without this, a quota
         // rejection only shows up on the shim's stderr (visible to the agent
         // but not to the user) — the success-path card has no counterpart.
-        // Same `emitMessage` route as `session_spawned` so reconnecting
-        // viewers see it via the turn-event buffer.
+        // Recorded in-band like the success card so it survives reload — and
+        // unlike a successful spawn there is NO sidebar row to fall back on, so
+        // persistence is the only record of the failure. `id` is generated for
+        // live-append idempotency (a failure has no natural key).
         const parentRunner = deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
           const promptPreview = (body.prompt ?? "")
             .trim()
             .split(/\r?\n/)[0]
             .slice(0, 200);
-          parentRunner.emitMessage({
-            type: "session_spawn_failed",
-            sessionId: request.params.parentId,
+          const spawnFailed = {
+            id: `spawn-failed-${randomUUID()}`,
             message: errorMessage,
             statusCode,
             reason: classifySpawnFailure(statusCode, errorMessage),
@@ -714,7 +720,12 @@ export async function registerSessionRoutes(
             ...(promptPreview ? { promptPreview } : {}),
             ...(body.shipitSource ? { shipitSource: true } : {}),
             failedAt: new Date().toISOString(),
-          });
+          };
+          emitChatCard(
+            parentRunner,
+            { type: "session_spawn_failed", sessionId: request.params.parentId, ...spawnFailed },
+            { role: "assistant", text: "", spawnFailed },
+          );
         }
 
         recordSpawnInvocation({

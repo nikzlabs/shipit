@@ -14,7 +14,7 @@ import {
   sanitizeVoiceContext,
   VOICE_NOTE_TOOL_NAME,
 } from "../voice/voice-note-router.js";
-import { emitChatCard } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 
@@ -889,13 +889,12 @@ export function wireAgentListeners(
           // this turn, so we let it complete in auto-equivalent and just label
           // it. Set the volatile flag so subsequent turns silently send auto.
           runner.guardedUnavailable = true;
-          emitToViewers({
-            type: "system_notice",
-            sessionId: turnSessionId,
-            level: "warn",
-            message:
-              "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
-          });
+          emitNoticeInTurn(
+            runner,
+            turnSessionId,
+            "Guarded mode isn't available for this account or model, so this turn is running in auto mode (no command safety check). It needs a Max, Team, or Enterprise plan and a Sonnet or Opus model.",
+            "warn",
+          );
         }
       }
 
@@ -1268,18 +1267,21 @@ export function wireAgentListeners(
       if (
         event.permissionDenials?.length
         && turnSessionId
+        && runner
         && opts.requestedPermissionMode === "guarded"
       ) {
         const blockedTools = [...new Set(event.permissionDenials.map((d) => d.toolName))].join(", ");
         const count = event.permissionDenials.length;
-        emitToViewers({
-          type: "system_notice",
-          sessionId: turnSessionId,
-          level: "warn",
-          message:
-            `Guarded mode blocked ${count} action${count === 1 ? "" : "s"} (${blockedTools}) as potentially unsafe. ` +
+        // Recorded in-band (not emit-only) so the blocked-actions summary
+        // survives a reload. It fires before this turn's final persist below,
+        // so buildTurnMessages interleaves it at the turn's end.
+        emitNoticeInTurn(
+          runner,
+          turnSessionId,
+          `Guarded mode blocked ${count} action${count === 1 ? "" : "s"} (${blockedTools}) as potentially unsafe. ` +
             "Rephrase with a narrower scope, run the command yourself, or switch to auto mode for this action.",
-        });
+          "warn",
+        );
       }
 
       const usageSessionId = turnSessionId ?? event.sessionId;

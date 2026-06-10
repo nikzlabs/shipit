@@ -59,6 +59,22 @@ describe("handleAgentReviewAdded (docs/151)", () => {
     expect(msg.agentReview?.summary).toBeUndefined();
   });
 
+  it("dedupes by reviewId so a reconnect buffer-replay + history reload don't double-render", () => {
+    const event = {
+      type: "agent_review_added" as const,
+      sessionId: "s1",
+      filePath: "docs/foo.md",
+      reviewId: "rev-dup",
+      fileType: "markdown" as const,
+      snapshotHash: "h",
+      findingCount: 1,
+      createdAt: "2026-05-01T12:00:00Z",
+    };
+    handleAgentReviewAdded(ctx, event);
+    handleAgentReviewAdded(ctx, event);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
+  });
+
   it("does NOT mutate the file-review-store (AI findings live in their own bucket post-docs/151)", () => {
     const before = JSON.stringify(useFileReviewStore.getState());
     handleAgentReviewAdded(ctx, {

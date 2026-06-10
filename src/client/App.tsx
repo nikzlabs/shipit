@@ -1002,7 +1002,7 @@ export default function App() {
           userReview: { filePaths, commentCount },
         },
         activity: "Working on comments...",
-        dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid ?? undefined }),
+        dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid ?? undefined, userReview: { filePaths, commentCount } }),
       });
     },
     [send],
