@@ -23,3 +23,16 @@ updates:
     # edits the existing exact version in place, so this keeps it from widening
     # to a range.
     versioning-strategy: increase
+    # Group coupled packages that share peer-dependency ranges into a single PR.
+    # Without grouping, Dependabot bumps each package in isolation, so a major
+    # vite bump (e.g. 7→8) opens a PR that fails `npm ci` with ERESOLVE because
+    # @vitejs/plugin-react's peer range hasn't moved in lockstep. Grouping the
+    # vite toolchain makes Dependabot bump them together in one resolvable PR.
+    groups:
+      vite:
+        patterns:
+          - "vite"
+          - "@vitejs/*"
+          - "@tailwindcss/vite"
+          - "vitest"
+          - "@vitest/*"
