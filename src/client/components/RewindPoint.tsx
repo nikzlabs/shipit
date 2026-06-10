@@ -135,9 +135,16 @@ export function RewindPoint({
 
   const interactive = !disabled;
   const justify = align === "left" ? "justify-start" : align === "right" ? "justify-end" : "justify-center";
+  // The negative bottom margin pulls the handle tight against the message
+  // below it. When the handle is on the right (after a user turn) the bubble
+  // below sits on the left, so the tightening is invisible. When it's on the
+  // left (after an agent turn) a long, full-width user bubble below shares the
+  // handle's column, and the negative margin makes them look glued — so we
+  // drop the bottom tightening for left/center, keeping only the top.
+  const bottomMargin = align === "right" ? "-mb-0.75" : "";
   return (
     <div
-      className={`group/rewind relative flex h-2 -my-0.75 items-center ${justify}`}
+      className={`group/rewind relative flex h-2 -mt-0.75 ${bottomMargin} items-center ${justify}`}
       data-testid="rewind-point"
       data-menu-open={menuOpen}
       data-align={align}
