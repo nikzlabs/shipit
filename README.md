@@ -262,13 +262,37 @@ harness:
 - Voice input and spoken summaries require configuring a supported voice provider for speech
   services.
 
+## Security
+
+ShipIt runs AI-agent-written code on your repos and infrastructure, so it treats the agent as a
+powerful but only semi-trusted actor and defends the boundaries around it. The headline measures:
+
+- **Container-isolated agents** — each session runs in its own Docker container on an isolated
+  network; sessions can't reach each other. Containers get no Docker socket, only a proxy that
+  enforces an allow-list and rejects privileged/host-namespace escapes.
+- **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
+  the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
+  aren't sitting at rest in the agent's sandbox.
+- **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
+  age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
+- **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
+  first, and you review the redacted result.
+- **Access control is yours** — there's no built-in user auth, so don't expose a raw instance; the
+  VPS installer can put ShipIt behind Cloudflare Zero Trust or Tailscale with no open ports.
+
+The full picture — trust model, every defense, and the gaps ShipIt has consciously accepted (notably
+unrestricted agent network egress) along with their planned mitigations — is in
+[SECURITY-MODEL.md](SECURITY-MODEL.md).
+
 ## Contributing
 
 ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request,
 please [open an issue](https://github.com/nicolasalt/shipit/issues). For the architecture, dev loop,
 and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md).
+Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md). For
+how ShipIt defends its trust boundaries (and the risks it has accepted), see
+[SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Author
 

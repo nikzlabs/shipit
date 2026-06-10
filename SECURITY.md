@@ -5,6 +5,11 @@ ShipIt runs AI-agent-written code inside Docker containers and brokers credentia
 the isolation and credential-handling boundaries seriously and appreciate reports
 that help us keep them sound.
 
+This file is the **reporting policy**. For how ShipIt actually defends those
+boundaries — the trust model, supply-chain pinning, credential brokering, container
+containment, and the risks it has consciously accepted — see
+[SECURITY-MODEL.md](SECURITY-MODEL.md).
+
 ## Reporting a vulnerability
 
 **Please do not open a public issue for security vulnerabilities.** Public issues
