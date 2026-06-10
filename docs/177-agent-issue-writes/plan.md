@@ -290,6 +290,7 @@ gains an optional `labels: string[]` populated by both adapters.
 - `src/server/orchestrator/api-routes-issues.ts` — session-scoped write routes.
 - `src/server/session/agent-shim/shipit.ts` — `shipit issue comment`/`edit`/`status`/`assign`.
 - `chat-card-persistence.ts`, `chat-history.ts`, `session-data.ts` — persist + rehydrate the write provenance card; wire undo.
+- `src/client/components/visual-elements.ts` — `buildVisualElements` must include `issueWrite` in its `hasCardContent` allow-list. The provenance card rides on an empty-text, tool-less assistant message (the `issueWrite` field IS the content); if it isn't allow-listed, the grouping layer silently drops the message and the card never renders (regression fixed alongside docs/178's `compaction` card, which had the identical omission). Covered by `visual-elements.test.ts`.
 
 ## Related docs
 

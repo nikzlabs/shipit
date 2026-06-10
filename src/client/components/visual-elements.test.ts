@@ -75,6 +75,18 @@ describe("buildVisualElements", () => {
         }),
       },
       { name: "bugReport", msg: card({ bugReport: { cardId: "b1" } }) },
+      { name: "issueWrite", msg: card({ issueWrite: { cardId: "iw1" } }) },
+      { name: "compaction", msg: card({ compaction: { id: "c1", createdAt: "2026-06-01T00:00:00.000Z" } }) },
+      {
+        name: "spawnedSession",
+        msg: card({
+          spawnedSession: { childSessionId: "s1", title: "Child", spawnedAt: "2026-06-01T00:00:00.000Z" },
+        }),
+      },
+      {
+        name: "forkChild",
+        msg: card({ forkChild: { childSessionId: "s2", title: "Fork", branch: "b" } }),
+      },
       {
         name: "spawnFailed",
         msg: card({

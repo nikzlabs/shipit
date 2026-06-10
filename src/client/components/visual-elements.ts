@@ -44,14 +44,17 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
     // Inline cards (docs/151 review, docs/163 voice note, docs/164 bug report,
-    // session spawn success/failure, fork child) ride on a message whose `text`
-    // is empty and which carries no tools — the card field IS the content. Such
-    // a message must still emit a `message` element, otherwise the grouping
-    // layer silently drops it and the card never renders.
+    // docs/177 issue write, docs/178 compaction, session spawn success/failure,
+    // fork child) ride on a message whose `text` is empty and which carries no
+    // tools — the card field IS the content. Such a message must still emit a
+    // `message` element, otherwise the grouping layer silently drops it and the
+    // card never renders.
     const hasCardContent =
       msg.agentReview !== undefined
       || msg.voiceNote !== undefined
       || msg.bugReport !== undefined
+      || msg.issueWrite !== undefined
+      || msg.compaction !== undefined
       || msg.spawnedSession !== undefined
       || msg.spawnFailed !== undefined
       || msg.forkChild !== undefined;
