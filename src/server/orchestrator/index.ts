@@ -66,7 +66,7 @@ import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled } from "./overlay-session.js";
-import { publishDepDirOverlayBases } from "./overlay-publish.js";
+import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
@@ -419,10 +419,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
-  }): Promise<void> => {
-    if (!isOverlayEnabled() || !session.remoteUrl) return;
+  }): Promise<DepDirPublishOutcome[]> => {
+    if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
-    await publishDepDirOverlayBases(
+    return publishDepDirOverlayBases(
       { session, workerUrl: runner.getWorkerUrl(), installOk },
       { stateDir, createRepoGit, getBareCacheDir },
     );

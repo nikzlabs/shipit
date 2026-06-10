@@ -10,6 +10,7 @@ import type { WsLogEntry, SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
+import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -269,7 +270,7 @@ export function setupServiceManager(
       runner: ContainerSessionRunner;
       session: SessionInfo;
       installOk: boolean;
-    }) => Promise<void>;
+    }) => Promise<DepDirPublishOutcome[]>;
   },
 ): void {
   const {
@@ -336,6 +337,10 @@ export function setupServiceManager(
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
   let installPromise: Promise<{ ok: boolean }> | null = null;
+  // docs/183 — orchestrator-observed install wall-clock for the overlay
+  // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
+  // a real install in seconds, so duration classifies the warm-vs-cold scenario.
+  const installStartedAt = Date.now();
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
@@ -356,7 +361,20 @@ export function setupServiceManager(
     void (async () => {
       const res = await p;
       try {
-        await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+        const outcomes = await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+        // docs/183 — emit one greppable measurement line per overlay session so the
+        // warm-vs-cold + depth-cap data can be tabulated off service logs. A
+        // non-empty outcome list means overlay was active (flag on + eligible), so
+        // this is inert for non-overlay sessions.
+        if (outcomes.length > 0 && s.remoteUrl) {
+          console.log(formatOverlayMeasurement({
+            sessionId: r.sessionId,
+            repoUrl: s.remoteUrl,
+            installOk: res.ok,
+            installDurationMs: Date.now() - installStartedAt,
+            outcomes,
+          }));
+        }
       } catch (err) {
         console.error(`[overlay-publish:${r.sessionId}] publish failed:`, getErrorMessage(err));
       }

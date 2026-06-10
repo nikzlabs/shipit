@@ -7,6 +7,7 @@ import { Readable } from "node:stream";
 
 import {
   publishDepDirOverlayBases,
+  formatOverlayMeasurement,
   type OverlayPublishDeps,
   type AncestryOracle,
 } from "./overlay-publish.js";
@@ -103,7 +104,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created" }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
     expect(pointerFor("node_modules")).toMatchObject({ commit: HEAD, depth: 1 });
     expect(baseContentFor("node_modules")).toBe("node_modules");
   });
@@ -117,8 +118,8 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith(),
     );
     expect(out).toEqual([
-      { depDir: "node_modules", outcome: "created" },
-      { depDir: "packages/app/node_modules", outcome: "created" },
+      { depDir: "node_modules", outcome: "created", depth: 1, generation: 1 },
+      { depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 },
     ]);
     // Each base holds ONLY its own dep dir's snapshot — distinct scope hashes.
     expect(baseContentFor("node_modules")).toBe("node_modules");
@@ -126,6 +127,25 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(overlayScopeHash(REPO_URL, runtimeKey, "node_modules")).not.toBe(
       overlayScopeHash(REPO_URL, runtimeKey, "packages/app/node_modules"),
     );
+  });
+
+  it("propagates the climbing overlay depth on an advance (the depth-cap signal)", async () => {
+    const c1 = "c1".padEnd(40, "0");
+    const c2 = "c2".padEnd(40, "0");
+    let head = c1; // the current default-branch tip; advances to c2 between publishes
+    const oracle2: AncestryOracle = {
+      isAncestor: (a, b) => Promise.resolve(a === c1 && b === c2),
+      resolveDefaultBranchCommit: () => Promise.resolve(head),
+    };
+    const deps = depsWith({ createRepoGit: () => oracle2, fetchHeadCommit: () => Promise.resolve(head) });
+    const session = { remoteUrl: REPO_URL, kind: undefined, workspaceDir };
+
+    const first = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
+    expect(first).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+
+    head = c2; // main advanced with a dep change
+    const second = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
+    expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2 }]);
   });
 
   it("no-ops when the feature flag is off", async () => {
@@ -196,7 +216,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
       depsWith(),
     );
-    expect(out).toEqual([{ depDir: "node_modules", outcome: "created" }]);
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
     expect(baseContentFor("node_modules")).toBe("node_modules");
     expect(baseContentFor("src/vendored")).toBeNull();
   });
@@ -215,9 +235,41 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       }),
     );
     expect(out[0]).toMatchObject({ depDir: "node_modules", outcome: "error" });
-    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created" });
+    expect(out[1]).toEqual({ depDir: "packages/app/node_modules", outcome: "created", depth: 1, generation: 1 });
     // The failing dir wrote no base; the healthy dir did.
     expect(pointerFor("node_modules")).toBeNull();
     expect(baseContentFor("packages/app/node_modules")).toBe("packages/app/node_modules");
+  });
+});
+
+describe("formatOverlayMeasurement", () => {
+  it("renders a greppable single line with per-dir outcome + depth/generation", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "sess-1",
+      repoUrl: "https://github.com/x/y.git",
+      installOk: true,
+      installDurationMs: 1843,
+      outcomes: [
+        { depDir: "node_modules", outcome: "advanced", depth: 3, generation: 4 },
+        { depDir: "packages/api/node_modules", outcome: "created", depth: 1, generation: 1 },
+      ],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=sess-1 repo=https://github.com/x/y.git install_ok=true install_ms=1843 " +
+        "dirs=node_modules:advanced:d3g4,packages/api/node_modules:created:d1g1",
+    );
+  });
+
+  it("omits the depth suffix for outcomes without a pointer (skips/errors)", () => {
+    const line = formatOverlayMeasurement({
+      sessionId: "s",
+      repoUrl: "r",
+      installOk: false,
+      installDurationMs: 12,
+      outcomes: [{ depDir: "node_modules", outcome: "skipped-ineligible" }],
+    });
+    expect(line).toBe(
+      "[overlay-measure] session=s repo=r install_ok=false install_ms=12 dirs=node_modules:skipped-ineligible",
+    );
   });
 });
