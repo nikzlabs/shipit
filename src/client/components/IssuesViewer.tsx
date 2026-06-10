@@ -159,7 +159,7 @@ function IssueRow({
           <span className="line-clamp-2">{issue.title}</span>
           <CaretRightIcon
             size={ICON_SIZE.XS}
-            className="mt-0.5 shrink-0 text-(--color-text-tertiary) opacity-0 group-hover:opacity-100 transition-opacity"
+            className="mt-1 shrink-0 text-(--color-text-tertiary) opacity-0 group-hover:opacity-100 transition-opacity"
           />
         </div>
         {issue.description && (
