@@ -8,58 +8,80 @@
 > "NOT DONE — host-gated" — **source-sync re-sequencing (A)** and the **workspace-view resolver (B)**
 > — are now **REJECTED, not pending**: the dep-dir design leaves `session.workspaceDir` authoritative
 > and the host-side clone in place, so neither is needed. The remaining work is the **dep-dir
-> retargeting** captured in the new "Phase 3b/4b — dependency-directory retargeting" section below.
+> implementation**, decomposed into the **7 thin phases (1 PR each)** below.
 
-## Dependency-directory retargeting (current remaining work)
+## Dependency-directory implementation — 7 phases, 1 PR each
 
-- [ ] **Read `agent.dep-dirs` from shipit.yaml** (default `[node_modules]`) in the shipit-config
-      parser; literal relative paths only (no globs). Add to `src/server/shipit-docs/shipit-yaml.md`.
-- [ ] **Validate each entry** — relative + inside the workspace + not the root + not containing
-      tracked files (gitignored artifact); invalid/missing → skip that dir (plain install), never break.
-- [ ] **`buildOverlaySpec` → N mounts.** Emit one overlay mount per declared dep dir at its subpath
-      (`/workspace/<dep-dir>`), each with its own base scope `(repo, runtime, dep-dir relpath)` and
-      per-session upper/work; resolve dep dirs against the **pre-container host clone** (so the source
-      parent exists; the daemon creates the artifact-leaf mountpoint). Drops the single
-      `/workspace`-root mount.
-- [ ] **Scope the worker snapshot to the dep dirs** (per-dir export), not the whole merged tree.
-- [ ] **Compose wiring:** mount the same per-session overlay volume(s) into services at the dep-dir
-      subpaths (reuse the shared-volume pattern), instead of rooting the whole workspace at the overlay.
-- [ ] **Host-matrix spike:** confirm a `type=overlay` volume mounts cleanly at a target **nested under
-      the `/workspace` bind** (`/workspace/node_modules`) on VPS/ext4 + Docker Desktop Mac/Windows.
-- [x] **Stripped the whole-workspace *application* layer from the branch** (the parts the dep-dir
-      design replaces wholesale, so the PR carries only the reusable foundation): removed
-      `workspace-snapshot.ts` + the `GET /workspace/snapshot` endpoint, `buildOverlaySpec` (single
-      `/workspace`-root mount) + `prepareOverlaySpec` + the overlay-spec container/`buildConfig`
-      threading, `publishOverlayBaseAfterInstall` + the `publishOverlayBase` hook/callback wiring, and
-      the compose-rooting override in `setupServiceManager` (+ its tests). **Kept** as reused
-      foundation: `overlay-volume.ts` primitives, `overlay-base.ts` publish CAS, `install-marker.ts`,
-      the `RepoGit` ancestry oracle, `GET /workspace/head-commit` (publish still needs source HEAD),
-      and the gating/scope/GC helpers in `overlay-session.ts`. These get retargeted per-dep-dir by the
-      items above (N mounts at subpaths, per-dir snapshot, scope key + GC gain the dep-dir relpath).
+**Granularity rule: one PR per phase.** Each phase is a thin, independently-mergeable slice that stays
+**inert while `OVERLAY_DEP_STORE` is off** and ships with its own tests. Ordered by dependency.
 
-### Rejected — do NOT implement (see plan.md "Rejected approaches")
+**Invariant — the flag must NOT be enabled until Phase 6 lands.** The GC live-set and teardown only
+become correct for N volumes in Phases 2/6; Phases 1–5 keep `liveOverlayScopeHashes` returning ∅ (flag
+off) so `sweepOrphanedOverlayBases` stays inert regardless. The flag flip is the last step of Phase 7.
 
-- [REJECTED] **(A) Source-sync re-sequencing** — clone/checkout/`git clean` inside the merged mount.
-  Obviated: dep-dir overlay keeps the host-side clone at the normal path.
-- [REJECTED] **(B) Workspace-view resolver** — routing file/doc/git/post-turn through the worker.
-  Obviated: `session.workspaceDir` stays authoritative (source + `.git` on the normal mount).
-- [REJECTED] **Host-visible overlay (privileged sidecar + propagation)** — privileged infra +
-  Windows gap; strictly dominated by the unprivileged daemon-overlay dep-dir design.
-- [REJECTED] **Globs in `dep-dirs`** — special-cases the artifact suffix for zero expressiveness gain;
-  literal paths degrade benignly and are agent-maintainable.
+The host-matrix mount-topology gate is **cleared** (nested-overlay spike 3/3 — see "Merged foundation"
+below). No empirical unknowns remain; the work from here is mechanical.
 
-## Disk cleanup retargeting (dep-dir)
+### Phase 1 — Config: read + validate `agent.dep-dirs`
 
-Separate from the mount/compose retargeting above: overlay removes the per-session full `node_modules`
-copy, so the dominant steady-state cost is gone, but cleanup **splits into three surfaces** and one
-existing reclaim path (disk-tier escalation) must be **retargeted**, or it silently reclaims nothing
-for overlay sessions. See `plan.md` → "Disk cleanup under the dep-dir design".
+- [ ] Parse `agent.dep-dirs` (default `[node_modules]`) in the shipit-config parser; **literal relative
+      paths only, no globs**. Add the key to `KNOWN_AGENT_KEYS`.
+- [ ] Validate each entry — relative + inside the workspace + not the root + not a tracked
+      (non-gitignored) path; invalid/missing → skip that dir (plain install for it), never break the
+      session.
+- [ ] Document the key in `src/server/shipit-docs/shipit-yaml.md`.
+- [ ] Unit tests (default, multiple dirs, nested dir, each rejected-entry case).
+- *Inert: nothing reads the parsed value yet.*
 
-- [ ] **Per-`(session, dep-dir)` live-set for base GC.** Make `liveOverlayScopeHashes` enumerate one
-      scope-hash per *(resumable session × declared dep dir)* (depends on the scope-key gaining the
-      dep-dir relpath). Hard requirement: `sweepOrphanedOverlayBases` must never reap a base that is a
-      **live overlay lowerdir** (undefined behavior), so the live-set must be complete across resumable
-      (not just running) sessions. Add a test that a live session's per-dep-dir bases are all retained.
+### Phase 2 — Spec shape: scope key + `buildOverlaySpec` → N specs + GC live-set
+
+- [ ] Extend the base scope key to `(repo, runtime fingerprint, dep-dir relpath)` —
+      `overlayScopeHash` / `resolveOverlayScope` gain the relpath.
+- [ ] Reintroduce `buildOverlaySpec` returning **N** `OverlaySpec` (one per declared dep dir from
+      Phase 1): `lowerdir = overlay-base/<scope-hash>`, per-session upper/work, mount target
+      `/workspace/<dep-dir>`. Resolve dep dirs against the **pre-container host clone** so the parent
+      dir is real — the daemon *will* `mkdir -p` an absent parent (proven by the spike) but prod must
+      not rely on that.
+- [ ] Update `liveOverlayScopeHashes` to enumerate one scope-hash per *(resumable session × declared
+      dep dir)* — **folded in here** (it is the same scope-key change) so the GC contract stays honest
+      at every intermediate merge.
+- [ ] Unit tests: config + session → N specs with correct paths/scopes; live-set retains all
+      per-dep-dir bases of a live session.
+- *Inert: specs aren't wired into container creation yet.*
+
+### Phase 3 — Mount wiring: create + mount N overlay volumes
+
+- [ ] Container creation creates the N overlay volumes (Phase-2 specs) and `buildMounts` mounts each at
+      its `/workspace/<dep-dir>` subpath, nested under the workspace mount. First phase that mounts when
+      the flag is on; the flag-off path is byte-for-byte unchanged.
+- [ ] Integration test (fake Docker): N volumes created + mounted at the right subpaths; a non-overlay
+      session is unchanged.
+- [ ] **Validate the recursive file-tree watcher descends into the nested submount** (same-namespace
+      inotify across a mount boundary) — the one item the nested-overlay spike deliberately did not
+      cover. See `host-overlay-spike.sh`'s inotify rung; this is the right phase since it's where the
+      nested mount first exists.
+
+### Phase 4 — Snapshot + publish, per dep dir
+
+- [ ] Worker exports **per-dep-dir** (not the whole merged tree).
+- [ ] Orchestrator pulls each export and publishes per `(session, dep-dir)` via the existing
+      `overlay-base.ts` `publishBase` CAS (reused unchanged — only the caller/granularity is new); re-add
+      the publish-after-install hook, per dep dir. Eligibility unchanged (exit-0 pre-user install whose
+      source base is the remote default commit).
+- [ ] Tests: a per-dir publish advances only the matching scope; cross-dir isolation; ineligible skips.
+
+### Phase 5 — Compose services at dep-dir subpaths
+
+- [ ] `generateComposeOverride` appends nested overlay mounts into services that need a dep dir, at the
+      same `<service-target>/<dep-dir>` subpaths (reuse the shared-volume refcount pattern proven by
+      `shared-volume-spike.sh`), instead of rooting the whole service workspace at an overlay.
+- [ ] Compose-generator unit tests (mounts at subpaths, never at the storage root or `overlay-base/`).
+
+### Phase 6 — Disk cleanup retargeting (GC correctness — the gate to enabling the flag)
+
+Overlay removes the per-session full `node_modules` copy, but cleanup splits across surfaces; this phase
+makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the dep-dir design".
+
 - [ ] **Teardown removes all N per-session overlay volumes.** `destroyContainer` must
       `removeOverlayVolume` for **each** of the session's overlay specs (not one). Confirm
       `sweepOrphanSessionVolumes`' `^shipit-([a-f0-9-]{12})_` regex reclaims every crash-orphaned
@@ -79,10 +101,34 @@ for overlay sessions. See `plan.md` → "Disk cleanup under the dep-dir design".
 - [ ] **Flatten/swap reclaim.** Confirm depth-cap flatten via `copySnapshotToBase`'s atomic swap
       rm's the old base generation (transient double-disk during the swap; live mounts keep pinned
       inodes). Add/confirm a test.
+- [ ] **Verify the per-`(session, dep-dir)` live-set end-to-end.** The enumeration itself lands in
+      Phase 2; here confirm the GC contract holds across the whole pipeline — `sweepOrphanedOverlayBases`
+      never reaps a base that is a **live overlay lowerdir** for any resumable (not just running)
+      session. Add a test that all of a live session's per-dep-dir bases are retained.
 - [ ] **Docs sync.** Update CLAUDE.md's "Disk cleanup" section (it describes per-session teardown as
       dropping compose **named volumes**) to note that overlay sessions also carry N per-dep-dir overlay
       volumes reclaimed the same way, and update any agent-facing `shipit-docs` if escalation behavior
       changes for overlay sessions.
+
+### Phase 7 — Enable path + measure & tune
+
+- [ ] Wire the overlay-spec into the **warm-pool standby** + **on-activation** paths so warm-claimed
+      sessions get the dep-dir overlay (today they would silently run plain).
+- [ ] Measure warm-install on the **containerized** path (`main` unchanged / `main`-advanced / cold;
+      separate network from extract/link). Set the final depth cap from measurement.
+- [ ] **Flip `OVERLAY_DEP_STORE` on** (the user's call) — only after Phases 1–6 are all merged and the
+      flag invariant above is satisfied.
+
+### Rejected — do NOT implement (see plan.md "Rejected approaches")
+
+- [REJECTED] **(A) Source-sync re-sequencing** — clone/checkout/`git clean` inside the merged mount.
+  Obviated: dep-dir overlay keeps the host-side clone at the normal path.
+- [REJECTED] **(B) Workspace-view resolver** — routing file/doc/git/post-turn through the worker.
+  Obviated: `session.workspaceDir` stays authoritative (source + `.git` on the normal mount).
+- [REJECTED] **Host-visible overlay (privileged sidecar + propagation)** — privileged infra +
+  Windows gap; strictly dominated by the unprivileged daemon-overlay dep-dir design.
+- [REJECTED] **Globs in `dep-dirs`** — special-cases the artifact suffix for zero expressiveness gain;
+  literal paths degrade benignly and are agent-maintainable.
 
 ---
 
@@ -160,7 +206,7 @@ top of this file.
       root — the *opposite* of the dep-dir design, which mounts overlays at subpaths).
 - [x] **Kept** `GET /workspace/head-commit` — publish still needs the source HEAD.
 
-### Still unproven — the one new host spike the dep-dir design needs
+### Host-spike status — the dep-dir mount-topology gate (CLEARED)
 
 - [x] **Nested-overlay-under-the-`/workspace`-bind topology — PROVEN, gate cleared (3/3).** The merged
       spikes proved overlay at the `/workspace` **root**; the dep-dir design instead keeps `/workspace`
@@ -173,11 +219,9 @@ top of this file.
       sharing all hold, including under a real host bind on ext4 (the literal prod topology). See
       [`FINDINGS.md`](./FINDINGS.md). **Carry-forward:** prod must resolve dep dirs against the host
       clone so the parent dir is real (don't rely on the daemon's `mkdir -p` of an absent parent).
-- [ ] **Recursive file-tree watcher across the nested submount.** Confirm the agent-container watcher
-      (recursive same-namespace inotify over `/workspace`) descends into the nested `node_modules`
-      submount so copy-ups there surface as change events — inotify does not cross a mount boundary
-      implicitly, but a recursive per-dir watcher should re-arm into the submount. Validate alongside the
-      spike (see `host-overlay-spike.sh`'s inotify rung).
+- One thing the nested spike deliberately did **not** cover — the recursive file-tree watcher
+  descending into the nested submount (same-namespace inotify across a mount boundary) — is now tracked
+  as a verification bullet in **Phase 3** (where the nested mount first exists), not here.
 
 ### Obviated by the pivot — do NOT implement
 
