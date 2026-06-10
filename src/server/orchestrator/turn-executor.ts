@@ -211,7 +211,7 @@ export async function executeAgentTurn(
     return true;
   };
   const recoverAuth = async (): Promise<boolean> => {
-    let healed = false;
+    let healed: boolean;
     try {
       healed = deps.ensureAgentTokenFresh ? await deps.ensureAgentTokenFresh(agentId) : false;
     } catch (err) {

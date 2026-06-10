@@ -515,7 +515,7 @@ async function readPromptFile(promptFile: string, deps: RunDeps): Promise<string
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     fail(deps.io, `shipit session create: could not read prompt file ${promptFile}: ${message}`);
-    throw new Error("__shim_exit__"); // unreachable; fail() exits.
+    throw new Error("__shim_exit__", { cause: err }); // unreachable; fail() exits.
   }
 }
 

@@ -309,7 +309,7 @@ export async function searchShipitSource(
   const args = ["grep", "-n", "-I", "-e", trimmed, ref];
   if (path) args.push("--", path);
 
-  let stdout = "";
+  let stdout: string;
   try {
     stdout = await runGit(dir, args);
   } catch (err) {

@@ -473,7 +473,7 @@ async function exchangeCodeForTokens(opts: {
       signal: oauthFetchSignal(),
     });
   } catch (err) {
-    throw new Error(`Token endpoint request failed: ${getErrorMessage(err)}`);
+    throw new Error(`Token endpoint request failed: ${getErrorMessage(err)}`, { cause: err });
   }
   if (!res.ok) {
     const text = await res.text().catch(() => "");

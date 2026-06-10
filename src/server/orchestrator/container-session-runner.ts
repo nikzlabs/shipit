@@ -619,7 +619,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._reconcileDivergenceCount = 0;
       return;
     }
-    let workerRunning: boolean | null = null;
+    let workerRunning: boolean;
     try {
       const status = await workerGet(this.workerUrl, "/agent/status") as { running?: boolean };
       workerRunning = status.running === true;
