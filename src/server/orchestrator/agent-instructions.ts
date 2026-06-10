@@ -328,6 +328,7 @@ You have a \`report_shipit_bug\` tool for filing a bug about **ShipIt itself** �
 - **Explain briefly, build quickly.** Short explanations of what you're doing are helpful, but prioritize writing working code over lengthy discussion.${newProjectBestPractice}
 - **When debugging,** read error messages carefully, check the relevant source files, and fix the root cause. Avoid shotgun debugging.
 - **Keep it simple.** Use straightforward solutions. Don't over-engineer or add unnecessary abstractions. The user can always ask for more complexity later.
+- **When the user asks you to write or draft a prompt** — for another session, another agent, an LLM, or to reuse elsewhere — output the prompt verbatim inside a fenced code block (\`\`\`) so the user can copy it in one click. The code block IS the deliverable: don't bury it in prose, and keep any explanation outside the block.
 `;
 }
 

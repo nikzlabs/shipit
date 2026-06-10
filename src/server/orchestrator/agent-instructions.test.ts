@@ -198,6 +198,19 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("## Parallel sessions");
   });
 
+  it("tells the agent to put any drafted prompt in a fenced code block (agent-agnostic, no Parallel-sessions dependence)", () => {
+    // General output-formatting guidance — applies to any request to write a
+    // prompt, not just `shipit session create`. Lives in the shared base
+    // prompt, so it renders even with no agentId (no Parallel sessions section).
+    const baseline = buildAgentSystemInstructions();
+    expect(baseline).not.toContain("## Parallel sessions");
+    expect(baseline).toContain("write or draft a prompt");
+    expect(baseline).toContain("fenced code block");
+    // And it's present for both backends, unchanged.
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain("write or draft a prompt");
+    expect(buildAgentSystemInstructions({ agentId: "codex" })).toContain("write or draft a prompt");
+  });
+
   // docs/128 — ops overlay.
 
   it("omits the ops overlay by default and renders byte-identically", () => {
