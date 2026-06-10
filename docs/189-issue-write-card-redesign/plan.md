@@ -61,8 +61,15 @@ action attaches to it. The `attribution` field **stays in the data model**
 - **Line 1 — verb + identifier:** an explicit verb word does the disambiguation,
   not the icon alone: **Commented on** · **Edited** · **Set status of** ·
   **Assigned** + the bold identifier. (`Set status of`, not `Moved` — "moved"
-  reads as moved-to-another-project.) The identifier is no longer duplicated; the
-  deep link collapses to a bare ⧉ icon.
+  reads as moved-to-another-project.) The identifier is no longer duplicated.
+- **The whole card is the open affordance.** There is no separate open/deep-link
+  glyph: clicking anywhere on the card (or Enter/Space when focused) opens the
+  issue in ShipIt's inline detail view. Undo is the one nested action and stops
+  propagation so it doesn't also open. *(Anchoring to the specific comment within
+  the detail view is a follow-up — the inline `IssueDetail` doesn't render an
+  issue's comments yet, so there's nothing to anchor to. Until it does, opening
+  the issue inline is the right behavior rather than linking out, per principle
+  §4.)*
 - **Issue title** renders faint under line 1, so you know *which* issue without
   the link-out.
 - **Line 2 — the actual change**, verb-specific:

@@ -112,25 +112,37 @@ describe("IssueWriteCard (docs/189)", () => {
     expect(btn).toBeDisabled();
   });
 
-  it("calls onUndo when Undo is clicked", () => {
+  it("calls onUndo (and not onOpen) when Undo is clicked", () => {
     const onUndo = vi.fn();
+    const onOpen = vi.fn();
     seed();
-    render(<IssueWriteCard cardId={CARD_ID} onUndo={onUndo} />);
+    render(<IssueWriteCard cardId={CARD_ID} onUndo={onUndo} onOpen={onOpen} />);
     fireEvent.click(screen.getByRole("button", { name: /^undo$/i }));
     expect(onUndo).toHaveBeenCalledWith(CARD_ID);
+    // Undo stops propagation so it doesn't also open the issue.
+    expect(onOpen).not.toHaveBeenCalled();
   });
 
-  it("opens the inline detail view (not a link-out) from the identifier's lookup id", () => {
+  it("opens the inline detail view (not a link-out) when the card is clicked", () => {
     const onOpen = vi.fn();
     seed();
     render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
-    fireEvent.click(screen.getByRole("button", { name: /open SHI-48 in ShipIt/i }));
+    // The whole card is the open affordance — no separate glyph.
+    fireEvent.click(screen.getByTestId("issue-write-card"));
     expect(onOpen).toHaveBeenCalledWith({
       tracker: "linear",
       identifier: "SHI-48",
       title: "Rewind handle hugs long user bubbles",
       url: "https://linear.app/x/issue/SHI-48",
     });
+  });
+
+  it("opens the issue on Enter/Space when the card is focused (keyboard)", () => {
+    const onOpen = vi.fn();
+    seed();
+    render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
+    fireEvent.keyDown(screen.getByTestId("issue-write-card"), { key: "Enter" });
+    expect(onOpen).toHaveBeenCalledOnce();
   });
 
   it("collapses to a struck-through summary with no Undo once undone", () => {

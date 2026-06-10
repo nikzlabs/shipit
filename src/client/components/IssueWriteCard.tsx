@@ -9,12 +9,17 @@
  * Layout (docs/189): the card leads with the issue and surfaces the actual
  * change, not just the verb.
  *   - Line 1 — an explicit verb word ("Commented on" / "Edited" / "Set status
- *     of" / "Assigned") + the bold identifier (once, no duplicate); the open
- *     affordance collapses to a single icon.
+ *     of" / "Assigned") + the bold identifier (once, no duplicate).
  *   - A faint issue title under line 1, so you know *which* issue without the
  *     link-out.
  *   - Line 2 — the verb-specific change: a comment-body preview, a title /
  *     status delta, or the new assignee.
+ *
+ * The whole card is the open affordance — clicking it (or Enter/Space when
+ * focused) opens the issue in ShipIt's inline detail view, so there is no
+ * separate open glyph. Undo is the one nested action; it stops propagation so
+ * it doesn't also open the issue. (Anchoring to the specific comment inside the
+ * detail view is a follow-up — the inline view doesn't render comments yet.)
  *
  * The authorship line ("by the ShipIt agent (workspace token)") is gone: the
  * card is self-evidently the agent's (it lives in the agent's transcript and
@@ -28,7 +33,6 @@
 
 import {
   ArrowUUpLeftIcon,
-  CaretRightIcon,
   ChatCircleIcon,
   CheckCircleIcon,
   FlagIcon,
@@ -139,10 +143,32 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
     return null;
   })();
 
+  // The whole card opens the issue inline. Derive the lookup id from the
+  // display identifier (uniform across trackers) rather than `card.issueId`,
+  // which for GitHub is the undo target, not a valid `getIssue` key.
+  const openIssue = () =>
+    onOpen?.({
+      tracker: card.tracker,
+      identifier: card.identifier,
+      ...(card.title ? { title: card.title } : {}),
+      ...(card.url ? { url: card.url } : {}),
+    });
+
   return (
     <div
       data-testid="issue-write-card"
-      className={`rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs ${undone ? "opacity-70" : ""}`}
+      role="button"
+      tabIndex={0}
+      onClick={openIssue}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          openIssue();
+        }
+      }}
+      title={`Open ${card.identifier} in ShipIt`}
+      aria-label={`Open ${card.identifier} in ShipIt`}
+      className={`w-full text-left rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs cursor-pointer transition-colors hover:bg-(--color-bg-hover) focus:outline-none focus-visible:ring-1 focus-visible:ring-(--color-accent) ${undone ? "opacity-70" : ""}`}
     >
       <div className="flex items-center gap-2">
         <span className={`shrink-0 ${undone ? "text-(--color-text-tertiary)" : "text-(--color-accent)"}`}>
@@ -165,30 +191,16 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() =>
-            onOpen?.({
-              // Derive the lookup id from the display identifier (uniform across
-              // trackers) rather than `card.issueId`, which for GitHub is the
-              // undo target, not a valid `getIssue` key. See `issueLookupId`.
-              tracker: card.tracker,
-              identifier: card.identifier,
-              ...(card.title ? { title: card.title } : {}),
-              ...(card.url ? { url: card.url } : {}),
-            })
-          }
-          title={`Open ${card.identifier} in ShipIt`}
-          className="shrink-0 inline-flex items-center rounded px-1 py-0.5 text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors cursor-pointer"
-        >
-          <CaretRightIcon size={ICON_SIZE.SM} />
-        </button>
-
         {!undone && (
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => onUndo?.(cardId)}
+            // Stop the click from also opening the issue (the card is the open
+            // target); Undo is the one nested action.
+            onClick={(e) => {
+              e.stopPropagation();
+              onUndo?.(cardId);
+            }}
             disabled={undoing}
             className="shrink-0"
           >
