@@ -103,4 +103,53 @@ describe("PreviewServicesDrawer", () => {
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
     expect(localStorage.getItem("shipit:preview-services:expanded")).toBe("1");
   });
+
+  it("restart sends stop now, then start once the service reports stopped", () => {
+    const props = baseProps();
+    const services = [svc({ name: "web", port: 3000, status: "running" })];
+    const { rerender } = render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    fireEvent.click(screen.getByRole("button", { name: "Restart web" }));
+    // Stop is dispatched immediately; start is deferred until "stopped" arrives.
+    expect(props.send).toHaveBeenCalledWith({ type: "stop_service", name: "web" });
+    expect(props.send).not.toHaveBeenCalledWith({ type: "start_service", name: "web" });
+    // Service transitions to stopped → the deferred start fires.
+    rerender(<PreviewServicesDrawer services={[svc({ name: "web", port: 3000, status: "stopped" })]} {...props} />);
+    expect(props.send).toHaveBeenCalledWith({ type: "start_service", name: "web" });
+  });
+
+  it("'Stop all' stops every running/starting service", () => {
+    const props = baseProps();
+    const services = [
+      svc({ name: "web", port: 3000, status: "running" }),
+      svc({ name: "worker", status: "starting" }),
+      svc({ name: "db", status: "stopped" }),
+    ];
+    render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    fireEvent.click(screen.getByRole("button", { name: "Stop all" }));
+    expect(props.send).toHaveBeenCalledWith({ type: "stop_service", name: "web" });
+    expect(props.send).toHaveBeenCalledWith({ type: "stop_service", name: "worker" });
+    expect(props.send).not.toHaveBeenCalledWith({ type: "stop_service", name: "db" });
+  });
+
+  it("'Start all' appears when nothing is running and starts the stopped services", () => {
+    const props = baseProps();
+    const services = [svc({ name: "web", status: "stopped" }), svc({ name: "db", status: "error" })];
+    render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    fireEvent.click(screen.getByRole("button", { name: "Start all" }));
+    expect(props.send).toHaveBeenCalledWith({ type: "start_service", name: "web" });
+    expect(props.send).toHaveBeenCalledWith({ type: "start_service", name: "db" });
+  });
+
+  it("a crashed service shows its error and an 'ask the agent to fix' action", () => {
+    const props = baseProps();
+    const services = [svc({ name: "db", status: "error", error: "exit 137 (OOM)" })];
+    render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    expect(screen.getByText("exit 137 (OOM)")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Ask the agent to fix/ }));
+    expect(props.onSendToAgent).toHaveBeenCalledWith("db", "error", "exit 137 (OOM)");
+  });
 });

@@ -7,13 +7,18 @@ import {
   PaperPlaneRightIcon,
   PlayIcon,
   StopIcon,
+  ArrowClockwiseIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { ServiceList } from "./ServiceList.js";
 import { ServiceLogViewer } from "./ServiceLogViewer.js";
+import { buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
 import { usePreviewStore, type ManagedServiceState } from "../stores/preview-store.js";
 import type { WsClientMessage, WsServerMessage } from "../../server/shared/types.js";
+
+/** API host for container-mode subdomain URLs (e.g. "localhost:3001"). */
+const API_HOST = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
 
 /** Maximum number of plain-text lines kept for "Send to Agent". */
 const MAX_PLAIN_LINES = 200;
@@ -39,16 +44,57 @@ function saveHeight(v: number): void {
 }
 
 function StatusDot({ status }: { status: ManagedServiceState["status"] }) {
+  if (status === "running") {
+    return (
+      <span className="relative flex items-center justify-center w-2 h-2 shrink-0">
+        <span className="absolute inline-flex w-2 h-2 rounded-full bg-(--color-success) opacity-60 animate-ping" />
+        <span className="relative inline-flex w-2 h-2 rounded-full bg-(--color-success)" />
+      </span>
+    );
+  }
   const color =
-    status === "running" ? "bg-(--color-success)" :
     status === "starting" ? "bg-(--color-accent)" :
-    status === "error" ? "bg-orange-400" :
+    status === "error" ? "bg-(--color-error)" :
     "bg-(--color-text-tertiary)";
   return <span className={`w-2 h-2 rounded-full shrink-0 ${color}`} />;
 }
 
+const segColor: Record<ManagedServiceState["status"], string> = {
+  running: "bg-(--color-success)",
+  starting: "bg-(--color-accent)",
+  error: "bg-(--color-error)",
+  stopped: "bg-(--color-border-secondary)",
+};
+
+/** Compact one-segment-per-service health bar shown in the expanded header. */
+function HealthBar({ services }: { services: ManagedServiceState[] }) {
+  return (
+    <span className="flex gap-[3px]">
+      {services.map((s) => (
+        <span key={s.name} className={`w-[18px] h-1 rounded-full ${segColor[s.status]}`} title={`${s.name}: ${s.status}`} />
+      ))}
+    </span>
+  );
+}
+
+/** Pill button for the header's bulk actions (Start/Stop/Restart all). */
+function ToolbarButton({ onClick, title, children }: { onClick: () => void; title: string; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className="inline-flex items-center gap-1.5 px-2 py-1 rounded-md bg-(--color-bg-tertiary) border border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-active) transition-[color,background-color] duration-(--duration-fast) text-xs font-medium cursor-pointer"
+    >
+      {children}
+    </button>
+  );
+}
+
 interface PreviewServicesDrawerProps {
   services: ManagedServiceState[];
+  /** Active session id — used to build per-service external (new-tab) URLs. */
+  sessionId?: string;
   /** Whether the Preview tab is currently visible — gates xterm mount so the
    *  log viewer never opens against a zero-size (hidden) container. */
   active: boolean;
@@ -72,6 +118,7 @@ interface PreviewServicesDrawerProps {
  */
 export function PreviewServicesDrawer({
   services,
+  sessionId,
   active,
   lastMessage,
   drainMessages,
@@ -127,6 +174,43 @@ export function PreviewServicesDrawer({
     onSendToAgent(effectiveService, svc?.status ?? "unknown", plainLinesRef.current.join("\n").trim());
   }, [effectiveService, services, onSendToAgent]);
 
+  // --- Restart = client-orchestrated stop → start. Sending both at once would
+  //     let `start` race the still-running container, so we stop now and start
+  //     again only once the service reports "stopped" on the status stream. ---
+  const restartPendingRef = useRef<Set<string>>(new Set());
+  const handleRestart = useCallback((name: string) => {
+    restartPendingRef.current.add(name);
+    send({ type: "stop_service", name });
+  }, [send]);
+
+  // eslint-disable-next-line no-restricted-syntax -- reacts to the async service-status stream
+  useEffect(() => {
+    if (restartPendingRef.current.size === 0) return;
+    for (const svc of services) {
+      if (restartPendingRef.current.has(svc.name) && svc.status === "stopped") {
+        restartPendingRef.current.delete(svc.name);
+        send({ type: "start_service", name: svc.name });
+      }
+    }
+  }, [services, send]);
+
+  const handleAskFix = useCallback((svc: ManagedServiceState) => {
+    onSendToAgent(svc.name, svc.status, svc.error ?? "");
+  }, [onSendToAgent]);
+
+  const externalUrlFor = useCallback((svc: ManagedServiceState): string | null => {
+    if (!sessionId || !svc.port || svc.status !== "running") return null;
+    return buildSubdomainUrl(sessionId, svc.port, API_HOST);
+  }, [sessionId]);
+
+  // --- Bulk actions over the whole stack ---
+  const startable = services.filter((s) => s.status === "stopped" || s.status === "error");
+  const stoppable = services.filter((s) => s.status === "running" || s.status === "starting");
+  const restartable = services.filter((s) => s.status === "running");
+  const startAll = () => startable.forEach((s) => send({ type: "start_service", name: s.name }));
+  const stopAll = () => stoppable.forEach((s) => send({ type: "stop_service", name: s.name }));
+  const restartAll = () => restartable.forEach((s) => handleRestart(s.name));
+
   // --- Vertical drag-resize ---
   const onResizeStart = useCallback((e: React.MouseEvent | React.TouchEvent) => {
     const startY = "touches" in e ? e.touches[0]?.clientY ?? 0 : e.clientY;
@@ -169,6 +253,7 @@ export function PreviewServicesDrawer({
   if (services.length === 0) return null;
 
   const runningCount = services.filter((s) => s.status === "running").length;
+  const showToolbar = expanded && !!selectedSvc;
 
   return (
     <div
@@ -190,50 +275,50 @@ export function PreviewServicesDrawer({
       )}
 
       {/* Header strip */}
-      <div className="flex items-center gap-2 px-2 h-8 shrink-0 text-xs select-none">
+      <div className="flex items-center gap-2.5 px-3 min-h-9 shrink-0 text-xs select-none border-b border-(--color-border-primary)">
         <button
           onClick={toggleExpanded}
-          className="flex items-center gap-1.5 text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+          className="flex items-center gap-1.5 text-(--color-text-secondary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast) cursor-pointer shrink-0"
           aria-expanded={expanded}
           aria-label={expanded ? "Collapse services" : "Expand services"}
         >
           {expanded ? <CaretDownIcon size={ICON_SIZE.XS} /> : <CaretUpIcon size={ICON_SIZE.XS} />}
-          {!selectedSvc && (
-            <>
-              <span className="font-medium text-(--color-text-primary)">Services</span>
-              <span className="text-(--color-text-tertiary) tabular-nums">{runningCount}/{services.length}</span>
-            </>
-          )}
+          {!showToolbar && <span className="font-semibold text-(--color-text-primary) text-[13px]">Services</span>}
         </button>
 
-        {selectedSvc ? (
+        {showToolbar && selectedSvc ? (
           // Expanded + a service is selected: header doubles as the log toolbar.
           <>
             <button
               onClick={() => setSelectedService(null)}
-              className="flex items-center text-(--color-text-secondary) hover:text-(--color-text-primary) transition-colors cursor-pointer"
+              className="flex items-center text-(--color-text-secondary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast) cursor-pointer shrink-0"
               title="Back to services"
               aria-label="Back to services"
             >
               <ArrowLeftIcon size={ICON_SIZE.SM} />
             </button>
             <StatusDot status={selectedSvc.status} />
-            <span className="font-medium text-(--color-text-primary) truncate">{selectedSvc.name}</span>
+            <span className="font-semibold text-(--color-text-primary) truncate">{selectedSvc.name}</span>
             {selectedSvc.port && selectedSvc.status === "running" && (
-              <span className="text-(--color-text-tertiary)">:{selectedSvc.port}</span>
+              <span className="font-mono text-(--color-text-tertiary)">:{selectedSvc.port}</span>
             )}
             {selectedSvc.error && (
-              <span className="text-orange-400 truncate max-w-40" title={selectedSvc.error}>{selectedSvc.error}</span>
+              <span className="text-(--color-warning) truncate max-w-40" title={selectedSvc.error}>{selectedSvc.error}</span>
             )}
-            <div className="ml-auto flex items-center gap-1">
+            <div className="ml-auto flex items-center gap-1 shrink-0">
+              {selectedSvc.status === "running" && (
+                <Button variant="ghost" size="sm" onClick={() => handleRestart(selectedSvc.name)} title={`Restart ${selectedSvc.name}`}>
+                  <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+                </Button>
+              )}
               {(selectedSvc.status === "stopped" || selectedSvc.status === "error") && (
                 <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedSvc.name })} title={`Start ${selectedSvc.name}`}>
-                  <PlayIcon size={ICON_SIZE.SM} />
+                  <PlayIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}
               {(selectedSvc.status === "running" || selectedSvc.status === "starting") && (
                 <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedSvc.name })} title={`Stop ${selectedSvc.name}`}>
-                  <StopIcon size={ICON_SIZE.SM} />
+                  <StopIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}
               <Button variant="secondary" size="sm" onClick={handleSendToAgent} title="Send logs to agent">
@@ -242,11 +327,40 @@ export function PreviewServicesDrawer({
               </Button>
             </div>
           </>
+        ) : expanded ? (
+          // Expanded list view: health bar + bulk controls.
+          <>
+            <div className="flex items-center gap-2 min-w-0">
+              <HealthBar services={services} />
+              <span className="text-(--color-text-secondary) whitespace-nowrap">
+                <span className="text-(--color-text-primary) font-semibold tabular-nums">{runningCount}</span> of {services.length} running
+              </span>
+            </div>
+            <div className="ml-auto flex items-center gap-1.5 shrink-0">
+              {restartable.length > 0 && (
+                <ToolbarButton onClick={restartAll} title="Restart all running services">
+                  <ArrowClockwiseIcon size={ICON_SIZE.XS} /> Restart all
+                </ToolbarButton>
+              )}
+              {stoppable.length > 0 ? (
+                <ToolbarButton onClick={stopAll} title="Stop all running services">
+                  <StopIcon size={ICON_SIZE.XS} weight="fill" /> Stop all
+                </ToolbarButton>
+              ) : startable.length > 0 ? (
+                <ToolbarButton onClick={startAll} title="Start all services">
+                  <PlayIcon size={ICON_SIZE.XS} weight="fill" /> Start all
+                </ToolbarButton>
+              ) : null}
+            </div>
+          </>
         ) : (
-          // Collapsed (or list view): summarize status with dots on the right.
-          <span className="ml-auto flex items-center gap-1">
-            {services.map((s) => <StatusDot key={s.name} status={s.status} />)}
-          </span>
+          // Collapsed: compact count + status dots.
+          <>
+            <span className="text-(--color-text-tertiary) tabular-nums">{runningCount}/{services.length}</span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {services.map((s) => <StatusDot key={s.name} status={s.status} />)}
+            </span>
+          </>
         )}
       </div>
 
@@ -265,13 +379,16 @@ export function PreviewServicesDrawer({
               <div className="flex-1" style={{ backgroundColor: "#030712" }} />
             )
           ) : (
-            <div className="flex-1 overflow-auto p-2">
+            <div className="flex-1 overflow-auto p-2.5">
               <ServiceList
                 services={services}
                 onStart={(name) => send({ type: "start_service", name })}
                 onStop={(name) => send({ type: "stop_service", name })}
+                onRestart={handleRestart}
                 onSelectPreview={(_name, port) => onSelectPreviewPort(port)}
                 onSelect={setSelectedService}
+                onAskFix={handleAskFix}
+                externalUrlFor={externalUrlFor}
               />
             </div>
           )}

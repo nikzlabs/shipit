@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-95
 description: Fold the standalone Services tab into a collapsible, resizable drawer at the bottom of the Preview tab.
 ---
 
@@ -40,10 +41,10 @@ of competing for a tab.
   verbatim from the old `ServicesPanel` so the drawer can embed it. Mounts only
   when the Preview tab is actually visible (`active` prop), so xterm never opens
   against a hidden, zero-size container.
-- **`ServiceList.tsx`** — unchanged; reused for the expanded list view. Clicking
-  a service's `:port` chip now pivots the preview iframe to that port
-  (`onSelectPreviewPort` → `preview-store.setSelectedPort`), tying the two
-  surfaces together.
+- **`ServiceList.tsx`** — the expanded list view, redesigned as **cards** (see
+  "Visual redesign" below). Clicking a service's `:port` chip pivots the preview
+  iframe to that port (`onSelectPreviewPort` → `preview-store.setSelectedPort`),
+  tying the two surfaces together.
 
 ### App.tsx wiring
 
@@ -69,11 +70,43 @@ overlay is now just a "No preview running" nudge with a **Show services** button
 that expands the drawer (`setServicesDrawerExpanded(true)`). `PreviewFrame` no
 longer imports `ServiceList` or takes `onStartService`/`onStopService` props.
 
+## Visual redesign
+
+The drawer's contents were reworked from a flat row list into a polished,
+card-based surface (the original was "barebones and ugly"). Frontend-only — no
+backend or data-model changes; everything renders from the existing
+`ManagedServiceState` (`name`, `status`, `port`, `preview`, `error`).
+
+- **Service cards** (`ServiceList.tsx`): each service is a rounded card on
+  `--color-bg-tertiary` with a status-colored left rail, a live status indicator
+  (a pulsing `animate-ping` dot for *running*, a spinner for *starting*, a
+  glowing dot for *crashed*, a flat dot for *stopped*), the service name (a
+  button that opens its log view), a `Preview`/`Manual` mode badge derived from
+  `preview`, a clickable `:port` chip, and hover-revealed icon actions.
+- **Per-service actions**: open-in-new-tab (running services only — URL built
+  client-side via `buildSubdomainUrl(sessionId, port, apiHost)`, hidden when no
+  subdomain URL is possible, e.g. local mode), view logs, **restart**, and
+  start/stop. Restart is *client-orchestrated*: send `stop_service` now, then
+  `start_service` once the service reports `stopped` on the status stream
+  (sending both at once would race the still-running container). Tracked in a
+  `restartPendingRef` set, drained by an effect on the `services` prop.
+- **Crash affordance**: an errored service shows an error strip (with an `OOM`
+  badge when the message matches `/oom/i`) and an **"Ask the agent to fix →"**
+  link that prefills the composer via the existing `onSendToAgent` path.
+- **Header** (`PreviewServicesDrawer.tsx`): expanded, it shows a per-service
+  health segment bar + "N of M running" and bulk controls (**Restart all** /
+  **Stop all**, or **Start all** when nothing is running). Collapsed, it stays a
+  thin strip: count + per-service status dots. The selected-service log toolbar
+  also gained a Restart button.
+
+All colors use design tokens; `--color-warning`/`--color-error` replaced the
+ad-hoc `text-orange-400` the old rows used.
+
 ## Key files
 
 - `src/client/components/PreviewServicesDrawer.tsx` — the drawer (new)
 - `src/client/components/ServiceLogViewer.tsx` — extracted xterm log viewer (new)
-- `src/client/components/ServiceList.tsx` — reused list rows (unchanged)
+- `src/client/components/ServiceList.tsx` — card-based service list (redesigned)
 - `src/client/App.tsx` — flex-column layout, tab removal, `rightTab` coercion
 - `src/client/stores/ui-store.ts` — `RightTab` (no longer includes `"services"`)
 - `src/client/utils/local-storage.ts` — `VALID_RIGHT_TABS` (drops `"services"`;
