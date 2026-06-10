@@ -118,18 +118,19 @@ The store's two snapshot accessors map cleanly: `snapshotEntries` → `WsLogReco
 Both surfaces render through a single read-only xterm component, replacing **both** `ServiceLogViewer` and the bespoke DOM list inside `TerminalPanel`:
 
 ```tsx
-<LogView channel="agent" filterable sources={ALL_SOURCES} />   // bottom terminal "Logs" tab
-<LogView channel={`service:${name}`} />                        // preview-services drawer
+<LogView channel="agent" showSource />        // bottom terminal "Logs" tab
+<LogView channel={`service:${name}`} />       // preview-services drawer
 ```
 
-`LogView` owns the xterm instance (the existing `ServiceLogViewer` theme/addons/fit logic, lifted verbatim), plus an in-memory `records[]` **model**:
+`LogView` owns the xterm instance (the existing `ServiceLogViewer` theme + fit + web-links logic, lifted verbatim) plus the `@xterm/addon-search` `SearchAddon`, and an in-memory `records[]` **model**:
 
 - On mount: `send({ type: "subscribe_logs", channel })`.
 - `log_snapshot` seeds the model and writes it; `log_append` pushes and writes incrementally; `log_clear` resets.
-- **Rendering a record:** agent records are written as `dim(HH:MM:SS) {sourceColor}[src]{reset} text` (so the agent tab finally renders ANSI color from CLI output, which the old DOM list stripped); service records write `text` raw.
-- **Source filtering** (the one capability that doesn't come free on a raw grid): when `filterable`, `LogView` renders the source chips and, on toggle, **clears and re-writes the xterm from the filtered model**. Cheap because the model is already in memory and bounded. Services don't pass `filterable`, so they get a plain terminal with no chips. This is the deliberate cost of unifying onto xterm — see Open Questions.
+- **Rendering a record:** with `showSource` (agent), records are written as `dim(HH:MM:SS) {sourceColor}[src]{reset} text` — so each line still shows its origin and color, *and* the agent tab finally renders ANSI from CLI output (which the old DOM list stripped). Service records write `text` raw.
 
-This is a net **upgrade** for the agent Logs tab (true ANSI, terminal scrollback, web-links, copy) while keeping its timestamp/source/filter affordances, and it deletes the second renderer entirely.
+**Search, not filtering.** We drop the per-source filter chips (`err/out/srv/pre/ins`) entirely — they were cryptic and rarely used — and replace them with a **search box** wired to the `SearchAddon`: type to highlight matches, Enter / Shift-Enter (and ⌘/Ctrl-F to focus) for next / previous, with a match count. This is strictly simpler than the rejected filter approach (no buffer re-write on toggle), is what users actually reach for in a log pane, and works **identically for both channels** — services get search too, for free. `source` stays in the record for *display* (prefix + color via `showSource`); it just isn't a filter axis anymore.
+
+This is a net **upgrade** for the agent Logs tab (true ANSI, terminal scrollback, web-links, copy, search) and deletes the second renderer entirely.
 
 ### Integration — agent container (the Logs tab)
 
@@ -161,8 +162,8 @@ Logs for a **live-but-idle-evicted** session are intentionally **kept** (the ses
 
 The client work is the rendering unification, not just a bigger backlog:
 
-- **New `LogView` component** (lifts `ServiceLogViewer`'s xterm setup) consuming the channel-keyed messages and owning the `records[]` model + filter rewrite. `ServiceLogViewer` is deleted.
-- **`TerminalPanel`** keeps its Logs/Shell sub-tab switcher and source chips, but the Logs content becomes `<LogView channel="agent" filterable />`; the DOM-list rendering and the `terminal-store` `LogEntry[]` array are removed (the model now lives in `LogView`).
+- **New `LogView` component** (lifts `ServiceLogViewer`'s xterm setup) consuming the channel-keyed messages and owning the `records[]` model + the `SearchAddon` search box. `ServiceLogViewer` is deleted.
+- **`TerminalPanel`** keeps its Logs/Shell sub-tab switcher but **drops the source-filter chips**; the Logs content becomes `<LogView channel="agent" showSource />` with a search box, and the DOM-list rendering + the `terminal-store` `LogEntry[]` array + `hiddenSources` filter state are removed (the model now lives in `LogView`).
 - **`PreviewServicesDrawer`** swaps `ServiceLogViewer` for `<LogView channel={"service:"+name} />`.
 - **Message handlers** (`hooks/message-handlers/`) collapse `log_entry` + the `service_log*` handlers into one `log_snapshot` / `log_append` / `log_clear` path keyed by channel.
 - Snapshot-seeds-the-model means a reconnect can't duplicate (the snapshot replaces the model), so the old `clear_logs`-first dance is no longer needed; we still test the reconnect path.
@@ -177,7 +178,7 @@ The client work is the rendering unification, not just a bigger backlog:
 - Extend `terminal-logs-relay.test.ts` — agent logs survive a simulated orchestrator "restart" (new `LogStore` over the same `sessions/{id}/logs` dir) and replay on a fresh connect; cross-session non-leak still holds; `clear_logs` empties the durable file.
 - Service path — `service-manager` test: streamed chunks land in the channel file; `snapshotLogs` reads the file; reconcile/`logBuffers.clear()` does **not** drop the durable backlog.
 - No-duplicate-on-reconnect: a `log_snapshot` after reconnect replaces the model rather than appending (client idempotency).
-- `LogView` component test: snapshot seeds + writes; append writes incrementally; `log_clear` resets; for a `filterable` channel, toggling a source clears and re-writes from the filtered model; service channel renders no chips.
+- `LogView` component test: snapshot seeds + writes; append writes incrementally; `log_clear` resets; search highlights matches and next/prev cycles them; `showSource` renders the source prefix while a service channel does not.
 
 ## Migration / rollout
 
@@ -186,11 +187,12 @@ The client work is the rendering unification, not just a bigger backlog:
 
 ## Open questions
 
-1. **Source filtering on xterm — keep it (recommended) or drop it?** Unifying onto xterm means the agent tab's per-source chips can't toggle line visibility in place; we re-write the buffer from the in-memory filtered model on toggle. Recommended: **keep** it (it's genuinely useful and cheap with the model already in hand), behind a `filterable` prop services don't pass. Alternative: drop chips entirely for maximum simplicity — flag for a product call.
-2. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; collapse `createLogBuffer`'s array into a thin shim over `LogStore`.
-3. **Retention caps** — confirm `MAX_AGENT_BYTES` / `MAX_SERVICE_BYTES` (~1 MB/channel?), and whether the agent cap should be line-count rather than bytes.
-4. **Write batching** — append per line is fine for the agent channel; for chatty services consider coalescing `-f` chunks on a short timer (or relying on the OS write buffer) so we don't `appendFile` on every tiny chunk. Validate before optimising.
-5. **fd lifecycle** — keep a long-lived append fd per active channel (fast, but must close on session dispose / rotate), or open-append-close per write (simpler, slightly slower). Leaning long-lived with close-on-dispose.
+1. **Source filtering → RESOLVED: drop the chips, add search.** The `err/out/srv/pre/ins` chips were cryptic and underused; replaced by a `SearchAddon` search box (next/prev/highlight/count) that works for both channels. `source` is kept for display (prefix + color) only. This also removes the filter-rewrite complexity entirely.
+2. **Full-file search (future)?** Client search covers the loaded scrollback/snapshot (a large tail). Searching the *entire* persisted backlog would need a server-side grep over the channel file — deferred; the snapshot tail is expected to be enough.
+3. **Keep the in-memory rings as a hot cache, or delete them entirely?** Leaning: keep `ServiceManager.logBuffers` only as the live-stream fan-out scratch, make `LogStore` the sole backlog source; collapse `createLogBuffer`'s array into a thin shim over `LogStore`.
+4. **Retention caps** — confirm `MAX_AGENT_BYTES` / `MAX_SERVICE_BYTES` (~1 MB/channel?), and whether the agent cap should be line-count rather than bytes.
+5. **Write batching** — append per line is fine for the agent channel; for chatty services consider coalescing `-f` chunks on a short timer (or relying on the OS write buffer) so we don't `appendFile` on every tiny chunk. Validate before optimising.
+6. **fd lifecycle** — keep a long-lived append fd per active channel (fast, but must close on session dispose / rotate), or open-append-close per write (simpler, slightly slower). Leaning long-lived with close-on-dispose.
 
 ## Key files
 
@@ -203,6 +205,7 @@ The client work is the rendering unification, not just a bigger backlog:
 - `src/server/orchestrator/disk-janitor.ts` — orphan-session `logs/` sweep.
 - `src/server/orchestrator/session-dir-factory.ts` — reference for `sessions/{id}` layout (logs are a sibling of `workspace/`).
 - `src/server/shared/types/ws-*-messages.ts` + `terminal-types.ts` — `WsLogRecord` + `subscribe_logs` / `log_snapshot` / `log_append` / `log_clear`; remove `log_entry` / `clear_logs` / `service_log*`.
-- `src/client/components/LogView.tsx` *(new)* — unified xterm renderer (replaces `ServiceLogViewer.tsx`, deleted).
-- `src/client/components/TerminalPanel.tsx`, `PreviewServicesDrawer.tsx` — mount `<LogView>`; drop the DOM list + `terminal-store` `LogEntry[]`.
+- `src/client/components/LogView.tsx` *(new)* — unified xterm renderer + `SearchAddon` search box (replaces `ServiceLogViewer.tsx`, deleted).
+- `src/client/components/TerminalPanel.tsx`, `PreviewServicesDrawer.tsx` — mount `<LogView>`; drop the DOM list, source chips, and `terminal-store` `LogEntry[]`/`hiddenSources`.
 - `src/client/hooks/message-handlers/` — collapse log/service-log handlers into the channel-keyed path.
+- `package.json` — add `@xterm/addon-search` (exact version, ≥7 days old, compatible with `@xterm/xterm` 6.0.0; run `npm install` + `npm run check-deps`).

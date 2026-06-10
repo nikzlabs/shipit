@@ -19,11 +19,12 @@
 - [ ] `docker compose logs --since` backfill on stream (re)start
 
 ## Rendering (unified)
-- [ ] `LogView.tsx` (xterm, records model, filter-rewrite); delete `ServiceLogViewer.tsx`
-- [ ] `TerminalPanel` Logs tab → `<LogView channel="agent" filterable />`; drop DOM list + `terminal-store` `LogEntry[]`
+- [ ] Add `@xterm/addon-search` dep (exact version, ≥7d; `npm install` + `check-deps`)
+- [ ] `LogView.tsx` (xterm, records model, `SearchAddon` search box, `showSource` prefix); delete `ServiceLogViewer.tsx`
+- [ ] `TerminalPanel` Logs tab → `<LogView channel="agent" showSource />`; **drop source-filter chips** + DOM list + `terminal-store` `LogEntry[]`/`hiddenSources`
 - [ ] `PreviewServicesDrawer` → `<LogView channel={"service:"+name} />`
 - [ ] Collapse log/service-log message handlers into channel-keyed path
-- [ ] `LogView` test (snapshot seed, incremental append, clear, filter rewrite, no chips for service)
+- [ ] `LogView` test (snapshot seed, incremental append, clear, search next/prev/highlight, source prefix vs not)
 
 ## Lifecycle / cleanup
 - [ ] Session archive / delete / full-reset → `LogStore.remove(sessionId)` (rm `sessions/{id}/logs`)
