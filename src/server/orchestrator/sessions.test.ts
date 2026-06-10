@@ -392,6 +392,45 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/110 Phase 2: reorderPins", () => {
+    const repo = "https://github.com/o/r.git";
+    function pinnedOrder(mgr: SessionManager): string[] {
+      return mgr.list()
+        .filter((s) => s.pinnedAt)
+        .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""))
+        .map((s) => s.id);
+    }
+
+    it("rewrites pinned_at so the list matches the requested order", () => {
+      const mgr = new SessionManager(dbManager);
+      for (const id of ["a", "b", "c"]) {
+        mgr.track(id, id);
+        mgr.setRemoteUrl(id, repo);
+        mgr.setPinned(id, "2024-01-01T00:00:00.000Z");
+      }
+      mgr.reorderPins(repo, ["c", "a", "b"]);
+      expect(pinnedOrder(mgr)).toEqual(["c", "a", "b"]);
+      // And it round-trips to any order.
+      mgr.reorderPins(repo, ["b", "c", "a"]);
+      expect(pinnedOrder(mgr)).toEqual(["b", "c", "a"]);
+    });
+
+    it("only touches pinned rows in the named repo (ignores stale/cross-repo ids)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("pinned", "pinned"); mgr.setRemoteUrl("pinned", repo); mgr.setPinned("pinned", "2024-01-01T00:00:00.000Z");
+      mgr.track("unpinned", "unpinned"); mgr.setRemoteUrl("unpinned", repo); // not pinned
+      mgr.track("otherRepo", "otherRepo"); mgr.setRemoteUrl("otherRepo", "https://github.com/o/x.git"); mgr.setPinned("otherRepo", "2024-01-01T00:00:00.000Z");
+
+      mgr.reorderPins(repo, ["unpinned", "otherRepo", "pinned", "ghost"]);
+
+      // unpinned stays unpinned (the reorder never pins a row)...
+      expect(mgr.get("unpinned")?.pinnedAt).toBeUndefined();
+      // ...and a pin in another repo is untouched.
+      expect(mgr.get("otherRepo")?.pinnedAt).toBe("2024-01-01T00:00:00.000Z");
+      expect(mgr.get("pinned")?.pinnedAt).toBeTruthy();
+    });
+  });
+
   describe("session deletion cascade", () => {
     it("deleteSession cascades to chat history and usage", () => {
       const sessions = new SessionManager(dbManager);

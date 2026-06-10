@@ -41,11 +41,16 @@ All changes live in `SessionSidebar.tsx`, specifically the `RepoGroup` and `Sess
 - Inside each `RepoGroup`, render a **pinned sub-section directly below the "New session" button** (the `<button>` at the top of the non-collapsed session list) and above the active sessions. When the repo has pins, show a lightweight header — a thin `PushPinIcon` + "Pinned" label in the same style as the existing "Recently resolved" subheader — followed by the pinned rows. Hidden when the repo has zero pins.
 - Pinned rows are drag-reorderable within the pinned set (see Drag-and-drop below).
 
-### Drag-and-drop (Phase 2 — deferred)
+### Drag-and-drop (reorder within the pinned set)
 
-Reordering *within* the pinned set is cosmetic and deferred to a second phase (see `checklist.md`). Phase 1 orders pins by `pinnedAt` descending (most-recently-pinned on top), which needs no reorder UI.
+New pins land on top (ordered by `pinnedAt` descending); a user can drag to set an explicit order within a repo's pinned set. This reuses the **native HTML5 drag-and-drop** the sidebar already uses for repo-group reordering — there is **no `@dnd-kit` / `react-aria` dependency** in the tree, and we don't add one.
 
-When built: the sidebar already implements **native HTML5 drag-and-drop** for reordering repo groups (custom MIME type `application/x-shipit-repo`, drop-position indicator line, `reorderRepos()` → `PUT /api/repos`). There is **no `@dnd-kit` / `react-aria` dependency** in the tree, and we should not add one. Reuse that native-DnD pattern for pinned rows: a session-scoped MIME type (e.g. `application/x-shipit-pinned-session`) gates the drag, a drop indicator line marks the target slot, and dropping calls a `reorderPins` action that rewrites `pinnedAt` for the repo's pins. Enabled only when a repo has more than one pinned session.
+Implementation (all in `RepoGroup`, local to one repo group):
+- Each pinned row's tree is wrapped in a draggable shell, enabled only when the repo has **more than one** pinned session.
+- A session-scoped MIME type, `application/x-shipit-pinned-session`, gates the drag so a stray text/file drag can't look like a pin reorder.
+- `dragover` computes a before/after slot from the row's bounding-rect midpoint and renders a green drop-indicator line (the same `--color-success` line the repo reorder uses).
+- `drop` splices the source id into the target slot and calls `reorderPins(repo.url, ids)`.
+- On the server, `SessionManager.reorderPins(remoteUrl, ids)` rewrites `pinned_at` to a strictly-decreasing sequence anchored at `now` (so `ids[0]` sorts on top, and a later-pinned session still floats above the set). Only rows that are currently pinned *and* belong to `remoteUrl` are touched, so a stale/cross-repo id is ignored.
 
 ## Persistence (pin = never auto-reclaimed)
 
@@ -87,18 +92,18 @@ There is **no cap** on the number of pins. An earlier draft proposed a soft cap 
 - **Persistence guards** (the immunity from [Persistence](#persistence-pin--never-auto-reclaimed)):
   - `disk-janitor.ts` → `canAutoDescend`: `if (s.pinnedAt) return false;` — blocks age-based *and* disk-pressure descent at the single chokepoint.
   - `disk-janitor.ts` sweeps: defensive `pinnedAt` skip in the archived-workspace and orphan-credential sweeps.
+  - `SessionManager.reorderPins(remoteUrl, ids)` — rewrite `pinned_at` so the repo's pins match `ids` (top-first), touching only currently-pinned rows in that repo.
 - New routes in `api-routes-session.ts`, mirroring rename (`PATCH /api/sessions/:id`) / archive (`DELETE /api/sessions/:id`):
   - `POST /api/sessions/:id/pin` — sets `pinnedAt = now`.
   - `DELETE /api/sessions/:id/pin` — clears `pinnedAt`.
-  - (`POST /api/sessions/pin-order` — Phase 2, with the drag UI.)
-- Service layer: `services/session.ts` gains `pinSession`/`unpinSession` (pure functions over `SessionManager`, returning the updated `SessionInfo` + refreshed list, same as `renameSession`).
+  - `POST /api/sessions/pin-order { remoteUrl, ids }` — reorder a repo's pins.
+- Service layer: `services/session.ts` gains `setSessionPinned` and `reorderSessionPins` (pure functions over `SessionManager`, returning the updated `SessionInfo` and/or refreshed list, same shape as `renameSession`).
 - After each mutation, broadcast the full `session_list` (route handlers already call `deps.sseBroadcast("session_list", { sessions })` after unarchive/child-archive — follow that).
 
 ## Client pieces
 
-- Extend `session-store.ts` with a `setPinned(sessionId, pinned)` optimistic action (mirrors `setAutoFixCiPaused`) that calls the new endpoints; the authoritative `session_list` SSE broadcast reconciles. Session-list ordering is computed inside the `SessionSidebar` memo (not a store selector); the `RepoGroup` partitions pinned rows out of the active list.
-- Update `RepoGroup` in `SessionSidebar.tsx` to render the pinned sub-section (header + rows) directly below the "New session" button, and add the Pin/Unpin overflow item + pinned glyph (`PushPinIcon`) to `SessionItem`.
-- (Phase 2) reuse the native HTML5 drag-and-drop pattern to reorder pinned rows within a repo group.
+- Extend `session-store.ts` with optimistic `setPinned(sessionId, pinned)` (mirrors `setAutoFixCiPaused`) and `reorderPins(remoteUrl, ids)` actions that call the new endpoints; the authoritative `session_list` SSE broadcast reconciles. Session-list ordering is computed inside the `SessionSidebar` memo (not a store selector); the `RepoGroup` partitions pinned rows out of the active list.
+- Update `RepoGroup` in `SessionSidebar.tsx` to render the pinned sub-section (header + rows) directly below the "New session" button, add the Pin/Unpin overflow item + pinned glyph (`PushPinIcon`) to `SessionItem`, and wrap pinned rows in draggable shells (native HTML5 DnD) for reordering.
 
 ## Tests
 
@@ -107,14 +112,15 @@ There is **no cap** on the number of pins. An earlier draft proposed a soft cap 
 1. Pin a session → `pinnedAt` persists → `GET /api/sessions/all` returns it with `pinnedAt` set; unpin clears it.
 2. Archive a pinned session → `pinnedAt` is cleared (the invariant).
 3. Pin sessions across two different repos → each pin only affects its own repo's ordering (no global list).
-4. Multi-tab / multi-viewer: pinning re-broadcasts `session_list` so other viewers re-derive the order.
+4. `reorderPins` / `POST /api/sessions/pin-order` rewrites `pinned_at` to match the requested order, and ignores stale/cross-repo ids.
+5. Multi-tab / multi-viewer: pinning re-broadcasts `session_list` so other viewers re-derive the order.
 
 **Persistence (the core guarantee), in `sessions.test.ts` / `disk-janitor.test.ts`:**
 
 5. **Visibility immunity** — a repo with > `MAX_MERGED_SESSIONS_PER_REPO` merged sessions, one of them pinned: `filterVisibleInSidebar` keeps the pinned one even though it would otherwise fall past the cap.
 6. **Eviction immunity** — `escalateDiskTiers` over an ancient, idle, pinned session leaves its `diskTier` untouched (no `hot → light`, no `light → evicted`), including under simulated disk pressure. The same session unpinned *does* descend (proves the guard is what's protecting it).
 
-Component test for `SessionSidebar` / `RepoGroup`: the pinned sub-section renders below the "New session" button and pinned rows sort ahead of active rows within a repo group.
+Component tests for `SessionSidebar` / `RepoGroup`: the pinned sub-section renders below the "New session" button; pinned rows sort ahead of active rows; rows are draggable only with > 1 pin; a simulated drag-drop calls `reorderPins` with the new id order.
 
 ## Key files
 
@@ -122,16 +128,15 @@ Component test for `SessionSidebar` / `RepoGroup`: the pinned sub-section render
 |---|---|
 | `src/shared/types/domain-types.ts` | `pinnedAt?: string` on `SessionInfo` |
 | `src/server/shared/database.ts` | Migration: `ALTER TABLE sessions ADD COLUMN pinned_at TEXT` |
-| `src/server/orchestrator/sessions.ts` | `SessionRow.pinned_at` + `fromRow`; `setPinned`; `filterVisibleInSidebar` pin exemption; clear `pinned_at` in `archive` |
+| `src/server/orchestrator/sessions.ts` | `SessionRow.pinned_at` + `fromRow`; `setPinned`; `reorderPins`; `filterVisibleInSidebar` pin exemption; clear `pinned_at` in `archive` |
 | `src/server/orchestrator/disk-janitor.ts` | `canAutoDescend` pin guard (eviction immunity); defensive pin skip in archived-workspace + credential sweeps |
-| `src/server/orchestrator/services/session.ts` | `pinSession`/`unpinSession` |
-| `src/server/orchestrator/api-routes-session.ts` | `POST`/`DELETE /api/sessions/:id/pin`; `session_list` broadcast |
-| `src/client/stores/session-store.ts` | `setPinned` optimistic action |
-| `src/client/components/SessionSidebar.tsx` | Pinned sub-section in `RepoGroup` (below New session); Pin/Unpin overflow item + glyph in `SessionItem` |
+| `src/server/orchestrator/services/session.ts` | `setSessionPinned`, `reorderSessionPins` |
+| `src/server/orchestrator/api-routes-session.ts` | `POST`/`DELETE /api/sessions/:id/pin`, `POST /api/sessions/pin-order`; `session_list` broadcast |
+| `src/client/stores/session-store.ts` | `setPinned` + `reorderPins` optimistic actions |
+| `src/client/components/SessionSidebar.tsx` | Pinned sub-section in `RepoGroup` (below New session); Pin/Unpin overflow item + glyph in `SessionItem`; native-DnD reorder of pinned rows |
 
 ## Future extensions
 
-- **Drag-to-reorder within pins** (Phase 2, see `checklist.md`) — native HTML5 DnD + `POST /api/sessions/pin-order`.
 - **Always-warm pins** — an opt-in escalation where a pin *also* exempts the session from idle container disposal (`idle-enforcer.ts`), keeping the container resident. Deliberately out of scope for the base feature (RAM cost, memory-pressure safety) — see the "does not exempt" note under Persistence.
 - **Pin to the dock** — an OS-level dock badge for sessions awaiting attention, gated by pinned status.
 - **Hotkey jump** — `⌘1`–`⌘9` jumps to the Nth pinned session in the active repo group.

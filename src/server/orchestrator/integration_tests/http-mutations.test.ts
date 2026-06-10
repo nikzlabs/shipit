@@ -164,6 +164,37 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(sessionManager.get("a1")?.pinnedAt).toBeTruthy();
       expect(sessionManager.get("b1")?.pinnedAt).toBeUndefined();
     });
+
+    it("POST /api/sessions/pin-order reorders a repo's pins", async () => {
+      const repo = "https://github.com/o/a.git";
+      for (const id of ["p1", "p2", "p3"]) {
+        await createSession(id, id);
+        sessionManager.setRemoteUrl(id, repo);
+        await app.inject({ method: "POST", url: `/api/sessions/${id}/pin` });
+      }
+
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/pin-order",
+        payload: { remoteUrl: repo, ids: ["p3", "p1", "p2"] },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const order = sessionManager.list()
+        .filter((s) => s.pinnedAt)
+        .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""))
+        .map((s) => s.id);
+      expect(order).toEqual(["p3", "p1", "p2"]);
+    });
+
+    it("POST /api/sessions/pin-order rejects a non-array ids payload", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/sessions/pin-order",
+        payload: { remoteUrl: "https://github.com/o/a.git", ids: "nope" },
+      });
+      expect(res.statusCode).toBe(400);
+    });
   });
 
   describe("DELETE /api/sessions/:id (archive)", () => {

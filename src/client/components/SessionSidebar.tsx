@@ -702,6 +702,66 @@ function RepoGroup({
   // respects prefers-reduced-motion automatically. See docs/148.
   const [listRef] = useAutoAnimate<HTMLDivElement>();
 
+  // docs/110 Phase 2 — drag-to-reorder within the pinned set. Ordered pinned
+  // top-level sessions for THIS repo group (a child whose parent is in the group
+  // renders under the parent, so it's excluded here). Reorder rewrites pinnedAt.
+  const pinnedSessions = useMemo(() => {
+    const inGroup = new Set(sessions.map((s) => s.id));
+    return sessions
+      .filter((s) => !!s.pinnedAt && !s.userArchived && (!s.parentSessionId || !inGroup.has(s.parentSessionId)))
+      .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""));
+  }, [sessions]);
+  const pinnedIds = useMemo(() => pinnedSessions.map((s) => s.id), [pinnedSessions]);
+  const pinnedIdSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
+  const pinReorderEnabled = pinnedSessions.length > 1;
+
+  const [pinDragId, setPinDragId] = useState<string | null>(null);
+  const [pinDropTarget, setPinDropTarget] = useState<{ id: string; position: "before" | "after" } | null>(null);
+
+  // Native HTML5 DnD, gated by a session-scoped MIME type so a stray text drag
+  // can't look like a pin reorder (mirrors the repo-group reordering above).
+  const onPinDragStart = useCallback((id: string) => (e: React.DragEvent) => {
+    e.dataTransfer.setData("application/x-shipit-pinned-session", id);
+    e.dataTransfer.effectAllowed = "move";
+    setPinDragId(id);
+  }, []);
+  const onPinDragOver = useCallback((id: string) => (e: React.DragEvent) => {
+    if (!pinDragId) return; // not a pin-reorder drag — let other drops bubble
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (id === pinDragId) { setPinDropTarget(null); return; }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const position: "before" | "after" = e.clientY < rect.top + rect.height / 2 ? "before" : "after";
+    setPinDropTarget((prev) => (prev?.id === id && prev.position === position ? prev : { id, position }));
+  }, [pinDragId]);
+  const onPinDragLeave = useCallback((id: string) => (e: React.DragEvent) => {
+    const next = e.relatedTarget as Node | null;
+    if (next && e.currentTarget.contains(next)) return;
+    setPinDropTarget((prev) => (prev?.id === id ? null : prev));
+  }, []);
+  const onPinDrop = useCallback((targetId: string) => (e: React.DragEvent) => {
+    e.preventDefault();
+    const sourceId = e.dataTransfer.getData("application/x-shipit-pinned-session") || pinDragId;
+    const position = pinDropTarget?.position;
+    setPinDragId(null);
+    setPinDropTarget(null);
+    if (!sourceId || sourceId === targetId || !position) return;
+    const next = [...pinnedIds];
+    const sourceIdx = next.indexOf(sourceId);
+    if (sourceIdx === -1) return;
+    next.splice(sourceIdx, 1);
+    let targetIdx = next.indexOf(targetId);
+    if (targetIdx === -1) return;
+    if (position === "after") targetIdx += 1;
+    next.splice(targetIdx, 0, sourceId);
+    if (next.join("\n") === pinnedIds.join("\n")) return; // dropped back in place
+    void useSessionStore.getState().reorderPins(repo.url, next);
+  }, [pinDragId, pinDropTarget, pinnedIds, repo.url]);
+  const onPinDragEnd = useCallback(() => {
+    setPinDragId(null);
+    setPinDropTarget(null);
+  }, []);
+
   return (
     <div
       className={`flex flex-col relative ${isBeingDragged ? "opacity-40" : ""}`}
@@ -885,27 +945,41 @@ function RepoGroup({
               // group (merged OR closed-without-merge). The session list is
               // already sorted (active first, then resolved by resolve time
               // desc), so iterating in order keeps each group sorted.
-              // docs/110 — pinned (persistent) sessions form a sub-section
-              // pinned to the top of the repo group, ordered by pinnedAt desc
-              // (most-recently-pinned first). They render with their broods via
-              // pushTree and are skipped in the Active/Resolved split below so a
-              // pin always outranks both recency and the resolved demotion.
-              const isTopLevel = (s: SessionInfo): boolean =>
-                !s.parentSessionId || orphanedChildren.has(s.id);
-              const isPinnedTop = (s: SessionInfo): boolean =>
-                !!s.pinnedAt && !s.userArchived && isTopLevel(s);
-              const pinned: React.ReactElement[] = [];
-              for (const s of sessions
-                .filter(isPinnedTop)
-                .sort((a, b) => (b.pinnedAt ?? "").localeCompare(a.pinnedAt ?? ""))) {
-                pushTree(s, pinned);
-              }
+              // docs/110 — pinned (persistent) sessions form a sub-section pinned
+              // to the top of the repo group (ordered by pinnedAt desc; see the
+              // component-level pinnedSessions memo). Each pin's tree is wrapped in
+              // a draggable shell for Phase 2 reordering, and skipped in the
+              // Active/Resolved split below so a pin outranks recency + demotion.
+              const pinned: React.ReactElement[] = pinnedSessions.map((s) => {
+                const tree: React.ReactElement[] = [];
+                pushTree(s, tree);
+                return (
+                  <div
+                    key={`pin-${s.id}`}
+                    draggable={pinReorderEnabled}
+                    onDragStart={pinReorderEnabled ? onPinDragStart(s.id) : undefined}
+                    onDragOver={pinReorderEnabled ? onPinDragOver(s.id) : undefined}
+                    onDragLeave={pinReorderEnabled ? onPinDragLeave(s.id) : undefined}
+                    onDrop={pinReorderEnabled ? onPinDrop(s.id) : undefined}
+                    onDragEnd={pinReorderEnabled ? onPinDragEnd : undefined}
+                    className={`relative ${pinDragId === s.id ? "opacity-40" : ""}`}
+                  >
+                    {pinDropTarget?.id === s.id && pinDropTarget.position === "before" && (
+                      <div className="absolute left-2 right-2 -top-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />
+                    )}
+                    {tree}
+                    {pinDropTarget?.id === s.id && pinDropTarget.position === "after" && (
+                      <div className="absolute left-2 right-2 -bottom-px h-0.5 bg-(--color-success) z-20 rounded-full pointer-events-none" />
+                    )}
+                  </div>
+                );
+              });
               const active: React.ReactElement[] = [];
               const resolved: React.ReactElement[] = [];
               for (const s of sessions) {
                 // Skip children that we render beneath their parent.
                 if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
-                if (isPinnedTop(s)) continue; // rendered in the pinned sub-section
+                if (pinnedIdSet.has(s.id)) continue; // rendered in the pinned sub-section
                 pushTree(s, isRecentlyResolvedForGroup(s) ? resolved : active);
               }
               return (

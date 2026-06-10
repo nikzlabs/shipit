@@ -261,6 +261,22 @@ export function setSessionPinned(
 }
 
 /**
+ * docs/110 Phase 2 — reorder a repo's pinned sessions to the order in `ids`.
+ * Returns the refreshed sidebar list for the caller to broadcast.
+ */
+export function reorderSessionPins(
+  sessionManager: SessionManager,
+  remoteUrl: string,
+  ids: string[],
+): { sessions: SessionInfo[] } {
+  if (typeof remoteUrl !== "string") throw new ServiceError(400, "remoteUrl must be a string");
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+    throw new ServiceError(400, "ids must be an array of session ids");
+  }
+  return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
+}
+
+/**
  * Archive a session, cleaning up clone directory.
  *
  * `pruneVolumes` is invoked when no runner exists at archive time (so the

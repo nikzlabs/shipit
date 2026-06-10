@@ -518,6 +518,28 @@ export class SessionManager {
   }
 
   /**
+   * docs/110 Phase 2 — reorder a repo's pinned sessions to match `ids`. Pins
+   * sort by `pinned_at` descending, so we rewrite `pinned_at` to a strictly
+   * decreasing sequence anchored at `now`: `ids[0]` gets the largest stamp and
+   * lands on top. Spaced 1s apart so the order is unambiguous and a subsequently
+   * pinned session (stamped at a later `now`) still floats above the set.
+   * Defensive: only rows that are currently pinned AND belong to `remoteUrl` are
+   * touched, so a stale or cross-repo id from the client is ignored. All updates
+   * run in one transaction. Returns the refreshed sidebar list.
+   */
+  reorderPins(remoteUrl: string, ids: string[], now = Date.now()): SessionInfo[] {
+    const apply = this.db.transaction((orderedIds: string[]) => {
+      orderedIds.forEach((id, i) => {
+        this.db.prepare(
+          "UPDATE sessions SET pinned_at = ? WHERE id = ? AND remote_url = ? AND pinned_at IS NOT NULL",
+        ).run(new Date(now - i * 1000).toISOString(), id, remoteUrl);
+      });
+    });
+    apply(ids);
+    return this.list();
+  }
+
+  /**
    * docs/161 — bump the viewer clock. Read ONLY by the disk-idle ladder
    * (`max(lastUsedAt, lastViewedAt)`), never by the listing predicate — so
    * merely opening a merged session keeps its disk warm without promoting it to

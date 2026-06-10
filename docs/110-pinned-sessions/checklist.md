@@ -12,8 +12,9 @@
 - [x] Tests: persist/unpin, archive-clears-pin, per-repo scoping, visibility immunity, eviction immunity, sidebar component
 - [x] `lint:dev` + `typecheck` clean
 
-## Phase 2 — reorder within pins (deferred)
+## Phase 2 — reorder within pins
 
-- [ ] `SessionManager.reorderPins(remoteUrl, ids)`
-- [ ] `POST /api/sessions/pin-order` + client `reorderPins` action
-- [ ] Native HTML5 drag-and-drop on pinned rows (`application/x-shipit-pinned-session` MIME, drop indicator)
+- [x] `SessionManager.reorderPins(remoteUrl, ids)`
+- [x] `POST /api/sessions/pin-order` + client `reorderPins` action
+- [x] Native HTML5 drag-and-drop on pinned rows (`application/x-shipit-pinned-session` MIME, drop indicator)
+- [x] Tests: `reorderPins` order/scoping, route reorder + 400, draggable affordance, drag-drop calls `reorderPins`
