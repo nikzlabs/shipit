@@ -33,8 +33,9 @@ The boundaries ShipIt defends, in priority order:
    container.
 2. **Session → session.** One session must not read another's files, credentials, or history.
 3. **Container → high-value credentials.** A compromised session should reach as few
-   credentials as possible — and never the ones that would let an attacker impersonate you
-   broadly (your GitHub PAT, your tracker tokens).
+   credentials as possible. The highest-value ones are kept out of the container's on-disk
+   state — tracker tokens never enter it, and the GitHub PAT is brokered rather than stored
+   (see Known limitations for the residual on-demand exposure).
 4. **Instance → internet.** A self-hosted instance exposed to the network must sit behind
    an access layer you control.
 
@@ -71,12 +72,17 @@ are brokered to the container on demand — they are not handed to the agent's s
   (`credential-store.ts`, mode `0600`; per-repo secrets in `secret-store.ts`). They are
   **never echoed back to the browser** — settings endpoints report "configured / not
   configured," never the value.
-- **GitHub token brokering — the PAT never enters the container.** Git operations inside a
-  session (`push`, `pull`, `fetch`) work via a brokering credential helper
+- **GitHub token brokering — the PAT isn't stored in the container.** Git operations inside
+  a session (`push`, `pull`, `fetch`) work via a brokering credential helper
   (`shipit-git-credential`): on a credential request, it asks the orchestrator over the
   worker HTTP channel, which returns a token **only for `github.com`** and only in transit.
-  The container's generated `.gitconfig` is **token-free**, and `store`/`erase` are no-ops.
-  A prompt-injected agent can't `cat` your PAT out of a config file, because it isn't there.
+  The container's generated `.gitconfig` is **token-free** (it points at the helper, not a
+  token), and `store`/`erase` are no-ops — so the PAT is no longer on disk or in the
+  environment, and there's no config file to `cat`. This does **not** make the token
+  unreachable: the helper serves whatever process asks it, so a prompt-injected agent can
+  invoke it (e.g. `git credential fill`) to obtain the PAT on demand and, with egress open,
+  exfiltrate it. Brokering raises the bar from a one-line read to an active request; the
+  egress allow-list (see Known limitations) is what would actually contain that.
 - **Per-session, per-agent credential subtrees.** Each session mounts its own
   `/credentials` subpath, and only the *pinned* agent's files are copied in — a Claude
   session never sees `.codex`, and vice versa.
@@ -85,10 +91,10 @@ are brokered to the container on demand — they are not handed to the agent's s
   The actual GraphQL/REST calls happen in the orchestrator with the token in the
   Authorization header — **tracker tokens never enter the session container.**
 - **Compose secrets are scoped.** Secrets declared for your Compose services are resolved
-  from the per-repo secret store and delivered to the service that needs them. A
-  repo-controlled `docker-compose.yml` can **no longer** ask ShipIt to forward your global
-  platform credentials (Claude/GitHub/MCP) into a service — that forwarding was removed.
-  Secrets explicitly marked for the agent are documented as reachable by the agent (see
+  from the per-repo secret store and delivered only to the service that needs them. A
+  repo-controlled `docker-compose.yml` **cannot** pull your global platform credentials
+  (Claude/GitHub/MCP) into a service — those are not exposed to Compose secret resolution.
+  Secrets you explicitly mark for the agent are documented as reachable by the agent (see
   Known limitations).
 - **Redaction before anything leaves the box.** Bug reports filed from inside ShipIt run
   through a two-stage redactor (`services/redaction.ts`): a deterministic regex floor that
@@ -161,15 +167,17 @@ Honesty is part of the security model. These are the gaps ShipIt is aware of, th
 for accepting them today, and where they're headed.
 
 - **Unrestricted agent network egress (the big one).** Agent containers have full outbound
-  internet access. That means any credential that *does* live inside the container — the
-  agent CLI's own OAuth/subscription token, MCP server tokens, and any secret you
-  explicitly marked as reachable by the agent — can be **exfiltrated by a prompt-injected
-  agent** (e.g. `curl`-ing it to an attacker). The most damaging target, your GitHub PAT,
-  is *not* in the container (it's brokered), which is why brokering was prioritized. The
-  planned mitigation is an **orchestrator-side forward proxy with a host allow-list**
-  (GitHub, your configured Anthropic/MCP endpoints), so egress is restricted to the hosts
-  the agent legitimately needs. Until then: treat anything you put inside the container as
-  reachable by a compromised agent, and prefer the brokered paths.
+  internet access. That means any credential reachable inside the container — the agent
+  CLI's own OAuth/subscription token, MCP server tokens, any secret you explicitly marked
+  as reachable by the agent, and the GitHub PAT the credential helper will hand out on
+  request — can be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it to an
+  attacker). Brokering keeps the PAT off disk so it's no longer a trivial read, but it
+  doesn't stop a determined agent from requesting it through the helper; egress control, not
+  brokering, is what ultimately contains that. The planned mitigation is an
+  **orchestrator-side forward proxy with a host allow-list** (GitHub, your configured
+  Anthropic/MCP endpoints), so egress is restricted to the hosts the agent legitimately
+  needs. Until then: treat anything reachable inside the container as reachable by a
+  compromised agent.
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /
   time-of-use race exists in principle. Exploiting it requires an already-in-sandbox
@@ -179,8 +187,16 @@ for accepting them today, and where they're headed.
 - **Session worker runs as root inside its container.** A non-root worker runtime is
   planned but deferred — it's a broad change and the container boundary (not in-container
   UID) is the primary control today.
-- **Credential mounts are read-write.** Read-only credential mounts are a planned
-  hardening, pending an isolated agent-resume path.
+- **The agent's own CLI credentials live in its container.** The pinned agent's
+  OAuth/subscription token is mounted into its session (read-write, because the CLI refreshes
+  the token in place) so the CLI can authenticate. A prompt-injected agent can therefore
+  read — and, with egress open, exfiltrate — its own credentials. This is the accepted *"the
+  agent runs in the same box as its own credentials"* limitation from the
+  [managed-agents model](https://www.anthropic.com/engineering/managed-agents); a read-only
+  mount wouldn't help, since it blocks writes, not reads. Per-session, per-agent scoping
+  keeps the blast radius to that one session's pinned agent (a Claude session never has
+  `.codex` on disk, and vice versa), and the egress allow-list above is the containment
+  that's still to come.
 - **No orchestrator-level user auth.** As above, this is by design for single-tenant use
   and is covered by the deployment access layer — but it does mean an unprotected exposed
   instance is fully open. Don't run one.

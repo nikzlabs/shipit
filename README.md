@@ -270,9 +270,9 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 - **Container-isolated agents** — each session runs in its own Docker container on an isolated
   network; sessions can't reach each other. Containers get no Docker socket, only a proxy that
   enforces an allow-list and rejects privileged/host-namespace escapes.
-- **Brokered credentials** — your GitHub token is brokered on demand and **never written into the
-  container**, and tracker tokens stay orchestrator-side. High-value credentials don't live in the
-  agent's sandbox.
+- **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
+  the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
+  aren't sitting at rest in the agent's sandbox.
 - **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
   age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
 - **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
