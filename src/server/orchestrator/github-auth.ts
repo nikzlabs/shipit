@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import type { CredentialStore } from "./credential-store.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 // Sub-module imports — delegated implementations
@@ -253,6 +254,12 @@ export class GitHubAuthManager extends EventEmitter {
     if (!this._token) return;
 
     const cwd = targetDir ?? this.workspaceDir;
+    // Backfill (setGitHubToken) iterates every persisted session, including ones
+    // whose on-disk checkout has been reclaimed (archive / disk-janitor) while
+    // metadata is retained. Running `git config` with a non-existent cwd makes
+    // spawnSync fail to chdir and surface a misleading "spawnSync git ENOENT"
+    // (path: 'git') that looks like git is missing. Skip cleanly instead.
+    if (!existsSync(cwd)) return;
     try {
       execFileSync(
         "git",

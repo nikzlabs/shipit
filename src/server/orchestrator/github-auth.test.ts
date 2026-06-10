@@ -356,6 +356,21 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / SHI-72)", 
     expect(out).toContain("username=x-access-token");
     expect(out).toContain(`password=${TOKEN}`);
   });
+
+  it("silently skips a target dir that no longer exists (no spurious ENOENT)", () => {
+    // setGitHubToken backfills creds into EVERY persisted session, including
+    // ones whose on-disk checkout was reclaimed (archive / disk-janitor) while
+    // metadata is kept. A non-existent cwd makes spawnSync fail to chdir and
+    // surface a misleading "spawnSync git ENOENT" (path: 'git'). The guard
+    // turns that into a clean no-op.
+    credentialStore.setGithubToken(TOKEN);
+    const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
+    mgr.checkCredentials();
+
+    const gone = path.join(tmpDir, "reclaimed-session", "workspace");
+    expect(fs.existsSync(gone)).toBe(false);
+    expect(() => mgr.configureGitCredentials(gone)).not.toThrow();
+  });
 });
 
 /** Narrow fetch's `url` argument to a string. The auth manager only ever
