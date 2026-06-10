@@ -993,6 +993,17 @@ function RepoGroup({
                     </div>
                   )}
                   {pinned}
+                  {/* docs/110 — divider closes the pinned sub-section. Active rows
+                      carry no header of their own, so without this line the last
+                      pinned row and the first active row run together visually.
+                      Only render it when active/resolved rows actually follow. */}
+                  {pinned.length > 0 && (active.length > 0 || resolved.length > 0) && (
+                    <div
+                      data-testid="pinned-divider"
+                      className="h-px bg-(--color-border-primary) mx-3 mt-1.5 mb-0.5"
+                      aria-hidden
+                    />
+                  )}
                   {active}
                   {resolved.length > 0 && (
                     <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
