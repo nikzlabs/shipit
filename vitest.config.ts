@@ -26,7 +26,7 @@ export default defineConfig({
           name: "server",
           include: ["src/server/**/*.test.ts"],
           environment: "node",
-          setupFiles: ["./server-debug-setup.ts"],
+          setupFiles: ["./server-test-setup.ts", "./server-debug-setup.ts"],
         },
       },
       {
