@@ -15,6 +15,8 @@ The sidebar already groups sessions by repository (`RepoGroup` in `SessionSideba
 
 Pinning solves this with a dedicated pinned sub-section at the top of each repo group that ignores the activity sort.
 
+**Visual reference:** [`mockup.html`](./mockup.html) — a self-contained sidebar mock (real dark-theme tokens) showing the pinned sub-section below the New session button, the drag handle + drop indicator, the pin glyph, the "Pin to top" overflow item, and two repos with independent pins.
+
 ## Design
 
 ### State

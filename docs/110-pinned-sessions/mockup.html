@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>110 — Pinned Sessions · sidebar mock</title>
+<style>
+  /* Real ShipIt dark-theme tokens (src/client/themes/dark.css) */
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-tertiary: #1f2937;
+    --color-bg-elevated: #1f2937;
+    --color-bg-hover: rgba(255, 255, 255, 0.05);
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-border-primary: #1f2937;
+    --color-border-secondary: #374151;
+    --color-success: #22c55e;
+    --color-pr: #a78bfa;
+    --color-accent: #3b82f6;
+    --color-attention: #f59e0b;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background:
+      radial-gradient(1200px 700px at 18% -10%, #0b1222, transparent),
+      #05080f;
+    color: var(--color-text-primary);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, ui-sans-serif, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 40px;
+    padding: 48px 36px 64px;
+    min-height: 100%;
+  }
+  .stage { display: flex; gap: 44px; align-items: flex-start; }
+
+  /* ── Sidebar panel ───────────────────────────────────────────── */
+  .sidebar {
+    width: 286px;
+    background: var(--color-bg-primary);
+    border: 1px solid var(--color-border-primary);
+    border-radius: 12px;
+    padding: 8px 0 14px;
+    box-shadow: 0 24px 60px rgba(0,0,0,.55);
+    position: relative;
+    flex-shrink: 0;
+  }
+  .topbar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 12px 12px; margin: 0 2px 4px;
+    border-bottom: 1px solid var(--color-border-primary);
+  }
+  .topbar .logo {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: linear-gradient(135deg, #3b82f6, #a78bfa);
+    display: grid; place-items: center; font-weight: 800; font-size: 12px; color: #fff;
+  }
+  .topbar .ttl { font-size: 12px; font-weight: 700; letter-spacing: .02em; color: var(--color-text-secondary); }
+
+  svg { display: block; }
+  .icon { width: 16px; height: 16px; }
+  .icon-xs { width: 12px; height: 12px; }
+
+  /* Repo group */
+  .repo-header {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 12px 6px 14px;
+  }
+  .repo-header .caret { width: 20px; height: 20px; display: grid; place-items: center; color: var(--color-text-tertiary); }
+  .repo-header .name { font-size: 12px; font-weight: 600; letter-spacing: .03em; color: var(--color-text-secondary); }
+  .repo-header .gh { color: var(--color-text-secondary); }
+  .group-body { display: flex; flex-direction: column; gap: 4px; padding-bottom: 8px; }
+
+  /* New session button */
+  .new-session {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 8px; margin: 0 4px; border-radius: 6px;
+    font-size: 12px; color: var(--color-text-secondary);
+    border: 0; background: transparent; cursor: pointer; width: calc(100% - 8px); text-align: left;
+  }
+  .new-session:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .new-session .plus { width: 20px; height: 20px; display: grid; place-items: center; opacity: .7; }
+
+  /* Subgroup header (Pinned / Recently resolved) */
+  .subhead {
+    display: flex; align-items: center; gap: 6px;
+    padding: 8px 8px 2px; margin: 0 4px;
+  }
+  .subhead .lbl {
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em;
+    color: var(--color-text-tertiary);
+  }
+  .subhead .cnt { font-size: 10px; color: var(--color-text-tertiary); opacity: .8; }
+  .subhead svg { color: var(--color-text-tertiary); }
+
+  /* Session row */
+  .row {
+    display: flex; align-items: flex-start; gap: 6px;
+    padding: 6px 8px; margin: 0 4px; border-radius: 6px;
+    font-size: 12px; color: var(--color-text-secondary); position: relative;
+  }
+  .row:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .row.current { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .row .title { line-height: 1.3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row .meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; }
+  .row .meta .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .row .meta .date { font-size: 10px; color: var(--color-text-tertiary); }
+  .row .body { flex: 1; min-width: 0; }
+  .row .prbadge { width: 14px; display: grid; place-items: center; padding-top: 1px; }
+
+  /* drag handle on pinned rows */
+  .row .handle {
+    width: 14px; display: grid; place-items: center; padding-top: 1px;
+    color: var(--color-text-tertiary); cursor: grab; opacity: .55;
+    margin-left: -4px;
+  }
+  .row.pinned:hover .handle { opacity: 1; }
+  /* filled pin glyph */
+  .row .pinglyph { color: var(--color-accent); padding-top: 1px; flex-shrink: 0; }
+  /* overflow trigger */
+  .row .of { width: 22px; height: 22px; border-radius: 5px; display: grid; place-items: center;
+    color: var(--color-text-tertiary); opacity: 0; flex-shrink: 0; }
+  .row:hover .of, .row.current .of, .row.menu-open .of { opacity: 1; }
+  .row.menu-open .of { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+  /* attention right-edge marker (docs/187) */
+  .row.attention { box-shadow: inset -3px 0 0 var(--color-attention);
+    background-image: linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent)); }
+
+  /* drop indicator line for reorder */
+  .drop-line { height: 2px; margin: -1px 10px; border-radius: 9999px; background: var(--color-success); }
+
+  .divider { height: 1px; background: var(--color-border-primary); margin: 6px 12px 2px; }
+
+  /* Open overflow menu (Radix-style) */
+  .menu {
+    position: absolute; z-index: 30; width: 196px;
+    background: var(--color-bg-elevated);
+    border: 1px solid var(--color-border-secondary);
+    border-radius: 8px; padding: 4px;
+    box-shadow: 0 16px 40px rgba(0,0,0,.6);
+    font-size: 12px;
+  }
+  .menu .mi { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px; color: var(--color-text-secondary); cursor: default; }
+  .menu .mi:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+  .menu .mi.accent { color: var(--color-text-primary); }
+  .menu .mi.accent svg { color: var(--color-accent); }
+  .menu .sep { height: 1px; background: var(--color-border-secondary); margin: 4px 2px; }
+  .menu .mi svg { width: 15px; height: 15px; flex-shrink: 0; }
+
+  /* number markers */
+  .mark {
+    position: absolute; width: 18px; height: 18px; border-radius: 50%;
+    background: var(--color-accent); color: #fff; font-size: 11px; font-weight: 700;
+    display: grid; place-items: center; box-shadow: 0 0 0 3px var(--color-bg-primary);
+    z-index: 25;
+  }
+
+  /* ── Legend ──────────────────────────────────────────────────── */
+  .legend { width: 340px; padding-top: 8px; }
+  .legend h1 { font-size: 17px; margin: 0 0 4px; letter-spacing: .01em; }
+  .legend .sub { font-size: 12.5px; color: var(--color-text-secondary); margin: 0 0 20px; line-height: 1.5; }
+  .legend ol { list-style: none; counter-reset: n; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 14px; }
+  .legend li { counter-increment: n; position: relative; padding-left: 30px; font-size: 12.5px; line-height: 1.5; color: var(--color-text-secondary); }
+  .legend li::before {
+    content: counter(n); position: absolute; left: 0; top: -1px;
+    width: 19px; height: 19px; border-radius: 50%;
+    background: var(--color-accent); color: #fff; font-size: 11px; font-weight: 700;
+    display: grid; place-items: center;
+  }
+  .legend li b { color: var(--color-text-primary); font-weight: 600; }
+  .legend .note { margin-top: 22px; padding: 12px 14px; border: 1px solid var(--color-border-secondary);
+    border-radius: 8px; background: rgba(255,255,255,.02); font-size: 12px; color: var(--color-text-tertiary); line-height: 1.55; }
+  .legend .note b { color: var(--color-text-secondary); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; color: var(--color-text-primary);
+    background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div class="stage">
+
+  <!-- ════════════ SIDEBAR ════════════ -->
+  <div class="sidebar">
+    <div class="topbar">
+      <div class="logo">S</div>
+      <div class="ttl">ShipIt</div>
+    </div>
+
+    <!-- ─── Repo group: shipit ─── -->
+    <div class="repo-header">
+      <span class="caret">
+        <svg class="icon-xs" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+      </span>
+      <span class="gh">
+        <svg class="icon-xs" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </span>
+      <span class="name">shipit</span>
+    </div>
+
+    <div class="group-body">
+      <!-- New session -->
+      <button class="new-session">
+        <span class="plus">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>
+        </span>
+        <span>New session</span>
+      </button>
+
+      <!-- Pinned subgroup header -->
+      <div class="subhead" style="position:relative;">
+        <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg>
+        <span class="lbl">Pinned</span>
+        <span class="cnt">2</span>
+        <span class="mark" style="left:-9px; top:-4px;">1</span>
+      </div>
+
+      <!-- Pinned row 1 -->
+      <div class="row pinned">
+        <span class="handle" title="Drag to reorder">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+        </span>
+        <span class="prbadge"><svg class="icon-xs" viewBox="0 0 16 16" fill="var(--color-pr)"><circle cx="4" cy="4" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="9" r="2"/><path d="M4 6v4M12 7V5a2 2 0 0 0-2-2H7" stroke="var(--color-pr)" stroke-width="1.4" fill="none"/></svg></span>
+        <div class="body">
+          <div class="title">staging-env-debug</div>
+          <div class="meta"><span class="dot" style="background:var(--color-success)"></span><span class="date">2h ago</span></div>
+        </div>
+        <span class="pinglyph" title="Pinned"><svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg></span>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+        <span class="mark" style="right:-9px; top:8px;">3</span>
+      </div>
+
+      <!-- drop indicator (reorder in progress) -->
+      <div class="drop-line"></div>
+
+      <!-- Pinned row 2 -->
+      <div class="row pinned">
+        <span class="handle" title="Drag to reorder">
+          <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>
+        </span>
+        <span class="prbadge"></span>
+        <div class="body">
+          <div class="title">design-system-refactor</div>
+          <div class="meta"><span class="dot" style="background:var(--color-text-tertiary)"></span><span class="date">3d ago</span></div>
+        </div>
+        <span class="pinglyph" title="Pinned"><svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg></span>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+      </div>
+
+      <div class="divider"></div>
+
+      <!-- Active (recency) rows -->
+      <div class="row current menu-open">
+        <span class="prbadge"></span>
+        <div class="body">
+          <div class="title">fix-preview-proxy-hmr</div>
+          <div class="meta"><span class="dot" style="background:var(--color-success)"></span><span class="date">just now</span></div>
+        </div>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+
+        <!-- open overflow menu for an UNPINNED row -->
+        <div class="menu" style="right:6px; top:34px;">
+          <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 20h4L18 10l-4-4L4 16z"/></svg>Rename</div>
+          <div class="mi accent"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg>Pin to top</div>
+          <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11h14V8M10 12h4"/></svg>Archive</div>
+          <div class="sep"></div>
+          <div class="mi"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3v12m0 0l-4-4m4 4l4-4M5 21h14"/></svg>Download chat</div>
+        </div>
+        <span class="mark" style="right:-9px; top:8px;">4</span>
+      </div>
+
+      <!-- needs-attention active row -->
+      <div class="row attention">
+        <span class="prbadge"><svg class="icon-xs" viewBox="0 0 16 16" fill="var(--color-pr)"><circle cx="4" cy="4" r="2"/><circle cx="4" cy="12" r="2"/><circle cx="12" cy="9" r="2"/><path d="M4 6v4M12 7V5a2 2 0 0 0-2-2H7" stroke="var(--color-pr)" stroke-width="1.4" fill="none"/></svg></span>
+        <div class="body">
+          <div class="title">add-dep-dirs-config</div>
+          <div class="meta"><span class="dot" style="background:var(--color-attention)"></span><span class="date">25m ago</span></div>
+        </div>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+        <span class="mark" style="right:-9px; top:8px;">5</span>
+      </div>
+
+      <div class="row">
+        <span class="prbadge"></span>
+        <div class="body">
+          <div class="title">tidy-eslint-config</div>
+          <div class="meta"><span class="dot" style="background:var(--color-text-tertiary)"></span><span class="date">1d ago</span></div>
+        </div>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+      </div>
+
+      <!-- Recently resolved subgroup (existing, docs/161) -->
+      <div class="subhead">
+        <svg class="icon-xs" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="15" r="2.4"/><path d="M6 8.4V18M8.4 6H14a3 3 0 0 1 3 3v3.6"/></svg>
+        <span class="lbl">Recently resolved</span>
+      </div>
+      <div class="row" style="opacity:.7">
+        <span class="prbadge"><svg class="icon-xs" viewBox="0 0 16 16" fill="var(--color-pr)"><circle cx="8" cy="8" r="3"/></svg></span>
+        <div class="body">
+          <div class="title">bump-radix-ui</div>
+          <div class="meta"><span class="dot" style="background:var(--color-pr)"></span><span class="date">merged · 2d ago</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ─── Repo group: marketing-site (collapsed-ish to show per-repo pins) ─── -->
+    <div class="divider" style="margin-top:10px"></div>
+    <div class="repo-header">
+      <span class="caret">
+        <svg class="icon-xs" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l4 4 4-4"/></svg>
+      </span>
+      <span class="gh">
+        <svg class="icon-xs" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      </span>
+      <span class="name">marketing-site</span>
+    </div>
+    <div class="group-body">
+      <button class="new-session">
+        <span class="plus"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg></span>
+        <span>New session</span>
+      </button>
+      <div class="subhead" style="position:relative;">
+        <svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg>
+        <span class="lbl">Pinned</span>
+        <span class="cnt">1</span>
+      </div>
+      <div class="row pinned">
+        <span class="handle"><svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg></span>
+        <span class="prbadge"></span>
+        <div class="body">
+          <div class="title">black-friday-landing</div>
+          <div class="meta"><span class="dot" style="background:var(--color-success)"></span><span class="date">5h ago</span></div>
+        </div>
+        <span class="pinglyph"><svg class="icon-xs" viewBox="0 0 24 24" fill="currentColor"><path d="M14.5 2.5a1 1 0 0 0-1.4 0l-.4.4a1 1 0 0 0-.1 1.3l.15.22-3.27 3.27-2.55-.42a1 1 0 0 0-.87 1.7l2.9 2.9-4.06 4.06a1 1 0 1 0 1.41 1.41l4.06-4.06 2.9 2.9a1 1 0 0 0 1.7-.87l-.42-2.55 3.27-3.27.22.15a1 1 0 0 0 1.3-.1l.4-.4a1 1 0 0 0 0-1.4z"/></svg></span>
+        <span class="of"><svg class="icon" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="12" cy="19" r="1.6"/></svg></span>
+        <span class="mark" style="left:-9px; top:8px;">6</span>
+      </div>
+      <div class="row">
+        <span class="prbadge"></span>
+        <div class="body">
+          <div class="title">seo-meta-pass</div>
+          <div class="meta"><span class="dot" style="background:var(--color-text-tertiary)"></span><span class="date">4d ago</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════ LEGEND ════════════ -->
+  <div class="legend">
+    <h1>Pinned sessions — sidebar mock</h1>
+    <p class="sub">Faithful to the real <code>SessionSidebar</code> using ShipIt's dark-theme tokens. Pins are <b>per&nbsp;repository</b>: each repo group owns its own pinned set.</p>
+    <ol>
+      <li><b>Pinned sub-section</b> sits directly below the repo's <b>New session</b> button — a thin <i>Pinned · N</i> header in the same style as the existing <i>Recently resolved</i> divider. Hidden when a repo has zero pins.</li>
+      <li><b>Drag handle</b> (left gutter, hover-revealed) reorders rows <i>within</i> the pinned set, reusing the native HTML5 drag pattern already used for repo reordering — the green line is the drop indicator.</li>
+      <li><b>Filled pin glyph</b> marks a pinned row, tinted with the accent so a pin is legible at a glance.</li>
+      <li><b>Overflow → "Pin to top"</b> on an unpinned row (pinned rows show <i>Unpin</i> instead). No cap on how many you pin.</li>
+      <li><b>Pinning doesn't suppress signaling</b> — a pinned or unpinned row still gets the amber needs-attention edge (docs/187) on CI failure or conflicts.</li>
+      <li><b>Per repo</b> — a second repo keeps its own independent pin; there is no global pinned list.</li>
+    </ol>
+    <div class="note"><b>Ordering within a repo group:</b> Pinned (by <code>pinnedAt</code> desc, drag-reorderable) → Active (recency) → Recently resolved. An explicit pin outranks the auto-demotion of a merged/closed session.</div>
+  </div>
+
+</div>
+</body>
+</html>
