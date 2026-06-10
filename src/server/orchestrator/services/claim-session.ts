@@ -79,6 +79,16 @@ export interface ClaimSessionOptions {
    * latency (currently: `spawnChildSession`) opt in with `forceFetch: true`.
    */
   forceFetch?: boolean;
+  /**
+   * Session ids the claim must NEVER hand back. `spawnChildSession` passes the
+   * calling parent's id: an ungraduated parent is otherwise a valid hit for
+   * the reuse path, and "claiming" it returns the parent AS its own child —
+   * which hard-resets the parent's live workspace onto fresh `origin/main`
+   * (`refreshClaimedSession`) and records a self-parented session whose
+   * `findChildren` cycle then blows the recursive archive's stack (observed
+   * live: archive → "Maximum call stack size exceeded").
+   */
+  excludeSessionIds?: string[];
 }
 
 export class ClaimAbortedError extends Error {
@@ -265,6 +275,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
+      const excluded = new Set(opts?.excludeSessionIds ?? []);
 
       const result = await serializeClaim(url, async () => {
         const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -282,7 +293,11 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
         // Reuse path: check for previously-claimed warm session.
         const reusable = deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
-        if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
+        if (
+          reusable?.workspaceDir &&
+          !excluded.has(reusable.id) &&
+          existsSync(path.join(reusable.workspaceDir, ".git"))
+        ) {
           claimPath = "reuse";
           const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
@@ -290,7 +305,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
         // Warm path: claim the pre-warmed session.
         const currentRepo = deps.repoStore.get(url);
-        if (currentRepo?.warmSessionId) {
+        if (currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
           const warmSession = deps.sessionManager.get(currentRepo.warmSessionId);
           if (warmSession?.workspaceDir) {
             claimPath = "warm";
@@ -307,7 +322,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         if (warmingPromise) {
           await warmingPromise;
           const freshRepo = deps.repoStore.get(url);
-          if (freshRepo?.warmSessionId) {
+          if (freshRepo?.warmSessionId && !excluded.has(freshRepo.warmSessionId)) {
             const warmSession = deps.sessionManager.get(freshRepo.warmSessionId);
             if (warmSession?.workspaceDir) {
               claimPath = "waiting";
