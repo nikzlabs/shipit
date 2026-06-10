@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -48,19 +49,23 @@ describe("createDepSnapshotTar", () => {
     fs.mkdirSync(path.join(nm, "pkg"), { recursive: true });
     fs.writeFileSync(path.join(nm, "pkg", "index.js"), "module.exports = 1;");
     fs.symlinkSync("pkg/index.js", path.join(nm, "link.js"));
-
-    const { stream, done } = createDepSnapshotTar(root, "node_modules");
-
-    // Extract via a child tar into a fresh dir.
-    const { spawn } = await import("node:child_process");
     const dest = tmp();
-    const x = spawn("tar", ["-x", "-f", "-", "-C", dest]);
-    stream.pipe(x.stdin);
-    await done;
-    await new Promise<void>((resolve, reject) => {
+
+    // Spawn the consumer and pipe in the SAME synchronous tick as the producer —
+    // no `await` between them. An async gap here would let this small producer
+    // stream reach EOF before the pipe attaches, so `tar -x` would never receive
+    // an end-of-stdin and would hang (the CI timeout that caught the old version).
+    const x = spawn("tar", ["-x", "-f", "-", "-C", dest], { stdio: ["pipe", "ignore", "ignore"] });
+    const xin = x.stdin;
+    if (!xin) throw new Error("tar -x has no stdin");
+    const extracted = new Promise<void>((resolve, reject) => {
       x.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`extract exited ${code}`))));
       x.on("error", reject);
     });
+    const { stream, done } = createDepSnapshotTar(root, "node_modules");
+    stream.pipe(xin);
+
+    await Promise.all([done, extracted]);
 
     // The dep dir's CONTENTS landed directly at dest (no node_modules/ wrapper).
     expect(fs.readFileSync(path.join(dest, "pkg", "index.js"), "utf8")).toBe("module.exports = 1;");
