@@ -159,10 +159,6 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("review independently as its own pull request");
     // Pointer to the platform doc so the agent can read the full surface.
     expect(out).toContain("/shipit-docs/sessions.md");
-    // When asked to draft a prompt for another session, emit it in a fenced
-    // code block so the user can copy it in one click.
-    expect(out).toContain("write or draft a prompt");
-    expect(out).toContain("fenced code block");
   });
 
   it("Codex branch tells the agent shipit session create is its ONLY fan-out primitive", () => {
@@ -181,9 +177,6 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("heavy and user-visible");
     // Pointer to the platform doc.
     expect(out).toContain("/shipit-docs/sessions.md");
-    // Same copy-paste guidance as the Claude branch.
-    expect(out).toContain("write or draft a prompt");
-    expect(out).toContain("fenced code block");
   });
 
   it("Claude and Codex variants are distinct (different fan-out story)", () => {
@@ -203,6 +196,19 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("## Browser access");
     expect(out).toContain("## Pull requests");
     expect(out).toContain("## Parallel sessions");
+  });
+
+  it("tells the agent to put any drafted prompt in a fenced code block (agent-agnostic, no Parallel-sessions dependence)", () => {
+    // General output-formatting guidance — applies to any request to write a
+    // prompt, not just `shipit session create`. Lives in the shared base
+    // prompt, so it renders even with no agentId (no Parallel sessions section).
+    const baseline = buildAgentSystemInstructions();
+    expect(baseline).not.toContain("## Parallel sessions");
+    expect(baseline).toContain("write or draft a prompt");
+    expect(baseline).toContain("fenced code block");
+    // And it's present for both backends, unchanged.
+    expect(buildAgentSystemInstructions({ agentId: "claude" })).toContain("write or draft a prompt");
+    expect(buildAgentSystemInstructions({ agentId: "codex" })).toContain("write or draft a prompt");
   });
 
   // docs/128 — ops overlay.
