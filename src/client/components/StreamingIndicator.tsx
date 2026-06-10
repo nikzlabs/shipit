@@ -1,10 +1,10 @@
 /**
- * StreamingIndicator — animated typing indicator and activity status display.
+ * StreamingIndicator — activity status display.
  *
- * Shows a bouncing three-dot animation alongside a contextual status message
- * describing what the agent is currently doing (thinking, editing files,
- * running commands, etc.). Used in the chat when waiting for or receiving
- * agent responses.
+ * Derives a contextual status message describing what the agent is currently
+ * doing (thinking, editing files, running commands, etc.) plus a small spinner
+ * for in-progress tool executions. Used in the chat when waiting for or
+ * receiving agent responses.
  *
  * Activity labels are derived from the agent CLI's NDJSON event types:
  * - No events yet → "Thinking..."
@@ -20,17 +20,6 @@ export interface StreamingActivity {
   label: string;
   /** The tool name if a tool is actively running, undefined otherwise */
   tool?: string;
-}
-
-/** Bouncing three-dot animation shown while the agent is responding. */
-export function TypingDots() {
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
-      <span className="typing-dot inline-block w-1.5 h-1.5 rounded-full bg-(--color-info)" />
-    </span>
-  );
 }
 
 /** Small spinner icon for in-progress tool executions. */
