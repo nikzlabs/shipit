@@ -435,8 +435,20 @@ export async function createContainer(
     // hazard) right before the container references them; the daemon performs the
     // `mount -t overlay` as it builds the container. Kept INSIDE the try so any
     // later failure removes them via the catch below (`sc.overlayVolumeNames`).
+    //
+    // The daemon's mount fails with ENOENT unless lowerdir, upperdir AND workdir
+    // all exist — and nothing else creates them: a cold scope has no published
+    // base yet (no `overlay-base/<hash>/`; an empty lowerdir is a valid cold
+    // start), and the per-session upper/work dirs are born here. The spec's own
+    // paths are daemon-host paths the orchestrator container cannot reach, so we
+    // mkdir the orchestrator-visible twins (`orchDirs`, same volume via stateDir).
     if (config.overlaySpecs) {
       for (const spec of config.overlaySpecs) {
+        if (spec.orchDirs) {
+          fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+          fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
+          fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
+        }
         await createOverlayVolume(deps.docker, spec, deps.baseLabels());
       }
     }

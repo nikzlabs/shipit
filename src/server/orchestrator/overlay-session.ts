@@ -110,6 +110,18 @@ export interface DepDirOverlaySpec extends OverlaySpec {
   scope: OverlayScope;
   /** `overlayScopeHash(repo, runtime, depDir)` — the base dir + GC identity for this dep dir. */
   scopeHash: string;
+  /**
+   * The same lower/upper/work dirs as the daemon-host paths above, but as
+   * **orchestrator-visible** paths (under the orchestrator's state dir, which is
+   * the same volume the daemon mountpoint resolves to). The daemon's
+   * `mount -t overlay` fails with ENOENT unless all three dirs exist, and
+   * nothing else creates them — a cold scope has no published base (so no
+   * `overlay-base/<hash>/`), and the per-session `upper`/`work` dirs are born
+   * here. Container creation mkdirs these right before creating the volume.
+   * Absent when the populator has no orchestrator state dir (unit-test/mock
+   * configurations).
+   */
+  orchDirs?: { lowerdir: string; upperdir: string; workdir: string };
 }
 
 /**
@@ -132,11 +144,21 @@ export function buildOverlaySpecs(args: {
   depDirs: string[];
   /** Absolute daemon-host mountpoint of the workspace state volume (`shipit-workspace`). */
   volumeMountpoint: string;
+  /**
+   * Orchestrator-visible root of the SAME state volume (the orchestrator's
+   * `stateDir`, e.g. `/workspace`). When provided, each spec carries
+   * `orchDirs` — the lower/upper/work dirs as paths the orchestrator can
+   * `mkdir` before the daemon mounts the overlay (see `DepDirOverlaySpec.orchDirs`).
+   */
+  stateRoot?: string;
 }): DepDirOverlaySpec[] {
-  const { sessionId, scope, depDirs, volumeMountpoint } = args;
+  const { sessionId, scope, depDirs, volumeMountpoint, stateRoot } = args;
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
     const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, "overlay", scopeHash);
+    const orchSessionOverlayDir = stateRoot
+      ? path.join(stateRoot, "sessions", sessionId, "overlay", scopeHash)
+      : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),
       lowerdir: overlayBaseDir(volumeMountpoint, scopeHash),
@@ -146,6 +168,15 @@ export function buildOverlaySpecs(args: {
       mountPath: path.posix.join("/workspace", depDir),
       scope: { repoUrl: scope.repoUrl, runtimeKey: scope.runtimeKey, depDir },
       scopeHash,
+      ...(stateRoot && orchSessionOverlayDir
+        ? {
+            orchDirs: {
+              lowerdir: overlayBaseDir(stateRoot, scopeHash),
+              upperdir: path.join(orchSessionOverlayDir, "upper"),
+              workdir: path.join(orchSessionOverlayDir, "work"),
+            },
+          }
+        : {}),
     };
   });
 }

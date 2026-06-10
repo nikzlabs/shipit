@@ -240,6 +240,15 @@ export interface SessionContainerManagerOpts {
    * is passed as WORKSPACE_DIR env var.
    */
   workspaceVolume?: string;
+  /**
+   * Orchestrator-visible root of the workspace state volume (the app's
+   * `stateDir`, `/workspace` in containerized runtime). Needed by the overlay
+   * dep store (docs/183) to create each overlay's lower/upper/work dirs before
+   * the daemon mounts them — the spec's own paths are daemon-host paths the
+   * orchestrator container cannot reach. Optional: without it, overlay specs
+   * carry no `orchDirs` and creation relies on the dirs already existing.
+   */
+  stateDir?: string;
   /** Docker named volume for credentials. */
   credentialsVolume?: string;
   /** Stack name for labelling containers (e.g. "shipit-dev", "shipit-prod"). */
@@ -506,6 +515,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private workerPort: number;
   private skipHealthCheck: boolean;
   private workspaceVolume?: string;
+  private stateDir?: string;
   private credentialsVolume?: string;
   private stackName?: string;
   private dockerImageName?: string;
@@ -540,6 +550,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.workerPort = opts.workerPort ?? DEFAULT_WORKER_PORT;
     this.skipHealthCheck = opts.skipHealthCheck ?? false;
     this.workspaceVolume = opts.workspaceVolume;
+    this.stateDir = opts.stateDir;
     this.credentialsVolume = opts.credentialsVolume;
     this.stackName = opts.stackName;
     this.dockerImageName = opts.dockerImageName;
@@ -978,7 +989,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
     if (valid.length === 0) return [];
     const volumeMountpoint = await resolveVolumeMountpoint(this.docker, this.workspaceVolume);
-    const specs = buildOverlaySpecs({ sessionId: opts.sessionId, scope, depDirs: valid, volumeMountpoint });
+    const specs = buildOverlaySpecs({
+      sessionId: opts.sessionId,
+      scope,
+      depDirs: valid,
+      volumeMountpoint,
+      stateRoot: this.stateDir,
+    });
     if (!opts.requireProvisioned) return specs;
     const provisioned: DepDirOverlaySpec[] = [];
     for (const spec of specs) {

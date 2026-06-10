@@ -181,7 +181,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
-    deps, isTestMode, credentialsDir, sessionManager, runtimeMode,
+    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode,
   });
 
   // ---- Docker instance for memory stats ----

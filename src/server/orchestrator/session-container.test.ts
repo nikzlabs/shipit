@@ -493,6 +493,41 @@ describe("SessionContainerManager", () => {
       expect(specs[0].volumeName).toMatch(/^shipit-abc123def456_overlay-[a-f0-9]{8}$/);
     });
 
+    it("cold-scope create provisions lowerdir/upperdir/workdir via orchDirs before the volume mounts", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-state-"));
+      tmpDirs.push(stateDir);
+      const mgr = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        workspaceVolume: STATE_VOL,
+        stateDir,
+      });
+      try {
+        const specs = await mgr.prepareOverlaySpecs({ sessionId: "cold-scope-1", workspaceDir: dir, session: eligible });
+        expect(specs[0].orchDirs).toBeDefined();
+        // Cold scope: no published base, no session overlay dirs — none exist yet.
+        expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(false);
+        await mgr.create(mgr.buildConfigForWorkspace({
+          sessionId: "cold-scope-1",
+          sessionDir: dir,
+          workspaceDir: dir,
+          credentialsDir: "/credentials",
+          overlaySpecs: specs,
+        }));
+        // The daemon's overlay mount ENOENTs unless all three exist — create()
+        // must have provisioned them (empty lowerdir is the valid cold start).
+        expect(fs.existsSync(specs[0].orchDirs!.lowerdir)).toBe(true);
+        expect(fs.existsSync(specs[0].orchDirs!.upperdir)).toBe(true);
+        expect(fs.existsSync(specs[0].orchDirs!.workdir)).toBe(true);
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
     it("requireProvisioned drops specs whose overlay volume does not exist (container predates the flag)", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       const dir = await ws({ gitignore: "node_modules\n" });

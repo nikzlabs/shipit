@@ -168,6 +168,23 @@ describe("buildOverlaySpecs", () => {
   it("returns [] when no dep dirs are declared", () => {
     expect(buildOverlaySpecs({ sessionId: "s", scope, depDirs: [], volumeMountpoint: MP })).toEqual([]);
   });
+
+  it("carries orchestrator-visible orchDirs when a stateRoot is given (and omits them otherwise)", () => {
+    const sessionId = "11112222333344445555";
+    const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, "node_modules");
+    const [withRoot] = buildOverlaySpecs({
+      sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP, stateRoot: "/workspace",
+    });
+    expect(withRoot.orchDirs).toEqual({
+      lowerdir: `/workspace/overlay-base/${hash}`,
+      upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/upper`,
+      workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/work`,
+    });
+    const [withoutRoot] = buildOverlaySpecs({
+      sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP,
+    });
+    expect(withoutRoot.orchDirs).toBeUndefined();
+  });
 });
 
 describe("depDirsForSession", () => {
