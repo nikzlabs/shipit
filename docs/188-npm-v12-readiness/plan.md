@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-88
 description: Readiness assessment and migration plan for npm v12's install hardening (lifecycle-script allowlist, --allow-git, --allow-remote) across ShipIt's npm invocation points.
 ---
 
