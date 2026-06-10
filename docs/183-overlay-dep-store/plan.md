@@ -79,7 +79,10 @@ agent:
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
 
-  > **⚠️ Unproven — must be settled by a host spike before relying on this (see `checklist.md`).** This
+  > **⚠️ Unproven — must be settled by a host spike before relying on this. Run
+  > [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on VPS/ext4 + Docker
+  > Desktop/Mac + Windows-WSL2 and record the verdicts in [`FINDINGS.md`](./FINDINGS.md); see also
+  > `checklist.md` → "Still unproven".** This
   > nests a `type=overlay` volume mount at `/workspace/<dep-dir>` **underneath** the existing
   > `/workspace` bind/Subpath mount — a topology **none of the validated spikes exercised** (every
   > spike mounted the overlay AT the `/workspace` root, never as a child of an existing mount). Two
@@ -738,7 +741,8 @@ on top of the simplified install path.
 > `buildOverlaySpec` to emit **N mounts at dep-dir subpaths** (not one mount at `/workspace` root)
 > with the scope key extended by the dep-dir relpath; scope the worker snapshot to the dep dirs; wire
 > compose services to the same per-session overlay volume at the dep-dir subpaths; and host-matrix
-> validation (a 5-line spike for a `type=overlay` volume nested under the `/workspace` bind). See
+> validation ([`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) — a
+> `type=overlay` volume nested under the `/workspace` bind, run on all three targets). See
 > [`checklist.md`](./checklist.md) for the reframed task list.
 
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate

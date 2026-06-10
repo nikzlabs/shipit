@@ -150,3 +150,33 @@ non-gating data point, not a pass/fail), and a teardown↔startup overlap. **Can
 session container** (no `docker.sock` by design) — run on the prod VPS (ext4),
 Docker Desktop/Mac, and Docker Desktop/Windows-WSL2, and paste each summary into
 `../FINDINGS.md`. Green on all three retires Open Q #4.
+
+### Nested overlay under the `/workspace` bind (dep-dir design — THE current gate) — `nested-overlay-spike.sh`
+
+All the spikes above proved overlay at the `/workspace` **root** (the whole-workspace
+design). The design pivoted to the **dependency-directory** model: `/workspace`
+stays a normal bind (the host clone — source + `.git`, authoritative), and **each
+declared dep dir** is a separate `type=overlay` volume mounted at a **nested
+subpath** (`/workspace/node_modules`, `/workspace/packages/*/node_modules`). Nothing
+prior mounted an overlay volume onto a *subdirectory of an already-mounted parent* —
+that is the **one unproven topology** gating the dep-dir mount wiring.
+
+```
+bash docs/183-overlay-dep-store/prototype/nested-overlay-spike.sh
+```
+
+Per host it asserts: a `type=overlay` volume mounts cleanly nested under the
+workspace mount and shows the dep merged view; **source + `.git` coexist** on the
+parent; **copy-up isolation** (dep delta → per-session upper, base immutable; source
+write → the bind, never the dep upper); **two dep dirs at different depths** merge at
+once and the daemon **auto-creates an absent leaf** mountpoint; two sessions share one
+read-only dep base with **no EBUSY**; and **one dep overlay volume refcount-shares
+across an agent + a service container while nested** (the compose/preview pattern).
+Rungs 2–6 use a named-volume parent (portable — the nesting mechanism is identical
+whether the parent is a bind or a volume); rung 7 adds a **real host bind** parent on
+native Linux for the literal prod VPS topology. Unprivileged throughout (the daemon
+performs every mount). **Run on VPS/ext4, Docker Desktop/Mac, and Docker
+Desktop/Windows-WSL2; paste each summary into `../FINDINGS.md`. Green on all three is
+the gate to begin the dep-dir mount wiring; a failure forces a mount-topology
+rethink.** Not covered here (validate separately): the recursive file-tree watcher
+descending into the nested submount — see `host-overlay-spike.sh`'s inotify rung.
