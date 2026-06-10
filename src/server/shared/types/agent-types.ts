@@ -225,6 +225,29 @@ export interface AgentSteerRejectedEvent {
 }
 
 /**
+ * docs/140 — the streaming CLI's `--replay-user-messages` echo of an injected
+ * user message (`isReplay:true`), surfaced as a **delivery acknowledgment**.
+ *
+ * A live steer is written to the resident process's stdin while `running` is
+ * still `true`, but the CLI only applies a steered message at its next decision
+ * point (a tool return). When the model is *wrapping up* there is no next
+ * decision point, so a steer injected in that window never lands in the turn —
+ * the turn ends with a `result` and the message is silently lost (it stays in
+ * the transcript but the agent never acts on it). The CLI echoes every user
+ * message it actually accepts into a turn; the orchestrator matches this echo
+ * against the steer it sent, and any steer NOT echoed before the turn's
+ * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ *
+ * `text` is the echoed user-message text (the assembled prompt the CLI
+ * received). NOT chat content — `agent-listeners` consumes it for ack tracking
+ * and returns before the message accumulator (like `agent_steer_rejected`).
+ */
+export interface AgentUserReplayEvent {
+  type: "agent_user_replay";
+  text: string;
+}
+
+/**
  * docs/178 — a context compaction has *started*. Transient progress only: the
  * orchestrator forwards it as an emit-only "Compacting…" indicator and never
  * persists it (it has no place in the scrollback once the matching
@@ -280,6 +303,7 @@ export type AgentEvent =
   | AgentResultEvent
   | AgentRateLimitsEvent
   | AgentSteerRejectedEvent
+  | AgentUserReplayEvent
   | AgentCompactionStartedEvent
   | AgentCompactedEvent;
 

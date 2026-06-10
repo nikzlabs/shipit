@@ -424,6 +424,47 @@ is now allowlisted in **every** mode, including plan. Coverage in
 `process.test.ts` asserts it is present in the allowlist across auto/plan/guarded
 for both `ClaudeProcess` and `StreamingClaudeProcess`.
 
+**Phase 6.9 — a steer at the turn-end gap is lost (re-queue un-acked steers).**
+User report: "sometimes a live-steered message isn't sent to the agent when the
+agent is close to finishing — it sits in the chat (not at the bottom) and the
+agent just finishes without seeing it; I have to resend." Root cause is a TOCTOU
+race between the orchestrator's `running` flag and the CLI's real turn state. The
+WS handler decides steer-vs-queue on `runner.running`; while that is still `true`
+it writes the message to the resident process's stdin via `sendUserMessage`. But
+the spike established the CLI only applies a steered message **at the next
+decision point** (a tool return) — when the model is *wrapping up* there is no
+next decision point, so the steer has nowhere to land. The turn ends with a
+`result`; `agent-listeners` flips `running=false` and finalizes the turn, the
+queue is empty (the message was steered, not queued), and the steered row is
+left in the transcript anchored mid-conversation while the agent never acts on
+it. (A message that arrives *after* `result`, when `running` is already `false`,
+correctly falls to the queue — only the narrow before-`result` window is lost.)
+
+Fix: treat the CLI's `--replay-user-messages` echo as a **delivery ack**. The
+echo (`isReplay:true`) — previously dropped in `claude/adapter.ts` — is now
+surfaced as an `agent_user_replay` AgentEvent; `agent-listeners` matches it
+against the steer's stored `assembledPrompt` and marks that `SteeredMessage`
+`delivered`. At `agent_result`, BEFORE the turn is finalized,
+`requeueUndeliveredSteers` re-queues every steer that is **neither** acked
+**nor** followed by a later assistant group (the `afterGroupIndex` snapshot grew
+⇒ the model continued past the steer and acted on it). Requiring *both* signals
+absent is deliberately conservative: it never re-queues — and so never
+double-processes — a steer the agent demonstrably handled, even if the echo is
+missing. A re-queued steer is removed from the steered set (so it doesn't
+double-render against its own re-run) and drains as the next turn — an automatic
+resend instead of a silent loss, landing the message at the bottom where the
+user expects it. New `SteeredMessage.assembledPrompt`/`delivered` fields are
+in-memory only (`buildTurnMessages` copies just text/attachments). Coverage in
+`live-steering.test.ts` (gap steer → re-queued + resent; acked steer → not
+re-queued) and `adapter.test.ts` (replay echo → `agent_user_replay`).
+
+Residual assumption worth validating in production: this fixes the case where a
+gap-steer is **not** echoed by the CLI. If a future CLI echoes a steer it
+*received* but never *applied*, that steer would be marked delivered and not
+re-queued — the `[steer-requeue]` / `[steer-send]` diagnostics make such a repro
+visible, and the escalation lever is to drop the echo from the delivered
+predicate and rely on the assistant-activity signal alone.
+
 ## Open questions to resolve during build
 
 - ~~Exact `result subtype` taxonomy we should treat as "turn ended normally" vs.

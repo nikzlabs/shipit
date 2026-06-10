@@ -102,6 +102,21 @@ export interface SteeredMessage {
   images?: { data: string; mediaType: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
+  /**
+   * docs/140 — the exact assembled prompt sent to the streaming CLI for this
+   * steer (what `--replay-user-messages` echoes back). The delivery-ack matcher
+   * keys on it. Set only for steers routed through the live-steer path (a steer
+   * that can be lost in the turn-end gap); a `SteeredMessage` without it is not
+   * a re-queue candidate. In-memory only — `buildTurnMessages` copies just
+   * text/attachments, so this never reaches chat-history persistence.
+   */
+  assembledPrompt?: string;
+  /**
+   * docs/140 — set true once the CLI's replay echo confirmed this steer was
+   * accepted into a turn. A steer with `assembledPrompt` set but `delivered`
+   * still falsy at turn end fell into the gap and is re-queued.
+   */
+  delivered?: boolean;
 }
 
 /**

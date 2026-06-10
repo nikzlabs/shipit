@@ -31,6 +31,28 @@ import {
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
 
+/**
+ * docs/140 — concatenate the text blocks of a replayed user message back into
+ * the string the CLI received. `sendUserMessage` always frames a steer as a
+ * single `{type:"text"}` block, and `--replay-user-messages` echoes that block
+ * verbatim (JSON round-trip, no normalization), so the joined text equals the
+ * assembled prompt the orchestrator sent — which is what the ack matcher keys
+ * on. Non-text blocks are ignored.
+ */
+function textFromUserContent(content: unknown[]): string {
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(
+      (b): b is { type: "text"; text: string } =>
+        typeof b === "object" &&
+        b !== null &&
+        (b as { type?: unknown }).type === "text" &&
+        typeof (b as { text?: unknown }).text === "string",
+    )
+    .map((b) => b.text)
+    .join("");
+}
+
 export class ClaudeAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
@@ -171,9 +193,17 @@ export class ClaudeAdapter
         };
 
       case "user":
-        // Skip replayed user messages (--replay-user-messages echo) to avoid
-        // double-rendering — the orchestrator already emitted message_steered.
-        if (raw.isReplay) return null;
+        // docs/140 — surface the replay echo (--replay-user-messages) as a
+        // delivery ACK rather than dropping it. The echo means the CLI accepted
+        // this user message into a turn; the orchestrator matches it against the
+        // steer it sent so an un-echoed steer (one that fell into the turn-end
+        // gap) can be re-queued instead of silently lost. It is still NOT
+        // rendered as chat — agent-listeners consumes `agent_user_replay` for
+        // ack tracking and returns before the chat accumulator, so the inline
+        // bubble that `message_steered` already rendered is not duplicated.
+        if (raw.isReplay) {
+          return { type: "agent_user_replay", text: textFromUserContent(raw.message.content) };
+        }
         return {
           type: "agent_tool_result",
           content: raw.message.content,
