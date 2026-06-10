@@ -135,6 +135,13 @@ export interface DiskJanitorDeps {
    */
   credentialsDir?: string;
   /**
+   * docs/192 — sessions root (`<workspaceDir>/sessions`). When provided, the
+   * janitor sweeps per-session `logs/` dirs whose session is archived or no
+   * longer tracked, so durable container logs don't outlive their session.
+   * Omitted in tests / runtimes without on-disk sessions.
+   */
+  sessionsRoot?: string;
+  /**
    * Shell-out hook for docker prune commands. Overridable for tests so we
    * never touch a real Docker daemon from unit tests. Resolves with the
    * combined stdout/stderr of the command (the "Total reclaimed space"
@@ -202,6 +209,8 @@ export interface DiskJanitorResult {
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
   credentialDirsRemoved: number;
+  /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
+  logDirsRemoved: number;
 }
 
 const DEFAULT_CACHE_DAYS = 30;
@@ -222,6 +231,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     overlayBasesRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
+    logDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -293,6 +303,16 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
+  if (deps.sessionsRoot) {
+    try {
+      result.logDirsRemoved = await sweepOrphanSessionLogs(
+        deps.sessionManager, deps.sessionsRoot, paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] session-logs sweep failed:", getMessage(err));
+    }
+  }
+
   if (
     deps.sweepOrphanBranches !== false
     && deps.githubAuthManager
@@ -321,7 +341,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `nm-stores=${result.nmStoresRemoved} `
     + `overlay-bases=${result.overlayBasesRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
-    + `credential-dirs=${result.credentialDirsRemoved}`,
+    + `credential-dirs=${result.credentialDirsRemoved} `
+    + `log-dirs=${result.logDirsRemoved}`,
   );
   return result;
 }
@@ -373,6 +394,59 @@ async function sweepOrphanCredentialDirs(
       console.log(`[disk-janitor] removed orphan credentials dir ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+/**
+ * docs/192 — remove per-session `logs/` dirs (`<sessionsRoot>/<id>/logs`) whose
+ * session is archived or no longer tracked. Container logs are durable scratch:
+ * they should not outlive the session, and — unlike {@link sweepArchivedWorkspaces}
+ * — there is NO `!remoteUrl` skip, because a log dir is always disposable (it's
+ * never the only copy of the user's work). An archived session that is later
+ * unarchived simply starts a fresh log backlog.
+ *
+ * Preserved: dirs for active, non-archived sessions (still in `allIds()` and
+ * NOT in `listArchived()`), and pinned sessions — mirrors the credential-dir
+ * sweep so warm / idle-evicted sessions keep their logs for resume.
+ *
+ * Returns the count of `logs/` dirs removed.
+ */
+async function sweepOrphanSessionLogs(
+  sessionManager: SessionManager,
+  sessionsRoot: string,
+  paceMs: number,
+): Promise<number> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(sessionsRoot);
+  } catch {
+    return 0; // No sessions root yet — nothing to sweep.
+  }
+
+  const tracked = new Set(sessionManager.allIds());
+  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  const pinned = new Set(sessionManager.listAll().filter((s) => s.pinnedAt).map((s) => s.id));
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (pinned.has(entry)) continue;
+    if (tracked.has(entry) && !archived.has(entry)) continue;
+    const logsDir = path.join(sessionsRoot, entry, "logs");
+    try {
+      // Only count it if there was actually a logs dir to remove.
+      await fs.stat(logsDir);
+    } catch {
+      continue;
+    }
+    try {
+      await sleep(paceMs);
+      await fs.rm(logsDir, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed orphan logs dir ${logsDir}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${logsDir}:`, getMessage(err));
     }
   }
   return removed;

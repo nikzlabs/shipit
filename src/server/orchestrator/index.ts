@@ -8,6 +8,7 @@ import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
 import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
+import { LogStore } from "./log-store.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
@@ -211,7 +212,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { sseClients, sseBroadcast } = createSSE();
 
   // ---- Log buffer ----
-  const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
+  // Durable per-session log store (docs/192) — backs both the agent "Logs" tab
+  // and the preview-service log panels so history survives orchestrator
+  // restart, idle eviction, and container destruction. The in-memory ring in
+  // createLogBuffer stays as a hot, synchronous cache for diagnostics.
+  const logStore = new LogStore(sessionsRoot);
+  const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer(logStore);
 
   // ---- OOM circuit breaker ----
   // One process-local instance shared between the health monitor (which
@@ -439,6 +445,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     publishOverlayBases,
+    logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
@@ -938,6 +945,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       sessionManager,
       repoStore,
       stateDir,
+      sessionsRoot,
       credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
@@ -1682,8 +1690,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Without this, every WS reconnect (network blip, tab visibility flip,
       // session re-attach) would duplicate the buffered log lines in the UI.
       send({ type: "clear_logs" });
-      const logBuffer = getLogBuffer(sessionId);
-      for (const entry of logBuffer) { send(entry); }
+      // Replay this session's full backlog from the durable store (docs/192).
+      // Agent entries are written synchronously (see LogStore.appendEntry), so
+      // the file is always complete and current — the snapshot can't race a
+      // just-emitted line and it survives orchestrator restart / idle eviction
+      // / container destruction, which is what fixes "logs only from the moment
+      // I attached". The per-connection sessionBroadcastLog keeps persisting +
+      // emitting live lines after this replay.
+      for (const e of logStore.snapshotEntries(sessionId, "agent")) {
+        send({ type: "log_entry", source: e.source as WsLogEntry["source"], text: e.text, timestamp: e.ts });
+      }
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
       // Send preview_status after the log buffer so it's the last

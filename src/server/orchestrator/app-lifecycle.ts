@@ -11,6 +11,7 @@ import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import { getErrorMessage } from "./validation.js";
+import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
@@ -795,7 +796,7 @@ const MAX_LOG_ENTRIES = 500;
  * replayed the entire history — meaning logs from every session leaked into
  * every other session's terminal panel.
  */
-export function createLogBuffer(): {
+export function createLogBuffer(logStore?: LogStore): {
   getLogBuffer: (sessionId: string) => WsLogEntry[];
   clearLogBuffer: (sessionId: string) => void;
   removeLogBuffer: (sessionId: string) => void;
@@ -814,6 +815,10 @@ export function createLogBuffer(): {
       text,
       timestamp: new Date().toISOString(),
     };
+    // Durable backlog (docs/192): survives orchestrator restart / idle eviction
+    // / container destruction, unlike the in-memory ring below. The ring is
+    // kept as a hot, synchronous cache for diagnostics (`getLogBuffer`).
+    logStore?.appendEntry(sessionId, "agent", { ts: entry.timestamp, source, text });
     let buf = buffers.get(sessionId);
     if (!buf) {
       buf = [];
@@ -827,7 +832,10 @@ export function createLogBuffer(): {
 
   return {
     getLogBuffer: (sessionId: string) => buffers.get(sessionId) ?? [],
-    clearLogBuffer: (sessionId: string) => { buffers.set(sessionId, []); },
+    clearLogBuffer: (sessionId: string) => {
+      buffers.set(sessionId, []);
+      logStore?.clearSync(sessionId, "agent");
+    },
     removeLogBuffer: (sessionId: string) => { buffers.delete(sessionId); },
     broadcastLog,
   };

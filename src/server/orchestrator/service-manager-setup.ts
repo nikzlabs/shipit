@@ -7,6 +7,7 @@ import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { WsLogEntry, SessionInfo } from "../shared/types.js";
+import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
@@ -257,6 +258,8 @@ export function setupServiceManager(
      * outside the agent's workspace mount. Passed to `ServiceManager`.
      */
     serviceEnvDir?: string;
+    /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
+    logStore?: LogStore;
     broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
@@ -284,6 +287,7 @@ export function setupServiceManager(
     secretStore,
     dockerSecretsConfig,
     serviceEnvDir,
+    logStore,
     broadcastLog,
     credentialStore,
     publishOverlayBases,
@@ -477,6 +481,7 @@ export function setupServiceManager(
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(serviceEnvDir ? { serviceEnvDir } : {}),
+    ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network

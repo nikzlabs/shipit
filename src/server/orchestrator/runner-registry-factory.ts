@@ -16,6 +16,7 @@ import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap, SessionI
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
+import type { LogStore } from "./log-store.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
@@ -101,6 +102,8 @@ export interface RunnerRegistryDeps {
    * → `ServiceManager`. See `ServiceManagerOptions.serviceEnvDir`.
    */
   serviceEnvDir?: string;
+  /** docs/192 — durable log store, forwarded to `setupServiceManager` for service-log persistence. */
+  logStore?: LogStore;
   /**
    * Runtime mode. In `"local"` mode, ServiceManager is not constructed for
    * inner sessions (no Docker → no Compose). The compose-not-configured
@@ -243,7 +246,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -473,6 +476,7 @@ export function createRunnerRegistry(
           secretStore,
           dockerSecretsConfig,
           serviceEnvDir,
+          logStore,
           broadcastLog,
           credentialStore,
           publishOverlayBases,
