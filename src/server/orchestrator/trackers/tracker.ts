@@ -97,7 +97,7 @@ export interface Tracker {
    * tracker presents them (Linear board position). Throws on an unconfigured
    * tracker (callers check `isConfigured()` first).
    */
-  listStatuses(): Promise<{ name: string; type?: string }[]>;
+  listStatuses(): Promise<{ name: string; type?: string; color?: string }[]>;
 
   /**
    * List an issue's comments, oldest-first, for the inline comment thread

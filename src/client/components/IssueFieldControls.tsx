@@ -37,6 +37,8 @@ import type { IssuePriorityLevel, TrackerIssue } from "../../server/shared/types
 export interface IssueStatusRef {
   name: string;
   type?: string;
+  /** The tracker's own state color (Linear hex), preferred for the dot. */
+  color?: string;
 }
 
 /**
@@ -51,29 +53,41 @@ export const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | 
   none: "default",
 };
 
-/** Menu-dot color by normalized priority level. */
-export const PRIORITY_DOT: Record<IssuePriorityLevel, string> = {
-  urgent: "bg-(--color-error)",
-  high: "bg-(--color-warning)",
-  medium: "bg-(--color-info)",
-  low: "bg-(--color-text-tertiary)",
-  none: "bg-(--color-text-tertiary)",
+/**
+ * Dot color (a CSS color string for an inline `background`/`borderColor`) by
+ * normalized priority level. Low and No-priority are deliberately distinct
+ * (green vs gray) so they don't read as the same thing. Used as a style value
+ * rather than a Tailwind class so it composes with the tracker-provided status
+ * colors below — both flow through the same `style={{ backgroundColor }}` path.
+ */
+export const PRIORITY_DOT_COLOR: Record<IssuePriorityLevel, string> = {
+  urgent: "var(--color-error)",
+  high: "var(--color-warning)",
+  medium: "var(--color-info)",
+  low: "var(--color-success)",
+  none: "var(--color-text-tertiary)",
 };
 
-/** Status-dot color by normalized workflow-state type (mirrors the detail pill). */
-export function statusDotClass(type?: string): string {
+/** Fallback dot color by workflow-state type, when the tracker gives no color. */
+function statusTypeColor(type?: string): string {
   switch (type) {
     case "completed":
-      return "bg-(--color-success)";
+      return "var(--color-success)";
     case "started":
-      return "bg-(--color-accent)";
-    case "canceled":
-    case "unstarted":
-    case "backlog":
-    case "triage":
+      return "var(--color-accent)";
     default:
-      return "bg-(--color-text-tertiary)";
+      return "var(--color-text-tertiary)";
   }
+}
+
+/**
+ * The status-dot color (a CSS color string): the tracker's own state color when
+ * present (Linear's per-state hex / GitHub's open-closed hues), falling back to
+ * a coarse type→token only when the tracker gives none. Shared so the list,
+ * detail pill, edit menu, and filter all show the exact same color a status has.
+ */
+export function statusDotColor(status?: { type?: string; color?: string }): string {
+  return status?.color ?? statusTypeColor(status?.type);
 }
 
 /**
@@ -238,7 +252,11 @@ export function IssueStatusEditor({
               if (!selected) void run(() => onSelect(opt.name));
             }}
           >
-            <span className={cn("size-2 shrink-0 rounded-full", statusDotClass(opt.type))} aria-hidden="true" />
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: statusDotColor(opt) }}
+              aria-hidden="true"
+            />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.name}</span>
             {selected && <CheckIcon size={ICON_SIZE.XS} weight="bold" className="shrink-0 text-(--color-accent)" />}
           </DropdownMenuItem>
@@ -275,7 +293,11 @@ export function IssuePriorityEditor({
               if (!selected) void run(() => onSelect(opt.level));
             }}
           >
-            <span className={cn("size-2 shrink-0 rounded-full", PRIORITY_DOT[opt.level])} aria-hidden="true" />
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: PRIORITY_DOT_COLOR[opt.level] }}
+              aria-hidden="true"
+            />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.label}</span>
             {selected && <CheckIcon size={ICON_SIZE.XS} weight="bold" className="shrink-0 text-(--color-accent)" />}
           </DropdownMenuItem>

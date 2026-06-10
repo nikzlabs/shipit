@@ -36,6 +36,7 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
+  statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -94,28 +95,29 @@ const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warnin
  * the same vocabulary (Linear's six types, GitHub's open→started / closed→
  * completed), so a single mapping colors the status dot + label across both.
  */
-function statusTone(type?: string): { dot: string; text: string } {
+/** Status-NAME text color by workflow-state type (the dot uses the tracker color). */
+function statusTextClass(type?: string): string {
   switch (type) {
     case "completed":
-      return { dot: "bg-(--color-success)", text: "text-(--color-success)" };
-    case "canceled":
-      return { dot: "bg-(--color-text-tertiary)", text: "text-(--color-text-tertiary)" };
+      return "text-(--color-success)";
     case "started":
-      return { dot: "bg-(--color-accent)", text: "text-(--color-text-primary)" };
-    case "unstarted":
-    case "backlog":
-    case "triage":
+      return "text-(--color-text-primary)";
+    case "canceled":
+      return "text-(--color-text-tertiary)";
     default:
-      return { dot: "bg-(--color-text-tertiary)", text: "text-(--color-text-secondary)" };
+      return "text-(--color-text-secondary)";
   }
 }
 
 function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> }) {
-  const tone = statusTone(status.type);
   return (
     <span className="inline-flex items-center gap-1.5 h-[18px] text-[11px] font-medium leading-none">
-      <span className={`h-2 w-2 rounded-full ${tone.dot}`} aria-hidden="true" />
-      <span className={tone.text}>{status.name}</span>
+      <span
+        className="h-2 w-2 rounded-full"
+        style={{ backgroundColor: statusDotColor(status) }}
+        aria-hidden="true"
+      />
+      <span className={statusTextClass(status.type)}>{status.name}</span>
     </span>
   );
 }

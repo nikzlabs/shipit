@@ -224,8 +224,8 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
     }) as unknown as typeof fetch;
     const out = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH);
     expect(out.availableStatuses).toEqual([
-      { name: "Open", type: "started" },
-      { name: "Closed", type: "completed" },
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
     ]);
   });
 

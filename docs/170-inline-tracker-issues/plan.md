@@ -247,16 +247,25 @@ rather than a flat text table:
   folds the label name to a stable hue (`labelDotColor`). The dot carries the
   color; chip text/background stay on design tokens so chips are legible in every
   theme. Capped at `MAX_LABELS` (4) with a `+N` overflow (full list in `title`).
-- **Status dots.** The inline status trigger (and the mobile meta line) now lead
-  with a colored dot keyed by workflow-state `type`, reusing the exported
-  `statusDotClass` from `IssueFieldControls.tsx` so list/detail/menu dots match.
+- **Status dots use the tracker's real color.** Each status carries the
+  tracker's own state color — Linear's per-state hex (`state { … color }`),
+  GitHub's open=green / closed=purple — threaded end-to-end: `TrackerIssue.status.color`
+  + `availableStatuses[].color` + `listStatuses()` (so the inline editor's option
+  list is colored too). The client `statusDotColor(status)` (exported from
+  `IssueFieldControls.tsx`) returns the real color, falling back to a coarse
+  type→token only when the tracker gives none. This replaces the old
+  `statusDotClass` type→gray guess, under which the common Linear defaults
+  (Backlog / Todo / Duplicate) all collapsed to one gray. Used everywhere a
+  status dot renders (list row, mobile meta, detail pill, edit menu, filter).
+- **Priority colors are all distinct.** `PRIORITY_DOT_COLOR` (exported) gives Low
+  its own color (green) so it no longer reads identically to No-priority (gray).
 - **Filter bar (docs/173) parity.** The search box and the Priority/Status/
   Assignee facet triggers are pinned to one height (`h-8`) so the bar reads as a
-  single control strip. The Priority and Status popover options now carry the
-  same colored dots as the row editors — `PRIORITY_DOT` (also exported from
-  `IssueFieldControls.tsx`) and `statusDotClass` — so a status/priority looks the
-  same wherever it appears. `StatusOption` gained an optional `type` (captured by
-  `distinctStatuses`) to drive the status-dot color.
+  single control strip. The Priority/Status options color the **checkbox itself**
+  (colored border + a colored check on a subtle same-color tint — legible on
+  light colors like Linear's yellow "In Progress") instead of a separate dot, so
+  the color lives in the control. `StatusOption` gained `type` + `color` (captured
+  by `distinctStatuses`).
 - **Inline-edit affordance (docs/191).** The status/priority editor triggers no
   longer draw a gray hover box (its small corners clashed with the round pill and
   read as a nested box). Instead the *value itself* reacts: the priority pill

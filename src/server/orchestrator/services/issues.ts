@@ -69,7 +69,7 @@ export async function listIssuesForTracker(
     // degrades to "no inline editor" rather than a 502.
     const [issues, availableStatuses] = await Promise.all([
       tracker.listIssues(options),
-      tracker.listStatuses().catch(() => [] as { name: string; type?: string }[]),
+      tracker.listStatuses().catch(() => [] as { name: string; type?: string; color?: string }[]),
     ]);
     return {
       tracker: tracker.info(),

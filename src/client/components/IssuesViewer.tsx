@@ -14,12 +14,11 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
-  statusDotClass,
+  statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
 import { labelDotColor } from "./issue-label-color.js";
-import { cn } from "../utils/cn.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type {
   IssuePriorityLevel,
@@ -281,7 +280,8 @@ function IssueRow({
             trigger={
               <span className="inline-flex items-center gap-1.5 min-w-0">
                 <span
-                  className={cn("size-2 shrink-0 rounded-full", statusDotClass(issue.status.type))}
+                  className="size-2 shrink-0 rounded-full"
+                  style={{ backgroundColor: statusDotColor(issue.status) }}
                   aria-hidden="true"
                 />
                 <span className="truncate">{issue.status.name}</span>
@@ -301,7 +301,8 @@ function IssueRow({
         {issue.status && (
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <span
-              className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(issue.status.type))}
+              className="size-1.5 shrink-0 rounded-full"
+              style={{ backgroundColor: statusDotColor(issue.status) }}
               aria-hidden="true"
             />
             <span className="truncate">{issue.status.name}</span>

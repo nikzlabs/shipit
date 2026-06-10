@@ -308,8 +308,13 @@ export interface TrackerIssue {
    * no labels.
    */
   labels?: string[];
-  /** Workflow state, e.g. { name: "In Progress", type: "started" }. */
-  status?: { name: string; type?: string };
+  /**
+   * Workflow state, e.g. { name: "In Progress", type: "started" }. `color` is the
+   * tracker's own per-state color (Linear's state hex) so the UI dot matches the
+   * tracker exactly instead of a coarse type→gray guess — the default Linear
+   * states (Backlog/Todo/Duplicate) otherwise all collapse to one gray.
+   */
+  status?: { name: string; type?: string; color?: string };
   assignee?: { name: string; avatarUrl?: string };
   /**
    * Tracker-internal id of the current assignee (GitHub login, Linear
@@ -326,7 +331,7 @@ export interface TrackerIssue {
    * GitHub this is the fixed Open/Closed pair; for Linear it's the team's
    * workflow states. Absent on `listIssues` (only populated by `getIssue`).
    */
-  availableStatuses?: { name: string; type?: string }[];
+  availableStatuses?: { name: string; type?: string; color?: string }[];
 }
 
 /**
@@ -529,7 +534,7 @@ export interface ListIssuesResult {
    * rows don't carry `availableStatuses`; only `getIssue` populates that).
    * Best-effort: absent when the tracker is unconfigured or the lookup failed.
    */
-  availableStatuses?: { name: string; type?: string }[];
+  availableStatuses?: { name: string; type?: string; color?: string }[];
 }
 
 /**

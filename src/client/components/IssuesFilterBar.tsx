@@ -2,9 +2,8 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
-import { PRIORITY_DOT, statusDotClass } from "./IssueFieldControls.js";
+import { PRIORITY_DOT_COLOR, statusDotColor } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
-import { cn } from "../utils/cn.js";
 import {
   PRIORITY_OPTIONS,
   UNASSIGNED,
@@ -104,16 +103,24 @@ function FacetTrigger({
   );
 }
 
-/** A single checkbox option row inside a facet popover. */
+/**
+ * A single checkbox option row inside a facet popover. When `color` is given
+ * (priority / status), the CHECKBOX itself carries that color — a colored border
+ * always, filled with the color + a check when selected — so the option's color
+ * lives in the control instead of a separate dot. Without a color (assignee), it
+ * falls back to the neutral accent checkbox.
+ */
 function OptionRow({
   checked,
   onToggle,
   count,
+  color,
   children,
 }: {
   checked: boolean;
   onToggle: () => void;
   count: number;
+  color?: string;
   children: ReactNode;
 }) {
   return (
@@ -125,11 +132,26 @@ function OptionRow({
       className="w-full flex items-center gap-2.5 px-2 py-1.5 rounded-md text-sm text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) cursor-pointer"
     >
       <span
-        className={`shrink-0 w-4 h-4 rounded border inline-flex items-center justify-center ${
-          checked
-            ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
-            : "border-(--color-border-secondary)"
+        className={`shrink-0 w-4 h-4 rounded border inline-flex items-center justify-center transition-colors ${
+          color
+            ? ""
+            : checked
+              ? "bg-(--color-accent) border-(--color-accent) text-(--color-accent-text)"
+              : "border-(--color-border-secondary)"
         }`}
+        // The checkbox carries the option's color: a colored border + colored
+        // check on a subtle same-color tint when selected. A colored check (vs a
+        // white one on a solid fill) stays legible on light colors too — e.g.
+        // Linear's yellow "In Progress" or a pale-gray "Todo".
+        style={
+          color
+            ? {
+                borderColor: color,
+                color,
+                backgroundColor: checked ? `color-mix(in oklab, ${color} 22%, transparent)` : "transparent",
+              }
+            : undefined
+        }
       >
         {checked && <CheckIcon size={ICON_SIZE.XS} weight="bold" />}
       </span>
@@ -196,11 +218,9 @@ export function IssuesFilterBar({
             checked={filters.priorities.has(opt.level)}
             onToggle={() => onTogglePriority(opt.level)}
             count={priorityCounts[opt.level] ?? 0}
+            color={PRIORITY_DOT_COLOR[opt.level]}
           >
-            <span className="inline-flex items-center gap-2 min-w-0">
-              <span className={cn("size-2 shrink-0 rounded-full", PRIORITY_DOT[opt.level])} aria-hidden="true" />
-              <span>{opt.label}</span>
-            </span>
+            <span>{opt.label}</span>
           </OptionRow>
         ))}
       </PopoverContent>
@@ -224,11 +244,9 @@ export function IssuesFilterBar({
               checked={filters.statuses.has(opt.name)}
               onToggle={() => onToggleStatus(opt.name)}
               count={opt.count}
+              color={statusDotColor(opt)}
             >
-              <span className="inline-flex items-center gap-2 min-w-0">
-                <span className={cn("size-2 shrink-0 rounded-full", statusDotClass(opt.type))} aria-hidden="true" />
-                <span className="truncate">{opt.name}</span>
-              </span>
+              <span className="truncate">{opt.name}</span>
             </OptionRow>
           ))
         )}

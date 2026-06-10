@@ -42,9 +42,9 @@ import {
  * fixed pair we expose as `availableStatuses`, and the normalized types we
  * accept, both map onto it (see {@link resolveGitHubState}).
  */
-const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string }[] = [
-  { name: "Open", type: "started" },
-  { name: "Closed", type: "completed" },
+const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string; color?: string }[] = [
+  { name: "Open", type: "started", color: "#3fb950" },
+  { name: "Closed", type: "completed", color: "#8957e5" },
 ];
 
 export type FetchImpl = typeof fetch;
@@ -164,7 +164,13 @@ function toTrackerIssue(node: GitHubIssueNode, ref: GitHubRepoRef): TrackerIssue
     ...(node.body ? { description: node.body } : {}),
     priority: mapGitHubPriority(names),
     ...(names.length > 0 ? { labels: names } : {}),
-    status: { name: isClosed ? "Closed" : "Open", type: isClosed ? "completed" : "started" },
+    // GitHub's own issue-state colors: open = green, closed = purple (its
+    // "merged/closed" hue), so the UI dot matches what GitHub shows.
+    status: {
+      name: isClosed ? "Closed" : "Open",
+      type: isClosed ? "completed" : "started",
+      color: isClosed ? "#8957e5" : "#3fb950",
+    },
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatar_url ? { avatarUrl: node.assignee.avatar_url } : {}) } }
       : {}),
@@ -275,7 +281,7 @@ export class GitHubTracker implements Tracker {
     return { ...toTrackerIssue(node, ref), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
-  async listStatuses(): Promise<{ name: string; type?: string }[]> {
+  async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
     // GitHub has no workflow states — the fixed Open/Closed pair, identical to
     // what `getIssue` exposes as `availableStatuses`. No network call needed; the
     // configured guard keeps it consistent with the rest of the interface.

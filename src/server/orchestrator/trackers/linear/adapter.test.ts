@@ -96,7 +96,7 @@ describe("LinearTracker", () => {
                   description: null,
                   priority: 1,
                   priorityLabel: "Urgent",
-                  state: { name: "In Progress", type: "started" },
+                  state: { name: "In Progress", type: "started", color: "#f2c94c" },
                   assignee: null,
                 },
               ],
@@ -112,7 +112,7 @@ describe("LinearTracker", () => {
     // Urgent sorts before Low.
     expect(issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
     expect(issues[0].priority).toEqual({ level: "urgent", sortOrder: 0, label: "Urgent" });
-    expect(issues[0].status).toEqual({ name: "In Progress", type: "started" });
+    expect(issues[0].status).toEqual({ name: "In Progress", type: "started", color: "#f2c94c" });
     expect(issues[0].assignee).toBeUndefined();
     expect(issues[1].priority.level).toBe("low");
     expect(issues[1].assignee).toEqual({ name: "Nik", avatarUrl: "http://a/avatar.png" });
