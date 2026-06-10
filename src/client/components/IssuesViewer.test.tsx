@@ -67,6 +67,7 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
+    onOpenIssue: vi.fn(),
     onStartSession: vi.fn(),
     onConnect: vi.fn(),
     onSetQuery: vi.fn(),
@@ -113,10 +114,26 @@ describe("IssuesViewer", () => {
     // The narrow ID column shows the bare issue number, not the full repo path.
     expect(screen.getByText("1047")).toBeInTheDocument();
     expect(screen.queryByText("nicolasalt/shipit#1047")).not.toBeInTheDocument();
-    // The full identifier survives in the tracker-link tooltip.
-    expect(
-      screen.getByTitle("Open nicolasalt/shipit#1047 in the tracker"),
-    ).toBeInTheDocument();
+    // The row no longer links out to the tracker (docs/189) — the deep link
+    // now lives only inside the inline detail view.
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+  });
+
+  it("opens the inline detail view when a row is clicked (docs/189)", () => {
+    const issue = makeIssue({ title: "Openable" });
+    const props = defaultProps({ issues: [issue] });
+    render(<IssuesViewer {...props} />);
+    fireEvent.click(screen.getByText("Openable"));
+    expect(props.onOpenIssue).toHaveBeenCalledWith(issue);
+  });
+
+  it("does not open the detail view when Start session is clicked", () => {
+    const issue = makeIssue();
+    const props = defaultProps({ issues: [issue] });
+    render(<IssuesViewer {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /Start session/i }));
+    expect(props.onStartSession).toHaveBeenCalledWith(issue);
+    expect(props.onOpenIssue).not.toHaveBeenCalled();
   });
 
   it("fires onStartSession for the clicked issue", () => {

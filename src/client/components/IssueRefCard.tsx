@@ -8,16 +8,19 @@
  * the write card it has NO lifecycle (no undo), so the full payload arrives on
  * the chat message and the component renders straight from props — no store.
  *
- * The deep link is an escape hatch (ShipIt has no inline single-issue view yet),
- * consistent with how the Issues tab and the write card link out per-issue.
+ * docs/189 — clicking the card opens ShipIt's inline single-issue view (the
+ * Issues tab's detail pane), NOT the external tracker. The deep link to Linear/
+ * GitHub now lives only inside that view (CLAUDE.md §2: inline beats link-out).
  */
 
-import { ArrowSquareOutIcon, EyeIcon } from "@phosphor-icons/react";
+import { CaretRightIcon, EyeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { IssueRefCard as IssueRefCardData } from "../../server/shared/types.js";
 
 export interface IssueRefCardProps {
   card: IssueRefCardData;
+  /** Open the inline detail view for this issue (docs/189). */
+  onOpen?: (ref: { tracker: IssueRefCardData["tracker"]; identifier: string; title?: string; url?: string }) => void;
 }
 
 /** A done issue (closed / completed / canceled) reads as muted, not active. */
@@ -25,13 +28,24 @@ function isDone(statusType?: string): boolean {
   return statusType === "completed" || statusType === "canceled";
 }
 
-export function IssueRefCard({ card }: IssueRefCardProps) {
+export function IssueRefCard({ card, onOpen }: IssueRefCardProps) {
   const done = isDone(card.statusType);
 
+  const open = () =>
+    onOpen?.({
+      tracker: card.tracker,
+      identifier: card.identifier,
+      ...(card.title ? { title: card.title } : {}),
+      ...(card.url ? { url: card.url } : {}),
+    });
+
   return (
-    <div
+    <button
+      type="button"
       data-testid="issue-ref-card"
-      className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs flex items-center gap-2"
+      onClick={open}
+      title={`Open ${card.identifier} in ShipIt`}
+      className="w-full text-left rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2.5 text-xs flex items-center gap-2 cursor-pointer hover:bg-(--color-bg-hover) hover:border-(--color-border-primary) transition-colors group"
     >
       <span className="shrink-0 text-(--color-text-tertiary)">
         <EyeIcon size={ICON_SIZE.SM} />
@@ -54,18 +68,10 @@ export function IssueRefCard({ card }: IssueRefCardProps) {
         )}
       </div>
 
-      {card.url && (
-        <a
-          href={card.url}
-          target="_blank"
-          rel="noreferrer"
-          title={`Open ${card.identifier} in the tracker`}
-          className="shrink-0 inline-flex items-center gap-1 text-(--color-text-secondary) hover:text-(--color-text-primary)"
-        >
-          <ArrowSquareOutIcon size={ICON_SIZE.XS} />
-          {card.identifier}
-        </a>
-      )}
-    </div>
+      <CaretRightIcon
+        size={ICON_SIZE.SM}
+        className="shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors"
+      />
+    </button>
   );
 }

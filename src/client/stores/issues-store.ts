@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type {
+  GetIssueResult,
   IssuePriorityLevel,
   ListIssuesResult,
   TrackerId,
@@ -32,10 +33,55 @@ function sessionIdParam(): string {
 }
 
 /**
+ * GitHub identifiers are `owner/repo#123`; the tracker-native lookup id the
+ * detail fetch wants is the bare number after `#`. Linear identifiers (`SHI-1`,
+ * no `#`) ARE the lookup id, so they pass through unchanged. Mirrors the
+ * server's `parseIssueRef`, kept here so a card (which only carries the display
+ * identifier) can open the detail view without a round-trip to resolve the id.
+ */
+export function issueLookupId(identifier: string): string {
+  const hash = identifier.indexOf("#");
+  return hash === -1 ? identifier : identifier.slice(hash + 1);
+}
+
+/**
+ * The issue currently open in the inline detail view (docs/189). Carries the
+ * tracker-native lookup `id` plus the display fields a caller already has (from
+ * a list row or a chat card) so the header can render instantly while the
+ * fully-hydrated issue is fetched.
+ */
+export interface IssueSelection {
+  tracker: TrackerId;
+  /** Tracker-native lookup id: a Linear key/UUID or a bare GitHub number. */
+  id: string;
+  /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
+  identifier: string;
+  title?: string;
+  url?: string;
+}
+
+/** Argument to {@link IssuesState.openIssue} — from a list row or a chat card. */
+export interface OpenIssueRef {
+  tracker: TrackerId;
+  /** Native lookup id (the list row's `issue.id`); derived from `identifier`
+   *  when absent (the chat-card path, which only knows the display id). */
+  id?: string;
+  identifier: string;
+  title?: string;
+  url?: string;
+  /** Full issue to render instantly while the fresh fetch lands (list path). */
+  seed?: TrackerIssue;
+}
+
+/**
  * Issues-tab store (docs/170). Per-tracker issue lists, fetched on tab open and
  * via a manual refresh button — no background poller in v1. Mirrors the
  * docs-list model (HTTP fetch + manual reload) rather than an SSE feed: the
  * issue list is repo/workspace-scoped reference data, not per-session stream.
+ *
+ * docs/189 adds the master-detail layer: `selected`/`detail` drive the inline
+ * single-issue view that the list rows AND the agent's chat cards open, so a
+ * user never leaves ShipIt to read an issue.
  */
 interface IssuesState {
   /** Configured-tracker metadata — drives the sub-tab switcher. */
@@ -63,9 +109,25 @@ interface IssuesState {
    */
   includeDone: boolean;
 
+  /**
+   * The issue open in the inline detail view, or null when the list is showing
+   * (docs/189). `detail` is the fully-hydrated issue from `GET /api/issue`;
+   * until it lands the view renders from `selected`'s seed fields.
+   */
+  selected: IssueSelection | null;
+  detail: TrackerIssue | null;
+  detailLoading: boolean;
+  detailError: string | null;
+
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
+  /** Open the detail view for an issue (from a list row or a chat card). */
+  openIssue: (ref: OpenIssueRef) => Promise<void>;
+  /** Re-fetch the open issue (refresh button inside the detail view). */
+  fetchDetail: () => Promise<void>;
+  /** Close the detail view and return to the list. */
+  closeIssue: () => void;
   setQuery: (query: string) => void;
   togglePriority: (level: IssuePriorityLevel) => void;
   toggleStatus: (name: string) => void;
@@ -116,6 +178,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   // fetchIssues, so restoring before any fetch is safe.
   filters: getSavedIssueFilters(),
   includeDone: getSavedIncludeDone(),
+  selected: null,
+  detail: null,
+  detailLoading: false,
+  detailError: null,
 
   setActiveTracker: (id) =>
     set((state) => ({
@@ -186,6 +252,58 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
+  openIssue: async (ref) => {
+    const id = ref.id ?? issueLookupId(ref.identifier);
+    set((state) => ({
+      // Align the list's sub-tab with the issue being opened so the back
+      // button lands on the matching tracker.
+      activeTracker: ref.tracker,
+      selected: {
+        tracker: ref.tracker,
+        id,
+        identifier: ref.identifier,
+        ...(ref.title !== undefined ? { title: ref.title } : {}),
+        ...(ref.url !== undefined ? { url: ref.url } : {}),
+      },
+      // Seed from the row/card so the view paints immediately; the fetch then
+      // hydrates the description + availableStatuses.
+      detail: ref.seed ?? null,
+      detailError: null,
+      detailLoading: true,
+      filters: pruneFilters(state.filters, state.issuesByTracker[ref.tracker] ?? []),
+    }));
+    await get().fetchDetail();
+  },
+
+  fetchDetail: async () => {
+    const sel = get().selected;
+    if (!sel) return;
+    set({ detailLoading: true, detailError: null });
+    try {
+      const params = sessionIdParam();
+      const res = await fetch(
+        `/api/issue?tracker=${encodeURIComponent(sel.tracker)}&id=${encodeURIComponent(sel.id)}${params ? `&${params}` : ""}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const body = (await res.json().catch(() => ({}))) as Partial<GetIssueResult> & { error?: string };
+      // Drop a stale response: a newer openIssue may have superseded this fetch
+      // while it was in flight (a fast click from one card to another).
+      const current = get().selected;
+      if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
+      if (!res.ok || !body.issue) {
+        set({ detailLoading: false, detailError: body.error ?? `Failed to load issue (${res.status})` });
+        return;
+      }
+      set({ detailLoading: false, detail: body.issue, detailError: null });
+    } catch (err) {
+      const current = get().selected;
+      if (current?.id !== sel.id || current?.tracker !== sel.tracker) return;
+      set({ detailLoading: false, detailError: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  closeIssue: () => set({ selected: null, detail: null, detailError: null, detailLoading: false }),
+
   setQuery: (query) => set((state) => ({ filters: { ...state.filters, query } })),
 
   togglePriority: (level) =>
@@ -219,6 +337,10 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       loading: false,
       error: null,
       filters: emptyFilters(),
+      selected: null,
+      detail: null,
+      detailLoading: false,
+      detailError: null,
     }),
 }));
 

@@ -369,6 +369,7 @@ export function MessageList({
   onRewindAtGap,
   onSubmitBugReport,
   onUndoIssueWrite,
+  onOpenIssue,
   onResumeSession,
 }: {
   messages: ChatMessage[];
@@ -384,6 +385,17 @@ export function MessageList({
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
   /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
   onUndoIssueWrite?: (cardId: string) => void;
+  /**
+   * docs/189 — open an issue's inline detail view from a chat card (read or
+   * write). Switches the right panel to the Issues tab and loads the issue.
+   */
+  onOpenIssue?: (ref: {
+    tracker: "linear" | "github";
+    id?: string;
+    identifier: string;
+    title?: string;
+    url?: string;
+  }) => void;
   /**
    * Opens a spawned/fork child session. Wraps the router-aware
    * `handleSessionResume`, so the active session switches via the same code
@@ -823,7 +835,7 @@ export function MessageList({
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
-                <IssueWriteCard cardId={msg.issueWrite.cardId} onUndo={onUndoIssueWrite} />
+                <IssueWriteCard cardId={msg.issueWrite.cardId} onUndo={onUndoIssueWrite} onOpen={onOpenIssue} />
               </div>
             </div>
           );
@@ -836,7 +848,7 @@ export function MessageList({
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
-                <IssueRefCard card={msg.issueRef} />
+                <IssueRefCard card={msg.issueRef} onOpen={onOpenIssue} />
               </div>
             </div>
           );
