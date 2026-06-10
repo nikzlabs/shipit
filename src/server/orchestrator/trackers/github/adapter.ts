@@ -284,7 +284,7 @@ export class GitHubTracker implements Tracker {
         { headers: githubHeaders(this.token!) },
       );
     } catch (err) {
-      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     this.assertOk(res);
     const nodes = (await res.json()) as GitHubCommentNode[];
