@@ -190,12 +190,21 @@ So a session's overlay volume is a **pure disposable cache**: dropping it loses 
 re-installs the delta over the base). Two consequences:
 
 - Reclaiming a session's overlay volume is **safe by construction** — no "unsaved work?" check.
-- The existing **disk-tier escalation** (docs/161), which today `rm`s idle
-  `session.workspaceDir/node_modules` to reclaim disk, **finds nothing for an overlay session** — its
-  `node_modules` is the overlay (shared base + upper volume), not a host-side copy at `workspaceDir`.
-  For overlay sessions it must instead **drop the per-session overlay volume(s)** (cheap,
-  re-derivable) and skip the host-path `rm`. This is the change most likely to be missed, because the
-  escalation lives outside the overlay code path.
+- The existing **disk-tier escalation** (docs/161) reclaims deps at the `hot → light` rung
+  (`reclaimToLight` in `disk-janitor.ts`) by **dropping the per-session compose named volumes** —
+  it sets `removeVolumesOnDispose`, disposes the runner, and calls `containerManager.destroy()`
+  (with a `ServiceManager.stop({ removeVolumes: true })` + `pruneVolumes` fallback when no runner
+  is alive); the host-side checkout is kept. There is **no host-path `rm` of `node_modules`** to skip —
+  the only `fs.rm` of host state is the full-`workspaceDir` wipe at the `light → evicted` rung.
+  `destroyContainer` already calls `removeOverlayVolume(sc.overlayVolumeName)` for the single Phase-2
+  overlay volume, so on `hot → light` one overlay volume is already reclaimed today. The dep-dir
+  retarget is therefore to **extend `removeOverlayVolume` in `destroyContainer` to drop all N
+  per-dep-dir volumes** — not to skip a host-path `rm`. (The `pruneVolumes`/`pruneSessionVolumes`
+  fallback can't reach overlay volumes: it filters `label=shipit-session=<sessionId>`, but overlay
+  volumes are labeled `shipit-session=true` + `shipit-managed=true`. The backstop for crash-orphaned
+  overlay volumes is the `sweepOrphanSessionVolumes` `^shipit-([a-f0-9-]{12})_` sweep, not the label
+  prune.) This is the change most likely to be missed, because the escalation lives outside the
+  overlay code path.
 
 Net: aggregate disk drops sharply (shared base vs. per-session copies), resource **count** rises
 (N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface

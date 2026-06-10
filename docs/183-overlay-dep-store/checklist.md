@@ -64,17 +64,24 @@ for overlay sessions. See `plan.md` → "Disk cleanup under the dep-dir design".
       `removeOverlayVolume` for **each** of the session's overlay specs (not one). Confirm
       `sweepOrphanSessionVolumes`' `^shipit-([a-f0-9-]{12})_` regex reclaims every crash-orphaned
       `shipit-<id>_overlayN`; add a test with N>1.
-- [ ] **Retarget disk-tier escalation (docs/161) for overlay sessions.** Today it `rm`s idle
-      `session.workspaceDir/node_modules`; for an overlay session that path holds no `node_modules`
-      (it's the overlay volume), so the reclaim is a no-op. For overlay sessions, **drop the
-      per-session overlay volume(s)** instead (safe — the upper is a pure disposable cache, re-derived
-      on next mount) and skip the host-path `rm`. This is the most-likely-missed change (it lives
-      outside the overlay code path).
+- [ ] **Extend disk-tier escalation (docs/161) volume removal to N dep-dir volumes.** The `hot → light`
+      rung (`reclaimToLight`) reclaims deps by dropping the per-session compose named volumes via
+      `removeVolumesOnDispose` → `containerManager.destroy()` (with a `ServiceManager.stop({ removeVolumes:
+      true })` + `pruneVolumes` fallback), keeping the host checkout — there is **no host-path `rm` of
+      `node_modules`** to skip. `destroyContainer` already calls `removeOverlayVolume` for the single
+      Phase-2 overlay volume, so today one overlay volume is reclaimed on `hot → light`. Extend
+      `destroyContainer` to drop **all N** per-dep-dir overlay volumes; add a test with N>1. Note the
+      `pruneVolumes`/`pruneSessionVolumes` fallback can't reach overlay volumes (it filters
+      `label=shipit-session=<id>`, but overlay volumes are labeled `shipit-session=true`); the
+      crash-orphan backstop is the `sweepOrphanSessionVolumes` `^shipit-([a-f0-9-]{12})_` sweep — confirm
+      it matches `shipit-<id>_overlayN`. Safe by construction — each upper is a pure disposable cache,
+      re-derived on next mount. Most-likely-missed change (it lives outside the overlay code path).
 - [ ] **Flatten/swap reclaim.** Confirm depth-cap flatten via `copySnapshotToBase`'s atomic swap
       rm's the old base generation (transient double-disk during the swap; live mounts keep pinned
       inodes). Add/confirm a test.
-- [ ] **Docs sync.** Update CLAUDE.md's "Disk cleanup" section (it currently describes escalation as
-      `rm`-ing host-side `node_modules`) and any agent-facing `shipit-docs` if the escalation behavior
+- [ ] **Docs sync.** Update CLAUDE.md's "Disk cleanup" section (it describes per-session teardown as
+      dropping compose **named volumes**) to note that overlay sessions also carry N per-dep-dir overlay
+      volumes reclaimed the same way, and update any agent-facing `shipit-docs` if escalation behavior
       changes for overlay sessions.
 
 ---
