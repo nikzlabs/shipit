@@ -12,7 +12,8 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
-import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap } from "../shared/types.js";
+import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
+import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
@@ -214,6 +215,20 @@ export interface RunnerRegistryDeps {
    * minimal test setups.
    */
   runParamsPreps?: Map<AgentId, PrepareRunParamsFn>;
+  /**
+   * docs/183 Phase 4b — publish-after-install hook, forwarded into
+   * `setupServiceManager`. After a session's `agent.install` resolves, it pulls
+   * each declared dep dir's merged snapshot from the worker and publishes it as
+   * the next rolling overlay base. Optional and inert unless `OVERLAY_DEP_STORE`
+   * is on and the session is overlay-eligible; absent in test setups. Constructed
+   * in `index.ts` (where `stateDir`/`createRepoGit`/`getBareCacheDir` are in
+   * scope) as a runner-adapting wrapper over `publishDepDirOverlayBases`.
+   */
+  publishOverlayBases?: (args: {
+    runner: ContainerSessionRunner;
+    session: SessionInfo;
+    installOk: boolean;
+  }) => Promise<void>;
 }
 
 /**
@@ -231,6 +246,7 @@ export function createRunnerRegistry(
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
+    publishOverlayBases,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -457,6 +473,7 @@ export function createRunnerRegistry(
           serviceEnvDir,
           broadcastLog,
           credentialStore,
+          publishOverlayBases,
         };
         setupServiceManager(runner, setupDeps);
 

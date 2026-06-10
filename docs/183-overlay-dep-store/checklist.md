@@ -128,14 +128,28 @@ publish-after-install orchestration + wiring (4b).
 
 #### Phase 4b — Publish-after-install orchestration + wiring
 
-- [ ] After an eligible install (exit-0, pre-user, source==remote default), for each declared dep dir:
-      `fetchDepSnapshotStream` → `extractTarStream` to a temp dir → `publishBase` with the per-dep-dir
-      scope `(repo, runtime, dep-dir)` and the bare-cache `isAncestor` + `currentDefaultCommit`. Reuses
-      the `overlay-base.ts` CAS unchanged — only the caller/granularity is new.
-- [ ] Wire the hook into the install-completion seam (`service-manager-setup.ts` install promise +
-      `index.ts` callback construction, as the stripped whole-workspace version did, but per dep dir).
-- [ ] Tests: a per-dir publish advances only the matching scope; cross-dir isolation; ineligible skips;
-      flag-off → no publish.
+- [x] `overlay-publish.ts` → `publishDepDirOverlayBases(args, deps)`: after an eligible install (exit-0,
+      pre-user, source==remote default), for each declared dep dir runs `fetchDepSnapshotStream` →
+      `extractTarStream` to a temp dir → `publishBase` with the per-dep-dir scope `(repo, runtime, dep-dir)`
+      and the bare-cache `isAncestor` + `currentDefaultCommit`. Reuses the `overlay-base.ts` CAS unchanged
+      — only the caller/granularity is new. HTTP/tar/oracle glue is injected so the orchestration is
+      unit-testable; a per-dir failure is recorded (`"error"`) and never aborts the others. Eligibility:
+      `commit` from the worker's merged HEAD (`fetchWorkspaceHeadCommit`, added to `overlay-snapshot.ts`),
+      `currentDefaultCommit` from the bare cache, `sourceIsDefaultBranch = commit === currentDefaultCommit`,
+      `preUserInstall = true` at this setup-install seam (documented residual: uncommitted dep edits while
+      HEAD still equals the default tip — hardened in Phase 7).
+- [x] Wired into the install-completion seam: `setupServiceManager` calls an optional `publishOverlayBases`
+      hook once after its install promise resolves (placed before the compose/adoption branches so
+      compose-less projects publish too); the hook is threaded through `RunnerRegistryDeps` → `setupDeps`.
+      `index.ts` constructs the runner-adapting wrapper (closes over `stateDir` + `createRepoGit` +
+      `getBareCacheDir`, awaits `whenWorkerReady()`, reads `getWorkerUrl()`), gated by a cheap
+      `isOverlayEnabled()` check first so a flag-off session never awaits worker readiness. Best-effort: a
+      publish throw is caught and logged, never affecting the install/session.
+- [x] Tests (`overlay-publish.test.ts`, 10): default-dir created base; per-dir publish into its own scope
+      + cross-dir isolation (distinct scope hashes, each base holds only its own snapshot); flag-off → no
+      publish; ineligible (no remoteUrl / ops) → no publish; install-failed → skipped-ineligible (no base);
+      head-commit unresolvable → skipped; source≠default → skipped-ineligible (no base); tracked-source dep
+      dir dropped while the ignored one publishes; per-dir error isolated from healthy dirs.
 
 ### Phase 5 — Compose services at dep-dir subpaths
 

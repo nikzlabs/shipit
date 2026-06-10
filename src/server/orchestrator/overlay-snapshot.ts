@@ -74,3 +74,23 @@ export async function fetchDepSnapshotStream(workerUrl: string, depDir: string):
   }
   return Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
 }
+
+/**
+ * Fetch the merged-workspace HEAD commit from the session worker (`GET
+ * /workspace/head-commit`) — the source commit the install ran against, which
+ * stamps a publish candidate and decides publish eligibility (source == remote
+ * default). The orchestrator can't read it from the host upperdir (`.git` lives
+ * in the merged tree), so it asks the worker. Returns null on any failure so the
+ * publish path conservatively declines rather than stamping a candidate with a
+ * guessed commit.
+ */
+export async function fetchWorkspaceHeadCommit(workerUrl: string): Promise<string | null> {
+  try {
+    const res = await fetch(`${workerUrl}/workspace/head-commit`);
+    if (!res.ok) return null;
+    const body = (await res.json()) as { commit?: string | null };
+    return typeof body.commit === "string" && body.commit.length > 0 ? body.commit : null;
+  } catch {
+    return null;
+  }
+}
