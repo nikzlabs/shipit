@@ -82,12 +82,29 @@ export function statusDotClass(type?: string): string {
  * issue still has something to click. Exported for read-only-adjacent reuse.
  */
 export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority"] }) {
+  // Caret lives INSIDE the value and reveals on hover by growing from zero
+  // width — so the colored pill itself widens slightly to show a "⌄" in its own
+  // color, rather than a separate gray box appearing around it. `group/fe` is
+  // the editor button (FieldEditor); read-only uses of this trigger have no such
+  // ancestor, so the caret simply stays collapsed.
+  const caret = (
+    <CaretDownIcon
+      size={ICON_SIZE.XS}
+      className="shrink-0 max-w-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100"
+    />
+  );
   if (priority.level === "none") {
-    return <span className="text-[11px] text-(--color-text-tertiary)">No priority</span>;
+    return (
+      <span className="inline-flex items-center text-[11px] text-(--color-text-tertiary)">
+        No priority
+        {caret}
+      </span>
+    );
   }
   return (
     <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px]">
       {priority.label}
+      {caret}
     </Badge>
   );
 }
@@ -104,6 +121,7 @@ function FieldEditor({
   saving,
   error,
   align = "start",
+  chevron = true,
   children,
 }: {
   ariaLabel: string;
@@ -111,6 +129,13 @@ function FieldEditor({
   saving: boolean;
   error: string | null;
   align?: "start" | "end";
+  /**
+   * Render the shared inline (gray) caret after the trigger. The priority
+   * editor sets this `false` because its trigger ({@link PriorityTrigger})
+   * grows the colored pill to reveal an in-pill caret instead, so the value
+   * itself is the only affordance — no separate box or sibling chevron.
+   */
+  chevron?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -124,24 +149,23 @@ function FieldEditor({
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
           className={cn(
-            // Fully-round hover/focus highlight so it reads as one cohesive
-            // affordance around the pill (a small-radius box clashed with the
-            // pill's round corners — looked like a weird nested box).
-            "group/fe inline-flex max-w-full items-center gap-1 rounded-full -mx-1.5 px-1.5 py-0.5",
-            "cursor-pointer transition-colors hover:bg-(--color-bg-hover)",
-            "focus:outline-none focus-visible:bg-(--color-bg-hover)",
+            // No hover box — the affordance is the value reacting (the pill
+            // grows / a caret slides out). A surrounding highlight clashed with
+            // the pill's round corners and read as a weird nested box.
+            "group/fe inline-flex max-w-full items-center rounded-full",
+            "cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-(--color-border-focus)",
             error && "ring-1 ring-(--color-error)",
           )}
         >
           <span className="inline-flex min-w-0 items-center gap-1">{trigger}</span>
           {saving ? (
-            <CircleNotchIcon size={ICON_SIZE.XS} className="shrink-0 animate-spin text-(--color-text-tertiary)" />
-          ) : (
+            <CircleNotchIcon size={ICON_SIZE.XS} className="ml-1 shrink-0 animate-spin text-(--color-text-tertiary)" />
+          ) : chevron ? (
             <CaretDownIcon
               size={ICON_SIZE.XS}
-              className="shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover/fe:opacity-100"
+              className="shrink-0 max-w-0 overflow-hidden opacity-0 text-(--color-text-tertiary) transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100"
             />
-          )}
+          ) : null}
         </button>
       </DropdownMenuTrigger>
       {/* The menu renders in a portal but is still a React descendant of the
@@ -236,7 +260,7 @@ export function IssuePriorityEditor({
   const { saving, error, run } = useFieldWrite();
 
   return (
-    <FieldEditor ariaLabel={ariaLabel} trigger={trigger} saving={saving} error={error} align={align}>
+    <FieldEditor ariaLabel={ariaLabel} trigger={trigger} saving={saving} error={error} align={align} chevron={false}>
       {PRIORITY_OPTIONS.map((opt) => {
         const selected = opt.level === current;
         return (

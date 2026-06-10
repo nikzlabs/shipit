@@ -248,6 +248,14 @@ rather than a flat text table:
 - **Status dots.** The inline status trigger (and the mobile meta line) now lead
   with a colored dot keyed by workflow-state `type`, reusing the exported
   `statusDotClass` from `IssueFieldControls.tsx` so list/detail/menu dots match.
+- **Inline-edit affordance (docs/191).** The status/priority editor triggers no
+  longer draw a gray hover box (its small corners clashed with the round pill and
+  read as a nested box). Instead the *value itself* reacts: the priority pill
+  grows slightly to reveal a "⌄" in its own color (the caret lives inside the
+  `Badge`, collapsed to zero width until `group-hover/fe`); the status trigger
+  slides out a subtle gray caret. `FieldEditor` gained a `chevron` prop so the
+  priority editor opts out of the shared sibling caret. Keyboard focus is
+  preserved via a `focus-visible` ring + the same caret reveal on focus.
 - **Row polish.** Taller rows, `font-medium` titles, an accent left-edge bar that
   fades in on hover/focus, a hover-reveal caret that slides in, softer
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
