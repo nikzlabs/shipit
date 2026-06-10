@@ -32,7 +32,7 @@ export interface IssueWriteCardProps {
   cardId: string;
   onUndo?: (cardId: string) => void;
   /** Open the inline detail view for this issue (docs/189). */
-  onOpen?: (ref: { tracker: TrackerId; id: string; identifier: string; title?: string; url?: string }) => void;
+  onOpen?: (ref: { tracker: TrackerId; identifier: string; title?: string; url?: string }) => void;
 }
 
 export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) {
@@ -79,8 +79,10 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
         type="button"
         onClick={() =>
           onOpen?.({
+            // Derive the lookup id from the display identifier (uniform across
+            // trackers) rather than `card.issueId`, which for GitHub is the undo
+            // target, not a valid `getIssue` key. See `issueLookupId`.
             tracker: card.tracker,
-            id: card.issueId,
             identifier: card.identifier,
             ...(card.title ? { title: card.title } : {}),
             ...(card.url ? { url: card.url } : {}),
