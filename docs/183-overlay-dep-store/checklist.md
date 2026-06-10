@@ -1,4 +1,46 @@
-# Checklist — overlay-mounted rolling workspace base
+# Checklist — overlay-mounted rolling dependency base
+
+> **⚠️ Design pivot (2026-06-10).** The design changed from **whole-workspace overlay** to
+> **dependency-directory overlay** (declared in `shipit.yaml` `agent.dep-dirs`, default
+> `[node_modules]`). See `plan.md` → "Current design" + "Rejected approaches". Net effect on this
+> checklist: the daemon-overlay **mechanism** (Phases 0–2) and the **publish CAS / marker / runtime
+> fingerprint / GC** (most of Phase 3) are **reused as-is**. The two items previously tracked as
+> "NOT DONE — host-gated" — **source-sync re-sequencing (A)** and the **workspace-view resolver (B)**
+> — are now **REJECTED, not pending**: the dep-dir design leaves `session.workspaceDir` authoritative
+> and the host-side clone in place, so neither is needed. The remaining work is the **dep-dir
+> retargeting** captured in the new "Phase 3b/4b — dependency-directory retargeting" section below.
+
+## Dependency-directory retargeting (current remaining work)
+
+- [ ] **Read `agent.dep-dirs` from shipit.yaml** (default `[node_modules]`) in the shipit-config
+      parser; literal relative paths only (no globs). Add to `src/server/shipit-docs/shipit-yaml.md`.
+- [ ] **Validate each entry** — relative + inside the workspace + not the root + not containing
+      tracked files (gitignored artifact); invalid/missing → skip that dir (plain install), never break.
+- [ ] **`buildOverlaySpec` → N mounts.** Emit one overlay mount per declared dep dir at its subpath
+      (`/workspace/<dep-dir>`), each with its own base scope `(repo, runtime, dep-dir relpath)` and
+      per-session upper/work; resolve dep dirs against the **pre-container host clone** (so the source
+      parent exists; the daemon creates the artifact-leaf mountpoint). Drops the single
+      `/workspace`-root mount.
+- [ ] **Scope the worker snapshot to the dep dirs** (per-dir export), not the whole merged tree.
+- [ ] **Compose wiring:** mount the same per-session overlay volume(s) into services at the dep-dir
+      subpaths (reuse the shared-volume pattern), instead of rooting the whole workspace at the overlay.
+- [ ] **Host-matrix spike:** confirm a `type=overlay` volume mounts cleanly at a target **nested under
+      the `/workspace` bind** (`/workspace/node_modules`) on VPS/ext4 + Docker Desktop Mac/Windows.
+- [ ] **Remove/repurpose** the whole-workspace-only code now obviated: the merged-workspace snapshot
+      can shrink to per-dir; `GET /workspace/head-commit` stays (publish still needs source HEAD).
+
+### Rejected — do NOT implement (see plan.md "Rejected approaches")
+
+- [REJECTED] **(A) Source-sync re-sequencing** — clone/checkout/`git clean` inside the merged mount.
+  Obviated: dep-dir overlay keeps the host-side clone at the normal path.
+- [REJECTED] **(B) Workspace-view resolver** — routing file/doc/git/post-turn through the worker.
+  Obviated: `session.workspaceDir` stays authoritative (source + `.git` on the normal mount).
+- [REJECTED] **Host-visible overlay (privileged sidecar + propagation)** — privileged infra +
+  Windows gap; strictly dominated by the unprivileged daemon-overlay dep-dir design.
+- [REJECTED] **Globs in `dep-dirs`** — special-cases the artifact suffix for zero expressiveness gain;
+  literal paths degrade benignly and are agent-maintainable.
+
+---
 
 Design proposal. Core decisions: **overlay the whole workspace** (environment-agnostic, no
 keys / no lockfile detection); **keyless rolling base per `(repo, runtime fingerprint)`**;

@@ -1,11 +1,165 @@
 ---
 status: planned
-description: Share a warm workspace baseline across sessions via one rolling overlay base per repo runtime; each session runs its real install on top, so it's ecosystem-agnostic with no keys and no lockfile detection.
+issue: https://linear.app/shipit-ai/issue/SHI-93
+description: Share installed dependency directories across sessions via a rolling overlay base per (repo, runtime), scoped to the dirs declared in shipit.yaml agent.dep-dirs (default node_modules); each session installs its delta on top. (Whole-workspace overlay superseded.)
 ---
 
-# Overlay-mounted rolling workspace base
+# Overlay-mounted rolling dependency base
 
-> **TL;DR — the proposal.** Instead of copying `node_modules` into each session (today's
+> **⚠️ Design status (updated 2026-06-10) — the design changed.** This feature originally
+> proposed overlaying the **whole workspace**. That is now **superseded**. The current design
+> overlays only the **dependency directories a repo declares in `shipit.yaml`** (`agent.dep-dirs`,
+> default `[node_modules]`). It keeps the same proven, unprivileged daemon-overlay mount mechanism
+> and the rolling-base publish logic (Phases 0–2 + the `overlay-base.ts` CAS are reused as-is),
+> but it **eliminates the two host-gated subsystems** that blocked the whole-workspace variant —
+> whole-workspace **source re-sequencing** and the worker **workspace-view resolver**.
+>
+> **Read [Current design](#current-design-overlay-declared-dependency-directories) and
+> [Rejected approaches](#rejected-approaches) first.** The sections below them describe the
+> **superseded** whole-workspace design; they are retained because the mount mechanism, publish
+> CAS, marker, runtime fingerprint, and GC they specify are reused unchanged by the current design
+> — only the mount *target* (declared dep dirs vs. the whole `/workspace`) and the absence of A/B
+> differ.
+
+## Current design: overlay declared dependency directories
+
+**What we overlay.** Not the whole workspace — only the **dependency/artifact directories** a repo
+declares in `shipit.yaml` `agent.dep-dirs` (default `[node_modules]`). Source and `.git` stay on the
+normal per-session workspace mount exactly as today; each declared dep dir is **additionally** mounted
+as a per-session `local` `type=overlay` volume whose read-only `lowerdir` is the shared rolling base
+for that `(repo, runtime, dep-dir)` and whose `upperdir` captures this session's install delta.
+
+**Why this shape.** It keeps the rolling-base value — a warm shared baseline makes each install a
+near-no-op, shared on disk — and the proven unprivileged daemon-overlay mechanism, while **deleting
+the two pieces that made the whole-workspace variant a large, host-gated re-architecture**:
+
+- The orchestrator's view of the workspace (`session.workspaceDir`) is **unchanged** — source +
+  `.git` are still the normal host-visible mount — so there is **no workspace-view resolver** (no
+  rerouting file/doc/git/diff/post-turn flows through the worker).
+- The clone still happens host-side at the normal path, so there is **no source-sync re-sequencing**
+  (no clone-into-the-merged-mount, no whiteout pass for base-deleted source).
+
+The dep dirs are gitignored build artifacts the orchestrator never needs to read host-side (the file
+tree hides them, diffs ignore them), so overlaying **only** them is invisible to every existing
+workspace operation.
+
+### `agent.dep-dirs` config
+
+```yaml
+agent:
+  install: npm ci
+  dep-dirs:            # default: [node_modules]
+    - node_modules
+    - packages/web/node_modules   # monorepo: list each explicitly
+    - services/worker/.venv        # polyglot: just more literals
+```
+
+- **Literal relative paths only — no globs, no detection.** Each entry is a relative directory path
+  inside the workspace. Globs are deliberately **not** supported (see Rejected approaches): a glob
+  would force special-casing the artifact suffix (`packages/*/node_modules` = "expand the source
+  parent `packages/*`, treat `node_modules` as a literal the mount creates"), a confusing wart for
+  **zero** expressiveness gain — package dirs have fixed names in committed source, so any glob match
+  can be listed literally.
+- **Default `[node_modules]`** so the common single-package npm/Yarn/pnpm repo is **zero-config**
+  (pnpm's `.pnpm` store lives inside `node_modules`; the global download store is already shared via
+  `/dep-cache`, [075](../075-shared-dependency-cache/plan.md)).
+- **Agent-maintainable.** A monorepo or polyglot repo declares its dep dirs once; in a chat-driven IDE
+  the agent writes/updates the list on request ("cache the new package's deps"), so the user doesn't
+  hand-curate it. The scope is fixed at container-create, so a freshly-added dir takes effect on the
+  **next** session — first session plain, then fast.
+
+### Per-dir base + mount model
+
+- **Scope:** one rolling base per `(repo, runtime fingerprint, dep-dir relpath)`. The runtime
+  fingerprint is the orchestrator-side `overlayRuntimeKey` (worker image digest + arch — pins libc +
+  Node ABI). The publish compare-and-swap, depth-cap flatten, force-push lineage reset, and the
+  `.shipit/.install-done` stamped marker all carry over unchanged, scoped per dep dir.
+- **Mount targets at create time.** Because this design keeps the **pre-container host clone**, the
+  orchestrator resolves the declared dep dirs against the real checked-out source before creating
+  mounts. A dep dir's `node_modules` need **not** pre-exist — the daemon **creates the mountpoint**
+  when it mounts the overlay (the source parent, e.g. `packages/web/`, exists from the checkout, so
+  the leaf is creatable); cold start → empty `lowerdir` → install populates the `upperdir`.
+- **Publish snapshot = the dep dirs only**, not the whole tree — so export/import is much smaller and
+  faster than the whole-workspace snapshot.
+- **Compose services** that need a dep dir (a dev server reading `node_modules`) mount the *same*
+  per-session overlay volume at their corresponding path — the shared-overlay-volume-across-containers
+  pattern proven by `shared-volume-spike.sh`, scoped to the subdir.
+
+### Validation (degrade safely, never break)
+
+An entry is **skipped** (that dir runs plain install; the session is unaffected) when it:
+
+- isn't a relative path inside the workspace (no `..`, no absolute, not the workspace root — overlaying
+  the root **is** the rejected whole-workspace mode);
+- **contains tracked source files** — dep dirs must be gitignored build artifacts; a base over tracked
+  source would shadow real files. Warn + skip.
+- doesn't exist after install (nothing to capture).
+
+An empty / missing / all-invalid list → no overlay → plain install everywhere. Misconfiguration only
+forfeits speedup; it never corrupts a session or the shared base.
+
+### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
+
+- **Reused as-is:** the daemon `type=overlay` volume mechanism (`overlay-volume.ts`, Phases 0–2); the
+  rolling-base publish CAS + depth-cap flatten + force-push lineage reset (`overlay-base.ts`); the
+  stamped install marker (`install-marker.ts`); the runtime fingerprint; the disk-janitor
+  `overlay-base/<hash>` GC.
+- **Dropped (no longer needed):** the whole-workspace **source-sync re-sequencing** and the worker
+  **workspace-view resolver** — the two host-gated pieces. `session.workspaceDir` stays authoritative.
+- **Changed:** `buildOverlaySpec` produces **N mounts at dep-dir subpaths** instead of one mount at
+  the `/workspace` root; the scope key gains the dep-dir relpath; the worker snapshot shrinks to a
+  per-dep-dir export; `agent.dep-dirs` is read from `shipit.yaml`.
+
+## Rejected approaches
+
+### Whole-workspace overlay (the original design) — **superseded**
+
+Overlay the entire `/workspace` and run the install on top, capturing the whole diff generically.
+**Pro:** truly ecosystem-agnostic — no need to know where deps live. **Why rejected:** the merged
+tree exists only inside the session container, which forces two large, **host-gated** subsystems
+before it can even function:
+
+- **(A) Source-sync re-sequencing** — the clone/checkout/reset/clean must run *inside* the merged
+  mount after the container starts (the existing host clone lands outside the merged view → an empty
+  `/workspace`). This includes an explicit whiteout pass for source files deleted since the base that
+  **cannot** be a plain `git clean -ffdx` — `-x` would also delete the base's `node_modules`, the very
+  thing the base exists to preserve.
+- **(B) Workspace-view resolver** — every orchestrator file/doc/git/diff/post-turn operation must
+  route through the worker because `session.workspaceDir` is only the upperdir for an overlay session.
+
+Both touch the most critical path in the product (session creation + every workspace read/write) and
+can only be verified on real Docker overlay across the host matrix. The ecosystem-agnosticism they buy
+is **not worth** that cost: explicit `dep-dirs` (defaulted, agent-maintainable) covers the real cases,
+and the dep-dir overlay keeps **all four targets + the unprivileged mechanism** while deleting A and B
+entirely. (The implementation spine for this variant — `overlay-session.ts`, the publish wiring — was
+built and tested behind a flag; the reusable parts above survive the pivot, A and B were never built.)
+
+### Host-visible overlay (privileged sidecar + mount propagation) — **rejected**
+
+Make the *orchestrator* see the merged whole-workspace tree at `session.workspaceDir` (so existing
+fs/git code "just works" and A/B mostly vanish) via a long-lived `--privileged` mounter sidecar whose
+overlay propagates (`rshared`) into the daemon's namespace. **Why rejected:** it reintroduces exactly
+the infrastructure the daemon-overlay mechanism was chosen to delete — a privileged container
+(containment regression vs `docs/172`), a startup propagation probe, re-arm-on-boot, and the
+disk-janitor unmount-ordering hazard — **and it fails on Docker Desktop/Windows-WSL2** (managed
+`docker-desktop` distro, no user-applicable `MountFlags=shared`; `propagation-spike.sh`), so Windows
+dev falls back to plain install anyway. It trades portability + containment for the same goal the
+dep-dir overlay reaches **unprivileged on all four targets**. Strictly dominated except on
+ecosystem-agnosticism, which it buys at far higher cost.
+
+### Globs in `dep-dirs` — **rejected**
+
+Support `packages/*/node_modules`. **Why rejected:** `node_modules` doesn't exist pre-install, so a
+glob can't match the artifact dir directly; supporting it means **special-casing the suffix** (expand
+the source-parent wildcard against the checkout, treat the artifact name as a literal the mount
+creates) — confusing semantics + edge cases (matches containing tracked files, transitive nesting) for
+**zero** expressiveness gain, since package directories have fixed names in committed source. The cost
+of literal-only (a longer, drift-prone list for big monorepos) is **benign**: a missing entry just
+runs that dir plain, and the agent regenerates the list on request. Globs can be added later as pure
+sugar if real demand appears — no architectural commitment now.
+
+> **TL;DR — the SUPERSEDED whole-workspace proposal (retained for the reused mechanism; see the
+> design-status banner above).** Instead of copying `node_modules` into each session (today's
 > `nm-store` `tar`/`cp -a`), keep **one rolling overlay base per repo runtime**: the
 > whole-workspace filesystem state right after a successful install for a compatible runtime.
 > A new session mounts that base read-only
@@ -466,23 +620,26 @@ Ordered; see [`checklist.md`](./checklist.md) for the per-phase task list. **Pha
 nm-store first** — a clean, self-contained simplification — then the overlay subsystem is built
 on top of the simplified install path.
 
-> **Implementation status (current).** Phases 0–2 and the Phase-3 *decision logic* are done.
-> The Phase-3/4 **orchestration spine** is now wired behind the **`OVERLAY_DEP_STORE` feature
-> flag (default OFF)**, so production is byte-for-byte unchanged until a deployment opts in:
-> `overlay-session.ts` (eligibility, `(repo, runtime)` scope, daemon-host spec construction with
-> upper-persists/workdir-resets, snapshot→publish, GC live-source), the `RepoGit` ancestry oracle
-> (`isAncestor` via an explicit git exit-code — simple-git's `raw` does NOT reject on
-> `--is-ancestor` exit-1, which would have silently broken the CAS) + `resolveDefaultBranchCommit`,
-> the worker `GET /workspace/head-commit`, container-spec population (`prepareOverlaySpec` →
-> `buildConfigForWorkspace`), compose volume rooting (`setupServiceManager`), the publish-on-install
-> hook, and the disk-janitor GC source. **Two host-gated pieces remain and are why the flag must
-> stay OFF in production:** (1) the **source-sync re-sequencing** — clone/checkout/`git clean -ffdx`
-> must run inside the merged `/workspace` after the container starts, not the pre-container host
-> clone (Phase 3); and (2) the **workspace-view resolver** — routing every file/doc/git/post-turn
-> flow through the worker because `session.workspaceDir` is only the upperdir for overlay sessions
-> (Phase 4). Both require real Docker overlay across the host matrix to verify; the pure logic is
-> unit-tested (`overlay-session.test.ts`, `overlay-base.test.ts`, `repo-git.test.ts`,
-> `compose-generator.test.ts`).
+> **Implementation status (updated 2026-06-10 — design pivot).** The phase list below was written
+> for the **superseded whole-workspace** design; it is retained because Phases 0–2 (the daemon-overlay
+> mechanism) and the Phase-3 *decision logic* (the publish CAS) are **reused unchanged** by the
+> current dep-dir design. What's on the branch today, behind the **`OVERLAY_DEP_STORE` flag (default
+> OFF)**: `overlay-volume.ts`, `overlay-base.ts` (publish CAS), `install-marker.ts`, the `RepoGit`
+> ancestry oracle (`isAncestor` via an explicit git exit-code — simple-git's `raw` does NOT reject on
+> `--is-ancestor` exit-1, which would have silently broken the CAS), the worker
+> `GET /workspace/head-commit`, container-spec population, compose volume rooting, the publish hook,
+> and the disk-janitor GC — all unit-tested.
+>
+> **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and
+> (B) the workspace-view resolver — are now [REJECTED, not pending](#rejected-approaches)**, because
+> the current design overlays only the declared **dep dirs** and leaves `session.workspaceDir`
+> authoritative (so neither A nor B is needed). The **actual remaining work** under the current
+> design is: read `agent.dep-dirs` from shipit.yaml (default `[node_modules]`) + validation; change
+> `buildOverlaySpec` to emit **N mounts at dep-dir subpaths** (not one mount at `/workspace` root)
+> with the scope key extended by the dep-dir relpath; scope the worker snapshot to the dep dirs; wire
+> compose services to the same per-session overlay volume at the dep-dir subpaths; and host-matrix
+> validation (a 5-line spike for a `type=overlay` volume nested under the `/workspace` bind). See
+> [`checklist.md`](./checklist.md) for the reframed task list.
 
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
    (WSL2 + Docker Desktop/Mac), and the §4 design are settled. **Mechanism = daemon-performed
