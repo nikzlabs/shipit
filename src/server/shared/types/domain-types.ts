@@ -332,6 +332,33 @@ export interface TrackerComment {
 export type IssueWriteVerb = "comment" | "edit" | "status" | "assignee" | "create";
 
 /**
+ * docs/189 — the human-readable "what changed" values the redesigned write card
+ * renders on its second line. Display-only and verb-specific: the client reads
+ * the field that matches `IssueWriteCard.verb`. Distinct from `undo` (the
+ * reverse-write snapshot, captured for replay, not display). Every field is
+ * optional — the card degrades to its first line when absent (pre-docs/189
+ * cards, or a `create`, which has no "before").
+ */
+export interface IssueWriteContent {
+  /** comment → a clipped preview of the posted comment body. */
+  comment?: string;
+  /** edit → the title transition, present only when the title was edited. */
+  title?: { before: string; after: string };
+  /** edit → true when the description was among the edited fields. */
+  descriptionChanged?: boolean;
+  /**
+   * edit → a faint one-liner for label/priority changes (e.g.
+   * "priority → High · labels: security, bug"), so a labels/priority-only edit
+   * still shows what changed rather than rendering an empty second line.
+   */
+  attrs?: string;
+  /** status → the native status names of the transition. */
+  status?: { from: string; to: string };
+  /** assignee → the new assignee's display name, or null when unassigned. */
+  assignee?: string | null;
+}
+
+/**
  * The minimal snapshot a do-then-surface write captures so it can be undone as
  * a reverse brokered write (docs/177). Captured BEFORE mutating. The assignee
  * variant stores the prior **tracker-internal id** (GitHub login / Linear
@@ -382,10 +409,21 @@ export interface IssueWriteCard {
   /** Human one-liner, e.g. "commented on SHI-28", "set #42 → Closed". */
   summary: string;
   /**
+   * docs/189 — display-only "what changed" values for the card's second line
+   * (comment preview, title/status/assignee deltas). Optional: absent on
+   * pre-docs/189 cards and on a `create`; for a labels/priority-only edit only
+   * `content.attrs` is set. NOT consulted by undo — that is `undo`.
+   */
+  content?: IssueWriteContent;
+  /**
    * Whose identity the write is attributed to. GitHub writes use the acting
    * user's own token (`"user"`); Linear writes use the deployment-wide PAT, so
    * they are attributed to the workspace PAT owner (`"workspace"`), NOT the
    * acting user — the card must not claim per-user authorship for Linear.
+   *
+   * docs/189 — retained in the data model (cheap, useful for a future audit
+   * log) but no longer rendered: the card is self-evidently the agent's, so
+   * spelling out the backing identity carries no actionable information.
    */
   attribution: "user" | "workspace";
   undo: IssueWriteUndo;

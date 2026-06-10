@@ -358,6 +358,7 @@ export async function registerIssueRoutes(
       ...(outcome.issue.url ? { url: outcome.issue.url } : {}),
       verb: outcome.verb,
       summary: outcome.summary,
+      ...(outcome.content ? { content: outcome.content } : {}),
       // GitHub writes use the acting user's own token; Linear writes use the
       // deployment-wide PAT (attributed to the workspace, not the acting user).
       attribution: trackerId === "github" ? "user" : "workspace",
