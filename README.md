@@ -3,8 +3,8 @@
   <span>&nbsp;ShipIt</span>
 </h1>
 
-**The glass-box coding agent.** Describe what you want in chat and watch the agent build — every
-diff, command, and check on screen — then ship the way real software does: branches, reviews, CI,
+**The glass box for coding agents.** Run Claude Code or Codex in an environment where every diff,
+command, and check stays on screen — then ship the way real software does: branches, reviews, CI,
 and deploys, on your own Git, containers, and server.
 
 <p align="center">
