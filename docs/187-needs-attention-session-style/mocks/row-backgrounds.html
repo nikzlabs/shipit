@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Needs-attention — background treatments</title>
+<style>
+  :root {
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f9fafb;
+    --color-bg-tertiary: #f3f4f6;
+    --color-bg-hover: rgba(0,0,0,0.04);
+    --color-text-primary: #111827;
+    --color-text-secondary: #4b5563;
+    --color-text-tertiary: #9ca3af;
+    --color-border-primary: #e5e7eb;
+    --color-border-secondary: #d1d5db;
+    --color-attention: #d97706;
+    --color-attention-deep: #b45309;
+    --amber-08: rgba(217,119,6,0.08);
+    --amber-12: rgba(217,119,6,0.12);
+    --amber-22: rgba(217,119,6,0.22);
+    --color-pr: #7c3aed;
+    --color-success: #16a34a;
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: var(--font);
+    background: radial-gradient(1200px 600px at 50% -10%, #ffffff, #eef1f5 70%);
+    color: var(--color-text-primary); -webkit-font-smoothing: antialiased;
+    padding: 40px 28px 64px;
+  }
+  h1 { font-size: 20px; font-weight: 650; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .sub { font-size: 13px; color: var(--color-text-secondary); max-width: 860px; margin: 0 0 14px; line-height: 1.5; }
+  code { background: var(--color-bg-tertiary); padding: 1px 5px; border-radius: 5px; font-size: 11px; color: var(--color-text-secondary); }
+
+  .legend { display:flex; flex-wrap:wrap; gap:14px; margin: 0 0 30px; font-size:11px; color:var(--color-text-tertiary); }
+  .legend b { color: var(--color-text-secondary); font-weight:600; }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 22px; max-width: 1320px; }
+  .card {
+    background: var(--color-bg-primary); border: 1px solid var(--color-border-primary);
+    border-radius: 14px; padding: 16px 14px 18px;
+    box-shadow: 0 1px 2px rgba(16,24,40,0.04), 0 8px 24px -16px rgba(16,24,40,0.25);
+  }
+  .card.featured { outline: 2px solid var(--amber-12); }
+  .label { display: flex; align-items: baseline; gap: 8px; margin: 2px 4px 6px; }
+  .label .name { font-size: 13px; font-weight: 650; }
+  .label .tag {
+    font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+    color: var(--color-attention); background: var(--amber-12); padding: 2px 6px; border-radius: 999px;
+  }
+  .desc-row { font-size: 11px; color: var(--color-text-tertiary); margin: 0 4px 12px; line-height: 1.45; }
+  .desc-row b { color: var(--color-text-secondary); }
+
+  .list { padding: 4px 0; }
+  .row {
+    position: relative; display: flex; align-items: flex-start; gap: 6px;
+    margin: 3px 4px; padding: 6px 8px; border-radius: 6px;
+    border-left: 2px solid transparent; border-right: 2px solid transparent;
+    font-size: 12px; color: var(--color-text-secondary);
+  }
+  .prdot { width: 7px; height: 7px; border-radius: 999px; margin-top: 5px; flex: none; background: var(--color-pr); }
+  .body { flex: 1; min-width: 0; }
+  .title { color: var(--color-text-primary); font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row:not(.sel) .title { font-weight: 500; }
+  .meta { display: flex; align-items: center; gap: 6px; margin-top: 2px; color: var(--color-text-tertiary); font-size: 10px; }
+  .statusdot { width: 6px; height: 6px; border-radius: 999px; background: var(--color-success); flex: none; }
+  .state {
+    flex: none; align-self: center; font-size: 9px; font-weight: 600; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--color-text-tertiary);
+    border: 1px solid var(--color-border-primary); border-radius: 999px; padding: 1px 6px; background: var(--color-bg-primary);
+  }
+
+  /* BG-A · Amber fill, selection = inset ring */
+  .a .row.attn { background: var(--amber-12); }
+  .a .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .a .row.attn.sel { background: var(--amber-12); box-shadow: inset 0 0 0 1.5px var(--color-border-secondary); }
+
+  /* BG-B · Selected fill wins, attention falls back to rail */
+  .b .row.attn { background: var(--amber-12); }
+  .b .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .b .row.attn.sel { background: var(--color-bg-secondary); border-left: 3px solid var(--color-attention); border-radius: 6px; }
+
+  /* BG-C · Deepened amber for the both-state */
+  .c .row.attn { background: var(--amber-12); }
+  .c .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .c .row.attn.sel { background: var(--amber-22); color: var(--color-text-primary); }
+
+  /* BG-D · Left amber bar + tint (rail rides the fill) */
+  .d .row.attn { background: var(--amber-08); border-left: 3px solid var(--color-attention); border-radius: 6px; }
+  .d .row.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); }
+  .d .row.attn.sel { background: var(--color-bg-secondary); color: var(--color-text-primary); border-left: 3px solid var(--color-attention); border-radius: 6px; }
+
+  .foot { margin-top: 36px; font-size: 12px; color: var(--color-text-tertiary); max-width: 860px; line-height: 1.6; }
+</style>
+</head>
+<body>
+  <h1>Needs-attention — background treatments · light theme</h1>
+  <p class="sub">
+    These move attention onto the <strong>row background</strong> (soft amber) instead of a border. That collides with the gray selected-session fill,
+    so each card shows all <strong>four states</strong> and a different rule for the tricky <b>selected + needs-attention</b> case. Amber fill <code>rgba(217,119,6,0.12)</code>; selected gray <code>#f9fafb</code>.
+  </p>
+  <div class="legend">
+    <span><b>Row 1</b> — normal</span>
+    <span><b>Row 2</b> — needs attention</span>
+    <span><b>Row 3</b> — selected (no attention)</span>
+    <span><b>Row 4</b> — selected <i>and</i> needs attention</span>
+  </div>
+
+  <div class="grid">
+
+    <!-- BG-A -->
+    <div class="card a featured">
+      <div class="label"><span class="name">A · Amber fill, selection ring</span><span class="tag">recommended</span></div>
+      <div class="desc-row">Attention tints the bg amber. Selected gets the gray fill. <b>Both</b> = amber fill + a thin inset gray ring marking selection — attention color wins, selection still legible.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span>shipit · now</span></div></div><span class="state">selected</span></div>
+        <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- BG-B -->
+    <div class="card b">
+      <div class="label"><span class="name">B · Selected wins, attention → rail</span></div>
+      <div class="desc-row">Background stays <b>reserved for selection</b>. Attention normally tints the bg, but when a row is also selected the gray fill takes over and attention falls back to a left rail. Never two fills.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span>shipit · now</span></div></div><span class="state">selected</span></div>
+        <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- BG-C -->
+    <div class="card c">
+      <div class="label"><span class="name">C · Deepened amber both-state</span></div>
+      <div class="desc-row">Attention = light amber fill, selected = gray, and <b>selected + attention</b> = a deeper, more saturated amber — the most urgent combination gets the strongest color of all.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span>shipit · now</span></div></div><span class="state">selected</span></div>
+        <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+    <!-- BG-D -->
+    <div class="card d">
+      <div class="label"><span class="name">D · Tint + rail together</span></div>
+      <div class="desc-row">Attention = faint amber fill <i>plus</i> a left rail (belt &amp; suspenders). When also selected, the gray fill replaces the tint but the rail stays — selection reads through, attention persists.</div>
+      <div class="list">
+        <div class="row"><span class="prdot"></span><div class="body"><div class="title">Refine preview proxy routing</div><div class="meta"><span class="statusdot"></span><span>shipit · 2h</span></div></div><span class="state">normal</span></div>
+        <div class="row attn"><span class="prdot"></span><div class="body"><div class="title">Fix CI on auth refresh</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>shipit · 5m</span></div></div><span class="state">attn</span></div>
+        <div class="row sel"><span class="prdot"></span><div class="body"><div class="title">Disk janitor sweep</div><div class="meta"><span class="statusdot"></span><span>shipit · now</span></div></div><span class="state">selected</span></div>
+        <div class="row attn sel"><span class="prdot"></span><div class="body"><div class="title">Resolve merge conflict</div><div class="meta"><span class="statusdot" style="background:var(--color-attention)"></span><span>api · 8m</span></div></div><span class="state">sel+attn</span></div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="foot">
+    The whole question with a background treatment is the <b>selected + attention</b> collision. <b>A</b> lets amber win and rings the selection;
+    <b>B</b> keeps "background = selection" and demotes attention to a rail; <b>C</b> makes the overlap its own deepest color; <b>D</b> separates the two
+    signals entirely (fill = attention, rail = also-attention, gray = selection). Each is a CSS swap in <code>SessionItem</code> (<code>SessionSidebar.tsx</code>),
+    keyed on <code>needsAttention</code> + <code>isCurrent</code>.
+  </p>
+</body>
+</html>

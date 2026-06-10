@@ -345,13 +345,27 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
+  // docs/187 — "rail + trail": a needs-attention session is marked on the row's
+  // open RIGHT edge (clear of the PR icon and the panel's left border, where a
+  // marker is easy to miss). A crisp solid amber bar on the right edge — an `inset`
+  // box-shadow with a negative x-offset, so it paints the right inner edge with zero
+  // layout shift — gives the hard contrast peripheral vision catches; a soft amber
+  // gradient trails left from it for the glow. Both reuse the saturated per-theme
+  // `--color-attention` (the trail via `color-mix`), so no new tokens; the
+  // background layers over the row's own fill, so it coexists with the selected gray.
+  const attentionMarker = needsAttention
+    ? {
+        boxShadow: "inset -3px 0 0 var(--color-attention)",
+        backgroundImage:
+          "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
+      }
+    : undefined;
+
   return (
     <div
       data-testid={indented ? "session-item-indented" : "session-item"}
       className={`group flex items-start gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 ${
         indented ? "ml-5" : ""
-      } ${
-        needsAttention ? "border-x-2 border-x-(--color-attention)" : "border-x-2 border-x-transparent"
       } ${
         isArchived ? "opacity-60" : ""
       } ${
@@ -361,6 +375,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
             : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
+      style={attentionMarker}
       title={attentionReason ?? undefined}
     >
       {hasChildren && (
@@ -409,7 +424,11 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           disabled={disabled}
           className="flex-1 min-w-0 text-left"
         >
-          <p className="truncate leading-snug">{session.title}</p>
+          <p
+            className="truncate leading-snug"
+          >
+            {session.title}
+          </p>
           <div className="flex items-center gap-1.5 mt-0.5">
             <SessionStatusDot sessionId={session.id} />
             {session.kind === "ops" && (
@@ -536,7 +555,7 @@ function OpsSessionGroup({
         </button>
       </div>
       {!isCollapsed && (
-        <div className="flex flex-col gap-0.5">
+        <div className="flex flex-col gap-1">
           {sessions.map((session) => (
             <SessionItem
               key={session.id}
@@ -583,7 +602,7 @@ function OrphanSessionGroup({
           {label}
         </span>
       </div>
-      <div className="flex flex-col gap-0.5">
+      <div className="flex flex-col gap-1">
         {sessions.map((session) => (
           <SessionItem
             key={session.id}
@@ -766,7 +785,7 @@ function RepoGroup({
 
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
-        <div ref={listRef} className="flex flex-col gap-0.5 pb-2">
+        <div ref={listRef} className="flex flex-col gap-1 pb-2">
           {/* New session row — matches SessionItem shape so it can render as selected */}
           <button
             type="button"
