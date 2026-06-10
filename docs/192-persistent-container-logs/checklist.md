@@ -1,6 +1,8 @@
 # Checklist — Persistent container logs
 
-## PR 1 — durable storage + persistence (LANDED, keeps existing wire formats)
+> Single PR (#1228, branch `shipit/show-all-agent-container-logs-wzo3ee`). The work below lands on one branch — "Landed" is already committed; "Remaining" extends the same PR.
+
+## Landed — durable storage + persistence (still uses existing wire formats)
 
 ### Storage
 - [x] `LogStore` (`log-store.ts`): file-backed at `sessions/{id}/logs/`; append / appendEntry / snapshotEntries (JSONL) / snapshotText / hasChannel / clear / remove + two-file rotation
@@ -24,7 +26,7 @@
 - [x] `service-manager-snapshot.test.ts` — prefers store; falls back to docker before seed
 - [x] lint:dev + typecheck + smoke green
 
-## PR 2 — transport + rendering unification + search (FOLLOW-UP)
+## Remaining — transport + rendering unification + search (same PR)
 - [ ] `WsLogRecord` + `subscribe_logs` / `log_snapshot` / `log_append` / `log_clear`; migrate all emit sites + client handlers atomically, then remove `log_entry` / `clear_logs` / `service_log*`
 - [ ] One `appendLog(sessionId, source, text)` helper — covers category A/B/C producers, incl. the emit-only `preview-proxy.ts:308` + `rebase-driver.ts:225` deferred from PR 1
 - [ ] `docker compose logs --since` backfill (closes the orchestrator-downtime gap left by `--tail 0`)
