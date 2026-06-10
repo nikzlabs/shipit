@@ -13,4 +13,4 @@
 - [x] `npm run typecheck` clean.
 - [x] `npm run lint:dev` clean.
 - [x] Affected MCP test files pass (200 server + 28 client).
-- [ ] Open PR.
+- [x] Open PR (#1195).
