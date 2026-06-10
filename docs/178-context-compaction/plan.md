@@ -257,3 +257,17 @@ notes worth recording:
   `thread/compact/start` instead of `turn/start`, and the `contextCompaction`
   completion synthesizes the `agent_result` that ends the run. The live
   `agent.compact()` method covers the in-flight-turn case.
+
+## Fix (2026-06-10): transient indicator bled across session switch
+
+The "Compacting…" spinner is a **global** Zustand flag (`SessionState.compacting`),
+not per-session — by design, since it's a live progress signal that is never
+persisted. `useSessionStore.reset()` clears it (it's in `initialResettableState`),
+but `resumeSessionInternal()` (the session-switch path in
+`stores/actions/session-actions.ts`) does **not** call `reset()`; it manually
+clears a subset of fields (`messages`, `isLoading`, `activity`, `queuedMessages`)
+and originally omitted `compacting`. So if the outgoing session had a compaction
+in flight, the spinner visually persisted into the switched-to session. Fix:
+`resumeSessionInternal()` now also calls `setCompacting(false)`. Covered by
+`session-actions.test.ts`. (Not a persistence bug — history reload never brings
+it back; purely a missing reset on the switch path.)

@@ -39,6 +39,11 @@ export function resumeSessionInternal(sessionId: string) {
   session.setIsLoading(false);
   session.setActivity(undefined);
   session.setQueuedMessages([]);
+  // docs/178 — the "Compacting…" spinner is a global, transient flag. Clear it
+  // on switch so a compaction in flight on the outgoing session doesn't bleed
+  // its spinner into the incoming one (it's never persisted, so history reload
+  // won't bring it back).
+  session.setCompacting(false);
   useUiStore.getState().setShowTemplates(false);
 
   // Reset session-specific UI state
