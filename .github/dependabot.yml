@@ -24,10 +24,20 @@ updates:
     # to a range.
     versioning-strategy: increase
     # Group coupled packages that share peer-dependency ranges into a single PR.
-    # Without grouping, Dependabot bumps each package in isolation, so a major
-    # vite bump (e.g. 7→8) opens a PR that fails `npm ci` with ERESOLVE because
-    # @vitejs/plugin-react's peer range hasn't moved in lockstep. Grouping the
-    # vite toolchain makes Dependabot bump them together in one resolvable PR.
+    # Without grouping, Dependabot bumps each package in isolation, so a coupled
+    # set lands as separate PRs that each fail CI because their peers didn't move
+    # in lockstep. Three observed cases (all real Dependabot breakages):
+    #   - vite 7→8 failed `npm ci` (ERESOLVE) because @vitejs/plugin-react's peer
+    #     range hadn't moved.
+    #   - react 19.2.7 split from react-dom: react bumped alone broke every client
+    #     test (react/react-dom must share a version); react-dom bumped alone hit
+    #     ERESOLVE on react's peer.
+    #   - @eslint/js 10 split from eslint core / typescript-eslint: an incoherent
+    #     eslint-major state that fails lint.
+    # Grouping each toolchain makes Dependabot bump them together in one
+    # resolvable PR. Patterns are exact names (no trailing `*`) where a wildcard
+    # would over-capture — e.g. `react` must not swallow react-markdown /
+    # react-router-dom, which version independently.
     groups:
       vite:
         patterns:
@@ -36,3 +46,15 @@ updates:
           - "@tailwindcss/vite"
           - "vitest"
           - "@vitest/*"
+      react:
+        patterns:
+          - "react"
+          - "react-dom"
+          - "@types/react"
+          - "@types/react-dom"
+      eslint:
+        patterns:
+          - "eslint"
+          - "@eslint/*"
+          - "typescript-eslint"
+          - "@typescript-eslint/*"
