@@ -32,7 +32,7 @@ import {
 import type { GitHubTrackerContext } from "./trackers/index.js";
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
-import type { TrackerId, IssueWriteCard } from "../shared/types.js";
+import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../shared/types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { emitChatCard } from "./chat-card-persistence.js";
@@ -72,6 +72,48 @@ export async function registerIssueRoutes(
 
   const resolveGitHubContext = (sessionId?: string): GitHubTrackerContext =>
     resolveGitHubTrackerContext(githubAuthManager, sessionManager, sessionId);
+
+  /**
+   * Surface a read-only navigation card when the agent views an issue
+   * (`shipit issue view`, docs/188). The read-path sibling of the write
+   * provenance card — so any agent issue interaction, not just edits, leaves a
+   * jump-to-issue affordance in the transcript. It has no lifecycle (no undo),
+   * so the full payload rides on the persisted message and renders without a
+   * client store.
+   *
+   * Best-effort: a `view` must still succeed and return the issue to the shim
+   * even when no runner is attached (read fired outside an active turn) or the
+   * issue was already carded this turn — so this never throws and silently
+   * no-ops in those cases.
+   */
+  function emitIssueReadCard(sessionId: string, trackerId: string, issue: TrackerIssue): void {
+    const runner = deps.runnerRegistry.get(sessionId);
+    if (!runner) return;
+    // Per-turn dedup: the agent often re-views the same issue within a turn
+    // (e.g. to re-check available statuses before a write). `recordedCards`
+    // resets each turn, so one card per issue per turn is the right grain.
+    const carded = runner.recordedCards.some(
+      (c) =>
+        c.message.issueRef?.tracker === trackerId &&
+        c.message.issueRef?.identifier === issue.identifier,
+    );
+    if (carded) return;
+    const card: IssueRefCard = {
+      cardId: `issue-ref-${randomUUID()}`,
+      tracker: trackerId as TrackerId,
+      identifier: issue.identifier,
+      title: issue.title,
+      ...(issue.url ? { url: issue.url } : {}),
+      ...(issue.status?.name ? { status: issue.status.name } : {}),
+      ...(issue.status?.type ? { statusType: issue.status.type } : {}),
+      createdAt: new Date().toISOString(),
+    };
+    emitChatCard(
+      runner,
+      { type: "issue_ref_card", sessionId, card },
+      { role: "assistant", text: "", issueRef: card },
+    );
+  }
 
   // GET /api/trackers — configured-tracker metadata (drives the sub-tabs).
   app.get<{ Querystring: { sessionId?: string } }>("/api/trackers", async (request) => {
@@ -125,13 +167,17 @@ export async function registerIssueRoutes(
       const trackerId = request.query.tracker ?? "github";
       const github = resolveGitHubContext(request.params.id);
       try {
-        return await getIssueForTracker(
+        const result = await getIssueForTracker(
           credentialStore,
           trackerId,
           request.query.id ?? "",
           trackerFetchImpl,
           github,
         );
+        // Surface a jump-to-issue card in the transcript (docs/188). Best-effort
+        // — never let a card failure mask the successful read.
+        emitIssueReadCard(request.params.id, trackerId, result.issue);
+        return result;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

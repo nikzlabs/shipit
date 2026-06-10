@@ -232,6 +232,16 @@ describe("ChatHistoryManager", () => {
         undoState: "available",
         createdAt: "2026-06-05T00:00:00.000Z",
       },
+      issueRef: {
+        cardId: "ir1",
+        tracker: "linear",
+        identifier: "SHI-28",
+        title: "Some issue",
+        url: "https://linear.app/x/issue/SHI-28",
+        status: "In Review",
+        statusType: "started",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
       subagentEvents: [],
     };
 
@@ -291,6 +301,31 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", writeCard("iw-1"));
       expect(mgr.updateIssueWriteCard("sess-1", "missing", { undoState: "undone" })).toBe(false);
+    });
+  });
+
+  describe("issue-ref card persistence (docs/188)", () => {
+    const refCard = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      issueRef: {
+        cardId,
+        tracker: "github",
+        identifier: "octocat/hello#42",
+        title: "Bug",
+        url: "https://github.com/octocat/hello/issues/42",
+        status: "Open",
+        statusType: "started",
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    });
+
+    it("persists a read card so it replays on session attach", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg = refCard("ir-1");
+      mgr.append("sess-1", msg);
+      const loaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(loaded[0].issueRef).toEqual(msg.issueRef);
     });
   });
 

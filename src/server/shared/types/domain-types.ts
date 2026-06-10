@@ -379,6 +379,34 @@ export interface IssueWriteCard {
 }
 
 /**
+ * docs/188 — a lightweight navigation card recording that the agent **read** an
+ * issue (`shipit issue view <pointer>`). The write path already surfaces an
+ * `IssueWriteCard`; this is its read-only sibling so any agent issue interaction
+ * — not just edits — leaves a quick jump-to-issue affordance in the transcript.
+ *
+ * Unlike the write card it has no lifecycle (no undo), so the full payload lives
+ * directly on the persisted chat message and renders without a client store.
+ * Shared verbatim by the live WS payload, the persisted row, and the client card
+ * so the three can't drift.
+ */
+export interface IssueRefCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  tracker: TrackerId;
+  /** Display identifier, e.g. "SHI-28" or "owner/repo#42". */
+  identifier: string;
+  /** Issue title at view time, for the card line. */
+  title: string;
+  /** Deep link to the issue in the tracker (escape hatch). */
+  url?: string;
+  /** Human status name at view time, e.g. "In Progress" / "Closed". */
+  status?: string;
+  /** Normalized status type (e.g. "completed"/"canceled") for done-styling. */
+  statusType?: string;
+  createdAt: string;
+}
+
+/**
  * docs/178 — a persisted "Context compacted" transcript card. Shared verbatim by
  * the live WS payload (`WsCompactionCard`), the persisted chat-history row
  * (`PersistedMessage.compaction`), and the client card so the three can't drift

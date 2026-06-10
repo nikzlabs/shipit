@@ -476,6 +476,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN auto_fix_ci_paused INTEGER NOT NULL DEFAULT 0");
   },
+  // docs/188 — persist the issue **read** navigation card (`shipit issue view`)
+  // so it survives a session switch / full reload. Like the write card it
+  // arrives off the agent-event stream and is recorded in-band via emitChatCard;
+  // without this column the inline jump-to-issue card renders live but vanishes
+  // on the next loadSessionHistory, which rebuilds from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN issue_ref TEXT");
+  },
 ];
 
 export class DatabaseManager {
