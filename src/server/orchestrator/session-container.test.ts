@@ -506,6 +506,50 @@ describe("SessionContainerManager", () => {
       if (wsMount) expect(wsMount.Source).not.toBe(overlaySpecs[0].volumeName);
     });
 
+    it("warm standby path (docs/183 Phase 7): prepareOverlaySpecs → buildConfigForWorkspace → createStandby mounts the overlay nested + records the volume", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      // The warm pool builds the standby with this exact call shape: the warm
+      // appSessionId + a repo-backed, non-ops session ({ remoteUrl, kind: undefined }).
+      // A warm-claimed session reuses THIS container (keyed by appSessionId), so it
+      // must already carry the overlay mounts — the one path that doesn't go through
+      // createContainerForRunner.
+      const appSessionId = "warm12345678";
+      const overlaySpecs = await ovlManager.prepareOverlaySpecs({
+        sessionId: appSessionId, workspaceDir: dir, session: eligible,
+      });
+      expect(overlaySpecs).toHaveLength(1);
+      const config = ovlManager.buildConfigForWorkspace({
+        sessionId: appSessionId, sessionDir: dir, workspaceDir: dir,
+        credentialsDir: "/credentials", overlaySpecs,
+      });
+      const sc = await ovlManager.createStandby(config);
+
+      expect(mockDocker._liveVolumes.has(overlaySpecs[0].volumeName)).toBe(true);
+      expect(sc.overlayVolumeNames).toEqual([overlaySpecs[0].volumeName]);
+      const call = mockDocker.createContainer.mock.calls.at(-1)![0];
+      const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
+      expect(nested?.Source).toBe(overlaySpecs[0].volumeName);
+      expect(ovlManager.standbyCount).toBeGreaterThan(0);
+    });
+
+    it("warm standby is overlay-free when the flag is off (byte-for-byte unchanged)", async () => {
+      delete process.env.OVERLAY_DEP_STORE;
+      const dir = await ws({ gitignore: "node_modules\n" });
+      const overlaySpecs = await ovlManager.prepareOverlaySpecs({
+        sessionId: "warm-off-1", workspaceDir: dir, session: eligible,
+      });
+      expect(overlaySpecs).toEqual([]);
+      const config = ovlManager.buildConfigForWorkspace({
+        sessionId: "warm-off-1", sessionDir: dir, workspaceDir: dir,
+        credentialsDir: "/credentials", overlaySpecs,
+      });
+      await ovlManager.createStandby(config);
+      const call = mockDocker.createContainer.mock.calls.at(-1)![0];
+      const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
+      expect(nested).toBeUndefined();
+    });
+
     it("drops dep dirs that fail contextual validation (tracked source)", async () => {
       process.env.OVERLAY_DEP_STORE = "1";
       // Declare `src` (tracked, not ignored) → validation drops it → no specs.

@@ -209,12 +209,26 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
 
 ### Phase 7 — Enable path + measure & tune
 
-- [ ] Wire the overlay-spec into the **warm-pool standby** + **on-activation** paths so warm-claimed
-      sessions get the dep-dir overlay (today they would silently run plain).
-- [ ] Measure warm-install on the **containerized** path (`main` unchanged / `main`-advanced / cold;
-      separate network from extract/link). Set the final depth cap from measurement.
-- [ ] **Flip `OVERLAY_DEP_STORE` on** (the user's call) — only after Phases 1–6 are all merged and the
-      flag invariant above is satisfied.
+- [x] **Wired the overlay-spec into the warm-pool standby path** (`warm-pool-manager.ts`): the standby is
+      now built via `prepareOverlaySpecs` → `buildConfigForWorkspace({ overlaySpecs })` → `createStandby`,
+      so a warm-claimed session — which **reuses** the standby container keyed by its `appSessionId`
+      (factory reuse branch, `app-lifecycle.ts`) — already carries the per-dep-dir overlay mounts. This was
+      the **only** container-creation path that bypassed overlay wiring; every other path (cold create,
+      standby-fallback, restart-agent, idle-recreate, on-activation `getOrCreate`) already routes through
+      `createContainerForRunner`, which threads `prepareOverlaySpecs` (Phase 3b). `prepareOverlaySpecs`
+      returns `[]` (no Docker call) when the flag is off / repo ineligible, so the standby config is
+      byte-for-byte unchanged until the store is enabled. **Tests** (`session-container.test.ts`): the warm
+      `createStandby` path mounts the overlay nested + records `overlayVolumeNames` (flag on); overlay-free
+      standby (flag off). `warm-sessions` + `standby-container` integration suites stay green.
+- [ ] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
+      (`main` unchanged / `main`-advanced / cold; separate network from extract/link). Set the final depth
+      cap from measurement. Not doable in the dev sandbox (no real Docker overlay); the code is in place
+      (`DEFAULT_DEPTH_CAP = 16`, overridable via `publishBase`'s `depthCap` arg if tuning is needed).
+- [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
+      invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
+      complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately
+      (ideally a canary) after the measurement above. Intentionally left to the user — this PR keeps the
+      flag OFF.
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

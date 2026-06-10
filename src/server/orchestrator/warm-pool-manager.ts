@@ -203,12 +203,27 @@ export function createWarmPool(
             // container from the warm pool, OOMing on first turn when
             // npm install + claude both run inside the under-provisioned
             // cgroup.
+            // docs/183 Phase 7 — build the standby WITH the per-dep-dir overlay
+            // specs so a warm-claimed session reuses an already-overlay-mounted
+            // container. This is the one container-creation path that does NOT go
+            // through `createContainerForRunner` (which wires overlay for cold /
+            // restart / idle-recreate), so without this a warm hit would silently
+            // run plain. The warm session is repo-backed and non-ops by
+            // construction. `prepareOverlaySpecs` returns [] (no Docker call) when
+            // the flag is off / the repo is ineligible, so this is inert and the
+            // standby config is byte-for-byte unchanged until the store is enabled.
+            const overlaySpecs = await containerManager.prepareOverlaySpecs({
+              sessionId: appSessionId,
+              workspaceDir,
+              session: { remoteUrl: repoUrl, kind: undefined },
+            });
             const config = containerManager.buildConfigForWorkspace({
               sessionId: appSessionId,
               sessionDir,
               workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
+              overlaySpecs,
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback
             containerManager.createStandby(config).then(async (sc) => {
