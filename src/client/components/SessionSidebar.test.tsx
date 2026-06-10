@@ -601,7 +601,7 @@ describe("SessionSidebar", () => {
   });
 
   describe("docs/110: pinned sub-section", () => {
-    it("renders a 'Pinned' subheader below New session and above active sessions", () => {
+    it("renders the 'Pinned' subheader above New session, which sits above active sessions", () => {
       const sessions = [
         baseSession({
           id: "s-active",
@@ -621,14 +621,14 @@ describe("SessionSidebar", () => {
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
 
-      const newSession = screen.getByText("New session");
       const header = screen.getByText("Pinned");
       const pinned = screen.getByText("Pinned work");
+      const newSession = screen.getByText("New session");
       const active = screen.getByText("Active work");
-      // New session → Pinned header → pinned row → active row.
-      expect(newSession.compareDocumentPosition(header) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      // Pinned header → pinned row → New session → active row.
       expect(header.compareDocumentPosition(pinned) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-      expect(pinned.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(pinned.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(newSession.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("keeps a pinned session above active even though it is older (pin outranks recency)", () => {
@@ -675,12 +675,17 @@ describe("SessionSidebar", () => {
       expect(divider.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
-    it("omits the divider when there are pins but no active or resolved sessions", () => {
+    it("renders the divider even with pins but no active or resolved sessions (New session row follows it)", () => {
       const sessions = [
         baseSession({ id: "p-only", title: "Only pin", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
       ];
       render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      expect(screen.queryByTestId("pinned-divider")).toBeNull();
+      const divider = screen.getByTestId("pinned-divider");
+      const pinned = screen.getByText("Only pin");
+      const newSession = screen.getByText("New session");
+      // Pinned row → divider → New session row.
+      expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(divider.compareDocumentPosition(newSession) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
     it("makes pinned rows draggable only when there is more than one pin", () => {
