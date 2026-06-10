@@ -40,6 +40,35 @@
 - [REJECTED] **Globs in `dep-dirs`** — special-cases the artifact suffix for zero expressiveness gain;
   literal paths degrade benignly and are agent-maintainable.
 
+## Disk cleanup retargeting (dep-dir)
+
+Separate from the mount/compose retargeting above: overlay removes the per-session full `node_modules`
+copy, so the dominant steady-state cost is gone, but cleanup **splits into three surfaces** and one
+existing reclaim path (disk-tier escalation) must be **retargeted**, or it silently reclaims nothing
+for overlay sessions. See `plan.md` → "Disk cleanup under the dep-dir design".
+
+- [ ] **Per-`(session, dep-dir)` live-set for base GC.** Make `liveOverlayScopeHashes` enumerate one
+      scope-hash per *(resumable session × declared dep dir)* (depends on the scope-key gaining the
+      dep-dir relpath). Hard requirement: `sweepOrphanedOverlayBases` must never reap a base that is a
+      **live overlay lowerdir** (undefined behavior), so the live-set must be complete across resumable
+      (not just running) sessions. Add a test that a live session's per-dep-dir bases are all retained.
+- [ ] **Teardown removes all N per-session overlay volumes.** `destroyContainer` must
+      `removeOverlayVolume` for **each** of the session's overlay specs (not one). Confirm
+      `sweepOrphanSessionVolumes`' `^shipit-([a-f0-9-]{12})_` regex reclaims every crash-orphaned
+      `shipit-<id>_overlayN`; add a test with N>1.
+- [ ] **Retarget disk-tier escalation (docs/161) for overlay sessions.** Today it `rm`s idle
+      `session.workspaceDir/node_modules`; for an overlay session that path holds no `node_modules`
+      (it's the overlay volume), so the reclaim is a no-op. For overlay sessions, **drop the
+      per-session overlay volume(s)** instead (safe — the upper is a pure disposable cache, re-derived
+      on next mount) and skip the host-path `rm`. This is the most-likely-missed change (it lives
+      outside the overlay code path).
+- [ ] **Flatten/swap reclaim.** Confirm depth-cap flatten via `copySnapshotToBase`'s atomic swap
+      rm's the old base generation (transient double-disk during the swap; live mounts keep pinned
+      inodes). Add/confirm a test.
+- [ ] **Docs sync.** Update CLAUDE.md's "Disk cleanup" section (it currently describes escalation as
+      `rm`-ing host-side `node_modules`) and any agent-facing `shipit-docs` if the escalation behavior
+      changes for overlay sessions.
+
 ---
 
 Design proposal. Core decisions: **overlay the whole workspace** (environment-agnostic, no

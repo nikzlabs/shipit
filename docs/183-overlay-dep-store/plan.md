@@ -163,6 +163,44 @@ forfeits speedup; it never corrupts a session or the shared base.
     (`shipit-config.ts` `KNOWN_AGENT_KEYS` is `{memory, cpu, pids, install}`), so it is a real add, not
     a wiring tweak.
 
+### Disk cleanup under the dep-dir design
+
+Overlay removes the per-session full `node_modules` copy (`nm-store`), so the dominant steady-state
+disk cost is gone — but cleanup doesn't disappear, it **splits into three surfaces**, each reclaimed
+where it accrues:
+
+1. **Shared bases — `overlay-base/<scope-hash>/`** (now one per `(repo, runtime, dep-dir)`). Bounded
+   by **scope count, not session count**; each holds one dep dir's tree (≈ "a few `node_modules` per
+   repo" in aggregate). Reclaimed by the disk-janitor `sweepOrphanedOverlayBases`: keep if the
+   scope-hash is live, else mtime-guard + reap. **Hard constraint:** a base is a live overlay
+   **lowerdir** — deleting it under a live mount is undefined behavior — so the live-set
+   (`liveOverlayScopeHashes`) must enumerate **per `(session, dep-dir)`** (see the "Changed → GC" item)
+   and be complete across all *resumable* sessions, not just running ones.
+2. **Per-session overlay volumes — `shipit-<id>_overlayN`** (N per session). Removed on container
+   teardown (`destroyContainer` → `removeOverlayVolume` for each); crash-orphans swept by the
+   `^shipit-([a-f0-9-]{12})_` prefix regex (`sweepOrphanSessionVolumes`), which already matches every
+   per-dep-dir name sharing the session prefix. Each is small — the delta, not a copy.
+3. **`/dep-cache` download cache** ([075](../075-shared-dependency-cache/plan.md)) — unchanged,
+   separate subtree, swept independently.
+
+**The disposable-upper property + the disk-tier-escalation retarget.** Unlike the whole-workspace
+variant — where the upper held `.git` + source + uncommitted work and was **undeletable** — the dep-dir
+upper holds **only the dependency delta**; source/`.git` stay on the normal host-side workspace mount.
+So a session's overlay volume is a **pure disposable cache**: dropping it loses nothing (the next mount
+re-installs the delta over the base). Two consequences:
+
+- Reclaiming a session's overlay volume is **safe by construction** — no "unsaved work?" check.
+- The existing **disk-tier escalation** (docs/161), which today `rm`s idle
+  `session.workspaceDir/node_modules` to reclaim disk, **finds nothing for an overlay session** — its
+  `node_modules` is the overlay (shared base + upper volume), not a host-side copy at `workspaceDir`.
+  For overlay sessions it must instead **drop the per-session overlay volume(s)** (cheap,
+  re-derivable) and skip the host-path `rm`. This is the change most likely to be missed, because the
+  escalation lives outside the overlay code path.
+
+Net: aggregate disk drops sharply (shared base vs. per-session copies), resource **count** rises
+(N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface
+needing careful GC is "don't reap a base that's a live lowerdir."
+
 ## Rejected approaches
 
 ### Whole-workspace overlay (the original design) — **superseded**
