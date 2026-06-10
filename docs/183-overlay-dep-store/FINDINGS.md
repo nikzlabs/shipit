@@ -634,20 +634,27 @@ mechanism is sound.
 > against the host clone to guarantee the parent is real rather than relying on the
 > daemon to invent it.
 
-**Matrix — 1 of 3 (the decisive host green; Mac + VPS pending).**
+> **Docker Desktop / Mac run:** PASS=13 FAIL=0, daemon `docker-desktop` (Docker Desktop),
+> docker 29.5.3, **linux/arm64**. Same six functional rungs green as Windows-WSL2,
+> confirming the topology on the other Desktop backend + a different arch (arm64). Rung 7
+> auto-skipped (Desktop), same absent-parent data point observed. Both Desktop backends
+> now agree; the only un-run axis is the real host-bind parent on native Linux/ext4.
+
+**Matrix — 2 of 3 (both Desktop backends green; VPS pending — load-bearing).**
 
 | Host | Arch / kernel | Storage | Rung 7 (real bind) | Result |
 |---|---|---|---|---|
 | Docker Desktop/Windows-WSL2 | amd64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ✅ PASS=13/13 |
-| Docker Desktop/Mac | arm64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ⏳ pending |
+| Docker Desktop/Mac | arm64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ✅ PASS=13/13 |
 | Prod VPS (ext4) | amd64 / native Linux | **ext4** | **runs — the load-bearing bind check** | ⏳ pending |
 
-**Gate not yet cleared — the VPS run is load-bearing.** Rungs 2–6 prove the nesting
-*mechanism* portably (the parent's source type doesn't change how the child mount
-resolves), but the literal prod topology is "overlay nested under a real **host bind**,"
-which only rung 7 exercises — and rung 7 auto-skips on Docker Desktop. So the VPS/ext4
-run (where rung 7 actually executes) is the one that validates the production case;
-don't treat the Windows-WSL2 green alone as the go signal. Run on Docker Desktop/Mac and
-the prod VPS, then this gate clears and the dep-dir mount wiring can begin. (Still not
-covered by this spike: the recursive file-tree watcher descending into the nested
-submount — validate via `host-overlay-spike.sh`'s inotify rung.)
+**Gate not yet cleared — only the VPS run remains, and it is load-bearing.** Both
+Desktop backends are green, but rungs 2–6 prove the nesting *mechanism* portably (the
+parent's source type doesn't change how the child mount resolves) — they do **not**
+exercise the literal prod topology, "overlay nested under a real **host bind**." That is
+only rung 7, which auto-skips on Docker Desktop and runs solely on native Linux. So the
+**VPS/ext4 run is the single remaining gate** (it's also the only one on the production
+ext4 substrate); don't treat the two Desktop greens as the go signal. Run it on the prod
+VPS, and this gate clears so the dep-dir mount wiring can begin. (Still not covered by
+this spike: the recursive file-tree watcher descending into the nested submount —
+validate via `host-overlay-spike.sh`'s inotify rung.)

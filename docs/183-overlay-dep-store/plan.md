@@ -79,14 +79,15 @@ agent:
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
 
-  > **⚠️ Partially proven — 1 of 3 hosts green; the prod VPS run is still load-bearing. Run
-  > [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on the remaining targets
-  > (Docker Desktop/Mac + VPS/ext4) and record the verdicts in [`FINDINGS.md`](./FINDINGS.md); see also
-  > `checklist.md` → "Still unproven".** This
+  > **⚠️ Partially proven — 2 of 3 hosts green (both Desktop backends); the prod VPS run is still
+  > load-bearing. Run [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on the
+  > VPS/ext4 and record the verdict in [`FINDINGS.md`](./FINDINGS.md); see also `checklist.md` →
+  > "Still unproven".** This
   > nests a `type=overlay` volume mount at `/workspace/<dep-dir>` **underneath** the existing
   > `/workspace` bind/Subpath mount — a topology **none of the *earlier* spikes exercised** (they all
   > mounted the overlay AT the `/workspace` root, never as a child of an existing mount). The two
-  > unknowns this design assumed are now **answered on Docker Desktop/Windows-WSL2 (PASS=13/0):**
+  > unknowns this design assumed are now **answered on both Docker Desktop backends (Windows-WSL2 amd64
+  > + Mac arm64, PASS=13/0 each):**
   > **(a)** the dep dir's leaf mountpoint **is** created cleanly inside the already-mounted parent when
   > it doesn't pre-exist (the daemon `mkdir -p`'d the leaf — and, as a data point, even an absent
   > *parent* chain); and **(b)** **mount ordering** holds — the daemon applies the nested
