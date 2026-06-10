@@ -550,6 +550,26 @@ export function setupServiceManager(
     // Gate on any prior runner's pending compose-stop for this session.
     // Bounded to avoid hanging start() forever if `compose down` wedges.
     await awaitComposeStop(composeStopPromises, runner.sessionId);
+    // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
+    // them to the manager BEFORE the first start(), so compose services that
+    // share the workspace also mount each dep dir's overlay volume nested at
+    // `<service-target>/<dep-dir>`. `prepareOverlaySpecs` returns [] (with no
+    // Docker call) when the flag is off / the session is ineligible, so this is
+    // inert and the override is byte-for-byte unchanged for non-overlay sessions.
+    if (containerManager && session && runner instanceof ContainerSessionRunner) {
+      try {
+        const specs = await containerManager.prepareOverlaySpecs({
+          sessionId: runner.sessionId,
+          workspaceDir,
+          session,
+        });
+        if (specs.length > 0) {
+          mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+        }
+      } catch (err) {
+        console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
+      }
+    }
     try {
       await mgr.start();
       console.log(`[compose:${runner.sessionId}] Compose stack started`);

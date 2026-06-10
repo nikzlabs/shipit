@@ -123,6 +123,31 @@ export interface ComposeOverrideOptions {
    * `env_file:`).
    */
   serviceEnvFiles?: Record<string, string>;
+  /**
+   * docs/183 Phase 5 — per-session overlay dep-dir volumes. For an
+   * overlay-eligible session, each declared dep dir (e.g. `node_modules`) is a
+   * separate per-session `type=overlay` Docker volume that the agent container
+   * mounts nested at `/workspace/<dep-dir>`. A compose service that bind-mounts
+   * the workspace (or a subdir of it) must share those SAME deps — so for every
+   * such service we KEEP its normal `shipit-workspace` mount (source + `.git`)
+   * and **additionally append** one `type: volume` mount per dep dir reachable
+   * through that mount, targeted at the matching nested subpath
+   * (`<service-target>/<dep-dir-relative-to-the-mounted-source>`). This is the
+   * shared-overlay-volume-across-containers refcount pattern (proven by
+   * `shared-volume-spike.sh`), NOT the rejected "root the whole service at an
+   * overlay" approach. Each referenced volume is declared `external: true` (the
+   * daemon-overlay subsystem owns its lifecycle). Empty/absent → no overlay
+   * mounts (non-overlay sessions are byte-for-byte unchanged).
+   */
+  overlayDepDirs?: OverlayDepDirVolume[];
+}
+
+/** One per-session overlay dep-dir volume: the dep dir it backs + its Docker volume name. */
+export interface OverlayDepDirVolume {
+  /** Declared dep dir, relative to the workspace root (e.g. `node_modules`). */
+  depDir: string;
+  /** Per-session `type=overlay` Docker volume name (`shipit-<id>_overlay-<hash>`). */
+  volumeName: string;
 }
 
 export class ComposeValidationError extends Error {
@@ -526,6 +551,78 @@ function rewriteVolumes(
 }
 
 /**
+ * Extract the (source, target) of a volume entry in either short (`"src:tgt[:mode]"`)
+ * or long (`{ source, target }`) form. Returns nulls for shapes we don't recognize
+ * (anonymous volumes, named-volume-only entries) so callers can skip them.
+ */
+function volumeSourceTarget(vol: unknown): { source: string | null; target: string | null } {
+  if (typeof vol === "string") {
+    const parts = vol.split(":");
+    // "src:tgt[:mode]" — a bare "/app/node_modules" anonymous volume has no ":".
+    return parts.length >= 2 ? { source: parts[0], target: parts[1] } : { source: null, target: null };
+  }
+  if (vol && typeof vol === "object") {
+    const obj = vol as Record<string, unknown>;
+    return {
+      source: typeof obj.source === "string" ? obj.source : null,
+      target: typeof obj.target === "string" ? obj.target : null,
+    };
+  }
+  return { source: null, target: null };
+}
+
+/**
+ * A dep dir `depDir` (workspace-relative) is reachable through a service mount of
+ * workspace subdir `mountSubdir` ("" = the workspace root) iff it equals or lives
+ * under that subdir. Returns the dep dir's path RELATIVE to the mount ("" when the
+ * mount IS the dep dir), or null when the dep dir isn't under the mount.
+ */
+function depDirWithinMount(mountSubdir: string, depDir: string): string | null {
+  if (mountSubdir === "") return depDir;
+  if (depDir === mountSubdir) return "";
+  if (depDir.startsWith(`${mountSubdir}/`)) return depDir.slice(mountSubdir.length + 1);
+  return null;
+}
+
+/**
+ * Compute the nested overlay mounts to append to a service: for each of the
+ * service's workspace mounts (relative-path source) and each dep dir reachable
+ * through it, one `type: volume` mount of that dep dir's overlay volume targeted
+ * at `<mount-target>/<dep-dir-relative-to-the-mount>`. De-duplicated by target so
+ * two overlapping mounts (or a dep dir that equals a mounted subdir) never emit a
+ * duplicate-target the daemon would reject. Mutates `referenced` with the volume
+ * names actually used (so only used volumes get an `external:` declaration).
+ */
+function overlayMountsForService(
+  rawVolumes: unknown[],
+  overlayDepDirs: OverlayDepDirVolume[],
+  referenced: Set<string>,
+): Record<string, unknown>[] {
+  const mounts: Record<string, unknown>[] = [];
+  const seenTargets = new Set<string>();
+  for (const vol of rawVolumes) {
+    const { source, target } = volumeSourceTarget(vol);
+    if (source === null || target === null) continue;
+    const mountSubdir = isRelativeWorkspacePath(source);
+    if (mountSubdir === null) continue; // not a workspace mount — nothing to nest under
+    for (const { depDir, volumeName } of overlayDepDirs) {
+      const rel = depDirWithinMount(mountSubdir, depDir);
+      if (rel === null) continue;
+      const mountTarget = rel ? path.posix.join(target, rel) : target;
+      if (seenTargets.has(mountTarget)) continue;
+      seenTargets.add(mountTarget);
+      referenced.add(volumeName);
+      // No `volume.subpath`: the overlay volume's root IS the merged dep dir, so
+      // the mount points at the volume root. This also keeps the read-only-lower
+      // guardrail trivially true — a service mount can never reach an
+      // `overlay-base/` lowerdir subpath.
+      mounts.push({ type: "volume", source: volumeName, target: mountTarget });
+    }
+  }
+  return mounts;
+}
+
+/**
  * Generate the `.shipit/compose.override.yml` content.
  *
  * The override adds:
@@ -540,6 +637,9 @@ export function generateComposeOverride(
   opts: ComposeOverrideOptions,
 ): string {
   const overrideServices: Record<string, Record<string, unknown>> = {};
+  // docs/183 Phase 5 — overlay volume names actually referenced by some service,
+  // so only used volumes get an `external:` declaration in the volumes block.
+  const referencedOverlayVolumes = new Set<string>();
 
   for (const svc of services) {
     const mode = resolvePreviewMode(svc);
@@ -615,6 +715,22 @@ export function generateComposeOverride(
       entry.env_file = [envFilePath];
     }
 
+    // docs/183 Phase 5 — append nested overlay dep-dir mounts for services that
+    // share the workspace, so a dev server reading `node_modules` sees the same
+    // per-session overlay deps as the agent container. KEEP the normal workspace
+    // mount(s) above and add one volume mount per reachable dep dir. An overlay
+    // mount whose target collides with an existing mount (a service mounting a
+    // dep dir directly) replaces it so the daemon never sees a duplicate target.
+    if (opts.overlayDepDirs && opts.overlayDepDirs.length > 0 && svc.volumes && opts.workspaceVolume) {
+      const overlayMounts = overlayMountsForService(svc.volumes, opts.overlayDepDirs, referencedOverlayVolumes);
+      if (overlayMounts.length > 0) {
+        const overlayTargets = new Set(overlayMounts.map((m) => m.target as string));
+        const existing = (entry.volumes as unknown[] | undefined) ?? [];
+        const kept = existing.filter((v) => !overlayTargets.has(volumeSourceTarget(v).target ?? ""));
+        entry.volumes = [...kept, ...overlayMounts];
+      }
+    }
+
     overrideServices[svc.name] = entry;
   }
 
@@ -663,6 +779,13 @@ export function generateComposeOverride(
         },
       };
     }
+  }
+  // docs/183 Phase 5 — declare each referenced overlay dep-dir volume `external:
+  // true`. The daemon-overlay subsystem `docker volume create`s it (with the
+  // overlay options) before the agent container starts; compose only references
+  // it, never creates or owns it.
+  for (const name of referencedOverlayVolumes) {
+    volumeOverlay[name] = { name, external: true };
   }
   if (Object.keys(volumeOverlay).length > 0) {
     override.volumes = volumeOverlay;
