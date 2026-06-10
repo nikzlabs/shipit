@@ -1,7 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, it, expect } from "vitest";
 import { overlayMountedDepDirs } from "./overlay-dep-check.js";
 
 /**
@@ -11,13 +8,8 @@ import { overlayMountedDepDirs } from "./overlay-dep-check.js";
  * is pure (`overlayMountedDepDirs`) and covered here.
  */
 
-const tmpDirs: string[] = [];
-afterEach(() => {
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
-});
-
 function mounts(lines: string[]): string {
-  return lines.join("\n") + "\n";
+  return `${lines.join("\n")}\n`;
 }
 
 describe("overlayMountedDepDirs", () => {
