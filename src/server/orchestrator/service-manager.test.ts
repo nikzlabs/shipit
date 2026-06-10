@@ -2033,33 +2033,69 @@ services:
     const web = mgr.getService("web");
     expect(web?.status).toBe("starting");
     expect(web?.error).toBeUndefined();
+
+    // This test runs on real timers and just scheduled a 1s backoff retry.
+    // Dispose so that pending timer is cancelled instead of firing after the
+    // test and leaking a retry chain into the rest of the suite.
+    await mgr.stop();
   });
 
   it("recovers a post-gate crash once deps finish landing", async () => {
     vi.useFakeTimers();
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    // Drive recovery off the number of times `web` has actually been brought
+    // up rather than a manual timer dance: it crashes on its first boot (the
+    // gate-open `up`) and comes up healthy on the second (a backoff retry),
+    // simulating deps landing during the backoff window. This is fully
+    // deterministic under `runAllTimersAsync` and structurally cannot loop —
+    // the second `up` flips `ps` to running, so the retry succeeds.
+    let webUps = 0;
+    const upCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        const call = args.slice(upIdx);
+        if (call.some(a => a === "web")) webUps++;
+        upCalls.push(call);
+      }
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") {
+        const running = webUps >= 2;
+        return Promise.resolve(JSON.stringify({
+          Service: "web", ID: "abc",
+          State: running ? "running" : "exited",
+          ExitCode: running ? 0 : 127,
+        }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
 
     mgr.setInstallRunning(true);
     await mgr.start();
+    expect(webUps).toBe(0); // gated — not brought up during install
 
-    // Gate opens; first boot crashes (exit 127).
-    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 127 }));
+    // Gate opens → first boot (webUps→1) crashes 127 → bounded post-gate
+    // retry. The retry's `up` (webUps→2) flips `ps` to running → recovered.
     mgr.setInstallRunning(false);
-    // Let the gated batch settle: composeUp → first poll → schedule retry.
-    await vi.advanceTimersByTimeAsync(0);
-    expect(mgr.getService("web")?.status).toBe("starting");
-
-    const upCountBefore = upNames(upCalls).filter(n => n === "web").length;
-
-    // Deps have now landed — the backoff retry boots the service cleanly.
-    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
-    await vi.advanceTimersByTimeAsync(1_000);
     await vi.runAllTimersAsync();
 
     expect(mgr.getService("web")?.status).toBe("running");
-    expect(upNames(upCalls).filter(n => n === "web").length).toBeGreaterThan(upCountBefore);
+    expect(webUps).toBeGreaterThanOrEqual(2);
   });
 
   it("latches to error after exhausting the post-gate retry budget", async () => {
