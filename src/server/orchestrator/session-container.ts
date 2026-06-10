@@ -870,6 +870,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     dockerAccess?: boolean;
     opsSession?: boolean;
     hostMounts?: HostMount[];
+    /** docs/183 — overlay dep store spec; absent for non-overlay sessions. */
+    overlaySpec?: OverlaySpec;
   }): ContainerConfig {
     return buildContainerConfig({
       imageName: this.imageName,

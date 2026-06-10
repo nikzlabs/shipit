@@ -64,6 +64,7 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
+import { liveOverlayScopeHashes } from "./overlay-session.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -912,6 +913,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       createRepoGit,
       getBareCacheDir,
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
+      // docs/183 Phase 3/4 — authoritative live-base source for the overlay-base
+      // sweep. Resolved at sweep time (not boot) so it reflects the current
+      // session set; returns an empty set when the feature is off, keeping the
+      // sweep inert until a deployment opts in.
+      liveOverlayScopeHashes: () => liveOverlayScopeHashes(sessionManager.listAll()),
     });
   }
 

@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -242,6 +243,56 @@ export class RepoGit {
     }
 
     return "main";
+  }
+
+  /**
+   * docs/183 Phase 3/4 — ancestry oracle for the overlay rolling-base publish
+   * compare-and-swap. `git merge-base --is-ancestor a b` exits 0 iff `a` is an
+   * ancestor of `b` (reflexively true when a === b), exit 1 when it isn't, and
+   * exit 128 on an unknown commit. Run against the bare cache, which holds the
+   * full default-branch history, so a candidate's commit can be ordered relative
+   * to the current base's commit without any session checkout.
+   *
+   * We spawn git directly and inspect the exit code rather than using
+   * `this.git.raw`: simple-git's `raw` resolves (does NOT reject) on
+   * `--is-ancestor`'s exit-1, so a `try/raw/catch` would treat EVERY pair as an
+   * ancestor — silently turning the publish CAS into "always advance" and
+   * clobbering the base with behind/diverged candidates. Exit code 1 → false;
+   * any other non-zero (unknown commit, git error) → false too, the safe
+   * direction (decline the publish rather than clobber a healthy base).
+   */
+  isAncestor(ancestor: string, descendant: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      try {
+        const proc = spawn(
+          "git",
+          ["merge-base", "--is-ancestor", ancestor, descendant],
+          { cwd: this.repoDir, stdio: "ignore" },
+        );
+        proc.on("error", () => resolve(false));
+        proc.on("close", (code) => resolve(code === 0));
+      } catch {
+        resolve(false);
+      }
+    });
+  }
+
+  /**
+   * docs/183 Phase 4 — resolve the current default-branch commit of the bare
+   * cache (the value the overlay publish path passes as `currentDefaultCommit`).
+   * A bare repo stores the branch at `refs/heads/<branch>`; resolve via
+   * `getDefaultBranch` then `rev-parse`. Returns null if it can't be resolved
+   * (the publish path then conservatively declines rather than guessing).
+   */
+  async resolveDefaultBranchCommit(remote = "origin"): Promise<string | null> {
+    try {
+      const branch = await this.getDefaultBranch(remote);
+      const sha = await this.git.revparse([branch]);
+      const trimmed = sha.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    } catch {
+      return null;
+    }
   }
 
   /** Delete a remote branch. Used during session cleanup. */
