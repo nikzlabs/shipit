@@ -227,7 +227,34 @@ Server:
 
 Client:
 - `src/client/components/IssuesViewer.tsx` (new).
+- `src/client/components/issue-label-color.ts` (new) — deterministic per-label
+  dot color for the list label chips (see "List visual language" below).
 - `src/client/stores/issues-store.ts` (new).
+
+## List visual language (refresh)
+
+The row grid (docs/173) is unchanged, but the cells inside it were given a
+sharper visual language so the list reads as a polished, scannable surface
+rather than a flat text table:
+
+- **Labels under the title.** `issue.labels` (already populated on the list path
+  by both adapters — Linear's `labels { nodes { name } }`, GitHub's REST labels,
+  SHI-92) render as a chip row inside the title cell, under the description. Each
+  chip is a token-driven pill with a small **deterministic colored dot** — neither
+  tracker hands us a label color on the list path, so `issue-label-color.ts`
+  folds the label name to a stable hue (`labelDotColor`). The dot carries the
+  color; chip text/background stay on design tokens so chips are legible in every
+  theme. Capped at `MAX_LABELS` (4) with a `+N` overflow (full list in `title`).
+- **Status dots.** The inline status trigger (and the mobile meta line) now lead
+  with a colored dot keyed by workflow-state `type`, reusing the exported
+  `statusDotClass` from `IssueFieldControls.tsx` so list/detail/menu dots match.
+- **Row polish.** Taller rows, `font-medium` titles, an accent left-edge bar that
+  fades in on hover/focus, a hover-reveal caret that slides in, softer
+  (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
+  for unassigned/avatarless users).
+
+Visual reference: presented as an inline before/after mockup during the redesign
+turn (not committed — the live component is the source of truth).
 
 ## Relationship to existing docs
 

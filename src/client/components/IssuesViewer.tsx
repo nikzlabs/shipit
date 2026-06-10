@@ -14,9 +14,12 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
+  statusDotClass,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
+import { labelDotColor } from "./issue-label-color.js";
+import { cn } from "../utils/cn.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type {
   IssuePriorityLevel,
@@ -101,12 +104,56 @@ function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assig
   return (
     <span className="inline-flex items-center gap-1.5 min-w-0">
       {assignee.avatarUrl ? (
-        <img src={assignee.avatarUrl} alt="" className="shrink-0 w-[18px] h-[18px] rounded-full object-cover" />
+        <img
+          src={assignee.avatarUrl}
+          alt=""
+          className="shrink-0 w-5 h-5 rounded-full object-cover ring-1 ring-(--color-border-primary)"
+        />
       ) : (
-        <UserIcon size={ICON_SIZE.XS} className="shrink-0 text-(--color-text-tertiary)" />
+        <span className="shrink-0 inline-flex items-center justify-center w-5 h-5 rounded-full bg-(--color-bg-tertiary) ring-1 ring-(--color-border-primary)">
+          <UserIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
+        </span>
       )}
       <span className="truncate">{assignee.name}</span>
     </span>
+  );
+}
+
+/**
+ * Label chips shown under the issue title (SHI-92). Each chip pairs a
+ * deterministic colored dot (so labels are visually distinguishable at a glance —
+ * neither tracker gives us a label color on the list path) with the label name
+ * in token-driven text, keeping the chip legible in every theme. We cap the row
+ * at a handful of chips and roll the rest into a "+N" so a heavily-labeled issue
+ * never blows out the title cell.
+ */
+const MAX_LABELS = 4;
+
+function IssueLabels({ labels }: { labels?: string[] }) {
+  if (!labels || labels.length === 0) return null;
+  const shown = labels.slice(0, MAX_LABELS);
+  const overflow = labels.length - shown.length;
+  return (
+    <div className="mt-1.5 flex flex-wrap items-center gap-1">
+      {shown.map((label) => (
+        <span
+          key={label}
+          className="inline-flex items-center gap-1 max-w-[160px] rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) pl-1.5 pr-2 py-px text-[10px] font-medium text-(--color-text-secondary)"
+        >
+          <span
+            className="size-1.5 shrink-0 rounded-full"
+            style={{ backgroundColor: labelDotColor(label) }}
+            aria-hidden="true"
+          />
+          <span className="truncate">{label}</span>
+        </span>
+      ))}
+      {overflow > 0 && (
+        <span className="text-[10px] font-medium text-(--color-text-tertiary)" title={labels.slice(MAX_LABELS).join(", ")}>
+          +{overflow}
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -168,20 +215,20 @@ function IssueRow({
           onOpenIssue(issue);
         }
       }}
-      className={`${ROW_GRID} group px-3 py-2.5 cursor-pointer hover:bg-(--color-bg-hover) transition-colors focus:outline-none focus-visible:bg-(--color-bg-hover)`}
+      className={`${ROW_GRID} group relative px-3 py-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
       {/* Issue identifier — plain label; the row click (not this) opens detail. */}
-      <span className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) self-start min-w-0">
+      <span className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors self-start min-w-0">
         <span className="truncate">{shortIdentifier(issue.identifier)}</span>
       </span>
 
-      {/* Title (+ optional description preview), wraps to two lines. */}
+      {/* Title (+ optional description preview + labels), wraps to two lines. */}
       <div className="[grid-area:title] min-w-0">
-        <div className="flex items-start gap-1 text-sm text-(--color-text-primary)">
+        <div className="flex items-start gap-1 text-sm font-medium text-(--color-text-primary)">
           <span className="line-clamp-2">{issue.title}</span>
           <CaretRightIcon
             size={ICON_SIZE.XS}
-            className="mt-1 shrink-0 text-(--color-text-tertiary) opacity-0 group-hover:opacity-100 transition-opacity"
+            className="mt-0.5 shrink-0 text-(--color-text-tertiary) opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all"
           />
         </div>
         {issue.description && (
@@ -189,6 +236,7 @@ function IssueRow({
             {issue.description}
           </div>
         )}
+        <IssueLabels labels={issue.labels} />
       </div>
 
       {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
@@ -216,7 +264,15 @@ function IssueRow({
             options={availableStatuses}
             onSelect={(name) => onSetStatus(issue, name)}
             ariaLabel={`Change status of ${issue.identifier} (currently ${issue.status.name})`}
-            trigger={<span className="truncate">{issue.status.name}</span>}
+            trigger={
+              <span className="inline-flex items-center gap-1.5 min-w-0">
+                <span
+                  className={cn("size-2 shrink-0 rounded-full", statusDotClass(issue.status.type))}
+                  aria-hidden="true"
+                />
+                <span className="truncate">{issue.status.name}</span>
+              </span>
+            }
           />
         )}
       </div>
@@ -228,7 +284,15 @@ function IssueRow({
 
       {/* Mobile-only meta line: status · assignee. */}
       <div className="md:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
-        {issue.status && <span className="truncate">{issue.status.name}</span>}
+        {issue.status && (
+          <span className="inline-flex items-center gap-1.5 min-w-0">
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", statusDotClass(issue.status.type))}
+              aria-hidden="true"
+            />
+            <span className="truncate">{issue.status.name}</span>
+          </span>
+        )}
         {issue.status && issue.assignee && <span aria-hidden="true">·</span>}
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
@@ -446,7 +510,7 @@ export function IssuesViewer({
         ) : (
           <>
             <TableHeader />
-            <div className="divide-y divide-(--color-border-secondary)">
+            <div className="divide-y divide-(--color-border-primary)">
               {filteredIssues.map((issue) => (
                 <IssueRow
                   key={issue.id}

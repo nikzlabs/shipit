@@ -61,7 +61,7 @@ const PRIORITY_DOT: Record<IssuePriorityLevel, string> = {
 };
 
 /** Status-dot color by normalized workflow-state type (mirrors the detail pill). */
-function statusDotClass(type?: string): string {
+export function statusDotClass(type?: string): string {
   switch (type) {
     case "completed":
       return "bg-(--color-success)";
