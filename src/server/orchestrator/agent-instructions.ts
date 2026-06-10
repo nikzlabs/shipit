@@ -250,6 +250,8 @@ Users can upload files from their browser. Uploaded files are available at /uplo
 
 You have a built-in browser you can use to see and interact with web pages, including the live preview when one is running. **Use the browser proactively** to verify your work — especially after UI changes, styling fixes, or building new features. Don't wait for the user to ask you to check. A quick browser_snapshot after a meaningful change catches bugs early.
 
+Do not assume the app is reachable on \`127.0.0.1:<port>\` from the browser. ShipIt previews often run in Compose service containers, so the browser may need the service container URL instead. When a preview URL is not obvious, or when localhost returns connection refused, query ShipIt's service registry before retrying: \`curl -s http://\${SHIPIT_HOST}:\${SHIPIT_PORT}/api/sessions/\${SHIPIT_SESSION_ID}/services\`. Use the matching service's \`containerIp\` and \`port\` (for example, \`http://<containerIp>:<port>\`) or the preview URL ShipIt provides. See /shipit-docs/preview.md for details.
+
 Available tools:
 - **browser_navigate** — open a URL
 - **browser_snapshot** — read the page content (accessibility tree, preferred over screenshots for understanding layout)
@@ -280,11 +282,23 @@ Reference documentation about the ShipIt platform is at /shipit-docs/. Consult t
 - /shipit-docs/design-docs.md — feature docs under \`docs/\` and their frontmatter
 - /shipit-docs/release.md — how to cut a release (version bump, annotated tag, confirmation)
 
+## Issue Trackers
+
+Use \`shipit issue\` for issue tracker operations. It is the sanctioned, tracker-neutral interface for both Linear and GitHub Issues, and it brokers credentials through ShipIt so tracker tokens never enter the session container. Do not conclude you lack Linear access just because no Linear MCP/tool is exposed; run \`shipit issue --help\` or read /shipit-docs/issues.md.
+
+Common commands:
+- Read: \`shipit issue view <pointer> [--json]\`
+- Comment: \`shipit issue comment <pointer> --body-file -\`
+- Edit fields: \`shipit issue edit <pointer> ...\`
+- Set status: \`shipit issue status <pointer> completed\`
+
+Pass the pointer the user gave you, such as \`TRACKER-123\` or \`https://linear.app/.../issue/TRACKER-123\`; the tracker is inferred from its shape. Use this before reaching for GitHub issue commands, external Linear MCP tools, or WebFetch on issue URLs.
+
 ## Design docs
 
 Workspace \`.md\` files (typically under \`docs/NNN-feature/plan.md\`) show up in ShipIt's feature list. Docs are **reference material** — what a feature is, why, and how. The recognized frontmatter fields are all optional: \`issue\`, \`title\`, and \`description\`. A doc with no frontmatter still appears in the list. Work tracking — what's planned, in progress, or done — lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its \`issue:\` pointer.
 
-\`issue:\` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Linear pointers must be a full URL (\`https://linear.app/<workspace>/issue/SHI-28/...\`) — a bare \`SHI-28\` is not accepted; GitHub is \`owner/repo#123\` or a full issue URL. \`description\` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
+\`issue:\` points at the work item that tracks the doc, and ShipIt renders a jump-to-issue chip from it. Linear pointers must be a full URL (\`https://linear.app/<workspace>/issue/TRACKER-123/...\`) — a bare \`TRACKER-123\` is not accepted; GitHub is \`owner/repo#123\` or a full issue URL. \`description\` is a single-line summary shown under the title. See /shipit-docs/design-docs.md for the full schema (issue pointer, title, description, common mistakes).
 
 Track remaining work in a sibling \`checklist.md\` file next to \`plan.md\` (e.g. \`docs/NNN-feature/checklist.md\`) — not as a \`## Checklist\` section inside \`plan.md\`. Mark items complete with \`[x]\`. The checklist drives the docs list's Active/Done grouping: when every item is checked, the doc folds into the collapsed Done group, so check them all off when the work is finished.
 
