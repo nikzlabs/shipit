@@ -156,7 +156,7 @@ describe("McpServerSettings (docs/088)", () => {
     fireEvent.click(screen.getByTestId("mcp-add-server"));
 
     // Type an invalid name (uppercase + hyphen).
-    const nameInput = screen.getByPlaceholderText("linear");
+    const nameInput = screen.getByPlaceholderText("sentry");
     fireEvent.change(nameInput, { target: { value: "Bad-Name" } });
 
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
@@ -177,7 +177,7 @@ describe("McpServerSettings (docs/088)", () => {
     render(<McpServerSettings hasActiveSession={false} />);
     fireEvent.click(await screen.findByTestId("mcp-add-server"));
 
-    fireEvent.change(screen.getByPlaceholderText("linear"), {
+    fireEvent.change(screen.getByPlaceholderText("sentry"), {
       target: { value: "ok" },
     });
     // Empty the prefilled command field.

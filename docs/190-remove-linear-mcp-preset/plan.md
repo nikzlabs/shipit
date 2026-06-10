@@ -73,9 +73,17 @@ hidden-but-honored; stale tokens (if any) simply become inert.
     needs two distinct providers.
 - **Docs** — status banner on `docs/088`, this doc, and a `shipit-docs/secrets.md`
   wording tweak.
+- **Illustrative examples re-pointed at Sentry** — to avoid any "is Linear still
+  built-in?" read, the *user-facing* manual-config examples now use Sentry: the
+  Settings → MCP Servers add-form placeholders (`McpServerSettings.tsx`) and the
+  `docs/088` "Concrete example" Option A/B walkthrough. Sentry is a real
+  third-party MCP server, unmistakably not a ShipIt-native integration. Linear is
+  still a perfectly valid thing to add manually — it's just no longer the poster
+  child for it.
 - **Kept untouched:** the native Linear *tracker* (docs/170 — `LinearTracker`,
-  `getLinearToken`, Issues tab) and all *manual* Linear MCP config examples
-  (`mcp__linear__*`, `@anthropic-ai/linear-mcp`, server name `linear`).
+  `getLinearToken`, Issues tab), and internal test fixtures / data-flow diagrams
+  that incidentally use a `linear`-named manual server (`mcp__linear__*`) — those
+  aren't user-facing examples, and a manual server named `linear` is still legal.
 
 ## A note on dormant coverage
 

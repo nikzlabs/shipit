@@ -10,6 +10,8 @@
       `agent-env-push.test.ts`, `mcp-resolve.test.ts`, client `mcp-store.test.ts`,
       `McpServerSettings.test.tsx`).
 - [x] Update docs (`docs/088` status banner, this doc) and `shipit-docs/secrets.md`.
+- [x] Re-point user-facing manual-config examples to Sentry (`McpServerSettings.tsx`
+      add-form placeholders + `docs/088` "Concrete example" walkthrough).
 - [x] `npm run typecheck` clean.
 - [x] `npm run lint:dev` clean.
 - [x] Affected MCP test files pass (200 server + 28 client).
