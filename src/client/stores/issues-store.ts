@@ -4,12 +4,16 @@ import type {
   IssuePriorityLevel,
   ListIssuesResult,
   ListIssueCommentsResult,
+  MutateIssueResult,
   PostIssueCommentResult,
   TrackerComment,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
 } from "../../server/shared/types.js";
+
+/** A tracker status option — the non-null shape of {@link TrackerIssue.status}. */
+type IssueStatusRef = NonNullable<TrackerIssue["status"]>;
 import {
   UNASSIGNED,
   distinctAssignees,
@@ -93,6 +97,13 @@ interface IssuesState {
   issuesByTracker: Record<string, TrackerIssue[]>;
   /** Per-tracker info refreshed alongside the list (configured + binding). */
   infoByTracker: Record<string, TrackerInfo>;
+  /**
+   * Per-tracker assignable statuses (docs/191) — the tracker's full workflow
+   * states (Linear team states / GitHub Open·Closed), refreshed alongside the
+   * list. Drives the inline status editor's option menu on the list rows, which
+   * (unlike the detail view's `availableStatuses`) have no per-issue option set.
+   */
+  statusesByTracker: Record<string, IssueStatusRef[]>;
   loading: boolean;
   error: string | null;
 
@@ -147,6 +158,18 @@ interface IssuesState {
    * success (so the calling component can surface it inline).
    */
   postComment: (body: string) => Promise<string | null>;
+  /**
+   * Set an issue's status (docs/191). Patches the row + open detail in place on
+   * success. Returns an error message on failure, or null on success. `tracker`
+   * is passed explicitly because a `TrackerIssue` doesn't carry its tracker id.
+   */
+  setIssueStatus: (tracker: TrackerId, issue: TrackerIssue, status: string) => Promise<string | null>;
+  /** Set an issue's priority (Linear-only, docs/191). Same contract as status. */
+  setIssuePriority: (
+    tracker: TrackerId,
+    issue: TrackerIssue,
+    level: IssuePriorityLevel,
+  ) => Promise<string | null>;
   /** Close the detail view and return to the list. */
   closeIssue: () => void;
   setQuery: (query: string) => void;
@@ -192,6 +215,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   activeTracker: "linear",
   issuesByTracker: {},
   infoByTracker: {},
+  statusesByTracker: {},
   loading: false,
   error: null,
   // Rehydrate the filter bar from the last reload (docs/173). Freeform
@@ -269,6 +293,12 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
           infoByTracker: body.tracker
             ? { ...state.infoByTracker, [id]: body.tracker }
             : state.infoByTracker,
+          // Cache the tracker's assignable statuses for the inline status editor
+          // (docs/191). Only overwrite when the response carried them so a
+          // best-effort omission doesn't blank a previously-loaded set.
+          statusesByTracker: body.availableStatuses
+            ? { ...state.statusesByTracker, [id]: body.availableStatuses }
+            : state.statusesByTracker,
         };
       });
     } catch (err) {
@@ -389,6 +419,12 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     }
   },
 
+  setIssueStatus: (tracker, issue, status) =>
+    applyIssueMutation("/api/issue/status", tracker, issue, { status }),
+
+  setIssuePriority: (tracker, issue, level) =>
+    applyIssueMutation("/api/issue/priority", tracker, issue, { priority: level }),
+
   closeIssue: () =>
     set({
       selected: null,
@@ -430,6 +466,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   reset: () =>
     set({
       issuesByTracker: {},
+      statusesByTracker: {},
       loading: false,
       error: null,
       filters: emptyFilters(),
@@ -442,6 +479,47 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       commentsError: null,
     }),
 }));
+
+/**
+ * POST a user-initiated status/priority change (docs/191) and, on success, patch
+ * the returned issue into the cached list row AND the open detail view in place
+ * — no refetch. Matching is by `issue.id` (the tracker-native node id the row and
+ * the hydrated detail share), so it survives a detail opened from a chat card
+ * (whose `selected.id` may be a key rather than the node id). Returns an error
+ * message on failure, or null on success, for the calling control to surface.
+ */
+async function applyIssueMutation(
+  endpoint: string,
+  tracker: TrackerId,
+  issue: TrackerIssue,
+  payload: Record<string, string>,
+): Promise<string | null> {
+  try {
+    const sessionId = useSessionStore.getState().sessionId;
+    const res = await fetch(endpoint, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "application/json" },
+      body: JSON.stringify({ tracker, id: issue.id, ...payload, ...(sessionId ? { sessionId } : {}) }),
+    });
+    const data = (await res.json().catch(() => ({}))) as Partial<MutateIssueResult> & { error?: string };
+    if (!res.ok || !data.issue) {
+      return data.error ?? `Request failed (${res.status})`;
+    }
+    const updated = data.issue;
+    useIssuesStore.setState((state) => {
+      const list = state.issuesByTracker[tracker];
+      return {
+        issuesByTracker: list
+          ? { ...state.issuesByTracker, [tracker]: list.map((i) => (i.id === updated.id ? updated : i)) }
+          : state.issuesByTracker,
+        detail: state.detail?.id === updated.id ? updated : state.detail,
+      };
+    });
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
 
 // Persist the filter bar across reloads (docs/173). A single subscription
 // covers every mutation point — direct edits (setQuery/toggle*/clearFilters)

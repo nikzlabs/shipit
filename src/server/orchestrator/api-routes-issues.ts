@@ -19,6 +19,8 @@ import {
   getIssueForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
+  userSetIssueStatus,
+  userSetIssuePriority,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -226,6 +228,58 @@ export async function registerIssueRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to post comment: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/issue/status { tracker, id, status, sessionId? } — a user setting
+  // an issue's status from the inline list/detail editor (docs/191). The
+  // status-setting sibling of `POST /api/issue/comments`: the user's own direct
+  // action, so it surfaces NO provenance card and has no undo. Returns the
+  // updated issue so the client patches the row + detail in place. `sessionId`
+  // only scopes the GitHub tracker to that session's repo.
+  app.post<{ Body: { tracker?: string; id?: string; status?: string; sessionId?: string } }>(
+    "/api/issue/status",
+    async (request, reply) => {
+      const { tracker, id, status, sessionId } = request.body ?? {};
+      if (!tracker || !id || !status?.trim()) {
+        reply.code(400).send({ error: "tracker, id and status are required" });
+        return;
+      }
+      const github = resolveGitHubContext(sessionId);
+      try {
+        return await userSetIssueStatus(credentialStore, tracker, id, status, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to set status: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/issue/priority { tracker, id, priority, sessionId? } — a user
+  // setting an issue's priority from the inline editor (docs/191). Linear-only:
+  // GitHub has no priority field and the service returns a 422 (the UI hides the
+  // control for GitHub). Same no-card, returns-the-issue contract as status.
+  app.post<{ Body: { tracker?: string; id?: string; priority?: string; sessionId?: string } }>(
+    "/api/issue/priority",
+    async (request, reply) => {
+      const { tracker, id, priority, sessionId } = request.body ?? {};
+      if (!tracker || !id || !priority?.trim()) {
+        reply.code(400).send({ error: "tracker, id and priority are required" });
+        return;
+      }
+      const github = resolveGitHubContext(sessionId);
+      try {
+        return await userSetIssuePriority(credentialStore, tracker, id, priority, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to set priority: ${getErrorMessage(err)}` });
       }
     },
   );

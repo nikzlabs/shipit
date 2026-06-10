@@ -443,6 +443,34 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(issue?.assigneeId).toBe("u1");
     expect(issue?.availableStatuses?.map((s) => s.name)).toContain("In Review");
   });
+
+  it("listStatuses returns the team's workflow states in board order (docs/191)", async () => {
+    const fetchImpl = routerFetch([
+      // Deliberately out of position order — listStatuses sorts by position.
+      {
+        match: "TeamStates",
+        data: {
+          team: {
+            states: {
+              nodes: [
+                { id: "s-done", name: "Done", type: "completed", position: 3 },
+                { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
+              ],
+            },
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    expect(await tracker.listStatuses()).toEqual([
+      { name: "Todo", type: "unstarted" },
+      { name: "Done", type: "completed" },
+    ]);
+  });
+
+  it("listStatuses throws when unconfigured", async () => {
+    await expect(new LinearTracker({ token: null, team: null }).listStatuses()).rejects.toThrow();
+  });
 });
 
 describe("resolveLinearPriority (SHI-92)", () => {

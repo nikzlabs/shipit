@@ -13,6 +13,7 @@ import type {
   ListIssuesResult,
   ListIssueCommentsResult,
   PostIssueCommentResult,
+  MutateIssueResult,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
@@ -62,8 +63,19 @@ export async function listIssuesForTracker(
     return { tracker: tracker.info(), issues: [] };
   }
   try {
-    const issues = await tracker.listIssues(options);
-    return { tracker: tracker.info(), issues };
+    // Fetch the issues and the tracker's assignable statuses together — the
+    // latter powers the list's inline status editor (docs/191). Statuses are
+    // best-effort: a failed states lookup must not blank the whole list, so it
+    // degrades to "no inline editor" rather than a 502.
+    const [issues, availableStatuses] = await Promise.all([
+      tracker.listIssues(options),
+      tracker.listStatuses().catch(() => [] as { name: string; type?: string }[]),
+    ]);
+    return {
+      tracker: tracker.info(),
+      issues,
+      ...(availableStatuses.length > 0 ? { availableStatuses } : {}),
+    };
   } catch (err) {
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));
   }
@@ -185,6 +197,65 @@ export async function addIssueCommentForTracker(
   } catch (err) {
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));
   }
+}
+
+// ---- User-initiated inline writes (docs/191) --------------------------------
+//
+// The status/priority siblings of `addIssueCommentForTracker`: a direct user
+// manipulation in the Issues tab, NOT the agent's do-then-surface write. They
+// return the updated issue for an in-place patch and emit no provenance card /
+// undo (unlike `setIssueStatusForTracker`, which returns an `IssueWriteOutcome`).
+
+/**
+ * Set an issue's status from a user action in the UI (docs/191). `status` is a
+ * native state name or a normalized type; an unresolvable value surfaces as a
+ * 422 listing the valid options (via {@link toResolutionServiceError}).
+ */
+export async function userSetIssueStatus(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  status: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<MutateIssueResult> {
+  if (!id.trim()) throw new ServiceError(400, "An issue id is required");
+  if (!status.trim()) throw new ServiceError(400, "A status is required");
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  let issue: TrackerIssue;
+  try {
+    issue = await tracker.setStatus(id, status);
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return { issue: issue! };
+}
+
+/**
+ * Set an issue's priority from a user action in the UI (docs/191). Linear-only
+ * by product decision: GitHub has no native priority field and its adapter
+ * rejects the write, so the UI only surfaces this control for Linear; a GitHub
+ * call here returns a 422. `priority` is a normalized level
+ * (`urgent|high|medium|low|none`).
+ */
+export async function userSetIssuePriority(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  priority: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<MutateIssueResult> {
+  if (!id.trim()) throw new ServiceError(400, "An issue id is required");
+  if (!priority.trim()) throw new ServiceError(400, "A priority is required");
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  let issue: TrackerIssue;
+  try {
+    issue = await tracker.updateIssue(id, { priority });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return { issue: issue! };
 }
 
 // ---- Writes (docs/177) ------------------------------------------------------

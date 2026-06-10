@@ -161,6 +161,20 @@ describe("GitHubTracker", () => {
       { name: "Closed", type: "completed" },
     ]);
   });
+
+  it("listStatuses returns the fixed Open/Closed pair without a request (docs/191)", async () => {
+    const fetchImpl = vi.fn();
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    expect(await tracker.listStatuses()).toEqual([
+      { name: "Open", type: "started" },
+      { name: "Closed", type: "completed" },
+    ]);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("listStatuses throws when unconfigured (no repo)", async () => {
+    await expect(new GitHubTracker({ token: "t", repo: null }).listStatuses()).rejects.toThrow();
+  });
 });
 
 describe("resolveGitHubState (docs/177 status mapping)", () => {

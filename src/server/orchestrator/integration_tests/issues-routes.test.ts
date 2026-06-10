@@ -94,6 +94,63 @@ describe("Integration: Issues tab routes (docs/170)", () => {
           },
         });
       }
+      // Team workflow states (`listStatuses`) — backs the list's availableStatuses
+      // and the inline status editor (docs/191).
+      if (query.includes("TeamStates")) {
+        return jsonResponse({
+          data: {
+            team: {
+              states: {
+                nodes: [
+                  { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
+                  { id: "s-prog", name: "In Progress", type: "started", position: 1 },
+                  { id: "s-done", name: "Done", type: "completed", position: 2 },
+                ],
+              },
+            },
+          },
+        });
+      }
+      // Per-issue states fetched before a `setStatus` (docs/191).
+      if (query.includes("IssueStates")) {
+        return jsonResponse({
+          data: {
+            issue: {
+              id: "a",
+              team: {
+                states: {
+                  nodes: [
+                    { id: "s-todo", name: "Todo", type: "unstarted", position: 0 },
+                    { id: "s-done", name: "Done", type: "completed", position: 1 },
+                  ],
+                },
+              },
+            },
+          },
+        });
+      }
+      // issueUpdate mutation (`setStatus` / `updateIssue`) — backs the user-
+      // initiated status/priority writes (docs/191).
+      if (query.includes("IssueUpdate")) {
+        return jsonResponse({
+          data: {
+            issueUpdate: {
+              success: true,
+              issue: {
+                id: "a",
+                identifier: "SHI-1",
+                title: "Urgent",
+                url: "https://linear.app/x/issue/SHI-1",
+                priority: 2,
+                priorityLabel: "High",
+                state: { name: "Done", type: "completed" },
+                assignee: null,
+                team: { states: { nodes: [{ id: "s-todo", name: "Todo", type: "unstarted", position: 0 }] } },
+              },
+            },
+          },
+        });
+      }
       // Resolve a key → UUID before a comment mutation (`addComment`).
       if (query.includes("IssueId")) {
         return jsonResponse({ data: { issue: { id: "uuid-1" } } });
@@ -271,20 +328,28 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
     await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
 
-    const variablesFor = (callIndex: number) => {
-      const init = trackerFetch.mock.calls[callIndex][1] as RequestInit;
-      return (JSON.parse(init.body as string) as { variables: { excludedTypes?: string[] } }).variables;
+    // listIssuesForTracker now fires the TeamIssues query AND a TeamStates query
+    // in parallel (docs/191 — statuses for the inline editor), so scan back for
+    // the TeamIssues call specifically rather than assuming it's the last one.
+    const lastIssuesVariables = () => {
+      for (let i = trackerFetch.mock.calls.length - 1; i >= 0; i--) {
+        const init = trackerFetch.mock.calls[i][1] as RequestInit;
+        const parsed = JSON.parse(init.body as string) as {
+          query: string;
+          variables: { excludedTypes?: string[] };
+        };
+        if (parsed.query.includes("issues(")) return parsed.variables;
+      }
+      throw new Error("no TeamIssues call recorded");
     };
 
     // Default: open working set — completed + canceled excluded.
     await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
-    const defaultCall = trackerFetch.mock.calls.length - 1;
-    expect(variablesFor(defaultCall).excludedTypes).toEqual(["completed", "canceled"]);
+    expect(lastIssuesVariables().excludedTypes).toEqual(["completed", "canceled"]);
 
     // includeDone=true: only canceled stays excluded.
     await app.inject({ method: "GET", url: "/api/issues?tracker=linear&includeDone=true" });
-    const doneCall = trackerFetch.mock.calls.length - 1;
-    expect(variablesFor(doneCall).excludedTypes).toEqual(["canceled"]);
+    expect(lastIssuesVariables().excludedTypes).toEqual(["canceled"]);
   });
 
   it("rejects an unknown tracker with 404", async () => {
@@ -364,6 +429,70 @@ describe("Integration: Issues tab routes (docs/170)", () => {
       payload: { tracker: "linear", id: "SHI-1", body: "   " },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // docs/191 — user-initiated inline status / priority writes.
+  it("GET /api/issues includes the tracker's availableStatuses (docs/191)", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({ method: "GET", url: "/api/issues?tracker=linear" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { availableStatuses?: { name: string }[] };
+    expect(body.availableStatuses?.map((s) => s.name)).toEqual(["Todo", "In Progress", "Done"]);
+  });
+
+  it("POST /api/issue/status sets the status and returns the issue (no card)", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/status",
+      payload: { tracker: "linear", id: "SHI-1", status: "Done" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { issue: { identifier: string; status?: { name: string } } };
+    expect(body.issue.identifier).toBe("SHI-1");
+    expect(body.issue.status?.name).toBe("Done");
+  });
+
+  it("POST /api/issue/status 400s without a status", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/status",
+      payload: { tracker: "linear", id: "SHI-1", status: "  " },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("POST /api/issue/priority sets Linear priority and returns the issue", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/priority",
+      payload: { tracker: "linear", id: "SHI-1", priority: "high" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { issue: { priority: { level: string } } };
+    expect(body.issue.priority.level).toBe("high");
+  });
+
+  it("POST /api/issue/priority is rejected on GitHub with a 422 (no native field)", async () => {
+    await githubAuthManager.setToken("ghp_test_token");
+    sessionManager.track("gh-sess", "GH session");
+    sessionManager.setRemoteUrl("gh-sess", "https://github.com/octocat/hello-world.git");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/issue/priority",
+      payload: { tracker: "github", id: "42", priority: "high", sessionId: "gh-sess" },
+    });
+    expect(res.statusCode).toBe(422);
   });
 
   it("GET /api/issue reads a GitHub issue scoped to the session repo", async () => {

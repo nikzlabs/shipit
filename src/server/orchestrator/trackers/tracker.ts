@@ -90,6 +90,16 @@ export interface Tracker {
   getIssue(id: string): Promise<TrackerIssue | null>;
 
   /**
+   * The full set of assignable statuses for the tracker's bound scope (docs/191)
+   * — Linear's team workflow states, GitHub's fixed Open/Closed pair. Powers the
+   * inline status editor's option list on the issue LIST, where rows don't carry
+   * the per-issue `availableStatuses` that `getIssue` populates. Ordered as the
+   * tracker presents them (Linear board position). Throws on an unconfigured
+   * tracker (callers check `isConfigured()` first).
+   */
+  listStatuses(): Promise<{ name: string; type?: string }[]>;
+
+  /**
    * List an issue's comments, oldest-first, for the inline comment thread
    * (docs/189 follow-up). Each comment carries its author + creation time so the
    * thread renders avatar/author/relative-date rows. Throws on an unconfigured

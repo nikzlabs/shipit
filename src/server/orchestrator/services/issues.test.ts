@@ -15,8 +15,11 @@ import path from "node:path";
 import { CredentialStore } from "../credential-store.js";
 import {
   getIssueForTracker,
+  listIssuesForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
+  userSetIssueStatus,
+  userSetIssuePriority,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -177,6 +180,127 @@ describe("getIssueForTracker (docs/175)", () => {
     await expect(
       getIssueForTracker(credentialStore, "github", "1", fetchImpl, GH),
     ).rejects.toMatchObject({ statusCode: 502 });
+  });
+});
+
+describe("listIssuesForTracker availableStatuses (docs/191)", () => {
+  it("attaches the Linear team's workflow states for the inline editor", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamIssues")) {
+        return jsonResponse({ data: { team: { issues: { nodes: [] } } } });
+      }
+      if (query.includes("TeamStates")) {
+        return jsonResponse({
+          data: {
+            team: {
+              states: {
+                nodes: [
+                  { id: "s2", name: "Done", type: "completed", position: 1 },
+                  { id: "s1", name: "Todo", type: "unstarted", position: 0 },
+                ],
+              },
+            },
+          },
+        });
+      }
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+    const out = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    // Sorted by board position, regardless of the response order.
+    expect(out.availableStatuses).toEqual([
+      { name: "Todo", type: "unstarted" },
+      { name: "Done", type: "completed" },
+    ]);
+  });
+
+  it("attaches GitHub's fixed Open/Closed pair (no extra request)", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      if ((url as string).includes("/issues?state=")) return ghResponse([]);
+      throw new Error(`unexpected ${url as string}`);
+    }) as unknown as typeof fetch;
+    const out = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH);
+    expect(out.availableStatuses).toEqual([
+      { name: "Open", type: "started" },
+      { name: "Closed", type: "completed" },
+    ]);
+  });
+
+  it("degrades to no availableStatuses when the states lookup fails (best-effort)", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamIssues")) {
+        return jsonResponse({ data: { team: { issues: { nodes: [] } } } });
+      }
+      // TeamStates errors — the list must still succeed without statuses.
+      return jsonResponse({ errors: [{ message: "states boom" }] });
+    }) as unknown as typeof fetch;
+    const out = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    expect(out.issues).toEqual([]);
+    expect(out.availableStatuses).toBeUndefined();
+  });
+});
+
+describe("user-initiated inline writes (docs/191)", () => {
+  it("userSetIssueStatus sets GitHub state and returns the updated issue (no undo)", async () => {
+    const out = await userSetIssueStatus(tmpStore(), "github", "42", "completed", ghFetch(), GH);
+    expect(out.issue.status?.name).toBe("Closed");
+    // Returns just the issue — no IssueWriteOutcome verb/undo (no provenance card).
+    expect(out).not.toHaveProperty("undo");
+    expect(out).not.toHaveProperty("verb");
+  });
+
+  it("userSetIssueStatus maps an ambiguous status to a 422", async () => {
+    await expect(
+      userSetIssueStatus(tmpStore(), "github", "42", "in review", ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("userSetIssueStatus 400s on a blank status", async () => {
+    await expect(
+      userSetIssueStatus(tmpStore(), "github", "42", "  ", ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 400 });
+  });
+
+  it("userSetIssueStatus 409s for an unconnected tracker", async () => {
+    await expect(
+      userSetIssueStatus(tmpStore(), "github", "42", "completed", ghFetch(), { token: null, repo: null }),
+    ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("userSetIssuePriority updates Linear priority and returns the issue", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const node = {
+      id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
+      priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null, labels: { nodes: [] },
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    });
+    const out = await userSetIssuePriority(store, "linear", "SHI-9", "high", fetchImpl as unknown as typeof fetch);
+    // The issueUpdate input mapped "high" → numeric 2.
+    const update = fetchImpl.mock.calls.find(
+      ([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"),
+    )!;
+    expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ priority: 2 });
+    expect(out.issue.priority.level).toBe("high");
+  });
+
+  it("userSetIssuePriority is rejected on GitHub with a 422 (no native field)", async () => {
+    await expect(
+      userSetIssuePriority(tmpStore(), "github", "42", "high", ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
   });
 });
 

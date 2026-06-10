@@ -10,6 +10,12 @@ import {
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { IssuesFilterBar } from "./IssuesFilterBar.js";
+import {
+  IssuePriorityEditor,
+  IssueStatusEditor,
+  PriorityTrigger,
+  type IssueStatusRef,
+} from "./IssueFieldControls.js";
 import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type {
@@ -38,11 +44,19 @@ export interface IssuesViewerProps {
   canStart: boolean;
   /** Whether the loaded list includes done/completed issues (fetch-scope). */
   includeDone: boolean;
+  /** The active tracker's assignable statuses, for the inline status editor (docs/191). */
+  availableStatuses: IssueStatusRef[];
+  /** Whether priority is editable for the active tracker (Linear yes, GitHub no). */
+  canEditPriority: boolean;
   onSelectTracker: (id: TrackerId) => void;
   onRefresh: () => void;
   onToggleIncludeDone: () => void;
   /** Open the inline detail view for a row (docs/189). */
   onOpenIssue: (issue: TrackerIssue) => void;
+  /** Set a row's status inline; resolves to an error message, or null (docs/191). */
+  onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
+  /** Set a row's priority inline (Linear-only); resolves to an error, or null. */
+  onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
   onStartSession: (issue: TrackerIssue) => void;
   /** Open Settings → Trackers so the user can connect/bind Linear. */
   onConnect: () => void;
@@ -123,12 +137,20 @@ const ROW_GRID =
 function IssueRow({
   issue,
   canStart,
+  availableStatuses,
+  canEditPriority,
   onOpenIssue,
+  onSetStatus,
+  onSetPriority,
   onStartSession,
 }: {
   issue: TrackerIssue;
   canStart: boolean;
+  availableStatuses: IssueStatusRef[];
+  canEditPriority: boolean;
   onOpenIssue: (issue: TrackerIssue) => void;
+  onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
+  onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
   onStartSession: (issue: TrackerIssue) => void;
 }) {
   return (
@@ -169,14 +191,34 @@ function IssueRow({
         )}
       </div>
 
-      {/* Priority — right-aligned on mobile, column-aligned on desktop. */}
+      {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
+          editable for Linear (docs/191); read-only badge for GitHub. */}
       <div className="[grid-area:pri] justify-self-end md:justify-self-start self-start">
-        <PriorityBadge priority={issue.priority} />
+        {canEditPriority ? (
+          <IssuePriorityEditor
+            current={issue.priority.level}
+            onSelect={(level) => onSetPriority(issue, level)}
+            ariaLabel={`Change priority of ${issue.identifier} (currently ${issue.priority.label})`}
+            trigger={<PriorityTrigger priority={issue.priority} />}
+            align="end"
+          />
+        ) : (
+          <PriorityBadge priority={issue.priority} />
+        )}
       </div>
 
-      {/* Status — its own column on desktop; folded into the meta line on mobile. */}
+      {/* Status — its own column on desktop; folded into the meta line on mobile.
+          Inline-editable (docs/191). */}
       <div className="hidden md:block [grid-area:status] text-xs text-(--color-text-secondary) truncate self-start">
-        {issue.status?.name}
+        {issue.status && (
+          <IssueStatusEditor
+            current={issue.status}
+            options={availableStatuses}
+            onSelect={(name) => onSetStatus(issue, name)}
+            ariaLabel={`Change status of ${issue.identifier} (currently ${issue.status.name})`}
+            trigger={<span className="truncate">{issue.status.name}</span>}
+          />
+        )}
       </div>
 
       {/* Assignee — own column at lg+, hidden in the md..lg band, in the meta line on mobile. */}
@@ -239,10 +281,14 @@ export function IssuesViewer({
   error,
   canStart,
   includeDone,
+  availableStatuses,
+  canEditPriority,
   onSelectTracker,
   onRefresh,
   onToggleIncludeDone,
   onOpenIssue,
+  onSetStatus,
+  onSetPriority,
   onStartSession,
   onConnect,
   onSetQuery,
@@ -406,7 +452,11 @@ export function IssuesViewer({
                   key={issue.id}
                   issue={issue}
                   canStart={canStart}
+                  availableStatuses={availableStatuses}
+                  canEditPriority={canEditPriority}
                   onOpenIssue={onOpenIssue}
+                  onSetStatus={onSetStatus}
+                  onSetPriority={onSetPriority}
                   onStartSession={onStartSession}
                 />
               ))}
