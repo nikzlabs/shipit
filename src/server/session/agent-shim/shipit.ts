@@ -1432,10 +1432,7 @@ function reportWrite(res: { status: number; body: Record<string, unknown> }, dep
     deps.io.exit(0);
     return;
   }
-  const lines = [
-    `done:       ${asString(res.body.summary) || "ok"}`,
-    "A provenance card with an Undo button has been posted in the chat.",
-  ];
+  const lines = [`done:       ${asString(res.body.summary) || "ok"}`];
   if (res.body.url) lines.push(`url:        ${asString(res.body.url)}`);
   success(deps.io, lines.join("\n"));
 }

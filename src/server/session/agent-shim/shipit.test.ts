@@ -1304,7 +1304,7 @@ describe("shipit issue", () => {
     expect(out.calls[0].path).toContain("id=42");
   });
 
-  it("comment posts tracker/id/body and reports the provenance card", async () => {
+  it("comment posts tracker/id/body and reports the write result", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "comment", "SHI-1", "-b", "noted"], {
       "POST /agent-ops/issue/comment": { status: 200, body: { ok: true, summary: "commented on SHI-1" } },
@@ -1315,7 +1315,7 @@ describe("shipit issue", () => {
       path: "/agent-ops/issue/comment",
       body: { tracker: "linear", id: "SHI-1", body: "noted" },
     });
-    expect(out.stdout).toContain("Undo");
+    expect(out.stdout).toContain("commented on SHI-1");
   });
 
   it("comment requires a body", async () => {
@@ -1350,7 +1350,7 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", assignee: null });
   });
 
-  it("create defaults to Linear and posts title/body, reporting the provenance card", async () => {
+  it("create defaults to Linear and posts title/body, reporting the write result", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "create", "--title", "New doc", "-b", "tracks docs/187"], {
       "POST /agent-ops/issue/create": {
@@ -1364,7 +1364,7 @@ describe("shipit issue", () => {
       path: "/agent-ops/issue/create",
       body: { tracker: "linear", title: "New doc", body: "tracks docs/187" },
     });
-    expect(out.stdout).toContain("Undo");
+    expect(out.stdout).toContain("created SHI-9");
     expect(out.stdout).toContain("https://linear.app/x/SHI-9");
   });
 
