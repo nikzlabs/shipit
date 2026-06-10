@@ -20,7 +20,6 @@ import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionManager } from "./sessions.js";
-import type { SessionInfo } from "../shared/types.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
 import type { RepoGit } from "./repo-git.js";
 import type { GitManager } from "../shared/git.js";
@@ -214,12 +213,6 @@ export interface RunnerFactoryDeps {
   credentialsDir: string;
   /** docs/128 — used to resolve a session's server-authoritative `kind` (ops). */
   sessionManager?: SessionManager;
-  /**
-   * docs/183 Phase 4 — orchestrator-visible root of the `shipit-workspace` state
-   * volume (the parent of `sessions/`). Used to build the overlay dep-store spec
-   * (base/upper/work dirs) for overlay-eligible sessions. Omitted in tests/local.
-   */
-  stateDir?: string;
   /** Runtime mode — selects ContainerSessionRunner vs in-process SessionRunner. */
   runtimeMode: RuntimeMode;
   /**
@@ -270,11 +263,6 @@ async function createContainerForRunner(opts: {
   /** docs/128 — true when the session's server-side `kind === "ops"`. Enables
    *  the privileged journal mounts + read-only Docker proxy wiring. */
   opsSession?: boolean;
-  /** docs/183 Phase 4 — session metadata + state dir for overlay-spec building.
-   *  When both are present and the session is overlay-eligible, the container
-   *  mounts the per-session `type=overlay` volume at `/workspace`. */
-  session?: Pick<SessionInfo, "id" | "remoteUrl" | "kind">;
-  stateDir?: string;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
@@ -298,13 +286,6 @@ async function createContainerForRunner(opts: {
 
   try {
     if (opts.destroyExisting) await mgr.destroy(sessionId);
-    // docs/183 Phase 4 — for an overlay-eligible session, resolve the per-session
-    // overlay spec (base lowerdir + private upper/work) so the container mounts
-    // the daemon `type=overlay` volume at /workspace. Returns undefined (plain
-    // install) when overlay is off / ineligible / no workspace volume.
-    const overlaySpec = (opts.session && opts.stateDir)
-      ? await mgr.prepareOverlaySpec({ session: opts.session, stateDir: opts.stateDir })
-      : undefined;
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
@@ -312,7 +293,6 @@ async function createContainerForRunner(opts: {
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
       opsSession: opts.opsSession,
-      overlaySpec,
     });
     const createStart = Date.now();
     const sc = await mgr.create(config);
@@ -352,7 +332,7 @@ async function createContainerForRunner(opts: {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, sessionManager, stateDir, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
+  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -434,8 +414,6 @@ export function buildRunnerFactory(
           depCacheDir: o.depCacheDir,
           destroyExisting: false,
           opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
-          session: sessionManager?.get(o.sessionId),
-          stateDir,
           failureContext: "from standby fallback",
           broadcastLog,
           oomBreaker,
@@ -462,8 +440,6 @@ export function buildRunnerFactory(
       depCacheDir: o.depCacheDir,
       destroyExisting: !!existing,
       opsSession: sessionManager?.get(o.sessionId)?.kind === "ops",
-      session: sessionManager?.get(o.sessionId),
-      stateDir,
       broadcastLog,
       oomBreaker,
     });

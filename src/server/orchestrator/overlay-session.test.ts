@@ -1,33 +1,24 @@
 /**
- * docs/183 Phase 3/4 — overlay-session orchestration tests.
+ * docs/183 — overlay-session gating/scope/GC tests.
  *
- * Covers the pure/lifecycle logic that ties the proven overlay mechanism
- * (`overlay-volume.ts`) and decision (`overlay-base.ts`) halves to the session
- * lifecycle: the feature gate + eligibility, the orchestrator runtime
- * fingerprint, daemon-host spec construction (incl. the upper-persists /
- * workdir-resets contract), the publish-after-install eligibility short-circuit
- * and snapshot→publish path, and the GC live-source set. The actual daemon
- * overlay mount + compose wiring are host-gated and verified by the Phase-0/4
- * spikes (FINDINGS.md), not here.
+ * Covers the design-agnostic reusable foundation: the feature gate + eligibility,
+ * the orchestrator runtime fingerprint, and the GC live-source set. The per-session
+ * mount-spec construction, snapshot pull, and publish-after-install flow were
+ * whole-workspace-shaped and removed in the dep-dir pivot (they will be rebuilt
+ * per declared dep dir); the publish CAS itself remains covered by
+ * `overlay-base.test.ts`.
  */
 
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import fs from "node:fs/promises";
-import fsSync from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, expect, it } from "vitest";
 
 import {
-  buildOverlaySpec,
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
   overlayRuntimeKey,
-  publishOverlayBaseAfterInstall,
   resolveOverlayScope,
 } from "./overlay-session.js";
-import { overlayBaseDir, overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
-import { readBasePointer, type OverlayScope } from "./overlay-base.js";
+import { overlayScopeHash } from "./overlay-volume.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
@@ -76,176 +67,6 @@ describe("overlayRuntimeKey", () => {
     expect(overlayRuntimeKey({ IMAGE_DIGEST: "sha256:def" } as NodeJS.ProcessEnv))
       .toBe(`sha256:def|${process.arch}`);
     expect(overlayRuntimeKey({} as NodeJS.ProcessEnv)).toBe(`unknown|${process.arch}`);
-  });
-});
-
-describe("buildOverlaySpec", () => {
-  let stateDir: string;
-  const MOUNTPOINT = "/var/lib/docker/volumes/shipit-workspace/_data";
-
-  beforeEach(async () => {
-    stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "overlay-spec-"));
-  });
-  afterEach(async () => {
-    await fs.rm(stateDir, { recursive: true, force: true });
-  });
-
-  const deps = (over: Partial<Parameters<typeof buildOverlaySpec>[2]> = {}) => ({
-    docker: {} as never,
-    stateDir,
-    workspaceVolume: "shipit-workspace",
-    resolveMountpoint: async () => MOUNTPOINT,
-    ...over,
-  });
-
-  it("resolves daemon-host absolute paths under the volume mountpoint", async () => {
-    const scope: OverlayScope = { repoUrl: "r", runtimeKey: "k" };
-    const s = session({ id: "abcdef0123456789aaaa" });
-    const spec = await buildOverlaySpec(s, scope, deps());
-    const hash = overlayScopeHash("r", "k");
-
-    expect(spec.volumeName).toBe(overlayVolumeName(s.id));
-    expect(spec.lowerdir).toBe(`${MOUNTPOINT}/overlay-base/${hash}`);
-    expect(spec.upperdir).toBe(`${MOUNTPOINT}/sessions/${s.id}/overlay-upper`);
-    expect(spec.workdir).toBe(`${MOUNTPOINT}/sessions/${s.id}/overlay-work`);
-  });
-
-  it("creates the (empty, cold-start v0) base dir and the upper/work dirs", async () => {
-    const scope: OverlayScope = { repoUrl: "r", runtimeKey: "k" };
-    const s = session({ id: "abcdef0123456789aaaa" });
-    await buildOverlaySpec(s, scope, deps());
-    const hash = overlayScopeHash("r", "k");
-    expect(fsSync.existsSync(overlayBaseDir(stateDir, hash))).toBe(true);
-    expect(fsSync.existsSync(path.join(stateDir, "sessions", s.id, "overlay-upper"))).toBe(true);
-    expect(fsSync.existsSync(path.join(stateDir, "sessions", s.id, "overlay-work"))).toBe(true);
-  });
-
-  it("preserves the upper across rebuilds but resets the workdir", async () => {
-    const scope: OverlayScope = { repoUrl: "r", runtimeKey: "k" };
-    const s = session({ id: "abcdef0123456789aaaa" });
-    await buildOverlaySpec(s, scope, deps());
-
-    const upper = path.join(stateDir, "sessions", s.id, "overlay-upper");
-    const work = path.join(stateDir, "sessions", s.id, "overlay-work");
-    // Simulate session work landing in the upper + scratch in the workdir.
-    await fs.writeFile(path.join(upper, "keep.txt"), "session work");
-    await fs.writeFile(path.join(work, "scratch.txt"), "stale");
-
-    await buildOverlaySpec(s, scope, deps());
-    expect(fsSync.existsSync(path.join(upper, "keep.txt"))).toBe(true); // upper preserved
-    expect(fsSync.existsSync(path.join(work, "scratch.txt"))).toBe(false); // work reset
-  });
-});
-
-describe("publishOverlayBaseAfterInstall", () => {
-  let stateDir: string;
-  const scope: OverlayScope = { repoUrl: "r", runtimeKey: "k" };
-
-  beforeEach(async () => {
-    stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "overlay-pub-"));
-  });
-  afterEach(async () => {
-    await fs.rm(stateDir, { recursive: true, force: true });
-  });
-
-  it("short-circuits (no snapshot pull) when HEAD isn't the default commit", async () => {
-    const fetchSnapshot = vi.fn();
-    const res = await publishOverlayBaseAfterInstall(session(), scope, {
-      stateDir,
-      workerUrl: "http://worker",
-      isAncestor: async () => true,
-      currentDefaultCommit: "deadbeef",
-      fetchHeadCommit: async () => "0ffsetc0mmit", // diverged from default
-      fetchSnapshot,
-    });
-    expect(res?.outcome).toBe("skipped-ineligible");
-    expect(fetchSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("short-circuits (no snapshot pull) when the base is already at this commit", async () => {
-    const COMMIT = "cafef00dcafef00dcafef00dcafef00dcafef00d";
-    // Seed a base at COMMIT via a first publish.
-    const seed = vi.fn(async (_url: string, dest: string) => {
-      await fs.mkdir(dest, { recursive: true });
-      await fs.writeFile(path.join(dest, "marker"), "v0");
-    });
-    await publishOverlayBaseAfterInstall(session(), scope, {
-      stateDir, workerUrl: "http://worker",
-      isAncestor: async () => false,
-      currentDefaultCommit: COMMIT,
-      fetchHeadCommit: async () => COMMIT,
-      fetchSnapshot: seed,
-    });
-    // Second call at the same commit must not pull a snapshot again.
-    const fetchSnapshot = vi.fn();
-    const res = await publishOverlayBaseAfterInstall(session(), scope, {
-      stateDir, workerUrl: "http://worker",
-      isAncestor: async () => false,
-      currentDefaultCommit: COMMIT,
-      fetchHeadCommit: async () => COMMIT,
-      fetchSnapshot,
-    });
-    expect(res?.outcome).toBe("skipped-equal");
-    expect(fetchSnapshot).not.toHaveBeenCalled();
-  });
-
-  it("returns null when HEAD can't be resolved", async () => {
-    const res = await publishOverlayBaseAfterInstall(session(), scope, {
-      stateDir,
-      workerUrl: "http://worker",
-      isAncestor: async () => true,
-      currentDefaultCommit: "deadbeef",
-      fetchHeadCommit: async () => null,
-    });
-    expect(res).toBeNull();
-  });
-
-  it("publishes a v0 base from the worker snapshot when source is the default tip", async () => {
-    const COMMIT = "cafef00dcafef00dcafef00dcafef00dcafef00d";
-    // The snapshot tar is written by the worker; stub it as a dir of files.
-    const fetchSnapshot = vi.fn(async (_url: string, dest: string) => {
-      await fs.mkdir(dest, { recursive: true });
-      await fs.writeFile(path.join(dest, "node_modules-marker"), "deps");
-    });
-
-    const res = await publishOverlayBaseAfterInstall(session(), scope, {
-      stateDir,
-      workerUrl: "http://worker",
-      isAncestor: async () => false,
-      currentDefaultCommit: COMMIT,
-      fetchHeadCommit: async () => COMMIT,
-      fetchSnapshot,
-    });
-
-    expect(fetchSnapshot).toHaveBeenCalledOnce();
-    expect(res?.outcome).toBe("created");
-    const pointer = readBasePointer(stateDir, scope);
-    expect(pointer?.commit).toBe(COMMIT);
-    // The base contents were materialized from the snapshot.
-    const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey);
-    expect(fsSync.existsSync(path.join(overlayBaseDir(stateDir, hash), "node_modules-marker"))).toBe(true);
-    // The temp snapshot dir was cleaned up.
-    expect(fsSync.existsSync(path.join(stateDir, "overlay-snapshots", `${session().id}-${hash}`))).toBe(false);
-  });
-
-  it("cleans up the snapshot dir even when the fetch throws", async () => {
-    const COMMIT = "cafef00dcafef00dcafef00dcafef00dcafef00d";
-    const fetchSnapshot = vi.fn(async (_url: string, dest: string) => {
-      await fs.mkdir(dest, { recursive: true });
-      throw new Error("snapshot boom");
-    });
-    await expect(
-      publishOverlayBaseAfterInstall(session(), scope, {
-        stateDir,
-        workerUrl: "http://worker",
-        isAncestor: async () => false,
-        currentDefaultCommit: COMMIT,
-        fetchHeadCommit: async () => COMMIT,
-        fetchSnapshot,
-      }),
-    ).rejects.toThrow("snapshot boom");
-    const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey);
-    expect(fsSync.existsSync(path.join(stateDir, "overlay-snapshots", `${session().id}-${hash}`))).toBe(false);
   });
 });
 

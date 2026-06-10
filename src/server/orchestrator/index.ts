@@ -64,13 +64,7 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
-import {
-  isOverlayEligible,
-  isOverlayEnabled,
-  liveOverlayScopeHashes,
-  publishOverlayBaseAfterInstall,
-  resolveOverlayScope,
-} from "./overlay-session.js";
+import { liveOverlayScopeHashes } from "./overlay-session.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
@@ -233,7 +227,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const loopDetector = createSessionLoopDetector();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, stateDir, runtimeMode, broadcastLog, oomBreaker });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
@@ -411,38 +405,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // flows through the per-provider auth managers (built just above).
   providerAccountManager.attachAuthManagers(authManagers);
 
-  // docs/183 Phase 4 — overlay rolling-base publish. Invoked by
-  // `setupServiceManager` after an exit-0 on-activation install for an
-  // overlay-eligible session. Closes over the bare-cache git deps (the ancestry
-  // oracle + current-default-commit resolver) that the publish CAS needs. Inert
-  // unless the feature is on; never throws into the install path.
-  const publishOverlayBase = (sessionId: string, workerUrl: string): void => {
-    if (!isOverlayEnabled()) return;
-    const session = sessionManager.get(sessionId);
-    if (!session || !isOverlayEligible(session)) return;
-    const scope = resolveOverlayScope(session);
-    if (!scope || !session.remoteUrl) return;
-    void (async () => {
-      try {
-        const repoGit = createRepoGit(getBareCacheDir(session.remoteUrl));
-        const currentDefaultCommit = await repoGit.resolveDefaultBranchCommit();
-        const res = await publishOverlayBaseAfterInstall(session, scope, {
-          stateDir,
-          workerUrl,
-          isAncestor: (a, b) => repoGit.isAncestor(a, b),
-          currentDefaultCommit,
-        });
-        if (res) console.log(`[overlay] base publish for ${sessionId}: ${res.outcome}`);
-      } catch (err) {
-        console.warn(`[overlay] base publish failed for ${sessionId}:`, getErrorMessage(err));
-      }
-    })();
-  };
-
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
-    autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit, publishOverlayBase,
+    autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, authManager, authManagers, runParamsPreps,

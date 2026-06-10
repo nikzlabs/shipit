@@ -61,7 +61,6 @@ import {
   serializeMarker,
   type InstallMarkerStamp,
 } from "./install-marker.js";
-import { createWorkspaceSnapshotTar } from "./workspace-snapshot.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -697,32 +696,7 @@ export class SessionWorker extends EventEmitter {
       lastResult: this._lastInstallResult,
     }));
 
-    // --- Merged-workspace snapshot (docs/183 Phase 3) ---
-
-    // Stream the merged `/workspace` as a tar archive (excluding `.git`) so the
-    // orchestrator can publish it as the next rolling overlay base. For an
-    // overlay session the merged tree (lowerdir + this session's install delta)
-    // is visible only inside this container, so the orchestrator pulls it here
-    // over HTTP rather than reading the host upperdir — which would lose every
-    // dependency/source file that lived only in the lowerdir. The Phase-4
-    // publish caller extracts the stream into a temp dir and feeds it to
-    // `publishBase` as the candidate snapshot. See `workspace-snapshot.ts`.
-    app.get("/workspace/snapshot", async (_request, reply) => {
-      const { stream, done } = createWorkspaceSnapshotTar(this.workspaceDir);
-      // A non-zero tar exit means the piped archive is truncated; the consumer
-      // validates extraction, but log here so a failed export isn't silent.
-      done.catch((err: unknown) => {
-        console.warn(
-          `[snapshot] workspace snapshot tar failed:`,
-          err instanceof Error ? err.message : String(err),
-        );
-        stream.destroy(err instanceof Error ? err : new Error(String(err)));
-      });
-      reply.header("content-type", "application/x-tar");
-      return reply.send(stream);
-    });
-
-    // docs/183 Phase 4 — the merged-workspace HEAD commit. The overlay publish
+    // docs/183 — the merged-workspace HEAD commit. The overlay publish
     // path needs the source commit the install actually ran against to stamp the
     // candidate base and decide publish eligibility (source == remote default).
     // The orchestrator can't read it from the host upperdir (`.git` lives in the

@@ -26,8 +26,16 @@
       subpaths (reuse the shared-volume pattern), instead of rooting the whole workspace at the overlay.
 - [ ] **Host-matrix spike:** confirm a `type=overlay` volume mounts cleanly at a target **nested under
       the `/workspace` bind** (`/workspace/node_modules`) on VPS/ext4 + Docker Desktop Mac/Windows.
-- [ ] **Remove/repurpose** the whole-workspace-only code now obviated: the merged-workspace snapshot
-      can shrink to per-dir; `GET /workspace/head-commit` stays (publish still needs source HEAD).
+- [x] **Stripped the whole-workspace *application* layer from the branch** (the parts the dep-dir
+      design replaces wholesale, so the PR carries only the reusable foundation): removed
+      `workspace-snapshot.ts` + the `GET /workspace/snapshot` endpoint, `buildOverlaySpec` (single
+      `/workspace`-root mount) + `prepareOverlaySpec` + the overlay-spec container/`buildConfig`
+      threading, `publishOverlayBaseAfterInstall` + the `publishOverlayBase` hook/callback wiring, and
+      the compose-rooting override in `setupServiceManager` (+ its tests). **Kept** as reused
+      foundation: `overlay-volume.ts` primitives, `overlay-base.ts` publish CAS, `install-marker.ts`,
+      the `RepoGit` ancestry oracle, `GET /workspace/head-commit` (publish still needs source HEAD),
+      and the gating/scope/GC helpers in `overlay-session.ts`. These get retargeted per-dep-dir by the
+      items above (N mounts at subpaths, per-dir snapshot, scope key + GC gain the dep-dir relpath).
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

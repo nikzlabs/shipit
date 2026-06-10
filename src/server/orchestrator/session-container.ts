@@ -41,8 +41,6 @@ import {
 } from "./container-health.js";
 import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount } from "../shared/shipit-config.js";
 import type { OverlaySpec } from "./overlay-volume.js";
-import { buildOverlaySpec, resolveOverlayScope } from "./overlay-session.js";
-import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -872,7 +870,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     dockerAccess?: boolean;
     opsSession?: boolean;
     hostMounts?: HostMount[];
-    /** docs/183 Phase 4 — overlay dep store spec; absent for non-overlay sessions. */
+    /** docs/183 — overlay dep store spec; absent for non-overlay sessions. */
     overlaySpec?: OverlaySpec;
   }): ContainerConfig {
     return buildContainerConfig({
@@ -881,38 +879,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       defaultCpuQuota: this.defaultCpuQuota,
       defaultPidsLimit: this.defaultPidsLimit,
     }, opts);
-  }
-
-  /**
-   * docs/183 Phase 4 — build the per-session overlay spec for an eligible
-   * session, or `undefined` when overlay is OFF, the session is ineligible
-   * (no remote / ops), or no `workspaceVolume` is configured (dev bind-mount
-   * mode can't back a daemon `type=overlay` volume). Resolves the daemon-host
-   * absolute paths and ensures the base/upper/work dirs exist.
-   *
-   * Returns `undefined` defensively on ANY failure: a spec error must fall back
-   * to the plain-install path rather than block container start. The result is
-   * passed into `buildConfigForWorkspace({ overlaySpec })` by the caller.
-   */
-  async prepareOverlaySpec(opts: {
-    session: Pick<SessionInfo, "id" | "remoteUrl" | "kind">;
-    stateDir: string;
-  }): Promise<OverlaySpec | undefined> {
-    const scope = resolveOverlayScope(opts.session);
-    if (!scope || !this.workspaceVolume) return undefined;
-    try {
-      return await buildOverlaySpec(opts.session, scope, {
-        docker: this.docker,
-        stateDir: opts.stateDir,
-        workspaceVolume: this.workspaceVolume,
-      });
-    } catch (err) {
-      console.warn(
-        `[overlay] prepareOverlaySpec failed for ${opts.session.id} — falling back to plain install:`,
-        err instanceof Error ? err.message : String(err),
-      );
-      return undefined;
-    }
   }
 
   /**
@@ -943,8 +909,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
      * passes `opsSession` falsy here, so its mounts are dropped downstream.
      */
     opsSession?: boolean;
-    /** docs/183 Phase 4 — overlay dep store spec from `prepareOverlaySpec`. */
-    overlaySpec?: OverlaySpec;
   }): ContainerConfig {
     const cfg = readAgentConfig(opts.workspaceDir);
     const limits = resolveAgentDockerLimits(opts.workspaceDir);
@@ -961,7 +925,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerAccess: limits.dockerAccess,
       opsSession: opts.opsSession,
       hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
-      overlaySpec: opts.overlaySpec,
     });
   }
 
