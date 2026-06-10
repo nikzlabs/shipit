@@ -743,8 +743,13 @@ on top of the simplified install path.
 > (`overlay-publish.ts` → `publishDepDirOverlayBases`, wired into `setupServiceManager`'s install seam
 > via a `publishOverlayBases` hook constructed in `index.ts`) are all landed and unit-tested. Each dep
 > dir publishes into its own `(repo, runtime, dep-dir)` base via the unchanged `overlay-base.ts` CAS.
-> Remaining before the flag can flip: Phase 5 (compose subpath mounts), Phase 6 (disk-cleanup
-> retargeting — the GC-correctness gate), Phase 7 (warm-pool/activation wiring + measure + flip).
+> **Phase 5 (compose subpath mounts)** is also landed: `generateComposeOverride` gained an
+> `overlayDepDirs` option that, for each service sharing the workspace, keeps the normal mount and
+> appends one nested `type: volume` overlay mount per reachable dep dir at `<service-target>/<dep-dir>`
+> (declared `external: true`); `ServiceManager` threads it via `setOverlayDepDirs()`, populated from
+> `prepareOverlaySpecs` in `setupServiceManager`'s start path. Remaining before the flag can flip:
+> Phase 6 (disk-cleanup retargeting — the GC-correctness gate), Phase 7 (warm-pool/activation wiring +
+> measure + flip).
 >
 > **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and
 > (B) the workspace-view resolver — are now [REJECTED, not pending](#rejected-approaches)**, because

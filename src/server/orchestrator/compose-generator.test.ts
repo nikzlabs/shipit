@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { parse as parseYaml } from "yaml";
 import {
   parseComposeFile,
   generateComposeOverride,
@@ -823,5 +824,126 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
     // redis service block shouldn't contain the entrypoint hijack
     const afterRedis = override.slice(redisIdx, redisIdx + 200);
     expect(afterRedis).not.toContain("secrets-entrypoint");
+  });
+});
+
+describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)", () => {
+  const baseOpts = {
+    sessionId: "sess123abcdef",
+    composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+    workspaceVolume: "shipit-ws",
+  };
+
+  type Vol =
+    | string
+    | { type?: string; source?: string; target?: string; volume?: { subpath?: string }; read_only?: boolean };
+  interface OverrideDoc {
+    services: Record<string, { volumes?: Vol[] }>;
+    volumes?: Record<string, { name?: string; external?: boolean; labels?: Record<string, string> }>;
+  }
+  const overrideDoc = (override: string): OverrideDoc => parseYaml(override) as OverrideDoc;
+  const isObj = (v: Vol): v is Exclude<Vol, string> => typeof v === "object";
+
+  const NM = { depDir: "node_modules", volumeName: "shipit-sess123abcde_overlay-aaaa1111" };
+
+  it("appends a nested overlay mount for a root workspace mount, keeping the workspace mount", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app"] }],
+      { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
+    );
+    const doc = overrideDoc(override);
+    const vols = doc.services.web.volumes ?? [];
+    // The normal workspace mount (state volume, source + .git) is preserved...
+    expect(vols).toContainEqual(
+      expect.objectContaining({ source: "shipit-workspace", target: "/app" }),
+    );
+    // ...and the dep-dir overlay volume is mounted nested under it.
+    expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/app/node_modules" });
+    // The referenced overlay volume is declared external (daemon owns its lifecycle).
+    expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
+  });
+
+  it("appends one overlay mount per dep dir reachable from the mount", () => {
+    const dirs = [
+      { depDir: "node_modules", volumeName: "vol-nm" },
+      { depDir: "packages/api/node_modules", volumeName: "vol-api" },
+    ];
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app"] }],
+      { ...baseOpts, overlayDepDirs: dirs },
+    );
+    const vols = overrideDoc(override).services.web.volumes ?? [];
+    expect(vols).toContainEqual({ type: "volume", source: "vol-nm", target: "/app/node_modules" });
+    expect(vols).toContainEqual({
+      type: "volume",
+      source: "vol-api",
+      target: "/app/packages/api/node_modules",
+    });
+  });
+
+  it("maps dep dirs through a subdir mount and skips dep dirs outside it", () => {
+    const override = generateComposeOverride(
+      [{ name: "api", volumes: ["./backend:/srv"] }],
+      {
+        ...baseOpts,
+        overlayDepDirs: [
+          { depDir: "backend/node_modules", volumeName: "vol-be" },
+          { depDir: "node_modules", volumeName: "vol-root" }, // not under ./backend
+        ],
+      },
+    );
+    const doc = overrideDoc(override);
+    const vols = doc.services.api.volumes ?? [];
+    expect(vols).toContainEqual({ type: "volume", source: "vol-be", target: "/srv/node_modules" });
+    expect(vols.some((v) => isObj(v) && v.source === "vol-root")).toBe(false);
+    // Only the used volume gets an external declaration.
+    expect(doc.volumes?.["vol-be"]).toEqual({ name: "vol-be", external: true });
+    expect(doc.volumes?.["vol-root"]).toBeUndefined();
+  });
+
+  it("targets the overlay volume root (no subpath) and never an overlay-base/ or storage subpath", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app"] }],
+      { ...baseOpts, workspaceSubpath: "sessions/abc/workspace", overlayDepDirs: [NM] },
+    );
+    const mount = (overrideDoc(override).services.web.volumes ?? []).find(
+      (v) => isObj(v) && v.source === NM.volumeName,
+    );
+    expect(mount && isObj(mount) ? mount.volume : "missing").toBeUndefined(); // no subpath
+    // Guardrail: a service mount must never reach an overlay-base/ lowerdir or the
+    // shipit-workspace storage subpath for a dep dir.
+    expect(override).not.toContain("overlay-base");
+    expect(override).not.toContain("sessions/abc/workspace/node_modules");
+  });
+
+  it("adds no overlay mounts to a service without a workspace mount", () => {
+    const override = generateComposeOverride(
+      [{ name: "db", volumes: ["pgdata:/var/lib/postgresql/data"] }],
+      { ...baseOpts, overlayDepDirs: [NM] },
+    );
+    const doc = overrideDoc(override);
+    const vols = doc.services.db.volumes ?? [];
+    expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+    expect(doc.volumes?.[NM.volumeName]).toBeUndefined(); // unused → not declared
+  });
+
+  it("emits nothing overlay-related when overlayDepDirs is absent (non-overlay session unchanged)", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app"] }],
+      { ...baseOpts },
+    );
+    expect(override).not.toContain("overlay");
+  });
+
+  it("replaces a direct dep-dir mount with the overlay volume (no duplicate target)", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", volumes: [".:/app", "./node_modules:/app/node_modules"] }],
+      { ...baseOpts, workspaceSubpath: "s/w", overlayDepDirs: [NM] },
+    );
+    const vols = overrideDoc(override).services.web.volumes ?? [];
+    const atNodeModules = vols.filter((v) => isObj(v) && v.target === "/app/node_modules");
+    expect(atNodeModules).toEqual([
+      { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
+    ]);
   });
 });

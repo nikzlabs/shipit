@@ -153,10 +153,27 @@ publish-after-install orchestration + wiring (4b).
 
 ### Phase 5 — Compose services at dep-dir subpaths
 
-- [ ] `generateComposeOverride` appends nested overlay mounts into services that need a dep dir, at the
-      same `<service-target>/<dep-dir>` subpaths (reuse the shared-volume refcount pattern proven by
-      `shared-volume-spike.sh`), instead of rooting the whole service workspace at an overlay.
-- [ ] Compose-generator unit tests (mounts at subpaths, never at the storage root or `overlay-base/`).
+- [x] `generateComposeOverride` gained an `overlayDepDirs` option (`{ depDir, volumeName }[]`). For each
+      service that bind-mounts the workspace (or a subdir of it) it now **keeps** the normal
+      `shipit-workspace` mount and **appends** one `type: volume` overlay mount per dep dir reachable
+      through that mount, targeted at `<service-target>/<dep-dir-relative-to-the-mounted-source>` — the
+      shared-volume refcount pattern, NOT the rejected root-the-service-at-overlay approach. Helpers:
+      `volumeSourceTarget` (short/long form), `depDirWithinMount` (subdir reachability + relative path),
+      `overlayMountsForService` (per-mount fan-out, target de-dup). Each referenced volume is declared
+      `external: true` (daemon owns the overlay volume); unused volumes are not declared. A direct
+      dep-dir mount whose target collides is replaced by the overlay (no duplicate-target).
+- [x] Wired through `ServiceManager`: new `overlayDepDirs` option + `setOverlayDepDirs()` setter (the
+      populator is async), threaded into both `generateComposeOverride` call sites. `setupServiceManager`
+      resolves the specs via `containerManager.prepareOverlaySpecs` in the async start path (before the
+      first `start()`) and calls the setter — `prepareOverlaySpecs` returns `[]` with no Docker call when
+      the flag is off / session ineligible, so the override is byte-for-byte unchanged for non-overlay
+      sessions.
+- [x] Compose-generator unit tests (7, `compose-generator.test.ts`): root-mount nesting + workspace mount
+      preserved + external declaration; one mount per dep dir; subdir-mount mapping + outside-mount dep dir
+      skipped + only-used-volume-declared; overlay mount targets the volume root (no subpath) and the
+      override never references `overlay-base/` or the `shipit-workspace` storage subpath for a dep dir;
+      no overlay mount on a service without a workspace mount; absent `overlayDepDirs` → unchanged;
+      direct dep-dir mount replaced (no duplicate target).
 
 ### Phase 6 — Disk cleanup retargeting (GC correctness — the gate to enabling the flag)
 
