@@ -781,6 +781,8 @@ interface RawClaudeEvent {
   duration_ms?: number;
   result?: string;
   parent_tool_use_id?: string;
+  // docs/140 — --replay-user-messages echo flag.
+  isReplay?: boolean;
   // docs/138 — guarded-mode signals.
   permissionMode?: string;
   permission_denials?: { tool_name: string; tool_use_id?: string; tool_input?: unknown }[];
@@ -810,6 +812,22 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
         parentToolUseId: raw.parent_tool_use_id,
       };
     case "user":
+      // docs/140 — mirror ClaudeAdapter: a replayed user message (the
+      // --replay-user-messages echo) surfaces as a delivery ack, not a tool
+      // result.
+      if (raw.isReplay) {
+        const content = raw.message?.content ?? [];
+        const text = Array.isArray(content)
+          ? content
+              .filter(
+                (b): b is { type: "text"; text: string } =>
+                  typeof b === "object" && b !== null && (b as { type?: unknown }).type === "text" && typeof (b as { text?: unknown }).text === "string",
+              )
+              .map((b) => b.text)
+              .join("")
+          : "";
+        return { type: "agent_user_replay", text };
+      }
       return {
         type: "agent_tool_result",
         content: raw.message?.content ?? [],

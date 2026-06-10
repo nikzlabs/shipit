@@ -125,8 +125,11 @@ export function trySteerDispatch(
   agent.sendUserMessage(opts.text);
 
   // Record + persist the steered message so it survives a reload at the spot
-  // the user sent it (docs/140), then broadcast to all viewers.
-  recordSteeredMessage(runner, opts.text);
+  // the user sent it (docs/140), then broadcast to all viewers. The dispatch
+  // path steers the raw text (no assembled context), so that text is exactly
+  // what the CLI echoes — pass it as `assembledPrompt` for delivery-ack +
+  // turn-end-gap re-queue (docs/140).
+  recordSteeredMessage(runner, opts.text, { assembledPrompt: opts.text });
   persistTurnInProgress(deps.listenerDeps.chatHistoryManager, runner, runner.sessionId);
   runner.emitMessage({
     type: "message_steered",

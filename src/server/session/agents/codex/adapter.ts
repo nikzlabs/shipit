@@ -568,22 +568,34 @@ export class CodexAdapter
     // with -32600 "invalid type: string, expected a sequence".
     if (this.proc && this.threadId && this.currentTurnId) {
       const steerText = data.trim();
-      this.sendRequest("turn/steer", {
-        threadId: this.threadId,
-        expectedTurnId: this.currentTurnId,
-        input: [{ type: "text", text: steerText }],
-      }).catch((err: unknown) => {
-        // A rejection here (e.g. ActiveTurnNotSteerable during a
-        // review/compaction turn, or the turn ending as we send) means the
-        // steer didn't land. The orchestrator already optimistically rendered
-        // the message, so emit `agent_steer_rejected` (docs/140) — the
-        // listener removes the optimistic bubble and re-queues the text so it
-        // runs as the next turn instead of silently vanishing. Also log for
-        // diagnostics.
-        const reason = err instanceof Error ? err.message : String(err);
-        this.emit("log", "codex", `turn/steer rejected: ${reason}`);
-        this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
-      });
+      void (async () => {
+        try {
+          await this.sendRequest("turn/steer", {
+            threadId: this.threadId,
+            expectedTurnId: this.currentTurnId,
+            input: [{ type: "text", text: steerText }],
+          });
+          // docs/140 — the request resolved, so the app-server accepted the
+          // steer into the active turn. Emit the delivery ACK (the same event
+          // Claude surfaces from its --replay-user-messages echo) so the
+          // orchestrator marks this steer `delivered` and does NOT re-queue it
+          // at turn end. Without this, an accepted Codex steer that produced no
+          // further assistant group would be misread as a lost gap-steer and
+          // re-sent (double-processed) by `requeueUndeliveredSteers`.
+          this.emit("event", { type: "agent_user_replay", text: steerText } as AgentEvent);
+        } catch (err: unknown) {
+          // A rejection here (e.g. ActiveTurnNotSteerable during a
+          // review/compaction turn, or the turn ending as we send) means the
+          // steer didn't land. The orchestrator already optimistically rendered
+          // the message, so emit `agent_steer_rejected` (docs/140) — the
+          // listener removes the optimistic bubble and re-queues the text so it
+          // runs as the next turn instead of silently vanishing. Also log for
+          // diagnostics.
+          const reason = err instanceof Error ? err.message : String(err);
+          this.emit("log", "codex", `turn/steer rejected: ${reason}`);
+          this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
+        }
+      })();
     }
   }
 

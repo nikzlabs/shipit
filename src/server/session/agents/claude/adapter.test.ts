@@ -296,6 +296,43 @@ describe("ClaudeAdapter", () => {
     });
   });
 
+  it("maps a replayed user message (isReplay) to agent_user_replay (docs/140)", () => {
+    // --replay-user-messages echoes an accepted steer as a delivery ack. The
+    // adapter must surface it (concatenating its text blocks) so the
+    // orchestrator can match it against the steer it sent — NOT drop it, and
+    // NOT mis-map it to agent_tool_result.
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "user",
+      message: { content: [{ type: "text", text: "fix the typo too" }] },
+      isReplay: true,
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual({ type: "agent_user_replay", text: "fix the typo too" });
+  });
+
+  it("joins multiple text blocks in a replayed user message", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "user",
+      message: { content: [{ type: "text", text: "part-a " }, { type: "text", text: "part-b" }] },
+      isReplay: true,
+    } satisfies ClaudeEvent);
+
+    expect(events[0]).toEqual({ type: "agent_user_replay", text: "part-a part-b" });
+  });
+
   it("maps result event to agent_result with cost and tokens", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
