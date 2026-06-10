@@ -275,6 +275,17 @@ export class ServiceManager extends EventEmitter {
    */
   private gatedServices = new Set<string>();
 
+  /**
+   * Names of gated services that have just been released by the gate and are
+   * within their first-boot recovery window. A crash here (e.g. the install
+   * gate opened before `node_modules/.bin` was on disk — exit 127) is owned by
+   * the bounded post-gate retry in {@link handleNonZeroExit} instead of
+   * latching straight to `error`. A service leaves the set the moment it
+   * reaches `running` (first boot succeeded), exhausts its retry budget, or is
+   * re-held for a mid-session re-install. See docs/137-depends-on-install.
+   */
+  private postGateServices = new Set<string>();
+
   constructor(opts: ServiceManagerOptions) {
     super();
     this.sessionId = opts.sessionId;
@@ -328,6 +339,11 @@ export class ServiceManager extends EventEmitter {
       onRunning: (name) => {
         // Service recovered — clear any pending install-window retry state.
         this.retry.clearRetryState(name);
+        // First boot after the gate opened succeeded — leave the post-gate
+        // recovery window so a later, unrelated crash gets normal error
+        // handling rather than a silent restart.
+        this.postGateServices.delete(name);
+        this.retry.clearPostGateState(name);
         // If a previous OOM kicked off auto-retries, arm a stable-uptime
         // timer that clears the OOM counter once the service has been
         // healthy long enough. We don't clear the counter eagerly: a
@@ -390,6 +406,18 @@ export class ServiceManager extends EventEmitter {
       // needing to intervene at all.
       this.retry.scheduleOomRetry(name);
       return;
+    }
+
+    if (this.postGateServices.has(name) && svc.preview === "auto") {
+      // Gated service that crashed within its first-boot window after the
+      // gate opened. The install-complete signal can lead the dependency
+      // tree on warm/reused fast-install paths, so retry with backoff
+      // instead of latching to `error` — nothing else owns this crash now
+      // that the gate is closed and the service is no longer gated. Bounded:
+      // a `false` return means the budget is exhausted, so fall through to
+      // the terminal `error` below with the real exit message.
+      if (this.retry.schedulePostGateRetry(name)) return;
+      this.postGateServices.delete(name);
     }
 
     const message = exitCode === 137
@@ -627,6 +655,7 @@ export class ServiceManager extends EventEmitter {
     // prior install already failed (the install-finished hook would otherwise
     // have fired before this start() ran). Non-gated services start now.
     this.gatedServices.clear();
+    this.postGateServices.clear();
     const gateOpen = !this._installRunning && !this._installFailed;
     const startNow: ManagedService[] = [];
     for (const svc of autoServices) {
@@ -848,6 +877,7 @@ export class ServiceManager extends EventEmitter {
     this._disposed = true;
     this.poller.stop();
     this.retry.cancelAll();
+    this.postGateServices.clear();
 
     // Kill all log streaming processes
     for (const [name, proc] of this.logProcesses) {
@@ -1032,6 +1062,11 @@ export class ServiceManager extends EventEmitter {
     );
     for (const name of names) {
       this.updateServiceStatus(name, "starting");
+      // Open a first-boot recovery window: if the service crashes shortly
+      // after this `up` (e.g. the gate released before deps finished landing),
+      // handleNonZeroExit restarts it with backoff instead of latching to
+      // `error`. Cleared once it reaches `running`. See docs/137.
+      this.postGateServices.add(name);
     }
     void this.startGatedBatch(names);
   }
@@ -1092,6 +1127,10 @@ export class ServiceManager extends EventEmitter {
     );
     for (const svc of gated) {
       this.updateServiceStatus(svc.name, "starting");
+      // Re-gating supersedes any in-flight post-gate recovery window — the
+      // next gate open re-arms a fresh one.
+      this.postGateServices.delete(svc.name);
+      this.retry.clearPostGateState(svc.name);
     }
     void this.stopGatedForReinstall([...this.gatedServices]);
   }

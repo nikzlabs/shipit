@@ -111,7 +111,7 @@ Controls whether a service waits for `agent.install` before starting.
 
 | Value | Behavior |
 |-------|----------|
-| `true` (default for `auto` services) | Held in `starting` until `agent.install` finishes, then started exactly once. If install fails, the service is marked `error` with `agent.install failed — dependent service not started`. |
+| `true` (default for `auto` services) | Held in `starting` until `agent.install` finishes, then started exactly once. If it crashes within its first-boot window (e.g. the install signal raced ahead of `node_modules/.bin` landing on disk → exit 127), ShipIt restarts it with backoff a bounded number of times before giving up. If install fails, the service is marked `error` with `agent.install failed — dependent service not started`. |
 | `false` (default for `manual` services) | Starts immediately, in parallel with install. Crash-loops while dependencies are missing are retried with backoff (the legacy net). |
 
 ```yaml
