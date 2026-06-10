@@ -347,6 +347,55 @@ describe("useVoiceInput", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it("finalizes the recording on a genuine window blur (tab away)", async () => {
+    const { result } = renderHook(() => useVoiceInput({ enabled: true }));
+    const received: string[] = [];
+    act(() => { result.current.onTranscript((t) => received.push(t)); });
+
+    act(() => { result.current.startRecording(); });
+    await flushMicrotasks();
+    expect(result.current.state).toBe("recording");
+    // Hold past the minimum so the blur finalizes (rather than aborting short).
+    await act(async () => { vi.advanceTimersByTime(300); });
+
+    // A real tab/app switch leaves activeElement on <body>.
+    await act(async () => { window.dispatchEvent(new Event("blur")); });
+    await flushMicrotasks();
+
+    expect(lastCapture?.stop).toHaveBeenCalledTimes(1);
+    expect(result.current.state).toBe("idle");
+    expect(received).toEqual(["hello"]);
+  });
+
+  it("does NOT finalize when a window blur is caused by focus moving into an iframe", async () => {
+    // Preview pane hot-reload (active session's agent edited files) steals focus
+    // into an embedded <iframe>; this fires a window blur but is not a tab-away.
+    const iframe = document.createElement("iframe");
+    document.body.appendChild(iframe);
+    const activeElDescriptor = Object.getOwnPropertyDescriptor(Document.prototype, "activeElement");
+    Object.defineProperty(document, "activeElement", { configurable: true, get: () => iframe });
+
+    try {
+      const { result } = renderHook(() => useVoiceInput({ enabled: true }));
+
+      act(() => { result.current.startRecording(); });
+      await flushMicrotasks();
+      expect(result.current.state).toBe("recording");
+      await act(async () => { vi.advanceTimersByTime(300); });
+
+      await act(async () => { window.dispatchEvent(new Event("blur")); });
+      await flushMicrotasks();
+
+      // The recording survives the iframe focus-steal — still recording, nothing transcribed.
+      expect(lastCapture?.stop).not.toHaveBeenCalled();
+      expect(result.current.state).toBe("recording");
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      if (activeElDescriptor) Object.defineProperty(document, "activeElement", activeElDescriptor);
+      iframe.remove();
+    }
+  });
+
   it("surfaces a MicPermissionError message when capture fails to start", async () => {
     startCaptureImpl = () =>
       Promise.reject(new MicPermissionError("Microphone access denied — enable it"));
