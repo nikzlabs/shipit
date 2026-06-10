@@ -661,6 +661,39 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Pinned")).toBeNull();
     });
 
+    it("counts pins next to the 'Pinned' header", () => {
+      const sessions = [
+        baseSession({ id: "p1", title: "Pin one", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
+        baseSession({ id: "p2", title: "Pin two", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const header = screen.getByText("Pinned");
+      // The count sibling lives next to the header label.
+      expect(header.parentElement?.textContent).toContain("2");
+    });
+
+    it("separates pinned from active sessions with a divider", () => {
+      const sessions = [
+        baseSession({ id: "s-active", title: "Active work", remoteUrl: repoA.url }),
+        baseSession({ id: "s-pinned", title: "Pinned work", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      const divider = screen.getByTestId("pinned-divider");
+      const pinned = screen.getByText("Pinned work");
+      const active = screen.getByText("Active work");
+      // Pinned row → divider → active row.
+      expect(pinned.compareDocumentPosition(divider) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(divider.compareDocumentPosition(active) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+
+    it("omits the divider when there are pins but no active or resolved sessions", () => {
+      const sessions = [
+        baseSession({ id: "p-only", title: "Only pin", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
+      ];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
+      expect(screen.queryByTestId("pinned-divider")).toBeNull();
+    });
+
     it("makes pinned rows draggable only when there is more than one pin", () => {
       const onePin = [
         baseSession({ id: "p1", title: "Solo pin", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
