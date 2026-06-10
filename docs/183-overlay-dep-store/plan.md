@@ -753,8 +753,14 @@ on top of the simplified install path.
 > `containerManager.destroy()`, the `^shipit-([a-f0-9-]{12})_` crash-orphan prefix sweep, the
 > per-`(session × dep-dir)` `liveOverlayScopeHashes` live-set, and `copySnapshotToBase`'s atomic
 > old-generation swap), and Phase 6 locked it with N>1 tests across all surfaces + the CLAUDE.md
-> "Disk cleanup" docs sync. Remaining before the flag can flip: Phase 7 (warm-pool/activation wiring +
-> measure + flip) — the flag invariant is now satisfiable.
+> "Disk cleanup" docs sync. **Phase 7 (enable-path wiring)** closed the last code gap: the warm-pool
+> standby is now built with `prepareOverlaySpecs` (`warm-pool-manager.ts`), so a warm-claimed session —
+> which reuses the standby container — carries the overlay mounts (it was the only creation path
+> bypassing `createContainerForRunner`'s overlay wiring). **The overlay dep store is now functionally
+> complete behind `OVERLAY_DEP_STORE` (still default OFF).** The only remaining items are the user's:
+> (1) measure warm-install on the real containerized path and set the final depth cap, and (2) flip the
+> flag on (deliberately, ideally a canary) — both deferred to the user, as the flip enables real overlay
+> mounts in production.
 >
 > **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and
 > (B) the workspace-view resolver — are now [REJECTED, not pending](#rejected-approaches)**, because
