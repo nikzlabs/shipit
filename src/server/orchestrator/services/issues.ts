@@ -16,6 +16,7 @@ import type {
   TrackerIssue,
   IssueWriteUndo,
   IssueWriteVerb,
+  IssueWriteContent,
   IssueWriteCard,
 } from "../../shared/types.js";
 import {
@@ -138,6 +139,23 @@ export interface IssueWriteOutcome {
   verb: IssueWriteVerb;
   summary: string;
   undo: IssueWriteUndo;
+  /**
+   * docs/189 — the display-only "what changed" values for the card's second
+   * line (comment preview, title/status/assignee deltas). The route copies this
+   * onto `IssueWriteCard.content`. Absent for a `create` (no "before" state).
+   */
+  content?: IssueWriteContent;
+}
+
+/**
+ * Clip a comment body to a short preview for the provenance card's second line
+ * (docs/189). Collapses runs of whitespace to keep the two-line clamp honest,
+ * then truncates with an ellipsis. The full comment lives in the tracker.
+ */
+function clipComment(body: string): string {
+  const collapsed = body.trim().replace(/\s+/g, " ");
+  const MAX = 280;
+  return collapsed.length > MAX ? `${collapsed.slice(0, MAX).trimEnd()}…` : collapsed;
 }
 
 /** Map a `TrackerResolutionError` to a 422 listing the valid options. */
@@ -229,6 +247,7 @@ export async function commentOnIssueForTracker(
     verb: "comment",
     summary: `commented on ${issue.identifier}`,
     undo: { kind: "comment", commentId: commentId! },
+    content: { comment: clipComment(body) },
   };
 }
 
@@ -281,11 +300,23 @@ export async function updateIssueForTracker(
   ]
     .filter(Boolean)
     .join(" & ");
+  // Surface the change on the card's second line (docs/189): the title
+  // before/after when it changed, a description-touched flag, and a faint note
+  // for label/priority edits so a labels-only edit isn't a blank line.
+  const attrParts: string[] = [];
+  if (patch.priority !== undefined) attrParts.push(`priority → ${updated!.priority.label}`);
+  if (patch.labels !== undefined) attrParts.push(`labels: ${(updated!.labels ?? []).join(", ") || "none"}`);
+  const content: IssueWriteContent = {
+    ...(patch.title !== undefined ? { title: { before: prior.title, after: patch.title } } : {}),
+    ...(patch.description !== undefined ? { descriptionChanged: true } : {}),
+    ...(attrParts.length > 0 ? { attrs: attrParts.join(" · ") } : {}),
+  };
   return {
     issue: updated!,
     verb: "edit",
     summary: `edited ${changed || "issue"} on ${updated!.identifier}${describeAttrs(updated!)}`,
     undo,
+    content,
   };
 }
 
@@ -306,12 +337,15 @@ export async function setIssueStatusForTracker(
   } catch (err) {
     toResolutionServiceError(err);
   }
+  const fromStatus = prior.status?.name ?? "open";
+  const toStatus = updated!.status?.name ?? status;
   return {
     issue: updated!,
     verb: "status",
-    summary: `set ${updated!.identifier} → ${updated!.status?.name ?? status}`,
+    summary: `set ${updated!.identifier} → ${toStatus}`,
     // Restore by the prior native state name (both trackers accept native names).
-    undo: { kind: "status", previousStatus: prior.status?.name ?? "open" },
+    undo: { kind: "status", previousStatus: fromStatus },
+    content: { status: { from: fromStatus, to: toStatus } },
   };
 }
 
@@ -332,15 +366,17 @@ export async function setIssueAssigneeForTracker(
   } catch (err) {
     toResolutionServiceError(err);
   }
+  const assigneeName = assignee === null ? null : updated!.assignee?.name ?? assignee;
   const summary =
     assignee === null
       ? `unassigned ${updated!.identifier}`
-      : `assigned ${updated!.identifier} → ${updated!.assignee?.name ?? assignee}`;
+      : `assigned ${updated!.identifier} → ${assigneeName}`;
   return {
     issue: updated!,
     verb: "assignee",
     summary,
     undo: { kind: "assignee", previousAssigneeId: prior.assigneeId ?? null },
+    content: { assignee: assigneeName },
   };
 }
 

@@ -350,12 +350,30 @@ describe("issue write services (docs/177)", () => {
     expect(out.verb).toBe("comment");
     expect(out.summary).toContain("octocat/hello-world#42");
     expect(out.undo).toEqual({ kind: "comment", commentId: "9001" });
+    // docs/189 — the comment body is captured (clipped) for the card's line 2.
+    expect(out.content).toEqual({ comment: "noted" });
+  });
+
+  it("comment: clips a long body to a single-line preview (docs/189)", async () => {
+    const body = `${"a".repeat(400)}\n\nsecond para`;
+    const out = await commentOnIssueForTracker(store, "github", "42", body, ghFetch(), GH);
+    const preview = out.content?.comment ?? "";
+    expect(preview.endsWith("…")).toBe(true);
+    expect(preview).not.toContain("\n");
+    expect(preview.length).toBeLessThanOrEqual(281); // 280 + ellipsis
   });
 
   it("edit: snapshots the prior title for undo", async () => {
     const out = await updateIssueForTracker(store, "github", "42", { title: "New title" }, ghFetch(), GH);
     expect(out.verb).toBe("edit");
     expect(out.undo).toEqual({ kind: "edit", previousTitle: "Original title" });
+    // docs/189 — the title delta is surfaced on line 2.
+    expect(out.content).toEqual({ title: { before: "Original title", after: "New title" } });
+  });
+
+  it("edit: a description-only edit flags descriptionChanged (docs/189)", async () => {
+    const out = await updateIssueForTracker(store, "github", "42", { description: "new body" }, ghFetch(), GH);
+    expect(out.content).toEqual({ descriptionChanged: true });
   });
 
   it("edit: labels are additive (merged with existing) and snapshot the prior set (SHI-92)", async () => {
@@ -366,6 +384,8 @@ describe("issue write services (docs/177)", () => {
     expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing", "added"]);
     // Undo restores the prior set.
     expect(out.undo).toMatchObject({ kind: "edit", previousLabels: ["existing"] });
+    // docs/189 — a labels-only edit still shows what changed on line 2 via `attrs`.
+    expect(out.content?.attrs).toContain("labels:");
   });
 
   it("undo: edit → restores the prior label set by replacing (SHI-92)", async () => {
@@ -409,17 +429,28 @@ describe("issue write services (docs/177)", () => {
     // Prior state is open → native name "Open".
     const out = await setIssueStatusForTracker(store, "github", "42", "completed", ghFetch(), GH);
     expect(out.undo).toEqual({ kind: "status", previousStatus: "Open" });
+    // docs/189 — the status transition is surfaced on line 2 (from the prior name).
+    expect(out.content?.status?.from).toBe("Open");
+    expect(out.content?.status?.to).toBeTruthy();
   });
 
   it("assignee: snapshots the prior internal id (login), not the display name", async () => {
     const out = await setIssueAssigneeForTracker(store, "github", "42", "bob", ghFetch(), GH);
     expect(out.undo).toEqual({ kind: "assignee", previousAssigneeId: "alice" });
+    // docs/189 — the new assignee name is surfaced on line 2.
+    expect(typeof out.content?.assignee).toBe("string");
   });
 
   it("assignee: prior id is null when the issue was unassigned", async () => {
     const fetchImpl = ghFetch({ issue: { assignee: null } });
     const out = await setIssueAssigneeForTracker(store, "github", "42", "bob", fetchImpl, GH);
     expect(out.undo).toEqual({ kind: "assignee", previousAssigneeId: null });
+  });
+
+  it("assignee: content.assignee is null when clearing the assignee (docs/189)", async () => {
+    const out = await setIssueAssigneeForTracker(store, "github", "42", null, ghFetch(), GH);
+    expect(out.summary).toContain("unassigned");
+    expect(out.content).toEqual({ assignee: null });
   });
 
   it("maps an ambiguous status to a 422 ServiceError listing options", async () => {

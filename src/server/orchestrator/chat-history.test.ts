@@ -39,6 +39,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     url: "https://linear.app/x/issue/SHI-28",
     verb: "status",
     summary: "set SHI-28 → In Review",
+    content: { status: { from: "Todo", to: "In Review" } },
     attribution: "workspace",
     undo: { kind: "status", previousStatus: "Todo" },
     undoState: "available",
@@ -313,6 +314,7 @@ describe("ChatHistoryManager", () => {
         url: "https://github.com/octocat/hello/issues/42",
         verb: "comment",
         summary: "commented on octocat/hello#42",
+        content: { comment: "Repro'd on staging — clamping the offset. PR incoming." },
         attribution: "user",
         undo: { kind: "comment", commentId: "c-99" },
         undoState: "available",
@@ -350,6 +352,35 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", msg);
       const card = new ChatHistoryManager(dbManager).load("sess-1")[0].issueWrite;
       expect(card?.undo).toEqual({ kind: "edit", previousLabels: ["backend"], previousPriority: "low" });
+    });
+
+    it("round-trips the docs/189 line-2 content (comment preview, status delta)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", writeCard("iw-comment"));
+      const statusMsg: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        issueWrite: {
+          cardId: "iw-status",
+          tracker: "linear",
+          issueId: "SHI-9",
+          identifier: "SHI-9",
+          title: "Doc",
+          verb: "status",
+          summary: "set SHI-9 → In Review",
+          content: { status: { from: "In Progress", to: "In Review" } },
+          attribution: "workspace",
+          undo: { kind: "status", previousStatus: "In Progress" },
+          undoState: "available",
+          createdAt: "2026-06-05T00:00:00.000Z",
+        },
+      };
+      mgr.append("sess-1", statusMsg);
+      const loaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(loaded[0].issueWrite?.content).toEqual({
+        comment: "Repro'd on staging — clamping the offset. PR incoming.",
+      });
+      expect(loaded[1].issueWrite?.content).toEqual({ status: { from: "In Progress", to: "In Review" } });
     });
 
     it("findIssueWriteCard recovers the tracker + undo snapshot by id", () => {

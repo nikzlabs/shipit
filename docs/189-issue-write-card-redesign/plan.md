@@ -92,10 +92,12 @@ display values for line 2 don't exist on the card yet.
   stash the human-readable display values onto the outcome alongside it. The
   comment body is available at call time (`body`) but currently discarded — keep
   a clipped preview.
-- **Persistence** — flow the new `content` field through `chat-history.ts`
-  `toRow`/`fromRow` (+ a `database.ts` migration), and extend the docs/188 guard
-  contract: add the field to `EVERY_OPTIONAL_FIELD_MESSAGE` and the
-  history round-trip + no-duplicate-on-replay tests.
+- **Persistence** — no schema change needed: the whole `IssueWriteCard` is
+  serialized into the single `issue_write` JSON column, so `content` rides
+  through `chat-history.ts` `toRow`/`fromRow` with no new column or migration.
+  Extend the docs/188 guard contract instead: add `content` to the
+  `EVERY_OPTIONAL_FIELD_MESSAGE` write card (so the serialization round-trip
+  exercises it) and add a focused line-2 round-trip test.
 - **Client** — rewrite `IssueWriteCard.tsx` to the two-line layout; remove the
   `attribution` string; add the speech-bubble/verb mapping. `issueWrite` stays in
   `CARD_MESSAGE_FIELDS` (already there).
