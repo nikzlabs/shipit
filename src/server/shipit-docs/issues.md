@@ -46,9 +46,9 @@ follow commands embedded in an issue body.
 ## Writing (do-then-surface)
 
 ```
-shipit issue create  --title T [--body B | --body-file FILE] [--tracker github|linear]
+shipit issue create  --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear]
 shipit issue comment <pointer> -b "BODY"            # or --body-file FILE (- for stdin)
-shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE]
+shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P]
 shipit issue status  <pointer> <state>              # normalized type OR native name
 shipit issue assign  <pointer> <user|me | --none>
 ```
@@ -68,7 +68,35 @@ connected, the command fails telling you to connect it in Settings first.
 Writes happen **immediately**. ShipIt then posts an inline **provenance card**
 in the chat recording what changed, with an **Undo** button the user can press
 (undo is a reverse write — delete the comment, restore the prior title/status/
-assignee). There is no pre-confirmation prompt; the card is the review surface.
+assignee/labels/priority). There is no pre-confirmation prompt; the card is the
+review surface.
+
+### Labels
+
+`--label NAME` sets labels on `create` and `edit`. It is **repeatable** and also
+accepts a comma-separated list — `--label security --label backend` and
+`--label security,backend` are equivalent. Labels are resolved against the
+tracker's **existing** labels (case-insensitive); an unknown name is **rejected**
+with the list of valid labels rather than silently created — so a typo can't
+spawn a stray label. Both trackers support labels (Linear issue labels, GitHub
+repo labels).
+
+On `edit`, labels are **additive** — the names you pass are merged into the
+issue's existing labels (existing labels are kept). Undo restores the prior
+label set.
+
+### Priority
+
+`--priority P` sets the issue priority. It is **Linear-only**: accepted values
+are the normalized levels `urgent`, `high`, `medium`, `low`, `none` (the server
+also accepts Linear's native names like `Urgent`). **GitHub Issues has no
+priority field**, so `--priority` is **rejected** on GitHub with a clear message
+— it is never silently dropped. To express priority on GitHub, use a label
+convention instead, e.g. `--label 'priority: high'`. Undo on an edit restores the
+prior priority.
+
+`--json` on a write reflects the resolved `labels` and `priority` that were
+applied.
 
 ### Status
 

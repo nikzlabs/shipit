@@ -46,9 +46,9 @@ Supported subcommands:
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
   shipit issue view      <pointer> [--tracker github|linear] [--json]
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--json]
-  shipit issue create    --title T [--body B | --body-file FILE] [--tracker github|linear] [--json]
+  shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
-  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--tracker T] [--json]
+  shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
   shipit issue status    <pointer> <state> [--tracker T] [--json]
   shipit issue assign    <pointer> <user|me | --none> [--tracker T] [--json]
 
@@ -57,6 +57,12 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   the change is made immediately and an inline provenance card with an Undo
   button is posted in the chat. 'create' defaults to Linear (no pointer to infer
   from); Undo cancels the new issue.
+
+  --label is repeatable (or comma-separated) and resolves against the tracker's
+  existing labels — an unknown name is rejected with the valid options, not
+  created. On 'edit' labels are added to the issue's existing set. --priority is
+  urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
+  label there instead.
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -103,6 +109,12 @@ interface ParsedFlags {
   positional: string[];
   /** Map flag name → string value (last value wins). */
   values: Record<string, string>;
+  /**
+   * Repeatable value flags collected into arrays, in the order seen. e.g.
+   * `--label a --label b` → `{ label: ["a", "b"] }`. Mirrors `gh.ts` so the
+   * two shims handle `--label` the same way (SHI-92).
+   */
+  arrays: Record<string, string[]>;
   /** Boolean flags that were present. */
   booleans: Set<string>;
   /** Tracks unsupported flags so we can reject them with a helpful error. */
@@ -112,6 +124,11 @@ interface ParsedFlags {
 interface FlagSpec {
   /** Flag → output key. e.g. { "--title": "title", "-t": "title" } */
   values?: Record<string, string>;
+  /**
+   * Repeatable value flags → output key. e.g. { "--label": "label", "-l": "label" }.
+   * Each occurrence is appended to an array rather than overwriting.
+   */
+  arrays?: Record<string, string>;
   /** Boolean flags → output key. e.g. { "--json": "json" } */
   booleans?: Record<string, string>;
 }
@@ -127,10 +144,12 @@ interface FlagSpec {
  */
 export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
   const valueSpec = spec.values ?? {};
+  const arraySpec = spec.arrays ?? {};
   const booleanSpec = spec.booleans ?? {};
   const out: ParsedFlags = {
     positional: [],
     values: {},
+    arrays: {},
     booleans: new Set(),
     unsupported: [],
   };
@@ -157,6 +176,23 @@ export function parseFlags(args: string[], spec: FlagSpec): ParsedFlags {
           out.unsupported.push(`${token} requires a value`);
         } else {
           out.values[key] = next;
+          i++;
+        }
+      }
+      continue;
+    }
+
+    if (token in arraySpec) {
+      const key = arraySpec[token];
+      const target = (out.arrays[key] ??= []);
+      if (inlineValue !== undefined) {
+        target.push(inlineValue);
+      } else {
+        const next = args[i + 1];
+        if (next === undefined) {
+          out.unsupported.push(`${token} requires a value`);
+        } else {
+          target.push(next);
           i++;
         }
       }
@@ -1288,6 +1324,55 @@ async function readIssueBody(
 
 const VALID_TRACKERS = new Set(["github", "linear"]);
 
+/** Normalized priority levels accepted by `--priority` (Linear-only). */
+const VALID_PRIORITIES = new Set(["urgent", "high", "medium", "low", "none"]);
+
+/**
+ * Flatten repeated `--label a --label b` and comma-separated `--label a,b` into
+ * a flat, de-duped, trimmed list — same semantics as the `gh` shim (SHI-92).
+ */
+function normalizeLabels(raw: string[] | undefined): string[] {
+  if (!raw || raw.length === 0) return [];
+  const out: string[] = [];
+  for (const entry of raw) {
+    for (const part of entry.split(",")) {
+      const label = part.trim();
+      if (label && !out.includes(label)) out.push(label);
+    }
+  }
+  return out;
+}
+
+/**
+ * Validate `--priority` against the tracker (SHI-92). GitHub has no native
+ * priority field, so `--priority` is rejected there with a pointer at the label
+ * convention rather than silently dropped. On Linear we accept the normalized
+ * levels (the server also accepts native names, but the shim keeps the surface
+ * tight). Returns the value to send, or fails the command.
+ */
+function validatePriority(
+  io: RunDeps["io"],
+  verb: string,
+  priority: string | undefined,
+  tracker: string,
+): string | undefined {
+  if (priority === undefined) return undefined;
+  if (tracker === "github") {
+    fail(
+      io,
+      `shipit issue ${verb}: --priority is not supported on GitHub (no native priority field). ` +
+        `Use a label instead, e.g. --label 'priority: high'.`,
+    );
+  }
+  if (!VALID_PRIORITIES.has(priority.toLowerCase())) {
+    fail(
+      io,
+      `shipit issue ${verb}: --priority must be one of urgent|high|medium|low|none (got '${priority}').`,
+    );
+  }
+  return priority.toLowerCase();
+}
+
 async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker" },
@@ -1450,7 +1535,9 @@ async function handleIssueCreate(args: string[], deps: RunDeps): Promise<void> {
       "-F": "bodyFile",
       "--body-file": "bodyFile",
       "--tracker": "tracker",
+      "--priority": "priority",
     },
+    arrays: { "--label": "label", "-l": "label" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
@@ -1467,8 +1554,13 @@ async function handleIssueCreate(args: string[], deps: RunDeps): Promise<void> {
   if (!VALID_TRACKERS.has(tracker)) {
     fail(deps.io, `shipit issue create: --tracker must be 'github' or 'linear' (got '${parsed.values.tracker}').`);
   }
+  const labels = normalizeLabels(parsed.arrays.label);
+  const priority = validatePriority(deps.io, "create", parsed.values.priority, tracker);
   const body = (await readIssueBody(parsed.values, deps)) ?? "";
-  const res = await deps.call("POST", "/agent-ops/issue/create", { tracker, title, body }, deps.env);
+  const payload: Record<string, unknown> = { tracker, title, body };
+  if (labels.length > 0) payload.labels = labels;
+  if (priority !== undefined) payload.priority = priority;
+  const res = await deps.call("POST", "/agent-ops/issue/create", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to create issue"), 1);
   }
@@ -1497,7 +1589,15 @@ async function handleIssueComment(args: string[], deps: RunDeps): Promise<void> 
 
 async function handleIssueEdit(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
-    values: { "--title": "title", "-b": "body", "--body": "body", "--body-file": "bodyFile", "--tracker": "tracker" },
+    values: {
+      "--title": "title",
+      "-b": "body",
+      "--body": "body",
+      "--body-file": "bodyFile",
+      "--tracker": "tracker",
+      "--priority": "priority",
+    },
+    arrays: { "--label": "label", "-l": "label" },
     booleans: { "--json": "json" },
   });
   if (parsed.unsupported.length > 0) {
@@ -1506,12 +1606,16 @@ async function handleIssueEdit(args: string[], deps: RunDeps): Promise<void> {
   const { tracker, id } = resolveIssuePointer(deps.io, parsed.positional[0], parsed.values.tracker);
   const body = await readIssueBody(parsed.values, deps);
   const title = parsed.values.title;
-  if (title === undefined && body === undefined) {
-    fail(deps.io, "shipit issue edit: at least one of --title or --body/--body-file is required.");
+  const labels = normalizeLabels(parsed.arrays.label);
+  const priority = validatePriority(deps.io, "edit", parsed.values.priority, tracker);
+  if (title === undefined && body === undefined && labels.length === 0 && priority === undefined) {
+    fail(deps.io, "shipit issue edit: at least one of --title, --body/--body-file, --label, or --priority is required.");
   }
   const payload: Record<string, unknown> = { tracker, id };
   if (title !== undefined) payload.title = title;
   if (body !== undefined) payload.body = body;
+  if (labels.length > 0) payload.labels = labels;
+  if (priority !== undefined) payload.priority = priority;
   const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to edit issue"), 1);

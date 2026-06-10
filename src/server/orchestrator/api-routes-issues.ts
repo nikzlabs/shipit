@@ -341,14 +341,28 @@ export async function registerIssueRoutes(
       { type: "issue_write_card", sessionId, card },
       { role: "assistant", text: "", issueWrite: card },
     );
-    return { ok: true, cardId: card.cardId, summary: card.summary, identifier: card.identifier, ...(card.url ? { url: card.url } : {}) };
+    // Surface the resolved labels + priority so `shipit issue ... --json` reflects
+    // what was actually applied (SHI-92), not just the title/identifier.
+    return {
+      ok: true,
+      cardId: card.cardId,
+      summary: card.summary,
+      identifier: card.identifier,
+      ...(card.url ? { url: card.url } : {}),
+      labels: outcome.issue.labels ?? [],
+      priority: outcome.issue.priority.label,
+    };
   }
 
-  // POST /api/sessions/:sessionId/issue/create { tracker, title, body } (docs/187)
-  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; title?: string; body?: string } }>(
+  // POST /api/sessions/:sessionId/issue/create
+  //   { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+  }>(
     "/api/sessions/:sessionId/issue/create",
     async (request, reply) => {
-      const { tracker, title, body } = request.body ?? {};
+      const { tracker, title, body, labels, priority } = request.body ?? {};
       if (!tracker || !title?.trim()) {
         reply.code(400).send({ error: "tracker and title are required" });
         return;
@@ -356,7 +370,7 @@ export async function registerIssueRoutes(
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
       return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", trackerFetchImpl, github),
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority }, trackerFetchImpl, github),
       );
     },
   );
@@ -376,18 +390,25 @@ export async function registerIssueRoutes(
     },
   );
 
-  // POST /api/sessions/:sessionId/issue/edit { tracker, id, title?, body? }
-  app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; title?: string; body?: string } }>(
+  // POST /api/sessions/:sessionId/issue/edit
+  //   { tracker, id, title?, body?, labels?, priority? } (SHI-92)
+  app.post<{
+    Params: { sessionId: string };
+    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+  }>(
     "/api/sessions/:sessionId/issue/edit",
     async (request, reply) => {
-      const { tracker, id, title, body } = request.body ?? {};
-      if (!tracker || !id || (title === undefined && body === undefined)) {
-        reply.code(400).send({ error: "tracker, id and at least one of title/body are required" });
+      const { tracker, id, title, body, labels, priority } = request.body ?? {};
+      const hasLabels = labels !== undefined && labels.length > 0;
+      if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined)) {
+        reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority are required" });
         return;
       }
       const patch = {
         ...(title !== undefined ? { title } : {}),
         ...(body !== undefined ? { description: body } : {}),
+        ...(hasLabels ? { labels } : {}),
+        ...(priority !== undefined ? { priority } : {}),
       };
       return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", (github) =>
         updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github),

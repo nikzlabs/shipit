@@ -208,6 +208,37 @@ function ghFetch(over: Partial<{ issue: Record<string, unknown> }> = {}) {
   });
 }
 
+/**
+ * A GitHub stub that also serves the repo `GET /labels` endpoint (SHI-92), so
+ * label resolution can validate names. `existing` is the repo's label set.
+ */
+function ghFetchWithLabels(existing: string[], over: Partial<{ issue: Record<string, unknown> }> = {}) {
+  const issue = {
+    id: 1,
+    number: 42,
+    title: "Original title",
+    html_url: "https://github.com/octocat/hello-world/issues/42",
+    body: "original body",
+    state: "open",
+    labels: (over.issue?.labels as unknown[]) ?? [],
+    assignee: { login: "alice" },
+    ...over.issue,
+  };
+  return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+    const u = url as string;
+    const method = init?.method ?? "GET";
+    if (method === "GET" && u.includes("/labels")) return ghResponse(existing.map((name) => ({ name })));
+    if (method === "GET" && u.endsWith("/issues/42")) return ghResponse(issue);
+    if (method === "POST" && u.endsWith("/issues")) {
+      return ghResponse({ ...issue, number: 7, html_url: "https://github.com/octocat/hello-world/issues/7", ...JSON.parse(init?.body as string) });
+    }
+    if (method === "PATCH" && u.endsWith("/issues/42")) {
+      return ghResponse({ ...issue, ...JSON.parse(init?.body as string) });
+    }
+    throw new Error(`unexpected ${method} ${u}`);
+  });
+}
+
 /** A Linear GraphQL stub routing by query substring (IssueStates / issueUpdate). */
 function linearFetch(states: { id: string; name: string; type: string; position: number }[]) {
   const node = {
@@ -242,7 +273,7 @@ describe("issue write services (docs/177)", () => {
   });
 
   it("create: files an issue and returns a create undo snapshot (docs/187)", async () => {
-    const out = await createIssueForTracker(store, "github", "New doc", "tracks docs/187", ghFetch(), GH);
+    const out = await createIssueForTracker(store, "github", "New doc", "tracks docs/187", {}, ghFetch(), GH);
     expect(out.verb).toBe("create");
     expect(out.summary).toContain("octocat/hello-world#7");
     expect(out.undo).toEqual({ kind: "create" });
@@ -253,6 +284,28 @@ describe("issue write services (docs/177)", () => {
     await expect(
       createIssueForTracker(store, "linear", "x", ""),
     ).rejects.toMatchObject({ statusCode: 409 });
+  });
+
+  it("create: forwards labels to the GitHub adapter (resolved against repo labels) (SHI-92)", async () => {
+    const fetchImpl = ghFetchWithLabels(["security", "backend"]);
+    const out = await createIssueForTracker(store, "github", "New", "", { labels: ["security"] }, fetchImpl, GH);
+    // The POST /issues carried the resolved label.
+    const post = fetchImpl.mock.calls.find(([u, i]) => i?.method === "POST" && (u as string).endsWith("/issues"))!;
+    expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security"]);
+    expect(out.summary).toContain("labels: security");
+  });
+
+  it("create: rejects --priority on GitHub with a 422 (SHI-92)", async () => {
+    await expect(
+      createIssueForTracker(store, "github", "New", "", { priority: "high" }, ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("create: an unknown GitHub label is rejected with the candidate list (SHI-92)", async () => {
+    const fetchImpl = ghFetchWithLabels(["security", "backend"]);
+    await expect(
+      createIssueForTracker(store, "github", "New", "", { labels: ["nope"] }, fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
   });
 
   it("undo: create → cancels the issue (close as not_planned)", async () => {
@@ -303,6 +356,53 @@ describe("issue write services (docs/177)", () => {
     const out = await updateIssueForTracker(store, "github", "42", { title: "New title" }, ghFetch(), GH);
     expect(out.verb).toBe("edit");
     expect(out.undo).toEqual({ kind: "edit", previousTitle: "Original title" });
+  });
+
+  it("edit: labels are additive (merged with existing) and snapshot the prior set (SHI-92)", async () => {
+    const fetchImpl = ghFetchWithLabels(["existing", "added"], { issue: { labels: [{ name: "existing" }] } });
+    const out = await updateIssueForTracker(store, "github", "42", { labels: ["added"] }, fetchImpl, GH);
+    // PATCH carried the merged set (existing kept + added), not just "added".
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing", "added"]);
+    // Undo restores the prior set.
+    expect(out.undo).toMatchObject({ kind: "edit", previousLabels: ["existing"] });
+  });
+
+  it("undo: edit → restores the prior label set by replacing (SHI-92)", async () => {
+    const fetchImpl = ghFetchWithLabels(["existing"], { issue: { labels: [{ name: "added" }] } });
+    await undoIssueWrite(
+      store,
+      { tracker: "github", issueId: "42", undo: { kind: "edit", previousLabels: ["existing"] } },
+      fetchImpl,
+      GH,
+    );
+    const patch = fetchImpl.mock.calls.find(([, i]) => i?.method === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["existing"]);
+  });
+
+  it("edit: snapshots the prior priority level for undo on Linear (SHI-92)", async () => {
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const node = {
+      id: "uuid-1", identifier: "SHI-9", title: "Doc", url: "https://linear.app/x/SHI-9",
+      priority: 2, priorityLabel: "High", state: { name: "Todo", type: "unstarted" }, assignee: null,
+      labels: { nodes: [] },
+    };
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("query Issue")) {
+        // Prior issue has priority level "low" (numeric 4).
+        return jsonResponse({ data: { issue: { ...node, priority: 4, priorityLabel: "Low" } } });
+      }
+      if (query.includes("IssueId")) return jsonResponse({ data: { issue: { id: "uuid-1" } } });
+      if (query.includes("issueUpdate")) return jsonResponse({ data: { issueUpdate: { success: true, issue: node } } });
+      throw new Error(`no route for "${query.trim().slice(0, 30)}"`);
+    });
+    const out = await updateIssueForTracker(store, "linear", "SHI-9", { priority: "high" }, fetchImpl as unknown as typeof fetch);
+    // The issueUpdate input mapped "high" → numeric 2.
+    const update = fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueUpdate"))!;
+    expect(JSON.parse(update[1]?.body as string).variables.input).toEqual({ priority: 2 });
+    expect(out.undo).toMatchObject({ kind: "edit", previousPriority: "low" });
   });
 
   it("status: snapshots the prior native status name for undo", async () => {

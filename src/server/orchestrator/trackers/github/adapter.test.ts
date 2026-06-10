@@ -210,6 +210,61 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(JSON.parse(init?.body as string)).toEqual({ title: "New doc", body: "tracks docs/187" });
   });
 
+  it("creates with labels validated against the repo's labels (SHI-92)", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      if ((init?.method ?? "GET") === "GET" && u.includes("/labels")) {
+        return jsonResponse([{ name: "security" }, { name: "backend" }]);
+      }
+      return issueResponse({ number: 7, ...JSON.parse(init?.body as string) });
+    });
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await tracker.createIssue({ title: "New", body: "", labels: ["Security"] });
+    const post = fetchImpl.mock.calls.find((c) => c[1]?.method === "POST")!;
+    // Case-insensitive match resolves to the repo's canonical casing.
+    expect(JSON.parse(post[1]?.body as string).labels).toEqual(["security"]);
+  });
+
+  it("rejects an unknown label with the repo's candidate list (SHI-92)", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) =>
+      (url as string).includes("/labels") ? jsonResponse([{ name: "security" }]) : issueResponse(),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.createIssue({ title: "New", body: "", labels: ["nope"] })).rejects.toMatchObject({
+      kind: "label",
+      options: ["security"],
+    });
+  });
+
+  it("rejects --priority on GitHub (no native priority field) (SHI-92)", async () => {
+    const fetchImpl = vi.fn(async () => issueResponse());
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.createIssue({ title: "New", body: "", priority: "high" })).rejects.toMatchObject({
+      kind: "priority",
+    });
+    // Rejected before any network call.
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("surfaces labels on a read (SHI-92)", async () => {
+    const tracker = new GitHubTracker({
+      token: "t",
+      repo: REPO,
+      fetchImpl: vi.fn(async () =>
+        jsonResponse({
+          id: 1,
+          number: 42,
+          title: "Bug",
+          html_url: "https://github.com/octocat/hello-world/issues/42",
+          state: "open",
+          labels: [{ name: "security" }, "backend"],
+        }),
+      ),
+    });
+    const issue = await tracker.getIssue("42");
+    expect(issue?.labels).toEqual(["security", "backend"]);
+  });
+
   it("adds a comment and returns its id for undo", async () => {
     const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
       jsonResponse({ id: 555, html_url: "https://github.com/octocat/hello-world/issues/42#c", body: "hi" }),

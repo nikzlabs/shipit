@@ -1384,6 +1384,67 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 
+  it("create forwards repeated + comma-separated labels and a priority (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "create", "--title", "Backlog", "--label", "security", "--label", "infra,backend", "--priority", "high"],
+      { "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      tracker: "linear",
+      title: "Backlog",
+      labels: ["security", "infra", "backend"],
+      priority: "high",
+    });
+  });
+
+  it("create rejects --priority on GitHub before any broker call (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--tracker", "github", "--priority", "high"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not supported on GitHub");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("create rejects an invalid --priority value (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--priority", "sometimes"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("urgent|high|medium|low|none");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("create --json reflects the resolved labels and priority (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--label", "security", "--json"], {
+      "POST /agent-ops/issue/create": {
+        status: 200,
+        body: { ok: true, summary: "created SHI-9", identifier: "SHI-9", labels: ["security"], priority: "High" },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ labels: ["security"], priority: "High" });
+  });
+
+  it("edit forwards labels and priority (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "edit", "SHI-1", "--label", "backend", "--priority", "low"], {
+      "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels & priority on SHI-1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", labels: ["backend"], priority: "low" });
+  });
+
+  it("edit allows a labels-only change (no title/body) (SHI-92)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "edit", "SHI-1", "--label", "infra"], {
+      "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited labels on SHI-1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ id: "SHI-1", labels: ["infra"] });
+  });
+
   it("still rejects `issue close` (use status completed/canceled)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "close", "SHI-1"]);

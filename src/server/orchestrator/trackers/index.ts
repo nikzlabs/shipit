@@ -17,6 +17,7 @@ export {
   LinearTracker,
   listLinearTeams,
   resolveLinearStateId,
+  resolveLinearPriority,
   LINEAR_GRAPHQL_ENDPOINT,
   type FetchImpl,
 } from "./linear/adapter.js";

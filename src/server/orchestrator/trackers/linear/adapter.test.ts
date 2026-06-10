@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from "vitest";
-import { LinearTracker, listLinearTeams, resolveLinearStateId, LINEAR_GRAPHQL_ENDPOINT } from "./adapter.js";
+import {
+  LinearTracker,
+  listLinearTeams,
+  resolveLinearStateId,
+  resolveLinearPriority,
+  LINEAR_GRAPHQL_ENDPOINT,
+} from "./adapter.js";
 import { TrackerResolutionError } from "../tracker.js";
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -207,6 +213,41 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.createIssue({ title: "x", body: "" })).rejects.toThrow(/team binding/);
   });
 
+  it("creates with resolved labelIds and a mapped priority (SHI-92)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }, { id: "lab-be", name: "backend" }] } } },
+      { match: "issueCreate", data: { issueCreate: { success: true, issue: issueNode({ identifier: "SHI-9" }) } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await tracker.createIssue({ title: "New", body: "", labels: ["security"], priority: "high" });
+    const input = JSON.parse(
+      fetchImpl.mock.calls.find(([, i]) => ((JSON.parse((i?.body as string) ?? "{}").query as string) ?? "").includes("issueCreate"))![1]?.body as string,
+    ).variables.input;
+    expect(input).toMatchObject({ teamId: "team-123", title: "New", labelIds: ["lab-sec"], priority: 2 });
+  });
+
+  it("rejects an unknown label with the candidate list (no create) (SHI-92)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "IssueLabels", data: { issueLabels: { nodes: [{ id: "lab-sec", name: "security" }] } } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    await expect(tracker.createIssue({ title: "New", body: "", labels: ["nope"] })).rejects.toMatchObject({
+      kind: "label",
+      options: ["security"],
+    });
+    // Only the labels query ran; issueCreate never fired.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("surfaces labels on a read (SHI-92)", async () => {
+    const fetchImpl = routerFetch([
+      { match: "query Issue", data: { issue: issueNode({ labels: { nodes: [{ name: "security" }, { name: "backend" }] } }) } },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    const issue = await tracker.getIssue("SHI-1");
+    expect(issue?.labels).toEqual(["security", "backend"]);
+  });
+
   it("edits title/description via issueUpdate", async () => {
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1" } } },
@@ -308,6 +349,32 @@ describe("LinearTracker writes (docs/177)", () => {
     const issue = await tracker.getIssue("SHI-1");
     expect(issue?.assigneeId).toBe("u1");
     expect(issue?.availableStatuses?.map((s) => s.name)).toContain("In Review");
+  });
+});
+
+describe("resolveLinearPriority (SHI-92)", () => {
+  it("maps normalized levels to Linear's numeric field", () => {
+    expect(resolveLinearPriority("urgent")).toBe(1);
+    expect(resolveLinearPriority("high")).toBe(2);
+    expect(resolveLinearPriority("medium")).toBe(3);
+    expect(resolveLinearPriority("low")).toBe(4);
+    expect(resolveLinearPriority("none")).toBe(0);
+  });
+
+  it("accepts native names case-insensitively (incl. 'No priority')", () => {
+    expect(resolveLinearPriority("High")).toBe(2);
+    expect(resolveLinearPriority("No priority")).toBe(0);
+  });
+
+  it("throws with the valid options on an unknown priority", () => {
+    try {
+      resolveLinearPriority("frobnicate");
+      throw new Error("expected throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(TrackerResolutionError);
+      expect((err as TrackerResolutionError).kind).toBe("priority");
+      expect((err as TrackerResolutionError).options).toContain("high");
+    }
   });
 });
 

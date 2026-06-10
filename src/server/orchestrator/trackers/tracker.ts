@@ -49,8 +49,11 @@ export interface SetAssigneeOptions {
 export class TrackerResolutionError extends Error {
   constructor(
     message: string,
-    /** Which write tripped: a status target or an assignee handle. */
-    readonly kind: "status" | "assignee",
+    /**
+     * Which write tripped: a status target, an assignee handle, a label name,
+     * or a priority value (SHI-92 added label/priority).
+     */
+    readonly kind: "status" | "assignee" | "label" | "priority",
     /** Concrete, valid choices the agent can retry with. */
     readonly options: string[],
   ) {
@@ -95,8 +98,19 @@ export interface Tracker {
    * Create a new issue in the bound scope (Linear team / GitHub session repo)
    * and return it (docs/187). The created issue's id is the undo target — undo
    * cancels/closes it rather than deleting (GitHub can't delete via REST).
+   *
+   * `labels` are display names resolved per tracker; an unknown/ambiguous name
+   * throws {@link TrackerResolutionError} (`kind: "label"`) listing candidates
+   * rather than silently creating a stray label (SHI-92). `priority` is a
+   * normalized level (`urgent|high|medium|low|none`) or a native priority name —
+   * Linear maps it to its numeric field; GitHub (no native priority) throws.
    */
-  createIssue(input: { title: string; body: string }): Promise<TrackerIssue>;
+  createIssue(input: {
+    title: string;
+    body: string;
+    labels?: string[];
+    priority?: string;
+  }): Promise<TrackerIssue>;
 
   /** Add a comment to an issue. Returns the created comment (id used for undo). */
   addComment(id: string, body: string): Promise<TrackerComment>;
@@ -104,8 +118,18 @@ export interface Tracker {
   /** Delete a comment by its tracker-internal id (reverses {@link addComment}). */
   deleteComment(commentId: string): Promise<void>;
 
-  /** Edit an issue's title and/or description. Returns the updated issue. */
-  updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue>;
+  /**
+   * Edit an issue's title, description, labels, and/or priority. Returns the
+   * updated issue. `labels`, when present, is the EXACT set to apply (a replace,
+   * not a merge) — the caller computes the additive set and passes the full list
+   * (SHI-92); names resolve per tracker, an unknown one throws
+   * {@link TrackerResolutionError}. `priority` follows the same rules as
+   * {@link createIssue}.
+   */
+  updateIssue(
+    id: string,
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+  ): Promise<TrackerIssue>;
 
   /**
    * Set an issue's status from EITHER a normalized type (`started`,

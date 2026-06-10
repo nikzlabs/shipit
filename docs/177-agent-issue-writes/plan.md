@@ -254,6 +254,33 @@ to the container.
   read type as `TrackerIssue.assigneeId` (populated from the raw API node), so
   the snapshot captures an exact id rather than the display name.
 
+## Extension — labels + priority on create/edit (SHI-92)
+
+`create`/`edit` originally carried only title/body. SHI-92 adds two attribute
+flags, tracker-neutral but explicit about per-tracker capability:
+
+- **`--label NAME`** (repeatable / comma-separated) on both `create` and `edit`.
+  Resolved against the tracker's **existing** labels by name (case-insensitive):
+  Linear via `issueLabels` → `labelIds`, GitHub via `GET .../labels` (GitHub's
+  write API would otherwise auto-create an unknown name). An unknown/ambiguous
+  name is **rejected** with the candidate list (`TrackerResolutionError`,
+  `kind: "label"` → 422) — same contract as assignee resolution — so a typo can't
+  spawn a stray label. On `edit` labels are **additive**: the service merges the
+  requested names into the issue's existing set (the adapter `updateIssue` is a
+  wholesale replace, so the service passes the merged set); undo restores the
+  prior set by replacing back to it.
+- **`--priority P`** on both verbs. **Linear-native**: `resolveLinearPriority`
+  maps `urgent|high|medium|low|none` (or a native name) to Linear's numeric
+  field. **GitHub has no priority field**, so `--priority` is **rejected** there
+  (shim-side before the round-trip, and a server-side backstop in the GitHub
+  adapter) rather than silently no-oped — the honest option (a) from the issue,
+  with `--label 'priority: high'` suggested as the label-convention alternative.
+
+The do-then-surface card reflects the applied labels/priority (folded into the
+write `summary`), `--json` returns the resolved `labels` + `priority`, and the
+`edit` undo snapshot gains `previousLabels` / `previousPriority`. `TrackerIssue`
+gains an optional `labels: string[]` populated by both adapters.
+
 ## Key files
 
 - `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.

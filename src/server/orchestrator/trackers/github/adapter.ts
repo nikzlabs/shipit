@@ -133,13 +133,15 @@ function labelNames(node: GitHubIssueNode): string[] {
 function toTrackerIssue(node: GitHubIssueNode, ref: GitHubRepoRef): TrackerIssue {
   const assigneeName = node.assignee?.login ?? undefined;
   const isClosed = node.state === "closed";
+  const names = labelNames(node);
   return {
     id: String(node.number),
     identifier: `${ref.owner}/${ref.repo}#${node.number}`,
     title: node.title,
     url: node.html_url,
     ...(node.body ? { description: node.body } : {}),
-    priority: mapGitHubPriority(labelNames(node)),
+    priority: mapGitHubPriority(names),
+    ...(names.length > 0 ? { labels: names } : {}),
     status: { name: isClosed ? "Closed" : "Open", type: isClosed ? "completed" : "started" },
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatar_url ? { avatarUrl: node.assignee.avatar_url } : {}) } }
@@ -253,12 +255,19 @@ export class GitHubTracker implements Tracker {
 
   // ---- Writes (docs/177) ----------------------------------------------------
 
-  async createIssue(input: { title: string; body: string }): Promise<TrackerIssue> {
+  async createIssue(input: {
+    title: string;
+    body: string;
+    labels?: string[];
+    priority?: string;
+  }): Promise<TrackerIssue> {
     const ref = this.requireRepo();
-    const node = await this.api<GitHubIssueNode>("POST", "issues", {
-      title: input.title,
-      body: input.body,
-    });
+    this.rejectPriority(input.priority);
+    const body: Record<string, unknown> = { title: input.title, body: input.body };
+    if (input.labels && input.labels.length > 0) {
+      body.labels = await this.resolveLabels(input.labels);
+    }
+    const node = await this.api<GitHubIssueNode>("POST", "issues", body);
     return toTrackerIssue(node, ref);
   }
 
@@ -275,10 +284,18 @@ export class GitHubTracker implements Tracker {
     await this.api<unknown>("DELETE", `issues/comments/${encodeURIComponent(commentId)}`);
   }
 
-  async updateIssue(id: string, patch: { title?: string; description?: string }): Promise<TrackerIssue> {
+  async updateIssue(
+    id: string,
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+  ): Promise<TrackerIssue> {
+    this.rejectPriority(patch.priority);
     const body: Record<string, unknown> = {};
     if (patch.title !== undefined) body.title = patch.title;
     if (patch.description !== undefined) body.body = patch.description;
+    // GitHub's PATCH `labels` replaces the full set — the service hands us the
+    // already-merged set (SHI-92). Validate names against the repo's labels
+    // first so a typo can't silently spawn a new label.
+    if (patch.labels !== undefined) body.labels = await this.resolveLabels(patch.labels);
     return this.patchIssue(id, body);
   }
 
@@ -304,6 +321,65 @@ export class GitHubTracker implements Tracker {
     const ref = this.requireRepo();
     const node = await this.api<GitHubIssueNode>("PATCH", `issues/${encodeURIComponent(id)}`, body);
     return toTrackerIssue(node, ref);
+  }
+
+  /**
+   * Resolve label display names against the repo's existing labels (SHI-92).
+   * GitHub's write API would silently CREATE any label name it doesn't know, so
+   * we validate up front and reject an unknown name with the candidate list
+   * (`kind: "label"`) — mirroring assignee resolution and avoiding label sprawl
+   * from typos. Matching is case-insensitive but the repo's canonical casing is
+   * what gets applied.
+   */
+  private async resolveLabels(names: string[]): Promise<string[]> {
+    const existing = await this.fetchRepoLabels();
+    const resolved: string[] = [];
+    for (const raw of names) {
+      const needle = raw.trim().toLowerCase();
+      const match = existing.find((l) => l.toLowerCase() === needle);
+      if (!match) {
+        throw new TrackerResolutionError(
+          `No label "${raw}" exists in this repo.`,
+          "label",
+          existing.slice(0, 50),
+        );
+      }
+      if (!resolved.includes(match)) resolved.push(match);
+    }
+    return resolved;
+  }
+
+  /** Fetch the repo's label names (first 100) for {@link resolveLabels}. */
+  private async fetchRepoLabels(): Promise<string[]> {
+    const ref = this.requireRepo();
+    let res: Response;
+    try {
+      res = await this.fetchImpl(
+        `https://api.github.com/repos/${ref.owner}/${ref.repo}/labels?per_page=100`,
+        { headers: githubHeaders(this.token!) },
+      );
+    } catch (err) {
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.assertOk(res);
+    const nodes = (await res.json()) as { name?: string | null }[];
+    return nodes.map((n) => n?.name ?? "").filter((n): n is string => Boolean(n));
+  }
+
+  /**
+   * GitHub Issues has no native priority field (SHI-92). Rather than silently
+   * dropping `--priority`, we reject it with a clear message pointing at the
+   * label convention. The shim also rejects it before the round-trip; this is
+   * the server-side backstop so a direct API call can't no-op.
+   */
+  private rejectPriority(priority: string | undefined): void {
+    if (priority !== undefined) {
+      throw new TrackerResolutionError(
+        "GitHub Issues has no priority field. Use a label (e.g. --label 'priority: high') or file on Linear instead.",
+        "priority",
+        [],
+      );
+    }
   }
 
   private async resolveViewerLogin(): Promise<string> {
