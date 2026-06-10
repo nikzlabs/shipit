@@ -715,8 +715,9 @@ export async function registerSessionRoutes(
         // via a `session_spawned` event, recorded in-band with the spawning
         // turn so it survives a session switch / full reload (not just a WS
         // reconnect). The agent ran `shipit session create` as a tool call, so
-        // the card lands at its true transcript position and the following
-        // tool-result boundary flushes it to history via buildTurnMessages.
+        // the card lands at its true transcript position; `emitChatCard`
+        // persists the in-progress turn immediately (docs/191), so it's durable
+        // the instant it fires rather than at the next tool-result boundary.
         const parentRunner = deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
           const spawnedSession = {
@@ -730,6 +731,7 @@ export async function registerSessionRoutes(
             parentRunner,
             { type: "session_spawned", sessionId: request.params.parentId, ...spawnedSession },
             { role: "assistant", text: "", spawnedSession },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
           );
         }
 
@@ -782,6 +784,7 @@ export async function registerSessionRoutes(
             parentRunner,
             { type: "session_spawn_failed", sessionId: request.params.parentId, ...spawnFailed },
             { role: "assistant", text: "", spawnFailed },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId: request.params.parentId },
           );
         }
 

@@ -22,9 +22,20 @@ function fakeRunner(
     emitMessage: (m: WsServerMessage) => emitted.push(m),
     chatMessageGroups: groups,
     recordedCards: [],
+    steeredMessages: [],
   } as unknown as SessionRunnerInterface;
   return { runner, emitted };
 }
+
+// `emitChatCard` now persists the in-progress turn (docs/191), so every
+// `routeVoiceNote` call needs a chat-history sink. A no-op satisfies the
+// contract for cases that don't assert on persistence; `route` injects it so
+// each test case's deps stay terse.
+const noopHistory = { replaceInProgress: () => {} };
+const route = (
+  payload: Parameters<typeof routeVoiceNote>[0],
+  deps: Omit<Parameters<typeof routeVoiceNote>[1], "chatHistoryManager">,
+) => routeVoiceNote(payload, { ...deps, chatHistoryManager: noopHistory });
 
 function fakeCredentialStore(opts: {
   mode: VoiceDeliveryMode;
@@ -53,7 +64,7 @@ describe("routeVoiceNote", () => {
   it("native mode emits a voice_note WS message and no webhook", async () => {
     const { runner, emitted } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
-    const res = await routeVoiceNote(base(), {
+    const res = await route(base(), {
       runner,
       sessionId: "s1",
       credentialStore,
@@ -82,7 +93,7 @@ describe("routeVoiceNote", () => {
       { text: "", toolUse: [{ name: "Edit" }] },
     ]);
     const credentialStore = fakeCredentialStore({ mode: "native" });
-    await routeVoiceNote(base(), {
+    await route(base(), {
       runner,
       sessionId: "s1",
       credentialStore,
@@ -114,7 +125,7 @@ describe("routeVoiceNote", () => {
       webhook: { url: "https://hook.example/notes", token: "t" },
     });
     const fetchImpl = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
-    await routeVoiceNote(base(), {
+    await route(base(), {
       runner, sessionId: "s1", credentialStore,
       source: "authored", fetchImpl, idFactory: deterministicId, now: fixedNow,
     });
@@ -133,7 +144,7 @@ describe("routeVoiceNote", () => {
       return new Response(JSON.stringify({ ok: true }), { status: 200 });
     }) as unknown as typeof fetch;
 
-    const res = await routeVoiceNote(base(), {
+    const res = await route(base(), {
       runner,
       sessionId: "s1",
       credentialStore,
@@ -162,7 +173,7 @@ describe("routeVoiceNote", () => {
       webhook: { url: "https://hook.example/notes", token: "t" },
     });
     const fetchImpl = (async () => new Response("{}", { status: 200 })) as unknown as typeof fetch;
-    const res = await routeVoiceNote(base(), {
+    const res = await route(base(), {
       runner, sessionId: "s1", credentialStore, source: "authored", fetchImpl,
       idFactory: deterministicId, now: fixedNow,
     });
@@ -179,7 +190,7 @@ describe("routeVoiceNote", () => {
     });
     let webhookCalled = false;
     const fetchImpl = (async () => { webhookCalled = true; return new Response("{}", { status: 200 }); }) as unknown as typeof fetch;
-    const res = await routeVoiceNote(base({ needsAttention: false }), {
+    const res = await route(base({ needsAttention: false }), {
       runner, sessionId: "s1", credentialStore, source: "authored", fetchImpl,
       idFactory: deterministicId, now: fixedNow,
     });
@@ -193,11 +204,11 @@ describe("routeVoiceNote", () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(false);
-    await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
+    await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(true);
     // A derived note must NOT set the authored flag.
     const { runner: r2 } = fakeRunner();
-    await routeVoiceNote(base(), { runner: r2, sessionId: "s1", credentialStore, source: "ask", idFactory: deterministicId });
+    await route(base(), { runner: r2, sessionId: "s1", credentialStore, source: "ask", idFactory: deterministicId });
     expect(hasAuthoredVoiceNoteThisTurn(r2)).toBe(false);
   });
 
@@ -207,7 +218,7 @@ describe("routeVoiceNote", () => {
     const results = [];
     for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN + 2; i++) {
       results.push(
-        await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId }),
+        await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId }),
       );
     }
     const attention = results.filter((r) => r.attention).length;
@@ -221,12 +232,12 @@ describe("routeVoiceNote", () => {
     const { runner } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "native" });
     for (let i = 0; i < MAX_ATTENTION_NOTES_PER_TURN; i++) {
-      await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
+      await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     }
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(true);
     resetVoiceNoteTurnState(runner);
     expect(hasAuthoredVoiceNoteThisTurn(runner)).toBe(false);
-    const res = await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
+    const res = await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     expect(res.attention).toBe(true);
     expect(res.capped).toBe(false);
   });
@@ -234,7 +245,7 @@ describe("routeVoiceNote", () => {
   it("external mode with no webhook configured does not post", async () => {
     const { runner, emitted } = fakeRunner();
     const credentialStore = fakeCredentialStore({ mode: "external", webhook: null });
-    const res = await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
+    const res = await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", idFactory: deterministicId });
     expect(res.native).toBe(false);
     expect(res.webhook).toBe(false);
     expect(emitted).toHaveLength(0);
@@ -247,7 +258,7 @@ describe("routeVoiceNote", () => {
       webhook: { url: "https://hook.example/notes", token: "t" },
     });
     const fetchImpl = (async () => { throw new Error("network down"); }) as unknown as typeof fetch;
-    const res = await routeVoiceNote(base(), { runner, sessionId: "s1", credentialStore, source: "authored", fetchImpl, idFactory: deterministicId });
+    const res = await route(base(), { runner, sessionId: "s1", credentialStore, source: "authored", fetchImpl, idFactory: deterministicId });
     expect(res.webhook).toBe(true);
     expect(res.webhookError).toContain("network down");
   });

@@ -114,6 +114,7 @@ export async function registerIssueRoutes(
       runner,
       { type: "issue_ref_card", sessionId, card },
       { role: "assistant", text: "", issueRef: card },
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
   }
 
@@ -425,6 +426,7 @@ export async function registerIssueRoutes(
       runner,
       { type: "issue_write_card", sessionId, card },
       { role: "assistant", text: "", issueWrite: card },
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
     );
     // Surface the resolved labels + priority so `shipit issue ... --json` reflects
     // what was actually applied (SHI-92), not just the title/identifier.

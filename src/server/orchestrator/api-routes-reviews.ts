@@ -325,6 +325,7 @@ export async function registerReviewRoutes(
             runner,
             { type: "agent_review_added", sessionId, ...agentReview },
             { role: "assistant", text: "", agentReview },
+            { chatHistoryManager: deps.chatHistoryManager, sessionId },
           );
         }
         return {
