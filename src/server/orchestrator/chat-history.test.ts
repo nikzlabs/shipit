@@ -1,6 +1,89 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { ChatHistoryManager, type PersistedMessage } from "./chat-history.js";
+import { CARD_MESSAGE_FIELDS } from "../../client/components/visual-elements.js";
+
+/**
+ * Serialization contract: a `PersistedMessage` carrying every optional field.
+ * If you add a field to `PersistedMessage`, wire it through `toRow`/`fromRow`
+ * (and a migration) AND add it here — a field that serializes one way but not
+ * the other (the recurring "card renders live but vanishes on reload" bug class,
+ * docs/188) fails the round-trip deep-equal below, and any inline-card field
+ * fails the CARD_MESSAGE_FIELDS guard test if it's missing here.
+ */
+const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
+  role: "assistant",
+  text: "everything",
+  toolUse: [{ type: "tool_use", id: "t1", name: "Edit", input: { path: "a.ts" } }],
+  images: [{ data: "abc", mediaType: "image/png" }],
+  files: [{ path: "a.ts", contentPreview: "x", startLine: 1, endLine: 2 }],
+  isError: true,
+  toolResults: [{ toolUseId: "t1", content: "ok", isError: false, durationMs: 1234 }],
+  commitHash: "abc123",
+  parentCommitHash: "def456",
+  uploadPaths: ["/uploads/x.png"],
+  notice: true,
+  noticeLevel: "warn",
+  rolledBack: true,
+  forkChild: { childSessionId: "child", title: "T", branch: "b" },
+  codeRollbackHash: "c0ffee",
+  voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
+  bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
+  compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
+  issueWrite: {
+    cardId: "iw1",
+    tracker: "linear",
+    issueId: "SHI-28",
+    identifier: "SHI-28",
+    title: "Some issue",
+    url: "https://linear.app/x/issue/SHI-28",
+    verb: "status",
+    summary: "set SHI-28 → In Review",
+    attribution: "workspace",
+    undo: { kind: "status", previousStatus: "Todo" },
+    undoState: "available",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  issueRef: {
+    cardId: "ir1",
+    tracker: "linear",
+    identifier: "SHI-28",
+    title: "Some issue",
+    url: "https://linear.app/x/issue/SHI-28",
+    status: "In Review",
+    statusType: "started",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  spawnedSession: {
+    childSessionId: "child-1",
+    title: "Child",
+    branch: "shipit/child-1",
+    spawnedAt: "2026-06-05T00:00:00.000Z",
+    shipitFix: { sourceRef: "abc123def456", sourceExact: true, refSource: "build-id", targetRepo: "o/r", diagnosis: "boom" },
+  },
+  spawnFailed: {
+    id: "spawn-failed-1",
+    title: "Failed child",
+    reason: "quota_per_turn",
+    message: "Per-turn spawn limit reached",
+    statusCode: 429,
+    promptPreview: "do the thing",
+    shipitSource: true,
+    failedAt: "2026-06-05T00:00:00.000Z",
+  },
+  agentReview: {
+    reviewId: "r1",
+    filePath: "a.ts",
+    fileType: "code",
+    findingCount: 2,
+    snapshotHash: "deadbeef",
+    summary: "two findings",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
+  userReview: { filePaths: ["a.ts", "b.ts"], commentCount: 3 },
+  noticeId: "notice-1",
+  subagentEvents: [],
+};
 
 describe("ChatHistoryManager", () => {
   let dbManager: DatabaseManager;
@@ -194,59 +277,27 @@ describe("ChatHistoryManager", () => {
   });
 
   it("round-trips a message carrying every optional field (serialization contract)", () => {
-    // Contract guard: if you add a field to PersistedMessage, wire it through
-    // toRow/fromRow (and a migration) AND add it here. A field that serializes
-    // one way but not the other — the recurring "card renders live but vanishes
-    // on reload" bug class — fails this deep-equal.
     const mgr = new ChatHistoryManager(dbManager);
-    const msg: PersistedMessage = {
-      role: "assistant",
-      text: "everything",
-      toolUse: [{ type: "tool_use", id: "t1", name: "Edit", input: { path: "a.ts" } }],
-      images: [{ data: "abc", mediaType: "image/png" }],
-      files: [{ path: "a.ts", contentPreview: "x", startLine: 1, endLine: 2 }],
-      isError: true,
-      toolResults: [{ toolUseId: "t1", content: "ok", isError: false, durationMs: 1234 }],
-      commitHash: "abc123",
-      parentCommitHash: "def456",
-      uploadPaths: ["/uploads/x.png"],
-      notice: true,
-      noticeLevel: "warn",
-      rolledBack: true,
-      forkChild: { childSessionId: "child", title: "T", branch: "b" },
-      codeRollbackHash: "c0ffee",
-      voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
-      bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
-      compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
-      issueWrite: {
-        cardId: "iw1",
-        tracker: "linear",
-        issueId: "SHI-28",
-        identifier: "SHI-28",
-        title: "Some issue",
-        url: "https://linear.app/x/issue/SHI-28",
-        verb: "status",
-        summary: "set SHI-28 → In Review",
-        attribution: "workspace",
-        undo: { kind: "status", previousStatus: "Todo" },
-        undoState: "available",
-        createdAt: "2026-06-05T00:00:00.000Z",
-      },
-      issueRef: {
-        cardId: "ir1",
-        tracker: "linear",
-        identifier: "SHI-28",
-        title: "Some issue",
-        url: "https://linear.app/x/issue/SHI-28",
-        status: "In Review",
-        statusType: "started",
-        createdAt: "2026-06-05T00:00:00.000Z",
-      },
-      subagentEvents: [],
-    };
+    mgr.append("sess-1", EVERY_OPTIONAL_FIELD_MESSAGE);
+    expect(mgr.load("sess-1")[0]).toEqual(EVERY_OPTIONAL_FIELD_MESSAGE);
+  });
 
-    mgr.append("sess-1", msg);
-    expect(mgr.load("sess-1")[0]).toEqual(msg);
+  it("every inline-card field is exercised by the serialization contract (no emit-only cards, docs/188)", () => {
+    // The forcing function that kills the recurring bug class: every field in
+    // CARD_MESSAGE_FIELDS (the single list that also drives `hasCardContent`, so
+    // it's the only way to make a card render) MUST appear in the round-trip
+    // message above. Combined with the deep-equal round-trip test, this chains:
+    //   in the render list ⇒ must be in this contract message ⇒ must survive
+    //   append→load ⇒ must have a DB column + toRow/fromRow.
+    // So a new card that ships emit-only (renders live, vanishes on reload)
+    // turns CI red, naming the missing field.
+    for (const field of CARD_MESSAGE_FIELDS) {
+      expect(
+        EVERY_OPTIONAL_FIELD_MESSAGE[field],
+        `Card field "${field}" is in CARD_MESSAGE_FIELDS but missing from the serialization contract — ` +
+          `add it to EVERY_OPTIONAL_FIELD_MESSAGE and wire its column + toRow/fromRow so it survives a reload.`,
+      ).toBeDefined();
+    }
   });
 
   describe("issue-write card persistence (docs/177)", () => {

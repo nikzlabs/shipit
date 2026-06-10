@@ -326,9 +326,14 @@ The established pattern for a **side-channel card** (one that arrives outside th
 1. **Emit it via `emitChatCard` (`chat-card-persistence.ts`), never bare `emitMessage`.** That single primitive both emits the live WS message AND records the card in-band with the turn — anchored by `afterGroupIndex` so `buildTurnMessages` interleaves it at its true transcript position instead of an out-of-band `append` floating it above the whole turn. It is the one supported way to add a transcript card, so a card can't ship emit-only.
 2. **Add a typed field on `PersistedMessage`** (e.g. `voiceNote`, `bugReport`) plus the column + `toRow`/`fromRow` (and a `database.ts` migration). Lifecycle transitions patch that record in place (e.g. `updateBugReportCard`) — the proposing-turn row is finalized by then, so a direct update is safe.
 3. **Rehydrate on the client** in `loadSessionHistory` (seed any store the card reads from), and make the **live append + any store upsert idempotent by id** so the reconnect buffer replay and the reload history replay never double-render or clobber a terminal state.
-4. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test. The serialization round-trip contract in `chat-history.test.ts` must include any new `PersistedMessage` field.
+4. **Register the card field in `CARD_MESSAGE_FIELDS`** (`client/components/visual-elements.ts`) if it renders on an empty-text message. This single list is the source of truth that drives `buildVisualElements`'s `hasCardContent` (so the carrier message isn't dropped before render — the other half of this bug class) AND is enumerated by the guard test in step 5. A field NOT in the list won't render on an empty-text message at all — you'll notice in dev. (Cards riding on a message that carries its own `text` — e.g. `userReview` — don't need listing.)
+5. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test, and add the field's payload to `EVERY_OPTIONAL_FIELD_MESSAGE` in `chat-history.test.ts`.
 
-If you find yourself reaching for `emitMessage` to put a card in the chat, reach for `emitChatCard` instead and wire steps 2–4. Key files: `chat-card-persistence.ts` (`emitChatCard`), `chat-history.ts`, `agent-listeners.ts` (`buildTurnMessages`), `session-data.ts` (`loadSessionHistory`).
+**The executable contract (docs/188) — this is what makes the rule self-enforcing, not the prose above.** Two guard tests turn a forgotten step into a red build instead of a "spot it in review" miss:
+- `chat-history.test.ts` asserts every `CARD_MESSAGE_FIELDS` entry appears in `EVERY_OPTIONAL_FIELD_MESSAGE`, which must deep-equal after `append`→`load`. Chain: **in the render list ⇒ in the contract message ⇒ survives a reload ⇒ has a column + `toRow`/`fromRow`.** A card that ships emit-only fails here, naming the field.
+- `visual-elements.test.ts` asserts every `CARD_MESSAGE_FIELDS` entry keeps its empty-text carrier message (the render half).
+
+If you find yourself reaching for `emitMessage` to put a card in the chat, reach for `emitChatCard` instead and wire steps 2–5. Key files: `chat-card-persistence.ts` (`emitChatCard`), `chat-history.ts`, `agent-listeners.ts` (`buildTurnMessages`), `session-data.ts` (`loadSessionHistory`), `visual-elements.ts` (`CARD_MESSAGE_FIELDS`).
 
 ### Preview routing
 

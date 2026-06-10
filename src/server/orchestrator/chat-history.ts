@@ -155,6 +155,80 @@ export interface PersistedMessage {
    */
   compaction?: CompactionCard;
   /**
+   * docs/117 Phase 2 — when set, this message renders an inline
+   * `SpawnedSessionCard` for a child the agent spawned via `shipit session
+   * create`. Emitted off the agent-event stream (the session-create HTTP
+   * relay), recorded in-band with the spawning turn and persisted here so the
+   * card survives a reload/switch. (Previously emit-only — it relied on the
+   * sidebar `session_list` as a reload fallback, which left the parent's
+   * transcript non-deterministic across reload.) The card's live status pill
+   * still derives from the session store; only the static payload persists.
+   */
+  spawnedSession?: {
+    childSessionId: string;
+    title: string;
+    branch?: string;
+    spawnedAt: string;
+    shipitFix?: {
+      sourceRef: string;
+      sourceExact: boolean;
+      refSource?: "build-id" | "checkout-head";
+      targetRepo?: string;
+      diagnosis?: string;
+    };
+  };
+  /**
+   * docs/117 cross-cutting follow-up — when set, renders an inline
+   * `SpawnFailedCard` for a rejected `shipit session create`. Unlike a
+   * successful spawn there is no sidebar row to fall back on, so persisting
+   * this is the only way the failure survives a reload. `id` is server-
+   * generated (no natural key) and used for live-append idempotency.
+   */
+  spawnFailed?: {
+    id: string;
+    title?: string;
+    reason: "quota_per_turn" | "quota_per_parent" | "invalid_request" | "parent_missing" | "error";
+    message: string;
+    statusCode: number;
+    promptPreview?: string;
+    shipitSource?: boolean;
+    failedAt: string;
+  };
+  /**
+   * docs/151 — when set, renders an inline `AgentReviewCard`. The review's
+   * snapshot + comments already persist in the `agent_reviews` tables; this
+   * persists the inline transcript breadcrumb (keyed by `reviewId`) so the card
+   * itself survives a reload instead of vanishing while the data lingers only
+   * behind the file modal.
+   */
+  agentReview?: {
+    reviewId: string;
+    filePath: string;
+    fileType: "markdown" | "code";
+    findingCount: number;
+    snapshotHash: string;
+    summary?: string;
+    createdAt: string;
+  };
+  /**
+   * User-side counterpart to `agentReview`: set on the initiating user message
+   * when the user submits doc/diff comments via "Send comments", so the bubble
+   * renders a `UserReviewCard` instead of a raw prompt. The prompt text lives on
+   * `text` (source of truth); this metadata persists so the card chrome survives
+   * a reload rather than degrading to a plain text bubble.
+   */
+  userReview?: {
+    filePaths: string[];
+    commentCount: number;
+  };
+  /**
+   * docs/138 — stable id for a persisted `system_notice` bubble. Notices are
+   * recorded in-band (mid-turn) or appended (post-turn); the id lets the live
+   * client handler dedupe a notice re-delivered by the turn-event buffer replay
+   * on reconnect against the copy already loaded from history.
+   */
+  noticeId?: string;
+  /**
    * Events emitted by subagents (Claude's Task tool) whose parent Task tool is
    * in this message's `toolUse`. Stored as a flat ordered list keyed by
    * `parentToolUseId` so the client can render the subagent's prompt, work,
@@ -187,6 +261,11 @@ interface MessageRow {
   issue_write: string | null;
   issue_ref: string | null;
   compaction: string | null;
+  spawned_session: string | null;
+  spawn_failed: string | null;
+  agent_review: string | null;
+  user_review: string | null;
+  notice_id: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
    * here. The canonical per-turn series is now owned by `UsageManager`
@@ -200,8 +279,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, issue_ref, compaction)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @issue_ref, @compaction)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, issue_ref, compaction, spawned_session, spawn_failed, agent_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @issue_ref, @compaction, @spawned_session, @spawn_failed, @agent_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -210,7 +289,8 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction
+    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction,
+    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
 
@@ -272,6 +352,11 @@ export class ChatHistoryManager {
       issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
       issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
+      spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
+      spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
+      agent_review: msg.agentReview ? JSON.stringify(msg.agentReview) : null,
+      user_review: msg.userReview ? JSON.stringify(msg.userReview) : null,
+      notice_id: msg.noticeId ?? null,
     };
   }
 
@@ -301,6 +386,11 @@ export class ChatHistoryManager {
     if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
     if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
+    if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
+    if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];
+    if (row.agent_review) msg.agentReview = JSON.parse(row.agent_review) as PersistedMessage["agentReview"];
+    if (row.user_review) msg.userReview = JSON.parse(row.user_review) as PersistedMessage["userReview"];
+    if (row.notice_id) msg.noticeId = row.notice_id;
     return msg;
   }
 

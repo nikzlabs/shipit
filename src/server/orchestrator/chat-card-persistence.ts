@@ -27,7 +27,8 @@
  * those modules have with each other.
  */
 
-import type { WsServerMessage } from "../shared/types.js";
+import { randomUUID } from "node:crypto";
+import type { WsServerMessage, WsSystemNotice } from "../shared/types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 
@@ -63,4 +64,60 @@ export function emitChatCard(
 ): void {
   runner.emitMessage(wsMessage);
   recordChatCard(runner, persisted);
+}
+
+/**
+ * docs/138 — build a `system_notice` WS message and its persisted chat row,
+ * sharing one stable id. The id lets the client dedupe a notice re-delivered by
+ * the turn-event buffer replay on reconnect against the copy already loaded from
+ * history. Use the helpers below rather than constructing notices ad-hoc, so a
+ * notice can never ship emit-only (the historical bug — notices survived a
+ * reconnect via the buffer but vanished on a full reload).
+ */
+function buildSystemNotice(
+  sessionId: string,
+  message: string,
+  level: "info" | "warn",
+): { ws: WsSystemNotice; persisted: PersistedMessage } {
+  const noticeId = `notice-${randomUUID()}`;
+  return {
+    ws: { type: "system_notice", sessionId, message, level, id: noticeId },
+    persisted: { role: "assistant", text: message, notice: true, noticeLevel: level, noticeId },
+  };
+}
+
+/**
+ * Emit + persist a system notice that fires WITHIN a turn (e.g. a guarded-mode
+ * banner on `agent_init`, a blocked-actions summary on `agent_result`). Recorded
+ * in-band via `emitChatCard` so `buildTurnMessages` interleaves it at its true
+ * transcript position when it flushes the turn.
+ */
+export function emitNoticeInTurn(
+  runner: Pick<SessionRunnerInterface, "emitMessage" | "chatMessageGroups" | "recordedCards">,
+  sessionId: string,
+  message: string,
+  level: "info" | "warn" = "info",
+): void {
+  const { ws, persisted } = buildSystemNotice(sessionId, message, level);
+  emitChatCard(runner, ws, persisted);
+}
+
+/**
+ * Emit + persist a system notice that fires AFTER the turn's final persist (e.g.
+ * an unresolved-merge-conflict warning during post-turn auto-commit) or outside
+ * a turn entirely (a rewind queue-clear). `recordedCards` are already flushed by
+ * then, so this appends the row directly — landing it at the current end of
+ * history, which is the correct post-turn position. `emit` is the caller's
+ * broadcast (`runner.emitMessage` or the per-connection `emit`).
+ */
+export function emitNoticePostTurn(
+  emit: (m: WsServerMessage) => void,
+  chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
+  sessionId: string,
+  message: string,
+  level: "info" | "warn" = "info",
+): void {
+  const { ws, persisted } = buildSystemNotice(sessionId, message, level);
+  emit(ws);
+  chatHistory.append(sessionId, persisted);
 }

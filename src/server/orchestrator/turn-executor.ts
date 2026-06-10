@@ -30,6 +30,7 @@ import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
+import { emitNoticePostTurn } from "./chat-card-persistence.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -336,15 +337,16 @@ export async function executeAgentTurn(
       // Fallback for minimal test setups that wire `autoCommit` but not `commitTurn`.
       const result = await deps.autoCommit(runner.sessionDir, summary);
       if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
-        emit({
-          type: "system_notice",
+        emitNoticePostTurn(
+          emit,
+          deps.listenerDeps.chatHistoryManager,
           sessionId,
-          level: "warn",
-          message: formatUnresolvedConflictNotice({
+          formatUnresolvedConflictNotice({
             conflictedFiles: result.conflictedFiles,
             rebaseInProgress: result.rebaseInProgress,
           }),
-        });
+          "warn",
+        );
       }
       if (!result.commitHash) return null;
       emit({ type: "git_committed", hash: result.commitHash, message: summary });

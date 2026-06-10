@@ -105,6 +105,13 @@ export interface ChatMessage {
    */
   notice?: boolean;
   noticeLevel?: "info" | "warn";
+  /**
+   * docs/138 — stable id for a persisted system notice, used to dedupe a notice
+   * re-delivered by the turn-event buffer replay on reconnect against the copy
+   * rehydrated from history. Absent on the transient rewind action-feedback
+   * notices, which are emit-only by design.
+   */
+  noticeId?: string;
   /** When true, this message is queued and waiting for Claude to become available. */
   queued?: boolean;
   /** 1-indexed position in the queue, shown as a badge. */
@@ -174,6 +181,8 @@ export interface ChatMessage {
    * successful spawns instead of only on the shim's stderr.
    */
   spawnFailed?: {
+    /** Server-generated stable id, used for live-append idempotency on reconnect. */
+    id?: string;
     title?: string;
     reason:
       | "quota_per_turn"

@@ -238,6 +238,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   /** Original upload paths consumed by this message (for sent-state tracking on reload). */
   uploadPaths?: string[];
   /**
+   * Set when the turn was started by the "Send comments" action on a file
+   * preview. Persisted onto the initiating user row so the bubble rehydrates as
+   * a `UserReviewCard` (file list + comment count) instead of degrading to a
+   * plain text bubble on reload. The prompt text remains the source of truth.
+   */
+  userReview?: { filePaths: string[]; commentCount: number };
+  /**
    * docs/125 — when this turn is a chat-native review, the file the
    * `submit_review_comments` tool is authorized to write on. Set on the runner
    * at turn start (here, which is also the dequeue point for queued turns) and
@@ -252,7 +259,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    */
   compact?: boolean;
 }): Promise<void> {
-  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths } = opts;
+  const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
   // Capture the session context at turn start. These values must NOT be read
   // from ctx later because the user may switch sessions while the agent runs.
@@ -317,6 +324,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       images: historyImages,
       files: historyFiles,
       uploadPaths: uploadPaths && uploadPaths.length > 0 ? uploadPaths : undefined,
+      // Persist the "Send comments" card metadata so the user bubble rehydrates
+      // as a UserReviewCard instead of a raw prompt bubble on reload.
+      ...(userReview ? { userReview } : {}),
     });
   };
 
