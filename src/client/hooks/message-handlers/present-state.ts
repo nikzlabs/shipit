@@ -24,6 +24,8 @@ export const handlePresentState: Handler<WsPresentStateMessage> = (_ctx, data) =
       content: p.content,
       mimeType: p.mimeType,
       createdAt: p.createdAt,
+      filePath: p.filePath,
+      inWorkspace: p.inWorkspace,
       ...(p.title !== undefined ? { title: p.title } : {}),
     })),
   );

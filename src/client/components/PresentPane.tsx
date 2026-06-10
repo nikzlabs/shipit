@@ -115,19 +115,31 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             </button>
           </div>
         )}
-        <div className="text-sm font-medium text-(--color-text-primary) truncate flex-1">
-          {active.title ?? `Presentation ${safeIndex + 1}`}
+        <div className="flex flex-col min-w-0 flex-1">
+          <div className="text-sm font-medium text-(--color-text-primary) truncate">
+            {active.title ?? basename(active.filePath)}
+          </div>
+          <div
+            className="text-xs text-(--color-text-tertiary) font-mono truncate"
+            title={active.filePath}
+          >
+            {active.filePath}
+          </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => { setSaveError(null); setSaveOpen(true); }}
-          className="shrink-0"
-          aria-label="Save presentation to project"
-        >
-          <FloppyDiskIcon size={ICON_SIZE.XS} />
-          Save
-        </Button>
+        {/* Already-in-workspace artifacts are tracked + auto-committed, so
+            there's nothing to save — hide the button for them. */}
+        {!active.inWorkspace && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setSaveError(null); setSaveOpen(true); }}
+            className="shrink-0"
+            aria-label="Save presentation to project"
+          >
+            <FloppyDiskIcon size={ICON_SIZE.XS} />
+            Save
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"
@@ -404,6 +416,17 @@ export function suggestDownloadName(title: string | undefined, mimeType: string)
     ? title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")
     : "presentation";
   return `${base || "presentation"}.${ext}`;
+}
+
+/**
+ * Last path segment of a presented file path, used as the header's primary
+ * label when the agent didn't pass a title. The path is always present (the
+ * worker validates `present`'s `file` arg is non-empty), so this returns the
+ * segment — or the whole path for a degenerate slashes-only input.
+ */
+function basename(filePath: string): string {
+  const segment = filePath.replace(/\/+$/, "").split("/").pop();
+  return segment && segment.length > 0 ? segment : filePath;
 }
 
 export function mimeTypeToExtension(mimeType: string): string {

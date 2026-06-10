@@ -849,6 +849,16 @@ export class SessionWorker extends EventEmitter {
       const resolvedPath = path.isAbsolute(file)
         ? file
         : path.resolve(this.workspaceDir, file);
+      // Whether the presented file already lives inside the workspace (so it's
+      // tracked + auto-committed already). The client uses this to hide the
+      // "Save to project" button — there's nothing to save. A relative arg
+      // always resolves under the workspace; an absolute arg counts only when
+      // it's actually within the workspace root (a `path.relative` that doesn't
+      // climb out via `..` and isn't itself absolute).
+      const relToWorkspace = path.relative(this.workspaceDir, resolvedPath);
+      const inWorkspace =
+        relToWorkspace === ""
+        || (!relToWorkspace.startsWith("..") && !path.isAbsolute(relToWorkspace));
       // MIME is inferred from the extension unless the caller overrides it.
       const overrideMime =
         typeof mimeType === "string" && mimeType.length > 0 ? mimeType : undefined;
@@ -903,6 +913,11 @@ export class SessionWorker extends EventEmitter {
           content: result.entry.content,
           mimeType: result.entry.mimeType,
           ...(result.entry.title !== undefined ? { title: result.entry.title } : {}),
+          // The presented path (verbatim — relative or absolute), shown in the
+          // Present tab header. `file` is validated non-empty above, so the
+          // field is always present downstream.
+          filePath: file,
+          inWorkspace,
           createdAt: result.entry.createdAt,
         },
       });
