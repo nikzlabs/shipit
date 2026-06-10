@@ -253,12 +253,18 @@ rather than a flat text table:
   read as a nested box). Instead the *value itself* reacts: the priority pill
   grows slightly to reveal a "⌄" in its own color (the caret lives inside the
   `Badge`, collapsed to zero width until `group-hover/fe`); the status trigger
-  slides out a subtle gray caret. `FieldEditor` gained a `chevron` prop so the
-  priority editor opts out of the shared sibling caret. The reveal also latches
-  **while the menu is open** (`group-data-[state=open]/fe`, set by Radix on the
-  trigger) so opening the dropdown doesn't shrink the pill back and shift the
-  row. Keyboard focus is preserved via a `focus-visible` ring + the same caret
-  reveal on focus.
+  fades in a subtle gray caret whose **space is always reserved** (only opacity
+  animates) so revealing it never changes the trigger's width — important on the
+  detail page, where status and priority share a flex row and a growing status
+  caret would otherwise shove the priority pill sideways. `FieldEditor` gained a
+  `chevron` prop so the priority editor opts out of that shared sibling caret and
+  grows its pill instead (it's always last / in its own column, so its growth
+  pushes nothing). Both reveals latch **while the menu is open**
+  (`group-data-[state=open]/fe`, set by Radix on the trigger) so opening the
+  dropdown doesn't collapse the affordance and shift the row. Keyboard focus is
+  preserved via a `focus-visible` ring + the same reveal on focus. On the detail
+  page the `StatusPill` is pinned to the priority badge's height (`h-[18px]`) so
+  the two read as vertically aligned.
 - **Row polish.** Taller rows, `font-medium` titles, an accent left-edge bar that
   fades in on hover/focus, a hover-reveal caret that slides in, softer
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback

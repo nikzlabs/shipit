@@ -161,9 +161,14 @@ function FieldEditor({
           {saving ? (
             <CircleNotchIcon size={ICON_SIZE.XS} className="ml-1 shrink-0 animate-spin text-(--color-text-tertiary)" />
           ) : chevron ? (
+            // Caret space is RESERVED (always `ml-0.5` + icon width), only its
+            // opacity fades in — so revealing it never changes the trigger's
+            // width and never pushes a sibling (e.g. the priority pill next to
+            // the status on the detail page). The priority editor opts out
+            // (`chevron={false}`) and grows its pill instead.
             <CaretDownIcon
               size={ICON_SIZE.XS}
-              className="shrink-0 max-w-0 overflow-hidden opacity-0 text-(--color-text-tertiary) transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:ml-0.5 group-data-[state=open]/fe:max-w-3.5 group-data-[state=open]/fe:opacity-100"
+              className="ml-0.5 shrink-0 opacity-0 text-(--color-text-tertiary) transition-opacity duration-150 group-hover/fe:opacity-100 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:opacity-100"
             />
           ) : null}
         </button>

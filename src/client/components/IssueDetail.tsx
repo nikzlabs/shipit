@@ -113,7 +113,7 @@ function statusTone(type?: string): { dot: string; text: string } {
 function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> }) {
   const tone = statusTone(status.type);
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
+    <span className="inline-flex items-center gap-1.5 h-[18px] text-xs font-medium leading-none">
       <span className={`h-2 w-2 rounded-full ${tone.dot}`} aria-hidden="true" />
       <span className={tone.text}>{status.name}</span>
     </span>
