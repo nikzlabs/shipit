@@ -132,6 +132,45 @@ Guidance lives on two surfaces with different guarantees:
   `src/server/orchestrator/integration_tests/present-flow.test.ts` — updated to
   the file-based API (+ missing-file 400 coverage).
 
+## Discovery is search-gated (tool search), not upfront
+
+Both backends defer MCP tools behind a search layer by default, so the agent
+does **not** see the `present` definition at session start:
+
+- **Claude Code** (pinned 2.1.161): tool search is on by default — only MCP tool
+  *names* and *server instructions* load at session start; full definitions are
+  fetched on demand via the `ToolSearch` tool (`tool_reference` → expanded def).
+  ShipIt sets neither `ENABLE_TOOL_SEARCH` nor `alwaysLoad` and uses no custom
+  `ANTHROPIC_BASE_URL`, so the default (deferred) applies. (Disabled only on
+  Vertex AI / non-first-party base URL / Haiku.)
+- **Codex** (pinned 0.136.0): uses a BM25 tool index with deferred MCP tool
+  calls; tools-only MCP servers like this bridge were historically invisible to
+  its search until codex#16944 (~Apr 2026).
+
+This is why `present` stayed dormant unless explicitly asked: the agent had to
+*think to search* for it and *then* choose it, with no cue to do either.
+
+### Portable discoverability levers (applied)
+
+`alwaysLoad` (and the `anthropic/alwaysLoad` tool `_meta` key) would force the
+definition upfront — but it is **Claude-only**; Codex has no equivalent. So we
+use the levers that work for *both* search layers:
+
+1. **System-prompt nudge** (`agent-instructions.ts`, "Showing visual work"):
+   tells the agent to proactively `present` visual artifacts rather than only
+   describing them. Agent-agnostic — both backends receive the ShipIt system
+   prompt. This is what makes the agent *want* to reach for (search) the tool.
+2. **MCP server `instructions`** on the present bridge: both Claude's tool search
+   and Codex's BM25 index rank deferred tools on the server instructions, so
+   this is the field that makes `present` *findable* by a search. (Kept < 2 KB;
+   Claude truncates there.)
+3. **Sharper tool description**: front-loads the visual-artifact trigger
+   keywords (diagram/chart/mockup/wireframe/prototype) so the search ranks it and
+   the model picks it once surfaced.
+
+`alwaysLoad` was deliberately *not* used — the goal was cross-agent parity, and a
+Claude-only flag would help one backend and not the other.
+
 ## Relationship to docs/093 and docs/170
 
 - **docs/093** introduced `present` (Tier 1, inline `content`), the Present tab,

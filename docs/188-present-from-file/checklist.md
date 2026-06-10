@@ -29,6 +29,14 @@
 - [x] Make "screenshot `viewUrl`, not the file" explicit in `present.md`
 - [x] Add `present.md` to the system prompt's "Key docs" list (`agent-instructions.ts`) so it's discoverable
 
+## Search-gated discovery (portable levers, both backends)
+
+- [x] Researched tool-search behavior: Claude 2.1.161 defers MCP tools by default; Codex 0.136.0 BM25 tool search; `alwaysLoad` is Claude-only
+- [x] System-prompt nudge ("Showing visual work") in `agent-instructions.ts` — proactively `present` visual artifacts
+- [x] MCP server `instructions` on the present bridge (ranked by both Claude tool search + Codex BM25)
+- [x] Front-load visual-artifact trigger keywords in the tool description
+- [x] Test: bridge advertises server instructions (`getInstructions()`)
+
 ## Verification
 
 - [x] `inferPresentMimeType` unit coverage (via present-view.test.ts additions)

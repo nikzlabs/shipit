@@ -28,10 +28,13 @@ const TOOL_NAME = "present";
 const WORKER_URL = `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`;
 
 const TOOL_DESCRIPTION = [
-  "Display a single self-contained file (HTML, SVG, markdown, or image) to the",
-  "user in the dedicated Present tab. First write the file with the Write tool,",
-  "then call `present` with its path. Use this for charts, diagrams, mockups,",
-  "rendered docs, and quick HTML prototypes you want the user to look at.",
+  "Show the user a visual artifact — a diagram, chart, graph, mockup, wireframe,",
+  "rendered markdown doc, comparison view, or HTML/SVG prototype — rendered in",
+  "ShipIt's dedicated Present tab, with no dev server. Reach for this proactively",
+  "whenever you produce something visual for the user to look at, instead of only",
+  "describing it in chat or writing a file you never surface.",
+  "Workflow: write a single self-contained file with the Write tool, then call",
+  "`present` with its path.",
   "Write the file under /tmp for a throwaway artifact (it never enters git), or",
   "into the workspace if you want it tracked and committed — either way it renders",
   "in the Present tab; the path's location is the only difference.",
@@ -77,6 +80,21 @@ const inputSchema = {
   required: ["file"],
 };
 
+// MCP server instructions. Both Claude Code's tool search and Codex's BM25 tool
+// index rank/surface deferred MCP tools using the server's instructions (not
+// just the per-tool description), so this is what helps either agent decide to
+// reach for `present` when it has produced something visual. Kept concise
+// (Claude truncates instructions at ~2 KB). See docs/188.
+const SERVER_INSTRUCTIONS = [
+  "Use this server's `present` tool to show the user a visual artifact in",
+  "ShipIt's Present tab without a dev server: a diagram, chart, graph, mockup,",
+  "wireframe, rendered markdown doc, comparison view, or HTML/SVG prototype.",
+  "Reach for it whenever you create something visual for the user to look at,",
+  "rather than only describing it. Write a single self-contained file (to /tmp",
+  "for a throwaway, or into the workspace to keep it tracked), then call",
+  "`present` with the file path.",
+].join(" ");
+
 /**
  * Build the MCP `Server` with the `present` tool's `ListTools` / `CallTool`
  * handlers wired. Factored out of the module top-level so tests can connect it
@@ -91,7 +109,7 @@ export function createPresentBridgeServer() {
   // eslint-disable-next-line @typescript-eslint/no-deprecated
   const server = new Server(
     { name: "shipit-present", version: "1.0.0" },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: SERVER_INSTRUCTIONS },
   );
 
   server.setRequestHandler(ListToolsRequestSchema, () =>

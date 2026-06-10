@@ -260,6 +260,12 @@ Available tools:
 
 If you get a connection error, the dev server may still be starting — wait a moment and retry.
 
+## Showing visual work
+
+When you produce a **self-contained visual artifact** — a diagram, chart, mockup, rendered markdown doc, comparison view, or a quick HTML/SVG prototype — **show it with the \`present\` tool** instead of only describing it in chat or writing a file you never surface. It renders in the dedicated Present tab with no dev server. Reach for it proactively, the same way you use the browser to verify UI work; don't wait to be asked.
+
+Write the file first, then \`present({ file })\`. Put it under \`/tmp\` for a throwaway (never enters git) or into the workspace to keep it tracked and committed — either way it renders. If the \`present\` tool isn't already loaded, it's an MCP tool you can discover via tool search. Full details: /shipit-docs/present.md.
+
 ${pullRequestsSection}
 ${releasesSection}
 ${parallelSessionsSection}

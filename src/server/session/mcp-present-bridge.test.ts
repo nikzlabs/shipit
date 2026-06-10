@@ -71,6 +71,16 @@ describe("mcp-present-bridge", () => {
     expect(schema.required).toEqual(["file"]);
   });
 
+  it("advertises server instructions that steer the agent to reach for present", async () => {
+    // Both Claude's tool search and Codex's BM25 index rank deferred MCP tools
+    // on the server instructions, so they must be present and mention the
+    // visual-artifact trigger (docs/188).
+    const instructions = bridge.client.getInstructions();
+    expect(typeof instructions).toBe("string");
+    expect(instructions).toMatch(/present/i);
+    expect(instructions).toMatch(/diagram|chart|mockup|visual/i);
+  });
+
   it("CallTool forwards args to the worker and relays { status, presentId }", async () => {
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
