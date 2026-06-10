@@ -108,3 +108,70 @@ describe("issues-store detail view (docs/189)", () => {
     expect(s.detailError).toBeNull();
   });
 });
+
+describe("issues-store comments (docs/189 follow-up)", () => {
+  const COMMENT = { id: "c1", body: "First", author: { name: "Nik" }, createdAt: "2026-06-01T00:00:00Z" };
+
+  /** Routes fetches: the single-issue detail, the comment thread, and the post. */
+  function routeFetch(overrides: { comments?: unknown; postStatus?: number; postBody?: unknown } = {}) {
+    return vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = url as string;
+      if (init?.method === "POST" && u === "/api/issue/comments") {
+        return new Response(JSON.stringify(overrides.postBody ?? { comment: { id: "c2", body: "Posted", author: { name: "Nik" } } }), {
+          status: overrides.postStatus ?? 200,
+        });
+      }
+      if (u.startsWith("/api/issue/comments")) {
+        return new Response(JSON.stringify({ comments: overrides.comments ?? [COMMENT] }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ tracker: {}, issue: makeIssue() }), { status: 200 });
+    }) as typeof fetch;
+  }
+
+  beforeEach(() => useIssuesStore.getState().reset());
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("openIssue fetches the comment thread alongside the detail", async () => {
+    globalThis.fetch = routeFetch();
+    await useIssuesStore.getState().openIssue({ tracker: "linear", identifier: "SHI-1", seed: makeIssue() });
+    const s = useIssuesStore.getState();
+    expect(s.comments).toEqual([COMMENT]);
+    expect(s.commentsLoading).toBe(false);
+    expect(s.commentsError).toBeNull();
+  });
+
+  it("postComment appends the created comment to the open thread", async () => {
+    globalThis.fetch = routeFetch({ comments: [] });
+    await useIssuesStore.getState().openIssue({ tracker: "linear", identifier: "SHI-1", seed: makeIssue() });
+    const err = await useIssuesStore.getState().postComment("Posted");
+    expect(err).toBeNull();
+    expect(useIssuesStore.getState().comments).toEqual([{ id: "c2", body: "Posted", author: { name: "Nik" } }]);
+  });
+
+  it("postComment returns an error message and leaves the thread untouched on failure", async () => {
+    globalThis.fetch = routeFetch({ comments: [COMMENT], postStatus: 502, postBody: { error: "Linear rejected the comment" } });
+    await useIssuesStore.getState().openIssue({ tracker: "linear", identifier: "SHI-1", seed: makeIssue() });
+    const err = await useIssuesStore.getState().postComment("nope");
+    expect(err).toBe("Linear rejected the comment");
+    expect(useIssuesStore.getState().comments).toEqual([COMMENT]);
+  });
+
+  it("postComment refuses an empty body without hitting the network", async () => {
+    globalThis.fetch = routeFetch();
+    await useIssuesStore.getState().openIssue({ tracker: "linear", identifier: "SHI-1", seed: makeIssue() });
+    (globalThis.fetch as ReturnType<typeof vi.fn>).mockClear();
+    const err = await useIssuesStore.getState().postComment("   ");
+    expect(err).toBe("A comment can't be empty");
+    expect(globalThis.fetch).not.toHaveBeenCalled();
+  });
+
+  it("closeIssue clears the comment thread", async () => {
+    globalThis.fetch = routeFetch();
+    await useIssuesStore.getState().openIssue({ tracker: "linear", identifier: "SHI-1", seed: makeIssue() });
+    useIssuesStore.getState().closeIssue();
+    expect(useIssuesStore.getState().comments).toBeNull();
+  });
+});

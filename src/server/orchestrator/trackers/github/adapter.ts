@@ -124,6 +124,28 @@ interface GitHubIssueNode {
   pull_request?: unknown;
 }
 
+/** GitHub REST issue-comment node (subset we consume). */
+interface GitHubCommentNode {
+  id: number;
+  body?: string | null;
+  html_url?: string | null;
+  created_at?: string | null;
+  user?: { login?: string | null; avatar_url?: string | null } | null;
+}
+
+function toTrackerComment(node: GitHubCommentNode): TrackerComment {
+  const login = node.user?.login ?? undefined;
+  return {
+    id: String(node.id),
+    body: node.body ?? "",
+    ...(node.html_url ? { url: node.html_url } : {}),
+    ...(node.created_at ? { createdAt: node.created_at } : {}),
+    ...(login
+      ? { author: { name: login, ...(node.user?.avatar_url ? { avatarUrl: node.user.avatar_url } : {}) } }
+      : {}),
+  };
+}
+
 function labelNames(node: GitHubIssueNode): string[] {
   return (node.labels ?? [])
     .map((l) => (typeof l === "string" ? l : (l?.name ?? "")))
@@ -253,6 +275,22 @@ export class GitHubTracker implements Tracker {
     return { ...toTrackerIssue(node, ref), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
+  async listComments(id: string): Promise<TrackerComment[]> {
+    const ref = this.requireRepo();
+    let res: Response;
+    try {
+      res = await this.fetchImpl(
+        `https://api.github.com/repos/${ref.owner}/${ref.repo}/issues/${encodeURIComponent(id)}/comments?per_page=100`,
+        { headers: githubHeaders(this.token!) },
+      );
+    } catch (err) {
+      throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.assertOk(res);
+    const nodes = (await res.json()) as GitHubCommentNode[];
+    return nodes.map(toTrackerComment);
+  }
+
   // ---- Writes (docs/177) ----------------------------------------------------
 
   async createIssue(input: {
@@ -272,12 +310,12 @@ export class GitHubTracker implements Tracker {
   }
 
   async addComment(id: string, body: string): Promise<TrackerComment> {
-    const data = await this.api<{ id: number; html_url?: string; body?: string }>(
+    const data = await this.api<GitHubCommentNode>(
       "POST",
       `issues/${encodeURIComponent(id)}/comments`,
       { body },
     );
-    return { id: String(data.id), body: data.body ?? body, ...(data.html_url ? { url: data.html_url } : {}) };
+    return toTrackerComment(data);
   }
 
   async deleteComment(commentId: string): Promise<void> {

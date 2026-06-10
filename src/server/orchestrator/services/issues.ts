@@ -11,6 +11,8 @@
 import type { CredentialStore } from "../credential-store.js";
 import type {
   ListIssuesResult,
+  ListIssueCommentsResult,
+  PostIssueCommentResult,
   TrackerId,
   TrackerInfo,
   TrackerIssue,
@@ -125,6 +127,64 @@ export async function getIssueForTracker(
     throw new ServiceError(404, `Issue not found: ${id}`);
   }
   return { tracker: tracker.info(), issue };
+}
+
+/**
+ * List an issue's comments for the inline detail-view thread (docs/189
+ * follow-up). The read sibling of `getIssueForTracker`: an unconfigured tracker
+ * is an error (the thread has no useful empty state if the tracker can't be
+ * reached), a missing issue surfaces as the tracker's own error. Oldest-first,
+ * the order a reader expects a discussion in.
+ */
+export async function listIssueCommentsForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<ListIssueCommentsResult> {
+  if (!id.trim()) {
+    throw new ServiceError(400, "An issue id is required");
+  }
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = registry.get(trackerId as TrackerId);
+  if (!tracker) {
+    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+  }
+  if (!tracker.isConfigured()) {
+    throw new ServiceError(400, `${tracker.label} is not configured`);
+  }
+  try {
+    return { comments: await tracker.listComments(id) };
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * Post a comment a USER typed in the inline detail view (docs/189 follow-up).
+ * Deliberately separate from `commentOnIssueForTracker` (the agent's
+ * do-then-surface write): a user-authored comment is visible in the thread it
+ * lands in, so it does NOT emit a provenance card into the chat transcript and
+ * has no undo lifecycle. Returns the created comment so the client appends it to
+ * the open thread without a refetch.
+ */
+export async function addIssueCommentForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  body: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<PostIssueCommentResult> {
+  if (!id.trim()) throw new ServiceError(400, "An issue id is required");
+  if (!body.trim()) throw new ServiceError(400, "A comment body is required");
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  try {
+    return { comment: await tracker.addComment(id, body) };
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
 }
 
 // ---- Writes (docs/177) ------------------------------------------------------

@@ -329,7 +329,14 @@ export interface TrackerIssue {
   availableStatuses?: { name: string; type?: string }[];
 }
 
-/** A comment created on an issue (docs/177 — agent issue writes). */
+/**
+ * A comment on an issue. Returned by a write (`addComment`, docs/177 — only `id`
+ * is consulted there, for undo) AND by the read path that powers the inline
+ * comment thread (`listComments`, docs/189 follow-up). The author + timestamp
+ * are optional because a freshly-created comment from a write doesn't always
+ * carry them, but `listComments` and the enriched `addComment` populate them so
+ * the thread can render avatar/author/relative-date rows.
+ */
 export interface TrackerComment {
   /** Tracker-internal comment id. Used to undo (delete) the comment. */
   id: string;
@@ -337,6 +344,10 @@ export interface TrackerComment {
   url?: string;
   /** The comment body that was posted. */
   body: string;
+  /** Comment author, for the thread row. Absent when the tracker omits it. */
+  author?: { name: string; avatarUrl?: string };
+  /** ISO-8601 creation time, for the relative-date label. */
+  createdAt?: string;
 }
 
 /** Which kind of issue write a provenance card records (docs/177, docs/187). */
@@ -523,6 +534,26 @@ export interface ListIssuesResult {
 export interface GetIssueResult {
   tracker: TrackerInfo;
   issue: TrackerIssue;
+}
+
+/**
+ * Response shape for `GET /api/issue/comments?tracker=&id=` — the comment thread
+ * rendered inline in the issue detail view (docs/189 follow-up). Oldest-first,
+ * the order a reader expects in a discussion.
+ */
+export interface ListIssueCommentsResult {
+  comments: TrackerComment[];
+}
+
+/**
+ * Response shape for `POST /api/issue/comments` — a user posting a comment from
+ * the inline detail view. Returns the created comment (enriched with author +
+ * timestamp) so the client appends it to the thread without a full refetch.
+ * Distinct from the agent's do-then-surface comment write, which returns an
+ * `IssueWriteOutcome` and leaves a provenance card in the transcript.
+ */
+export interface PostIssueCommentResult {
+  comment: TrackerComment;
 }
 
 /**

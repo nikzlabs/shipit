@@ -57,6 +57,34 @@ identifier (`owner/repo#42` → `42`; `SHI-28` → `SHI-28`), mirroring the serv
   the fetch lands; `fetchDetail` then hydrates. A stale-response guard drops a
   fetch superseded by a newer `openIssue` (fast card-to-card clicks).
 
+## Comment thread (follow-up, shipped)
+
+Reading an issue now includes its **discussion**, and the user can reply without
+leaving ShipIt — the same inline-beats-link-out stance applied to comments. This
+was the first listed non-goal; it's now built, mirroring the PR detail tab's
+`PrConversationSection` (read + post inline).
+
+- **Tracker interface** grew `listComments(id)` → `TrackerComment[]`
+  (oldest-first). The Linear adapter queries `issue.comments`; the GitHub adapter
+  hits `GET issues/{n}/comments`. `TrackerComment` gained optional
+  `author { name, avatarUrl }` + `createdAt` so a thread row can render; the
+  write-path `addComment` now populates them too (so a just-posted comment
+  appears with its author without a refetch).
+- **Read route** `GET /api/issue/comments?tracker=&id=[&sessionId=]` →
+  `listIssueCommentsForTracker` → `{ comments }` (`ListIssueCommentsResult`).
+  Public, card-less, session-scoped for GitHub only — exactly like `GET /api/issue`.
+- **User-post route** `POST /api/issue/comments { tracker, id, body, sessionId? }`
+  → `addIssueCommentForTracker` → `{ comment }` (`PostIssueCommentResult`).
+  Deliberately distinct from the agent's session-scoped `issue/comment` write:
+  a user-typed comment lands in the thread it's visible in, so it emits **no**
+  chat provenance card and has no undo. (The agent path keeps its card + Undo.)
+- **Store** holds `comments` / `commentsLoading` / `commentsError`; `openIssue`
+  fetches the thread alongside the detail (independently, so the body paints
+  without waiting on it), `postComment` appends the returned comment, and a
+  stale-response guard mirrors `fetchDetail`'s.
+- **`IssueDetail`** renders the thread (avatar · author · relative-date ·
+  markdown body) + a composer below the description.
+
 ## Visual reference
 
 `mockup.html` — the detail view's layout (header with back + deep link, status·
@@ -66,12 +94,17 @@ action). Self-contained dark-theme HTML.
 ## Key files
 
 - `src/server/orchestrator/api-routes-issues.ts` — `GET /api/issue` (public read,
-  no card).
-- `src/server/orchestrator/services/issues.ts` — `getIssueForTracker()` (reused).
-- `src/server/shared/types/domain-types.ts` — `GetIssueResult`.
+  no card) + `GET`/`POST /api/issue/comments` (thread read + user post).
+- `src/server/orchestrator/services/issues.ts` — `getIssueForTracker()`,
+  `listIssueCommentsForTracker()`, `addIssueCommentForTracker()`.
+- `src/server/orchestrator/trackers/tracker.ts` + `linear/`,`github/` adapters —
+  `listComments()`; `TrackerComment` carries author + `createdAt`.
+- `src/server/shared/types/domain-types.ts` — `GetIssueResult`,
+  `ListIssueCommentsResult`, `PostIssueCommentResult`, enriched `TrackerComment`.
 - `src/client/stores/issues-store.ts` — `selected`/`detail` state,
   `openIssue`/`fetchDetail`/`closeIssue`, `issueLookupId()`.
-- `src/client/components/IssueDetail.tsx` — the detail view (new).
+- `src/client/components/IssueDetail.tsx` — the detail view (new); now also the
+  comment thread + composer.
 - `src/client/components/IssuesPanel.tsx` — list ⇄ detail branch.
 - `src/client/components/IssuesViewer.tsx` — row opens detail (deep link removed).
 - `src/client/components/IssueRefCard.tsx` / `IssueWriteCard.tsx` — open the
@@ -81,8 +114,7 @@ action). Self-contained dark-theme HTML.
 
 ## Non-goals (follow-ups)
 
-- **Comments thread.** The detail view shows the description but not the issue's
-  comment history — the `Tracker` interface has no `listComments` yet. A natural
-  next step toward "more issue tracking inside ShipIt."
-- **In-view editing/status changes.** Writes still flow through the agent
-  (`shipit issue ...`); the view is read + navigate only.
+- **In-view editing/status changes.** Title/status/assignee/label writes still
+  flow through the agent (`shipit issue ...`); the view is read + navigate +
+  comment. (Comments are the one user-write affordance, matching the PR detail
+  tab — see "Comment thread" above.)
