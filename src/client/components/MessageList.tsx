@@ -1,8 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
 import { Fragment, useMemo, useEffect, useLayoutEffect, useRef, useDeferredValue } from "react";
-import {
-  TypingDots,
-} from "./StreamingIndicator.js";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
@@ -637,7 +634,7 @@ export function MessageList({
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      {buildVisualElements(messages).map((el, elIdx, allElements) => {
+      {buildVisualElements(messages).map((el) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
           return (
@@ -1038,12 +1035,6 @@ export function MessageList({
                     );
                   })}
                 </div>
-              )}
-
-              {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && !latestTodoTool && (
-                <span className="inline-flex items-center ml-1 align-middle">
-                  <TypingDots />
-                </span>
               )}
 
               {voicePlaybackEnabled && turnProseByLastIndex.has(i) && (
