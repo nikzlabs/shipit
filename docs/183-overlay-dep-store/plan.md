@@ -9,17 +9,18 @@ description: Share installed dependency directories across sessions via a rollin
 > **⚠️ Design status (updated 2026-06-10) — the design changed.** This feature originally
 > proposed overlaying the **whole workspace**. That is now **superseded**. The current design
 > overlays only the **dependency directories a repo declares in `shipit.yaml`** (`agent.dep-dirs`,
-> default `[node_modules]`). It keeps the same proven, unprivileged daemon-overlay mount mechanism
-> and the rolling-base publish logic (Phases 0–2 + the `overlay-base.ts` CAS are reused as-is),
-> but it **eliminates the two host-gated subsystems** that blocked the whole-workspace variant —
-> whole-workspace **source re-sequencing** and the worker **workspace-view resolver**.
+> default `[node_modules]`). It keeps the same proven, unprivileged daemon-overlay volume
+> **primitives** and the rolling-base publish logic (the `overlay-base.ts` CAS, marker, and runtime
+> fingerprint are reused as-is), but it **eliminates the two host-gated subsystems** that blocked the
+> whole-workspace variant — whole-workspace **source re-sequencing** and the worker
+> **workspace-view resolver**.
 >
 > **Read [Current design](#current-design-overlay-declared-dependency-directories) and
 > [Rejected approaches](#rejected-approaches) first.** The sections below them describe the
-> **superseded** whole-workspace design; they are retained because the mount mechanism, publish
-> CAS, marker, runtime fingerprint, and GC they specify are reused unchanged by the current design
-> — only the mount *target* (declared dep dirs vs. the whole `/workspace`) and the absence of A/B
-> differ.
+> **superseded** whole-workspace design; they are retained because the **publish CAS, marker, and
+> runtime fingerprint** they specify are reused unchanged. The **volume shape** (name, count, mount
+> target, scope key) and the **GC** are NOT unchanged — they go from one-base-per-`(repo,runtime)` to
+> one-base-per-`(repo,runtime,dep-dir)`; see the "Changed" bucket below.
 
 ## Current design: overlay declared dependency directories
 
@@ -76,21 +77,53 @@ agent:
   `.shipit/.install-done` stamped marker all carry over unchanged, scoped per dep dir.
 - **Mount targets at create time.** Because this design keeps the **pre-container host clone**, the
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
-  mounts. A dep dir's `node_modules` need **not** pre-exist — the daemon **creates the mountpoint**
-  when it mounts the overlay (the source parent, e.g. `packages/web/`, exists from the checkout, so
-  the leaf is creatable); cold start → empty `lowerdir` → install populates the `upperdir`.
+  mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
+
+  > **⚠️ Unproven — must be settled by a host spike before relying on this (see `checklist.md`).** This
+  > nests a `type=overlay` volume mount at `/workspace/<dep-dir>` **underneath** the existing
+  > `/workspace` bind/Subpath mount — a topology **none of the validated spikes exercised** (every
+  > spike mounted the overlay AT the `/workspace` root, never as a child of an existing mount). Two
+  > specific unknowns this design currently *assumes* rather than has proven: **(a)** whether a dep
+  > dir's `node_modules` leaf mountpoint is created cleanly **inside an already-mounted bind target**
+  > (that dir would be created on the session-volume subtree, not the overlay volume) when it doesn't
+  > pre-exist; and **(b)** **mount ordering** — the nested `/workspace/<dep-dir>` overlay must be
+  > applied *after* the parent `/workspace` mount. If (a)/(b) don't hold, the fallback is to require
+  > the dep-dir leaf to pre-exist (e.g. a touch/`mkdir` in the install step) or to mount at a
+  > non-nested path. Do not treat "the daemon creates the mountpoint" as settled until the spike runs.
 - **Publish snapshot = the dep dirs only**, not the whole tree — so export/import is much smaller and
   faster than the whole-workspace snapshot.
 - **Compose services** that need a dep dir (a dev server reading `node_modules`) mount the *same*
-  per-session overlay volume at their corresponding path — the shared-overlay-volume-across-containers
-  pattern proven by `shared-volume-spike.sh`, scoped to the subdir.
+  per-session overlay volume(s) at the matching subpath(s) — the shared-overlay-volume-across-containers
+  substrate proven by `shared-volume-spike.sh`. **But this needs a new compose-generator construct, not
+  the existing rewrite.** The superseded design pointed `opts.workspaceVolume` at the overlay volume
+  with `workspaceSubpath = ""`, and `rewriteVolumes`
+  ([compose-generator.ts:479-526](../../src/server/orchestrator/compose-generator.ts#L479-L526))
+  reroutes **every** relative workspace mount onto a **single** `shipit-workspace` alias at the merged
+  root — it hard-codes one `source` for all relative-path mounts and has **no per-path volume
+  selection**. That cannot express what dep-dir overlay requires: a service that bind-mounts `.`
+  (the whole workspace) must keep its **normal** `shipit-workspace` workspace mount for source/`.git`
+  **and additionally** mount each per-dep-dir overlay volume nested at `<service-target>/<dep-dir>`.
+  So the wiring is: leave the service's workspace mount on the state volume (as today), then **append
+  one extra `type: volume` mount per dep dir** pointing at that dep dir's overlay volume, targeted at
+  the nested subpath. `rewriteVolumes` must be extended to emit those appended nested mounts (it is a
+  generator change to design — the "scoped to the subdir" shorthand above understates it). The
+  read-only-lower / never-mount-an-`overlay-base/`-subpath guardrails from the superseded §4 still
+  apply, asserted by a generator test.
 
 ### Validation (degrade safely, never break)
+
+**Precondition — the config field must be added first.** `agent.dep-dirs` is **not** parsed today:
+`shipit-config.ts` `KNOWN_AGENT_KEYS` is `{memory, cpu, pids, install}`, so an unrecognized `dep-dirs`
+currently only emits an "Unknown key" warning. The field, its known-key entry, the `[node_modules]`
+default, and the validation below are all net-new parser work — see `checklist.md`.
 
 An entry is **skipped** (that dir runs plain install; the session is unaffected) when it:
 
 - isn't a relative path inside the workspace (no `..`, no absolute, not the workspace root — overlaying
   the root **is** the rejected whole-workspace mode);
+- the entry, or any path component, **is a symlink** — overlaying onto a symlinked target (or through a
+  symlinked parent) has undefined resolution and must be skipped; this is covered by neither the
+  relative-path nor the tracked-files check, so it needs its own guard;
 - **contains tracked source files** — dep dirs must be gitignored build artifacts; a base over tracked
   source would shadow real files. Warn + skip.
 - doesn't exist after install (nothing to capture).
@@ -100,15 +133,35 @@ forfeits speedup; it never corrupts a session or the shared base.
 
 ### Reused vs dropped vs changed (relative to the whole-workspace implementation already on the branch)
 
-- **Reused as-is:** the daemon `type=overlay` volume mechanism (`overlay-volume.ts`, Phases 0–2); the
-  rolling-base publish CAS + depth-cap flatten + force-push lineage reset (`overlay-base.ts`); the
-  stamped install marker (`install-marker.ts`); the runtime fingerprint; the disk-janitor
-  `overlay-base/<hash>` GC.
+- **Reused as-is:** the rolling-base publish CAS + depth-cap flatten + force-push lineage reset
+  (`overlay-base.ts`); the stamped install marker (`install-marker.ts`); the runtime fingerprint; the
+  `RepoGit` ancestry oracle; and the low-level daemon `type=overlay` volume **primitives**
+  (`createOverlayVolume` / `resolveVolumeMountpoint` / `removeOverlayVolume` in `overlay-volume.ts`).
 - **Dropped (no longer needed):** the whole-workspace **source-sync re-sequencing** and the worker
   **workspace-view resolver** — the two host-gated pieces. `session.workspaceDir` stays authoritative.
-- **Changed:** `buildOverlaySpec` produces **N mounts at dep-dir subpaths** instead of one mount at
-  the `/workspace` root; the scope key gains the dep-dir relpath; the worker snapshot shrinks to a
-  per-dep-dir export; `agent.dep-dirs` is read from `shipit.yaml`.
+- **Changed (these are NOT "reused as-is" despite the superseded sections implying it):**
+  - **Volume shape — one per session → one per session × dep-dir.** `overlayVolumeName(sessionId)`
+    returns a single name today; the dep-dir model needs a **distinct overlay volume per dep dir**
+    (one `type=overlay` volume = exactly one merged root, so a single volume cannot back N subpaths).
+    The name must gain a per-dep-dir component while still matching the GC regex
+    `^shipit-([a-f0-9-]{12})_` (e.g. `shipit-<id[:12]>_overlayN`).
+  - **Spec count — one → N.** `ContainerConfig.overlaySpec` (a single `OverlaySpec`) and
+    `createContainer` (creates one volume) become an `OverlaySpec[]` / N volumes.
+  - **Mount target.** `buildMounts` mounts the overlay at the `/workspace` **root** today
+    ([container-lifecycle.ts:107-111](../../src/server/orchestrator/container-lifecycle.ts#L107-L111)).
+    The dep-dir design keeps the **normal `/workspace` mount** and adds an overlay mount at each
+    `/workspace/<dep-dir>` subpath.
+  - **Scope key.** `overlayScopeHash(repoUrl, runtimeKey)` has **no dep-dir component** today; it must
+    gain the dep-dir relpath, or two dep dirs in one `(repo, runtime)` collide on the same
+    `overlay-base/<hash>`.
+  - **GC.** `liveOverlayScopeHashes` emits **one scope-hash per session** today
+    ([overlay-session.ts:370-384](../../src/server/orchestrator/overlay-session.ts#L370-L384)); it must
+    emit **one per (session, dep-dir)**, or the janitor under-counts live bases and can reap one out
+    from under a live mount.
+  - **Snapshot.** the worker export shrinks from the whole merged tree to a **per-dep-dir** export.
+  - **Config.** `agent.dep-dirs` is read from `shipit.yaml` — **this field does not exist yet**
+    (`shipit-config.ts` `KNOWN_AGENT_KEYS` is `{memory, cpu, pids, install}`), so it is a real add, not
+    a wiring tweak.
 
 ## Rejected approaches
 
