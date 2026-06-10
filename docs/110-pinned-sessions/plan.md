@@ -38,7 +38,7 @@ All changes live in `SessionSidebar.tsx`, specifically the `RepoGroup` and `Sess
 
 - Each session row's overflow menu (`OverflowMenu` / `DropdownMenuItem`) gains a **"Pin" / "Unpin"** item using `PushPinIcon` from Phosphor.
 - A pinned session shows a small filled `PushPinIcon` in its row.
-- Inside each `RepoGroup`, render a **pinned sub-section directly below the "New session" button** (the `<button>` at the top of the non-collapsed session list) and above the active sessions. When the repo has pins, show a lightweight header — a thin `PushPinIcon` + "Pinned" label (with a pin count) in the same style as the existing "Recently resolved" subheader — followed by the pinned rows. Hidden when the repo has zero pins.
+- Inside each `RepoGroup`, render a **pinned sub-section directly below the "New session" button** (the `<button>` at the top of the non-collapsed session list) and above the active sessions. When the repo has pins, show a lightweight header — a thin `PushPinIcon` + "Pinned" label in the same style as the existing "Recently resolved" subheader — followed by the pinned rows. Hidden when the repo has zero pins.
 - **Close the section with a divider.** Unlike "Recently resolved", the active group has no header of its own, so the last pinned row and the first active row would otherwise run together. A 1px `--color-border-primary` divider (`data-testid="pinned-divider"`) renders after the pinned rows, but only when active or resolved rows actually follow — matching the divider in `mockup.html`.
 - Pinned rows are drag-reorderable within the pinned set (see Drag-and-drop below).
 

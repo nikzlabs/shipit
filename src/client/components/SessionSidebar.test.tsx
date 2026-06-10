@@ -661,17 +661,6 @@ describe("SessionSidebar", () => {
       expect(screen.queryByText("Pinned")).toBeNull();
     });
 
-    it("counts pins next to the 'Pinned' header", () => {
-      const sessions = [
-        baseSession({ id: "p1", title: "Pin one", remoteUrl: repoA.url, pinnedAt: "2024-06-02T00:00:00.000Z" }),
-        baseSession({ id: "p2", title: "Pin two", remoteUrl: repoA.url, pinnedAt: "2024-06-01T00:00:00.000Z" }),
-      ];
-      render(<SessionSidebar {...defaultProps} sessions={sessions} />);
-      const header = screen.getByText("Pinned");
-      // The count sibling lives next to the header label.
-      expect(header.parentElement?.textContent).toContain("2");
-    });
-
     it("separates pinned from active sessions with a divider", () => {
       const sessions = [
         baseSession({ id: "s-active", title: "Active work", remoteUrl: repoA.url }),

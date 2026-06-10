@@ -990,7 +990,6 @@ function RepoGroup({
                       <span className="text-[10px] font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
                         Pinned
                       </span>
-                      <span className="text-[10px] text-(--color-text-tertiary) opacity-80">{pinned.length}</span>
                     </div>
                   )}
                   {pinned}
