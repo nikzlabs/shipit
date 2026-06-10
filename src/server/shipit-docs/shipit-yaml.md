@@ -46,6 +46,8 @@ agent:
   install:            # Install commands, run sequentially
     - npm install
     - npx prisma generate
+  dep-dirs:           # Dependency dirs for the overlay store (default: [node_modules])
+    - node_modules
 ```
 
 | Field | Type | Default | Description |
@@ -54,6 +56,7 @@ agent:
 | `cpu` | float | 0.5 | CPU cores |
 | `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
+| `dep-dirs` | string or string[] | `[node_modules]` | Dependency directories eligible for the overlay store |
 
 A declared resource value is honored up to a deployment-level ceiling. By
 default that ceiling tracks the host: memory is capped at ~75% of total host
@@ -85,6 +88,30 @@ values fall back to defaults.
 > installs its own deps in its compose `command`; `shipit.yaml` is just
 > `compose: docker-compose.yml`. See
 > [compose.md](compose.md) → "Python: the preview service owns its install".
+
+#### Dependency directories (`dep-dirs`)
+
+Declares which directories hold installed dependencies, so they can be served
+from a shared, copy-on-write **overlay dependency store** instead of a full
+per-session copy (faster fresh-session starts; far less disk). Defaults to
+`[node_modules]`, which covers most Node projects with no configuration.
+
+```yaml
+agent:
+  dep-dirs:
+    - node_modules
+    - packages/web/node_modules   # extra dirs in a monorepo
+```
+
+- **Literal relative paths only** — no globs. Each entry must be a relative path
+  inside the workspace (not the root, no `..`). A monorepo lists each
+  `node_modules` it wants covered explicitly.
+- Invalid entries (absolute, glob, `..`-escaping, the root) are **ignored with a
+  warning** — they never break the session; that directory just falls back to a
+  plain install.
+- An explicit empty list (`dep-dirs: []`) opts out entirely.
+- The overlay store is rolling out behind a platform flag; until it is enabled
+  this key is parsed and validated but has no runtime effect. See docs/183.
 
 ### `compose` (optional)
 

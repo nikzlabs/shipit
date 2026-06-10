@@ -11,6 +11,8 @@
  *     install:
  *       - npm install
  *       - npx prisma generate
+ *     dep-dirs:         # dependency dirs eligible for the overlay store (docs/183)
+ *       - node_modules
  *   compose: docker-compose.yml   # string or object form
  *
  * Old-format keys (preview, resources, capabilities, services) emit warnings
@@ -34,6 +36,16 @@ export interface AgentConfig {
   pids: number;
   /** Install commands, run sequentially before compose starts. Default: [] */
   install: string[];
+  /**
+   * Dependency directories eligible for the overlay dep store (docs/183),
+   * declared as **literal relative paths** (no globs) inside the workspace.
+   * Default: `["node_modules"]`. Structurally-invalid entries (absolute, glob,
+   * `..`-escaping, the workspace root) are dropped with a warning rather than
+   * failing the session. Whether each surviving path actually exists as a
+   * dependency dir (and isn't tracked source) is a contextual check applied by
+   * the overlay-spec builder against the host clone (docs/183 Phase 2), not here.
+   */
+  depDirs: string[];
 }
 
 export interface ComposeConfig {
@@ -120,11 +132,15 @@ export class ShipitConfigError extends Error {
 // Defaults
 // ---------------------------------------------------------------------------
 
+/** Default dep dirs eligible for the overlay store when `agent.dep-dirs` is absent (docs/183). */
+export const DEFAULT_DEP_DIRS: readonly string[] = ["node_modules"];
+
 export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
   memory: 1536,
   cpu: 0.5,
   pids: 4096,
   install: [],
+  depDirs: [...DEFAULT_DEP_DIRS],
 };
 
 // ---------------------------------------------------------------------------
@@ -132,7 +148,7 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // ---------------------------------------------------------------------------
 
 const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "release", "x-shipit-host-mounts"]);
-const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install"]);
+const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install", "dep-dirs"]);
 
 /**
  * docs/128 — the only host paths an ops session may bind-mount (read-only) into
@@ -277,8 +293,79 @@ function parseAgentConfig(raw: unknown, warnings: string[]): AgentConfig {
   const cpu = parsePositiveNumber(obj.cpu, AGENT_DEFAULTS.cpu, false);
   const pids = parsePositiveNumber(obj.pids, AGENT_DEFAULTS.pids, true);
   const install = parseInstallList(obj.install);
+  const depDirs = parseDepDirs(obj["dep-dirs"], warnings);
 
-  return { memory, cpu, pids, install };
+  return { memory, cpu, pids, install, depDirs };
+}
+
+/** Glob metacharacters — `agent.dep-dirs` accepts literal paths only (docs/183). */
+const DEP_DIR_GLOB_CHARS = /[*?[\]{}]/;
+
+/**
+ * Parse `agent.dep-dirs` (docs/183) into a list of normalized, literal relative
+ * dep-dir paths. Structural validation only — the parser has no workspace/git
+ * context, so "exists as a dependency dir and isn't tracked source" is deferred
+ * to the overlay-spec builder (Phase 2).
+ *
+ * Semantics:
+ * - absent/null → the default `["node_modules"]`.
+ * - a bare string is treated as a one-element list.
+ * - a wrong top-level type (number, object, …) warns and falls back to the default.
+ * - an explicit empty list `[]` means "no overlay dep dirs" and is returned verbatim.
+ *
+ * Each entry must be a non-empty **relative** path with no glob metacharacters and
+ * no `..` segment (can't escape the workspace), and must not resolve to the root.
+ * Invalid entries are dropped **with a warning** — never fatal (dep dirs degrade
+ * to a plain install). Surviving paths are normalized (collapse `./`, strip
+ * trailing slash) and de-duplicated.
+ */
+function parseDepDirs(val: unknown, warnings: string[]): string[] {
+  if (val === undefined || val === null) return [...DEFAULT_DEP_DIRS];
+
+  let entries: unknown[];
+  if (typeof val === "string") {
+    entries = [val];
+  } else if (Array.isArray(val)) {
+    entries = val;
+  } else {
+    warnings.push("`agent.dep-dirs` must be a string or a list of strings; using the default [node_modules].");
+    return [...DEFAULT_DEP_DIRS];
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const normalized = normalizeDepDir(entries[i], i, warnings);
+    if (normalized === null) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+/** Structurally validate + normalize one `dep-dirs` entry; returns null (and warns) if invalid. */
+function normalizeDepDir(entry: unknown, index: number, warnings: string[]): string | null {
+  const drop = (reason: string): null => {
+    warnings.push(`Ignoring \`agent.dep-dirs[${index}]\`: ${reason}.`);
+    return null;
+  };
+
+  if (typeof entry !== "string") return drop("must be a string");
+  const trimmed = entry.trim();
+  if (!trimmed) return drop("must not be empty");
+  if (trimmed.startsWith("/")) return drop(`must be a relative path, not absolute (\`${trimmed}\`)`);
+  if (DEP_DIR_GLOB_CHARS.test(trimmed)) {
+    return drop(`must be a literal path — globs are not supported (\`${trimmed}\`)`);
+  }
+
+  const segments = trimmed.split("/").filter((s) => s.length > 0 && s !== ".");
+  if (segments.some((s) => s === "..")) {
+    return drop(`must stay inside the workspace — \`..\` is not allowed (\`${trimmed}\`)`);
+  }
+  if (segments.length === 0) return drop("must not be the workspace root");
+
+  return segments.join("/");
 }
 
 function parsePositiveNumber(val: unknown, fallback: number, floor: boolean): number {
