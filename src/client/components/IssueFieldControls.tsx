@@ -52,7 +52,7 @@ export const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | 
 };
 
 /** Menu-dot color by normalized priority level. */
-const PRIORITY_DOT: Record<IssuePriorityLevel, string> = {
+export const PRIORITY_DOT: Record<IssuePriorityLevel, string> = {
   urgent: "bg-(--color-error)",
   high: "bg-(--color-warning)",
   medium: "bg-(--color-info)",

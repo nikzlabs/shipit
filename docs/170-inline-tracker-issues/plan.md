@@ -250,6 +250,13 @@ rather than a flat text table:
 - **Status dots.** The inline status trigger (and the mobile meta line) now lead
   with a colored dot keyed by workflow-state `type`, reusing the exported
   `statusDotClass` from `IssueFieldControls.tsx` so list/detail/menu dots match.
+- **Filter bar (docs/173) parity.** The search box and the Priority/Status/
+  Assignee facet triggers are pinned to one height (`h-8`) so the bar reads as a
+  single control strip. The Priority and Status popover options now carry the
+  same colored dots as the row editors — `PRIORITY_DOT` (also exported from
+  `IssueFieldControls.tsx`) and `statusDotClass` — so a status/priority looks the
+  same wherever it appears. `StatusOption` gained an optional `type` (captured by
+  `distinctStatuses`) to drive the status-dot color.
 - **Inline-edit affordance (docs/191).** The status/priority editor triggers no
   longer draw a gray hover box (its small corners clashed with the round pill and
   read as a nested box). Instead the *value itself* reacts: the priority pill

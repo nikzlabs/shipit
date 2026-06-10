@@ -2,7 +2,9 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
+import { PRIORITY_DOT, statusDotClass } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { cn } from "../utils/cn.js";
 import {
   PRIORITY_OPTIONS,
   UNASSIGNED,
@@ -43,7 +45,7 @@ function SearchBox({ query, onSetQuery }: { query: string; onSetQuery: (q: strin
   }, [text, query, onSetQuery]);
 
   return (
-    <label className="flex-1 flex items-center gap-2 min-w-0 rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-2.5 py-1.5">
+    <label className="flex-1 flex items-center gap-2 min-w-0 h-8 rounded-md border border-(--color-border-secondary) bg-(--color-bg-tertiary) px-2.5">
       <MagnifyingGlassIcon size={ICON_SIZE.SM} className="shrink-0 text-(--color-text-tertiary)" />
       <input
         type="text"
@@ -81,14 +83,11 @@ function FacetTrigger({
   variant?: "button" | "chip";
 }) {
   const active = count > 0;
-  const base =
-    variant === "chip"
-      ? "rounded-full px-3 py-1.5"
-      : "rounded-md px-2.5 py-1.5";
+  const base = variant === "chip" ? "rounded-full px-3" : "rounded-md px-2.5";
   return (
     <button
       type="button"
-      className={`inline-flex items-center gap-1.5 whitespace-nowrap border text-xs transition-colors cursor-pointer ${base} ${
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap h-8 border text-xs transition-colors cursor-pointer ${base} ${
         active
           ? "border-(--color-accent) text-(--color-text-primary) bg-(--color-bg-tertiary)"
           : "border-(--color-border-secondary) text-(--color-text-secondary) bg-(--color-bg-tertiary) hover:text-(--color-text-primary)"
@@ -198,7 +197,10 @@ export function IssuesFilterBar({
             onToggle={() => onTogglePriority(opt.level)}
             count={priorityCounts[opt.level] ?? 0}
           >
-            <span>{opt.label}</span>
+            <span className="inline-flex items-center gap-2 min-w-0">
+              <span className={cn("size-2 shrink-0 rounded-full", PRIORITY_DOT[opt.level])} aria-hidden="true" />
+              <span>{opt.label}</span>
+            </span>
           </OptionRow>
         ))}
       </PopoverContent>
@@ -223,7 +225,10 @@ export function IssuesFilterBar({
               onToggle={() => onToggleStatus(opt.name)}
               count={opt.count}
             >
-              <span className="truncate">{opt.name}</span>
+              <span className="inline-flex items-center gap-2 min-w-0">
+                <span className={cn("size-2 shrink-0 rounded-full", statusDotClass(opt.type))} aria-hidden="true" />
+                <span className="truncate">{opt.name}</span>
+              </span>
             </OptionRow>
           ))
         )}
