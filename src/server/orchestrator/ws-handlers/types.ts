@@ -191,6 +191,13 @@ export interface AppCtx {
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
 
+  /**
+   * docs/192 — remove a session's durable `logs/` dir + in-memory ring when it
+   * is archived (e.g. the rollback/fork archive path). Optional; the
+   * disk-janitor sweep is the backstop.
+   */
+  removeSessionLogs?: (sessionId: string) => void;
+
   // Config
   workspaceDir: string;
   sessionsRoot: string;

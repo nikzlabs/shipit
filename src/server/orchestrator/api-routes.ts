@@ -203,6 +203,11 @@ export interface ApiDeps {
    */
   getLogBuffer?: (sessionId: string) => LogRingEntry[];
   /**
+   * docs/192 — remove a session's durable `logs/` dir + in-memory ring when it
+   * is archived/deleted. Optional; the disk-janitor sweep is the backstop.
+   */
+  removeSessionLogs?: (sessionId: string) => void;
+  /**
    * OOM circuit breaker — passed into recovery service handlers so
    * user-initiated restarts reset the trip, and into the diagnostics
    * service so the panel can render the current breaker state.

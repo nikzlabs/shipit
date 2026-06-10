@@ -218,7 +218,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // restart, idle eviction, and container destruction. The in-memory ring in
   // createLogBuffer stays as a hot, synchronous cache for diagnostics.
   const logStore = new LogStore(sessionsRoot);
-  const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer(logStore);
+  const { getLogBuffer, clearLogBuffer, removeLogBuffer, broadcastLog } = createLogBuffer(logStore);
+  // docs/192 — drop a session's durable logs dir + in-memory ring when it goes
+  // away for good (archive / delete / full reset). The disk-janitor sweep is
+  // the startup backstop for paths that don't call this.
+  const removeSessionLogs = (sid: string): void => {
+    logStore.remove(sid);
+    removeLogBuffer(sid);
+  };
 
   // ---- OOM circuit breaker ----
   // One process-local instance shared between the health monitor (which
@@ -1118,6 +1125,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // this and the route derives the per-session CLI runner.
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
+    removeSessionLogs,
     agentFactory,
     oomBreaker,
     loopDetector,
@@ -1679,6 +1687,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
         logStore,
+        removeSessionLogs,
       };
 
       // Auto-activate the session on connect

@@ -20,6 +20,7 @@
 
 ### Lifecycle / cleanup
 - [x] Disk-janitor `sweepOrphanSessionLogs`: `readdir(sessionsRoot)` removing `logs/` for ids not active (keeps active+pinned, reaps archived/deleted/reset); NO `!remoteUrl` skip — mirrors `sweepOrphanCredentialDirs`
+- [x] Explicit removal wired (review fix): `removeSessionLogs(sid)` = `logStore.remove(sid)` + `removeLogBuffer(sid)`, threaded into `archiveSession` / `deleteSession` (unconditional — not `remoteUrl`-gated, since logs aren't re-creatable). `fullReset` is covered by its existing `workspaceDir` wipe (logs live under `sessions/`). Janitor remains the startup backstop.
 
 ### Tests
 - [x] `terminal-logs-relay.test.ts` still green (buffering, cross-session non-leak, clear)
