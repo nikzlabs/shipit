@@ -79,17 +79,22 @@ agent:
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
 
-  > **⚠️ Unproven — must be settled by a host spike before relying on this (see `checklist.md`).** This
+  > **✅ Proven — 3 of 3 hosts green; the mount-topology gate is CLEARED** (see
+  > [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) verdicts in
+  > [`FINDINGS.md`](./FINDINGS.md): Docker Desktop/Windows-WSL2 amd64 PASS=13/0, Docker Desktop/Mac
+  > arm64 PASS=13/0, **prod VPS `shipit-16gb`/ext4 PASS=14/0 with rung 7 — the real host-bind parent —
+  > executed**). This
   > nests a `type=overlay` volume mount at `/workspace/<dep-dir>` **underneath** the existing
-  > `/workspace` bind/Subpath mount — a topology **none of the validated spikes exercised** (every
-  > spike mounted the overlay AT the `/workspace` root, never as a child of an existing mount). Two
-  > specific unknowns this design currently *assumes* rather than has proven: **(a)** whether a dep
-  > dir's `node_modules` leaf mountpoint is created cleanly **inside an already-mounted bind target**
-  > (that dir would be created on the session-volume subtree, not the overlay volume) when it doesn't
-  > pre-exist; and **(b)** **mount ordering** — the nested `/workspace/<dep-dir>` overlay must be
-  > applied *after* the parent `/workspace` mount. If (a)/(b) don't hold, the fallback is to require
-  > the dep-dir leaf to pre-exist (e.g. a touch/`mkdir` in the install step) or to mount at a
-  > non-nested path. Do not treat "the daemon creates the mountpoint" as settled until the spike runs.
+  > `/workspace` bind/Subpath mount — a topology **none of the *earlier* spikes exercised** (they all
+  > mounted the overlay AT the `/workspace` root, never as a child of an existing mount). The two
+  > unknowns this design assumed are now **confirmed on all three targets, including under a real host
+  > bind on ext4:**
+  > **(a)** the dep dir's leaf mountpoint **is** created cleanly inside the already-mounted parent when
+  > it doesn't pre-exist (the daemon `mkdir -p`'d the leaf — and, as a data point, even an absent
+  > *parent* chain); and **(b)** **mount ordering** holds — the daemon applies the nested
+  > `/workspace/<dep-dir>` overlay after the parent mount. **Carry-forward:** the data point in (a)
+  > means **prod must still resolve dep dirs against the host clone** so the parent dir is real, rather
+  > than leaning on the daemon to invent it.
 - **Publish snapshot = the dep dirs only**, not the whole tree — so export/import is much smaller and
   faster than the whole-workspace snapshot.
 - **Compose services** that need a dep dir (a dev server reading `node_modules`) mount the *same*
@@ -738,7 +743,8 @@ on top of the simplified install path.
 > `buildOverlaySpec` to emit **N mounts at dep-dir subpaths** (not one mount at `/workspace` root)
 > with the scope key extended by the dep-dir relpath; scope the worker snapshot to the dep dirs; wire
 > compose services to the same per-session overlay volume at the dep-dir subpaths; and host-matrix
-> validation (a 5-line spike for a `type=overlay` volume nested under the `/workspace` bind). See
+> validation ([`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) — a
+> `type=overlay` volume nested under the `/workspace` bind, run on all three targets). See
 > [`checklist.md`](./checklist.md) for the reframed task list.
 
 0. **Prototypes & decisions** *(done)* — rolling-base logic (33/33), overlay substrate
