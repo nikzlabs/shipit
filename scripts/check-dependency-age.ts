@@ -32,6 +32,35 @@ const pkg = JSON.parse(readFileSync(pkgPath, "utf8")) as {
 
 const EXACT_SEMVER = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
+// `npm view` reaches the registry over the network, so a transient blip
+// (DNS hiccup, 5xx, rate-limit) makes a single call fail and would otherwise
+// fail the whole build with a spurious `lookup-failed`. Retry a few times with
+// a short synchronous backoff before giving up; genuine failures still surface
+// after the last attempt, behaving exactly as before.
+const VIEW_ATTEMPTS = 4;
+const VIEW_BACKOFF_MS = 1500;
+
+function sleepSync(ms: number): void {
+  // Block synchronously (this script is intentionally sequential/sync).
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function npmViewTime(spec: string): string {
+  let lastErr: Error | undefined;
+  for (let attempt = 1; attempt <= VIEW_ATTEMPTS; attempt++) {
+    try {
+      return execFileSync("npm", ["view", "--json", spec, "time"], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (err) {
+      lastErr = err as Error;
+      if (attempt < VIEW_ATTEMPTS) sleepSync(VIEW_BACKOFF_MS * attempt);
+    }
+  }
+  throw lastErr;
+}
+
 interface Violation {
   name: string;
   version: string;
@@ -64,11 +93,7 @@ for (const [name, version] of allDeps) {
 
   let publishedAt: number | undefined;
   try {
-    const raw = execFileSync(
-      "npm",
-      ["view", "--json", `${name}@${version}`, "time"],
-      { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-    );
+    const raw = npmViewTime(`${name}@${version}`);
     const times = JSON.parse(raw) as Record<string, string>;
     const stamp = times[version];
     if (!stamp) {
