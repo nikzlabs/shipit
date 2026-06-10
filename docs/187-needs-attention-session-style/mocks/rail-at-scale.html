@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Bold attention markers at scale</title>
+<style>
+  *{box-sizing:border-box;}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    background:#eef1f5;color:#111827;-webkit-font-smoothing:antialiased;padding:32px 24px 60px;}
+  h1{font-size:19px;font-weight:650;margin:0 0 6px;}
+  .sub{font-size:12.5px;color:#4b5563;max-width:1000px;margin:0 0 24px;line-height:1.5;}
+  code{background:#e5e7eb;padding:1px 5px;border-radius:5px;font-size:11px;color:#374151;}
+  .cols{display:flex;gap:18px;flex-wrap:wrap;}
+  .panel{width:252px;border-radius:14px;padding:10px 8px 12px;border:1px solid;}
+  .ptitle{font-size:11px;font-weight:650;margin:2px 4px 8px;display:flex;flex-direction:column;gap:2px;}
+  .ptitle .d{font-weight:500;font-size:9.5px;}
+
+  .warm{background:#fdf8f0;border-color:#e4d8c4;
+    --bg:#fdf8f0;--sel:#f5ede0;--txt:#2c2416;--txt2:#5c5040;--txt3:#a89878;--bd:#e4d8c4;--bd2:#d0c0a4;
+    --ok:#2d8a4e;--oksub:rgba(45,138,78,.1);--okbd:rgba(45,138,78,.3);--err:#c43030;--warn:#b07010;
+    --pr:#7840b0;--prsub:rgba(120,64,176,.1);--prbd:rgba(120,64,176,.3);--am:#d97706;--am07:rgba(217,119,6,.09);}
+  .warm .ptitle{color:#2c2416;} .warm .ptitle .d{color:#a89878;}
+  .dk{background:#030712;border-color:#1f2937;
+    --bg:#030712;--sel:#111827;--txt:#f3f4f6;--txt2:#9ca3af;--txt3:#6b7280;--bd:#1f2937;--bd2:#374151;
+    --ok:#22c55e;--oksub:rgba(34,197,94,.15);--okbd:rgba(34,197,94,.3);--err:#ef4444;--warn:#f59e0b;
+    --pr:#a78bfa;--prsub:rgba(167,139,250,.15);--prbd:rgba(167,139,250,.3);--am:#f59e0b;--am07:rgba(245,158,11,.12);}
+  .dk .ptitle{color:#f3f4f6;} .dk .ptitle .d{color:#6b7280;}
+
+  .row{position:relative;display:flex;align-items:flex-start;gap:6px;margin:1px 2px;padding:6px 8px;border-radius:6px;font-size:12px;color:var(--txt2);}
+  .row.sel{background:var(--sel);}
+  .prbadge{width:20px;height:20px;border-radius:6px;display:flex;align-items:center;justify-content:center;flex:none;border:1px solid;margin-top:1px;}
+  .open{background:var(--oksub);color:var(--ok);border-color:var(--okbd);}
+  .branch{background:var(--bg);color:var(--txt3);border-color:var(--bd2);}
+  .merged{background:var(--prsub);color:var(--pr);border-color:var(--prbd);}
+  .body{flex:1;min-width:0;}
+  .title{color:var(--txt);font-weight:540;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .meta{display:flex;align-items:center;gap:5px;margin-top:2px;color:var(--txt3);font-size:10px;}
+  .ci{flex:none;display:flex;} .pass{color:var(--ok);} .fail{color:var(--err);} .pend{color:var(--warn);}
+  .amerge{margin-left:auto;flex:none;display:flex;color:var(--txt3);}
+  .kebab{flex:none;color:var(--txt3);opacity:.4;}
+  svg{display:block;} .i-sm{width:16px;height:16px;} .i-xs{width:12px;height:12px;}
+
+  /* A · solid full-height left rail (IMPLEMENTED) */
+  .A .attn{box-shadow:inset 3px 0 0 var(--am);}
+  /* B · rail + faint row tint */
+  .B .attn{box-shadow:inset 3px 0 0 var(--am);background:var(--am07);}
+  .B .attn.sel{background:var(--sel);box-shadow:inset 3px 0 0 var(--am);}
+  /* C · rounded pill marker */
+  .C .attn::before{content:"";position:absolute;left:1px;top:50%;transform:translateY(-50%);width:3px;height:60%;border-radius:999px;background:var(--am);}
+  /* dark column reuses the A rail */
+  .dk .attn{box-shadow:inset 3px 0 0 var(--am);}
+
+  .foot{margin-top:26px;font-size:12px;color:#4b5563;max-width:1000px;line-height:1.6;}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="pr" viewBox="0 0 256 256"><path fill="currentColor" d="M104 96a32 32 0 1 0-40 31v66a32 32 0 1 0 16 0V127a32 32 0 0 0 24-31Zm-32 128a16 16 0 1 1 16-16 16 16 0 0 1-16 16Zm0-112a16 16 0 1 1 16-16 16 16 0 0 1-16 16Zm144 81V88a40 40 0 0 0-40-40h-16V32a8 8 0 0 0-13.66-5.66l-32 32a8 8 0 0 0 0 11.32l32 32A8 8 0 0 0 160 96V64h16a24 24 0 0 1 24 24v105a32 32 0 1 0 16 0Zm-8 47a16 16 0 1 1 16-16 16 16 0 0 1-16 16Z"/></symbol>
+  <symbol id="branch" viewBox="0 0 256 256"><path fill="currentColor" d="M232 80a40 40 0 1 0-48 39.19V120a32 32 0 0 1-32 32h-48a47.81 47.81 0 0 0-24 6.46V119.19a40 40 0 1 0-16 0v17.62a40 40 0 1 0 16 0v-1.81a32 32 0 0 1 32-32h48a48.05 48.05 0 0 0 48-48V119.19A40.06 40.06 0 0 0 232 80ZM72 56a24 24 0 1 1 24 24 24 24 0 0 1-24-24Zm48 144a24 24 0 1 1-24-24 24 24 0 0 1 24 24ZM192 96a24 24 0 1 1 24-24 24 24 0 0 1-24 24Z"/></symbol>
+  <symbol id="merge" viewBox="0 0 256 256"><path fill="currentColor" d="M232 80a40 40 0 1 0-48 39.19v.81a48.05 48.05 0 0 1-48 48h-24v-48.81a40 40 0 1 0-16 0v81.62a40 40 0 1 0 16 0V184h24a64.07 64.07 0 0 0 64-64v-.81A40.06 40.06 0 0 0 232 80ZM72 56a24 24 0 1 1 24 24 24 24 0 0 1-24-24Zm24 168a24 24 0 1 1 24-24 24 24 0 0 1-24 24ZM192 96a24 24 0 1 1 24-24 24 24 0 0 1-24 24Z"/></symbol>
+  <symbol id="check" viewBox="0 0 256 256"><path fill="currentColor" d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0ZM232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104Zm-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88Z"/></symbol>
+  <symbol id="xcircle" viewBox="0 0 256 256"><path fill="currentColor" d="M128 24a104 104 0 1 0 104 104A104.11 104.11 0 0 0 128 24Zm37.66 130.34a8 8 0 0 1-11.32 11.32L128 139.31l-26.34 26.35a8 8 0 0 1-11.32-11.32L116.69 128 90.34 101.66a8 8 0 0 1 11.32-11.32L128 116.69l26.34-26.35a8 8 0 0 1 11.32 11.32L139.31 128Z"/></symbol>
+  <symbol id="notch" viewBox="0 0 256 256"><path fill="currentColor" d="M232 128a104 104 0 0 1-208 0c0-41 23.81-78.36 60.66-95.27a8 8 0 0 1 6.68 14.54C61.43 61.59 40 93.59 40 128a88 88 0 0 0 176 0c0-34.41-21.43-66.41-51.34-80.73a8 8 0 0 1 6.68-14.54C208.19 49.64 232 87 232 128Z"/></symbol>
+  <symbol id="kebab" viewBox="0 0 256 256"><path fill="currentColor" d="M128 96a16 16 0 1 0 16 16 16 16 0 0 0-16-16Zm0-24a16 16 0 1 0-16-16 16 16 0 0 0 16 16Zm0 112a16 16 0 1 0 16 16 16 16 0 0 0-16-16Z"/></symbol>
+</defs></svg>
+
+  <h1>Bold attention markers — tested at scale</h1>
+  <p class="sub">
+    A full sidebar (~half the rows flagged, in clusters, like a real "came back from a break" sidebar) so we can judge <b>peripheral glance</b> and the
+    <b>many-at-once</b> case. All use a solid, hard-edged left marker in the saturated attention color — the kind of high-contrast vertical edge peripheral
+    vision actually catches — applied via <code>box-shadow: inset</code> so there's <b>zero layout shift</b>. <b>A (solid rail) was implemented.</b>
+  </p>
+
+  <div class="cols">
+
+    <!-- A -->
+    <div class="panel warm A">
+      <div class="ptitle"><span>A · Solid left rail ✅</span><span class="d">3px, full height — forms a scannable column</span></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Shipit Harness Tool Call</div><div class="meta"><span>15h</span></div></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Harness Tool Question</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>7d</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Add 1 Enemy (what-did-you…)</div><div class="meta"><span class="ci pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Add 1 Enemy</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn sel"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Quick Wins: XP formula + Quit…</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>20d</span><span class="amerge"><svg class="i-xs"><use href="#merge"/></svg></span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
+    </div>
+
+    <!-- B -->
+    <div class="panel warm B">
+      <div class="ptitle"><span>B · Rail + faint tint</span><span class="d">rail edge + a slight warm body</span></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Shipit Harness Tool Call</div><div class="meta"><span>15h</span></div></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Harness Tool Question</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>7d</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Add 1 Enemy (what-did-you…)</div><div class="meta"><span class="ci pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Add 1 Enemy</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn sel"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Quick Wins: XP formula + Quit…</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>20d</span><span class="amerge"><svg class="i-xs"><use href="#merge"/></svg></span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
+    </div>
+
+    <!-- C -->
+    <div class="panel warm C">
+      <div class="ptitle"><span>C · Rounded pill marker</span><span class="d">centered vertical pill — softer, modern</span></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Shipit Harness Tool Call</div><div class="meta"><span>15h</span></div></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Harness Tool Question</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>7d</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Add 1 Enemy (what-did-you…)</div><div class="meta"><span class="ci pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Add 1 Enemy</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn sel"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Quick Wins: XP formula + Quit…</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>20d</span><span class="amerge"><svg class="i-xs"><use href="#merge"/></svg></span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
+    </div>
+
+    <!-- DARK rail check -->
+    <div class="panel dk">
+      <div class="ptitle"><span>Dark · Solid left rail</span><span class="d">same rail (A) on the dark theme</span></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row attn"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">UI Smoke Test for Tool Rendering</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>13h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Shipit Harness Tool Call</div><div class="meta"><span>15h</span></div></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Test Harness Tool Question</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>7d</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Add 1 Enemy (what-did-you…)</div><div class="meta"><span class="ci pend"><svg class="i-xs"><use href="#notch"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row attn"><div class="prbadge merged"><svg class="i-sm"><use href="#merge"/></svg></div><div class="body"><div class="title">This is a parallel ShipIt sess…</div><div class="meta"><span>14d</span></div></div></div>
+      <div class="row"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Add 1 Enemy</div><div class="meta"><span class="ci pass"><svg class="i-xs"><use href="#check"/></svg></span><span>14d</span></div></div></div>
+      <div class="row attn sel"><div class="prbadge open"><svg class="i-sm"><use href="#pr"/></svg></div><div class="body"><div class="title">Quick Wins: XP formula + Quit…</div><div class="meta"><span class="ci fail"><svg class="i-xs"><use href="#xcircle"/></svg></span><span>20d</span><span class="amerge"><svg class="i-xs"><use href="#merge"/></svg></span></div></div><div class="kebab"><svg class="i-sm"><use href="#kebab"/></svg></div></div>
+      <div class="row attn"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Let's migrate the package man…</div><div class="meta"><span>23h</span></div></div></div>
+      <div class="row"><div class="prbadge branch"><svg class="i-sm"><use href="#branch"/></svg></div><div class="body"><div class="title">Tanks Core: Check Plan Comple…</div><div class="meta"><span>20d</span></div></div></div>
+    </div>
+
+  </div>
+
+  <p class="foot">
+    The point of the at-scale view: a solid left edge makes the flagged rows scan as a <b>column of marks</b> — the eye catches the set (and the gaps) in
+    peripheral vision, even with many flagged. <b>A</b> is the cleanest column (implemented); <b>B</b> adds a body cue but risks the "everything's tinted" noise;
+    <b>C</b> is softer but the gaps between pills make the column slightly less continuous. All are <code>inset box-shadow</code> → no layout shift.
+  </p>
+</body>
+</html>

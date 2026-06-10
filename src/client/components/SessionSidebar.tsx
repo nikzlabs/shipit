@@ -345,16 +345,16 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
-  // docs/187 — "edge gradient wash": a needs-attention session is marked by a
-  // short, soft amber glow built up only near the row's right edge (transparent
-  // until ~72%, then ramping to the amber peak at the right). Sitting behind the
-  // auto-merge / ⋮ area, it pulls the eye right without touching the title. Driven
-  // by the per-theme `--color-attention-wash` token, which carries a higher opacity
-  // in dark themes (the near-black surface needs it to read). The transparent left
-  // portion layers over the row's own background-color, so a selected row keeps its
-  // gray fill with the amber blended in at the right — no special-casing required.
-  const attentionWash = needsAttention
-    ? "linear-gradient(90deg, transparent 72%, var(--color-attention-wash))"
+  // docs/187 — "attention rail": a needs-attention session is marked by a solid
+  // amber bar down the row's left edge. Rendered as an `inset` box-shadow so it
+  // paints inside the row with zero layout shift, using the saturated per-theme
+  // `--color-attention` (not a translucent wash) so it stays a high-contrast,
+  // peripherally-glanceable mark — when several rows are flagged the bars line up
+  // into a scannable column, and the gaps make flagged-vs-not obvious at a glance.
+  // The shadow paints over the row background, so it coexists with the gray
+  // selected fill with no special-casing.
+  const attentionRail = needsAttention
+    ? "inset 3px 0 0 var(--color-attention)"
     : undefined;
 
   return (
@@ -371,7 +371,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
             : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
-      style={attentionWash ? { backgroundImage: attentionWash } : undefined}
+      style={attentionRail ? { boxShadow: attentionRail } : undefined}
       title={attentionReason ?? undefined}
     >
       {hasChildren && (

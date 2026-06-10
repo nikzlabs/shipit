@@ -75,48 +75,45 @@ three are theme-proof with no new tokens and don't touch the selected-row fill. 
 A/D for a clean low-cost change; reach for C (title fill) only if a bolder signal is
 worth the per-theme token work.
 
-## Decision — implemented: edge gradient wash
+## Decision — implemented: attention rail (solid left bar)
 
-After trying the title treatments (which all reshape the title box and disturbed
-the row layout), we moved to a **row-level** signal that leaves every element where
-it is. The implemented choice is the **edge gradient wash** (#4 on the creative
-board, [mocks/creative-directions.html](./mocks/creative-directions.html)): a soft
-amber gradient fades in from the row's left edge and dissolves by ~60%.
+We iterated through several row-level backgrounds (a left-edge wash, a center wash,
+and a short right-edge glow) — all **rejected** because a soft gradient reads as
+ambient texture, not a marker: it's ambiguous (could be hover/selection/loading),
+hard to notice in peripheral vision, and turns into noise when many rows are flagged
+at once (the realistic "came back from a break" case).
+
+The implemented choice is the **attention rail**: a solid amber bar down the row's
+left edge.
 
 ```tsx
-// SessionItem — applied as an inline backgroundImage on the row div
-const attentionWash = needsAttention
-  ? "linear-gradient(90deg, transparent 72%, var(--color-attention-wash))"
+// SessionItem — applied as an inline boxShadow on the row div
+const attentionRail = needsAttention
+  ? "inset 3px 0 0 var(--color-attention)"
   : undefined;
 // ...
-<div ... style={attentionWash ? { backgroundImage: attentionWash } : undefined}>
+<div ... style={attentionRail ? { boxShadow: attentionRail } : undefined}>
 ```
 
-The gradient is a **short amber glow built up only near the row's right edge**
-(transparent until ~72%, then ramping to the amber peak at the right). It sits
-behind the auto-merge / ⋮ area and pulls the eye right. (Earlier iterations — a
-left-edge wash, then a full-width center wash — were both rejected as too heavy /
-hard to see; right-edge + short reads as a compact accent.)
+Why this is the right signal (verified at scale — see
+[mocks/rail-at-scale.html](./mocks/rail-at-scale.html)):
+- **Peripherally glanceable.** Peripheral vision responds to luminance contrast and
+  hard edges, not small text or soft tints. A solid, saturated bar with a crisp edge
+  is exactly that; the soft washes failed this test by design.
+- **Scales to many-at-once.** When several rows are flagged the bars line up into a
+  **scannable column** down the left edge — you catch the set (and the gaps) in one
+  glance instead of reading row by row.
+- **Zero layout shift.** Rendered as an `inset` box-shadow, so the bar paints inside
+  the row's box; nothing moves (a real `border-left` would shift the content right).
+- **No new tokens.** Uses the saturated per-theme `--color-attention` directly
+  (amber-600 light / amber-500 dark) — it reads strongly on both light and dark
+  surfaces, so the interim `--color-attention-wash` token was removed.
+- **Coexists with selection.** The shadow paints over the row background, so a
+  selected + needs-attention row keeps its gray fill with the bar on top — no
+  special-casing of `isCurrent`.
 
-Why this shape:
-- **No layout impact.** It's purely a background, so the PR badge, title, CI icon,
-  timestamp, auto-merge icon, and ⋮ menu all stay exactly where they are.
-- **Coexists with selection.** The transparent left portion layers over the row's
-  own `background-color`: a selected + needs-attention row keeps its gray selection
-  fill with the amber blended in at the right — no special-casing of `isCurrent`.
-- **Per-theme visibility via one new token.** A flat `color-mix` at 18% was nearly
-  invisible on the near-black dark surface. Visibility is now driven by a single new
-  token, **`--color-attention-wash`**, added to all 14 theme files: light themes use
-  `rgba(217,119,6,0.28)` (amber-600), dark themes `rgba(245,158,11,0.45)` (amber-500),
-  and `high-contrast` `0.55`. This is the one place family C's "title fill" cost (a
-  per-theme token) reappears — but it's a single token, not a fill+text pair, and the
-  component reads it identically in every theme.
-
-Note: because the CI-pending status glyph also uses amber (`--color-warning` ==
-`--color-attention`), the wash shares that hue. It reads as a row-level state
-rather than a glyph, so they don't conflict in practice, but if we want a sharper
-distinction later the **reason chip** / **notification dot** ideas on the creative
-board are the shape/position-based alternatives.
+Easy knobs if we want to tune: bar thickness (`3px`), or the row-tint and
+rounded-pill variants (B / C in the at-scale mock).
 
 ## Key files
 
@@ -126,9 +123,8 @@ board are the shape/position-based alternatives.
   All options above are a swap here (row variants) or wrapping the title `<p>` in a
   span and toggling a class (title variants), keyed on `needsAttention` + `isCurrent`.
 - `src/client/hooks/useAttentionInfo.ts` — derives `needsAttention` and the reason string.
-- `src/client/themes/*.css` — `--color-attention` per theme, plus the
-  `--color-attention-wash` token added for the implemented gradient wash (light 0.28,
-  dark 0.45, high-contrast 0.55).
+- `src/client/themes/*.css` — `--color-attention` per theme (amber-600 light /
+  amber-500 dark); the implemented rail uses this token directly, no theme edits.
 
 ## Visual reference
 
@@ -146,4 +142,8 @@ board are the shape/position-based alternatives.
 - **[mocks/creative-directions.html](./mocks/creative-directions.html)** — content/motion/texture
   ideas (reason chip, notification dot, bell, gradient wash, shimmer, dog-ear, wavy
   underline, marching ants) drawn on a faithful replica of the real session row
-  (PR badge, CI status, auto-merge, ⋮). **#4 edge gradient wash was implemented.**
+  (PR badge, CI status, auto-merge, ⋮).
+- **[mocks/rail-at-scale.html](./mocks/rail-at-scale.html)** — the deciding board:
+  bold left-edge markers (solid rail / rail+tint / rounded pill) on a **full sidebar
+  with ~half the rows flagged in clusters**, in warm-light + dark, to judge
+  peripheral glance and the many-at-once case. **The solid rail (A) was implemented.**
