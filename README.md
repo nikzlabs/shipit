@@ -3,8 +3,9 @@
   <span>&nbsp;ShipIt</span>
 </h1>
 
-**Describe products into existence — on your own Git, containers, and server.** Chat-driven
-development that still ships the way real software does: branches, reviews, CI, and deploys.
+**The glass box for coding agents.** Run Claude Code or Codex in an environment where every diff,
+command, and check stays on screen — then ship the way real software does: branches, reviews, CI,
+and deploys, on your own Git, containers, and server.
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
@@ -24,10 +25,12 @@ development that still ships the way real software does: branches, reviews, CI, 
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a browser-based AI dev environment: describe what you want in chat, the agent writes the
-code, and you see results live. It has the ease of prompt-to-app builders, but the work runs through
-a real engineering loop — branches, pull requests, CI, and deploys — on _your_ repo, _your_ Git, and
-_your_ infrastructure. A few choices make that possible:
+ShipIt is a browser-based AI dev environment built on one idea: an agent you can follow is an agent
+you can trust. Most AI tools go dark while they work and hand back a result; ShipIt keeps the work
+legible — reasoning, file edits, terminal output, diffs, and CI checks stay on screen as they
+happen, so you steer turn by turn instead of cleaning up after. It has the ease of prompt-to-app
+builders, but that work runs through a real engineering loop — branches, pull requests, CI, and
+deploys — on _your_ repo, _your_ Git, and _your_ infrastructure. A few choices make that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat
   history, and workspace, so concurrent agents can't step on each other's files, processes, or
