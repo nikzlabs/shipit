@@ -252,6 +252,13 @@ rather than a flat text table:
   fades in on hover/focus, a hover-reveal caret that slides in, softer
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
   for unassigned/avatarless users).
+- **Shared first-line baseline.** The row grid is `items-start`, so each cell's
+  leading element (11px id, 14px title, 18px priority pill, dot+text status, 20px
+  button) would otherwise top-align at a slightly different vertical center. Every
+  cell's first line is wrapped in one fixed-height centered band (`FIRST_LINE`,
+  24px — clears the tallest inner element) so the leading line reads as a single
+  baseline; the title uses `min-h-6` instead so a two-line title still grows
+  downward with its description + labels flowing below.
 
 Visual reference: presented as an inline before/after mockup during the redesign
 turn (not committed — the live component is the source of truth).

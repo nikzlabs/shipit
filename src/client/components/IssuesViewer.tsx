@@ -181,6 +181,16 @@ const ROW_GRID =
   "lg:grid-cols-[64px_minmax(0,1fr)_88px_104px_96px_136px] " +
   "lg:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
+// Every cell's FIRST line shares one fixed-height band, vertically centered, so
+// the row's leading line (id · title · priority · status · assignee · action)
+// reads as a single baseline regardless of each cell's inner element height —
+// the 11px id, the 14px title, the 18px priority pill, the dot+text status, and
+// the 20px button would otherwise each top-align at a slightly different center
+// (the row is `items-start`). 24px clears the tallest inner element (the
+// editor-trigger-wrapped priority badge). The title uses `min-h-6` instead so a
+// two-line title can still grow downward; its description + labels flow below.
+const FIRST_LINE = "flex items-center h-6";
+
 function IssueRow({
   issue,
   canStart,
@@ -218,17 +228,17 @@ function IssueRow({
       className={`${ROW_GRID} group relative px-3 py-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
       {/* Issue identifier — plain label; the row click (not this) opens detail. */}
-      <span className="[grid-area:id] inline-flex items-center gap-1 text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors self-start min-w-0">
+      <span className={`[grid-area:id] ${FIRST_LINE} text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors min-w-0`}>
         <span className="truncate">{shortIdentifier(issue.identifier)}</span>
       </span>
 
       {/* Title (+ optional description preview + labels), wraps to two lines. */}
       <div className="[grid-area:title] min-w-0">
-        <div className="flex items-start gap-1 text-sm font-medium text-(--color-text-primary)">
+        <div className="flex items-center min-h-6 gap-1 text-sm font-medium text-(--color-text-primary)">
           <span className="line-clamp-2">{issue.title}</span>
           <CaretRightIcon
             size={ICON_SIZE.XS}
-            className="mt-0.5 shrink-0 text-(--color-text-tertiary) opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all"
+            className="shrink-0 text-(--color-text-tertiary) opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all"
           />
         </div>
         {issue.description && (
@@ -241,7 +251,7 @@ function IssueRow({
 
       {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
           editable for Linear (docs/191); read-only badge for GitHub. */}
-      <div className="[grid-area:pri] justify-self-end md:justify-self-start self-start">
+      <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end md:justify-self-start`}>
         {canEditPriority ? (
           <IssuePriorityEditor
             current={issue.priority.level}
@@ -257,7 +267,7 @@ function IssueRow({
 
       {/* Status — its own column on desktop; folded into the meta line on mobile.
           Inline-editable (docs/191). */}
-      <div className="hidden md:block [grid-area:status] text-xs text-(--color-text-secondary) truncate self-start">
+      <div className="hidden md:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
         {issue.status && (
           <IssueStatusEditor
             current={issue.status}
@@ -278,7 +288,7 @@ function IssueRow({
       </div>
 
       {/* Assignee — own column at lg+, hidden in the md..lg band, in the meta line on mobile. */}
-      <div className="hidden lg:flex [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0 self-start">
+      <div className="hidden lg:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
@@ -297,20 +307,24 @@ function IssueRow({
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
-      <Button
-        variant="secondary"
-        size="sm"
-        disabled={!canStart}
-        title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-        onClick={(e) => {
-          e.stopPropagation();
-          onStartSession(issue);
-        }}
-        className="[grid-area:action] w-full md:w-auto justify-self-stretch md:justify-self-end inline-flex items-center gap-1.5 self-start"
-      >
-        <RocketLaunchIcon size={ICON_SIZE.SM} />
-        Start session
-      </Button>
+      {/* Wrapped in the shared first-line band so the 20px button centers on the
+          same baseline as the other cells (the row is `items-start`). */}
+      <div className={`[grid-area:action] ${FIRST_LINE} w-full md:w-auto justify-self-stretch md:justify-self-end`}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={!canStart}
+          title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
+          onClick={(e) => {
+            e.stopPropagation();
+            onStartSession(issue);
+          }}
+          className="w-full md:w-auto inline-flex items-center gap-1.5"
+        >
+          <RocketLaunchIcon size={ICON_SIZE.SM} />
+          Start session
+        </Button>
+      </div>
     </div>
   );
 }
