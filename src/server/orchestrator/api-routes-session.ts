@@ -21,6 +21,8 @@ import {
   listAllSessions,
   unarchiveSession,
   renameSession,
+  setSessionPinned,
+  reorderSessionPins,
   archiveSession,
   deleteSession,
   applyTemplate,
@@ -287,6 +289,61 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to rename session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/pin — pin (make persistent) a session
+  app.post<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, true);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to pin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // DELETE /api/sessions/:id/pin — unpin a session
+  app.delete<{ Params: { id: string } }>(
+    "/api/sessions/:id/pin",
+    async (request, reply) => {
+      try {
+        const { session, sessions } = setSessionPinned(sessionManager, request.params.id, false);
+        deps.sseBroadcast("session_list", { sessions });
+        return { session };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to unpin session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/pin-order — reorder a repo's pinned sessions (docs/110 Phase 2)
+  app.post<{ Body: { remoteUrl: string; ids: string[] } }>(
+    "/api/sessions/pin-order",
+    async (request, reply) => {
+      try {
+        const { remoteUrl, ids } = request.body;
+        const { sessions } = reorderSessionPins(sessionManager, remoteUrl, ids);
+        deps.sseBroadcast("session_list", { sessions });
+        return { sessions };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to reorder pins: ${getErrorMessage(err)}` });
       }
     },
   );

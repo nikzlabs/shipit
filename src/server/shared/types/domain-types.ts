@@ -111,6 +111,17 @@ export interface SessionInfo {
    * promoted to Active forever.
    */
   lastViewedAt?: string;
+  /**
+   * docs/110 — pinned session. ISO timestamp set when the user pins the session;
+   * presence is the pin flag, the value orders pins (most-recently-pinned first)
+   * within a repo group. A pin makes the session **persistent**: it sticks to the
+   * top of its repo group in the sidebar, is exempt from the merged top-N view cap
+   * (`filterVisibleInSidebar`) so it never silently drops out of the list, and is
+   * immune to automatic disk-tier descent (`canAutoDescend`) so its workspace is
+   * never reclaimed. Cleared by an explicit user archive — a session can't be both
+   * hidden and persistent.
+   */
+  pinnedAt?: string;
   /** Branch name for sessions cloned from a repo. */
   branch?: string;
   /** If true, this is a pre-created warm session not yet visible in the sidebar. */

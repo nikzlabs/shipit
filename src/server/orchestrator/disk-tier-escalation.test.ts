@@ -125,6 +125,39 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
   });
 
+  it("docs/110: NEVER descends a pinned session, even when ancient and idle", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-pinned");
+    fs.mkdirSync(wsDir, { recursive: true });
+    fs.writeFileSync(path.join(wsDir, "keep.txt"), "x");
+    // Old enough to be evicted on the gentle clock, let alone demoted to light.
+    insertSession({
+      id: "pinned-old",
+      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 5),
+      diskTier: "hot",
+      workspaceDir: wsDir,
+    });
+    sm.setPinned("pinned-old", "2026-05-01T00:00:00.000Z");
+
+    const { registry, disposed } = fakeRegistry();
+    const result = await escalateDiskTiers(baseDeps(sm, registry));
+
+    // The pin is the only thing protecting it: no descent, tier unchanged.
+    expect(result.toLight).toBe(0);
+    expect(result.toEvicted).toBe(0);
+    expect(sm.get("pinned-old")?.diskTier).toBe("hot");
+    expect(disposed).not.toContain("pinned-old");
+    expect(fs.existsSync(path.join(wsDir, "keep.txt"))).toBe(true);
+
+    // Control: unpinning the same session lets it descend (proves the guard,
+    // not some other condition, is what kept it resident).
+    sm.setPinned("pinned-old", null);
+    const after = await escalateDiskTiers(baseDeps(sm, registry));
+    expect(after.toLight + after.toEvicted).toBeGreaterThan(0);
+    expect(sm.get("pinned-old")?.diskTier).not.toBe("hot");
+  });
+
   it("paces age-based descents when paceMs is set", async () => {
     setup();
     const sm = new SessionManager(dbManager!);

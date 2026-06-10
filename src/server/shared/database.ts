@@ -499,6 +499,13 @@ const MIGRATIONS: Migration[] = [
     db.exec("ALTER TABLE messages ADD COLUMN user_review TEXT");
     db.exec("ALTER TABLE messages ADD COLUMN notice_id TEXT");
   },
+  // docs/110 — pinned (persistent) sessions. `pinned_at` is the ISO instant the
+  // user pinned the session; NULL = not pinned. A pin sticks the session to the
+  // top of its repo group, exempts it from the merged sidebar view cap, and makes
+  // it immune to automatic disk-tier reclamation. Cleared by explicit archive.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN pinned_at TEXT");
+  },
 ];
 
 export class DatabaseManager {

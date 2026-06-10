@@ -137,6 +137,18 @@ interface SessionState {
    * session list so other tabs reconcile.
    */
   setAutoFixCiPaused: (sessionId: string, paused: boolean) => Promise<void>;
+  /**
+   * docs/110 — pin/unpin a session. Pinning makes it persistent (top of its repo
+   * group, always visible, immune to disk reclamation). Optimistic; the
+   * authoritative `session_list` SSE broadcast reconciles.
+   */
+  setPinned: (sessionId: string, pinned: boolean) => Promise<void>;
+  /**
+   * docs/110 Phase 2 — reorder a repo's pinned sessions to the given id order
+   * (top-first). Optimistic; the authoritative `session_list` broadcast
+   * reconciles.
+   */
+  reorderPins: (remoteUrl: string, ids: string[]) => Promise<void>;
   setAuthUrl: (url: string | null) => void;
   setSelectedRepoUrl: (url: string | null) => void;
   setCreatingRepo: (creating: boolean) => void;
@@ -310,6 +322,71 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     } catch (err) {
       console.error("[session-store] Auto-fix pause toggle failed:", err);
       patch(prev); // revert
+    }
+  },
+
+  setPinned: async (sessionId, pinned) => {
+    const patch = (value: string | undefined) =>
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          s.id === sessionId ? { ...s, pinnedAt: value } : s,
+        ),
+      }));
+    const prev = get().sessions.find((s) => s.id === sessionId)?.pinnedAt;
+    patch(pinned ? new Date().toISOString() : undefined); // optimistic
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/pin`, {
+        method: pinned ? "POST" : "DELETE",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        console.error("[session-store] Pin toggle failed:", data.error);
+        patch(prev); // revert
+      }
+      // On success the server broadcasts session_list, which reconciles ordering.
+    } catch (err) {
+      console.error("[session-store] Pin toggle failed:", err);
+      patch(prev); // revert
+    }
+  },
+
+  reorderPins: async (remoteUrl, ids) => {
+    // Snapshot pinnedAt for the affected sessions so we can revert on failure.
+    const prev = new Map(
+      get().sessions.filter((s) => ids.includes(s.id)).map((s) => [s.id, s.pinnedAt]),
+    );
+    // Optimistic: rewrite pinnedAt to a strictly-decreasing sequence so the
+    // requested order sorts correctly (mirrors SessionManager.reorderPins).
+    const base = Date.now();
+    set((state) => ({
+      sessions: state.sessions.map((s) => {
+        const idx = ids.indexOf(s.id);
+        return idx >= 0 ? { ...s, pinnedAt: new Date(base - idx * 1000).toISOString() } : s;
+      }),
+    }));
+    try {
+      const res = await fetch("/api/sessions/pin-order", {
+        method: "POST",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ remoteUrl, ids }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { error?: string };
+        console.error("[session-store] Pin reorder failed:", data.error);
+        set((state) => ({
+          sessions: state.sessions.map((s) =>
+            prev.has(s.id) ? { ...s, pinnedAt: prev.get(s.id) } : s,
+          ),
+        }));
+      }
+    } catch (err) {
+      console.error("[session-store] Pin reorder failed:", err);
+      set((state) => ({
+        sessions: state.sessions.map((s) =>
+          prev.has(s.id) ? { ...s, pinnedAt: prev.get(s.id) } : s,
+        ),
+      }));
     }
   },
 

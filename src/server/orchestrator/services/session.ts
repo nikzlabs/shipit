@@ -245,6 +245,38 @@ export function renameSession(
 }
 
 /**
+ * docs/110 — pin or unpin a session. Pinning makes it persistent: it sticks to
+ * the top of its repo group, stays exempt from the merged sidebar view cap, and
+ * is immune to automatic disk-tier reclamation. Returns the updated session plus
+ * the refreshed sidebar list so the caller can broadcast `session_list`.
+ */
+export function setSessionPinned(
+  sessionManager: SessionManager,
+  sessionId: string,
+  pinned: boolean,
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  const updated = sessionManager.setPinned(sessionId, pinned ? new Date().toISOString() : null);
+  if (!updated) throw new ServiceError(404, "Session not found");
+  return { session: updated, sessions: sessionManager.list() };
+}
+
+/**
+ * docs/110 Phase 2 — reorder a repo's pinned sessions to the order in `ids`.
+ * Returns the refreshed sidebar list for the caller to broadcast.
+ */
+export function reorderSessionPins(
+  sessionManager: SessionManager,
+  remoteUrl: string,
+  ids: string[],
+): { sessions: SessionInfo[] } {
+  if (typeof remoteUrl !== "string") throw new ServiceError(400, "remoteUrl must be a string");
+  if (!Array.isArray(ids) || ids.some((id) => typeof id !== "string")) {
+    throw new ServiceError(400, "ids must be an array of session ids");
+  }
+  return { sessions: sessionManager.reorderPins(remoteUrl, ids) };
+}
+
+/**
  * Archive a session, cleaning up clone directory.
  *
  * `pruneVolumes` is invoked when no runner exists at archive time (so the
