@@ -94,6 +94,15 @@ export interface DepDirPublishOutcome {
   depDir: string;
   outcome: PublishOutcome | "error";
   error?: string;
+  /**
+   * docs/183 — overlay depth of this dep dir's base after the publish (from the
+   * resulting pointer): 1 right after a `created`/`flattened`/`reset`, climbing on
+   * each `advanced`. The key signal for depth-cap tuning. Absent for skips/errors
+   * that didn't read a pointer.
+   */
+  depth?: number;
+  /** Base generation after the publish (bumps on advance/flatten/reset). */
+  generation?: number;
 }
 
 /**
@@ -162,7 +171,12 @@ export async function publishDepDirOverlayBases(
         isAncestor,
         currentDefaultCommit,
       });
-      outcomes.push({ depDir, outcome: res.outcome });
+      outcomes.push({
+        depDir,
+        outcome: res.outcome,
+        depth: res.pointer?.depth,
+        generation: res.pointer?.generation,
+      });
     } catch (err) {
       outcomes.push({
         depDir,
@@ -174,4 +188,44 @@ export async function publishDepDirOverlayBases(
     }
   }
   return outcomes;
+}
+
+// ---------------------------------------------------------------------------
+// Measurement instrumentation (docs/183 Phase 7 — warm-install tuning)
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a single greppable measurement line for an overlay session's
+ * install + publish, so the warm-vs-cold / depth-cap data can be tabulated off
+ * service logs without a metrics backend. Only emitted when overlay is active
+ * (the caller gates on a non-empty outcome list, which only happens with the
+ * flag on and the session eligible), so it is inert in production by default.
+ *
+ * Shape (stable for log parsing — `grep '\[overlay-measure\]' | ...`):
+ *
+ *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=node_modules:created:d1g1,...
+ *
+ * `install_ms` is the orchestrator-observed wall-clock from install kickoff to
+ * resolve — a marker-skip (deps already materialized / "main unchanged") resolves
+ * in ~tens of ms, a real install in seconds, so duration alone classifies the
+ * scenario; the per-dir `outcome:d<depth>g<generation>` suffix gives the publish
+ * result and the overlay depth that drives the depth-cap decision.
+ */
+export function formatOverlayMeasurement(args: {
+  sessionId: string;
+  repoUrl: string;
+  installOk: boolean;
+  installDurationMs: number;
+  outcomes: DepDirPublishOutcome[];
+}): string {
+  const dirs = args.outcomes
+    .map((o) => {
+      const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
+      return `${o.depDir}:${o.outcome}${depth}`;
+    })
+    .join(",");
+  return (
+    `[overlay-measure] session=${args.sessionId} repo=${args.repoUrl} ` +
+    `install_ok=${args.installOk} install_ms=${args.installDurationMs} dirs=${dirs}`
+  );
 }

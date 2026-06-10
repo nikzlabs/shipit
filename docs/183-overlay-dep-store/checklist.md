@@ -222,8 +222,13 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       standby (flag off). `warm-sessions` + `standby-container` integration suites stay green.
 - [ ] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
       (`main` unchanged / `main`-advanced / cold; separate network from extract/link). Set the final depth
-      cap from measurement. Not doable in the dev sandbox (no real Docker overlay); the code is in place
-      (`DEFAULT_DEPTH_CAP = 16`, overridable via `publishBase`'s `depthCap` arg if tuning is needed).
+      cap from measurement. Not doable in the dev sandbox (no real Docker overlay). **Instrumentation is now
+      in place** (flag-gated): the orchestrator prints a greppable `[overlay-measure] session=… repo=…
+      install_ok=… install_ms=… dirs=<depDir>:<outcome>:d<depth>g<generation>,…` line per overlay session
+      (install wall-clock + per-dep-dir publish outcome + overlay depth), and
+      [`prototype/measure-warm-install.md`](./prototype/measure-warm-install.md) is the runbook (scenarios,
+      a grep/awk tabulator, the network-vs-extract split, and the depth-cap derivation). `DEFAULT_DEPTH_CAP
+      = 16`, overridable via `publishBase`'s `depthCap`.
 - [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
       invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
       complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately

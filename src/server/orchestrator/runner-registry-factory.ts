@@ -14,6 +14,7 @@ import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
+import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
@@ -228,7 +229,7 @@ export interface RunnerRegistryDeps {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
-  }) => Promise<void>;
+  }) => Promise<DepDirPublishOutcome[]>;
 }
 
 /**
