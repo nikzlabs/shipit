@@ -440,11 +440,17 @@ left in the transcript anchored mid-conversation while the agent never acts on
 it. (A message that arrives *after* `result`, when `running` is already `false`,
 correctly falls to the queue — only the narrow before-`result` window is lost.)
 
-Fix: treat the CLI's `--replay-user-messages` echo as a **delivery ack**. The
-echo (`isReplay:true`) — previously dropped in `claude/adapter.ts` — is now
-surfaced as an `agent_user_replay` AgentEvent; `agent-listeners` matches it
-against the steer's stored `assembledPrompt` and marks that `SteeredMessage`
-`delivered`. At `agent_result`, BEFORE the turn is finalized,
+Fix: route every steer through a **delivery ack** (`agent_user_replay`) that the
+orchestrator matches against the steer's stored `assembledPrompt` to mark that
+`SteeredMessage` `delivered`. **Both backends** produce it: **Claude** from its
+`--replay-user-messages` echo (`isReplay:true`, previously dropped in
+`claude/adapter.ts`), and **Codex** when its `turn/steer` JSON-RPC request
+*resolves* (the existing `.catch` already emits `agent_steer_rejected` on
+failure — the new `.then` emits the ack on success). The Codex ack is what keeps
+`requeueUndeliveredSteers` from misreading an *accepted* Codex steer that
+produced no further assistant group as a lost gap-steer and double-sending it;
+Codex's own turn-end gap is still handled by the existing rejection path
+(`turn/steer` is refused as the turn ends → `agent_steer_rejected` → re-queued). At `agent_result`, BEFORE the turn is finalized,
 `requeueUndeliveredSteers` re-queues every steer that is **neither** acked
 **nor** followed by a later assistant group (the `afterGroupIndex` snapshot grew
 ⇒ the model continued past the steer and acted on it). Requiring *both* signals

@@ -225,8 +225,20 @@ export interface AgentSteerRejectedEvent {
 }
 
 /**
- * docs/140 — the streaming CLI's `--replay-user-messages` echo of an injected
- * user message (`isReplay:true`), surfaced as a **delivery acknowledgment**.
+ * docs/140 — a live steer's **delivery acknowledgment**: the backend confirmed
+ * it accepted the steered user message into the running turn.
+ *
+ * - **Claude** emits this from its `--replay-user-messages` echo of an injected
+ *   user message (`isReplay:true`). The echo fires for every accepted user
+ *   message (including the turn's initial prompt), so the orchestrator matches
+ *   `text` against the steer it sent rather than assuming every replay is a steer.
+ * - **Codex** emits this when its `turn/steer` JSON-RPC request *resolves*
+ *   (the app-server accepted the steer). A rejected `turn/steer` instead emits
+ *   {@link AgentSteerRejectedEvent}.
+ *
+ * Either way the orchestrator marks the matching steer `delivered` so it is not
+ * re-queued at turn end. An un-acked steer (one that fell into the turn-end gap)
+ * IS re-queued.
  *
  * A live steer is written to the resident process's stdin while `running` is
  * still `true`, but the CLI only applies a steered message at its next decision

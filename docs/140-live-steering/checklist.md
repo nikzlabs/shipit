@@ -78,8 +78,9 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 
 ## Phase 6.9 — re-queue a steer lost in the turn-end gap (docs/140 plan.md "Phase 6.9")
 
-- [x] Surface the `--replay-user-messages` echo as an `agent_user_replay` delivery ack instead of dropping it in `claude/adapter.ts`
-- [x] Track per-steer `assembledPrompt` + `delivered` on `SteeredMessage`; match the ack in `agent-listeners.ts`
+- [x] **Claude:** surface the `--replay-user-messages` echo as an `agent_user_replay` delivery ack instead of dropping it in `claude/adapter.ts`
+- [x] **Codex:** emit the same `agent_user_replay` ack when `turn/steer` resolves (success), so an accepted Codex steer is never falsely re-queued; the existing `turn/steer` rejection path still covers Codex's own turn-end gap
+- [x] Track per-steer `assembledPrompt` + `delivered` on `SteeredMessage`; match the ack (backend-agnostic) in `agent-listeners.ts`
 - [x] `requeueUndeliveredSteers` at `agent_result` (before finalize) re-queues steers that were neither acked nor followed by a later assistant group — runs them as the next turn
 - [x] Tests: `live-steering.test.ts` (gap steer re-queued + resent; acked steer not re-queued), `adapter.test.ts` (replay echo → `agent_user_replay`)
 - [ ] **Validate in production** that a gap-steer is genuinely un-echoed (the fix's assumption). Watch the `[steer-requeue]`/`[steer-send]` logs; if the CLI echoes received-but-unapplied steers, drop the echo from the delivered predicate and rely on the assistant-activity signal alone.
