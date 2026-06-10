@@ -102,7 +102,7 @@ export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority
     );
   }
   return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px]">
+    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px] leading-none">
       {priority.label}
       {caret}
     </Badge>
