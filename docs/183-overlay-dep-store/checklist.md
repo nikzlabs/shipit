@@ -81,18 +81,27 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
 
 #### Phase 3b — Spec populator + flag-gated wiring (first phase that mounts)
 
-- [ ] Add the populator (`prepareOverlaySpecs`): resolve eligibility + base scope from `SessionInfo`,
-      read the session's `agent.dep-dirs`, resolve the state-volume daemon-host mountpoint
-      (`resolveVolumeMountpoint`), call `buildOverlaySpecs`, and populate `ContainerConfig.overlaySpecs`.
-      Wire it into the container-creation path (manager / app-lifecycle); flag-off → no specs → unchanged.
-- [ ] **Contextual dep-dir validation (deferred from Phase 1).** The host clone now exists. Before
-      building specs, drop a declared dep dir whose **parent doesn't exist** or that **points at tracked
-      (non-gitignored) source**. A dropped dir falls back to a plain install for that path; never fatal.
-- [ ] Integration test (fake Docker, flag on): N volumes created + mounted at the right nested subpaths;
-      a non-overlay / flag-off session is unchanged.
-- [ ] **Validate the recursive file-tree watcher descends into the nested submount** (same-namespace
-      inotify across a mount boundary) — the one item the nested-overlay spike deliberately did not
-      cover. See `host-overlay-spike.sh`'s inotify rung; this is where the nested mount first exists.
+- [x] Added `SessionContainerManager.prepareOverlaySpecs`: resolves eligibility + base scope
+      (`resolveOverlayScope`) from `SessionInfo`, reads the session's `agent.dep-dirs`
+      (`depDirsForSession`), validates against the clone, resolves the state-volume daemon-host
+      mountpoint (`resolveVolumeMountpoint`), and calls `buildOverlaySpecs`. Returns `[]` when the flag
+      is off / session ineligible / no state volume / nothing overlay-worthy.
+- [x] Wired into the container-creation path: `createContainerForRunner` (app-lifecycle) calls
+      `prepareOverlaySpecs` and threads the result through `buildConfigForWorkspace({ overlaySpecs })`
+      → `buildConfig` → the 3a plumbing. Both call sites pass the session (`sessionManager.get`).
+      Flag-off → `[]` → byte-for-byte unchanged.
+- [x] **Contextual dep-dir validation (deferred from Phase 1)** — `validDepDirsForOverlay`: keep a dep
+      dir only if its **parent exists** on the clone AND it is **git-ignored** (an artifact, not tracked
+      source — `simpleGit.checkIgnore`). Any error (non-git dir, git failure) drops all (conservative).
+      A dropped dir falls back to a plain install for that path; never fatal.
+- [x] Tests: `validDepDirsForOverlay` (ignored-kept, tracked-source-dropped, missing-parent-dropped,
+      nested, mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
+      at the mountpoint, tracked-source→[], no-state-volume→[]); **end-to-end** populator →
+      `buildConfigForWorkspace` → `create` mounts the volume nested at `/workspace/node_modules`.
+- [ ] **(host-gated) Validate the recursive file-tree watcher descends into the nested submount**
+      (same-namespace inotify across a mount boundary) — the one item the nested-overlay spike
+      deliberately did not cover. Needs a running container on real overlay; see `host-overlay-spike.sh`'s
+      inotify rung. Not verifiable in-environment (no real Docker overlay), like the host spikes.
 
 ### Phase 4 — Snapshot + publish, per dep dir
 

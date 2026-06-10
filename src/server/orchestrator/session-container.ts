@@ -40,7 +40,15 @@ import {
   type HealthMonitorState,
 } from "./container-health.js";
 import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount } from "../shared/shipit-config.js";
-import type { DepDirOverlaySpec } from "./overlay-session.js";
+import {
+  buildOverlaySpecs,
+  depDirsForSession,
+  resolveOverlayScope,
+  validDepDirsForOverlay,
+  type DepDirOverlaySpec,
+} from "./overlay-session.js";
+import { resolveVolumeMountpoint } from "./overlay-volume.js";
+import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -909,6 +917,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
      * passes `opsSession` falsy here, so its mounts are dropped downstream.
      */
     opsSession?: boolean;
+    /**
+     * docs/183 dep-dir design — per-dep-dir overlay specs from `prepareOverlaySpecs`.
+     * Empty/absent for non-overlay sessions (the byte-for-byte-unchanged path).
+     */
+    overlaySpecs?: DepDirOverlaySpec[];
   }): ContainerConfig {
     const cfg = readAgentConfig(opts.workspaceDir);
     const limits = resolveAgentDockerLimits(opts.workspaceDir);
@@ -925,7 +938,38 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerAccess: limits.dockerAccess,
       opsSession: opts.opsSession,
       hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
+      overlaySpecs: opts.overlaySpecs,
     });
+  }
+
+  /**
+   * docs/183 dep-dir design — resolve the per-dep-dir overlay specs for a session,
+   * or `[]` when the feature is off / the session is ineligible / nothing is
+   * overlay-worthy. Async because it inspects the workspace state volume for its
+   * daemon-host mountpoint. The caller passes the result into
+   * `buildConfigForWorkspace({ overlaySpecs })`.
+   *
+   * Returns `[]` (the byte-for-byte-unchanged path) when:
+   *  - the `OVERLAY_DEP_STORE` flag is off, the session has no remote, or it is an
+   *    ops session (`resolveOverlayScope` → null);
+   *  - there is no workspace state volume to anchor the overlay subtrees against
+   *    (dev/bind mode); or
+   *  - no declared dep dir survives contextual validation (`validDepDirsForOverlay`:
+   *    parent exists + git-ignored artifact).
+   */
+  async prepareOverlaySpecs(opts: {
+    sessionId: string;
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+  }): Promise<DepDirOverlaySpec[]> {
+    const scope = resolveOverlayScope(opts.session);
+    if (!scope) return [];
+    if (!this.workspaceVolume) return [];
+    const declared = depDirsForSession({ workspaceDir: opts.workspaceDir });
+    const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
+    if (valid.length === 0) return [];
+    const volumeMountpoint = await resolveVolumeMountpoint(this.docker, this.workspaceVolume);
+    return buildOverlaySpecs({ sessionId: opts.sessionId, scope, depDirs: valid, volumeMountpoint });
   }
 
   // --- Dispose ---

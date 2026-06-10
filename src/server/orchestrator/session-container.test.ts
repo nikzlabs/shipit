@@ -416,6 +416,119 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  // --- docs/183 Phase 3b — prepareOverlaySpecs populator ---
+
+  describe("prepareOverlaySpecs", () => {
+    const STATE_VOL = "shipit-workspace";
+    const MP = `/var/lib/docker/volumes/${STATE_VOL}/_data`;
+    let ovlManager: SessionContainerManager;
+    let tmpDirs: string[];
+    let savedFlag: string | undefined;
+
+    beforeEach(() => {
+      savedFlag = process.env.OVERLAY_DEP_STORE;
+      tmpDirs = [];
+      ovlManager = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        workspaceVolume: STATE_VOL,
+      });
+    });
+    afterEach(async () => {
+      if (savedFlag === undefined) delete process.env.OVERLAY_DEP_STORE;
+      else process.env.OVERLAY_DEP_STORE = savedFlag;
+      for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+      await ovlManager.dispose();
+    });
+
+    async function ws(opts: { gitignore?: string; shipitYaml?: string; dirs?: string[] } = {}): Promise<string> {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prep-overlay-"));
+      tmpDirs.push(dir);
+      const git = (await import("simple-git")).default;
+      await git(dir).init();
+      if (opts.gitignore !== undefined) fs.writeFileSync(path.join(dir, ".gitignore"), opts.gitignore);
+      if (opts.shipitYaml !== undefined) fs.writeFileSync(path.join(dir, "shipit.yaml"), opts.shipitYaml);
+      for (const d of opts.dirs ?? []) fs.mkdirSync(path.join(dir, d), { recursive: true });
+      return dir;
+    }
+    const eligible = { remoteUrl: "https://github.com/acme/repo.git", kind: undefined } as const;
+
+    it("returns [] when the feature flag is off", async () => {
+      delete process.env.OVERLAY_DEP_STORE;
+      const dir = await ws({ gitignore: "node_modules\n" });
+      expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: eligible }))
+        .toEqual([]);
+    });
+
+    it("returns [] for an ineligible session (no remote / ops) even with the flag on", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: { remoteUrl: "", kind: undefined } }))
+        .toEqual([]);
+      expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: { remoteUrl: "r", kind: "ops" } }))
+        .toEqual([]);
+    });
+
+    it("builds one spec per valid dep dir, anchored at the state-volume mountpoint", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" }); // default dep dir node_modules, ignored
+      const specs = await ovlManager.prepareOverlaySpecs({ sessionId: "abc123def456", workspaceDir: dir, session: eligible });
+      expect(specs).toHaveLength(1);
+      expect(specs[0].depDir).toBe("node_modules");
+      expect(specs[0].mountPath).toBe("/workspace/node_modules");
+      expect(specs[0].lowerdir.startsWith(`${MP}/overlay-base/`)).toBe(true);
+      expect(specs[0].upperdir).toContain(`${MP}/sessions/abc123def456/overlay/`);
+      expect(specs[0].volumeName).toMatch(/^shipit-abc123def456_overlay-[a-f0-9]{8}$/);
+    });
+
+    it("end-to-end: populator → buildConfigForWorkspace → create mounts the overlay volume nested under /workspace", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      const overlaySpecs = await ovlManager.prepareOverlaySpecs({ sessionId: "e2e-session-1", workspaceDir: dir, session: eligible });
+      const config = ovlManager.buildConfigForWorkspace({
+        sessionId: "e2e-session-1",
+        sessionDir: dir,
+        workspaceDir: dir,
+        credentialsDir: "/credentials",
+        overlaySpecs,
+      });
+      await ovlManager.create(config);
+
+      // The overlay volume was created…
+      expect(mockDocker._liveVolumes.has(overlaySpecs[0].volumeName)).toBe(true);
+      // …and mounted nested at /workspace/node_modules (NOT at the /workspace root).
+      const call = mockDocker.createContainer.mock.calls.at(-1)![0];
+      const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
+      expect(nested?.Source).toBe(overlaySpecs[0].volumeName);
+      const wsMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace");
+      if (wsMount) expect(wsMount.Source).not.toBe(overlaySpecs[0].volumeName);
+    });
+
+    it("drops dep dirs that fail contextual validation (tracked source)", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      // Declare `src` (tracked, not ignored) → validation drops it → no specs.
+      const dir = await ws({ gitignore: "node_modules\n", shipitYaml: "agent:\n  dep-dirs:\n    - src\n", dirs: ["src"] });
+      expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: eligible }))
+        .toEqual([]);
+    });
+
+    it("returns [] when the manager has no workspace state volume (dev/bind mode)", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const noVolManager = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+      });
+      const dir = await ws({ gitignore: "node_modules\n" });
+      expect(await noVolManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: eligible }))
+        .toEqual([]);
+      await noVolManager.dispose();
+    });
+  });
+
   // --- bootedLimits (W3) ---
 
   describe("bootedLimits", () => {
