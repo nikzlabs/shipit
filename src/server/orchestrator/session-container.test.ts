@@ -47,6 +47,10 @@ function createMockDocker() {
   // docs/183 Phase 2 — track overlay volume create/remove for the mock.
   const liveVolumes = new Set<string>();
   const removedVolumes: string[] = [];
+  // Names whose `getVolume().inspect()` 404s — models a volume that was never
+  // provisioned (for the `requireProvisioned` compose-path filter). Inspect
+  // succeeds for any other name so `resolveVolumeMountpoint` keeps working.
+  const missingVolumes = new Set<string>();
 
   const eventEmitter = new EventEmitter();
 
@@ -58,13 +62,19 @@ function createMockDocker() {
     _eventEmitter: eventEmitter,
     _liveVolumes: liveVolumes,
     _removedVolumes: removedVolumes,
+    _missingVolumes: missingVolumes,
 
     createVolume: vi.fn(async (opts: any) => {
       liveVolumes.add(opts.Name);
       return { Name: opts.Name };
     }),
     getVolume: vi.fn((name: string) => ({
-      inspect: vi.fn(async () => ({ Name: name, Mountpoint: `/var/lib/docker/volumes/${name}/_data` })),
+      inspect: vi.fn(async () => {
+        if (missingVolumes.has(name)) {
+          const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
+        }
+        return { Name: name, Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+      }),
       remove: vi.fn(async () => {
         if (!liveVolumes.has(name)) {
           const err: any = new Error("no such volume"); err.statusCode = 404; throw err;
@@ -481,6 +491,31 @@ describe("SessionContainerManager", () => {
       expect(specs[0].lowerdir.startsWith(`${MP}/overlay-base/`)).toBe(true);
       expect(specs[0].upperdir).toContain(`${MP}/sessions/abc123def456/overlay/`);
       expect(specs[0].volumeName).toMatch(/^shipit-abc123def456_overlay-[a-f0-9]{8}$/);
+    });
+
+    it("requireProvisioned drops specs whose overlay volume does not exist (container predates the flag)", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      const all = await ovlManager.prepareOverlaySpecs({ sessionId: "abc123def456", workspaceDir: dir, session: eligible });
+      expect(all).toHaveLength(1);
+      // The volume was never created (e.g. the agent container was built
+      // before OVERLAY_DEP_STORE was enabled) — the compose path must not
+      // reference it as `external`.
+      mockDocker._missingVolumes.add(all[0].volumeName);
+      const provisioned = await ovlManager.prepareOverlaySpecs({
+        sessionId: "abc123def456", workspaceDir: dir, session: eligible, requireProvisioned: true,
+      });
+      expect(provisioned).toEqual([]);
+    });
+
+    it("requireProvisioned keeps specs whose overlay volume exists", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n" });
+      const provisioned = await ovlManager.prepareOverlaySpecs({
+        sessionId: "abc123def456", workspaceDir: dir, session: eligible, requireProvisioned: true,
+      });
+      expect(provisioned).toHaveLength(1);
+      expect(provisioned[0].depDir).toBe("node_modules");
     });
 
     it("end-to-end: populator → buildConfigForWorkspace → create mounts the overlay volume nested under /workspace", async () => {

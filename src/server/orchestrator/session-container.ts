@@ -47,7 +47,7 @@ import {
   validDepDirsForOverlay,
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
-import { resolveVolumeMountpoint } from "./overlay-volume.js";
+import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -961,6 +961,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     sessionId: string;
     workspaceDir: string;
     session: Pick<SessionInfo, "remoteUrl" | "kind">;
+    /**
+     * Keep only specs whose overlay volume already exists on the daemon. The
+     * compose path passes `true`: it consumes the specs as `external` volume
+     * references, and the volumes are created at agent-container-create time —
+     * so a container built before the flag was enabled (or whose provisioning
+     * failed) has none, and referencing them would fail the whole `compose up`.
+     * Creation paths omit this (they are about to create the volumes).
+     */
+    requireProvisioned?: boolean;
   }): Promise<DepDirOverlaySpec[]> {
     const scope = resolveOverlayScope(opts.session);
     if (!scope) return [];
@@ -969,7 +978,20 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
     if (valid.length === 0) return [];
     const volumeMountpoint = await resolveVolumeMountpoint(this.docker, this.workspaceVolume);
-    return buildOverlaySpecs({ sessionId: opts.sessionId, scope, depDirs: valid, volumeMountpoint });
+    const specs = buildOverlaySpecs({ sessionId: opts.sessionId, scope, depDirs: valid, volumeMountpoint });
+    if (!opts.requireProvisioned) return specs;
+    const provisioned: DepDirOverlaySpec[] = [];
+    for (const spec of specs) {
+      if (await volumeExists(this.docker, spec.volumeName)) {
+        provisioned.push(spec);
+      } else {
+        console.warn(
+          `[overlay:${opts.sessionId}] skipping compose mount for ${spec.depDir}: ` +
+          `volume ${spec.volumeName} is not provisioned (agent container predates the overlay enable?)`,
+        );
+      }
+    }
+    return provisioned;
   }
 
   // --- Dispose ---

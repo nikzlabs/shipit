@@ -224,6 +224,24 @@ export async function createOverlayVolume(
 }
 
 /**
+ * Whether a named volume currently exists on the daemon. Used by the compose
+ * path to mount only overlay volumes the agent container was actually built
+ * with — re-deriving eligibility there can disagree with what was provisioned
+ * (e.g. a container created before `OVERLAY_DEP_STORE` was enabled), and a
+ * compose override referencing a missing `external` volume fails the whole
+ * `compose up`. 404 → false; any other daemon error propagates.
+ */
+export async function volumeExists(docker: Docker, volumeName: string): Promise<boolean> {
+  try {
+    await docker.getVolume(volumeName).inspect();
+    return true;
+  } catch (err) {
+    if (errStatus(err) === 404) return false;
+    throw err;
+  }
+}
+
+/**
  * Remove a per-session overlay volume on teardown. The daemon unmounts the overlay
  * when the container stops, so this is a plain `docker volume rm` with no manual
  * unmount-ordering. Best-effort: a missing/already-removed volume is not an error.

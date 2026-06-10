@@ -7,6 +7,7 @@ import {
   resolveVolumeMountpoint,
   createOverlayVolume,
   removeOverlayVolume,
+  volumeExists,
   OVERLAY_MANAGED_LABEL,
   type OverlaySpec,
 } from "./overlay-volume.js";
@@ -202,6 +203,23 @@ describe("createOverlayVolume", () => {
     await expect(createOverlayVolume(docker, { ...spec, volumeName: "v1" })).rejects.toThrow("boom");
     // Second create still runs.
     await expect(createOverlayVolume(docker, { ...spec, volumeName: "v2" })).resolves.toBeUndefined();
+  });
+});
+
+describe("volumeExists", () => {
+  it("returns true when inspect succeeds", async () => {
+    const { docker } = makeFakeDocker();
+    expect(await volumeExists(docker, "shipit-abc_overlay-deadbeef")).toBe(true);
+  });
+
+  it("returns false on 404 (volume never provisioned)", async () => {
+    const { docker } = makeFakeDocker({ inspect: async () => { throw notFound(); } });
+    expect(await volumeExists(docker, "shipit-abc_overlay-deadbeef")).toBe(false);
+  });
+
+  it("propagates non-404 daemon errors", async () => {
+    const { docker } = makeFakeDocker({ inspect: async () => { throw new Error("daemon unreachable"); } });
+    await expect(volumeExists(docker, "v")).rejects.toThrow("daemon unreachable");
   });
 });
 
