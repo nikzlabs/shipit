@@ -601,3 +601,53 @@ coherent merged view. **Nothing else gates the compose/preview path; proceed to 
 compose-generator wiring** (point overlay-session services at the per-session overlay
 volume by subpath; dev-server HMR keeps polling, which the write/mtime-coherence check
 confirmed works over the shared mount).
+
+## Nested overlay under the `/workspace` bind (dep-dir design — the current gate)
+
+All the runs above proved the overlay **at the `/workspace` root** (the whole-workspace
+design). The design pivoted to the **dependency-directory** model: `/workspace` stays a
+normal bind (the host clone — source + `.git`, authoritative), and **each declared dep
+dir** is a separate `type=overlay` volume mounted at a **nested subpath**
+(`/workspace/node_modules`, `/workspace/packages/*/node_modules`). Nothing prior mounted
+an overlay volume onto a *subdirectory of an already-mounted parent* — the one unproven
+topology gating the dep-dir mount wiring. [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh)
+settles it per host.
+
+**Status: PROVEN on the decisive host — Docker Desktop/Windows-WSL2** (`docker-desktop`,
+docker 29.4.1, linux/amd64). **PASS=13 FAIL=0:** nested overlay mounts under the parent
+and shows the dep lower; source + `.git` coexist on the parent; copy-up isolation holds
+(dep delta → per-session upper / base immutable; source write → the bind, never the dep
+upper); two dep dirs at distinct depths merge at once with absent-leaf auto-creation;
+two sessions share one read-only base with no EBUSY; one dep overlay volume
+refcount-shares across agent + service while nested (HMR-poll substrate confirmed). The
+Windows-WSL2 backend is again the decisive host (it's where the rejected sidecar's
+propagation failed), so a clean run here is the strongest single signal that the nesting
+mechanism is sound.
+
+> **Docker Desktop / Windows-WSL2 run:** PASS=13 FAIL=0, daemon `docker-desktop`
+> (Docker Desktop), docker 29.4.1, linux/amd64. All six functional rungs (2–6) green;
+> rung 7 (real host-bind parent) correctly auto-skipped on Desktop — the named-volume
+> parent in rungs 2–6 exercises the nesting mechanism, and a host bind of the VM's
+> volume path isn't shared into Desktop, so the real-bind topology is deferred to the
+> VPS run. **Data point:** the daemon also `mkdir -p`'d an absent *parent* chain
+> (`/workspace/ghost/deep/...`), not just the leaf — so prod must still resolve dep dirs
+> against the host clone to guarantee the parent is real rather than relying on the
+> daemon to invent it.
+
+**Matrix — 1 of 3 (the decisive host green; Mac + VPS pending).**
+
+| Host | Arch / kernel | Storage | Rung 7 (real bind) | Result |
+|---|---|---|---|---|
+| Docker Desktop/Windows-WSL2 | amd64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ✅ PASS=13/13 |
+| Docker Desktop/Mac | arm64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ⏳ pending |
+| Prod VPS (ext4) | amd64 / native Linux | **ext4** | **runs — the load-bearing bind check** | ⏳ pending |
+
+**Gate not yet cleared — the VPS run is load-bearing.** Rungs 2–6 prove the nesting
+*mechanism* portably (the parent's source type doesn't change how the child mount
+resolves), but the literal prod topology is "overlay nested under a real **host bind**,"
+which only rung 7 exercises — and rung 7 auto-skips on Docker Desktop. So the VPS/ext4
+run (where rung 7 actually executes) is the one that validates the production case;
+don't treat the Windows-WSL2 green alone as the go signal. Run on Docker Desktop/Mac and
+the prod VPS, then this gate clears and the dep-dir mount wiring can begin. (Still not
+covered by this spike: the recursive file-tree watcher descending into the nested
+submount — validate via `host-overlay-spike.sh`'s inotify rung.)

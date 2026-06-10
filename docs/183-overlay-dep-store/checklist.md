@@ -168,12 +168,16 @@ top of this file.
       **nested subpath** (`/workspace/node_modules`, `/workspace/packages/*/node_modules`). Whether the
       daemon mounts an overlay volume cleanly onto a subdirectory of an already-mounted parent — and
       whether merged dep view, copy-up isolation, source/`.git` coexistence, multi-depth + absent-leaf
-      auto-creation, concurrent shared-base, and agent+service sharing all hold in that topology — is
-      **not yet proven on any target**. Run
-      [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on VPS/ext4, Docker
-      Desktop/Mac, and Docker Desktop/Windows-WSL2 and paste each summary into
-      [`FINDINGS.md`](./FINDINGS.md). **Green on all three is the gate to begin the dep-dir mount wiring;
-      a failure forces a mount-topology rethink.**
+      auto-creation, concurrent shared-base, and agent+service sharing all hold in that topology.
+      **Progress: 1 of 3 — Docker Desktop/Windows-WSL2 PASS=13/0** (the decisive host where the rejected
+      sidecar's propagation failed; see [`FINDINGS.md`](./FINDINGS.md)). **Still pending: Docker
+      Desktop/Mac and — load-bearing — the prod VPS/ext4 run.** Rungs 2–6 prove the nesting *mechanism*
+      portably, but the literal prod topology (overlay nested under a real **host bind**) is only
+      exercised by rung 7, which auto-skips on Docker Desktop and runs only on native Linux — so the
+      VPS run is the one that validates production. Run
+      [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on the remaining two
+      targets and paste each summary into `FINDINGS.md`. **Green on all three (VPS included) is the gate
+      to begin the dep-dir mount wiring; a failure forces a mount-topology rethink.**
 - [ ] **Recursive file-tree watcher across the nested submount.** Confirm the agent-container watcher
       (recursive same-namespace inotify over `/workspace`) descends into the nested `node_modules`
       submount so copy-ups there surface as change events — inotify does not cross a mount boundary
