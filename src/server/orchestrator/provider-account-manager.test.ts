@@ -96,6 +96,27 @@ describe("ProviderAccountManager", () => {
     expect(mgr.selectRouteForTurn("codex")).toEqual({ kind: "account", id: "codex-default" });
   });
 
+  it("does not count unavailable or failed stored accounts as configured", () => {
+    const now = Date.now();
+    store.upsertProviderAccount({
+      id: "claude-default",
+      provider: "claude",
+      label: "Primary Anthropic account",
+      isPrimary: true,
+      status: "auth_failed",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
+
+    expect(mgr.hasAnyAuthForProvider("claude")).toBe(false);
+
+    process.env.ANTHROPIC_AUTH_TOKEN = "env-token";
+    expect(mgr.hasAnyAuthForProvider("claude")).toBe(true);
+    expect(mgr.selectRouteForTurn("claude")).toEqual({ kind: "reserved", id: "claude-env-oauth" });
+  });
+
   describe("account-scoped auth flows (docs/150)", () => {
     function setup() {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });

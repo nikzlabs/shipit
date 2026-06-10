@@ -32,6 +32,7 @@ import type { AgentRegistry } from "../shared/agent-registry.js";
 import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
+import { listAgents } from "./services/settings.js";
 
 // ---- Re-exports for extracted modules ----
 //
@@ -855,6 +856,24 @@ export interface EventWiringDeps {
   sessionManager: SessionManager;
 }
 
+export function markProviderAccountUnauthenticated(opts: {
+  agentId: AgentId;
+  accountId: string;
+  providerAccountManager: ProviderAccountManager;
+  agentRegistry: AgentRegistry;
+  sseBroadcast: (event: string, data: unknown) => void;
+}): void {
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  try {
+    providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+  } catch (err) {
+    console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
+  }
+  agentRegistry.refreshAuth(agentId);
+  sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+}
+
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;
@@ -959,6 +978,8 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.reason ? { reason: payload.reason } : {}),
         ...(payload?.message ? { message: payload.message } : {}),
       });
+      agentRegistry.refreshAuth(agentId);
+      sseBroadcast("agent_list", agentListPayload());
     });
   }
 

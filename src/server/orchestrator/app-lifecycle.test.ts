@@ -10,6 +10,7 @@ import {
   runMcpOAuthStartupRefresh,
   scheduleStartupTasks,
   wireEventHandlers,
+  markProviderAccountUnauthenticated,
 } from "./app-lifecycle.js";
 import { SessionRunner, SessionRunnerRegistry } from "./session-runner.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
@@ -799,5 +800,54 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     const complete = events.find((e) => e.event === "agent_auth_complete");
     expect(complete?.data).toMatchObject({ agentId: "claude" });
     expect(complete?.data.accountId).toBeUndefined();
+  });
+});
+
+describe("markProviderAccountUnauthenticated", () => {
+  it("marks the account auth_failed, refreshes registry auth, and broadcasts agent list", () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-provider-unauth-"));
+    try {
+      const credentialStore = new CredentialStore(tmp);
+      const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
+      const account = providerAccountManager.create("claude", "Work");
+      providerAccountManager.setAccountStatus("claude", account.id, "ready");
+      let authConfigured = true;
+      const refreshAuth = vi.fn(() => { authConfigured = false; });
+      const agentRegistry = {
+        refreshAuth,
+        list: () => [{
+          id: "claude",
+          name: "Claude Code",
+          installed: true,
+          authConfigured,
+          capabilities: {
+            models: ["sonnet"],
+            supportsReview: true,
+            supportsSteering: true,
+            supportsCompaction: true,
+            supportedPermissionModes: ["auto"],
+            skillInvocationPrefix: "/",
+          },
+        }],
+      } as unknown as AgentRegistry;
+      const events: { event: string; data: Record<string, unknown> }[] = [];
+
+      markProviderAccountUnauthenticated({
+        agentId: "claude",
+        accountId: account.id,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
+      });
+
+      expect(providerAccountManager.get("claude", account.id)?.status).toBe("auth_failed");
+      expect(refreshAuth).toHaveBeenCalledWith("claude");
+      expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
+      expect(events.find((e) => e.event === "agent_list")?.data.agents)
+        .toEqual(expect.arrayContaining([expect.objectContaining({ id: "claude", authConfigured: false })]));
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });
