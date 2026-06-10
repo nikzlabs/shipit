@@ -1,4 +1,4 @@
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, memo } from "react";
 import hljs from "highlight.js";
 import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
 import Markdown, { type Components } from "react-markdown";
@@ -167,8 +167,17 @@ const remarkPlugins = [remarkGfm, remarkBreaks];
  * existing text nodes instead of replacing whole subtrees — the user's text
  * selection survives token-by-token streaming without the freeze hack that
  * used to live in `MessageList`.
+ *
+ * `memo`'d on `text`: `react-markdown` re-runs the full remark pipeline
+ * (micromark parse → mdast → hast → React elements) on every render, and the
+ * `MessageList` re-renders on every streamed token. Without this gate, every
+ * message in the transcript re-parsed its markdown on each token of the
+ * *currently streaming* message — O(messages × tokens) parsing that pinned the
+ * main thread (the dominant cost in the 2026-06 perf trace). `remarkPlugins`
+ * and `markdownComponents` are module-level constants, so the parse output
+ * depends only on `text`; a shallow prop compare is exactly correct.
  */
-export function MarkdownContent({ text }: { text: string }) {
+export const MarkdownContent = memo(({ text }: { text: string }) => {
   return (
     <div
       className="prose dark:prose-invert prose-sm max-w-none"
@@ -183,7 +192,7 @@ export function MarkdownContent({ text }: { text: string }) {
       </Markdown>
     </div>
   );
-}
+});
 
 /** Hover tooltip that renders its content as markdown. Scrollable. */
 export function MarkdownTooltip({ content, children }: { content: string; children: React.ReactNode }) {
@@ -209,8 +218,15 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
   );
 }
 
-/** Syntax-highlighted fenced code block with a header and "Copy" button. */
-export function CodeBlock({ code, language }: { code: string; language: string }) {
+/**
+ * Syntax-highlighted fenced code block with a header and "Copy" button.
+ *
+ * `memo`'d on `{ code, language }` so a growing transcript doesn't re-run
+ * `hljs.highlight` for every already-rendered block on each streamed token —
+ * the inner `useMemo` only protects a single render, the `memo` boundary
+ * skips the render entirely when the block's content is unchanged.
+ */
+export const CodeBlock = memo(({ code, language }: { code: string; language: string }) => {
   const [copied, setCopied] = useState(false);
 
   const html = useMemo(() => {
@@ -256,4 +272,4 @@ export function CodeBlock({ code, language }: { code: string; language: string }
       </pre>
     </div>
   );
-}
+});

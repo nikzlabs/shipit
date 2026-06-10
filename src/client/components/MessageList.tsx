@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
-import { Fragment, useMemo, useEffect, useLayoutEffect, useRef } from "react";
+import { Fragment, useMemo, useEffect, useLayoutEffect, useRef, useDeferredValue } from "react";
 import {
   TypingDots,
 } from "./StreamingIndicator.js";
@@ -412,7 +412,17 @@ export function MessageList({
   const currentMatchRef = useRef<HTMLElement | null>(null);
   const hasRewindControls = !!onRewindAtGap;
 
-  const messages = messagesProp;
+  // Coalesce streaming re-renders. The agent appends to the streaming message
+  // once per token (a separate WS macrotask each), so `messagesProp` changes
+  // dozens of times a second during a turn. `useDeferredValue` lets React
+  // render this heavy transcript at a lower priority: under a burst it skips
+  // intermediate values and re-parses the streaming message's markdown once
+  // per painted frame instead of once per token, always converging to the
+  // latest text at the trailing edge. Combined with the per-message
+  // `MarkdownContent` memo, this turns the old O(messages × tokens) parse
+  // storm into roughly O(frames). WS delivery is untouched, so no message is
+  // dropped — only the render cadence is throttled.
+  const messages = useDeferredValue(messagesProp);
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
@@ -618,7 +628,10 @@ export function MessageList({
   };
 
   return (
-    <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2">
+    <div
+      ref={containerRef}
+      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
+    >
       {/* SHI-10 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
           to this scroll container via the ref so it never fires on the composer
@@ -949,11 +962,17 @@ export function MessageList({
               {useMarkdown ? (
                 <MarkdownContent text={msg.text} />
               ) : hasCodeBlocks ? (
-                segments.map((seg, segIdx) => {
+                segments.map((seg) => {
+                  // Key on the segment's character offset, not its array index.
+                  // While a user message with code blocks is being composed/
+                  // streamed, indices stay stable but a content-derived key is
+                  // sturdier against re-segmentation — it keeps each `CodeBlock`
+                  // instance mounted so its memoized `hljs.highlight` cache
+                  // survives instead of remounting and re-highlighting.
                   if (seg.type === "code") {
                     return (
                       <CodeBlock
-                        key={segIdx}
+                        key={seg.offset}
                         code={seg.content}
                         language={seg.language}
                       />
@@ -965,7 +984,7 @@ export function MessageList({
                     seg.content.length
                   );
                   return (
-                    <span key={segIdx} className="whitespace-pre-wrap">
+                    <span key={seg.offset} className="whitespace-pre-wrap">
                       <HighlightedText
                         text={seg.content}
                         matches={segMatches}
