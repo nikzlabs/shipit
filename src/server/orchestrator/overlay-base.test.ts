@@ -13,7 +13,7 @@ import {
   readBasePointer,
   shouldFlattenNext,
 } from "./overlay-base.js";
-import { overlayBaseDir, overlayScopeHash } from "./overlay-volume.js";
+import { overlayBaseDir, overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 
 /**
  * Production port of the validated prototype (`run-rolling-base.ts`, 33/33).
@@ -108,9 +108,9 @@ describe("overlay-base: rolling-base publish CAS", () => {
     });
     expect(res.outcome).toBe("created");
     expect(res.pointer).toMatchObject({ commit: c1, depth: 1, generation: 1 });
-    // Base contents were materialized at the scope-hash path.
+    // Base contents were materialized as generation 1 under the scope-hash dir.
     const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
-    expect(res.pointer?.baseDir).toBe(overlayBaseDir(stateDir, scopeHash));
+    expect(res.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 1));
     expect(fs.existsSync(path.join(res.pointer!.baseDir, "node_modules.marker"))).toBe(true);
   });
 
@@ -178,26 +178,29 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(ptr).toMatchObject({ commit: last, depth: 1, generation: 3 });
   });
 
-  it("the swap reclaims the old base generation (new contents only, no leaked old/tmp dirs)", async () => {
-    // docs/183 Phase 6 — every advance/flatten materializes into a fresh temp
-    // sibling and atomically swaps it over `overlay-base/<hash>`, then rm's the
-    // old generation. Confirm the base ends up holding ONLY the newest snapshot
-    // and no `.old-*`/`.tmp-*` siblings leak (unreferenced disk the GC can't key on).
+  it("an advance leaves the previous generation untouched (immutable lowerdirs, no tmp leaks)", async () => {
+    // docs/183 — bases are immutable generations: live overlay mounts pin a
+    // specific g<N> as their lowerdir, and (spike-proven) renaming/deleting a
+    // mounted lowerdir breaks merged-readdir for every same-scope session. So an
+    // advance must create g2 BESIDE g1 — never mutate, rename, or remove g1 —
+    // and move only the pointer. Stale generations are the disk-janitor's job.
     const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
-    const baseDir = overlayBaseDir(stateDir, scopeHash);
-    const markerPath = path.join(baseDir, "node_modules.marker");
 
     const c1 = commit("c1");
-    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
-    expect(fs.readFileSync(markerPath, "utf8")).toBe(c1);
+    const r1 = await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
+    expect(r1.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 1));
+    expect(fs.readFileSync(path.join(r1.pointer!.baseDir, "node_modules.marker"), "utf8")).toBe(c1);
 
     const c2 = commit("c2");
-    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor });
-    // The base reflects ONLY the new generation — the old one was reclaimed.
-    expect(fs.readFileSync(markerPath, "utf8")).toBe(c2);
+    const r2 = await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor });
+    expect(r2.pointer?.baseDir).toBe(overlayBaseGenDir(stateDir, scopeHash, 2));
+    expect(fs.readFileSync(path.join(r2.pointer!.baseDir, "node_modules.marker"), "utf8")).toBe(c2);
 
-    const root = path.join(stateDir, "overlay-base");
-    const leaked = fs.readdirSync(root).filter((n) => n.includes(".old-") || n.includes(".tmp-"));
+    // g1 is still exactly what it was — a live mount may be pinning it.
+    expect(fs.readFileSync(path.join(overlayBaseGenDir(stateDir, scopeHash, 1), "node_modules.marker"), "utf8")).toBe(c1);
+
+    // No `.tmp-*` copies leak in the scope dir (unreferenced disk the GC can't key on).
+    const leaked = fs.readdirSync(overlayBaseDir(stateDir, scopeHash)).filter((n) => n.startsWith(".tmp-"));
     expect(leaked).toEqual([]);
   });
 
@@ -286,12 +289,12 @@ describe("overlay-base: rolling-base publish CAS", () => {
     // a second publisher start materializing before the first finished).
     let active = 0;
     let maxConcurrent = 0;
-    const materialize = async (snapshotDir: string, scopeHash: string): Promise<string> => {
+    const materialize = async (snapshotDir: string, scopeHash: string, generation: number): Promise<string> => {
       active++;
       maxConcurrent = Math.max(maxConcurrent, active);
       await new Promise((r) => setTimeout(r, 1));
       try {
-        return await copySnapshotToBase(stateDir, snapshotDir, scopeHash);
+        return await copySnapshotToBase(stateDir, snapshotDir, scopeHash, generation);
       } finally {
         active--;
       }
@@ -324,10 +327,10 @@ describe("overlay-base: rolling-base publish CAS", () => {
   it("releases the scope lock when a publish throws (next publisher is not wedged)", async () => {
     const c1 = commit("c1");
     let calls = 0;
-    const flaky = async (snapshotDir: string, scopeHash: string): Promise<string> => {
+    const flaky = async (snapshotDir: string, scopeHash: string, generation: number): Promise<string> => {
       calls++;
       if (calls === 1) throw new Error("boom");
-      return copySnapshotToBase(stateDir, snapshotDir, scopeHash);
+      return copySnapshotToBase(stateDir, snapshotDir, scopeHash, generation);
     };
     await expect(
       publishBase({
@@ -350,25 +353,26 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(res.outcome).toBe("created");
   });
 
-  it("stamps the top-level base dir mtime on every advance (GC contract)", async () => {
+  it("stamps the top-level scope dir mtime on every advance (GC contract)", async () => {
+    const scopeDir = overlayBaseDir(stateDir, overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey));
     const c1 = commit("c1");
-    const r1 = await publishBase({
+    await publishBase({
       stateDir,
       scope: SCOPE,
       candidate: candidate({ commit: c1 }),
       isAncestor,
     });
-    const mtime1 = fs.statSync(r1.pointer!.baseDir).mtimeMs;
+    const mtime1 = fs.statSync(scopeDir).mtimeMs;
 
     await new Promise((r) => setTimeout(r, 10));
     const c2 = commit("c2");
-    const r2 = await publishBase({
+    await publishBase({
       stateDir,
       scope: SCOPE,
       candidate: candidate({ commit: c2 }),
       isAncestor,
     });
-    const mtime2 = fs.statSync(r2.pointer!.baseDir).mtimeMs;
+    const mtime2 = fs.statSync(scopeDir).mtimeMs;
     expect(mtime2).toBeGreaterThan(mtime1);
   });
 
@@ -396,7 +400,7 @@ describe("overlay-base: copySnapshotToBase", () => {
   });
   afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
 
-  it("atomically swaps fresh contents over the base dir (old contents gone)", async () => {
+  it("materializes each generation at its own immutable path (no cross-generation mutation)", async () => {
     const stateDir = path.join(tmpDir, "state");
     fs.mkdirSync(stateDir, { recursive: true });
     const scopeHash = "deadbeefdeadbeef";
@@ -404,22 +408,38 @@ describe("overlay-base: copySnapshotToBase", () => {
     const snap1 = path.join(tmpDir, "snap1");
     fs.mkdirSync(path.join(snap1, "node_modules"), { recursive: true });
     fs.writeFileSync(path.join(snap1, "node_modules", "a.js"), "old");
-    fs.writeFileSync(path.join(snap1, "stale.txt"), "remove-me");
-    const base1 = await copySnapshotToBase(stateDir, snap1, scopeHash);
-    expect(fs.readFileSync(path.join(base1, "stale.txt"), "utf8")).toBe("remove-me");
+    const base1 = await copySnapshotToBase(stateDir, snap1, scopeHash, 1);
+    expect(base1).toBe(overlayBaseGenDir(stateDir, scopeHash, 1));
 
     const snap2 = path.join(tmpDir, "snap2");
     fs.mkdirSync(path.join(snap2, "node_modules"), { recursive: true });
     fs.writeFileSync(path.join(snap2, "node_modules", "a.js"), "new");
-    const base2 = await copySnapshotToBase(stateDir, snap2, scopeHash);
+    const base2 = await copySnapshotToBase(stateDir, snap2, scopeHash, 2);
 
-    expect(base2).toBe(base1); // same scope-hash path
+    expect(base2).toBe(overlayBaseGenDir(stateDir, scopeHash, 2));
     expect(fs.readFileSync(path.join(base2, "node_modules", "a.js"), "utf8")).toBe("new");
-    // The stale file from snap1 is gone — a clean swap, not a merge.
-    expect(fs.existsSync(path.join(base2, "stale.txt"))).toBe(false);
-    // No leftover temp dirs under overlay-base/.
-    const entries = fs.readdirSync(path.join(stateDir, "overlay-base"));
+    // Generation 1 is untouched — a live mount may pin it as lowerdir.
+    expect(fs.readFileSync(path.join(base1, "node_modules", "a.js"), "utf8")).toBe("old");
+    // No leftover temp dirs in the scope dir.
+    const entries = fs.readdirSync(overlayBaseDir(stateDir, scopeHash));
     expect(entries.filter((e) => e.startsWith(".tmp-"))).toEqual([]);
+  });
+
+  it("rebuilds a crash-orphaned generation dir (rename landed, pointer write didn't)", async () => {
+    const stateDir = path.join(tmpDir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+    const scopeHash = "deadbeefdeadbeef";
+    // Simulate the orphan: g3 exists with stale content but no pointer named it.
+    const orphan = overlayBaseGenDir(stateDir, scopeHash, 3);
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(path.join(orphan, "stale.txt"), "leftover");
+
+    const snap = path.join(tmpDir, "snap");
+    fs.mkdirSync(snap, { recursive: true });
+    fs.writeFileSync(path.join(snap, "fresh.txt"), "fresh");
+    const base = await copySnapshotToBase(stateDir, snap, scopeHash, 3);
+    expect(fs.readFileSync(path.join(base, "fresh.txt"), "utf8")).toBe("fresh");
+    expect(fs.existsSync(path.join(base, "stale.txt"))).toBe(false);
   });
 
   it("preserves symlinks rather than dereferencing them", async () => {
@@ -429,7 +449,7 @@ describe("overlay-base: copySnapshotToBase", () => {
     fs.mkdirSync(snap, { recursive: true });
     fs.writeFileSync(path.join(snap, "real.js"), "x");
     fs.symlinkSync("real.js", path.join(snap, "link.js"));
-    const base = await copySnapshotToBase(stateDir, snap, "cafebabecafebabe");
+    const base = await copySnapshotToBase(stateDir, snap, "cafebabecafebabe", 1);
     expect(fs.lstatSync(path.join(base, "link.js")).isSymbolicLink()).toBe(true);
   });
 });

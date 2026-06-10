@@ -145,7 +145,8 @@ describe("buildOverlaySpecs", () => {
     expect(nm.scopeHash).toBe(hash);
     expect(nm.scope).toEqual({ ...scope, depDir: "node_modules" });
     expect(nm.mountPath).toBe("/workspace/node_modules");
-    expect(nm.lowerdir).toBe(`${MP}/overlay-base/${hash}`);
+    // No generation resolver → generation 0, the empty cold-start lowerdir.
+    expect(nm.lowerdir).toBe(`${MP}/overlay-base/${hash}/g0`);
     expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/upper`);
     expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/work`);
     expect(nm.volumeName).toBe(overlayVolumeName(sessionId, "node_modules"));
@@ -176,7 +177,7 @@ describe("buildOverlaySpecs", () => {
       sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP, stateRoot: "/workspace",
     });
     expect(withRoot.orchDirs).toEqual({
-      lowerdir: `/workspace/overlay-base/${hash}`,
+      lowerdir: `/workspace/overlay-base/${hash}/g0`,
       upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/upper`,
       workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/work`,
     });
@@ -184,6 +185,23 @@ describe("buildOverlaySpecs", () => {
       sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP,
     });
     expect(withoutRoot.orchDirs).toBeUndefined();
+  });
+
+  it("pins the lowerdir to the resolver's generation (per dep-dir scope)", () => {
+    const sessionId = "11112222333344445555";
+    const nmHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, "node_modules");
+    const [nm, vendor] = buildOverlaySpecs({
+      sessionId,
+      scope,
+      depDirs: ["node_modules", "vendor/bundle"],
+      volumeMountpoint: MP,
+      stateRoot: "/workspace",
+      generationForScope: (hash) => (hash === nmHash ? 4 : 0),
+    });
+    expect(nm.lowerdir).toBe(`${MP}/overlay-base/${nmHash}/g4`);
+    expect(nm.orchDirs?.lowerdir).toBe(`/workspace/overlay-base/${nmHash}/g4`);
+    // The other dep dir's scope has no base yet — cold-start g0.
+    expect(vendor.lowerdir).toBe(`${MP}/overlay-base/${vendor.scopeHash}/g0`);
   });
 });
 

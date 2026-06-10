@@ -13,7 +13,7 @@ import {
 } from "./overlay-publish.js";
 import { readBasePointer, type OverlayScope } from "./overlay-base.js";
 import { overlayRuntimeKey } from "./overlay-session.js";
-import { overlayBaseDir, overlayScopeHash } from "./overlay-volume.js";
+import { overlayScopeHash } from "./overlay-volume.js";
 
 /**
  * Phase 4b (docs/183) — publish-after-install orchestration. The worker pull and
@@ -75,8 +75,10 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   }
 
   function baseContentFor(depDir: string): string | null {
-    const scopeHash = overlayScopeHash(REPO_URL, runtimeKey, depDir);
-    const f = path.join(overlayBaseDir(stateDir, scopeHash), "content");
+    // Bases are generational — the pointer names the current generation's dir.
+    const ptr = pointerFor(depDir);
+    if (!ptr) return null;
+    const f = path.join(ptr.baseDir, "content");
     return fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null;
   }
 

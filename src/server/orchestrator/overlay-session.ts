@@ -28,7 +28,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
-import { overlayScopeHash, overlayVolumeName, overlayBaseDir, type OverlaySpec } from "./overlay-volume.js";
+import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import type { OverlayScope } from "./overlay-base.js";
 
 // ---------------------------------------------------------------------------
@@ -151,17 +151,28 @@ export function buildOverlaySpecs(args: {
    * `mkdir` before the daemon mounts the overlay (see `DepDirOverlaySpec.orchDirs`).
    */
   stateRoot?: string;
+  /**
+   * Resolve the current base generation for a per-dep-dir scope hash — normally
+   * backed by `readBasePointer` (the pointer's `generation`). Bases are
+   * generational (`overlay-base/<hash>/g<N>`, see `overlayBaseGenDir`): a mount
+   * pins ONE immutable generation, chosen here at spec-build time. Defaults to
+   * `0` — the empty cold-start generation, created on demand at container
+   * create — when absent or when the resolver has no pointer.
+   */
+  generationForScope?: (scopeHash: string) => number;
 }): DepDirOverlaySpec[] {
   const { sessionId, scope, depDirs, volumeMountpoint, stateRoot } = args;
+  const generationForScope = args.generationForScope ?? (() => 0);
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
+    const generation = generationForScope(scopeHash);
     const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, "overlay", scopeHash);
     const orchSessionOverlayDir = stateRoot
       ? path.join(stateRoot, "sessions", sessionId, "overlay", scopeHash)
       : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),
-      lowerdir: overlayBaseDir(volumeMountpoint, scopeHash),
+      lowerdir: overlayBaseGenDir(volumeMountpoint, scopeHash, generation),
       upperdir: path.join(sessionOverlayDir, "upper"),
       workdir: path.join(sessionOverlayDir, "work"),
       depDir,
@@ -171,7 +182,7 @@ export function buildOverlaySpecs(args: {
       ...(stateRoot && orchSessionOverlayDir
         ? {
             orchDirs: {
-              lowerdir: overlayBaseDir(stateRoot, scopeHash),
+              lowerdir: overlayBaseGenDir(stateRoot, scopeHash, generation),
               upperdir: path.join(orchSessionOverlayDir, "upper"),
               workdir: path.join(orchSessionOverlayDir, "work"),
             },

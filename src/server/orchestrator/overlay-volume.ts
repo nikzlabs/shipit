@@ -117,6 +117,23 @@ export function overlayBaseDir(stateDir: string, scopeHash: string): string {
   return path.join(stateDir, OVERLAY_BASE_SUBDIR, scopeHash);
 }
 
+/**
+ * On-disk path of ONE immutable base generation:
+ * `<stateDir>/overlay-base/<scope-hash>/g<generation>`.
+ *
+ * Bases are generational because a live overlay mount pins its lowerdir
+ * dentries — and (spike-proven on the docs/183 measurement host) renaming or
+ * deleting that directory out from under the mount breaks merged-readdir for
+ * every same-scope session (readdir returns empty while path lookups still
+ * resolve), silently corrupting npm/tar/ls in those containers. So a publish
+ * NEVER mutates or replaces an existing generation: it writes the next
+ * `g<N+1>` beside it and moves the pointer. `g0` is the empty cold-start
+ * lowerdir (created at container-create time, before any base exists).
+ */
+export function overlayBaseGenDir(stateDir: string, scopeHash: string, generation: number): string {
+  return path.join(stateDir, OVERLAY_BASE_SUBDIR, scopeHash, `g${generation}`);
+}
+
 // ---------------------------------------------------------------------------
 // Overlay spec
 // ---------------------------------------------------------------------------

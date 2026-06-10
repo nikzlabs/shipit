@@ -48,6 +48,7 @@ import {
   type DepDirOverlaySpec,
 } from "./overlay-session.js";
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
+import { readBasePointerByHash } from "./overlay-base.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -989,12 +990,19 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
     if (valid.length === 0) return [];
     const volumeMountpoint = await resolveVolumeMountpoint(this.docker, this.workspaceVolume);
+    const stateDir = this.stateDir;
     const specs = buildOverlaySpecs({
       sessionId: opts.sessionId,
       scope,
       depDirs: valid,
       volumeMountpoint,
-      stateRoot: this.stateDir,
+      stateRoot: stateDir,
+      // Pin each mount to the scope's CURRENT base generation (bases are
+      // immutable `g<N>` dirs — see overlay-base.ts). No pointer / no stateDir
+      // → generation 0, the empty cold-start lowerdir.
+      generationForScope: stateDir
+        ? (scopeHash) => readBasePointerByHash(stateDir, scopeHash)?.generation ?? 0
+        : undefined,
     });
     if (!opts.requireProvisioned) return specs;
     const provisioned: DepDirOverlaySpec[] = [];
