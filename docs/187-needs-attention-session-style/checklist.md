@@ -15,4 +15,5 @@
 - [x] Verify peripheral glance + many-at-once on a full-sidebar mock in warm-light + dark ([mocks/rail-at-scale.html](./mocks/rail-at-scale.html))
 - [x] Remove the interim `--color-attention-wash` token from all 14 theme files (no longer used)
 - [x] Typecheck + lint pass
-- [ ] Verify on the live UI (light + dark, several flagged + selected+attention row) — pending dev service
+- [x] Tune the trail — shorter + softer (gradient start `52%`→`62%`, strength `26%`→`20%`)
+- [x] Verify on the live UI (dogfood dev server) across dark, warm-light, and cool-light — reads clearly and stays tasteful on each

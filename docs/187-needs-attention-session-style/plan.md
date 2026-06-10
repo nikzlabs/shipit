@@ -95,7 +95,7 @@ const attentionMarker = needsAttention
   ? {
       boxShadow: "inset -3px 0 0 var(--color-attention)",
       backgroundImage:
-        "linear-gradient(90deg, transparent 52%, color-mix(in srgb, var(--color-attention) 26%, transparent))",
+        "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
     }
   : undefined;
 // ...
@@ -118,8 +118,12 @@ and the right-gradient comparison):
   own `background-color`, so a selected + needs-attention row keeps its gray fill with
   the bar + trail on top — no special-casing of `isCurrent`.
 
-Easy knobs: bar thickness (`3px`), trail length (`52%`), trail strength (the `26%`
-`color-mix`).
+Easy knobs: bar thickness (`3px`), trail length (the gradient start `62%` — higher
+is shorter), trail strength (the `20%` `color-mix`).
+
+Verified live (dogfood dev server) across **dark**, **warm-light**, and
+**cool-light**: the warm amber bar + trail reads clearly on each and stays tasteful
+(it contrasts cleanly against the cool blue-gray surface rather than clashing).
 
 ## Key files
 

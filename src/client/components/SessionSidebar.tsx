@@ -357,7 +357,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
     ? {
         boxShadow: "inset -3px 0 0 var(--color-attention)",
         backgroundImage:
-          "linear-gradient(90deg, transparent 52%, color-mix(in srgb, var(--color-attention) 26%, transparent))",
+          "linear-gradient(90deg, transparent 62%, color-mix(in srgb, var(--color-attention) 20%, transparent))",
       }
     : undefined;
 
