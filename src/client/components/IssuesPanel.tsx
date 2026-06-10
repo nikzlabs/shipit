@@ -8,6 +8,7 @@ import {
   type AssigneeOption,
   type StatusOption,
 } from "./issues-filter.js";
+import type { IssueStatusRef } from "./IssueFieldControls.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -24,6 +25,7 @@ import type { IssuePriorityLevel, TrackerId, TrackerIssue } from "../../server/s
 const EMPTY_ISSUES: TrackerIssue[] = [];
 const EMPTY_STATUSES: StatusOption[] = [];
 const EMPTY_ASSIGNEES: AssigneeOption[] = [];
+const EMPTY_STATUS_REFS: IssueStatusRef[] = [];
 
 const ZERO_PRIORITY_COUNTS: Record<IssuePriorityLevel, number> = {
   urgent: 0,
@@ -53,6 +55,9 @@ export function IssuesPanel({
   const activeTracker = useIssuesStore((s) => s.activeTracker);
   const issues = useIssuesStore((s) => s.issuesByTracker[s.activeTracker] ?? EMPTY_ISSUES);
   const info = useIssuesStore((s) => s.infoByTracker[s.activeTracker]);
+  const availableStatuses = useIssuesStore(
+    (s) => s.statusesByTracker[s.activeTracker] ?? EMPTY_STATUS_REFS,
+  );
   const loading = useIssuesStore((s) => s.loading);
   const error = useIssuesStore((s) => s.error);
   const filters = useIssuesStore((s) => s.filters);
@@ -112,6 +117,7 @@ export function IssuesPanel({
   // inline detail view. The list state stays mounted in the store, so the back
   // button returns to the same filtered scroll position the user left.
   if (selected) {
+    const detailTracker = selected.tracker;
     return (
       <IssueDetail
         selection={selected}
@@ -123,6 +129,8 @@ export function IssuesPanel({
         comments={comments}
         commentsLoading={commentsLoading}
         commentsError={commentsError}
+        availableStatuses={availableStatuses}
+        canEditPriority={detailTracker === "linear"}
         onBack={() => useIssuesStore.getState().closeIssue()}
         onRefresh={() => {
           // Refresh re-fetches both the issue body and its comment thread.
@@ -131,6 +139,18 @@ export function IssuesPanel({
         }}
         onStartSession={handleStartSession}
         onPostComment={(body) => useIssuesStore.getState().postComment(body)}
+        onSetStatus={(status) => {
+          // Read the live issue from the store so a refetch between renders
+          // doesn't write against a stale snapshot.
+          const open = useIssuesStore.getState().detail;
+          if (!open) return Promise.resolve("No issue is open");
+          return useIssuesStore.getState().setIssueStatus(detailTracker, open, status);
+        }}
+        onSetPriority={(level) => {
+          const open = useIssuesStore.getState().detail;
+          if (!open) return Promise.resolve("No issue is open");
+          return useIssuesStore.getState().setIssuePriority(detailTracker, open, level);
+        }}
       />
     );
   }
@@ -150,9 +170,17 @@ export function IssuesPanel({
       error={error}
       canStart={Boolean(effectiveRepoUrl)}
       includeDone={includeDone}
+      availableStatuses={availableStatuses}
+      canEditPriority={activeTracker === "linear"}
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}
+      onSetStatus={(issue, status) =>
+        useIssuesStore.getState().setIssueStatus(activeTracker, issue, status)
+      }
+      onSetPriority={(issue, level) =>
+        useIssuesStore.getState().setIssuePriority(activeTracker, issue, level)
+      }
       onOpenIssue={(issue) =>
         void useIssuesStore.getState().openIssue({
           tracker: activeTracker,

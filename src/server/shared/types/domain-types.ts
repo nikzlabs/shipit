@@ -522,6 +522,14 @@ export interface TrackerInfo {
 export interface ListIssuesResult {
   tracker: TrackerInfo;
   issues: TrackerIssue[];
+  /**
+   * The tracker's full set of assignable statuses for the bound scope (docs/191)
+   * — Linear's team workflow states, GitHub's fixed Open/Closed. Lets the list's
+   * inline status editor offer valid targets without a per-row `getIssue` (list
+   * rows don't carry `availableStatuses`; only `getIssue` populates that).
+   * Best-effort: absent when the tracker is unconfigured or the lookup failed.
+   */
+  availableStatuses?: { name: string; type?: string }[];
 }
 
 /**
@@ -554,6 +562,17 @@ export interface ListIssueCommentsResult {
  */
 export interface PostIssueCommentResult {
   comment: TrackerComment;
+}
+
+/**
+ * Response shape for the user-initiated inline status/priority writes (docs/191):
+ * `POST /api/issue/status` and `POST /api/issue/priority`. Returns the updated
+ * issue so the client patches the open detail view + list row in place. Like the
+ * user-posted comment, these are the user's own direct action — no transcript
+ * card and no undo lifecycle (distinct from the agent's do-then-surface writes).
+ */
+export interface MutateIssueResult {
+  issue: TrackerIssue;
 }
 
 /**

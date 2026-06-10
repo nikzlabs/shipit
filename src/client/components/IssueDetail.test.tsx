@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IssueDetail } from "./IssueDetail.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type { TrackerComment, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
@@ -46,10 +47,14 @@ function baseProps() {
     comments: [] as TrackerComment[] | null,
     commentsLoading: false,
     commentsError: null as string | null,
+    availableStatuses: [] as { name: string; type?: string }[],
+    canEditPriority: true,
     onBack: vi.fn(),
     onRefresh: vi.fn(),
     onStartSession: vi.fn(),
     onPostComment: vi.fn(async () => null as string | null),
+    onSetStatus: vi.fn(async () => null as string | null),
+    onSetPriority: vi.fn(async () => null as string | null),
   };
 }
 
@@ -95,6 +100,34 @@ describe("IssueDetail (docs/189)", () => {
     expect(props.onBack).toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: /Start session/i }));
     expect(props.onStartSession).toHaveBeenCalledWith(props.detail);
+  });
+
+  it("edits the status inline from the detail view (docs/191)", async () => {
+    const user = userEvent.setup();
+    const props = {
+      ...baseProps(),
+      detail: makeIssue({
+        availableStatuses: [
+          { name: "In Progress", type: "started" },
+          { name: "Done", type: "completed" },
+        ],
+      }),
+    };
+    render(<IssueDetail {...props} />);
+    await user.click(screen.getByLabelText(/Change status/));
+    await user.click(screen.getByRole("menuitem", { name: "Done" }));
+    expect(props.onSetStatus).toHaveBeenCalledWith("Done");
+  });
+
+  it("offers an editable priority for Linear", () => {
+    render(<IssueDetail {...baseProps()} />);
+    expect(screen.getByLabelText(/Change priority/)).toBeInTheDocument();
+  });
+
+  it("renders priority read-only when the tracker can't edit it (GitHub)", () => {
+    render(<IssueDetail {...baseProps()} canEditPriority={false} />);
+    expect(screen.queryByLabelText(/Change priority/)).toBeNull();
+    expect(screen.getByText("Urgent")).toBeInTheDocument();
   });
 
   it("renders an empty-description placeholder", () => {

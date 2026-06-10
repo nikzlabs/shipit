@@ -32,6 +32,12 @@ import { Badge } from "./ui/badge.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { MarkdownContent } from "./message-markdown.js";
+import {
+  IssuePriorityEditor,
+  IssueStatusEditor,
+  PriorityTrigger,
+  type IssueStatusRef,
+} from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
@@ -56,11 +62,23 @@ export interface IssueDetailProps {
   comments: TrackerComment[] | null;
   commentsLoading: boolean;
   commentsError: string | null;
+  /**
+   * The tracker's assignable statuses, as a fallback for the inline status
+   * editor when the hydrated issue hasn't supplied its own `availableStatuses`
+   * yet (docs/191).
+   */
+  availableStatuses: IssueStatusRef[];
+  /** Whether priority is editable for this tracker (Linear yes, GitHub no). */
+  canEditPriority: boolean;
   onBack: () => void;
   onRefresh: () => void;
   onStartSession: (issue: TrackerIssue) => void;
   /** Post a user comment; resolves to an error message, or null on success. */
   onPostComment: (body: string) => Promise<string | null>;
+  /** Set the open issue's status; resolves to an error message, or null. */
+  onSetStatus: (status: string) => Promise<string | null>;
+  /** Set the open issue's priority; resolves to an error message, or null. */
+  onSetPriority: (level: IssuePriorityLevel) => Promise<string | null>;
 }
 
 const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
@@ -121,10 +139,14 @@ export function IssueDetail({
   comments,
   commentsLoading,
   commentsError,
+  availableStatuses,
+  canEditPriority,
   onBack,
   onRefresh,
   onStartSession,
   onPostComment,
+  onSetStatus,
+  onSetPriority,
 }: IssueDetailProps) {
   // Prefer the hydrated issue; fall back to the seed fields the opener supplied
   // so the header/title paint before the fetch resolves.
@@ -194,10 +216,28 @@ export function IssueDetail({
           <IssueDetailSkeleton />
         ) : (
           <article className="px-5 py-5">
-            {/* Status · priority strip. */}
+            {/* Status · priority strip — both inline-editable (docs/191). */}
             <div className="flex items-center flex-wrap gap-3 mb-3">
-              {detail?.status && <StatusPill status={detail.status} />}
-              {detail && <PriorityBadge priority={detail.priority} />}
+              {detail?.status && (
+                <IssueStatusEditor
+                  current={detail.status}
+                  options={detail.availableStatuses ?? availableStatuses}
+                  onSelect={onSetStatus}
+                  ariaLabel={`Change status (currently ${detail.status.name})`}
+                  trigger={<StatusPill status={detail.status} />}
+                />
+              )}
+              {detail &&
+                (canEditPriority ? (
+                  <IssuePriorityEditor
+                    current={detail.priority.level}
+                    onSelect={onSetPriority}
+                    ariaLabel={`Change priority (currently ${detail.priority.label})`}
+                    trigger={<PriorityTrigger priority={detail.priority} />}
+                  />
+                ) : (
+                  <PriorityBadge priority={detail.priority} />
+                ))}
             </div>
 
             {/* Title. */}

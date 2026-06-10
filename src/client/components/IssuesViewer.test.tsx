@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { IssuesViewer, type IssuesViewerProps } from "./IssuesViewer.js";
 import {
   distinctAssignees,
@@ -64,10 +65,14 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     error: null,
     canStart: true,
     includeDone: false,
+    availableStatuses: [],
+    canEditPriority: true,
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
     onOpenIssue: vi.fn(),
+    onSetStatus: vi.fn(async () => null),
+    onSetPriority: vi.fn(async () => null),
     onStartSession: vi.fn(),
     onConnect: vi.fn(),
     onSetQuery: vi.fn(),
@@ -125,6 +130,43 @@ describe("IssuesViewer", () => {
     render(<IssuesViewer {...props} />);
     fireEvent.click(screen.getByText("Openable"));
     expect(props.onOpenIssue).toHaveBeenCalledWith(issue);
+  });
+
+  it("edits a row's priority inline without opening the detail view (docs/191)", async () => {
+    const user = userEvent.setup();
+    const issue = makeIssue({ priority: { level: "low", sortOrder: 3, label: "Low" } });
+    const props = defaultProps({ issues: [issue], canEditPriority: true });
+    render(<IssuesViewer {...props} />);
+    await user.click(screen.getByLabelText(/Change priority of SHI-1/));
+    await user.click(screen.getByRole("menuitem", { name: "Urgent" }));
+    expect(props.onSetPriority).toHaveBeenCalledWith(issue, "urgent");
+    // The editor's stopPropagation keeps the row click from also firing.
+    expect(props.onOpenIssue).not.toHaveBeenCalled();
+  });
+
+  it("edits a row's status inline from the tracker's statuses (docs/191)", async () => {
+    const user = userEvent.setup();
+    const issue = makeIssue({ status: { name: "Todo", type: "unstarted" } });
+    const props = defaultProps({
+      issues: [issue],
+      availableStatuses: [
+        { name: "Todo", type: "unstarted" },
+        { name: "Done", type: "completed" },
+      ],
+    });
+    render(<IssuesViewer {...props} />);
+    await user.click(screen.getByLabelText(/Change status of SHI-1/));
+    await user.click(screen.getByRole("menuitem", { name: "Done" }));
+    expect(props.onSetStatus).toHaveBeenCalledWith(issue, "Done");
+    expect(props.onOpenIssue).not.toHaveBeenCalled();
+  });
+
+  it("renders a read-only priority badge when priority isn't editable (GitHub)", () => {
+    const issue = makeIssue({ priority: { level: "high", sortOrder: 1, label: "High" } });
+    const props = defaultProps({ issues: [issue], canEditPriority: false });
+    render(<IssuesViewer {...props} />);
+    expect(screen.queryByLabelText(/Change priority of/)).toBeNull();
+    expect(screen.getByText("High")).toBeInTheDocument();
   });
 
   it("does not open the detail view when Start session is clicked", () => {

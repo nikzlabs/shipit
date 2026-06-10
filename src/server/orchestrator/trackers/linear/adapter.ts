@@ -313,6 +313,24 @@ export class LinearTracker implements Tracker {
     return data.issue ? toTrackerIssue(data.issue) : null;
   }
 
+  async listStatuses(): Promise<{ name: string; type?: string }[]> {
+    if (!this.token || !this.team) {
+      throw new Error("Linear is not configured (missing token or team binding)");
+    }
+    // The bound team's workflow states, in board order — the same set
+    // `getIssue` attaches per-issue, fetched once here for the list editor.
+    const data = await this.gql<{ team: { states: { nodes: LinearStateNode[] } } | null }>(
+      `query TeamStates($teamId: String!) {
+        team(id: $teamId) { states(first: 100) { nodes { id name type position } } }
+      }`,
+      { teamId: this.team.id },
+    );
+    return (data.team?.states.nodes ?? [])
+      .slice()
+      .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
+      .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}) }));
+  }
+
   async listComments(id: string): Promise<TrackerComment[]> {
     if (!this.token) {
       throw new Error("Linear is not configured (missing token)");

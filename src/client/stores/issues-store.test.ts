@@ -175,3 +175,90 @@ describe("issues-store comments (docs/189 follow-up)", () => {
     expect(useIssuesStore.getState().comments).toBeNull();
   });
 });
+
+describe("issues-store status/priority writes (docs/191)", () => {
+  const originalFetchLocal = globalThis.fetch;
+  beforeEach(() => useIssuesStore.getState().reset());
+  afterEach(() => {
+    globalThis.fetch = originalFetchLocal;
+    vi.restoreAllMocks();
+  });
+
+  it("fetchIssues caches the tracker's availableStatuses", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          tracker: { id: "linear", label: "Linear", configured: true },
+          issues: [makeIssue()],
+          availableStatuses: [
+            { name: "Todo", type: "unstarted" },
+            { name: "Done", type: "completed" },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch;
+    await useIssuesStore.getState().fetchIssues("linear");
+    expect(useIssuesStore.getState().statusesByTracker.linear).toEqual([
+      { name: "Todo", type: "unstarted" },
+      { name: "Done", type: "completed" },
+    ]);
+  });
+
+  it("setIssueStatus patches the list row + open detail and posts the native id", async () => {
+    const issue = makeIssue({ id: "node-1", status: { name: "In Progress", type: "started" } });
+    const updated = makeIssue({ id: "node-1", status: { name: "Done", type: "completed" } });
+    useIssuesStore.setState({
+      issuesByTracker: { linear: [issue] },
+      detail: issue,
+      selected: { tracker: "linear", id: "node-1", identifier: "SHI-1" },
+    });
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ issue: updated }), { status: 200 }),
+    ) as typeof fetch;
+
+    const err = await useIssuesStore.getState().setIssueStatus("linear", issue, "Done");
+    expect(err).toBeNull();
+    const s = useIssuesStore.getState();
+    expect(s.issuesByTracker.linear[0].status?.name).toBe("Done");
+    expect(s.detail?.status?.name).toBe("Done");
+
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("/api/issue/status");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({
+      tracker: "linear",
+      id: "node-1",
+      status: "Done",
+    });
+  });
+
+  it("setIssuePriority patches priority in place and posts the level", async () => {
+    const issue = makeIssue({ id: "node-1", priority: { level: "low", sortOrder: 3, label: "Low" } });
+    const updated = makeIssue({ id: "node-1", priority: { level: "high", sortOrder: 1, label: "High" } });
+    useIssuesStore.setState({ issuesByTracker: { linear: [issue] } });
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ issue: updated }), { status: 200 }),
+    ) as typeof fetch;
+
+    const err = await useIssuesStore.getState().setIssuePriority("linear", issue, "high");
+    expect(err).toBeNull();
+    expect(useIssuesStore.getState().issuesByTracker.linear[0].priority.level).toBe("high");
+
+    const [url, init] = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(url).toBe("/api/issue/priority");
+    expect(JSON.parse((init as RequestInit).body as string)).toMatchObject({ priority: "high" });
+  });
+
+  it("setIssueStatus returns the error and leaves state untouched on failure", async () => {
+    const issue = makeIssue({ id: "node-1" });
+    useIssuesStore.setState({ issuesByTracker: { linear: [issue] } });
+    globalThis.fetch = vi.fn(async () =>
+      new Response(JSON.stringify({ error: "Unknown status" }), { status: 422 }),
+    ) as typeof fetch;
+
+    const err = await useIssuesStore.getState().setIssueStatus("linear", issue, "Bogus");
+    expect(err).toBe("Unknown status");
+    // The row object is unchanged (same reference).
+    expect(useIssuesStore.getState().issuesByTracker.linear[0]).toBe(issue);
+  });
+});

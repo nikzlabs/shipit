@@ -275,6 +275,14 @@ export class GitHubTracker implements Tracker {
     return { ...toTrackerIssue(node, ref), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
+  async listStatuses(): Promise<{ name: string; type?: string }[]> {
+    // GitHub has no workflow states — the fixed Open/Closed pair, identical to
+    // what `getIssue` exposes as `availableStatuses`. No network call needed; the
+    // configured guard keeps it consistent with the rest of the interface.
+    this.requireRepo();
+    return GITHUB_AVAILABLE_STATUSES.map((s) => ({ ...s }));
+  }
+
   async listComments(id: string): Promise<TrackerComment[]> {
     const ref = this.requireRepo();
     let res: Response;
