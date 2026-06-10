@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-111
 description: Two-way voice integration. Input — push-to-talk dictation with an LLM cleanup pass (fixes mis-hearings, fillers, capitalisation) before the transcript lands in the textarea. Mode A targets the current MessageInput, Mode B the quick-capture overlay from doc 145. Output — per-assistant-turn Play button that streams TTS of the response so the user can listen while walking around. Cleanup defaults to the user's Claude subscription, falls back to the OpenAI voice key.
 ---
 
@@ -516,9 +517,8 @@ hook must handle:
 |---|---|
 | `keydown` with `event.repeat === true` | Ignore (autorepeat — first keydown already started recording) |
 | Recording started, `keyup` arrives | Stop recording, transcribe |
-| Recording started, **window `blur`** | Stop recording, transcribe (user tabbed away) |
-| Recording started, **`visibilitychange` to hidden** | Stop recording, transcribe |
-| Recording started, **focus moves to an iframe or other window** | Stop recording, transcribe |
+| Recording started, **window `blur`** | Stop recording, transcribe (user tabbed away) — **unless** the blur was caused by focus moving into an in-page `<iframe>` (`document.activeElement instanceof HTMLIFrameElement`), in which case keep recording. The preview pane hot-reloading after another session's agent edits files steals focus into its iframe and fires a window blur; finalizing there cut dictation short ("voice randomly stops" — most visible in the Mode-B overlay, whose recording is a click-to-stop toggle with no keyup to fall back on). A real tab/app switch leaves `activeElement` on `<body>`. |
+| Recording started, **`visibilitychange` to hidden** | Stop recording, transcribe (covers an actual tab hide, which the iframe-aware blur guard above intentionally does not) |
 | Recording started, **session switch** | Abort recording, discard captured audio, do not insert anything |
 | Recording duration < 250 ms | Discard, do not call the STT API (accidental tap) |
 | Long recordings | No client-side duration cap. Recording runs until the user releases the key / taps Stop, or one of the lifecycle stops above (blur/visibility/session switch) fires. The only ceiling is the 50 MB multipart upload limit (~50 min of Opus), well beyond any realistic dictation. |
