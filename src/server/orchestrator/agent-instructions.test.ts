@@ -159,6 +159,10 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("review independently as its own pull request");
     // Pointer to the platform doc so the agent can read the full surface.
     expect(out).toContain("/shipit-docs/sessions.md");
+    // When asked to draft a prompt for another session, emit it in a fenced
+    // code block so the user can copy it in one click.
+    expect(out).toContain("write or draft a prompt");
+    expect(out).toContain("fenced code block");
   });
 
   it("Codex branch tells the agent shipit session create is its ONLY fan-out primitive", () => {
@@ -177,6 +181,9 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("heavy and user-visible");
     // Pointer to the platform doc.
     expect(out).toContain("/shipit-docs/sessions.md");
+    // Same copy-paste guidance as the Claude branch.
+    expect(out).toContain("write or draft a prompt");
+    expect(out).toContain("fenced code block");
   });
 
   it("Claude and Codex variants are distinct (different fan-out story)", () => {

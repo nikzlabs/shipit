@@ -20,4 +20,6 @@ You have two fan-out primitives. They are NOT interchangeable:
 - Use **\`shipit session create --prompt-file -\`** (the prompt is read from stdin or a file, never an inline \`-p\` — pass it with a single-quoted heredoc like \`gh pr create --body-file -\`) ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
 
 Spawning a session is heavy and user-visible: a new container, a new branch, a new sidebar entry. If you are unsure, ask the user. See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
+
+When the user asks you to **write or draft a prompt** for another session (rather than spawn one yourself), output the prompt verbatim inside a fenced code block (\`\`\`) so the user can copy it in one click. Don't bury it in prose or wrap it in commentary — the code block IS the deliverable. Put any explanation before or after the block, never inside it.
 `;

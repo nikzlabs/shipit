@@ -17,4 +17,6 @@ ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own
 You can spawn a sibling session via \`shipit session create --prompt-file -\` (the prompt is read from stdin or a file, never an inline \`-p\` — pass it with a single-quoted heredoc like \`gh pr create --body-file -\`, so backticks and \`$(...)\` in the prompt aren't evaluated by the shell). This is your only fan-out primitive — there is no in-process subagent tool available to you.
 
 Reach for it ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Do not use it as a generic optimization for your own work — spawning a session is heavy and user-visible (a new container, a new branch, a new sidebar entry). See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
+
+When the user asks you to **write or draft a prompt** for another session (rather than spawn one yourself), output the prompt verbatim inside a fenced code block (\`\`\`) so the user can copy it in one click. Don't bury it in prose or wrap it in commentary — the code block IS the deliverable. Put any explanation before or after the block, never inside it.
 `;
