@@ -120,9 +120,16 @@ describe("scanFileTree", () => {
     ]);
   });
 
-  it("skips hidden files and directories but allows .env", async () => {
+  it("shows dotfiles by default (.npmrc, .gitignore, .env, rc files)", async () => {
+    // Dotfiles are real, editable source and must be visible in the IDE just
+    // like VS Code shows them. Show-by-default replaces the old allowlist —
+    // see docs/096-claude-skills-access/plan.md.
     fs.writeFileSync(path.join(tmpDir, ".env"), "SECRET=123");
     fs.writeFileSync(path.join(tmpDir, ".env.local"), "SECRET=local");
+    fs.writeFileSync(path.join(tmpDir, ".npmrc"), "registry=https://example.com");
+    fs.writeFileSync(path.join(tmpDir, ".gitignore"), "node_modules");
+    fs.writeFileSync(path.join(tmpDir, ".dockerignore"), ".git");
+    fs.writeFileSync(path.join(tmpDir, ".editorconfig"), "");
     fs.writeFileSync(path.join(tmpDir, ".eslintrc"), "{}");
     fs.writeFileSync(path.join(tmpDir, "index.ts"), "");
 
@@ -130,8 +137,50 @@ describe("scanFileTree", () => {
     const names = tree.map((n) => n.name);
     expect(names).toContain(".env");
     expect(names).toContain(".env.local");
-    expect(names).not.toContain(".eslintrc");
+    expect(names).toContain(".npmrc");
+    expect(names).toContain(".gitignore");
+    expect(names).toContain(".dockerignore");
+    expect(names).toContain(".editorconfig");
+    expect(names).toContain(".eslintrc");
     expect(names).toContain("index.ts");
+  });
+
+  it("hides pure junk and internal data files (.DS_Store, session bookkeeping)", async () => {
+    fs.writeFileSync(path.join(tmpDir, ".DS_Store"), "");
+    fs.writeFileSync(path.join(tmpDir, ".shipit-usage.json"), "{}");
+    fs.writeFileSync(path.join(tmpDir, ".vibe-sessions.json"), "{}");
+    fs.writeFileSync(path.join(tmpDir, ".npmrc"), "");
+    fs.writeFileSync(path.join(tmpDir, "index.ts"), "");
+
+    const tree = await scanFileTree(tmpDir);
+    const names = tree.map((n) => n.name);
+    expect(names).not.toContain(".DS_Store");
+    expect(names).not.toContain(".shipit-usage.json");
+    expect(names).not.toContain(".vibe-sessions.json");
+    expect(names).toContain(".npmrc");
+    expect(names).toContain("index.ts");
+  });
+
+  it("keeps WORKSPACE_SKIP_DIRS hidden even though they are dotfiles", async () => {
+    // Inverting dotfile visibility must NOT regress the directory skips —
+    // .git internals and the ShipIt-in-ShipIt metadir skips (feature 118).
+    fs.mkdirSync(path.join(tmpDir, ".git"));
+    fs.writeFileSync(path.join(tmpDir, ".git", "HEAD"), "");
+    fs.mkdirSync(path.join(tmpDir, ".shipit"));
+    fs.writeFileSync(path.join(tmpDir, ".shipit", ".env.dev"), "SECRET=1");
+    fs.mkdirSync(path.join(tmpDir, ".inner-shipit"));
+    fs.writeFileSync(path.join(tmpDir, ".inner-shipit", "db.sqlite"), "");
+    fs.mkdirSync(path.join(tmpDir, "sessions"));
+    fs.writeFileSync(path.join(tmpDir, "sessions", "clone.txt"), "");
+    fs.writeFileSync(path.join(tmpDir, ".npmrc"), "");
+
+    const tree = await scanFileTree(tmpDir);
+    const names = tree.map((n) => n.name);
+    expect(names).not.toContain(".git");
+    expect(names).not.toContain(".shipit");
+    expect(names).not.toContain(".inner-shipit");
+    expect(names).not.toContain("sessions");
+    expect(names).toContain(".npmrc");
   });
 
   it("shows .claude/ in the tree (skills are part of the codebase)", async () => {

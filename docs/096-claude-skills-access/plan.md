@@ -9,7 +9,7 @@ description: Show .claude/skills in the file tree and grant Edit/Write permissio
 
 Two related issues prevented the agent (and the human in the IDE) from working on `.claude/skills/*.md` from inside the ShipIt **dev environment**:
 
-1. **The file tree panel hid them.** The workspace scanner at `src/server/shared/file-tree.ts` skipped any entry whose name started with `.` (with a narrow allow-list for `.env` / `.env.local`). `.claude/` was invisible in the UI even though the files were present on disk and version-controlled. **Fixed:** added `.claude` to the allow-list (see `src/server/shared/fs-constants.ts:WORKSPACE_HIDDEN_ALLOWLIST`).
+1. **The file tree panel hid them.** The workspace scanner at `src/server/shared/file-tree.ts` skipped any entry whose name started with `.` (with a narrow allow-list for `.env` / `.env.local`). `.claude/` was invisible in the UI even though the files were present on disk and version-controlled. **Originally fixed** by adding `.claude` to the allow-list; **superseded 2026-06-10** by inverting the model to show dotfiles by default (see "Follow-up — show dotfiles by default" below).
 2. **The Claude Code harness (which the developer-facing dev loop runs under) requires explicit user permission to write under `.claude/`.** The project shipped no `.claude/settings.json` opting in, so attempting to edit a skill triggered a permission prompt that aborted the operation. **Fixed:** committed a project-scoped `.claude/settings.json` declaring `Edit(.claude/skills/**)` / `Write(.claude/skills/**)`.
 
 ## Two permission layers — DON'T conflate them
@@ -43,7 +43,7 @@ The problem was: Claude Code (running on the developer's machine to develop Ship
 
 ## Implementation
 
-### Fix 1 — Show `.claude/` in the file tree (DONE)
+### Fix 1 — Show `.claude/` in the file tree (DONE, later generalized)
 
 `src/server/shared/file-tree.ts` previously did:
 
@@ -51,17 +51,11 @@ The problem was: Claude Code (running on the developer's machine to develop Ship
 if (entry.name.startsWith(".") && entry.name !== ".env" && entry.name !== ".env.local") continue;
 ```
 
-Now uses an extensible allow-list in `fs-constants.ts`:
+The first iteration of this fix replaced the inline check with an extensible allow-list (`WORKSPACE_HIDDEN_ALLOWLIST = {.env, .env.local, .claude}`). That made `.claude/` visible but left every *other* dotfile (`.npmrc`, `.gitignore`, `.dockerignore`, …) invisible — a whack-a-mole model where each newly-needed dotfile hit the same wall.
 
-```ts
-export const WORKSPACE_HIDDEN_ALLOWLIST = new Set([".env", ".env.local", ".claude"]);
-// ...
-if (entry.name.startsWith(".") && !WORKSPACE_HIDDEN_ALLOWLIST.has(entry.name)) continue;
-```
+**Superseded 2026-06-10** by inverting the model — see "Follow-up — show dotfiles by default" below. `.claude/skills/*.md` is still visible; so is every other editable dotfile. Hidden directories that should stay hidden (`.git`, `.cache`, `.vite`, `.next`, `sessions`, `.shipit`, `.inner-shipit`) remain in `WORKSPACE_SKIP_DIRS`.
 
-`.claude/skills/*.md` is now visible in the workspace pane like any other markdown file. Hidden directories that should stay hidden (`.git`, `.cache`, `.vite`, `.next`) remain in `WORKSPACE_SKIP_DIRS` and are still excluded by the first check.
-
-Test added in `src/server/shared/file-tree.test.ts` ("shows .claude/ in the tree").
+Tests in `src/server/shared/file-tree.test.ts` cover `.claude/` visibility plus the inverted behavior.
 
 ### Fix 2 — Grant the Claude Code harness write permission for `.claude/skills/**` (DONE)
 
@@ -117,9 +111,9 @@ Note: even after the settings file is created, in-flight Edit tool attempts duri
 
 | File | Change |
 |---|---|
-| `src/server/shared/fs-constants.ts` | Added `WORKSPACE_HIDDEN_ALLOWLIST` constant |
-| `src/server/shared/file-tree.ts` | Uses the allow-list |
-| `src/server/shared/file-tree.test.ts` | Test for `.claude/` visibility |
+| `src/server/shared/fs-constants.ts` | `WORKSPACE_HIDDEN_ALLOWLIST` (allow-list) replaced by `WORKSPACE_HIDDEN_FILES` (minimal deny-list) — see 2026-06-10 follow-up |
+| `src/server/shared/file-tree.ts` | Shows dotfiles by default; only `WORKSPACE_SKIP_DIRS` + `WORKSPACE_HIDDEN_FILES` are hidden |
+| `src/server/shared/file-tree.test.ts` | Tests for `.claude/` + show-by-default + skip-dir/junk hiding |
 | `.claude/settings.json` | New — scoped Edit/Write permission for `.claude/skills/**`; **repaired 2026-06-10 (glob anchoring, see follow-up)** |
 | `.claude/skills/server-architecture/SKILL.md` | Added the WebSocket-lifecycle rule |
 
@@ -168,3 +162,30 @@ So the rule matched only the (never-supplied) relative form. The guard saw no ma
 `**/.claude/skills/**` is preferred over a hardcoded `/workspace/.claude/skills/**` because it matches the path regardless of checkout location (the dev loop is `/workspace`, but a contributor's local clone is elsewhere) **and** matches the relative form. With the rule repaired, the path-aware tools edit skills without a prompt and the `perl -i` workaround is no longer needed for routine skill-doc edits.
 
 > Note: the same guard fires on `.claude/settings.json` itself, so this very fix had to be bootstrapped via a Bash heredoc (the allow rule is scoped to `.claude/skills/**`, deliberately **not** `.claude/**`, so settings/secrets aren't implicitly writable). Bumping a Claude Code version can change the matcher; if skill edits start prompting again, re-check the absolute-vs-relative behavior with the picomatch snippet above before widening the glob.
+
+## Follow-up — show dotfiles by default (2026-06-10)
+
+**Reported symptom:** a user needed to edit `.npmrc` and it simply wasn't in the file tree. The allow-list model from Fix 1 only ever surfaced `.env`, `.env.local`, and `.claude` — so `.npmrc`, `.gitignore`, `.dockerignore`, `.nvmrc`, `.editorconfig`, `.prettierrc`, and every other rc/config dotfile stayed invisible. Each one a user needs is a new entry to add: whack-a-mole.
+
+### Fix: invert the model — dotfiles are shown by default
+
+`scanFileTree()` no longer skips a dotfile just because its name starts with `.`. Most dotfiles are real, editable source and belong in the tree exactly like VS Code shows them. The two existing exclusion mechanisms do the real work:
+
+- **`WORKSPACE_SKIP_DIRS`** (unchanged) hides genuine directory noise — `.git`, `.cache`, `.next`, `.vite`, plus the ShipIt-in-ShipIt metadirs `sessions`, `.shipit`, `.inner-shipit` (feature 118). These remain hidden.
+- **`WORKSPACE_HIDDEN_FILES`** (new, replaces `WORKSPACE_HIDDEN_ALLOWLIST`) is a *minimal* deny-list for pure junk and ShipIt-internal session data the user never edits: `.DS_Store`, `.shipit-usage.json`, `.vibe-sessions.json` (the latter two mirror `IGNORE_FILES` in `file-watcher.ts`).
+
+```ts
+// file-tree.ts, in scanFileTree()
+if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
+if (WORKSPACE_HIDDEN_FILES.has(entry.name)) continue;   // was: skip-all-dotfiles-unless-allowlisted
+```
+
+### Shared-consumer audit
+
+`fs-constants.ts` is shared, so each consumer was traced before changing it:
+
+- **`src/server/session/file-watcher.ts`** — uses only `WORKSPACE_SKIP_DIRS` (+ its own `IGNORE_FILES`), never the dotfile allow-list. It already let dotfiles through. **No behavior change**, so no watcher flood on `.git`-internal churn (`.git` is in `WORKSPACE_SKIP_DIRS`) and inner-orch metadata stays excluded.
+- **`src/server/orchestrator/markdown.ts`** (`findMarkdownFiles`) — uses only `WORKSPACE_SKIP_DIRS` and collects `.md` files. Never referenced the allow-list. **No behavior change.**
+- **`src/client/components/FileTree.tsx`** — renders whatever the server returns; does **no** second-layer dotfile filtering. So the server fix isn't defeated client-side.
+
+Only `file-tree.ts` referenced `WORKSPACE_HIDDEN_ALLOWLIST`, so the constant was removed outright rather than left as dead code.
