@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, CompactionCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1182,6 +1182,19 @@ export interface WsIssueWriteUpdate {
 }
 
 /**
+ * docs/188 — a read-only navigation card surfaced when the agent views an issue
+ * (`shipit issue view`). Emitted via `emitChatCard` so it broadcasts live AND
+ * records in-band with the turn, surviving a reconnect, switch, and reload.
+ * Carries the full `IssueRefCard`; the card has no lifecycle, so there is no
+ * follow-up update message (unlike the write card's undo transition).
+ */
+export interface WsIssueRefCard {
+  type: "issue_ref_card";
+  sessionId: string;
+  card: IssueRefCard;
+}
+
+/**
  * docs/178 — transient "Compacting…" progress indicator. Emit-only (NOT
  * persisted): it has no place in the scrollback once the matching
  * `WsCompactionCard` lands. `active:true` shows the indicator, `active:false`
@@ -1217,6 +1230,7 @@ export type WsServerMessage =
   | WsBugReportFailed
   | WsIssueWriteCard
   | WsIssueWriteUpdate
+  | WsIssueRefCard
   | WsError
   | WsPreviewStatus
   | WsGitLog

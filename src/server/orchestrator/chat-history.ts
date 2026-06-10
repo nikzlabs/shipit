@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, CompactionCard } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -136,6 +136,16 @@ export interface PersistedMessage {
    */
   issueWrite?: IssueWriteCard;
   /**
+   * docs/188 — when set, this message renders an inline issue **read**
+   * navigation card ("agent viewed SHI-28") with a jump-to-issue link. Arrives
+   * off the agent-event stream (the `shipit issue view` read relay) so
+   * `buildTurnMessages` doesn't capture it; recorded in-band with the turn via
+   * `emitChatCard` and persisted here so it survives a reload. Unlike the write
+   * card it has no lifecycle, so the full payload lives on this record (no
+   * client store) and never needs an in-place patch.
+   */
+  issueRef?: IssueRefCard;
+  /**
    * docs/178 — when set, this message renders an inline "Context compacted" card.
    * Compaction signals arrive off the agent-event stream
    * (`system/compact_boundary`, Codex `contextCompaction` items), so
@@ -175,6 +185,7 @@ interface MessageRow {
   voice_note: string | null;
   bug_report: string | null;
   issue_write: string | null;
+  issue_ref: string | null;
   compaction: string | null;
   /**
    * Legacy column — older rows may carry a serialized per-turn usage record
@@ -189,8 +200,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, compaction)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @compaction)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, issue_ref, compaction)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @issue_ref, @compaction)
 `;
 
 const UPDATE_SQL = `
@@ -199,7 +210,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, compaction=@compaction
+    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction
   WHERE id = @id
 `;
 
@@ -259,6 +270,7 @@ export class ChatHistoryManager {
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
       bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
       issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
+      issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
     };
   }
@@ -287,6 +299,7 @@ export class ChatHistoryManager {
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
     if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
+    if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
     return msg;
   }

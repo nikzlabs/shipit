@@ -29,7 +29,8 @@ import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
-import type { IssueWriteCard as IssueWriteCardData, CompactionCard as CompactionCardData } from "../../server/shared/types.js";
+import { IssueRefCard } from "./IssueRefCard.js";
+import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -264,6 +265,13 @@ export interface ChatMessage {
   issueWrite?: {
     cardId: string;
   } & Partial<IssueWriteCardData>;
+  /**
+   * docs/188 — when set, this message renders a read-only `IssueRefCard` inline
+   * (the agent ran `shipit issue view`). The card has no lifecycle, so both the
+   * live `issue_ref_card` WS handler and a history rehydration carry the full
+   * payload on the message; the component renders straight from it (no store).
+   */
+  issueRef?: IssueRefCardData;
   /**
    * docs/178 — when set, this message renders a `CompactionCard` inline ("Context
    * compacted"). Populated from `compaction_card` WS events and rehydrated from
@@ -807,6 +815,19 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <IssueWriteCard cardId={msg.issueWrite.cardId} onUndo={onUndoIssueWrite} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/188 — issue read navigation card. Carries no chat text of its
+        // own; renders the read-only `IssueRefCard` straight from the message
+        // payload (no store, no lifecycle) and skips the bubble path.
+        if (msg.issueRef) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <IssueRefCard card={msg.issueRef} />
               </div>
             </div>
           );

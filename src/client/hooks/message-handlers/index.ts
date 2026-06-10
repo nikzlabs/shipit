@@ -29,6 +29,7 @@ import { handleGlobalSettings } from "./global-settings.js";
 import { handleInstallLog } from "./install-log.js";
 import { handleIssueWriteCard } from "./issue-write-card.js";
 import { handleIssueWriteUpdate } from "./issue-write-update.js";
+import { handleIssueRefCard } from "./issue-ref-card.js";
 import { handleInstallStatus } from "./install-status.js";
 import { handleLogEntry } from "./log-entry.js";
 import { handleMcpServerStatus } from "./mcp-server-status.js";
@@ -128,6 +129,7 @@ export const messageHandlers: MessageHandlerMap = {
   install_status: handleInstallStatus,
   issue_write_card: handleIssueWriteCard,
   issue_write_update: handleIssueWriteUpdate,
+  issue_ref_card: handleIssueRefCard,
   log_entry: handleLogEntry,
   mcp_server_status: handleMcpServerStatus,
   message_queued: handleMessageQueued,
