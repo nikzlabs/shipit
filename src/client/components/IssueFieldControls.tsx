@@ -124,7 +124,10 @@ function FieldEditor({
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
           className={cn(
-            "group/fe inline-flex max-w-full items-center gap-1 rounded -mx-1 px-1 py-0.5",
+            // Fully-round hover/focus highlight so it reads as one cohesive
+            // affordance around the pill (a small-radius box clashed with the
+            // pill's round corners — looked like a weird nested box).
+            "group/fe inline-flex max-w-full items-center gap-1 rounded-full -mx-1.5 px-1.5 py-0.5",
             "cursor-pointer transition-colors hover:bg-(--color-bg-hover)",
             "focus:outline-none focus-visible:bg-(--color-bg-hover)",
             error && "ring-1 ring-(--color-error)",
