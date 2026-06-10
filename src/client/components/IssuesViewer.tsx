@@ -158,28 +158,32 @@ function IssueLabels({ labels }: { labels?: string[] }) {
 }
 
 /**
- * Grid template that reflows responsively (docs/173). A single DOM row whose
- * cells are placed by `grid-area`, so there's no duplicated markup between the
- * desktop table and the mobile card:
- *   - mobile (<md): stacked card — id+priority, then title, then status·assignee,
- *     then a full-width action.
- *   - md..lg: tabular, Assignee column dropped.
- *   - lg+: full table with the Assignee column.
- * Title never drops; the action is always present.
+ * Grid template that reflows to the **panel** width via container queries
+ * (docs/173). The Issues tab lives in a resizable side panel that is usually far
+ * narrower than the viewport, so viewport breakpoints (`md:`/`lg:`) mis-fired —
+ * a wide viewport picked the widest table even when the panel was ~520px, and it
+ * overflowed (columns overlapped, the action button clipped off-screen). The
+ * `@`-prefixed variants resolve against the nearest `@container` (the scroll
+ * area) instead. A single DOM row whose cells are placed by `grid-area`, with
+ * just two layouts — no column silently vanishes at mid widths:
+ *   - very narrow (< @sm): stacked card — id+priority, title, status·assignee
+ *     meta, full-width action.
+ *   - @sm+: the full table (every column, Assignee included).
+ *
+ * The title track is `minmax(<min>,1fr)`, so the table grid has an intrinsic
+ * min-width (fixed cols + title min). When the panel is narrower than that, the
+ * scroll container (`overflow-auto`) shows a HORIZONTAL scrollbar rather than
+ * dropping a column or crushing the rest; the card layout (below @sm) has no
+ * never scrolls horizontally. The action track is a FIXED width (not `auto`) so
+ * the independent header and row grids resolve to identical column tracks (with
+ * `auto`, the header sized it to "Action" while rows sized it to the wider
+ * button, and the `1fr` title absorbed the difference — misaligning the two).
  */
-// The action track is a FIXED width (not `auto`) so the header grid and each
-// row grid — which are independent grid containers — resolve to identical
-// column tracks. With `auto`, the header sized that column to the "Action"
-// label while rows sized it to the wider "Start session" button; the `1fr`
-// title column absorbed the difference, shifting every trailing column out of
-// alignment between header and rows.
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'action_action'] " +
-  "md:grid-cols-[64px_minmax(0,1fr)_88px_104px_136px] md:gap-x-3 md:items-start " +
-  "md:[grid-template-areas:'id_title_pri_status_action'] " +
-  "lg:grid-cols-[64px_minmax(0,1fr)_88px_104px_96px_136px] " +
-  "lg:[grid-template-areas:'id_title_pri_status_assignee_action']";
+  "@sm:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @sm:gap-x-2.5 @sm:items-start " +
+  "@sm:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
 // Every cell's FIRST line shares one fixed-height band, vertically centered, so
 // the row's leading line (id · title · priority · status · assignee · action)
@@ -251,7 +255,7 @@ function IssueRow({
 
       {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
           editable for Linear (docs/191); read-only badge for GitHub. */}
-      <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end md:justify-self-start`}>
+      <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end @sm:justify-self-start`}>
         {canEditPriority ? (
           <IssuePriorityEditor
             current={issue.priority.level}
@@ -267,7 +271,7 @@ function IssueRow({
 
       {/* Status — its own column on desktop; folded into the meta line on mobile.
           Inline-editable (docs/191). */}
-      <div className="hidden md:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
+      <div className="hidden @sm:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
         {issue.status && (
           <IssueStatusEditor
             current={issue.status}
@@ -287,13 +291,13 @@ function IssueRow({
         )}
       </div>
 
-      {/* Assignee — own column at lg+, hidden in the md..lg band, in the meta line on mobile. */}
-      <div className="hidden lg:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
+      {/* Assignee — its own column in the table (@sm+); folded into the card meta line below @sm. */}
+      <div className="hidden @sm:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
-      {/* Mobile-only meta line: status · assignee. */}
-      <div className="md:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
+      {/* Card-only meta line: status · assignee (shown when the table columns fold). */}
+      <div className="@sm:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
         {issue.status && (
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <span
@@ -309,10 +313,10 @@ function IssueRow({
 
       {/* Wrapped in the shared first-line band so the button centers on the same
           baseline as the other cells (the row is `items-start`). The cell fills
-          the action track and `justify-end` pushes the button to the track's
-          right edge — the same edge the `justify-self-end` header label sits on,
-          so "Action" lines up with the button regardless of the button's width. */}
-      <div className={`[grid-area:action] ${FIRST_LINE} w-full justify-end`}>
+          the action track and `justify-center` centers the button in it — the
+          `justify-self-center` header label centers in the same track, so
+          "Action" sits centered over the button. */}
+      <div className={`[grid-area:action] ${FIRST_LINE} w-full justify-center`}>
         <StartSessionButton
           disabled={!canStart}
           title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
@@ -320,25 +324,25 @@ function IssueRow({
             e.stopPropagation();
             onStartSession(issue);
           }}
-          className="w-full md:w-auto"
+          className="w-full @sm:w-auto"
         />
       </div>
     </div>
   );
 }
 
-/** Sticky table header — desktop only; mobile rows are cards with no header. */
+/** Sticky table header — shown only in the table layout; the card layout has none. */
 function TableHeader() {
   return (
     <div
-      className={`${ROW_GRID} hidden md:grid sticky top-0 z-10 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-[10px] uppercase tracking-wide font-semibold text-(--color-text-tertiary)`}
+      className={`${ROW_GRID} hidden @sm:grid sticky top-0 z-10 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-[10px] uppercase tracking-wide font-semibold text-(--color-text-tertiary)`}
     >
       <div className="[grid-area:id]">Issue</div>
       <div className="[grid-area:title]">Title</div>
       <div className="[grid-area:pri]">Priority</div>
       <div className="[grid-area:status]">Status</div>
-      <div className="hidden lg:block [grid-area:assignee]">Assignee</div>
-      <div className="[grid-area:action] justify-self-end">Action</div>
+      <div className="[grid-area:assignee]">Assignee</div>
+      <div className="[grid-area:action] justify-self-center">Action</div>
     </div>
   );
 }
@@ -468,7 +472,11 @@ export function IssuesViewer({
         />
       )}
 
-      <div className="flex-1 overflow-y-auto">
+      {/* `@container` so the row grid reflows to THIS panel's width, not the
+          viewport; `overflow-auto` so a too-narrow panel scrolls the table
+          horizontally (the grid's title-min keeps columns from crushing) rather
+          than clipping the action column. */}
+      <div className="@container flex-1 overflow-auto">
         {error && (
           <div className="flex items-start gap-2 m-3 p-3 rounded bg-(--color-error-subtle) text-(--color-error) text-xs">
             <WarningCircleIcon size={ICON_SIZE.SM} className="shrink-0 mt-0.5" />

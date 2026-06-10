@@ -271,6 +271,19 @@ rather than a flat text table:
   fades in on hover/focus, a hover-reveal caret that slides in, softer
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
   for unassigned/avatarless users).
+- **Container-query responsive layout.** The row grid now reflows to the **panel**
+  width via container queries (`@container` on the scroll area + `@sm:` variants),
+  not the viewport. The Issues tab lives in a resizable side panel far narrower
+  than the viewport, so the old viewport breakpoints (`md:`/`lg:`) mis-fired — a
+  wide viewport picked the widest table even in a ~520px panel, overflowing it
+  (columns overlapped into "TIPRIORITY", the action button clipped off-screen).
+  Two layouts only — **no column silently drops at mid widths** (the old
+  assignee-dropping tier is gone): a stacked **card** below `@sm`, and the **full
+  table** (Assignee included) at `@sm+`. The title track is `minmax(96px,1fr)`, so
+  the table has an intrinsic min-width; when the panel is narrower the scroll area
+  (`overflow-auto`) shows a **horizontal scrollbar** instead of crushing or
+  dropping columns. Verified live in the dogfood inner app at a 520px panel:
+  `scrollWidth 620 > clientWidth 520`, button fully reachable after scroll.
 - **Shared first-line baseline.** The row grid is `items-start`, so each cell's
   leading element (11px id, 14px title, 18px priority pill, dot+text status, 20px
   button) would otherwise top-align at a slightly different vertical center. Every
