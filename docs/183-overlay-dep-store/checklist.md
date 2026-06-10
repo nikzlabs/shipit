@@ -61,21 +61,38 @@ below). No empirical unknowns remain; the work from here is mechanical.
 - *Inert: `buildOverlaySpecs` has no production caller yet (Phase 3 wires it); the live-set is ∅ while
   the flag is off.*
 
-### Phase 3 — Mount wiring: create + mount N overlay volumes
+### Phase 3 — Mount wiring (split into 3a/3b for reviewability)
 
-- [ ] Container creation creates the N overlay volumes (Phase-2 specs) and `buildMounts` mounts each at
-      its `/workspace/<dep-dir>` subpath, nested under the workspace mount. First phase that mounts when
-      the flag is on; the flag-off path is byte-for-byte unchanged.
-- [ ] **Contextual dep-dir validation (deferred from Phase 1).** This is the right phase — the host
-      clone now exists. Before building specs, drop a declared dep dir whose **parent doesn't exist** or
-      that **points at tracked (non-gitignored) source** — the checks the pure config parser couldn't
-      make. A dropped dir falls back to a plain install for that path; never fatal.
-- [ ] Integration test (fake Docker): N volumes created + mounted at the right subpaths; a non-overlay
-      session is unchanged.
+Phase 3 is materially bigger than 1–2 (it touches the hot container-creation path and needs a populator
+that resolves eligibility/scope/mountpoint from `SessionInfo`, which `ContainerConfig` doesn't carry).
+Split into a pure inert plumbing refactor (3a) and the flag-gated populator + integration test (3b).
+
+#### Phase 3a — N-spec container plumbing (inert refactor)
+
+- [x] Converted the container-lifecycle overlay plumbing from one spec to **N**: `ContainerConfig.overlaySpec`
+      → `overlaySpecs: DepDirOverlaySpec[]`; `SessionContainer.overlayVolumeName` → `overlayVolumeNames[]`.
+- [x] `buildMounts` no longer root-mounts an overlay; `/workspace` **always** stays the normal host-clone
+      mount and each dep spec is appended as a **nested** `/workspace/<dep-dir>` volume mount.
+- [x] `createContainer` creates **each** overlay volume (serialized) and records all names; the
+      failure-path cleanup and `destroyContainer` `removeOverlayVolume` **every** recorded name.
+- [x] Tests: `buildMounts` nested-mount unit tests (workspace stays normal; N nested mounts; uploads/dep-cache
+      never overlay; non-overlay unchanged) + `session-container` create/fail/destroy with N specs.
+- *Inert: no caller populates `overlaySpecs` yet (3b does).*
+
+#### Phase 3b — Spec populator + flag-gated wiring (first phase that mounts)
+
+- [ ] Add the populator (`prepareOverlaySpecs`): resolve eligibility + base scope from `SessionInfo`,
+      read the session's `agent.dep-dirs`, resolve the state-volume daemon-host mountpoint
+      (`resolveVolumeMountpoint`), call `buildOverlaySpecs`, and populate `ContainerConfig.overlaySpecs`.
+      Wire it into the container-creation path (manager / app-lifecycle); flag-off → no specs → unchanged.
+- [ ] **Contextual dep-dir validation (deferred from Phase 1).** The host clone now exists. Before
+      building specs, drop a declared dep dir whose **parent doesn't exist** or that **points at tracked
+      (non-gitignored) source**. A dropped dir falls back to a plain install for that path; never fatal.
+- [ ] Integration test (fake Docker, flag on): N volumes created + mounted at the right nested subpaths;
+      a non-overlay / flag-off session is unchanged.
 - [ ] **Validate the recursive file-tree watcher descends into the nested submount** (same-namespace
       inotify across a mount boundary) — the one item the nested-overlay spike deliberately did not
-      cover. See `host-overlay-spike.sh`'s inotify rung; this is the right phase since it's where the
-      nested mount first exists.
+      cover. See `host-overlay-spike.sh`'s inotify rung; this is where the nested mount first exists.
 
 ### Phase 4 — Snapshot + publish, per dep dir
 

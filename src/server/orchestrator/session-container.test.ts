@@ -326,50 +326,88 @@ describe("SessionContainerManager", () => {
     });
   });
 
-  // --- docs/183 Phase 2 — overlay sessions ---
+  // --- docs/183 dep-dir design — overlay sessions (N nested dep-dir mounts) ---
 
   describe("overlay session", () => {
-    const overlaySpec = {
-      volumeName: "shipit-test-session_overlay",
-      lowerdir: "/data/overlay-base/h1",
-      upperdir: "/data/sessions/test-session-1/upper",
-      workdir: "/data/sessions/test-session-1/work",
-    };
+    // Two declared dep dirs → two overlay volumes, each mounted NESTED under
+    // /workspace at its dep-dir subpath. /workspace itself stays the normal mount.
+    const overlaySpecs = [
+      {
+        volumeName: "shipit-test-session_overlay-aaaaaaaa",
+        lowerdir: "/data/overlay-base/h1",
+        upperdir: "/data/sessions/test-session-1/overlay/h1/upper",
+        workdir: "/data/sessions/test-session-1/overlay/h1/work",
+        depDir: "node_modules",
+        mountPath: "/workspace/node_modules",
+        scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
+        scopeHash: "h1",
+      },
+      {
+        volumeName: "shipit-test-session_overlay-bbbbbbbb",
+        lowerdir: "/data/overlay-base/h2",
+        upperdir: "/data/sessions/test-session-1/overlay/h2/upper",
+        workdir: "/data/sessions/test-session-1/overlay/h2/work",
+        depDir: "packages/app/node_modules",
+        mountPath: "/workspace/packages/app/node_modules",
+        scope: { repoUrl: "r", runtimeKey: "rt", depDir: "packages/app/node_modules" },
+        scopeHash: "h2",
+      },
+    ];
 
-    it("creates the per-session type=overlay volume and mounts it at /workspace root", async () => {
-      await manager.create(buildConfig({ overlaySpec }));
+    it("creates one type=overlay volume per dep dir and mounts each nested under /workspace", async () => {
+      await manager.create(buildConfig({ overlaySpecs }));
 
-      expect(mockDocker.createVolume).toHaveBeenCalledWith(
-        expect.objectContaining({
-          Name: overlaySpec.volumeName,
-          Driver: "local",
-          DriverOpts: expect.objectContaining({ type: "overlay", device: "overlay" }),
-        }),
-      );
-      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(true);
+      for (const spec of overlaySpecs) {
+        expect(mockDocker.createVolume).toHaveBeenCalledWith(
+          expect.objectContaining({
+            Name: spec.volumeName,
+            Driver: "local",
+            DriverOpts: expect.objectContaining({ type: "overlay", device: "overlay" }),
+          }),
+        );
+        expect(mockDocker._liveVolumes.has(spec.volumeName)).toBe(true);
+      }
 
       const call = mockDocker.createContainer.mock.calls[0][0];
-      const wsMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace");
-      expect(wsMount.Source).toBe(overlaySpec.volumeName);
-      expect(wsMount.VolumeOptions?.Subpath).toBeUndefined(); // mounted at root
+      const mounts = call.HostConfig.Mounts ?? [];
+      const overlayNames = overlaySpecs.map((s) => s.volumeName);
+
+      // /workspace is never sourced from an overlay volume — it stays the normal
+      // host-clone mount (a volume subpath in prod, a bind in this test harness).
+      const wsMount = mounts.find((m: any) => m.Target === "/workspace");
+      if (wsMount) expect(overlayNames).not.toContain(wsMount.Source);
+
+      // Each dep dir is mounted nested at its /workspace/<dep-dir> target.
+      for (const spec of overlaySpecs) {
+        const nested = mounts.find((m: any) => m.Target === spec.mountPath);
+        expect(nested).toBeDefined();
+        expect(nested.Source).toBe(spec.volumeName);
+        expect(nested.Type).toBe("volume");
+      }
     });
 
-    it("removes the overlay volume when container creation fails (no leak)", async () => {
+    it("removes every overlay volume when container creation fails (no leak)", async () => {
       // Regression: createOverlayVolume must run inside the try block so a
-      // later failure removes the volume instead of leaking it.
+      // later failure removes the volumes instead of leaking them.
       mockDocker.createContainer.mockRejectedValueOnce(new Error("image not found"));
 
-      await expect(manager.create(buildConfig({ overlaySpec }))).rejects.toThrow("image not found");
-      expect(mockDocker._removedVolumes).toContain(overlaySpec.volumeName);
-      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(false);
+      await expect(manager.create(buildConfig({ overlaySpecs }))).rejects.toThrow("image not found");
+      for (const spec of overlaySpecs) {
+        expect(mockDocker._removedVolumes).toContain(spec.volumeName);
+        expect(mockDocker._liveVolumes.has(spec.volumeName)).toBe(false);
+      }
     });
 
-    it("removes the overlay volume on destroy", async () => {
-      await manager.create(buildConfig({ overlaySpec }));
-      expect(mockDocker._liveVolumes.has(overlaySpec.volumeName)).toBe(true);
+    it("removes every overlay volume on destroy", async () => {
+      await manager.create(buildConfig({ overlaySpecs }));
+      for (const spec of overlaySpecs) {
+        expect(mockDocker._liveVolumes.has(spec.volumeName)).toBe(true);
+      }
 
       await manager.destroy("test-session-1");
-      expect(mockDocker._removedVolumes).toContain(overlaySpec.volumeName);
+      for (const spec of overlaySpecs) {
+        expect(mockDocker._removedVolumes).toContain(spec.volumeName);
+      }
     });
 
     it("does not touch volumes for non-overlay sessions", async () => {

@@ -83,52 +83,81 @@ describe("buildMounts", () => {
 });
 
 // ---------------------------------------------------------------------------
-// docs/183 Phase 2 — overlay workspace volume
+// docs/183 dep-dir design — overlay sessions mount N dep-dir volumes NESTED
+// under /workspace; /workspace itself stays the normal host-clone mount.
 // ---------------------------------------------------------------------------
 
 describe("buildMounts — overlay session (docs/183)", () => {
-  const OVERLAY_VOL = "shipit-sess-1abc234_overlay";
+  const depSpecs = [
+    {
+      volumeName: "shipit-sess-1abc234_overlay-aaaaaaaa",
+      lowerdir: "/data/overlay-base/h1",
+      upperdir: "/data/sessions/sess-1/overlay/h1/upper",
+      workdir: "/data/sessions/sess-1/overlay/h1/work",
+      depDir: "node_modules",
+      mountPath: "/workspace/node_modules",
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
+      scopeHash: "h1",
+    },
+    {
+      volumeName: "shipit-sess-1abc234_overlay-bbbbbbbb",
+      lowerdir: "/data/overlay-base/h2",
+      upperdir: "/data/sessions/sess-1/overlay/h2/upper",
+      workdir: "/data/sessions/sess-1/overlay/h2/work",
+      depDir: "packages/app/node_modules",
+      mountPath: "/workspace/packages/app/node_modules",
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "packages/app/node_modules" },
+      scopeHash: "h2",
+    },
+  ];
 
-  it("mounts the overlay volume at /workspace ROOT (no subpath) when set", () => {
+  it("keeps /workspace on the state workspaceVolume and nests each dep dir's overlay volume under it", () => {
     const config = baseConfig({ uploadsDir: "/workspace/sessions/sess-1/uploads" });
-    const result = buildMounts(config, "shipit-workspace", "shipit-credentials", OVERLAY_VOL);
-    const wsMount = result.mounts.find((m) => m.Target === "/workspace");
-    expect(wsMount).toBeDefined();
-    expect(wsMount!.Source).toBe(OVERLAY_VOL);
-    // The merged overlay tree IS the volume root — no storage subpath.
-    expect(wsMount!.VolumeOptions?.Subpath).toBeUndefined();
-    // And the state-volume /workspace subpath mount must NOT also be present.
-    expect(
-      result.mounts.filter((m) => m.Target === "/workspace"),
-    ).toHaveLength(1);
-    // No /workspace bind leaked in either.
-    expect(result.binds.some((b) => b.endsWith(":/workspace:rw"))).toBe(false);
+    const result = buildMounts(config, "shipit-workspace", "shipit-credentials", depSpecs);
+
+    // /workspace stays the normal host-clone subpath mount — NOT an overlay volume.
+    const wsMounts = result.mounts.filter((m) => m.Target === "/workspace");
+    expect(wsMounts).toHaveLength(1);
+    expect(wsMounts[0].Source).toBe("shipit-workspace");
+    expect(wsMounts[0].VolumeOptions?.Subpath).toBe("sessions/sess-1");
+
+    // Each dep dir is mounted at its nested /workspace/<dep-dir> target.
+    for (const spec of depSpecs) {
+      const nested = result.mounts.find((m) => m.Target === spec.mountPath);
+      expect(nested).toBeDefined();
+      expect(nested!.Type).toBe("volume");
+      expect(nested!.Source).toBe(spec.volumeName);
+      expect(nested!.VolumeOptions?.Subpath).toBeUndefined(); // overlay volume mounted at its own root
+    }
   });
 
-  it("keeps /uploads and /dep-cache on the state workspaceVolume, NOT the overlay volume", () => {
+  it("keeps /uploads and /dep-cache on the state workspaceVolume, never an overlay volume", () => {
     const config = baseConfig({
       uploadsDir: "/workspace/sessions/sess-1/uploads",
       depCacheDir: "/workspace/dep-cache/abc123",
     });
-    const result = buildMounts(config, "shipit-workspace", undefined, OVERLAY_VOL);
+    const result = buildMounts(config, "shipit-workspace", undefined, depSpecs);
+    const overlayNames = depSpecs.map((s) => s.volumeName);
 
     const uploads = result.mounts.find((m) => m.Target === "/uploads");
     expect(uploads!.Source).toBe("shipit-workspace");
-    expect(uploads!.Source).not.toBe(OVERLAY_VOL);
+    expect(overlayNames).not.toContain(uploads!.Source);
     expect(uploads!.VolumeOptions?.Subpath).toBe("sessions/sess-1/uploads");
 
     const depCache = result.mounts.find((m) => m.Target === DEP_CACHE_CONTAINER_PATH);
     expect(depCache!.Source).toBe("shipit-workspace");
-    expect(depCache!.Source).not.toBe(OVERLAY_VOL);
+    expect(overlayNames).not.toContain(depCache!.Source);
     expect(depCache!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
   });
 
-  it("non-overlay sessions are unchanged (overlay arg omitted)", () => {
+  it("non-overlay sessions are unchanged (overlay arg omitted → no nested mounts)", () => {
     const config = baseConfig();
     const result = buildMounts(config, "shipit-workspace", undefined);
     const wsMount = result.mounts.find((m) => m.Target === "/workspace");
     expect(wsMount!.Source).toBe("shipit-workspace");
     expect(wsMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1");
+    // No nested /workspace/* mounts.
+    expect(result.mounts.some((m) => m.Target.startsWith("/workspace/"))).toBe(false);
   });
 });
 

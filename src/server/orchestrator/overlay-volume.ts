@@ -20,9 +20,9 @@
  * This module owns ONLY the Docker-volume mechanics (name → spec → create/inspect/
  * remove) plus the serialization that avoids the overlay2 EBUSY hazard. The base
  * filesystem (lowerdir contents, the rolling-base publish CAS) is Phase 3; the
- * session-eligibility decision and the workspace-view resolver are Phase 4. Nothing
+ * session-eligibility decision and the spec populator are later phases. Nothing
  * here is wired into live session creation until a caller populates
- * `ContainerConfig.overlaySpec`, so importing it is behavior-preserving.
+ * `ContainerConfig.overlaySpecs`, so importing it is behavior-preserving.
  */
 
 import crypto from "node:crypto";

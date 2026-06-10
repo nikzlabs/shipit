@@ -40,7 +40,7 @@ import {
   type HealthMonitorState,
 } from "./container-health.js";
 import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount } from "../shared/shipit-config.js";
-import type { OverlaySpec } from "./overlay-volume.js";
+import type { DepDirOverlaySpec } from "./overlay-session.js";
 
 // ---------------------------------------------------------------------------
 // Re-export sub-module public symbols for backwards compatibility
@@ -118,15 +118,15 @@ export interface ContainerConfig {
    */
   hostMounts?: HostMount[];
   /**
-   * docs/183 Phase 2 — overlay dep store. When set, the orchestrator creates a
-   * per-session `local`-driver `type=overlay` volume (lowerdir=shared base,
-   * upper/work=this session) and mounts it at `/workspace` instead of the
-   * `workspaceVolume` subpath; the daemon performs the overlay mount as it builds
-   * the container. `/uploads` and `/dep-cache` keep using `workspaceVolume`.
-   * Populated by later-phase eligibility logic; absent for non-overlay sessions
-   * (the byte-for-byte-unchanged path).
+   * docs/183 dep-dir design — overlay dep store. When set, the orchestrator
+   * creates one `local`-driver `type=overlay` volume **per declared dep dir**
+   * (lowerdir=shared base, upper/work=this session) and mounts each **nested** at
+   * `/workspace/<dep-dir>`; `/workspace` itself stays the normal host-clone mount.
+   * The daemon performs each overlay mount as it builds the container. Populated
+   * by the eligibility/spec-builder logic (`buildOverlaySpecs`); absent for
+   * non-overlay sessions (the byte-for-byte-unchanged path).
    */
-  overlaySpec?: OverlaySpec;
+  overlaySpecs?: DepDirOverlaySpec[];
 }
 
 export interface SessionContainer {
@@ -163,12 +163,12 @@ export interface SessionContainer {
    */
   bootedLimits?: { memoryLimit: number; cpuQuota: number; pidsLimit: number };
   /**
-   * docs/183 Phase 2 — name of the per-session overlay volume created for this
-   * container, when it is an overlay session. Recorded so `destroyContainer` can
-   * `docker volume rm` it on teardown without re-deriving eligibility. Absent for
-   * non-overlay sessions.
+   * docs/183 dep-dir design — names of the per-session overlay volumes created
+   * for this container (one per declared dep dir), when it is an overlay session.
+   * Recorded so `destroyContainer` can `docker volume rm` each on teardown without
+   * re-deriving eligibility. Absent for non-overlay sessions.
    */
-  overlayVolumeName?: string;
+  overlayVolumeNames?: string[];
 }
 
 export interface SessionContainerManagerEvents {
@@ -870,8 +870,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     dockerAccess?: boolean;
     opsSession?: boolean;
     hostMounts?: HostMount[];
-    /** docs/183 — overlay dep store spec; absent for non-overlay sessions. */
-    overlaySpec?: OverlaySpec;
+    /** docs/183 — one overlay dep store spec per declared dep dir; absent for non-overlay sessions. */
+    overlaySpecs?: DepDirOverlaySpec[];
   }): ContainerConfig {
     return buildContainerConfig({
       imageName: this.imageName,
