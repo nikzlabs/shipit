@@ -57,7 +57,10 @@ shipit issue assign  <pointer> <user|me | --none>
 
 `create` files a new issue and prints its identifier and URL on stdout (and the
 raw object with `--json`), so you can use the URL immediately in the same turn
-(e.g. to cross-link a design doc's `issue:` frontmatter). There is no pointer to
+(e.g. to cross-link a design doc's `issue:` frontmatter). For Linear the printed
+URL is the canonical, slug-free `…/issue/TRACKER-28` form — the title slug Linear
+normally appends is stripped, so the URL you drop into `issue:` frontmatter never
+leaks the issue title and matches the pointer shape ShipIt expects. There is no pointer to
 infer the tracker from, so it **defaults to Linear** (the workspace-wide
 tracker); pass `--tracker github` to file on this session's repo instead. Like
 every other write it is do-then-surface — the issue is created right away and a
