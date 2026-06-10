@@ -178,6 +178,29 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(ptr).toMatchObject({ commit: last, depth: 1, generation: 3 });
   });
 
+  it("the swap reclaims the old base generation (new contents only, no leaked old/tmp dirs)", async () => {
+    // docs/183 Phase 6 — every advance/flatten materializes into a fresh temp
+    // sibling and atomically swaps it over `overlay-base/<hash>`, then rm's the
+    // old generation. Confirm the base ends up holding ONLY the newest snapshot
+    // and no `.old-*`/`.tmp-*` siblings leak (unreferenced disk the GC can't key on).
+    const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
+    const baseDir = overlayBaseDir(stateDir, scopeHash);
+    const markerPath = path.join(baseDir, "node_modules.marker");
+
+    const c1 = commit("c1");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
+    expect(fs.readFileSync(markerPath, "utf8")).toBe(c1);
+
+    const c2 = commit("c2");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c2 }), isAncestor });
+    // The base reflects ONLY the new generation — the old one was reclaimed.
+    expect(fs.readFileSync(markerPath, "utf8")).toBe(c2);
+
+    const root = path.join(stateDir, "overlay-base");
+    const leaked = fs.readdirSync(root).filter((n) => n.includes(".old-") || n.includes(".tmp-"));
+    expect(leaked).toEqual([]);
+  });
+
   /** Rewrite `main` to a divergent orphan line; returns the rewritten commit. */
   function forcePushDivergentHistory(): string {
     git(repoDir, "checkout", "-q", "--orphan", "rewritten");

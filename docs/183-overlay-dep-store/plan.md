@@ -747,9 +747,14 @@ on top of the simplified install path.
 > `overlayDepDirs` option that, for each service sharing the workspace, keeps the normal mount and
 > appends one nested `type: volume` overlay mount per reachable dep dir at `<service-target>/<dep-dir>`
 > (declared `external: true`); `ServiceManager` threads it via `setOverlayDepDirs()`, populated from
-> `prepareOverlaySpecs` in `setupServiceManager`'s start path. Remaining before the flag can flip:
-> Phase 6 (disk-cleanup retargeting — the GC-correctness gate), Phase 7 (warm-pool/activation wiring +
-> measure + flip).
+> `prepareOverlaySpecs` in `setupServiceManager`'s start path. **Phase 6 (disk-cleanup retargeting — the
+> GC-correctness gate)** is also landed: the N-volume reclaim was already wired by the foundation +
+> Phase 3a (teardown via `destroyContainer`'s `overlayVolumeNames` loop, disk-tier escalation via
+> `containerManager.destroy()`, the `^shipit-([a-f0-9-]{12})_` crash-orphan prefix sweep, the
+> per-`(session × dep-dir)` `liveOverlayScopeHashes` live-set, and `copySnapshotToBase`'s atomic
+> old-generation swap), and Phase 6 locked it with N>1 tests across all surfaces + the CLAUDE.md
+> "Disk cleanup" docs sync. Remaining before the flag can flip: Phase 7 (warm-pool/activation wiring +
+> measure + flip) — the flag invariant is now satisfiable.
 >
 > **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and
 > (B) the workspace-view resolver — are now [REJECTED, not pending](#rejected-approaches)**, because
