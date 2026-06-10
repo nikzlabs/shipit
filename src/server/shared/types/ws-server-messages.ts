@@ -1043,6 +1043,8 @@ export interface WsPresentContentMessage {
   title?: string;
   /** The path the agent presented (`present`'s `file` arg), shown in the header. */
   filePath: string;
+  /** Whether `filePath` resolves inside the workspace (already tracked → hide Save). */
+  inWorkspace: boolean;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
 }
@@ -1067,6 +1069,7 @@ export interface PresentStateEntry {
   mimeType: string;
   title?: string;
   filePath: string;
+  inWorkspace: boolean;
   createdAt: string;
 }
 

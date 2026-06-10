@@ -144,6 +144,9 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
+      // Treat the temp dir as the workspace so artifacts submitted from it count
+      // as in-workspace (drives the `inWorkspace` flag the UI uses to hide Save).
+      workspaceDir: tmpDir,
     });
     const address = await worker.start();
     const port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
@@ -196,6 +199,9 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(msg.title).toBe("Sales Chart");
     // The presented file path rides through verbatim so the header can show it.
     expect(msg.filePath).toBe(filePath);
+    // The artifact was written under the worker's workspaceDir (the temp dir),
+    // so it's flagged in-workspace — the UI hides Save for it.
+    expect(msg.inWorkspace).toBe(true);
     expect(typeof msg.createdAt).toBe("string");
     expect(msg.replaceId).toBeUndefined();
 
@@ -209,7 +215,36 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       mimeType: "text/html",
       title: "Sales Chart",
       filePath,
+      inWorkspace: true,
     });
+  });
+
+  it("flags an artifact outside the workspace as not in-workspace", async () => {
+    // Write the file to a sibling temp dir that is NOT the worker's workspaceDir,
+    // then submit its absolute path — it resolves outside the workspace.
+    const outsideDir = await mkdtemp(path.join(os.tmpdir(), "present-outside-"));
+    const outsidePath = path.join(outsideDir, "throwaway.html");
+    await writeFile(outsidePath, "<p>throwaway</p>", "utf8");
+    try {
+      const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file: outsidePath, mimeType: "text/html" }),
+      });
+      expect(res.ok).toBe(true);
+      const { presentId } = (await res.json()) as { presentId: string };
+
+      await waitFor(
+        () => presentContentMsgs().some((m) => m.presentId === presentId),
+        3000,
+        "present_content for outside-workspace artifact",
+      );
+      const msg = presentContentMsgs().find((m) => m.presentId === presentId)!;
+      expect(msg.filePath).toBe(outsidePath);
+      expect(msg.inWorkspace).toBe(false);
+    } finally {
+      await rm(outsideDir, { recursive: true, force: true });
+    }
   });
 
   it("infers text/html from the .html extension when mimeType is omitted", async () => {

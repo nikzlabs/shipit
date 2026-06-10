@@ -126,16 +126,20 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             {active.filePath}
           </div>
         </div>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => { setSaveError(null); setSaveOpen(true); }}
-          className="shrink-0"
-          aria-label="Save presentation to project"
-        >
-          <FloppyDiskIcon size={ICON_SIZE.XS} />
-          Save
-        </Button>
+        {/* Already-in-workspace artifacts are tracked + auto-committed, so
+            there's nothing to save — hide the button for them. */}
+        {!active.inWorkspace && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => { setSaveError(null); setSaveOpen(true); }}
+            className="shrink-0"
+            aria-label="Save presentation to project"
+          >
+            <FloppyDiskIcon size={ICON_SIZE.XS} />
+            Save
+          </Button>
+        )}
         <Button
           variant="ghost"
           size="sm"

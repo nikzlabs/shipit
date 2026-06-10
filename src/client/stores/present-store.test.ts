@@ -11,6 +11,7 @@ function makePresent(overrides: Partial<Parameters<ReturnType<typeof usePresentS
     mimeType: "text/html",
     title: "Hi",
     filePath: "/tmp/hi.html",
+    inWorkspace: false,
     createdAt: "2026-05-29T00:00:00.000Z",
     ...overrides,
   };
@@ -69,8 +70,8 @@ describe("present-store", () => {
 
   it("hydrate replaces the whole list without bumping the unseen count", () => {
     usePresentStore.getState().hydrate([
-      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
-      { presentId: "p2", content: "<p>b</p>", mimeType: "text/html", filePath: "/tmp/b.html", createdAt: "2026-05-29T00:00:01.000Z" },
+      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", inWorkspace: false, createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p2", content: "<p>b</p>", mimeType: "text/html", filePath: "/tmp/b.html", inWorkspace: false, createdAt: "2026-05-29T00:00:01.000Z" },
     ]);
     const { presentations, unseenCount } = usePresentStore.getState();
     expect(presentations.map((p) => p.presentId)).toEqual(["p1", "p2"]);
@@ -83,7 +84,7 @@ describe("present-store", () => {
     usePresentStore.getState().setActiveIndex(1);
     // Hydrate to a shorter list — active index must clamp.
     usePresentStore.getState().hydrate([
-      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", inWorkspace: false, createdAt: "2026-05-29T00:00:00.000Z" },
     ]);
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });

@@ -17,6 +17,7 @@ function seedPresentations() {
       mimeType: "text/html",
       title: "One",
       filePath: "/tmp/one.html",
+      inWorkspace: false,
       createdAt: "2026-05-31T00:00:00.000Z",
     },
     {
@@ -25,6 +26,7 @@ function seedPresentations() {
       mimeType: "text/html",
       title: "Two",
       filePath: "/tmp/two.html",
+      inWorkspace: false,
       createdAt: "2026-05-31T00:00:01.000Z",
     },
   ]);
@@ -51,6 +53,7 @@ describe("PresentPane", () => {
         mimeType: "text/html",
         title: "One",
         filePath: "/tmp/one.html",
+        inWorkspace: false,
         createdAt: "2026-05-31T00:00:00.000Z",
       },
     ]);
@@ -71,6 +74,7 @@ describe("PresentPane", () => {
         mimeType: "text/html",
         title: "Landing page",
         filePath: "docs/mockups/landing.html",
+        inWorkspace: false,
         createdAt: "2026-05-31T00:00:00.000Z",
       },
     ]);
@@ -88,6 +92,7 @@ describe("PresentPane", () => {
         content: "<h1>One</h1>",
         mimeType: "text/html",
         filePath: "/tmp/sales-chart.html",
+        inWorkspace: false,
         createdAt: "2026-05-31T00:00:00.000Z",
       },
     ]);
@@ -134,6 +139,44 @@ describe("PresentPane", () => {
         body: JSON.stringify({ presentId: "pres_one", destPath: "docs/chart.html" }),
       });
     });
+  });
+
+  it("hides the Save button for an artifact that already lives in the workspace", () => {
+    usePresentStore.getState().hydrate([
+      {
+        presentId: "pres_tracked",
+        content: "<h1>tracked</h1>",
+        mimeType: "text/html",
+        title: "Tracked",
+        filePath: "docs/mockups/landing.html",
+        inWorkspace: true,
+        createdAt: "2026-05-31T00:00:00.000Z",
+      },
+    ]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.queryByLabelText("Save presentation to project")).toBeNull();
+    // Download stays — it targets the user's local machine, not the workspace.
+    expect(screen.getByLabelText("Download presentation")).toBeInTheDocument();
+  });
+
+  it("shows the Save button for a throwaway (/tmp) artifact", () => {
+    usePresentStore.getState().hydrate([
+      {
+        presentId: "pres_tmp",
+        content: "<h1>tmp</h1>",
+        mimeType: "text/html",
+        title: "Throwaway",
+        filePath: "/tmp/chart.html",
+        inWorkspace: false,
+        createdAt: "2026-05-31T00:00:00.000Z",
+      },
+    ]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByLabelText("Save presentation to project")).toBeInTheDocument();
   });
 
   it("dismisses the active presentation", () => {
