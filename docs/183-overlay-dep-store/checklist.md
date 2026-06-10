@@ -180,33 +180,32 @@ publish-after-install orchestration + wiring (4b).
 Overlay removes the per-session full `node_modules` copy, but cleanup splits across surfaces; this phase
 makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the dep-dir design".
 
-- [ ] **Teardown removes all N per-session overlay volumes.** `destroyContainer` must
-      `removeOverlayVolume` for **each** of the session's overlay specs (not one). Confirm
-      `sweepOrphanSessionVolumes`' `^shipit-([a-f0-9-]{12})_` regex reclaims every crash-orphaned
-      `shipit-<id>_overlayN`; add a test with N>1.
-- [ ] **Extend disk-tier escalation (docs/161) volume removal to N dep-dir volumes.** The `hot → light`
-      rung (`reclaimToLight`) reclaims deps by dropping the per-session compose named volumes via
-      `removeVolumesOnDispose` → `containerManager.destroy()` (with a `ServiceManager.stop({ removeVolumes:
-      true })` + `pruneVolumes` fallback), keeping the host checkout — there is **no host-path `rm` of
-      `node_modules`** to skip. `destroyContainer` already calls `removeOverlayVolume` for the single
-      Phase-2 overlay volume, so today one overlay volume is reclaimed on `hot → light`. Extend
-      `destroyContainer` to drop **all N** per-dep-dir overlay volumes; add a test with N>1. Note the
-      `pruneVolumes`/`pruneSessionVolumes` fallback can't reach overlay volumes (it filters
-      `label=shipit-session=<id>`, but overlay volumes are labeled `shipit-session=true`); the
-      crash-orphan backstop is the `sweepOrphanSessionVolumes` `^shipit-([a-f0-9-]{12})_` sweep — confirm
-      it matches `shipit-<id>_overlayN`. Safe by construction — each upper is a pure disposable cache,
-      re-derived on next mount. Most-likely-missed change (it lives outside the overlay code path).
-- [ ] **Flatten/swap reclaim.** Confirm depth-cap flatten via `copySnapshotToBase`'s atomic swap
-      rm's the old base generation (transient double-disk during the swap; live mounts keep pinned
-      inodes). Add/confirm a test.
-- [ ] **Verify the per-`(session, dep-dir)` live-set end-to-end.** The enumeration itself lands in
-      Phase 2; here confirm the GC contract holds across the whole pipeline — `sweepOrphanedOverlayBases`
-      never reaps a base that is a **live overlay lowerdir** for any resumable (not just running)
-      session. Add a test that all of a live session's per-dep-dir bases are retained.
-- [ ] **Docs sync.** Update CLAUDE.md's "Disk cleanup" section (it describes per-session teardown as
-      dropping compose **named volumes**) to note that overlay sessions also carry N per-dep-dir overlay
-      volumes reclaimed the same way, and update any agent-facing `shipit-docs` if escalation behavior
-      changes for overlay sessions.
+- [x] **Teardown removes all N per-session overlay volumes.** Already wired (Phase 3a): `destroyContainer`
+      iterates `SessionContainer.overlayVolumeNames` and `removeOverlayVolume`s each. Confirmed the
+      `sweepOrphanSessionVolumes` `^shipit-([a-f0-9-]{12})_` regex reclaims every crash-orphaned
+      `shipit-<id12>_overlay-<hash8>` (the discriminator is after the `_`, so one prefix match covers all
+      N). **Tests added:** `destroyContainer` removes all N (and none for a non-overlay session) —
+      `container-lifecycle.test.ts`; N>1 orphan-volume sweep keyed by prefix — `disk-janitor.test.ts`.
+- [x] **Disk-tier escalation (docs/161) volume removal is already N-aware.** `reclaimToLight` reclaims
+      deps via `containerManager.destroy()` → `destroyContainer`, which now drops **all N** per-dep-dir
+      overlay volumes (the same loop as teardown); the host checkout stays (no host-path `rm` of
+      `node_modules`). Documented (CLAUDE.md) that the `pruneVolumes`/`pruneSessionVolumes` fallback
+      can't reach overlay volumes (filters `label=shipit-session=<id>`; overlay volumes are labeled
+      `shipit-session=true`), so the `^shipit-([a-f0-9-]{12})_` prefix sweep is their only crash-orphan
+      backstop — covered by the N>1 sweep test. Each upper is a disposable cache re-derived on next mount.
+- [x] **Flatten/swap reclaim — confirmed + tested.** `copySnapshotToBase`'s atomic swap rm's the old base
+      generation; added a test asserting the base holds only the newest snapshot after an advance and that
+      no `.old-*`/`.tmp-*` siblings leak under `overlay-base/` (`overlay-base.test.ts`).
+- [x] **Per-`(session, dep-dir)` live-set verified end-to-end.** Added a `disk-janitor.test.ts` test that
+      drives the REAL `liveOverlayScopeHashes` (flag on, N dep dirs) and asserts `sweepOrphanedOverlayBases`
+      retains EVERY per-(live session × dep-dir) base despite age while reaping a stale base belonging to no
+      live (session, dep-dir).
+- [x] **Docs sync.** Added a fourth bullet to CLAUDE.md's "Disk cleanup" section describing the overlay
+      dep store's three N-aware reclaim surfaces (per-session teardown + disk-tier escalation, the
+      crash-orphan prefix sweep incl. the `shipit-session=true` label caveat, and the shared-base sweep +
+      atomic-swap old-gen reclaim), all gated behind `OVERLAY_DEP_STORE`. No agent-facing `shipit-docs`
+      change needed (the overlay is transparent to the agent; escalation behavior is unchanged when the
+      flag is off).
 
 ### Phase 7 — Enable path + measure & tune
 

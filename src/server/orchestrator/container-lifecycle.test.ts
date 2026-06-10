@@ -3,15 +3,19 @@
  */
 
 import { describe, it, expect } from "vitest";
+import { EventEmitter } from "node:events";
+import type Docker from "dockerode";
 import {
   buildMounts,
   buildEnv,
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
+  destroyContainer,
+  type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
   OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
-import type { ContainerConfig } from "./session-container.js";
+import type { ContainerConfig, SessionContainer } from "./session-container.js";
 import type { HostMount } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
@@ -382,5 +386,76 @@ describe("buildContainerConfig", () => {
       dockerAccess: true,
     });
     expect(config.dockerAccess).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// destroyContainer — overlay-volume teardown (docs/183 Phase 6)
+// ---------------------------------------------------------------------------
+
+describe("destroyContainer — overlay volume teardown", () => {
+  /** Minimal fake Docker that records every `volume rm` by name. */
+  function fakeDocker(removedVolumes: string[]): Docker {
+    const noop = async (): Promise<void> => {};
+    return {
+      getContainer: () => ({ stop: noop, remove: noop }),
+      listContainers: async () => [],
+      listNetworks: async () => [],
+      getNetwork: () => ({ remove: noop }),
+      listVolumes: async () => ({ Volumes: [] }),
+      getVolume: (name: string) => ({ remove: async () => { removedVolumes.push(name); } }),
+    } as unknown as Docker;
+  }
+
+  function makeDeps(removedVolumes: string[], sc: SessionContainer): { deps: LifecycleDeps; emitter: EventEmitter } {
+    const emitter = new EventEmitter();
+    const deps = {
+      docker: fakeDocker(removedVolumes),
+      containers: new Map([[sc.sessionId, sc]]),
+      standbySessionIds: new Set<string>(),
+      emitter,
+    } as unknown as LifecycleDeps;
+    return { deps, emitter };
+  }
+
+  function makeContainer(overlayVolumeNames?: string[]): SessionContainer {
+    return {
+      id: "cid-1",
+      sessionId: "sess-x",
+      containerIp: "",
+      workerUrl: "",
+      status: "running",
+      hostWorkspaceDir: "/workspace/sessions/sess-x/workspace",
+      dockerAccess: false,
+      ...(overlayVolumeNames ? { overlayVolumeNames } : {}),
+    } as unknown as SessionContainer;
+  }
+
+  it("removes ALL N per-dep-dir overlay volumes on teardown", async () => {
+    const names = [
+      "shipit-abcdef012345_overlay-aaaa1111",
+      "shipit-abcdef012345_overlay-bbbb2222",
+      "shipit-abcdef012345_overlay-cccc3333",
+    ];
+    const removed: string[] = [];
+    const { deps, emitter } = makeDeps(removed, makeContainer(names));
+    let destroyed: string | undefined;
+    emitter.on("container_destroyed", (id: string) => { destroyed = id; });
+
+    await destroyContainer(deps, "sess-x");
+
+    expect([...removed].sort()).toEqual([...names].sort());
+    expect(deps.containers.has("sess-x")).toBe(false);
+    expect(destroyed).toBe("sess-x");
+  });
+
+  it("removes no overlay volumes for a non-overlay session", async () => {
+    const removed: string[] = [];
+    const { deps } = makeDeps(removed, makeContainer(undefined));
+
+    await destroyContainer(deps, "sess-x");
+
+    expect(removed).toEqual([]);
+    expect(deps.containers.has("sess-x")).toBe(false);
   });
 });

@@ -8,6 +8,8 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./disk-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
+import { liveOverlayScopeHashes, overlayRuntimeKey } from "./overlay-session.js";
+import { overlayScopeHash } from "./overlay-volume.js";
 
 describe("runDiskJanitor", () => {
   let tmpDir: string;
@@ -1198,6 +1200,87 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(orphanStale)).toBe(false);
     expect(fs.existsSync(orphanYoung)).toBe(true);
     expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
+    expect(result.overlayBasesRemoved).toBe(1);
+  });
+
+  it("reclaims ALL N per-dep-dir orphan overlay volumes and preserves a live session's N", async () => {
+    // The dep-dir design names overlay volumes `shipit-<id12>_overlay-<hash8>`,
+    // one per declared dep dir. The existing `^shipit-([a-f0-9-]{12})_` orphan
+    // sweep keys on the session-ID prefix, so it reclaims EVERY crash-orphaned
+    // per-dep-dir volume of a dead session and preserves every one of a live
+    // session's — no per-dep-dir sweep logic needed. This locks that for N>1.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveId = "abc123def456-aaaa-bbbb-cccc-dddddddddddd";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    const livePrefix = liveId.slice(0, 12);
+
+    const liveVols = [`shipit-${livePrefix}_overlay-aaaa1111`, `shipit-${livePrefix}_overlay-bbbb2222`];
+    const orphanVols = ["shipit-deadbeef0000_overlay-cccc3333", "shipit-deadbeef0000_overlay-dddd4444"];
+
+    const rmRequests: string[] = [];
+    const dockerListing = [...liveVols, ...orphanVols].join("\n");
+    const runDocker = (args: string[]): Promise<string> => {
+      if (args[0] === "volume" && args[1] === "ls") return Promise.resolve(dockerListing);
+      if (args[0] === "volume" && args[1] === "rm") { rmRequests.push(args[2]); return Promise.resolve(""); }
+      return Promise.resolve("");
+    };
+
+    const result = await runDiskJanitor({ sessionManager, repoStore, stateDir: tmpDir, runDocker });
+
+    expect([...rmRequests].sort()).toEqual([...orphanVols].sort());
+    for (const v of liveVols) expect(rmRequests).not.toContain(v);
+    expect(result.orphanVolumesRemoved).toBe(2);
+  });
+
+  it("retains EVERY per-(session, dep-dir) base in the live-set; reaps only unreferenced ones", async () => {
+    // End-to-end: a live session with N declared dep dirs contributes N scope
+    // hashes to the live-set (via the real `liveOverlayScopeHashes`), and the
+    // overlay-base sweep must keep ALL of them while still reaping a stale base
+    // that belongs to no live (session, dep-dir).
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const remoteUrl = "https://github.com/example/repo.git";
+    const liveId = "feed1234beef-aaaa-bbbb-cccc-dddddddddddd";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", remoteUrl);
+
+    const env = { OVERLAY_DEP_STORE: "1", SESSION_WORKER_IMAGE_ID: "img-6" } as NodeJS.ProcessEnv;
+    const depDirs = ["node_modules", "packages/api/node_modules"];
+    const runtimeKey = overlayRuntimeKey(env);
+
+    const root = path.join(tmpDir, "overlay-base");
+    fs.mkdirSync(root, { recursive: true });
+    const mkBase = (hash: string, ageDays: number): string => {
+      const d = path.join(root, hash);
+      fs.mkdirSync(d, { recursive: true });
+      fs.writeFileSync(path.join(d, "marker"), "x");
+      const t = Date.now() / 1000 - ageDays * 86_400;
+      fs.utimesSync(d, t, t);
+      return d;
+    };
+    // One stale base per (live session × dep dir) — all must survive despite age.
+    const liveBases = depDirs.map((d) => mkBase(overlayScopeHash(remoteUrl, runtimeKey, d), 99));
+    // A stale base for a dep dir no live session declares — must be reaped.
+    const orphanBase = mkBase(overlayScopeHash(remoteUrl, runtimeKey, "vendor/bundle"), 99);
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      liveOverlayScopeHashes: () =>
+        liveOverlayScopeHashes(sessionManager.listAll(), () => depDirs, env),
+      runDocker: () => Promise.resolve(""),
+    });
+
+    for (const b of liveBases) expect(fs.existsSync(b)).toBe(true);
+    expect(fs.existsSync(orphanBase)).toBe(false);
     expect(result.overlayBasesRemoved).toBe(1);
   });
 });
