@@ -16,23 +16,30 @@ const execFileAsync = promisify(execFile);
 /**
  * Single source of truth for the Claude models offered in the picker.
  *
+ * Order matters: `models[0]` is the default model a fresh install runs with.
+ * Every default path — the server's connect-time fallback in `index.ts`
+ * (`agentInfo?.capabilities.models[0]`) and the client picker's fallback in
+ * `ModelAgentSelector` (`activeAgent?.models[0]`, used when there's no
+ * persisted session model and no saved `vibe-model-id`) — resolves to the
+ * first entry. Opus leads so a brand-new user gets Opus, not Sonnet.
+ *
  * Mixed style is intentional:
- * - Bare family names (`sonnet`, `haiku`) are CLI aliases that always resolve
- *   to the latest of that family on the installed CLI.
  * - Explicit dated/versioned IDs (`claude-opus-4-8`) are listed when a new
  *   model ships before the CLI's alias is bumped to point at it. The CLI
  *   forwards `--model` to the API as-is, so any API-recognized ID works even
  *   if the CLI's local alias table hasn't caught up.
+ * - Bare family names (`sonnet`, `haiku`) are CLI aliases that always resolve
+ *   to the latest of that family on the installed CLI.
  *
  * No bare `opus` alias: on CLI ≤ 2.1.148 it resolves to Opus 4.7, which we no
  * longer surface. Once Anthropic ships a CLI release where `opus` resolves to
- * Opus 4.8 (or newer), we can re-add the alias and retire the explicit
- * versioned entry the same way.
+ * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
+ * the same way.
  *
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["sonnet", "haiku", "claude-opus-4-8"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
