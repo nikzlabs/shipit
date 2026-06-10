@@ -345,16 +345,20 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
 
-  // docs/187 — "attention rail": a needs-attention session is marked by a solid
-  // amber bar down the row's left edge. Rendered as an `inset` box-shadow so it
-  // paints inside the row with zero layout shift, using the saturated per-theme
-  // `--color-attention` (not a translucent wash) so it stays a high-contrast,
-  // peripherally-glanceable mark — when several rows are flagged the bars line up
-  // into a scannable column, and the gaps make flagged-vs-not obvious at a glance.
-  // The shadow paints over the row background, so it coexists with the gray
-  // selected fill with no special-casing.
-  const attentionRail = needsAttention
-    ? "inset 3px 0 0 var(--color-attention)"
+  // docs/187 — "rail + trail": a needs-attention session is marked on the row's
+  // open RIGHT edge (clear of the PR icon and the panel's left border, where a
+  // marker is easy to miss). A crisp solid amber bar on the right edge — an `inset`
+  // box-shadow with a negative x-offset, so it paints the right inner edge with zero
+  // layout shift — gives the hard contrast peripheral vision catches; a soft amber
+  // gradient trails left from it for the glow. Both reuse the saturated per-theme
+  // `--color-attention` (the trail via `color-mix`), so no new tokens; the
+  // background layers over the row's own fill, so it coexists with the selected gray.
+  const attentionMarker = needsAttention
+    ? {
+        boxShadow: "inset -3px 0 0 var(--color-attention)",
+        backgroundImage:
+          "linear-gradient(90deg, transparent 52%, color-mix(in srgb, var(--color-attention) 26%, transparent))",
+      }
     : undefined;
 
   return (
@@ -371,7 +375,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             ? "text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
             : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
       }`}
-      style={attentionRail ? { boxShadow: attentionRail } : undefined}
+      style={attentionMarker}
       title={attentionReason ?? undefined}
     >
       {hasChildren && (

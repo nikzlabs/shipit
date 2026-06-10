@@ -75,45 +75,51 @@ three are theme-proof with no new tokens and don't touch the selected-row fill. 
 A/D for a clean low-cost change; reach for C (title fill) only if a bolder signal is
 worth the per-theme token work.
 
-## Decision — implemented: attention rail (solid left bar)
+## Decision — implemented: rail + trail (right edge)
 
-We iterated through several row-level backgrounds (a left-edge wash, a center wash,
-and a short right-edge glow) — all **rejected** because a soft gradient reads as
-ambient texture, not a marker: it's ambiguous (could be hover/selection/loading),
-hard to notice in peripheral vision, and turns into noise when many rows are flagged
-at once (the realistic "came back from a break" case).
+We iterated through several row-level treatments before landing here:
+- Soft gradient **washes** (left-edge, center, short right-edge) — rejected: a soft
+  gradient reads as ambient texture, ambiguous with hover/selection, and hard to
+  notice in peripheral vision.
+- A solid **left rail** — rejected: the left edge is crowded by the PR-state icon and
+  hugs the panel border, so a marker there is easy to miss.
 
-The implemented choice is the **attention rail**: a solid amber bar down the row's
-left edge.
+The implemented choice combines the strengths of both, on the **open right edge**:
+a crisp solid amber bar on the right edge (the hard contrast peripheral vision
+catches) **plus** a soft amber gradient trailing left from it (the glow look we
+wanted) — the "rail + trail".
 
 ```tsx
-// SessionItem — applied as an inline boxShadow on the row div
-const attentionRail = needsAttention
-  ? "inset 3px 0 0 var(--color-attention)"
+// SessionItem — applied as an inline style on the row div
+const attentionMarker = needsAttention
+  ? {
+      boxShadow: "inset -3px 0 0 var(--color-attention)",
+      backgroundImage:
+        "linear-gradient(90deg, transparent 52%, color-mix(in srgb, var(--color-attention) 26%, transparent))",
+    }
   : undefined;
 // ...
-<div ... style={attentionRail ? { boxShadow: attentionRail } : undefined}>
+<div ... style={attentionMarker}>
 ```
 
-Why this is the right signal (verified at scale — see
-[mocks/rail-at-scale.html](./mocks/rail-at-scale.html)):
-- **Peripherally glanceable.** Peripheral vision responds to luminance contrast and
-  hard edges, not small text or soft tints. A solid, saturated bar with a crisp edge
-  is exactly that; the soft washes failed this test by design.
-- **Scales to many-at-once.** When several rows are flagged the bars line up into a
-  **scannable column** down the left edge — you catch the set (and the gaps) in one
-  glance instead of reading row by row.
-- **Zero layout shift.** Rendered as an `inset` box-shadow, so the bar paints inside
-  the row's box; nothing moves (a real `border-left` would shift the content right).
-- **No new tokens.** Uses the saturated per-theme `--color-attention` directly
-  (amber-600 light / amber-500 dark) — it reads strongly on both light and dark
-  surfaces, so the interim `--color-attention-wash` token was removed.
-- **Coexists with selection.** The shadow paints over the row background, so a
-  selected + needs-attention row keeps its gray fill with the bar on top — no
-  special-casing of `isCurrent`.
+Why this shape (verified at scale — see [mocks/rail-at-scale.html](./mocks/rail-at-scale.html)
+and the right-gradient comparison):
+- **On the open right edge.** Clear of the PR icon and the panel's left border, so it
+  isn't lost among the meaningful left-side glyphs.
+- **Peripherally glanceable.** The crisp right-edge bar supplies the hard luminance
+  contrast peripheral vision needs — the thing the soft washes lacked — while the
+  gradient trail keeps the soft glow.
+- **Zero layout shift.** The bar is an `inset` box-shadow with a negative x-offset
+  (paints the *right* inner edge); the trail is a background-image. Nothing moves.
+- **No new tokens.** The bar uses the saturated per-theme `--color-attention`; the
+  trail derives a translucent amber from it via `color-mix`. (The interim
+  `--color-attention-wash` token was removed.)
+- **Coexists with selection.** The transparent-left gradient layers over the row's
+  own `background-color`, so a selected + needs-attention row keeps its gray fill with
+  the bar + trail on top — no special-casing of `isCurrent`.
 
-Easy knobs if we want to tune: bar thickness (`3px`), or the row-tint and
-rounded-pill variants (B / C in the at-scale mock).
+Easy knobs: bar thickness (`3px`), trail length (`52%`), trail strength (the `26%`
+`color-mix`).
 
 ## Key files
 
