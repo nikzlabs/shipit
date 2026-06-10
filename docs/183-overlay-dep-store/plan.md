@@ -79,25 +79,22 @@ agent:
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
 
-  > **⚠️ Partially proven — 2 of 3 hosts green (both Desktop backends); the prod VPS run is still
-  > load-bearing. Run [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on the
-  > VPS/ext4 and record the verdict in [`FINDINGS.md`](./FINDINGS.md); see also `checklist.md` →
-  > "Still unproven".** This
+  > **✅ Proven — 3 of 3 hosts green; the mount-topology gate is CLEARED** (see
+  > [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) verdicts in
+  > [`FINDINGS.md`](./FINDINGS.md): Docker Desktop/Windows-WSL2 amd64 PASS=13/0, Docker Desktop/Mac
+  > arm64 PASS=13/0, **prod VPS `shipit-16gb`/ext4 PASS=14/0 with rung 7 — the real host-bind parent —
+  > executed**). This
   > nests a `type=overlay` volume mount at `/workspace/<dep-dir>` **underneath** the existing
   > `/workspace` bind/Subpath mount — a topology **none of the *earlier* spikes exercised** (they all
   > mounted the overlay AT the `/workspace` root, never as a child of an existing mount). The two
-  > unknowns this design assumed are now **answered on both Docker Desktop backends (Windows-WSL2 amd64
-  > + Mac arm64, PASS=13/0 each):**
+  > unknowns this design assumed are now **confirmed on all three targets, including under a real host
+  > bind on ext4:**
   > **(a)** the dep dir's leaf mountpoint **is** created cleanly inside the already-mounted parent when
   > it doesn't pre-exist (the daemon `mkdir -p`'d the leaf — and, as a data point, even an absent
   > *parent* chain); and **(b)** **mount ordering** holds — the daemon applies the nested
-  > `/workspace/<dep-dir>` overlay after the parent mount. **Caveat:** rungs 2–6 use a named-volume
-  > parent (portable), so they prove the nesting *mechanism* but not the literal "nested under a real
-  > **host bind**" case, which only rung 7 exercises — and rung 7 auto-skips on Docker Desktop. The
-  > VPS/ext4 run is therefore the one that validates production. The data point in (a) means **prod
-  > must still resolve dep dirs against the host clone** so the parent is real, rather than leaning on
-  > the daemon to invent it. If a remaining host fails, the fallback is to require the dep-dir leaf to
-  > pre-exist (e.g. a `mkdir` in the install step) or to mount at a non-nested path.
+  > `/workspace/<dep-dir>` overlay after the parent mount. **Carry-forward:** the data point in (a)
+  > means **prod must still resolve dep dirs against the host clone** so the parent dir is real, rather
+  > than leaning on the daemon to invent it.
 - **Publish snapshot = the dep dirs only**, not the whole tree — so export/import is much smaller and
   faster than the whole-workspace snapshot.
 - **Compose services** that need a dep dir (a dev server reading `node_modules`) mount the *same*

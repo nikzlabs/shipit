@@ -640,21 +640,31 @@ mechanism is sound.
 > auto-skipped (Desktop), same absent-parent data point observed. Both Desktop backends
 > now agree; the only un-run axis is the real host-bind parent on native Linux/ext4.
 
-**Matrix — 2 of 3 (both Desktop backends green; VPS pending — load-bearing).**
+> **Prod VPS run:** PASS=14 FAIL=0, daemon `shipit-16gb` (Ubuntu 24.04.4 LTS), docker
+> 29.5.2, linux/amd64. The decisive run: **rung 7 executed** (native Linux, not skipped) —
+> "REAL bind parent: nested overlay merges under a host bind mount (prod VPS topology
+> proven)" — so the literal production topology (a `type=overlay` volume nested under a
+> real **host bind** on **ext4**) is now validated, not just the named-volume proxy. The
+> extra pass vs the Desktop runs (14 vs 13) is exactly rung 7. All other rungs green.
+
+**Matrix COMPLETE — 3 of 3 green → the dep-dir mount-topology gate is CLEARED.**
 
 | Host | Arch / kernel | Storage | Rung 7 (real bind) | Result |
 |---|---|---|---|---|
 | Docker Desktop/Windows-WSL2 | amd64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ✅ PASS=13/13 |
 | Docker Desktop/Mac | arm64 / LinuxKit VM | overlay2-on-overlay2 | auto-skipped (Desktop) | ✅ PASS=13/13 |
-| Prod VPS (ext4) | amd64 / native Linux | **ext4** | **runs — the load-bearing bind check** | ⏳ pending |
+| Prod VPS `shipit-16gb` | amd64 / native Ubuntu 24.04 | **ext4** | **✅ ran + passed** | ✅ PASS=14/14 |
 
-**Gate not yet cleared — only the VPS run remains, and it is load-bearing.** Both
-Desktop backends are green, but rungs 2–6 prove the nesting *mechanism* portably (the
-parent's source type doesn't change how the child mount resolves) — they do **not**
-exercise the literal prod topology, "overlay nested under a real **host bind**." That is
-only rung 7, which auto-skips on Docker Desktop and runs solely on native Linux. So the
-**VPS/ext4 run is the single remaining gate** (it's also the only one on the production
-ext4 substrate); don't treat the two Desktop greens as the go signal. Run it on the prod
-VPS, and this gate clears so the dep-dir mount wiring can begin. (Still not covered by
-this spike: the recursive file-tree watcher descending into the nested submount —
-validate via `host-overlay-spike.sh`'s inotify rung.)
+**GATE CLEARED.** A `type=overlay` volume mounts cleanly at a subpath nested under the
+`/workspace` mount on all three targets, including under a **real host bind on ext4** (the
+literal prod topology, rung 7 on the VPS). The dep-dir model's load-bearing properties all
+held everywhere: nested merged dep view, source + `.git` coexistence on the parent, copy-up
+isolation (dep delta → per-session upper / base immutable; source → the bind), multi-depth
+mounts + absent-leaf auto-creation, concurrent shared-base with no EBUSY, and one dep volume
+refcount-shared across agent + service. **Proceed to the dep-dir mount wiring** (read
+`agent.dep-dirs`; emit N overlay mounts at the dep-dir subpaths; per-dir scope/snapshot;
+compose services mounted at the same subpaths). Two carry-forward notes: **(1)** prod must
+resolve dep dirs against the host clone so the parent dir is real (the daemon will `mkdir -p`
+an absent parent, which we do **not** want to rely on); **(2)** still validate separately —
+the recursive file-tree watcher descending into the nested submount (same-namespace inotify
+across a mount boundary), via `host-overlay-spike.sh`'s inotify rung.

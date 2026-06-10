@@ -162,22 +162,17 @@ top of this file.
 
 ### Still unproven — the one new host spike the dep-dir design needs
 
-- [ ] **Nested-overlay-under-the-`/workspace`-bind topology.** The merged spikes proved overlay at the
-      `/workspace` **root**. The dep-dir design instead keeps `/workspace` a normal bind (host clone:
-      source + `.git`, authoritative) and mounts each dep dir as a separate `type=overlay` volume at a
-      **nested subpath** (`/workspace/node_modules`, `/workspace/packages/*/node_modules`). Whether the
-      daemon mounts an overlay volume cleanly onto a subdirectory of an already-mounted parent — and
-      whether merged dep view, copy-up isolation, source/`.git` coexistence, multi-depth + absent-leaf
-      auto-creation, concurrent shared-base, and agent+service sharing all hold in that topology.
-      **Progress: 2 of 3 — Docker Desktop/Windows-WSL2 PASS=13/0 and Docker Desktop/Mac PASS=13/0**
-      (both Desktop backends, amd64 + arm64; see [`FINDINGS.md`](./FINDINGS.md)). **Only the prod
-      VPS/ext4 run remains — and it is load-bearing.** Rungs 2–6 prove the nesting *mechanism* portably,
-      but the literal prod topology (overlay nested under a real **host bind**) is only exercised by
-      rung 7, which auto-skips on Docker Desktop and runs only on native Linux — so the VPS run is the
-      one that validates production (and the only one on ext4). Run
-      [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh) on the prod VPS and
-      paste the summary into `FINDINGS.md`. **Green there (rung 7 included) clears the gate to begin the
-      dep-dir mount wiring; a failure forces a mount-topology rethink.**
+- [x] **Nested-overlay-under-the-`/workspace`-bind topology — PROVEN, gate cleared (3/3).** The merged
+      spikes proved overlay at the `/workspace` **root**; the dep-dir design instead keeps `/workspace`
+      a normal bind (host clone: source + `.git`, authoritative) and mounts each dep dir as a separate
+      `type=overlay` volume at a **nested subpath**. [`prototype/nested-overlay-spike.sh`](./prototype/nested-overlay-spike.sh)
+      passed on all three targets — **Docker Desktop/Windows-WSL2 PASS=13/0 (amd64), Docker Desktop/Mac
+      PASS=13/0 (arm64), and prod VPS `shipit-16gb`/ext4 PASS=14/0 with rung 7 (the real host-bind
+      parent) executed** — so nested merged dep view, copy-up isolation, source/`.git` coexistence,
+      multi-depth + absent-leaf auto-creation, concurrent shared-base (no EBUSY), and agent+service
+      sharing all hold, including under a real host bind on ext4 (the literal prod topology). See
+      [`FINDINGS.md`](./FINDINGS.md). **Carry-forward:** prod must resolve dep dirs against the host
+      clone so the parent dir is real (don't rely on the daemon's `mkdir -p` of an absent parent).
 - [ ] **Recursive file-tree watcher across the nested submount.** Confirm the agent-container watcher
       (recursive same-namespace inotify over `/workspace`) descends into the nested `node_modules`
       submount so copy-ups there surface as change events — inotify does not cross a mount boundary
