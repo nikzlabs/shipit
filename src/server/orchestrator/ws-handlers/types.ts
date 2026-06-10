@@ -1,4 +1,4 @@
-import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
+import type { WsServerMessage, LogSource } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import type { SessionManager } from "../sessions.js";
@@ -32,7 +32,7 @@ export type { QueuedMessage };
 export interface ConnectionCtx {
   // Communication
   send: (msg: WsServerMessage) => void;
-  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (source: LogSource, text: string) => void;
   sseBroadcast: (event: string, data: unknown) => void;
 
   // Active session accessors
@@ -190,6 +190,13 @@ export interface AppCtx {
    * the token is usable after the call.
    */
   ensureAgentTokenFresh?: (agentId: AgentId, accountId?: string) => Promise<boolean>;
+
+  /**
+   * docs/192 — remove a session's durable `logs/` dir + in-memory ring when it
+   * is archived (e.g. the rollback/fork archive path). Optional; the
+   * disk-janitor sweep is the backstop.
+   */
+  removeSessionLogs?: (sessionId: string) => void;
 
   // Config
   workspaceDir: string;

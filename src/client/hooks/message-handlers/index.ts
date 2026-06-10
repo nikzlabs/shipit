@@ -8,7 +8,6 @@ import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
-import { handleClearLogs } from "./clear-logs.js";
 import { handleCommitLinked } from "./commit-linked.js";
 import { handleCompactionCard } from "./compaction-card.js";
 import { handleCompactionStatus } from "./compaction-status.js";
@@ -31,7 +30,8 @@ import { handleIssueWriteCard } from "./issue-write-card.js";
 import { handleIssueWriteUpdate } from "./issue-write-update.js";
 import { handleIssueRefCard } from "./issue-ref-card.js";
 import { handleInstallStatus } from "./install-status.js";
-import { handleLogEntry } from "./log-entry.js";
+import { handleLogAppend } from "./log-append.js";
+import { handleLogSnapshot } from "./log-snapshot.js";
 import { handleMcpServerStatus } from "./mcp-server-status.js";
 import { handleMessageQueued } from "./message-queued.js";
 import { handleMessageSteered } from "./message-steered.js";
@@ -54,7 +54,6 @@ import { handleRewindRestored } from "./rewind-restored.js";
 import { handleRewindSnapshotAvailable } from "./rewind-snapshot-available.js";
 import { handleSecretsStatus } from "./secrets-status.js";
 import { handleServiceList } from "./service-list.js";
-import { handleServiceLog } from "./service-log.js";
 import { handleServiceStatus } from "./service-status.js";
 import { handleSessionForked } from "./session-forked.js";
 import { handleSessionMemoryExhausted } from "./session-memory-exhausted.js";
@@ -107,7 +106,6 @@ export const messageHandlers: MessageHandlerMap = {
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
   bug_report_filed: handleBugReportFiled,
-  clear_logs: handleClearLogs,
   commit_linked: handleCommitLinked,
   compaction_card: handleCompactionCard,
   compaction_status: handleCompactionStatus,
@@ -130,7 +128,8 @@ export const messageHandlers: MessageHandlerMap = {
   issue_write_card: handleIssueWriteCard,
   issue_write_update: handleIssueWriteUpdate,
   issue_ref_card: handleIssueRefCard,
-  log_entry: handleLogEntry,
+  log_append: handleLogAppend,
+  log_snapshot: handleLogSnapshot,
   mcp_server_status: handleMcpServerStatus,
   message_queued: handleMessageQueued,
   message_steered: handleMessageSteered,
@@ -153,7 +152,6 @@ export const messageHandlers: MessageHandlerMap = {
   rewind_snapshot_available: handleRewindSnapshotAvailable,
   secrets_status: handleSecretsStatus,
   service_list: handleServiceList,
-  service_log: handleServiceLog,
   service_status: handleServiceStatus,
   session_forked: handleSessionForked,
   session_memory_exhausted: handleSessionMemoryExhausted,

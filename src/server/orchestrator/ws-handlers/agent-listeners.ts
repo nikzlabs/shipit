@@ -1,4 +1,4 @@
-import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, WsLogEntry } from "../../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
@@ -52,7 +52,7 @@ export interface AgentListenerDeps {
   /** App-level SSE broadcaster (session_list, session_started, etc.). */
   sseBroadcast: (event: string, data: unknown) => void;
   /** Append a line to the per-session log buffer. */
-  broadcastLog: (source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (source: LogSource, text: string) => void;
   /** Model the caller wants the turn to start with (before agent_init confirms). */
   getSelectedModel: () => string | undefined;
   /** Optional: push a fresh rate-limit snapshot (any agent) to the subscription badge. */
@@ -217,7 +217,7 @@ export function stampToolDurations(
 export function recordSteeredMessage(
   runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
   text: string,
-  attachments?: Pick<SteeredMessage, "images" | "files" | "uploadPaths">,
+  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt">,
 ): void {
   const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
   runner.steeredMessages = [
@@ -225,9 +225,12 @@ export function recordSteeredMessage(
     {
       afterGroupIndex,
       text,
-      images: attachments?.images,
-      files: attachments?.files,
-      uploadPaths: attachments?.uploadPaths,
+      images: extra?.images,
+      files: extra?.files,
+      uploadPaths: extra?.uploadPaths,
+      // docs/140 — record what the CLI will echo so the delivery ack can match
+      // it. Absent ⇒ not a streaming live-steer ⇒ never a re-queue candidate.
+      assembledPrompt: extra?.assembledPrompt,
     },
   ];
   // docs/140 diag — capture the steered-message inject point. Pairs with the
@@ -237,6 +240,66 @@ export function recordSteeredMessage(
   console.log(
     `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
   );
+}
+
+/**
+ * docs/140 — re-queue live steers the CLI never acknowledged. A steer with
+ * `assembledPrompt` set but `delivered` still falsy at turn end fell into the
+ * turn-end gap: it was written to the resident streaming process's stdin while
+ * `running` was still true, but the model had already finished its output and
+ * had no decision point left to apply it at, so the turn ended (`result`)
+ * without the agent acting on it AND without the CLI echoing it back
+ * (`--replay-user-messages`). Such steers are dropped from the rendered set (so
+ * they don't double-render) and enqueued; the post-turn drain then runs each as
+ * a fresh turn the agent WILL process — turning a silently-lost message into an
+ * automatic resend.
+ *
+ * Must run on `agent_result` BEFORE the turn's rows are finalized
+ * (`buildTurnMessages` → `replaceInProgress` → `finalizeInProgress`), so the
+ * removed steers are excluded from the finalized turn and don't double-render
+ * against the re-queued turn's own user row. The enqueue also happens before
+ * the executor's post-turn `tryDrain`, which then runs the re-queued steer as
+ * the next turn. Steers without `assembledPrompt` (non-streaming sends, which
+ * are never echoed) are never candidates, so this is a no-op off the live-steer
+ * path.
+ *
+ * A steer counts as DELIVERED — and is left alone — when EITHER signal fired:
+ *   1. the CLI echoed it (`delivered`, set by the `agent_user_replay` ack), or
+ *   2. the turn produced an assistant group AFTER it was injected (the current
+ *      persistable-group count exceeds the steer's `afterGroupIndex` snapshot) —
+ *      i.e. the model continued past the steer point and acted on it.
+ * Only a steer with NEITHER signal fell into the turn-end gap. Requiring both
+ * to be absent is deliberately conservative: it never re-queues (and so never
+ * double-processes) a steer the agent demonstrably handled, even if the CLI's
+ * echo is missing or didn't match.
+ *
+ * Returns the number of steers re-queued (for diagnostics / tests).
+ */
+export function requeueUndeliveredSteers(
+  runner: SessionRunnerInterface,
+  emit: (msg: WsServerMessage) => void,
+): number {
+  const steers = runner.steeredMessages;
+  const persistableGroups = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
+  const isUndelivered = (s: SteeredMessage): boolean =>
+    s.assembledPrompt !== undefined && !s.delivered && persistableGroups <= s.afterGroupIndex;
+  const undelivered = steers.filter(isUndelivered);
+  if (undelivered.length === 0) return 0;
+  // Remove them from the steered set so the imminent finalize excludes them —
+  // the re-queued turn persists its own user row, so leaving them here would
+  // double-render the bubble on reload (same reasoning as steer-rejected).
+  runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
+  for (const s of undelivered) {
+    const queued: QueuedMessage = { text: s.text };
+    if (s.images && s.images.length > 0) queued.images = s.images;
+    if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
+    const position = runner.enqueue(queued);
+    emit({ type: "message_queued", text: s.text, position });
+    console.log(
+      `[steer-requeue] runner=${runner.sessionId} un-acked steer re-queued at pos=${position} text=${JSON.stringify(s.text.slice(0, 60))}`,
+    );
+  }
+  return undelivered.length;
 }
 
 /**
@@ -641,6 +704,32 @@ export function wireAgentListeners(
           "server",
           `Live steer rejected by ${agent.agentId} (turn not steerable) — re-queued for the next turn.`,
         );
+      }
+      return;
+    }
+
+    // docs/140 — a live steer's delivery ACK. The streaming CLI echoes every
+    // user message it accepts into a turn (`--replay-user-messages`); matching
+    // that echo against the steer we sent confirms the agent will act on it.
+    // Mark the oldest un-delivered steer whose assembled prompt the CLI echoed
+    // as delivered, so it is NOT re-queued at turn end (an un-acked steer fell
+    // into the turn-end gap and IS re-queued — see `requeueUndeliveredSteers`).
+    // NOT chat content (the inline bubble was rendered by `message_steered`) —
+    // handle and return before the message accumulator, like steer-rejected.
+    if (event.type === "agent_user_replay") {
+      if (runner) {
+        const steers = runner.steeredMessages;
+        const echoed = event.text.trim();
+        const idx = steers.findIndex(
+          (s) => !s.delivered && s.assembledPrompt?.trim() === echoed,
+        );
+        if (idx >= 0) {
+          const next = steers.slice();
+          next[idx] = { ...next[idx], delivered: true };
+          runner.steeredMessages = next;
+        }
+        // An unmatched echo is the initial turn prompt (also replayed) or a
+        // steer with no recorded assembledPrompt — harmless to ignore.
       }
       return;
     }
@@ -1273,6 +1362,15 @@ export function wireAgentListeners(
           }
         }
       }
+
+      // docs/140 — recover any live steer the CLI never acknowledged this turn
+      // (one that fell into the turn-end gap: written to stdin while `running`
+      // was still true, but the model had already finished and never applied or
+      // echoed it). Re-queue it BEFORE the finalize below so the un-acked steer
+      // is excluded from this turn's rows and instead runs as the next turn via
+      // the executor's post-turn drain — an automatic resend rather than a lost
+      // message. No-op off the live-steer path.
+      if (runner) requeueUndeliveredSteers(runner, emitToViewers);
 
       // Persist each message group as a separate assistant entry so that
       // reloaded chat history shows the same message boundaries as live

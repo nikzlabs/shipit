@@ -61,7 +61,7 @@ const samplePayload = {
     disposed: false,
   },
   recentLogs: [
-    { type: "log_entry", source: "server", text: "Session container paused after 60s.", timestamp: "2026-05-07T12:00:00.000Z" },
+    { source: "server", text: "Session container paused after 60s.", timestamp: "2026-05-07T12:00:00.000Z" },
   ],
   parsedConfig: {
     agent: { memory: 3072, cpu: 2.0, pids: 2048, install: ["npm install"] },

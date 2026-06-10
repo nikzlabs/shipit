@@ -5,7 +5,7 @@ import os from "node:os";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
-import type { WsLogEntry, WsServerMessage } from "../../shared/types.js";
+import type { LogRingEntry, WsServerMessage } from "../../shared/types.js";
 import { getSessionDiagnostics } from "./diagnostics.js";
 
 // Pin host detection to a large host so the host-relative default resource
@@ -62,8 +62,8 @@ function fakeServiceManager(opts: {
   } as unknown as ServiceManager;
 }
 
-function entry(text: string, ts = "2026-05-07T12:00:00.000Z"): WsLogEntry {
-  return { type: "log_entry", source: "server", text, timestamp: ts };
+function entry(text: string, ts = "2026-05-07T12:00:00.000Z"): LogRingEntry {
+  return { source: "server", text, timestamp: ts };
 }
 
 // ---- Tests ----
@@ -382,7 +382,7 @@ describe("getSessionDiagnostics", () => {
   });
 
   it("trims recent logs to the last 50 entries", async () => {
-    const all: WsLogEntry[] = Array.from({ length: 75 }, (_, i) => entry(`msg${i + 1}`));
+    const all: LogRingEntry[] = Array.from({ length: 75 }, (_, i) => entry(`msg${i + 1}`));
     const result = await getSessionDiagnostics(
       {
         containerManager: fakeContainerManager({ container: null }),

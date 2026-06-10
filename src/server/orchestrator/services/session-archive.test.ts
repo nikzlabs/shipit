@@ -104,6 +104,30 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
 
+  it("removes the session's durable logs (docs/192), even for a local-only session", async () => {
+    // Local-only session (no remoteUrl) — the workspace is preserved, but logs
+    // must still be dropped unconditionally.
+    const workspaceDir = path.join(tmpDir, "ws-local");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const sessionId = "sess-local";
+    sessionManager.track(sessionId, "Local session", workspaceDir);
+
+    const removeSessionLogs = vi.fn();
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      sessionId,
+      undefined,
+      undefined,
+      removeSessionLogs,
+    );
+
+    expect(removeSessionLogs).toHaveBeenCalledWith(sessionId);
+    // Local-only workspace is preserved (no recovery path), but logs were dropped.
+    expect(fs.existsSync(workspaceDir)).toBe(true);
+  });
+
   it("cascades to child sessions when archiving a parent", async () => {
     const parentWs = path.join(tmpDir, "parent-ws");
     const parentId = makeSession(parentWs);

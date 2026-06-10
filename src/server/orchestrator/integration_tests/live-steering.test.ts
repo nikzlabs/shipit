@@ -171,6 +171,90 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("re-queues a steer the CLI never acknowledged so it runs as the next turn (turn-end gap, docs/140)", async () => {
+    // The bug: a message steered in just as the agent is finishing has no
+    // decision point left to land at, so the CLI ends the turn (`result`)
+    // without acting on it AND without echoing it back (--replay-user-messages).
+    // The orchestrator must detect the un-acked steer at turn end and re-queue
+    // it — an automatic resend instead of a silently-lost message.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Build the thing", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-gap-session");
+
+    // Steer mid-turn — optimistically rendered + recorded with its assembledPrompt.
+    client.send({ type: "send_message", text: "fix the typo too", sessionId: client.sessionId });
+    await drainUntil(client, (m) => m.type === "message_steered");
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    expect(runner.steeredMessages.length).toBe(1);
+    expect(runner.steeredMessages[0].assembledPrompt).toBe("fix the typo too");
+
+    // Turn ends with NO replay echo for the steer — it fell into the gap.
+    claude.emit("event", { type: "result", subtype: "success", session_id: "steer-gap-session" });
+
+    // The un-acked steer comes back as a queued message and runs as the next turn.
+    const queued = await drainUntil(client, (m) => m.type === "message_queued");
+    expect(queued).toMatchObject({ type: "message_queued", text: "fix the typo too" });
+
+    // It's removed from the steered set (so it won't double-render against the
+    // re-queued turn's own user row) and re-sent to the resident agent. The
+    // resend runs on the executor's post-turn drain (after the synchronous
+    // message_queued emit), so poll until the second sendUserMessage lands.
+    expect(runner.steeredMessages.length).toBe(0);
+    for (let i = 0; i < 50 && claude.stdinData.filter((d: string) => d.includes("fix the typo too")).length < 2; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    const resends = claude.stdinData.filter((d: string) => d.includes("fix the typo too"));
+    expect(resends.length).toBeGreaterThanOrEqual(2); // once for the lost steer, once for the resend
+
+    client.close();
+  });
+
+  it("does NOT re-queue a steer the CLI acknowledged via replay echo (docs/140)", async () => {
+    // The complement of the gap case: when the CLI echoes the steer
+    // (--replay-user-messages), the agent accepted it into the turn, so it must
+    // NOT be re-queued — that would double-process the user's message.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Build the thing", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("steer-ack-session");
+
+    client.send({ type: "send_message", text: "acknowledged steer", sessionId: client.sessionId });
+    await drainUntil(client, (m) => m.type === "message_steered");
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    const echoText = runner.steeredMessages[0].assembledPrompt as string;
+
+    // The CLI echoes the accepted steer — the delivery ACK.
+    claude.emit("event", {
+      type: "user",
+      isReplay: true,
+      message: { content: [{ type: "text", text: echoText }] },
+    });
+    // Ack is processed synchronously: the steer is now marked delivered.
+    expect(runner.steeredMessages[0].delivered).toBe(true);
+
+    claude.emit("event", { type: "result", subtype: "success", session_id: "steer-ack-session" });
+
+    // Collect the whole post-turn burst — there must be NO message_queued for
+    // the acked steer (it was accepted into the turn, not lost).
+    const after = await client.drain();
+    expect(after.some((m) => m.type === "message_queued")).toBe(false);
+    expect(after.some((m) => m.type === "session_status" && (m as AnyMsg).running === false)).toBe(true);
+
+    // The acked steer stays in history as a single steered user bubble.
+    const history = chatHistoryManager.load(client.sessionId);
+    const userTexts = history.filter((m) => m.role === "user").map((m) => m.text);
+    expect(userTexts.filter((t) => t === "acknowledged steer").length).toBe(1);
+
+    client.close();
+  });
+
   it("runs the post-turn flow (session_agent_finished, queue drain) on agent_result without waiting for done — streaming path", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status

@@ -29,13 +29,26 @@ export const WORKSPACE_SKIP_DIRS = new Set([
 ]);
 
 /**
- * Hidden entries (names starting with `.`) that ARE shown in the file tree
- * despite the default "skip dotfiles" rule. Skills, env files, and (where
- * present) project-level Claude config are part of the codebase and should be
- * editable from the IDE. See docs/096-claude-skills-access/plan.md.
+ * Individual files (not directories) hidden from the workspace file tree.
+ *
+ * Dotfiles are shown by default — `.npmrc`, `.gitignore`, `.dockerignore`,
+ * `.editorconfig`, rc files, etc. are real, editable source and belong in the
+ * tree exactly like VS Code shows them. This is a *minimal* deny-list for pure
+ * junk and ShipIt-internal session data that the user never edits:
+ *
+ *   - `.DS_Store` — macOS Finder metadata, never source.
+ *   - `.shipit-usage.json` / `.vibe-sessions.json` — ShipIt's own per-session
+ *     bookkeeping written into the workspace root (mirrors `IGNORE_FILES` in
+ *     `file-watcher.ts`); surfacing them would just be noise.
+ *
+ * Directory-level noise (`.git`, `.cache`, `.next`, `.vite`, `sessions`,
+ * `.shipit`, `.inner-shipit`, …) is handled by `WORKSPACE_SKIP_DIRS` above,
+ * not here. Keep this list short and well-justified — see
+ * docs/096-claude-skills-access/plan.md for why the old allowlist model was
+ * replaced with show-by-default.
  */
-export const WORKSPACE_HIDDEN_ALLOWLIST = new Set([
-  ".env",
-  ".env.local",
-  ".claude",
+export const WORKSPACE_HIDDEN_FILES = new Set([
+  ".DS_Store",
+  ".shipit-usage.json",
+  ".vibe-sessions.json",
 ]);

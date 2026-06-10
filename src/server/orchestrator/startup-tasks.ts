@@ -7,10 +7,11 @@ import type { UsageManager } from "./usage.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { WsLogEntry } from "../shared/types.js";
+import type { LogSource } from "../shared/types.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
+import { agentLogAppend } from "./log-emit.js";
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
@@ -238,7 +239,7 @@ export function handleContainerExited(
   exitCode: number | undefined,
   error: string | undefined,
   runnerRegistry: SessionRunnerRegistry,
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
   chatHistoryManager?: ChatHistoryManager,
 ): void {
   console.error(`[container] Session ${sessionId} container exited: ${error ?? "unknown"}`);
@@ -316,7 +317,7 @@ function preservePartialTurnOnContainerExit(
 export function setupContainerHealthMonitoring(
   containerManager: SessionContainerManager,
   runnerRegistry: SessionRunnerRegistry,
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
   loopDetector: SessionLoopDetector = createSessionLoopDetector(),
   oomBreaker?: SessionOomCircuitBreaker,
   chatHistoryManager?: ChatHistoryManager,
@@ -471,11 +472,6 @@ export function setupContainerHealthMonitoring(
       ? `[compose] ${svcName} was OOM-killed (exit ${info.exitCode}). Increase memory limits in docker-compose.yml or reduce service workload.`
       : `[compose] ${svcName} exited with code ${info.exitCode}.`;
     if (broadcastLog) broadcastLog(sessionId, "server", logText);
-    runner.emitMessage({
-      type: "log_entry",
-      source: "server",
-      text: logText,
-      timestamp: new Date().toISOString(),
-    });
+    runner.emitMessage(agentLogAppend("server", logText));
   });
 }

@@ -434,11 +434,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     };
 
     const onLog = (name: string, text: string) => {
+      // docs/192 — unified channel-keyed transport. Live service lines ride
+      // the same `log_append` envelope as agent lines, keyed by channel, and
+      // render through the same `<LogView>`. Raw chunk, no per-line source.
       this.emitMessage({
-        type: "service_log",
-        sessionId: this.sessionId,
-        name,
-        text,
+        type: "log_append",
+        channel: `service:${name}`,
+        records: [{ ts: new Date().toISOString(), text }],
       } as WsServerMessage);
     };
 

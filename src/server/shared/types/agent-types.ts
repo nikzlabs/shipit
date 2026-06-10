@@ -225,6 +225,41 @@ export interface AgentSteerRejectedEvent {
 }
 
 /**
+ * docs/140 — a live steer's **delivery acknowledgment**: the backend confirmed
+ * it accepted the steered user message into the running turn.
+ *
+ * - **Claude** emits this from its `--replay-user-messages` echo of an injected
+ *   user message (`isReplay:true`). The echo fires for every accepted user
+ *   message (including the turn's initial prompt), so the orchestrator matches
+ *   `text` against the steer it sent rather than assuming every replay is a steer.
+ * - **Codex** emits this when its `turn/steer` JSON-RPC request *resolves*
+ *   (the app-server accepted the steer). A rejected `turn/steer` instead emits
+ *   {@link AgentSteerRejectedEvent}.
+ *
+ * Either way the orchestrator marks the matching steer `delivered` so it is not
+ * re-queued at turn end. An un-acked steer (one that fell into the turn-end gap)
+ * IS re-queued.
+ *
+ * A live steer is written to the resident process's stdin while `running` is
+ * still `true`, but the CLI only applies a steered message at its next decision
+ * point (a tool return). When the model is *wrapping up* there is no next
+ * decision point, so a steer injected in that window never lands in the turn —
+ * the turn ends with a `result` and the message is silently lost (it stays in
+ * the transcript but the agent never acts on it). The CLI echoes every user
+ * message it actually accepts into a turn; the orchestrator matches this echo
+ * against the steer it sent, and any steer NOT echoed before the turn's
+ * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ *
+ * `text` is the echoed user-message text (the assembled prompt the CLI
+ * received). NOT chat content — `agent-listeners` consumes it for ack tracking
+ * and returns before the message accumulator (like `agent_steer_rejected`).
+ */
+export interface AgentUserReplayEvent {
+  type: "agent_user_replay";
+  text: string;
+}
+
+/**
  * docs/178 — a context compaction has *started*. Transient progress only: the
  * orchestrator forwards it as an emit-only "Compacting…" indicator and never
  * persists it (it has no place in the scrollback once the matching
@@ -280,6 +315,7 @@ export type AgentEvent =
   | AgentResultEvent
   | AgentRateLimitsEvent
   | AgentSteerRejectedEvent
+  | AgentUserReplayEvent
   | AgentCompactionStartedEvent
   | AgentCompactedEvent;
 

@@ -302,6 +302,14 @@ export async function archiveSession(
   pruneVolumes?: (sessionId: string) => Promise<void>,
   containerManager?: { destroy(sessionId: string): Promise<void> } | null,
   /**
+   * docs/192 — drop the session's durable `logs/` dir + in-memory ring. Called
+   * unconditionally (unlike the `remoteUrl`-gated workspace rm below): logs are
+   * never re-creatable and aren't the user's source, so a local-only session's
+   * logs should go too. The disk-janitor `sweepOrphanSessionLogs` is the
+   * backstop for paths that don't pass this.
+   */
+  removeSessionLogs?: (sessionId: string) => void,
+  /**
    * Sessions already being archived by this cascade. Guards the recursion
    * against parent-link cycles — a self-parented session (produced live by the
    * spawn-claims-its-own-parent bug this commit also fixes) made the cascade
@@ -327,6 +335,7 @@ export async function archiveSession(
       child.id,
       pruneVolumes,
       containerManager,
+      removeSessionLogs,
       inProgress,
     );
   }
@@ -382,6 +391,10 @@ export async function archiveSession(
       console.warn("[server] Session workspace cleanup failed:", String(err));
     }
   }
+
+  // Drop the durable log backlog + ring (docs/192) — unconditional, since logs
+  // are never re-creatable and unarchive doesn't restore them.
+  removeSessionLogs?.(sessionId);
 
   // Archive
   sessionManager.archive(sessionId);
@@ -479,11 +492,14 @@ export function deleteSession(
   sessionId: string,
   chatHistoryManager?: ChatHistoryManager,
   usageManager?: UsageManager,
+  /** docs/192 — drop the session's durable `logs/` dir + in-memory ring. */
+  removeSessionLogs?: (sessionId: string) => void,
 ): boolean {
   const deleted = sessionManager.delete(sessionId);
   if (deleted) {
     chatHistoryManager?.delete(sessionId);
     usageManager?.delete(sessionId);
+    removeSessionLogs?.(sessionId);
   }
   return deleted;
 }

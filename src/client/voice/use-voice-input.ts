@@ -321,7 +321,20 @@ export function useVoiceInput(options: UseVoiceInputOptions): VoiceInputApi {
   // eslint-disable-next-line no-restricted-syntax -- focus/visibility lifecycle with cleanup
   useEffect(() => {
     if (!enabled) return undefined;
-    const onBlur = () => { if (captureRef.current) void finishRecording(); };
+    const onBlur = () => {
+      if (!captureRef.current) return;
+      // A window blur also fires when focus moves *into* an embedded iframe —
+      // e.g. ShipIt's preview pane hot-reloading after the active session's
+      // agent edits files, then autofocusing an input inside the reloaded
+      // page. That is NOT the user tabbing away, and finalizing here cuts a
+      // dictation short at a moment the user can't predict (the bug: voice
+      // "randomly stops" while another session's agent is working). On a real
+      // tab/app switch `activeElement` stays on `<body>`; an iframe focus-steal
+      // makes it the `<iframe>` element. Skip the latter — an actual tab *hide*
+      // is still caught by the visibilitychange handler below.
+      if (document.activeElement instanceof HTMLIFrameElement) return;
+      void finishRecording();
+    };
     const onVisibility = () => { if (document.hidden && captureRef.current) void finishRecording(); };
     window.addEventListener("blur", onBlur);
     document.addEventListener("visibilitychange", onVisibility);

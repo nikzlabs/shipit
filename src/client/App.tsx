@@ -79,6 +79,7 @@ import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { usePresentStore } from "./stores/present-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
+import { useLogStore } from "./stores/log-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
@@ -172,8 +173,6 @@ export default function App() {
   const composeServices = usePreviewStore((s) => s.services);
   const presentations = usePresentStore((s) => s.presentations);
   const presentUnseenCount = usePresentStore((s) => s.unseenCount);
-
-  const logEntries = useTerminalStore((s) => s.entries);
 
   const terminalMode = useTerminalStore((s) => s.mode);
   const shellStarted = useTerminalStore((s) => s.shellStarted);
@@ -1193,14 +1192,14 @@ export default function App() {
                 it only shows on the Preview tab. */}
             <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>
-          <PreviewServicesDrawer services={composeServices} sessionId={sessionId} active={previewVisible} lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
+          <PreviewServicesDrawer services={composeServices} sessionId={sessionId} active={previewVisible} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
         ) : rightTab === "issues" ? (
           <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("trackers"); }} />
         ) : rightTab === "terminal" ? (
-          <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
+          <TerminalPanel onClear={() => { useLogStore.getState().clearChannel("agent"); send({ type: "log_clear", channel: "agent" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} send={send} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (
               <InteractiveTerminal ref={terminalRef} onInput={(d) => send({ type: "terminal_input", data: d })} onResize={(cols, rows) => send({ type: "terminal_resize", cols, rows })} onStart={(cols, rows) => { send({ type: "terminal_start", cols, rows }); useTerminalStore.getState().setShellStarted(true); }} />
             ) : null

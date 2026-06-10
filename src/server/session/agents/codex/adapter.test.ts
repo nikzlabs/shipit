@@ -892,7 +892,7 @@ describe("CodexAdapter", () => {
     });
   });
 
-  it("does not emit agent_steer_rejected when turn/steer succeeds", async () => {
+  it("emits agent_user_replay (delivery ack) when turn/steer succeeds, not agent_steer_rejected (docs/140)", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
@@ -900,10 +900,17 @@ describe("CodexAdapter", () => {
     const steer = fakeProc.getRequests().find((r) => r.method === "turn/steer");
     expect(steer).toBeDefined();
 
-    // Accepted steer returns a turnId — no rejection event.
+    // Accepted steer returns a turnId — no rejection, and a delivery ack so the
+    // orchestrator marks the steer delivered and never re-queues it at turn end.
     fakeProc.sendResponse(steer!.id!, { turnId: "turn-001" });
 
-    await new Promise((r) => setTimeout(r, 20));
+    await vi.waitFor(() => {
+      expect(events.some((e) => e.type === "agent_user_replay")).toBe(true);
+    });
+    expect(events.find((e) => e.type === "agent_user_replay")).toEqual({
+      type: "agent_user_replay",
+      text: "keep going",
+    });
     expect(events.some((e) => e.type === "agent_steer_rejected")).toBe(false);
   });
 
