@@ -6,7 +6,6 @@ Readiness work (this doc) — done:
 - [x] Confirm agent-CLI install is already v12-compatible (`docs/141`)
 - [x] Confirm exact-pin check pre-satisfies `--allow-git` / `--allow-remote`
 - [x] Write the migration plan
-- [x] Add a forward-pointer from the dependency policy in CLAUDE.md
 
 Migration work — deferred until npm v12 ships (its `approve-scripts` allowlist
 API must be final before these can be authored/tested):

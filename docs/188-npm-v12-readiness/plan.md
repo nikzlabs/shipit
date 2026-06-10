@@ -107,10 +107,8 @@ user-facing install behavior and wants its own design pass.
 
 ## What ships now
 
-Nothing in the install path. This doc + a one-line forward-pointer added to the
-[dependency policy in CLAUDE.md](../../CLAUDE.md) so the next person bumping deps
-knows the v12 change is tracked here. The actual command changes are gated on
-npm v12's release because:
+Nothing in the install path — just this doc and its tracker issue (SHI-88). The
+actual command changes are gated on npm v12's release because:
 
 - The `approve-scripts` allowlist field does not exist in the npm version we
   currently ship, so we cannot author or test it today.
