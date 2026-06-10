@@ -229,11 +229,12 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
 - [x] **Generational bases** — `overlay-base/<hash>/g<N>`, immutable; publish never renames
       over a mounted lowerdir (spike-proven: that breaks merged-readdir for every live
       same-scope mount); janitor reaps superseded generations (PR #1235).
-- [ ] **(follow-up) Base-hit marker pre-stamp** — a fresh session over a populated base still
-      runs a full install (the marker lives in the host clone, not the base). Pre-stamp
-      `.shipit/.install-done` from the base pointer when pointer.commit == session HEAD so
-      "main unchanged" becomes a marker-skip. Requires recording the publisher's worker
-      runtimeKey + install commands in the pointer.
+- [x] **Base-hit marker pre-stamp** (PR #1239) — the pointer records the publisher's worker
+      runtimeKey + install commands; container creation pre-stamps `.shipit/.install-done`
+      when every dep dir's pointer matches the clone's HEAD, pinned generation, and commands.
+      Verified live: standby pre-install dropped from ~4 s to a 25 ms marker-skip, and the
+      per-session upper from 66 MB to ~1.1 MB; the advanced scenario correctly declines the
+      stamp and delta-installs (1.2 MB upper, `advanced:d2g2`).
 - [ ] **(follow-up) Dev-service install race** — `ETXTBSY`/`TAR_ENTRY_ERROR` noise when a
       compose service's own `npm install` runs over the same shared dep dir right after
       `agent.install`; the service can latch to `error` after the install gate closes.
@@ -258,12 +259,13 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       greppable `[overlay-measure] session=… repo=… install_ok=… install_ms=…
       dirs=<depDir>:<outcome>:d<depth>g<generation>,…` line per overlay session, and
       [`prototype/measure-warm-install.md`](./prototype/measure-warm-install.md) is the runbook.
-      **First live numbers (2026-06-10, local Docker Desktop/WSL2 — see FINDINGS.md):** cold
-      (template-vue, 66 MB deps) `install_ms=2209` → `created:d1g1`; marker-skip floor ~220–970 ms
-      (worker roundtrips, not "tens of ms"). Still open: the **`main` unchanged** scenario currently
-      pays a full install (see the base-hit pre-stamp follow-up above) and the **depth sweep**
-      (needs a sequence of dep-changing default-branch commits). `DEFAULT_DEPTH_CAP = 16` —
-      no data yet contradicts it; revisit after the pre-stamp lands.
+      **Live numbers (2026-06-10, local Docker Desktop/WSL2 — full table in FINDINGS.md):**
+      cold `created:d1g1` 2.2–3.3 s / 66 MB upper; `main` unchanged with the pre-stamp = npm
+      skipped entirely (~1.1 MB upper, standby pre-install 25 ms); `main` advanced =
+      delta-only (`advanced:d2g2`, 1.2 MB upper). Still open (canary-scale): the **depth
+      sweep 1→16** and a **flag-off control on a large (~30 k-file) repo** — template-vue is
+      too small to show the extract/link saving. `DEFAULT_DEPTH_CAP = 16` — d2 showed no
+      degradation; no data contradicts 16.
 - [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
       invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
       complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately

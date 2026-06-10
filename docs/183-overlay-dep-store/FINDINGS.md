@@ -739,17 +739,25 @@ Also attributable from this run, no code change:
   create` from an ungraduated session claimed the calling parent itself (self-parented
   session), and the archive cascade had no cycle guard → "Maximum call stack size exceeded".
 
-### Measured so far (template-vue, npm, warm npm cache)
+### Measured (template-vue, npm, warm npm cache, Docker Desktop/WSL2)
 
-| Scenario | install_ms | outcome | notes |
-|---|---|---|---|
-| Marker-skip (no overlay work) | ~220–970 | — | floor is worker roundtrips, not "tens of ms" as the runbook estimated |
-| Cold (empty g0 lower, full npm install) | 2209 | `created:d1g1` | 34 top-level pkgs / 66 MB into the upper |
-| Broken-readdir standby re-claimed | 1211 | `skipped-empty` | C5 guard declining the poison — by design |
+All three runbook scenarios were driven live after the fixes (including the base-hit
+marker pre-stamp, PR #1239):
 
-The "main unchanged" warm-hit scenario (fresh clone over a populated base) still runs a full
-npm install today — the marker lives in the host clone, not the base (the per-dep-dir pivot
-moved `.shipit/` out of the overlay). Closing that gap (pre-stamping the marker from the
-base pointer on a base-hit mount) is the remaining optimization; until then warm ≈ cold
-minus the package downloads. Depth-cap sweep not yet run (needs a sequence of dep-changing
-default-branch commits).
+| Scenario | install_ms | outcome | per-session upper | notes |
+|---|---|---|---|---|
+| Marker-skip (no overlay work) | ~220–970 | — | — | floor is worker roundtrips, not "tens of ms" |
+| Cold (empty g0 lower, full npm install) | 2209–3296 | `created:d1g1` | 66 MB | base materialized 75 MB `g1` + pointer w/ marker stamp |
+| **`main` unchanged, BEFORE pre-stamp** | 2605 | `skipped-equal` | **66 MB** | full reinstall + full copy-up — zero benefit (the gap) |
+| **`main` unchanged, AFTER pre-stamp** | npm skipped | `skipped-equal:d1g1` | **1.1 MB** | standby pre-install: `pre-stamped … (base-hit)` → skip in **25 ms** (was ~4 s); deps served from the shared `g1` lowerdir; the residual upper is the dev service's no-op npm pass |
+| `main` advanced (+1 dep on default) | 5640 | `advanced:d2g2` | 1.2 MB | pre-stamp correctly declined (commit mismatch); npm ran a true **delta** over `g1`; `g2` published beside `g1` (generational) |
+| Broken-readdir standby re-claimed | 1211 | `skipped-empty` | — | C5 guard declining the poison — by design |
+
+Headline: the warm path went from "full install + 66 MB per session" to "no npm at all +
+~1 MB per session" (≈60× per-session disk for same-commit sessions), and the advanced path
+does delta-only work. Still open: the **depth sweep 1→16** (needs a sequence of dep-changing
+default-branch pushes; nothing measured so far stresses `DEFAULT_DEPTH_CAP=16` — d2 showed no
+degradation) and a **flag-off control on a large repo** (template-vue's install is small
+enough that cold-with-overlay ≈ plain install; the canary should measure a ~30 k-file repo).
+Note for operators: never delete a live scope's current generation by hand — that replicates
+the readdir breakage on every session pinning it (the janitor's keep-rules encode this).
