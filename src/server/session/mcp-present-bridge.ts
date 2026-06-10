@@ -28,33 +28,37 @@ const TOOL_NAME = "present";
 const WORKER_URL = `http://127.0.0.1:${process.env.WORKER_PORT || "9100"}`;
 
 const TOOL_DESCRIPTION = [
-  "Display a single self-contained visual artifact (HTML, SVG, markdown, or image",
-  "data URI) to the user in the dedicated Present tab WITHOUT writing it to the",
-  "workspace. Use this for ephemeral artifacts you want the user to look at but not",
-  "commit: charts, diagrams, mockups, rendered docs, quick HTML prototypes.",
-  "For multi-file apps or files the user actually wants to keep, use Write instead",
-  "— the workspace is for deliverables, the Present tab is for scratch visuals.",
+  "Display a single self-contained file (HTML, SVG, markdown, or image) to the",
+  "user in the dedicated Present tab. First write the file with the Write tool,",
+  "then call `present` with its path. Use this for charts, diagrams, mockups,",
+  "rendered docs, and quick HTML prototypes you want the user to look at.",
+  "Write the file under /tmp for a throwaway artifact (it never enters git), or",
+  "into the workspace if you want it tracked and committed — either way it renders",
+  "in the Present tab; the path's location is the only difference.",
+  "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
+  ".jpg, .gif, .webp); pass `mimeType` only to override it.",
   "Pass `replaceId` with a prior call's `presentId` to revise an existing",
-  "presentation in-place (e.g. mockup v1 → v2); omit it for a brand-new entry.",
+  "presentation in-place (e.g. mockup v1 → v2) — edit the file and call again;",
+  "omit it for a brand-new entry.",
   "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and take a screenshot — then",
-  "fix any layout/contrast/clipping defects and call `present` again with",
-  "`replaceId` set to the same `presentId` to revise it in place.",
-  "Content is capped at ~1 MB; larger artifacts will be rejected.",
+  "fix any layout/contrast/clipping defects, edit the file, and call `present`",
+  "again with `replaceId` set to the same `presentId` to revise it in place.",
+  "The file is capped at ~1 MB; larger artifacts will be rejected.",
 ].join(" ");
 
 const inputSchema = {
   type: "object" as const,
   properties: {
-    content: {
+    file: {
       type: "string",
       description:
-        "The artifact content. For HTML/SVG/markdown, pass the raw markup as a string. For images, pass a data URI like 'data:image/png;base64,...'.",
+        "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /tmp/chart.html) are read as-is. Write the file first, then present it.",
     },
     mimeType: {
       type: "string",
       description:
-        "MIME type of the content: 'text/html', 'image/svg+xml', 'text/markdown', 'image/png', 'image/jpeg', 'image/gif'. Defaults to 'text/html'.",
+        "Optional override for the MIME type. By default it is inferred from the file extension ('text/html', 'image/svg+xml', 'text/markdown', 'image/png', 'image/jpeg', 'image/gif', 'image/webp'). Unknown extensions fall back to 'text/plain'.",
     },
     title: {
       type: "string",
@@ -67,7 +71,7 @@ const inputSchema = {
         "When set to a previous call's `presentId`, replaces that entry in-place (revision flow). Omit to append a new entry.",
     },
   },
-  required: ["content"],
+  required: ["file"],
 };
 
 /**
@@ -102,7 +106,7 @@ export function createPresentBridgeServer() {
     }
 
     const args = (req.params.arguments ?? {}) as {
-      content?: string;
+      file?: string;
       mimeType?: string;
       title?: string;
       replaceId?: string;
@@ -113,7 +117,7 @@ export function createPresentBridgeServer() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          content: args.content,
+          file: args.file,
           mimeType: args.mimeType,
           title: args.title,
           replaceId: args.replaceId,

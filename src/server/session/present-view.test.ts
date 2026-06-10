@@ -1,6 +1,11 @@
 import Fastify from "fastify";
 import { describe, expect, it } from "vitest";
-import { registerPresentFilesRoutes, renderPresentDocument } from "./present-view.js";
+import {
+  registerPresentFilesRoutes,
+  renderPresentDocument,
+  inferPresentMimeType,
+  isBinaryPresentMime,
+} from "./present-view.js";
 import { PresentBuffer, type PresentEntry } from "./present-buffer.js";
 
 function entry(partial: Partial<PresentEntry> & { content: string; mimeType: string }): PresentEntry {
@@ -11,6 +16,51 @@ function entry(partial: Partial<PresentEntry> & { content: string; mimeType: str
     ...partial,
   };
 }
+
+describe("inferPresentMimeType", () => {
+  it.each([
+    ["index.html", "text/html"],
+    ["page.htm", "text/html"],
+    ["diagram.svg", "image/svg+xml"],
+    ["notes.md", "text/markdown"],
+    ["notes.markdown", "text/markdown"],
+    ["shot.png", "image/png"],
+    ["photo.jpg", "image/jpeg"],
+    ["photo.jpeg", "image/jpeg"],
+    ["anim.gif", "image/gif"],
+    ["pic.webp", "image/webp"],
+    ["log.txt", "text/plain"],
+  ])("maps %s → %s", (file, mime) => {
+    expect(inferPresentMimeType(file)).toBe(mime);
+  });
+
+  it("is case-insensitive on the extension", () => {
+    expect(inferPresentMimeType("/tmp/CHART.HTML")).toBe("text/html");
+  });
+
+  it("resolves the extension from a full path", () => {
+    expect(inferPresentMimeType("/workspace/docs/mockups/landing.svg")).toBe("image/svg+xml");
+  });
+
+  it("returns empty string for unknown or missing extensions", () => {
+    expect(inferPresentMimeType("README")).toBe("");
+    expect(inferPresentMimeType("archive.tar.zip")).toBe("");
+  });
+});
+
+describe("isBinaryPresentMime", () => {
+  it("treats raster image types as binary", () => {
+    expect(isBinaryPresentMime("image/png")).toBe(true);
+    expect(isBinaryPresentMime("image/jpeg")).toBe(true);
+    expect(isBinaryPresentMime("IMAGE/GIF")).toBe(true);
+  });
+
+  it("treats SVG and text types as non-binary", () => {
+    expect(isBinaryPresentMime("image/svg+xml")).toBe(false);
+    expect(isBinaryPresentMime("text/html")).toBe(false);
+    expect(isBinaryPresentMime("text/markdown")).toBe(false);
+  });
+});
 
 describe("renderPresentDocument", () => {
   it("serves text/html content verbatim", async () => {

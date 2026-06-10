@@ -52,7 +52,11 @@ import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
 import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
-import { registerPresentFilesRoutes } from "./present-view.js";
+import {
+  registerPresentFilesRoutes,
+  inferPresentMimeType,
+  isBinaryPresentMime,
+} from "./present-view.js";
 import { runtimeKey, tuneNpmInstall } from "./install-runtime.js";
 import {
   makeMarker,
@@ -845,18 +849,45 @@ export class SessionWorker extends EventEmitter {
   private registerPresentEndpoints(app: FastifyInstance): void {
     app.post<{
       Body: {
-        content?: string;
+        file?: string;
         mimeType?: string;
         title?: string;
         replaceId?: string;
       };
     }>("/agent-ops/present/submit", async (request, reply) => {
-      const { content, mimeType, title, replaceId } = request.body ?? {};
-      if (typeof content !== "string" || content.length === 0) {
-        return reply.code(400).send({ error: "content is required and must be a string" });
+      const { file, mimeType, title, replaceId } = request.body ?? {};
+      if (typeof file !== "string" || file.length === 0) {
+        return reply.code(400).send({ error: "file is required and must be a path string" });
       }
+      // The agent writes a file (anywhere — /tmp for throwaway, the workspace
+      // for tracked) and presents it by path (docs/188). Relative paths resolve
+      // against the workspace (the agent's cwd); absolute paths are read as-is.
+      const resolvedPath = path.isAbsolute(file)
+        ? file
+        : path.resolve(this.workspaceDir, file);
+      // MIME is inferred from the extension unless the caller overrides it.
+      const overrideMime =
+        typeof mimeType === "string" && mimeType.length > 0 ? mimeType : undefined;
       const resolvedMime =
-        typeof mimeType === "string" && mimeType.length > 0 ? mimeType : "text/html";
+        overrideMime ?? (inferPresentMimeType(resolvedPath) || "text/plain");
+
+      // Read the file into the same `content` string the buffer/WS pipeline
+      // already carries: binary images become a `data:` URI, everything else is
+      // UTF-8 text (HTML/SVG markup, markdown, plain text).
+      let content: string;
+      try {
+        if (isBinaryPresentMime(resolvedMime)) {
+          const bytes = await fsp.readFile(resolvedPath);
+          content = `data:${resolvedMime};base64,${bytes.toString("base64")}`;
+        } else {
+          content = await fsp.readFile(resolvedPath, "utf8");
+        }
+      } catch (err) {
+        return reply.code(400).send({
+          error: `Could not read file "${file}": ${getErrorMessage(err)}`,
+        });
+      }
+
       const resolvedTitle =
         typeof title === "string" && title.length > 0 ? title : undefined;
       const resolvedReplaceId =
