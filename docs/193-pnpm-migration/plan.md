@@ -1,6 +1,6 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-110
-description: Migrate ShipIt's own root toolchain from npm to pnpm, gaining full-tree install-age enforcement and blocked-by-default build scripts.
+description: Evaluate and (optionally) migrate ShipIt's root toolchain from npm to pnpm — reframed once npm v11.10 shipped its own install-age gate, making the migration an efficiency/strictness upgrade rather than a security necessity.
 ---
 
 # 193 — pnpm migration
@@ -17,6 +17,47 @@ the most common supply-chain code-exec vector.
 This is a toolchain migration, not a config flip. It touches CI, both production
 Dockerfiles, the deploy build, Dependabot, and the dogfood/dev paths. The work is
 mechanical but spread across infra, so it's planned in phases with a clean rollback.
+
+## 2026 reality check — npm closed the gap (read before committing to this)
+
+Research (June 2026) materially weakens this migration's headline rationale. The
+release-age gate now exists in **all three** major package managers:
+
+| Tool | Config key | Default |
+|---|---|---|
+| **npm ≥ 11.10** | `min-release-age` (days) in `.npmrc` — requires Node 24 LTS, which ShipIt already runs | OFF (opt-in) |
+| **pnpm ≥ 11** | `minimumReleaseAge` (minutes) | **ON, 1 day** by default |
+| **Yarn ≥ 4.10** | `npmMinimalAgeGate` | ON, 3 days |
+
+So the strongest concrete reason to migrate — "only pnpm enforces install-age" — is no
+longer true. ShipIt can get the supply-chain age gate **today, on npm**, by setting
+`min-release-age=7` in `.npmrc` (plus a scoped `ignore-scripts` allow-list for
+`better-sqlite3` / `node-pty` / `esbuild`). The gate governs version *resolution* at
+install time, which is already broader than `check-dependency-age.ts`'s direct-deps-only
+check — so the security goal does **not** require leaving npm.
+
+**Revised recommendation:** the cheap, high-ROI move is to enable npm's `min-release-age`
+now and treat this pnpm migration as an **optional efficiency/strictness upgrade**, not a
+security necessity. pnpm's durable edges over a configured npm are: secure-*by-default*
+(no need to remember to configure), content-addressable store (~70% less disk, faster
+installs), best-in-class monorepo support, and strict no-phantom-deps `node_modules`. Of
+these, **the monorepo advantage does not apply** (ShipIt is a single package), and the
+disk/speed win is real-but-modest across the CI + Docker fleet. Worth doing if/when (a) the
+repo splits into a monorepo, (b) CI/Docker install time becomes real pain, or (c) we want
+secure-by-default without relying on opt-in config. Until one of those bites, the migration
+is defensible but not a priority.
+
+One risk this research raised, specific to the Phase-3 Docker plan below: `node-linker=hoisted`
+has open bugs where `pnpm deploy` yields an empty `node_modules`
+(pnpm/pnpm#6682) — the exact prod-image path this plan depends on. Validate it on a real
+image build before trusting it.
+
+### Alternative considered: stay on npm + `min-release-age`
+Lowest-cost option, captures the motivating security benefit, zero migration risk. The
+trade-off vs pnpm is opt-in-vs-default safety and the disk/speed/strictness wins — none of
+which are urgent for a working single-package repo. This is the recommended near-term path;
+the full migration below remains the documented option for when the durable advantages
+start to matter.
 
 ## Scope — read this first
 
