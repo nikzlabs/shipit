@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-99
 description: Let the agent create tracker issues directly via `shipit issue create`, surfaced as a do-then-surface provenance card with undo — the same model docs/177 uses for every other issue write. Closes the design-doc cross-link loop in one turn.
 ---
 
@@ -188,6 +189,15 @@ actor end-to-end within one turn.
   Linear is the workspace-wide tracker and the design-doc convention. `--tracker
   github` files on the session's repo instead. An unconfigured tracker fails with a
   "connect it in Settings" message rather than silently filing elsewhere.
+- **The returned Linear URL is slug-free, enforced server-side.** Linear's API
+  appends a title-derived slug to issue URLs (`…/issue/SHI-28/redesign-the-auth-flow`).
+  The adapter's `stripLinearUrlSlug` normalizes every `TrackerIssue.url` to the
+  canonical `…/issue/SHI-28` form, so the URL the agent receives (and writes into a
+  doc's `issue:` frontmatter, per step 3 of the cross-link flow) never leaks the
+  issue title and matches the pointer shape `parseIssueRef` treats as canonical.
+  This is a single chokepoint in `toTrackerIssue`, so it also covers `view`/`edit`/
+  the Issues tab — not just `create`. Stripping is safe: Linear resolves the
+  slug-free URL and redirects to the full one.
 
 ## Status — implemented
 

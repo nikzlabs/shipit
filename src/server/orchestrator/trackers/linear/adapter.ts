@@ -41,6 +41,28 @@ export const LINEAR_GRAPHQL_ENDPOINT = "https://api.linear.app/graphql";
 
 export type FetchImpl = typeof fetch;
 
+/**
+ * The canonical, slug-free form of a Linear issue URL: `…/issue/<IDENTIFIER>`.
+ * Linear's API returns the URL with a title-derived slug appended
+ * (`…/issue/SHI-28/redesign-the-auth-flow`). We strip that slug everywhere a
+ * `TrackerIssue.url` is produced, for two reasons:
+ *
+ *  - It can leak the issue title into URLs the agent writes back into committed
+ *    artifacts — a doc's `issue:` frontmatter pointer, a PR body — where only
+ *    the issue number belongs.
+ *  - It IS the convention documented for `issue:` pointers ("Linear must be a
+ *    full URL without the title slug"), and the shape `parseIssueRef` already
+ *    treats as canonical.
+ *
+ * The slug-free URL still resolves — Linear redirects `…/issue/SHI-28` to the
+ * full slug URL — so nothing downstream breaks. A URL that doesn't match the
+ * expected Linear shape is returned unchanged.
+ */
+export function stripLinearUrlSlug(url: string): string {
+  const match = /^(https?:\/\/linear\.app\/[^/]+\/issue\/[A-Za-z]+-\d+)(?:\/.*)?$/i.exec(url);
+  return match ? match[1] : url;
+}
+
 export interface LinearTrackerConfig {
   token: string | null;
   team: { id: string; key: string; name: string } | null;
@@ -103,7 +125,7 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     id: node.id,
     identifier: node.identifier,
     title: node.title,
-    url: node.url,
+    url: stripLinearUrlSlug(node.url),
     ...(node.description ? { description: node.description } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
     ...(labels.length > 0 ? { labels } : {}),

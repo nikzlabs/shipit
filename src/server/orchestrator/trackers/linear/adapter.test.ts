@@ -4,6 +4,7 @@ import {
   listLinearTeams,
   resolveLinearStateId,
   resolveLinearPriority,
+  stripLinearUrlSlug,
   LINEAR_GRAPHQL_ENDPOINT,
 } from "./adapter.js";
 import { TrackerResolutionError } from "../tracker.js";
@@ -208,6 +209,28 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(input).toEqual({ teamId: "team-123", title: "New doc", description: "tracks docs/187" });
   });
 
+  it("returns a slug-free issue URL on create (no title leak)", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "issueCreate",
+        data: {
+          issueCreate: {
+            success: true,
+            issue: issueNode({
+              identifier: "SHI-9",
+              title: "Redesign the secret auth flow",
+              // Linear's API appends a title-derived slug to the URL.
+              url: "https://linear.app/shipit/issue/SHI-9/redesign-the-secret-auth-flow",
+            }),
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    const issue = await tracker.createIssue({ title: "Redesign the secret auth flow", body: "" });
+    expect(issue.url).toBe("https://linear.app/shipit/issue/SHI-9");
+  });
+
   it("throws creating an issue without a team binding", async () => {
     const tracker = new LinearTracker({ token: "t", team: null });
     await expect(tracker.createIssue({ title: "x", body: "" })).rejects.toThrow(/team binding/);
@@ -375,6 +398,33 @@ describe("resolveLinearPriority (SHI-92)", () => {
       expect((err as TrackerResolutionError).kind).toBe("priority");
       expect((err as TrackerResolutionError).options).toContain("high");
     }
+  });
+});
+
+describe("stripLinearUrlSlug", () => {
+  it("strips a title slug, keeping …/issue/<IDENTIFIER>", () => {
+    expect(stripLinearUrlSlug("https://linear.app/shipit/issue/SHI-28/redesign-the-auth-flow")).toBe(
+      "https://linear.app/shipit/issue/SHI-28",
+    );
+  });
+
+  it("leaves an already slug-free URL unchanged", () => {
+    expect(stripLinearUrlSlug("https://linear.app/shipit/issue/SHI-28")).toBe(
+      "https://linear.app/shipit/issue/SHI-28",
+    );
+  });
+
+  it("drops a trailing slash but keeps the identifier", () => {
+    expect(stripLinearUrlSlug("https://linear.app/shipit/issue/SHI-28/")).toBe(
+      "https://linear.app/shipit/issue/SHI-28",
+    );
+  });
+
+  it("returns a non-matching URL untouched", () => {
+    expect(stripLinearUrlSlug("https://example.com/whatever")).toBe("https://example.com/whatever");
+    expect(stripLinearUrlSlug("https://linear.app/shipit/team/SHI/all")).toBe(
+      "https://linear.app/shipit/team/SHI/all",
+    );
   });
 });
 
