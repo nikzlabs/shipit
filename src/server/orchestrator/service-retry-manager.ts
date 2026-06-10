@@ -24,6 +24,16 @@
 const RETRY_BACKOFF_MS = [1_000, 2_000, 4_000, 8_000, 10_000];
 const MAX_OOM_AUTO_RETRIES = 3;
 const OOM_STABLE_RESET_MS = 60_000;
+/**
+ * How many times a gated service that crashes just after the install gate
+ * opens is restarted with backoff before latching to `error`. The cumulative
+ * backoff (1+2+4+8+10 = 25s) comfortably covers the gap between a premature
+ * install-complete signal (observed ~2s on warm/reused fast-install paths)
+ * and a real `npm install` finishing (~16s), so a service that only failed
+ * because `node_modules/.bin` wasn't on disk yet recovers on its own. See
+ * docs/137-depends-on-install.
+ */
+const MAX_POST_GATE_RETRIES = 5;
 
 export interface ServiceRetryManagerOptions {
   sessionId: string;
@@ -72,6 +82,16 @@ export class ServiceRetryManager {
    * service leaves `running` before it fires.
    */
   private oomStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  // --- Post-gate recovery state (docs/137) ---
+  /**
+   * Per-service counter of bounded restarts attempted for a gated service
+   * that crashed shortly after the install gate opened. Separate from both
+   * `retryAttempts` (install-window) and `oomRetryAttempts`. Reset when the
+   * service finally reaches `running`, when the budget is exhausted, on an
+   * explicit user action, or on manager-wide cleanup.
+   */
+  private postGateRetryAttempts = new Map<string, number>();
 
   constructor(opts: ServiceRetryManagerOptions) {
     this.sessionId = opts.sessionId;
@@ -164,6 +184,69 @@ export class ServiceRetryManager {
   }
 
   /**
+   * Schedule a bounded restart for a `preview: auto` gated service that
+   * crashed shortly AFTER the install gate opened (docs/137). On warm /
+   * reused fast-install paths the install-complete signal can fire before
+   * `node_modules/.bin` is fully on disk, so the service's first boot crashes
+   * (e.g. `astro: not found`, exit 127). Without this, the crash is observed
+   * by the poller once the gate is already closed and the service is no longer
+   * gated — so neither the install-window backoff nor the one-shot
+   * post-install pass owns it, and it latches to `error` permanently until a
+   * manual restart.
+   *
+   * Retry with the standard backoff so it recovers once deps finish landing.
+   * Bounded by `MAX_POST_GATE_RETRIES` so a genuinely broken service (bad
+   * command, missing binary that install never produces) still surfaces as
+   * `error` rather than looping forever.
+   *
+   * @returns `true` if a retry was scheduled (or one is already pending), so
+   *   the caller holds the service in `starting`; `false` once the budget is
+   *   exhausted, so the caller latches to `error`.
+   */
+  schedulePostGateRetry(name: string): boolean {
+    if (this.isDisposed()) return true;
+    // If a retry is already pending, leave it in place.
+    if (this.retryTimers.has(name)) return true;
+
+    const attempt = this.postGateRetryAttempts.get(name) ?? 0;
+    if (attempt >= MAX_POST_GATE_RETRIES) {
+      // Exhausted — clear the counter and tell the caller to latch to error.
+      this.postGateRetryAttempts.delete(name);
+      console.log(
+        `[compose:${this.sessionId}] ${name} still crashing after ${MAX_POST_GATE_RETRIES} post-install retries — marking error`,
+      );
+      return false;
+    }
+
+    const delayIdx = Math.min(attempt, RETRY_BACKOFF_MS.length - 1);
+    const delay = RETRY_BACKOFF_MS[delayIdx];
+    this.postGateRetryAttempts.set(name, attempt + 1);
+
+    console.log(
+      `[compose:${this.sessionId}] ${name} crashed just after install gate opened — retry #${attempt + 1}/${MAX_POST_GATE_RETRIES} in ${delay}ms`,
+    );
+
+    // Reflect "still coming up" to the UI rather than `error`.
+    this.updateServiceStatus(name, "starting");
+
+    const timer = setTimeout(() => {
+      this.retryTimers.delete(name);
+      void this.runRetryNow(name);
+    }, delay);
+    this.retryTimers.set(name, timer);
+    return true;
+  }
+
+  /**
+   * Drop the post-gate recovery budget for a service. Called when the service
+   * finally reaches `running` (its first boot succeeded after the gate opened)
+   * or when it is re-held for a mid-session re-install.
+   */
+  clearPostGateState(name: string): void {
+    this.postGateRetryAttempts.delete(name);
+  }
+
+  /**
    * Arm a stable-uptime timer for a service that has reached `running`
    * after at least one OOM auto-retry. If the service stays running for
    * `OOM_STABLE_RESET_MS` the OOM counter resets; if it leaves `running`
@@ -226,6 +309,7 @@ export class ServiceRetryManager {
     for (const timer of this.oomStableTimers.values()) clearTimeout(timer);
     this.oomStableTimers.clear();
     this.oomRetryAttempts.clear();
+    this.postGateRetryAttempts.clear();
   }
 
   /**

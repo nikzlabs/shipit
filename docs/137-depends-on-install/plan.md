@@ -141,6 +141,28 @@ tree is the safe default. Yes, this causes a visible preview blink on
 every `npm install`-triggering edit — but those edits are themselves
 intentional changes to the dependency tree.
 
+**Gated service crashes *just after* the gate opens.** The install-complete
+signal can lead the dependency tree on warm / reused fast-install paths — the
+gate releases (e.g. ~2s after compose start) before `node_modules/.bin/<bin>`
+is actually on disk, so the service's first boot crashes (`astro: not found`,
+exit 127). This crash is observed by the poller once the gate is already
+closed and the service is no longer in `gatedServices`, so neither the
+install-window backoff (gate-window-only) nor the one-shot
+`flushPostInstallRetries` (samples synchronously at gate-open, when the
+service is still `starting`) owns it. Without recovery it latched to `error`
+permanently until a manual `POST /services/restart`.
+
+The fix is a bounded **post-gate recovery window**: when `startGatedServices`
+releases a gated service it adds it to `postGateServices`, and a non-zero exit
+for a service still in that set is restarted with the standard backoff
+(`ServiceRetryManager.schedulePostGateRetry`, capped at `MAX_POST_GATE_RETRIES`
+= 5; cumulative ~25s comfortably covers a real `npm install`). The service
+leaves the window the moment it reaches `running` (first boot succeeded), when
+the budget is exhausted (then it latches to `error` with the real exit
+message), or when it is re-held for a mid-session re-install. This is distinct
+from docs/162 (gate hanging forever) — here the gate resolved fine; the
+service just crashed inside its first-boot grace window.
+
 **Compose's native `depends_on`.** The ShipIt install gate is applied
 first; once it opens, compose's normal `depends_on` ordering is honored
 by `docker compose up`. The two compose; they don't fight.
@@ -155,11 +177,12 @@ share startup time rather than serializing.
 |---|---|
 | `src/server/orchestrator/compose-generator.ts` | `ComposeService.dependsOnInstall` added (the per-service parsed model — there was no separate type in `domain-types.ts`). `parseComposeFile` resolves `x-shipit-depends-on-install`: explicit boolean wins, else `true` for effective `auto` preview / `false` for `manual`. No stripping needed — `x-` keys are valid compose extensions Docker ignores (same as `x-shipit-preview`). |
 | `src/server/orchestrator/compose-generator.test.ts` | Covers default-auto, implicit-auto (ports), default-manual, implicit-manual (portless), explicit `false` on auto, explicit `true` on manual. |
-| `src/server/orchestrator/service-manager.ts` | `ManagedService.dependsOnInstall` + `INSTALL_FAILED_GATE_MESSAGE`. Gate state: `_installFailed`, `gatedServices`. `start()` partitions auto services — non-gated start now, gated held in `starting` (or latched to `error` if a prior install failed). `setInstallRunning(running, { failed })`: `true→false` success → `startGatedServices` (one batched `up`); `true→false` fail → `latchGatedServicesToError`; `false→true` → `holdGatedServicesForReinstall` (stop + re-hold). `handleNonZeroExit` ignores gated services. `flushPostInstallRetries` (legacy net) excludes gated services. |
+| `src/server/orchestrator/service-manager.ts` | `ManagedService.dependsOnInstall` + `INSTALL_FAILED_GATE_MESSAGE`. Gate state: `_installFailed`, `gatedServices`, `postGateServices`. `start()` partitions auto services — non-gated start now, gated held in `starting` (or latched to `error` if a prior install failed). `setInstallRunning(running, { failed })`: `true→false` success → `startGatedServices` (one batched `up`, seeds `postGateServices`); `true→false` fail → `latchGatedServicesToError`; `false→true` → `holdGatedServicesForReinstall` (stop + re-hold, clears post-gate state). `handleNonZeroExit` ignores gated services and, for a service still in `postGateServices`, retries via `schedulePostGateRetry` instead of latching. `onRunning` clears the post-gate window. `flushPostInstallRetries` (legacy net) excludes gated services. |
+| `src/server/orchestrator/service-retry-manager.ts` | `schedulePostGateRetry(name): boolean` — bounded (`MAX_POST_GATE_RETRIES` = 5) backoff restart for a gated service that crashed inside its first-boot window; returns `false` once exhausted so the manager latches to `error`. `clearPostGateState(name)` + `postGateRetryAttempts` (cleared in `cancelAll`). |
 | `src/server/orchestrator/service-poller.ts` | New `isGated` callback — the poller skips gated services so a transient `ps` reading can't clobber the gate-owned status. |
 | `src/server/orchestrator/container-session-runner.ts` | `runInstall` now returns `Promise<{ ok: boolean }>`; `signalInstallComplete(ok)` carries success/failure (from `install_done`/`install_error` and the reconnect resync). |
 | `src/server/orchestrator/service-manager-setup.ts` | Plumbs the install outcome: `installPromise` is `Promise<{ ok: boolean }>`, and both the create and adopt paths call `setInstallRunning(false, { failed: !ok })`. |
-| `src/server/orchestrator/service-manager.test.ts` | New "install gate" describe block: not-started-during-install, started-after-success, latched-on-failure, vacuous open, opted-out starts immediately, mixed gated/non-gated, mid-session re-install teardown+restart, batched multi-service up. Three legacy backoff-net tests updated to use `x-shipit-depends-on-install: false` (the net no longer applies to gated defaults). |
+| `src/server/orchestrator/service-manager.test.ts` | New "install gate" describe block: not-started-during-install, started-after-success, latched-on-failure, vacuous open, opted-out starts immediately, mixed gated/non-gated, mid-session re-install teardown+restart, batched multi-service up. Post-gate recovery: crashes-just-after-gate-open held in `starting` not `error` (regression), recovers once deps land, latches after exhausting the budget. Three legacy backoff-net tests updated to use `x-shipit-depends-on-install: false` (the net no longer applies to gated defaults). |
 | `src/server/orchestrator/integration_tests/service-manager-adoption.test.ts` | Stub captures `setInstallRunning` opts; asserts `{ failed: false }` on success and `{ failed: true }` on failure through the adopt path. |
 | `src/server/shipit-docs/preview.md`, `compose.md` | Document the field, the new default, the failure message, and the mid-session re-install blink. The "exit 127 is expected" note is now scoped to opted-out services only. |
 

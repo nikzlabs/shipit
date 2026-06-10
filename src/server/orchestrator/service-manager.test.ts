@@ -2000,4 +2000,121 @@ services:
     expect(lastUp).toContain("a");
     expect(lastUp).toContain("b");
   });
+
+  // -------------------------------------------------------------------------
+  // Post-gate recovery — a gated service that crashes shortly AFTER the gate
+  // opens (e.g. the install-complete signal led the dependency tree on a
+  // warm/reused fast-install path, so `node_modules/.bin/astro` wasn't on disk
+  // yet → exit 127). Previously this latched to `error` forever with zero
+  // retries; now it gets a bounded post-gate restart pass. See docs/137.
+  // -------------------------------------------------------------------------
+
+  it("retries instead of latching when a gated service crashes just after the gate opens", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, upCalls, setPsResponse } = makeManager(dir);
+
+    // Install in flight → web held by the gate, never started.
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(upNames(upCalls)).not.toContain("web");
+
+    // Gate opens; the service is brought up but crashes on first boot. The
+    // single poll inside startGatedBatch observes the exit-127 transition.
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 127 }));
+    mgr.setInstallRunning(false);
+    await flushMicrotasks();
+
+    // It WAS brought up (gate opened) …
+    expect(upNames(upCalls)).toContain("web");
+    // … but the post-gate crash is held in `starting` (retry pending), NOT
+    // latched to `error`. This is the regression: pre-fix it sat in `error`
+    // with no owner until a manual restart.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("starting");
+    expect(web?.error).toBeUndefined();
+
+    // This test runs on real timers and just scheduled a 1s backoff retry.
+    // Dispose so that pending timer is cancelled instead of firing after the
+    // test and leaking a retry chain into the rest of the suite.
+    await mgr.stop();
+  });
+
+  it("recovers a post-gate crash once deps finish landing", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    // Drive recovery off the number of times `web` has actually been brought
+    // up rather than a manual timer dance: it crashes on its first boot (the
+    // gate-open `up`) and comes up healthy on the second (a backoff retry),
+    // simulating deps landing during the backoff window. This is fully
+    // deterministic under `runAllTimersAsync` and structurally cannot loop —
+    // the second `up` flips `ps` to running, so the retry succeeds.
+    let webUps = 0;
+    const upCalls: string[][] = [];
+    const composeRunner: ComposeRunner = (args) => {
+      const upIdx = args.indexOf("up");
+      if (upIdx >= 0) {
+        const call = args.slice(upIdx);
+        if (call.some(a => a === "web")) webUps++;
+        upCalls.push(call);
+      }
+      return Promise.resolve();
+    };
+    const composeQuery: ComposeQuery = (args) => {
+      const key = args.find(a => a === "ps" || a === "inspect" || a === "rm" || a === "network") ?? args[0];
+      if (key === "ps") {
+        const running = webUps >= 2;
+        return Promise.resolve(JSON.stringify({
+          Service: "web", ID: "abc",
+          State: running ? "running" : "exited",
+          ExitCode: running ? 0 : 127,
+        }));
+      }
+      if (key === "inspect") return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    expect(webUps).toBe(0); // gated — not brought up during install
+
+    // Gate opens → first boot (webUps→1) crashes 127 → bounded post-gate
+    // retry. The retry's `up` (webUps→2) flips `ps` to running → recovered.
+    mgr.setInstallRunning(false);
+    await vi.runAllTimersAsync();
+
+    expect(mgr.getService("web")?.status).toBe("running");
+    expect(webUps).toBeGreaterThanOrEqual(2);
+  });
+
+  it("latches to error after exhausting the post-gate retry budget", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Service is genuinely broken — every boot crashes 127.
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 127 }));
+    mgr.setInstallRunning(false);
+    // Run every backoff retry to exhaustion.
+    await vi.runAllTimersAsync();
+
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("error");
+    expect(web?.error).toContain("Exited with code 127");
+  });
 });
