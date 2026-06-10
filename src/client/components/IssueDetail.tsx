@@ -236,7 +236,7 @@ export function IssueDetail({
 
       {/* Footer action — seed a session from this issue (mirrors the list row). */}
       {detail && (
-        <div className="shrink-0 border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
+        <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
           <Button
             variant="secondary"
             size="sm"
