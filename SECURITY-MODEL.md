@@ -114,7 +114,8 @@ be hostile.
   (verified via a `shipit-parent-session` label).
 - **Dangerous container options are rejected, not just discouraged.** The proxy's
   sanitizer (`docker-proxy-sanitize.ts`) rejects `Privileged: true`, any `CapAdd`,
-  host/`container:*` network/PID/IPC/UTS namespace sharing, `VolumesFrom`, and strips
+  host or `container:*` network/PID/IPC namespace sharing (and host UTS sharing),
+  `VolumesFrom`, and strips
   `SecurityOpt`, `Sysctls`, `UsernsMode`, `CgroupParent`, `Runtime`, and similar escape
   hatches. Bind mounts must resolve under the session's own workspace dir; named volumes
   must belong to the session. Resource limits (memory, CPU, PID) are enforced.
@@ -172,9 +173,9 @@ for accepting them today, and where they're headed.
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /
   time-of-use race exists in principle. Exploiting it requires an already-in-sandbox
-  attacker, a pre-planted symlink, and precise timing; the dropped capabilities and the
-  read-only nature of the validated mounts limit the blast radius. A `nosymfollow` /
-  inode-based check is the intended hardening.
+  attacker, a pre-planted symlink, and precise timing; the workspace-path scoping and the
+  dropped capabilities limit the blast radius. A `nosymfollow` / inode-based check is the
+  intended hardening.
 - **Session worker runs as root inside its container.** A non-root worker runtime is
   planned but deferred — it's a broad change and the container boundary (not in-container
   UID) is the primary control today.
