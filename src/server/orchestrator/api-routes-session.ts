@@ -1032,6 +1032,7 @@ export async function registerSessionRoutes(
       try {
         const result = await createRepoWithTemplate(
           createGitManager,
+          createRepoGit,
           deps.githubAuthManager, deps.getSharedRepoDir,
           body.repoName, body.templateId,
           body.description, body.isPrivate,
