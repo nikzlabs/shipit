@@ -415,15 +415,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
   // HTTP-agnostic. Cheap flag gate first so a flag-off session never awaits worker
   // readiness. Inert unless `OVERLAY_DEP_STORE` is on.
-  const publishOverlayBases = async ({ runner, session, installOk }: {
+  const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
+    installCommands?: string[];
   }): Promise<DepDirPublishOutcome[]> => {
     if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
     return publishDepDirOverlayBases(
-      { session, workerUrl: runner.getWorkerUrl(), installOk },
+      { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands },
       { stateDir, createRepoGit, getBareCacheDir },
     );
   };

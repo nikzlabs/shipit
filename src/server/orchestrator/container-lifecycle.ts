@@ -25,7 +25,7 @@ import {
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
-import type { DepDirOverlaySpec } from "./overlay-session.js";
+import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -63,6 +63,12 @@ export interface LifecycleDeps {
   dockerImageName?: string;
   dockerProxyHost?: string;
   dockerProxyPort?: number;
+  /**
+   * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
+   * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
+   * without it the pre-stamp is skipped.
+   */
+  stateDir?: string;
   emitter: EventEmitter<SessionContainerManagerEvents>;
   baseLabels: () => Record<string, string>;
 }
@@ -506,6 +512,32 @@ export async function createContainer(
       await waitForWorkerHealth(sc.workerUrl);
     }
     sc.status = "running";
+
+    // docs/183 — base-hit marker pre-stamp: if every overlay dep dir mounts a
+    // base whose pointer matches this clone's HEAD (+ commands + worker runtime
+    // key, generation re-verified), write `.shipit/.install-done` so the
+    // worker's /install gate skips and "main unchanged" pays ~0 instead of a
+    // full install over the populated base. Runs AFTER container start (the
+    // lowerdir is pinned, so the generation check is race-correct) and before
+    // the caller resolves the runner's worker URL (so /install can't race the
+    // write). Best-effort: any failure just means a real install runs.
+    if (config.overlaySpecs && config.overlaySpecs.length > 0 && deps.stateDir && config.workspaceDir) {
+      try {
+        const stamped = await preStampInstallMarker({
+          stateDir: deps.stateDir,
+          workspaceDir: config.workspaceDir,
+          specs: config.overlaySpecs,
+        });
+        if (stamped) {
+          console.log(`[overlay:${config.sessionId}] pre-stamped install marker from base pointer (base-hit)`);
+        }
+      } catch (err) {
+        console.warn(
+          `[overlay:${config.sessionId}] marker pre-stamp failed (continuing with a real install):`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
 
     deps.emitter.emit("container_started", config.sessionId);
     return sc;

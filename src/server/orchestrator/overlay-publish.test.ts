@@ -62,7 +62,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       createRepoGit: () => oracle,
       getBareCacheDir: (url: string) => path.join(tmpDir, "cache", encodeURIComponent(url)),
       env,
-      fetchHeadCommit: () => Promise.resolve(HEAD),
+      fetchHeadInfo: () => Promise.resolve({ commit: HEAD, runtimeKey: "img|x64|glibc|node24" }),
       fetchSnapshot: (_url, depDir) => Promise.resolve(Readable.from([Buffer.from(depDir)])),
       extract: async (stream, destDir) => {
         const chunks: Buffer[] = [];
@@ -111,6 +111,37 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(baseContentFor("node_modules")).toBe("node_modules");
   });
 
+  it("records the publisher's marker stamp on the pointer when installCommands are provided", async () => {
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install"],
+      },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(pointerFor("node_modules")?.marker).toEqual({
+      runtimeKey: "img|x64|glibc|node24",
+      installCommands: ["npm install"],
+    });
+  });
+
+  it("omits the pointer marker when the worker reports no runtime key", async () => {
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install"],
+      },
+      depsWith({ fetchHeadInfo: () => Promise.resolve({ commit: HEAD, runtimeKey: null }) }),
+    );
+    expect(out[0].outcome).toBe("created");
+    expect(pointerFor("node_modules")?.marker).toBeUndefined();
+  });
+
   it("publishes each declared dep dir into its OWN scope (cross-dir isolation)", async () => {
     workspaceDir = makeWorkspace(["node_modules", "packages/app/node_modules"], {
       shipitDepDirs: ["node_modules", "packages/app/node_modules"],
@@ -139,7 +170,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       isAncestor: (a, b) => Promise.resolve(a === c1 && b === c2),
       resolveDefaultBranchCommit: () => Promise.resolve(head),
     };
-    const deps = depsWith({ createRepoGit: () => oracle2, fetchHeadCommit: () => Promise.resolve(head) });
+    const deps = depsWith({ createRepoGit: () => oracle2, fetchHeadInfo: () => Promise.resolve({ commit: head, runtimeKey: "img|x64|glibc|node24" }) });
     const session = { remoteUrl: REPO_URL, kind: undefined, workspaceDir };
 
     const first = await publishDepDirOverlayBases({ session, workerUrl: "http://w", installOk: true }, deps);
@@ -187,7 +218,7 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
   it("skips when the worker head-commit can't be resolved", async () => {
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
-      depsWith({ fetchHeadCommit: () => Promise.resolve(null) }),
+      depsWith({ fetchHeadInfo: () => Promise.resolve(null) }),
     );
     expect(out).toEqual([{ depDir: "node_modules", outcome: "skipped-ineligible" }]);
     expect(pointerFor("node_modules")).toBeNull();

@@ -7,7 +7,7 @@
  *   - `overlay-session.ts` — eligibility + the per-dep-dir scope (`resolveOverlayScope`,
  *     `depDirsForSession`, `validDepDirsForOverlay`).
  *   - `overlay-snapshot.ts` — the worker pull + tar extraction (`fetchDepSnapshotStream`,
- *     `extractTarStream`, `fetchWorkspaceHeadCommit`).
+ *     `extractTarStream`, `fetchWorkspaceHeadInfo`).
  *   - `overlay-base.ts` — the publish compare-and-swap (`publishBase`), reused
  *     **unchanged**: only the caller and the per-dep-dir granularity are new here.
  *
@@ -26,7 +26,7 @@
  * A candidate publishes only when its install **exited 0**, was a **pre-user**
  * install, and its **source base is the remote default-branch commit**. We resolve:
  *   - `exitCode` from the install result (`installOk`),
- *   - `commit` from the worker's merged HEAD (`fetchWorkspaceHeadCommit`),
+ *   - `commit` from the worker’s merged HEAD (`fetchWorkspaceHeadInfo`),
  *   - `currentDefaultCommit` from the bare cache (`RepoGit.resolveDefaultBranchCommit`),
  *   - `sourceIsDefaultBranch = commit === currentDefaultCommit`.
  *
@@ -53,7 +53,8 @@ import { publishBase, type PublishOutcome } from "./overlay-base.js";
 import {
   extractTarStream,
   fetchDepSnapshotStream,
-  fetchWorkspaceHeadCommit,
+  fetchWorkspaceHeadInfo,
+  type WorkspaceHeadInfo,
 } from "./overlay-snapshot.js";
 import type { RepoGit } from "./repo-git.js";
 
@@ -75,7 +76,7 @@ export interface OverlayPublishDeps {
   env?: NodeJS.ProcessEnv;
   /** HTTP/tar glue — injectable so the orchestration is unit-testable without a worker. */
   fetchSnapshot?: (workerUrl: string, depDir: string) => Promise<Readable>;
-  fetchHeadCommit?: (workerUrl: string) => Promise<string | null>;
+  fetchHeadInfo?: (workerUrl: string) => Promise<WorkspaceHeadInfo | null>;
   extract?: (stream: Readable, destDir: string) => Promise<void>;
   /** Root for per-dep-dir extraction temp dirs (defaults to the OS temp dir). */
   tmpRoot?: string;
@@ -87,6 +88,14 @@ export interface OverlayPublishArgs {
   workerUrl: string;
   /** Whether the just-finished `agent.install` exited 0. */
   installOk: boolean;
+  /**
+   * The exact `agent.install` command list the install ran. Recorded (with the
+   * worker's runtime key) on the resulting base pointer so a later same-commit
+   * session can be pre-stamped with a marker the /install gate accepts (see
+   * `preStampInstallMarker`). Optional — without it the publish proceeds and
+   * only the pre-stamp optimization is forgone.
+   */
+  installCommands?: string[];
 }
 
 /**
@@ -142,15 +151,21 @@ export async function publishDepDirOverlayBases(
     return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
   }
 
-  const fetchHeadCommit = deps.fetchHeadCommit ?? fetchWorkspaceHeadCommit;
+  const fetchHeadInfo = deps.fetchHeadInfo ?? fetchWorkspaceHeadInfo;
   const fetchSnapshot = deps.fetchSnapshot ?? fetchDepSnapshotStream;
   const extract = deps.extract ?? extractTarStream;
 
   // Without the source commit we can't stamp a candidate — decline conservatively.
-  const commit = await fetchHeadCommit(args.workerUrl);
-  if (!commit) {
+  const headInfo = await fetchHeadInfo(args.workerUrl);
+  if (!headInfo) {
     return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
   }
+  const commit = headInfo.commit;
+  // Marker ingredients for the base-hit pre-stamp — only when both halves exist.
+  const markerStamp =
+    headInfo.runtimeKey && args.installCommands && args.installCommands.length > 0
+      ? { runtimeKey: headInfo.runtimeKey, installCommands: args.installCommands }
+      : undefined;
 
   const repoGit = deps.createRepoGit(deps.getBareCacheDir(scope.repoUrl));
   const currentDefaultCommit = (await repoGit.resolveDefaultBranchCommit()) ?? undefined;
@@ -185,6 +200,7 @@ export async function publishDepDirOverlayBases(
           preUserInstall: true,
           sourceIsDefaultBranch,
           snapshotDir: tmpDir,
+          ...(markerStamp ? { markerStamp } : {}),
         },
         isAncestor,
         currentDefaultCommit,

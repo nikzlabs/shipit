@@ -75,21 +75,37 @@ export async function fetchDepSnapshotStream(workerUrl: string, depDir: string):
   return Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
 }
 
+/** The worker's merged-workspace HEAD plus its runtime fingerprint. */
+export interface WorkspaceHeadInfo {
+  commit: string;
+  /**
+   * The worker-side `install-runtime.ts:runtimeKey()` — recorded on the base
+   * pointer at publish so the marker pre-stamp can write a stamp the worker's
+   * `/install` gate accepts. Null when the worker predates the field (older
+   * image): the publish still proceeds, only the pre-stamp is forgone.
+   */
+  runtimeKey: string | null;
+}
+
 /**
- * Fetch the merged-workspace HEAD commit from the session worker (`GET
- * /workspace/head-commit`) — the source commit the install ran against, which
- * stamps a publish candidate and decides publish eligibility (source == remote
- * default). The orchestrator can't read it from the host upperdir (`.git` lives
- * in the merged tree), so it asks the worker. Returns null on any failure so the
- * publish path conservatively declines rather than stamping a candidate with a
- * guessed commit.
+ * Fetch the merged-workspace HEAD commit (and the worker's runtime fingerprint)
+ * from the session worker (`GET /workspace/head-commit`) — the source commit the
+ * install ran against, which stamps a publish candidate and decides publish
+ * eligibility (source == remote default). The orchestrator can't read it from
+ * the host upperdir (`.git` lives in the merged tree), so it asks the worker.
+ * Returns null on any failure so the publish path conservatively declines
+ * rather than stamping a candidate with a guessed commit.
  */
-export async function fetchWorkspaceHeadCommit(workerUrl: string): Promise<string | null> {
+export async function fetchWorkspaceHeadInfo(workerUrl: string): Promise<WorkspaceHeadInfo | null> {
   try {
     const res = await fetch(`${workerUrl}/workspace/head-commit`);
     if (!res.ok) return null;
-    const body = (await res.json()) as { commit?: string | null };
-    return typeof body.commit === "string" && body.commit.length > 0 ? body.commit : null;
+    const body = (await res.json()) as { commit?: string | null; runtimeKey?: string | null };
+    if (typeof body.commit !== "string" || body.commit.length === 0) return null;
+    return {
+      commit: body.commit,
+      runtimeKey: typeof body.runtimeKey === "string" && body.runtimeKey.length > 0 ? body.runtimeKey : null,
+    };
   } catch {
     return null;
   }

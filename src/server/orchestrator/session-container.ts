@@ -599,6 +599,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
+      stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),
     };

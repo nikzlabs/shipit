@@ -18,6 +18,8 @@ import simpleGit from "simple-git";
 import {
   buildOverlaySpecs,
   depDirsForSession,
+  preStampInstallMarker,
+  type DepDirOverlaySpec,
   isOverlayEligible,
   isOverlayEnabled,
   liveOverlayScopeHashes,
@@ -288,5 +290,114 @@ describe("validDepDirsForOverlay", () => {
     tmpDirs.push(nonGit);
     fs.mkdirSync(path.join(nonGit, "node_modules"));
     expect(await validDepDirsForOverlay(["node_modules"], nonGit)).toEqual([]);
+  });
+});
+
+describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+
+  async function gitWorkspace(installCmd = "npm install"): Promise<{ dir: string; head: string }> {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "prestamp-"));
+    tmpDirs.push(dir);
+    const git = simpleGit(dir);
+    await git.init();
+    await git.addConfig("user.email", "t@t");
+    await git.addConfig("user.name", "t");
+    fs.writeFileSync(path.join(dir, "shipit.yaml"), `agent:\n  install:\n    - ${installCmd}\n`);
+    await git.add(".");
+    await git.commit("init");
+    const head = (await git.revparse(["HEAD"])).trim();
+    return { dir, head };
+  }
+
+  function spec(scopeHash: string, generation: number): DepDirOverlaySpec {
+    return {
+      volumeName: `shipit-x_overlay-${scopeHash.slice(0, 8)}`,
+      lowerdir: `/mp/overlay-base/${scopeHash}/g${generation}`,
+      upperdir: "/mp/sessions/x/overlay/h/upper",
+      workdir: "/mp/sessions/x/overlay/h/work",
+      depDir: "node_modules",
+      mountPath: "/workspace/node_modules",
+      scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
+      scopeHash,
+      generation,
+    };
+  }
+
+  function pointer(commit: string, generation: number, marker?: { runtimeKey: string; installCommands: string[] }) {
+    return {
+      scopeHash: "h1", commit, depth: 1, generation,
+      baseDir: `/state/overlay-base/h1/g${generation}`,
+      updatedAt: "2026-06-10T00:00:00Z",
+      ...(marker ? { marker } : {}),
+    };
+  }
+
+  const WORKER_RT = "img|x64|glibc-2.36|node24";
+
+  it("stamps the marker when commit, generation, commands, and runtime key all line up", async () => {
+    const { dir, head } = await gitWorkspace();
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(true);
+    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    expect(written).toMatchObject({
+      version: 1,
+      sourceCommit: head,
+      runtimeKey: WORKER_RT,
+      installCommands: ["npm install"],
+    });
+  });
+
+  it("declines on commit mismatch, generation mismatch, command mismatch, or a pointer without marker", async () => {
+    const { dir, head } = await gitWorkspace();
+    const cases = [
+      pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }), // other commit
+      pointer(head, 4, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),           // pointer moved on
+      pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"] }),          // other commands
+      pointer(head, 3),                                                                        // no marker recorded
+    ];
+    for (const ptr of cases) {
+      expect(await preStampInstallMarker({
+        stateDir: "/state", workspaceDir: dir, specs: [spec("h1", 3)], readPointer: () => ptr,
+      })).toBe(false);
+    }
+    expect(fs.existsSync(path.join(dir, ".shipit", ".install-done"))).toBe(false);
+  });
+
+  it("never clobbers an existing marker", async () => {
+    const { dir, head } = await gitWorkspace();
+    fs.mkdirSync(path.join(dir, ".shipit"), { recursive: true });
+    fs.writeFileSync(path.join(dir, ".shipit", ".install-done"), "EXISTING");
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(false);
+    expect(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8")).toBe("EXISTING");
+  });
+
+  it("requires EVERY dep dir's pointer to match (one cold scope blocks the stamp)", async () => {
+    const { dir, head } = await gitWorkspace();
+    const ptrs: Record<string, ReturnType<typeof pointer> | null> = {
+      h1: pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+      h2: null, // second dep dir has no base yet
+    };
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3), { ...spec("h2", 0), scopeHash: "h2" }],
+      readPointer: (_s, hash) => ptrs[hash] ?? null,
+    });
+    expect(ok).toBe(false);
   });
 });

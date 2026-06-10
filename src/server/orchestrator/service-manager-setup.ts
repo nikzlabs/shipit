@@ -271,6 +271,9 @@ export function setupServiceManager(
       runner: ContainerSessionRunner;
       session: SessionInfo;
       installOk: boolean;
+      /** The exact `agent.install` commands the install ran — recorded on the
+       *  base pointer for the base-hit marker pre-stamp (docs/183). */
+      installCommands?: string[];
     }) => Promise<DepDirPublishOutcome[]>;
   },
 ): void {
@@ -362,7 +365,12 @@ export function setupServiceManager(
     void (async () => {
       const res = await p;
       try {
-        const outcomes = await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+        const outcomes = await publishOverlayBases({
+          runner: r,
+          session: s,
+          installOk: res.ok,
+          installCommands,
+        });
         // docs/183 — emit one greppable measurement line per overlay session so the
         // warm-vs-cold + depth-cap data can be tabulated off service logs. A
         // non-empty outcome list means overlay was active (flag on + eligible), so

@@ -351,6 +351,7 @@ describe("SessionContainerManager", () => {
         mountPath: "/workspace/node_modules",
         scope: { repoUrl: "r", runtimeKey: "rt", depDir: "node_modules" },
         scopeHash: "h1",
+      generation: 0,
       },
       {
         volumeName: "shipit-test-session_overlay-bbbbbbbb",
@@ -361,6 +362,7 @@ describe("SessionContainerManager", () => {
         mountPath: "/workspace/packages/app/node_modules",
         scope: { repoUrl: "r", runtimeKey: "rt", depDir: "packages/app/node_modules" },
         scopeHash: "h2",
+      generation: 0,
       },
     ];
 

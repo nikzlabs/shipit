@@ -99,6 +99,18 @@ export interface BasePointer {
   baseDir: string;
   /** ISO timestamp of the last advance — diagnostics only, never an ordering input. */
   updatedAt: string;
+  /**
+   * The publisher's install-marker stamp ingredients, recorded so a fresh
+   * session that mounts THIS base at the SAME commit can be pre-stamped with a
+   * `.shipit/.install-done` the worker gate accepts — turning the "main
+   * unchanged" scenario into a marker-skip instead of a full reinstall over the
+   * populated base (see `preStampInstallMarker`). `runtimeKey` is the
+   * publisher's WORKER-side fingerprint (`install-runtime.ts:runtimeKey()`,
+   * what the gate compares against), NOT the orchestrator-side scope key.
+   * Absent on pointers written before this field existed or when the publish
+   * couldn't resolve the worker's runtime key — pre-stamp then declines.
+   */
+  marker?: { runtimeKey: string; installCommands: string[] };
 }
 
 /**
@@ -119,6 +131,12 @@ export interface PublishCandidate {
   sourceIsDefaultBranch: boolean;
   /** Worker-exported merged-workspace snapshot to copy into the next base. */
   snapshotDir: string;
+  /**
+   * Install-marker ingredients recorded on the resulting pointer (see
+   * `BasePointer.marker`). Optional — a publish without it still advances the
+   * base; only the pre-stamp optimization is forgone.
+   */
+  markerStamp?: { runtimeKey: string; installCommands: string[] };
 }
 
 export type PublishOutcome =
@@ -429,6 +447,7 @@ async function finalize(
     generation: next.generation,
     baseDir,
     updatedAt: new Date().toISOString(),
+    ...(candidate.markerStamp ? { marker: candidate.markerStamp } : {}),
   };
   writeBasePointer(stateDir, pointer);
   return { outcome: next.outcome, pointer };

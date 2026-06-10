@@ -64,7 +64,7 @@ import {
   parseMarker,
   serializeMarker,
   type InstallMarkerStamp,
-} from "./install-marker.js";
+} from "../shared/install-marker.js";
 import { overlayBackedEmptyDepDirs } from "./overlay-dep-check.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 
@@ -725,6 +725,11 @@ export class SessionWorker extends EventEmitter {
     // `git rev-parse HEAD` in the same merged `/workspace` the agent sees.
     app.get("/workspace/head-commit", async () => ({
       commit: await this.readSourceCommit(),
+      // docs/183 — the worker-side runtime fingerprint. The publish path records
+      // it on the base pointer so a later same-commit session can be pre-stamped
+      // with a marker the /install gate accepts (the gate compares against THIS
+      // value, not the orchestrator-side scope key).
+      runtimeKey: runtimeKey(),
     }));
 
     // docs/183 Phase 4 — stream a single dep dir's merged contents as a tar so the
