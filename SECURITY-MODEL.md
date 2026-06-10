@@ -83,9 +83,14 @@ are brokered to the container on demand — they are not handed to the agent's s
   invoke it (e.g. `git credential fill`) to obtain the PAT on demand and, with egress open,
   exfiltrate it. Brokering raises the bar from a one-line read to an active request; the
   egress allow-list (see Known limitations) is what would actually contain that.
-- **Per-session, per-agent credential subtrees.** Each session mounts its own
-  `/credentials` subpath, and only the *pinned* agent's files are copied in — a Claude
-  session never sees `.codex`, and vice versa.
+- **Per-session, per-agent credential copies.** Each session gets its own `/credentials`
+  subpath rather than a shared mount, and only the *pinned* agent's files are copied in — a
+  Claude session never sees `.codex`, and vice versa. Because warm-pool containers boot
+  before the agent is even chosen, that copy happens at the first turn, once the agent is
+  fixed. The orchestrator stays the authoritative credential store: the rotating OAuth token
+  is synced into a session at turn start and back out only when that session refreshed it to
+  a newer expiry (newest-wins), so a single live refresh token isn't scattered across
+  sessions.
 - **Tracker tokens stay orchestrator-side.** The agent reads and updates Linear / GitHub
   issues through a tracker-neutral, ShipIt-brokered interface (the `shipit issue` command).
   The actual GraphQL/REST calls happen in the orchestrator with the token in the
@@ -187,16 +192,16 @@ for accepting them today, and where they're headed.
 - **Session worker runs as root inside its container.** A non-root worker runtime is
   planned but deferred — it's a broad change and the container boundary (not in-container
   UID) is the primary control today.
-- **The agent's own CLI credentials live in its container.** The pinned agent's
-  OAuth/subscription token is mounted into its session (read-write, because the CLI refreshes
-  the token in place) so the CLI can authenticate. A prompt-injected agent can therefore
-  read — and, with egress open, exfiltrate — its own credentials. This is the accepted *"the
-  agent runs in the same box as its own credentials"* limitation from the
+- **The agent's own CLI credentials are present in its container.** The pinned agent's CLI
+  needs its OAuth/subscription token to authenticate, so that token is present on disk inside
+  the session (in the per-session credential copy described above). A prompt-injected agent
+  can therefore read — and, with egress open, exfiltrate — its own token. This is the
+  accepted *"the agent runs in the same box as its own credentials"* limitation from the
   [managed-agents model](https://www.anthropic.com/engineering/managed-agents); a read-only
-  mount wouldn't help, since it blocks writes, not reads. Per-session, per-agent scoping
-  keeps the blast radius to that one session's pinned agent (a Claude session never has
-  `.codex` on disk, and vice versa), and the egress allow-list above is the containment
-  that's still to come.
+  mount wouldn't help, since it blocks writes, not reads. The exposure is bounded — a session
+  holds only its *own* pinned agent's token, and the orchestrator (not the container) remains
+  the source of truth for it — but the live token is still reachable in-container while the
+  agent runs, and the egress allow-list above is the containment that would close it.
 - **No orchestrator-level user auth.** As above, this is by design for single-tenant use
   and is covered by the deployment access layer — but it does mean an unprotected exposed
   instance is fully open. Don't run one.
