@@ -39,15 +39,7 @@ import type { AgentEvent, PermissionDecision, PermissionRequestInput } from "../
 interface PendingRequest {
   resolve: (decision: PermissionDecision) => void;
   path?: string;
-  timer: ReturnType<typeof setTimeout>;
 }
-
-/**
- * Default time the broker waits for a user decision before auto-denying a
- * pending request. Generous — a human may step away — but bounded so a
- * never-answered prompt can't block the CLI/app-server (and the turn) forever.
- */
-const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Best-effort resource path for a tool call. Covers the file-editing tools
@@ -81,19 +73,23 @@ export class PermissionBroker {
   /** Paths the user approved with "remember" — auto-allowed for the session. */
   private remembered = new Set<string>();
   private readonly broadcast: (event: AgentEvent) => void;
-  private readonly timeoutMs: number;
 
-  constructor(opts: { broadcast: (event: AgentEvent) => void; timeoutMs?: number }) {
+  constructor(opts: { broadcast: (event: AgentEvent) => void }) {
     this.broadcast = opts.broadcast;
-    this.timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
   /**
-   * Open a permission request and block until it's resolved. If the resource
-   * path was previously approved with "remember", resolves immediately to
-   * `allow` and surfaces no card. Otherwise registers the request, broadcasts
-   * the canonical `agent_permission_request` event, and returns a promise the
-   * user's decision (or the timeout) settles.
+   * Open a permission request and block until the user answers it. If the
+   * resource path was previously approved with "remember", resolves immediately
+   * to `allow` and surfaces no card. Otherwise registers the request, broadcasts
+   * the canonical `agent_permission_request` event, and returns a promise that
+   * settles when (and only when) the user decides.
+   *
+   * There is deliberately NO timeout — a permission decision is the user's, and
+   * ShipIt does not impose its own deadline on it. The request stays pending
+   * (and answerable) for as long as the backend holds the call open; it is only
+   * settled by a user decision (`resolve`) or by teardown when the backend
+   * process actually goes away (`clearPending`).
    */
   request(input: PermissionRequestInput): Promise<PermissionDecision> {
     const path = input.path ?? extractPermissionPath(input.input);
@@ -108,14 +104,7 @@ export class PermissionBroker {
     const summary = input.summary ?? describePermissionRequest(input.toolName, path, input.input);
 
     return new Promise<PermissionDecision>((resolve) => {
-      const timer = setTimeout(() => {
-        // Auto-deny on timeout so a never-answered prompt can't wedge the turn.
-        this.settle(requestId, { behavior: "deny", message: "Permission request timed out." }, { expired: true });
-      }, this.timeoutMs);
-      // Don't let a pending timer keep the worker event loop alive on its own.
-      if (typeof timer.unref === "function") timer.unref();
-
-      this.pending.set(requestId, { resolve, path, timer });
+      this.pending.set(requestId, { resolve, path });
 
       this.broadcast({
         type: "agent_permission_request",
@@ -132,33 +121,13 @@ export class PermissionBroker {
    * Deliver the user's decision for a pending request. Returns true when the
    * request existed (false → already resolved / unknown id, e.g. a stale card
    * after a worker restart). An `allow` with `remember` adds the path to the
-   * session allow-set.
+   * session allow-set. Broadcasts `agent_permission_resolved` so the
+   * orchestrator flips the card to its terminal state.
    */
   resolve(requestId: string, decision: PermissionDecision): boolean {
-    return this.settle(requestId, decision, { expired: false });
-  }
-
-  /**
-   * Resolve every pending request as a denied/expired one. Called on agent
-   * teardown (turn kill / process exit) so a card left pending when the backend
-   * dies flips to its terminal state instead of spinning forever.
-   */
-  rejectAllPending(message = "The turn ended before this request was answered."): void {
-    for (const requestId of [...this.pending.keys()]) {
-      this.settle(requestId, { behavior: "deny", message }, { expired: true });
-    }
-  }
-
-  /** Number of requests currently awaiting a decision (diagnostics / tests). */
-  get pendingCount(): number {
-    return this.pending.size;
-  }
-
-  private settle(requestId: string, decision: PermissionDecision, opts: { expired: boolean }): boolean {
     const entry = this.pending.get(requestId);
     if (!entry) return false;
     this.pending.delete(requestId);
-    clearTimeout(entry.timer);
 
     const remembered = decision.behavior === "allow" && decision.remember === true && !!entry.path;
     if (remembered && entry.path) this.remembered.add(entry.path);
@@ -168,9 +137,28 @@ export class PermissionBroker {
       type: "agent_permission_resolved",
       requestId,
       behavior: decision.behavior,
-      ...(opts.expired ? { expired: true } : {}),
       ...(remembered ? { remembered: true } : {}),
     });
     return true;
+  }
+
+  /**
+   * Internal teardown only — settle every held promise (as a silent deny) so
+   * the worker doesn't leak a held bridge response / awaiting RPC when the agent
+   * process goes away. Deliberately broadcasts NOTHING: the card stays `pending`
+   * in the transcript rather than flipping to a synthetic terminal state. There
+   * is no "expired" — an unanswered prompt is an honest record that it wasn't
+   * answered, not a ShipIt-imposed cutoff.
+   */
+  clearPending(): void {
+    for (const entry of this.pending.values()) {
+      entry.resolve({ behavior: "deny" });
+    }
+    this.pending.clear();
+  }
+
+  /** Number of requests currently awaiting a decision (diagnostics / tests). */
+  get pendingCount(): number {
+    return this.pending.size;
   }
 }

@@ -820,19 +820,14 @@ export function wireAgentListeners(
       return;
     }
 
-    // docs/193 — the broker settled a permission request (user decision,
-    // timeout, or teardown). Patch the persisted card to its terminal state and
-    // emit the terminal WS message so the live card flips. Driving the patch
-    // from this single broadcast keeps the user-click, timeout, and teardown
-    // paths consistent and idempotent by requestId.
+    // docs/193 — the user answered a permission request. Patch the persisted
+    // card to its terminal state and emit the terminal WS message so the live
+    // card flips. Driven by the broker's single resolution broadcast, keyed by
+    // requestId.
     if (event.type === "agent_permission_resolved") {
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
-        const phase = event.expired
-          ? "expired"
-          : event.behavior === "allow"
-            ? "approved"
-            : "denied";
+        const phase = event.behavior === "allow" ? "approved" : "denied";
         deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
           phase,
           ...(event.remembered ? { remembered: true } : {}),

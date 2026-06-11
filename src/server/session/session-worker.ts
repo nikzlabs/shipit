@@ -1533,9 +1533,11 @@ export class SessionWorker extends EventEmitter {
     // identity, so it compares this token (see container-session-runner.ts
     // `isStaleSpawnEvent`).
     agent.on("done", (exitCode: number) => {
-      // docs/193 — flip any permission card still pending when the turn ends to
-      // its terminal (expired) state so it can't spin forever.
-      this.permissionBroker.rejectAllPending();
+      // docs/193 — the backend process is gone; settle any held permission
+      // promise internally so the worker doesn't leak. This broadcasts nothing,
+      // so an unanswered card stays `pending` (no synthetic "expired" — ShipIt
+      // imposes no deadline on the user's decision).
+      this.permissionBroker.clearPending();
       this.broadcastSSE({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
@@ -1543,7 +1545,7 @@ export class SessionWorker extends EventEmitter {
     });
 
     agent.on("error", (err: Error) => {
-      this.permissionBroker.rejectAllPending();
+      this.permissionBroker.clearPending();
       this.broadcastSSE({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;

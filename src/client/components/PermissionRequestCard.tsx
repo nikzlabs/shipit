@@ -17,7 +17,6 @@ import {
   CheckCircleIcon,
   LockKeyIcon,
   ProhibitIcon,
-  ClockCountdownIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -48,11 +47,6 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
         icon: <ProhibitIcon size={ICON_SIZE.SM} weight="fill" />,
         color: "text-(--color-error)",
         label: "Denied",
-      },
-      expired: {
-        icon: <ClockCountdownIcon size={ICON_SIZE.SM} weight="fill" />,
-        color: "text-(--color-text-tertiary)",
-        label: "Expired — not answered in time",
       },
     }[card.phase];
     return (

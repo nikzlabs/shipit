@@ -60,15 +60,20 @@ Key properties:
   raises a request for genuinely escalated actions.
 - **Remember** is a per-session, per-path allow-set in the broker: an approved
   "remember" auto-allows later requests for the same file with no card.
+- **No ShipIt-imposed deadline.** A permission decision is the user's, so the
+  broker has **no timeout** — a pending prompt stays answerable for as long as
+  the backend holds the call open (you can step away and come back). There is no
+  "expired" state: if a turn is abandoned before the prompt is answered, the
+  worker settles the held promise internally (so it doesn't leak) but broadcasts
+  nothing, leaving the card in its honest pending form.
 - **Fail-safe.** The Claude bridge fails *closed* (a broker/transport error → a
   deny envelope, never an unconfirmed proceed). Codex falls back to its historical
   auto-accept only when no broker is wired or the broker path throws (never hangs
-  a turn). A 30-min timeout and agent-teardown both auto-deny + expire any
-  pending card.
+  a turn).
 - **Persisted** like every transcript card (docs/188 contract): the card and its
-  approved/denied/expired terminal state survive a reconnect, switch, and reload.
-  A still-pending card comes back actionable after a reload — the worker holds
-  the request.
+  approved/denied terminal state survive a reconnect, switch, and reload. A
+  still-pending card comes back actionable after a reload — the worker holds the
+  request, so the user can answer it later.
 
 ## Agent-agnostic seam
 
@@ -118,7 +123,7 @@ A future backend implements `setPermissionRequester` (or bridges to
 
 ## Tests
 
-- `permission-broker.test.ts` — request/resolve/remember/timeout/reject-all/unknown-id.
+- `permission-broker.test.ts` — request/resolve/remember/no-timeout/clearPending(silent)/unknown-id.
 - `chat-history.test.ts` — round-trip + `updatePermissionCard` + the `EVERY_OPTIONAL_FIELD_MESSAGE` / `CARD_MESSAGE_FIELDS` guards.
 - `process.test.ts` — `--permission-prompt-tool` presence/absence.
 - `claude/mcp-writer.test.ts` — `shipit-permission` registration.

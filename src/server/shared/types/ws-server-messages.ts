@@ -1184,7 +1184,7 @@ export interface WsPermissionResolved {
   type: "permission_resolved";
   sessionId: string;
   requestId: string;
-  phase: "approved" | "denied" | "expired";
+  phase: "approved" | "denied";
   /** True when the user approved with "remember this file for the session". */
   remembered?: boolean;
 }

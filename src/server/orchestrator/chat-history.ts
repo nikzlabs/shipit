@@ -45,7 +45,7 @@ export interface PersistedBugReport {
  */
 export interface PersistedPermissionRequest {
   cardId: string;
-  phase: "pending" | "approved" | "denied" | "expired";
+  phase: "pending" | "approved" | "denied";
   toolName: string;
   path?: string;
   summary?: string;

@@ -10,7 +10,7 @@
 
 import { create } from "zustand";
 
-export type PermissionPhase = "pending" | "approved" | "denied" | "expired";
+export type PermissionPhase = "pending" | "approved" | "denied";
 
 export interface PermissionCardState {
   requestId: string;

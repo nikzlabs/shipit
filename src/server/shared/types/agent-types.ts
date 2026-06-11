@@ -345,19 +345,16 @@ export interface AgentPermissionRequestEvent {
 }
 
 /**
- * docs/193 — the terminal transition for a permission request. The broker
- * broadcasts this on EVERY resolution path — a user decision (via the resolve
- * endpoint), a timeout, or agent teardown — so the orchestrator patches the
- * persisted card to its terminal state from a single place, idempotently by
- * `requestId`. `expired` marks a resolution that wasn't a deliberate user
- * decision (timeout / teardown), which the card renders distinctly.
+ * docs/193 — the terminal transition for a permission request, broadcast by the
+ * broker when the user answers it (the only thing that settles a request), so
+ * the orchestrator patches the persisted card to its terminal state
+ * idempotently by `requestId`. There is no timeout/expiry transition — an
+ * unanswered request simply stays pending; ShipIt imposes no deadline.
  */
 export interface AgentPermissionResolvedEvent {
   type: "agent_permission_resolved";
   requestId: string;
   behavior: "allow" | "deny";
-  /** True when resolved by timeout / agent teardown rather than a user click. */
-  expired?: boolean;
   /** True when the user asked to remember the decision for this path this session. */
   remembered?: boolean;
 }

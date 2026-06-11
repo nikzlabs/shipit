@@ -1,6 +1,6 @@
 # Checklist — 193 sensitive-file permission prompt (SHI-112)
 
-- [x] Agent-agnostic `PermissionBroker` (request/resolve/remember/timeout/teardown)
+- [x] Agent-agnostic `PermissionBroker` (request/resolve/remember/teardown — no timeout, no expiry)
 - [x] Claude `--permission-prompt-tool` bridge + adapter/process wiring
 - [x] Codex approval requests routed through the broker (with auto-accept fallback)
 - [x] Canonical `agent_permission_request` / `agent_permission_resolved` events + `AgentProcess` methods

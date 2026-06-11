@@ -2,9 +2,9 @@ import { describe, it, expect, vi } from "vitest";
 import { PermissionBroker, extractPermissionPath, describePermissionRequest } from "./permission-broker.js";
 import type { AgentEvent } from "../shared/types.js";
 
-function makeBroker(timeoutMs?: number) {
+function makeBroker() {
   const events: AgentEvent[] = [];
-  const broker = new PermissionBroker({ broadcast: (e) => events.push(e), ...(timeoutMs ? { timeoutMs } : {}) });
+  const broker = new PermissionBroker({ broadcast: (e) => events.push(e) });
   return { broker, events };
 }
 
@@ -47,6 +47,23 @@ describe("PermissionBroker", () => {
     expect(events[1]).toMatchObject({ type: "agent_permission_resolved", behavior: "allow" });
   });
 
+  it("never auto-resolves on a timer — a request stays pending until answered", async () => {
+    vi.useFakeTimers();
+    try {
+      const { broker } = makeBroker();
+      // The held promise is intentionally not awaited — `request` only settles
+      // on a user decision, which we never make here.
+      void broker.request({ toolName: "Write", input: { file_path: ".env" } });
+
+      // Even after a very long wait, the request is still pending — a settled
+      // request would have been removed from the broker's map. There is no timeout.
+      await vi.advanceTimersByTimeAsync(60 * 60 * 1000);
+      expect(broker.pendingCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("auto-allows a remembered path without surfacing a new card", async () => {
     const { broker, events } = makeBroker();
     const first = broker.request({ toolName: "Write", input: { file_path: ".npmrc" } });
@@ -74,30 +91,22 @@ describe("PermissionBroker", () => {
     expect(broker.pendingCount).toBe(1);
   });
 
-  it("auto-denies on timeout and marks the resolution expired", async () => {
-    vi.useFakeTimers();
-    try {
-      const { broker, events } = makeBroker(1000);
-      const pending = broker.request({ toolName: "Write", input: { file_path: ".env" } });
-      vi.advanceTimersByTime(1000);
-      await expect(pending).resolves.toMatchObject({ behavior: "deny" });
-      expect(events.at(-1)).toMatchObject({ type: "agent_permission_resolved", behavior: "deny", expired: true });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("rejectAllPending denies + expires every in-flight request (teardown)", async () => {
+  it("clearPending settles held promises on teardown WITHOUT broadcasting (card stays pending)", async () => {
     const { broker, events } = makeBroker();
     const a = broker.request({ toolName: "Write", input: { file_path: "a" } });
     const b = broker.request({ toolName: "Write", input: { file_path: "b" } });
-    broker.rejectAllPending();
+    const eventsBefore = events.length;
+
+    broker.clearPending();
+
+    // Promises settle (so the worker doesn't leak a held bridge response)…
     await expect(a).resolves.toMatchObject({ behavior: "deny" });
     await expect(b).resolves.toMatchObject({ behavior: "deny" });
     expect(broker.pendingCount).toBe(0);
-    const resolved = events.filter((e) => e.type === "agent_permission_resolved");
-    expect(resolved).toHaveLength(2);
-    expect(resolved.every((e) => e.type === "agent_permission_resolved" && e.expired)).toBe(true);
+    // …but NO resolved event is broadcast — the card is left pending, never
+    // flipped to a synthetic terminal/expired state.
+    expect(events).toHaveLength(eventsBefore);
+    expect(events.some((e) => e.type === "agent_permission_resolved")).toBe(false);
   });
 
   it("resolve() returns false for an unknown id (stale card)", () => {
