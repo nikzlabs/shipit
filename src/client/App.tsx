@@ -1195,7 +1195,7 @@ export default function App() {
           <PreviewServicesDrawer services={composeServices} sessionId={sessionId} active={previewVisible} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>
         {rightTab === "docs" ? (
-          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onOpenIssue={handleOpenIssue} />
         ) : rightTab === "issues" ? (
           <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("trackers"); }} />
         ) : rightTab === "terminal" ? (
