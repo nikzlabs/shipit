@@ -38,6 +38,10 @@ export class AutoMergeManager {
       this.states.set(sessionId, state);
     } else {
       state.enabled = enabled;
+      // A deliberate user toggle resets the managed-merge lifecycle, so clear
+      // the `completed` short-circuit either way (a re-enable must be able to
+      // merge again; a disable shouldn't leave stale bookkeeping behind).
+      delete state.completed;
       if (enabled) {
         // Clear any previous error when re-enabling
         delete state.error;
@@ -102,6 +106,13 @@ export class AutoMergeManager {
     const mergeState = this.states.get(sessionId);
     if (!mergeState?.enabled || !mergeState.managed) return;
 
+    // A prior tick's REST merge already succeeded — the poller just hasn't
+    // observed the merged state yet. Don't re-attempt (GitHub rejects an
+    // already-merged PR, which would set a spurious sticky error) and don't
+    // touch the state: auto-merge stays "in charge" until `prState` flips to
+    // merged. Released by `untrackSession` when the PR reaches a terminal state.
+    if (mergeState.completed) return;
+
     // Merge when CI passes, or when there are no required checks at all.
     // Mirrors the client's `isCiPassed || isCiNone` mergeability rule
     // (docs/113) so a docs-only PR with path-filtered CI ("none") isn't left
@@ -145,9 +156,16 @@ export class AutoMergeManager {
     );
 
     if (result.success) {
-      // Merge succeeded — disable, poller will detect merged state next cycle
-      mergeState.enabled = false;
-      mergeState.managed = false;
+      // Merge REST succeeded — the PR is merging. Keep `enabled`/`managed` as
+      // they are so the client keeps treating auto-merge as owning the next
+      // move and stays SILENT until the merged state lands. Flipping
+      // `enabled=false` here is what caused the spurious chime: the poller
+      // re-broadcasts `lastKnown` (still `prState:"open"`, `checks:"success"`)
+      // via this onChange, and an open+green+auto-merge-disabled summary reads
+      // as "Waiting for your input" → an attention notification fires a beat
+      // before the PR is observed merged. `completed` short-circuits further
+      // attempts; the state is released by untrackSession at the terminal state.
+      mergeState.completed = true;
       delete mergeState.error;
       this.onChange(sessionId);
     } else {

@@ -1,3 +1,7 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-117
+description: ShipIt-managed auto-merge fallback (merges via REST when GitHub native auto-merge is unavailable), and the fix that keeps a CI-green managed merge silent until the PR is observed merged.
+---
 
 # Managed Auto-Merge
 
@@ -20,7 +24,7 @@ The fallback is transparent: the user toggles auto-merge, it activates, and the 
    - The toggle stays on — from the user's perspective, auto-merge is active.
 4. The `PrStatusPoller` (which already polls every 3s) checks managed-merge sessions:
    - When `checks.state === "success"` and `mergeable === true`, calls `mergePullRequest()` REST API.
-   - On success: disables auto-merge, poller detects merge next cycle.
+   - On success: marks the state `completed` (internal) and **keeps `enabled` true** until the poller observes the merged PR; the `completed` guard short-circuits any further merge attempt in the meantime.
    - On failure (conflicts, API error): surfaces error, stays enabled for retry.
 5. An info icon appears next to the toggle with a tooltip explaining the fallback and linking to GitHub branch protection settings.
 
@@ -49,4 +53,4 @@ Errors from the managed merge (e.g., "PR has merge conflicts") show as a warning
 - **REST merge call fails**: Error surfaced, stays enabled, retries next poll cycle (3s).
 - **CI re-runs**: Merge only triggers on `success`. If CI goes back to `pending`, no merge.
 - **User disables auto-merge**: Clears `enabled` and `managed`, skips GitHub `disableAutoMerge` API call (nothing to disable).
-- **Race with poller merge detection**: After REST merge succeeds, `enabled` is set to false immediately. Next poll cycle sees PR gone from OPEN results and triggers normal merged flow.
+- **Race with poller merge detection / spurious "needs attention" chime**: After REST merge succeeds the PR is *merging* but the poller still has the PR as open+green in `lastKnown`. Flipping `enabled=false` here used to make the manager's `onChange` re-broadcast that stale summary as open+green+auto-merge-**disabled**, which the attention logic (`computeAttentionReason`) reads as "Waiting for your input" → a spurious notification/sound fires a beat before the merged state lands. Fix: on success we mark `completed` and keep `enabled` true, so auto-merge keeps *owning* the move and the client stays silent until `prState` flips to `merged`. The `completed` guard prevents a second merge attempt (GitHub would reject the already-merged PR and set a sticky error); the state is released by `untrackSession` at the terminal state, and `setEnabled` clears `completed` so a re-enable can merge again. See `auto-merge-manager.test.ts` ("keeps auto-merge owning the session after a successful merge and does not re-merge").

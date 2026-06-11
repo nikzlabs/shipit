@@ -47,7 +47,7 @@ function makeManager(mergeResult = { success: true, message: "merged" }) {
 }
 
 describe("AutoMergeManager.handleManaged", () => {
-  it("merges a no-checks PR (checks.state === 'none') and then disables auto-merge — regression", async () => {
+  it("merges a no-checks PR (checks.state === 'none') and marks it completed — regression", async () => {
     const { manager, mergePullRequest } = makeManager();
     manager.setEnabled("s1", true);
     manager.setManaged("s1", true);
@@ -56,11 +56,38 @@ describe("AutoMergeManager.handleManaged", () => {
 
     expect(mergePullRequest).toHaveBeenCalledTimes(1);
     expect(mergePullRequest).toHaveBeenCalledWith("o", "r", 42, "squash");
-    // Merge succeeded — auto-merge is disabled so the poller stops driving it.
+    // Merge succeeded — auto-merge keeps owning the session (enabled stays true
+    // so the client stays silent) and `completed` stops the poller re-driving it
+    // until the merged state is observed.
     const state = manager.get("s1");
-    expect(state?.enabled).toBe(false);
-    expect(state?.managed).toBe(false);
+    expect(state?.enabled).toBe(true);
+    expect(state?.completed).toBe(true);
     expect(state?.error).toBeUndefined();
+  });
+
+  // Regression (spurious chime): after a successful managed merge, auto-merge
+  // must NOT flip to a "user must act" shape before the poller observes the
+  // merged PR. `enabled` stays true (the client's suppression key) and a
+  // subsequent poll tick re-runs handleManaged without re-merging.
+  it("keeps auto-merge owning the session after a successful merge and does not re-merge", async () => {
+    const { manager, mergePullRequest, onChange } = makeManager();
+    manager.setEnabled("s1", true);
+    manager.setManaged("s1", true);
+
+    await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+    expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    expect(manager.get("s1")?.enabled).toBe(true);
+
+    onChange.mockClear();
+    // The poller re-broadcasts `lastKnown` (still open+green) on the next tick.
+    await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+    // No second merge attempt, no further state churn — the session stays
+    // suppressed until the merged state lands.
+    expect(mergePullRequest).toHaveBeenCalledTimes(1);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(manager.get("s1")?.enabled).toBe(true);
+    expect(manager.get("s1")?.completed).toBe(true);
   });
 
   it("defers a no-checks PR while mergeability is 'unknown' (does NOT merge)", async () => {
@@ -104,7 +131,7 @@ describe("AutoMergeManager.handleManaged", () => {
     await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
 
     expect(mergePullRequest).toHaveBeenCalledTimes(1);
-    expect(manager.get("s1")?.enabled).toBe(false);
+    expect(manager.get("s1")?.completed).toBe(true);
   });
 
   // docs/174 — review gate. A protected base branch reports review_required /
@@ -134,7 +161,7 @@ describe("AutoMergeManager.handleManaged", () => {
     await manager.handleManaged("s1", makeSummary("success", "mergeable", "approved"), "o", "r");
 
     expect(mergePullRequest).toHaveBeenCalledTimes(1);
-    expect(manager.get("s1")?.enabled).toBe(false);
+    expect(manager.get("s1")?.completed).toBe(true);
   });
 
   // A conflict is surfaced by the card's dedicated "Merge conflicts" indicator +
