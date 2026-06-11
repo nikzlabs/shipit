@@ -92,10 +92,20 @@ export interface ClaimSessionOptions {
   excludeSessionIds?: string[];
   /**
    * When `true`, skip the *reuse* path entirely — never hand back an existing
-   * ungraduated warm session via `findUngraduatedWarm`. Background, non-interactive
-   * claims that mint a *new* session for the requested work — `spawnChildSession`
-   * (agent-driven children) and `createHeadlessSession` (quick-capture,
-   * issue-seeded "Start session", webhooks) — MUST set this.
+   * ungraduated warm session via `findUngraduatedWarm`.
+   *
+   * THE RULE (applies to every caller of `claim()`, present and future):
+   * reuse is for *interactive* claims ONLY — a user claiming a session to work
+   * in, where recycling their own just-abandoned `/{repo}/new` draft is the
+   * intended behavior. Any *background, non-interactive* claim that mints a
+   * *new* session for some requested work MUST set `skipReuse: true`. If you
+   * are adding a new `claim()` call and the caller is not the user interactively
+   * claiming the session they're about to look at, you set this. No exceptions.
+   *
+   * Current callers that set it: `spawnChildSession` (agent-driven children) and
+   * `createHeadlessSession` (quick-capture, issue-seeded "Start session",
+   * webhooks). The single caller that leaves it unset is the interactive
+   * home-screen claim route (`POST /api/repos/:url/claim-session`).
    *
    * The reuse path recycles *abandoned* drafts so the home-screen quick-capture
    * flow doesn't leak warm sessions (docs/145). But `findUngraduatedWarm` scans
