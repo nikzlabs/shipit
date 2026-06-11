@@ -257,6 +257,10 @@ rather than a flat text table:
   `statusDotClass` type→gray guess, under which the common Linear defaults
   (Backlog / Todo / Duplicate) all collapsed to one gray. Used everywhere a
   status dot renders (list row, mobile meta, detail pill, edit menu, filter).
+  Dots render via `statusDotStyle` / `priorityDotStyle`, which pair the color
+  with a subtle neutral outline ring (`DOT_RING`) so a pale fill — e.g. Linear's
+  near-white Todo/Backlog grays on a light theme — still has a visible edge
+  instead of vanishing into the surface (the same trick GitHub uses for swatches).
 - **Priority colors are all distinct.** `PRIORITY_DOT_COLOR` (exported) gives Low
   its own color (green) so it no longer reads identically to No-priority (gray).
 - **Filter bar (docs/173) parity.** The search box and the Priority/Status/

@@ -13,7 +13,7 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
-  statusDotColor,
+  statusDotStyle,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
@@ -278,7 +278,7 @@ function IssueRow({
               <span className="inline-flex items-center gap-1.5 min-w-0">
                 <span
                   className="size-2 shrink-0 rounded-full"
-                  style={{ backgroundColor: statusDotColor(issue.status) }}
+                  style={statusDotStyle(issue.status)}
                   aria-hidden="true"
                 />
                 <span className="truncate">{issue.status.name}</span>
@@ -299,7 +299,7 @@ function IssueRow({
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <span
               className="size-1.5 shrink-0 rounded-full"
-              style={{ backgroundColor: statusDotColor(issue.status) }}
+              style={statusDotStyle(issue.status)}
               aria-hidden="true"
             />
             <span className="truncate">{issue.status.name}</span>

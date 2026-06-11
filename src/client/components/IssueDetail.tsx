@@ -36,7 +36,7 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
-  statusDotColor,
+  statusDotStyle,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -114,7 +114,7 @@ function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> })
     <span className="inline-flex items-center gap-1.5 h-[18px] text-[11px] font-medium leading-none">
       <span
         className="h-2 w-2 rounded-full"
-        style={{ backgroundColor: statusDotColor(status) }}
+        style={statusDotStyle(status)}
         aria-hidden="true"
       />
       <span className={statusTextClass(status.type)}>{status.name}</span>
