@@ -1,8 +1,7 @@
 import { useState, useRef, useCallback } from "react";
-import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
+import { CaretDownIcon, CheckIcon, CurrencyDollarIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
-import { getModelBilling } from "../utils/model-billing.js";
 import { getSavedModelId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
@@ -15,6 +14,13 @@ import {
 import type { AgentId } from "../../server/shared/types.js";
 import type { AgentOption } from "../agent-types.js";
 import type { ModelInfo } from "../utils/model-info.js";
+
+/**
+ * Models that bill per token (usage-based) instead of counting against the
+ * Claude subscription plan limit. Flagged with a $ icon in the picker so the
+ * cost is visible at selection time. Fable 5 is the first such model.
+ */
+const METERED_MODELS = new Set(["claude-fable-5"]);
 
 interface ModelAgentSelectorProps {
   agents: AgentOption[];
@@ -202,17 +208,16 @@ export function ModelAgentSelector({
                   {agent.models.map((model) => {
                     const isCurrentModel = isActiveAgent && selectedModel === model;
                     const rowDisabled = !isAvailable || isAgentLocked;
-                    // Non-subscription models (e.g. Fable 5 once its promo
-                    // window closes) carry a billing pill so the per-token cost
-                    // is visible at the point of selection.
-                    const billing = getModelBilling(model);
+                    // Usage-based models bill per token rather than counting
+                    // against the subscription plan — flag them with a $ icon.
+                    const isMetered = METERED_MODELS.has(model);
 
                     return (
                       <DropdownMenuItem
                         key={`${agent.id}-${model}`}
                         onSelect={() => handleModelSelect(agent.id as AgentId, model)}
                         disabled={rowDisabled}
-                        title={billing?.tooltip}
+                        title={isMetered ? "Usage-based pricing — billed per token" : undefined}
                         className={`pl-5 pr-3 py-1.5 text-sm ${
                           isCurrentModel
                             ? "bg-(--color-accent-subtle) text-(--color-text-link)"
@@ -221,17 +226,12 @@ export function ModelAgentSelector({
                         data-testid={`model-option-${model}`}
                       >
                         <span className="flex-1">{formatModelName(model)}</span>
-                        {billing && (
-                          <span
-                            data-testid={`model-billing-${model}`}
-                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${
-                              billing.tone === "metered"
-                                ? "bg-(--color-warning-subtle) text-(--color-warning)"
-                                : "bg-(--color-info-subtle) text-(--color-info)"
-                            }`}
-                          >
-                            {billing.badge}
-                          </span>
+                        {isMetered && (
+                          <CurrencyDollarIcon
+                            size={ICON_SIZE.SM}
+                            className="text-(--color-text-tertiary)"
+                            data-testid={`model-metered-${model}`}
+                          />
                         )}
                         {isCurrentModel && (
                           <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />

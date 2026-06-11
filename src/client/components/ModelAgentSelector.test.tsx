@@ -138,7 +138,7 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
   });
 
-  it("renders a billing pill on a non-subscription model (Fable 5) but not on subscription models", async () => {
+  it("flags a usage-based model (Fable 5) with a $ icon but not subscription models", async () => {
     const agentsWithFable: AgentOption[] = [
       { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
     ];
@@ -154,9 +154,9 @@ describe("ModelAgentSelector — mid-session model picking", () => {
       />,
     );
     await user.click(screen.getByTestId("model-agent-trigger"));
-    // Fable carries a billing badge; Opus (subscription-covered) does not.
-    expect(screen.getByTestId("model-billing-claude-fable-5")).toBeInTheDocument();
-    expect(screen.queryByTestId("model-billing-claude-opus-4-8")).not.toBeInTheDocument();
+    // Fable carries the metered $ icon; Opus (subscription-covered) does not.
+    expect(screen.getByTestId("model-metered-claude-fable-5")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-metered-claude-opus-4-8")).not.toBeInTheDocument();
   });
 
   it("picking a model in the pinned agent emits onModelChange but NOT onAgentChange", async () => {
