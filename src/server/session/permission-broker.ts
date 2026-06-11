@@ -43,6 +43,20 @@ interface PendingRequest {
 }
 
 /**
+ * Tools ShipIt handles itself via its own interrupt/resume machinery, NOT the
+ * sensitive-action gate — `AskUserQuestion` (renders the question card) and
+ * `ExitPlanMode` (renders the PlanApproval card). They are allowlisted, but the
+ * Claude CLI still routes these "control"-class tools through
+ * `--permission-prompt-tool` (docs/193) before emitting their `tool_use`. If the
+ * broker surfaced an approve/deny card for them, the user would get a dead-end
+ * permission prompt instead of the real question/plan card (the orchestrator
+ * interrupts on the `tool_use` regardless of the prompt's outcome). So we
+ * auto-allow them here with no card — the CLI then emits the `tool_use` and the
+ * normal interrupt flow takes over. See agent-listeners.ts's interrupt handling.
+ */
+const HANDLED_INTERRUPT_TOOLS = new Set(["AskUserQuestion", "ExitPlanMode"]);
+
+/**
  * Best-effort resource path for a tool call. Covers the file-editing tools
  * whose sensitive-file gate is the whole point of SHI-112 (`file_path` for
  * Write/Edit, `notebook_path` for NotebookEdit) plus a generic `path`. Returns
@@ -93,6 +107,15 @@ export class PermissionBroker {
    * process actually goes away (`clearPending`).
    */
   request(input: PermissionRequestInput): Promise<PermissionDecision> {
+    // ShipIt-handled interrupt tools (AskUserQuestion / ExitPlanMode) are never
+    // a sensitive action — auto-allow with no card so the CLI proceeds to emit
+    // the tool_use and ShipIt's own interrupt/resume flow renders the right
+    // card. Without this, docs/193's permission-prompt-tool intercepts them and
+    // surfaces a dead-end approve/deny card (the original bug).
+    if (HANDLED_INTERRUPT_TOOLS.has(input.toolName)) {
+      return Promise.resolve({ behavior: "allow" });
+    }
+
     const path = input.path ?? extractPermissionPath(input.input);
 
     // Remembered → auto-allow, no card. (Path-less requests are never

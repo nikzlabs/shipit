@@ -58,6 +58,14 @@ Key properties:
 - **No prompt spam.** Claude's `--permission-prompt-tool` only fires for
   "ask"-tier calls; allowlisted working-dir edits still auto-approve. Codex only
   raises a request for genuinely escalated actions.
+- **ShipIt-handled interrupt tools are never gated.** `AskUserQuestion` and
+  `ExitPlanMode` are control-class tools ShipIt resolves via its own
+  interrupt/resume flow (question card / PlanApproval card), but the Claude CLI
+  still routes them through `--permission-prompt-tool`. The broker auto-allows
+  them (`HANDLED_INTERRUPT_TOOLS` in `permission-broker.ts`) with no card — the
+  CLI then emits the `tool_use` and the normal interrupt flow renders the right
+  card. Without this, a dead-end approve/deny card appeared in place of the
+  question/plan card.
 - **Remember** is a per-session, per-path allow-set in the broker: an approved
   "remember" auto-allows later requests for the same file with no card.
 - **No ShipIt-imposed deadline.** A permission decision is the user's, so the

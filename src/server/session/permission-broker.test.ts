@@ -113,4 +113,19 @@ describe("PermissionBroker", () => {
     const { broker } = makeBroker();
     expect(broker.resolve("perm_missing", { behavior: "allow" })).toBe(false);
   });
+
+  it("auto-allows ShipIt-handled interrupt tools without surfacing a card", async () => {
+    // AskUserQuestion / ExitPlanMode are handled by ShipIt's own interrupt flow
+    // (question card / PlanApproval card). The Claude CLI still routes them
+    // through --permission-prompt-tool (docs/193); the broker must auto-allow so
+    // a dead-end permission card never appears instead of the real card.
+    for (const toolName of ["AskUserQuestion", "ExitPlanMode"]) {
+      const { broker, events } = makeBroker();
+      const decision = await broker.request({ toolName, input: {} });
+      expect(decision).toEqual({ behavior: "allow" });
+      // No request/resolved events: nothing was surfaced or persisted.
+      expect(events).toHaveLength(0);
+      expect(broker.pendingCount).toBe(0);
+    }
+  });
 });
