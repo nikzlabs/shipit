@@ -159,9 +159,10 @@ the **primary** agent.
   the review in the same turn.
 - **Authorization, server-side:**
   1. Global setting `enableCrossAgentReview` is on.
-  2. `reviewerAgentId` is registered, authed
-     (`AgentRegistry.getAuthStatus(reviewerAgentId).authenticated`), and
-     **different from** `runner._agentId`.
+  2. `reviewerAgentId` is registered and authed
+     (`agentRegistry.get(reviewerAgentId)?.authConfigured === true`;
+     call `agentRegistry.refreshAuth(reviewerAgentId)` first to
+     re-probe), and **different from** `runner._agentId`.
   3. The caller is the primary, not a reviewer. Each CLI spawn gets its
      own bridge subprocess (the bridge is spawned by the CLI's MCP
      transport via stdio, see docs/125), and bridges POST to the worker
@@ -288,13 +289,28 @@ strengthened by the global gate:
   global setting is on AND the primary has chosen to call the tool.
   Pre-invocation, per-session credential isolation holds exactly as
   docs/138 specifies.
-- **Just-in-time, just-before-spawn.** `runCrossAgentReview` calls
-  `provisionReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)`
-  synchronously before `/review/start`. The function copies *only*
-  `AGENT_CREDENTIAL_PATHS[reviewerAgentId]` plus a refresh of the
-  token-sync files; it must never touch
+- **Just-in-time, just-before-spawn.** `runCrossAgentReview` resolves
+  the reviewer's provider-account route first —
+  `providerAccountManager.selectRouteForTurn(reviewerAgentId)`, exactly
+  as the primary turn path does (`session-agent-env.ts`) — then
+  provisions from *that account's* root, not the flat credentials root.
+  When the route is `{ kind: "account", id: accountId }` it copies from
+  `providerAccountCredentialRoot(credentialsRoot, reviewerAgentId, accountId)`
+  via `provisionProviderAccountCredentials(credentialsRoot, sessionId,
+  reviewerAgentId, accountId)`; only the legacy no-account fallback
+  copies from the flat `credentialsRoot`. This matters because
+  post-docs/150/153 the flat root holds legacy-alias symlinks into the
+  provider-account subtrees and is **not** the freshest source for a
+  multi-account user — provisioning from it would start the reviewer CLI
+  on stale credentials and 401. Whichever source is chosen, the copy
+  pulls *only* the reviewer's subtree (`AGENT_CREDENTIAL_PATHS[reviewerAgentId]`
+  plus a refresh of the token-sync files); it must never touch
   `AGENT_CREDENTIAL_PATHS[pinnedAgentId]` (would clobber the CLI's
-  in-place writes per docs/138 §"write-once").
+  in-place writes per docs/138 §"write-once"). Record the resolved
+  `accountId` for the wipe and token-sync-back steps below — they must
+  target the same account root. (`provisionReviewerCredentials` is the
+  thin wrapper that does this route-resolve-then-provision; its real
+  signature carries the resolved account, not just `reviewerAgentId`.)
 - **Wiped on review completion.** `removeReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)` runs in a `finally`
   after the review subprocess exits (success, failure, crash, or
   cancel). Deletes only the reviewer's subtree.
@@ -303,7 +319,10 @@ strengthened by the global gate:
   both have rotating refresh tokens), the new token lives in the
   per-session subtree. `runCrossAgentReview` runs
   `syncAgentTokenBack(reviewerAgentId)` to the orchestrator's
-  source-of-truth credentials **before** invoking the wipe — otherwise
+  source-of-truth credentials — the **same account root** resolved at
+  provision time (`providerAccountCredentialRoot(...)` for an account
+  route, the flat root only for the legacy fallback), not unconditionally
+  the flat root — **before** invoking the wipe — otherwise
   the next session that lazily provisions the reviewer starts from a
   stale refresh token and 401s. Mirrors docs/142's per-turn token-back
   sync for primary agents, just scoped to the review window.
