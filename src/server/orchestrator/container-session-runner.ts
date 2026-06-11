@@ -29,6 +29,7 @@ import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
+import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -183,6 +184,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
+  private _subAgentSpawnsThisTurn = 0;
   private _workerResourcesStarted = false;
 
   constructor(opts: {
@@ -279,6 +281,35 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
+  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
+  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
+
+  /**
+   * docs/144 — broker a one-shot SUB-AGENT spawn to the session worker's
+   * `/agent/spawn`, which runs a fresh adapter subprocess OUTSIDE the agent slot
+   * and returns the accumulated final text synchronously. No SSE involvement —
+   * the result flows back over this HTTP response, so the runner's `_agent`
+   * accumulators are untouched. The request is unbounded (`timeoutMs: 0`); the
+   * worker's own wall-clock cap bounds the run, and a primary-turn interrupt
+   * (which hits the worker's `/agent/interrupt`) cancels it.
+   */
+  async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
+    const result = await workerPost(
+      this.workerUrl,
+      "/agent/spawn",
+      {
+        agentId: req.agentId,
+        prompt: req.prompt,
+        spawnId: req.spawnId,
+        depth: req.depth,
+        ...(req.model !== undefined ? { model: req.model } : {}),
+        ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+        ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+      },
+      { timeoutMs: 0 },
+    );
+    return result as SubAgentRunResult;
+  }
 
   getAgent(): AgentProcess | null { return this._agent; }
 

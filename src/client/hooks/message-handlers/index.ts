@@ -63,6 +63,7 @@ import { handleSessionSpawnFailed } from "./session-spawn-failed.js";
 import { handleSessionSpawned } from "./session-spawned.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
+import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
 import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
 import { handleTemplateApplied } from "./template-applied.js";
@@ -163,6 +164,7 @@ export const messageHandlers: MessageHandlerMap = {
   session_spawned: handleSessionSpawned,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
+  sub_agent_spawn: handleSubAgentSpawn,
   system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,
   template_applied: handleTemplateApplied,

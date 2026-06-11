@@ -70,6 +70,7 @@ export async function getBootstrapData(deps: {
         liveSteering: true,
         autoResolveConflicts: false,
         autoFixCi: false,
+        enableSubAgents: false,
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],

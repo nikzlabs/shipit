@@ -46,6 +46,8 @@ export function resumeSessionInternal(sessionId: string) {
   // its spinner into the incoming one (it's never persisted, so history reload
   // won't bring it back).
   session.setCompacting(false);
+  // docs/144 — sub-agent spawn chips are transient + per-session; clear on switch.
+  useSessionStore.setState({ subAgentSpawns: {} });
   useUiStore.getState().setShowTemplates(false);
 
   // Reset session-specific UI state

@@ -100,6 +100,8 @@ interface SettingsState {
   autoResolveConflicts: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi: boolean;
+  /** docs/144 — global gate for sub-agent spawning. */
+  enableSubAgents: boolean;
   /** Active Codex device-auth flow state — `null` when no flow is running. */
   codexDeviceAuth: CodexDeviceAuth | null;
   /** Last device-auth failure message — `null` when no error. */
@@ -134,6 +136,7 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setEnableSubAgents: (enabled: boolean) => void;
   setCodexDeviceAuth: (state: CodexDeviceAuth | null) => void;
   setCodexDeviceAuthError: (message: string | null) => void;
   setProviderAccounts: (accounts: ProviderAccount[]) => void;
@@ -195,6 +198,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   liveSteering: true,
   autoResolveConflicts: false,
   autoFixCi: false,
+  enableSubAgents: false,
   codexDeviceAuth: null,
   codexDeviceAuthError: null,
   providerAccounts: [],
@@ -306,6 +310,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
 
   setCodexDeviceAuth: (state) => set({ codexDeviceAuth: state }),
 

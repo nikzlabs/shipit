@@ -296,6 +296,49 @@ function PrAutomationsSettings() {
 }
 
 /**
+ * docs/144 — global gate for sub-agent spawning. When on, a pinned session's
+ * agent can spawn another registered agent for a one-shot sub-task (e.g. a
+ * second-opinion review) via `shipit agent run`. Default off.
+ */
+function MultiAgentSettings() {
+  const enableSubAgents = useSettingsStore((s) => s.enableSubAgents);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setEnableSubAgents(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enableSubAgents: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setEnableSubAgents(!v);
+      useUiStore.getState().setToast({ message: "Failed to update multi-agent setting" });
+      console.error("[settings] toggle enableSubAgents failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Multi-agent sessions</h3>
+      <div className="flex items-center justify-between py-1 gap-4">
+        <div>
+          <span className="text-sm text-(--color-text-primary)">Allow spawning another agent for a sub-task</span>
+          <p className="text-xs text-(--color-text-tertiary)">
+            Lets the agent in a session spawn another agent for a one-shot sub-task (e.g. a
+            second-opinion review from a different model). The spawned agent runs with full tool
+            access and its work is committed under your session&rsquo;s agent. Enabling this means
+            a session container can briefly hold credentials for both agents.
+          </p>
+        </div>
+        <ToggleSwitch enabled={enableSubAgents} onToggle={(v) => void handleToggle(v)} testId="settings-enable-sub-agents" />
+      </div>
+    </div>
+  );
+}
+
+/**
  * docs/128 — gated "Ops / Host" section. The create button is the operator
  * gate's UI surface; the route enforces the same gate server-side (v1: host
  * operator == ShipIt user). Creating an ops session POSTs the ops template to
@@ -1869,6 +1912,10 @@ export function Settings({
               <div className="border-t border-(--color-border-secondary)" />
 
               <PrAutomationsSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <MultiAgentSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

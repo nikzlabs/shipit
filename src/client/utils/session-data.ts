@@ -74,6 +74,7 @@ interface BootstrapResponse {
     liveSteering?: boolean;
     autoResolveConflicts?: boolean;
     autoFixCi?: boolean;
+    enableSubAgents?: boolean;
     providerAccounts?: ProviderAccount[];
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
@@ -261,6 +262,7 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
   if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
   if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+  if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setBootstrapLoaded(true);
