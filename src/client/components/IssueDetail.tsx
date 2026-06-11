@@ -36,10 +36,12 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
-  statusDotStyle,
+  statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type {
@@ -110,11 +112,12 @@ function statusTextClass(type?: string): string {
 }
 
 function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> }) {
+  const surfaceLum = useSurfaceLuminance("--color-bg-primary");
   return (
     <span className="inline-flex items-center gap-1.5 h-[18px] text-[11px] font-medium leading-none">
       <span
         className="h-2 w-2 rounded-full"
-        style={statusDotStyle(status)}
+        style={{ backgroundColor: adaptColorForSurface(statusDotColor(status), surfaceLum) }}
         aria-hidden="true"
       />
       <span className={statusTextClass(status.type)}>{status.name}</span>

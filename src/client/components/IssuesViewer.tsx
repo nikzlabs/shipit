@@ -13,11 +13,13 @@ import {
   IssuePriorityEditor,
   IssueStatusEditor,
   PriorityTrigger,
-  statusDotStyle,
+  statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
 import { labelDotColor } from "./issue-label-color.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type {
   IssuePriorityLevel,
@@ -198,6 +200,7 @@ function IssueRow({
   canStart,
   availableStatuses,
   canEditPriority,
+  surfaceLum,
   onOpenIssue,
   onSetStatus,
   onSetPriority,
@@ -207,6 +210,8 @@ function IssueRow({
   canStart: boolean;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
+  /** Luminance of the row surface, for contrast-adapting the status dot. */
+  surfaceLum: number;
   onOpenIssue: (issue: TrackerIssue) => void;
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
@@ -278,7 +283,7 @@ function IssueRow({
               <span className="inline-flex items-center gap-1.5 min-w-0">
                 <span
                   className="size-2 shrink-0 rounded-full"
-                  style={statusDotStyle(issue.status)}
+                  style={{ backgroundColor: adaptColorForSurface(statusDotColor(issue.status), surfaceLum) }}
                   aria-hidden="true"
                 />
                 <span className="truncate">{issue.status.name}</span>
@@ -299,7 +304,7 @@ function IssueRow({
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <span
               className="size-1.5 shrink-0 rounded-full"
-              style={statusDotStyle(issue.status)}
+              style={{ backgroundColor: adaptColorForSurface(statusDotColor(issue.status), surfaceLum) }}
               aria-hidden="true"
             />
             <span className="truncate">{issue.status.name}</span>
@@ -379,6 +384,9 @@ export function IssuesViewer({
   const configured = activeInfo?.configured ?? false;
   const filterActive = anyFilterActive(filters);
   const showFilterBar = configured && issues.length > 0;
+  // Rows sit on the primary surface; adapt status-dot colors to its luminance
+  // so pale states stay legible on light themes (computed once for all rows).
+  const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
 
   return (
     <div className="flex flex-col h-full">
@@ -536,6 +544,7 @@ export function IssuesViewer({
                   canStart={canStart}
                   availableStatuses={availableStatuses}
                   canEditPriority={canEditPriority}
+                  surfaceLum={rowSurfaceLum}
                   onOpenIssue={onOpenIssue}
                   onSetStatus={onSetStatus}
                   onSetPriority={onSetPriority}

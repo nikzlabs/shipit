@@ -3,6 +3,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
 import { PRIORITY_DOT_COLOR, statusDotColor } from "./IssueFieldControls.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import {
   PRIORITY_OPTIONS,
@@ -204,6 +206,11 @@ export function IssuesFilterBar({
   onToggleStatus,
   onToggleAssignee,
 }: IssuesFilterBarProps) {
+  // The facet popovers sit on the elevated surface; adapt status colors to it so
+  // the colored checkboxes stay legible on light themes (priority colors are
+  // theme-tuned tokens and pass through unchanged).
+  const popoverSurfaceLum = useSurfaceLuminance("--color-bg-elevated");
+
   const priorityFacet = (variant: "button" | "chip") => (
     <Popover>
       <PopoverTrigger asChild>
@@ -244,7 +251,7 @@ export function IssuesFilterBar({
               checked={filters.statuses.has(opt.name)}
               onToggle={() => onToggleStatus(opt.name)}
               count={opt.count}
-              color={statusDotColor(opt)}
+              color={adaptColorForSurface(statusDotColor(opt), popoverSurfaceLum)}
             >
               <span className="truncate">{opt.name}</span>
             </OptionRow>

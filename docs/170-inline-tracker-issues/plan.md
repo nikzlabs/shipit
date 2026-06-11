@@ -257,10 +257,20 @@ rather than a flat text table:
   `statusDotClass` type→gray guess, under which the common Linear defaults
   (Backlog / Todo / Duplicate) all collapsed to one gray. Used everywhere a
   status dot renders (list row, mobile meta, detail pill, edit menu, filter).
-  Dots render via `statusDotStyle` / `priorityDotStyle`, which pair the color
-  with a subtle neutral outline ring (`DOT_RING`) so a pale fill — e.g. Linear's
-  near-white Todo/Backlog grays on a light theme — still has a visible edge
-  instead of vanishing into the surface (the same trick GitHub uses for swatches).
+- **Contrast-adaptive status color (`utils/status-color.ts`).** Linear's state
+  colors are tuned for Linear's own UI — its near-white Backlog/Todo grays, and a
+  light accent like yellow "In Progress", vanish on a light theme; a dark state
+  would vanish on a dark theme. `adaptColorForSurface(color, surfaceLum)` keeps
+  the hue + saturation and nudges the **lightness away from the surface** (darker
+  on a light surface, lighter on a dark one) by the minimum needed to clear a
+  target contrast ratio (`1.8`); colors that already read are returned untouched.
+  So the same status shows a darker shade on light and a brighter one on dark,
+  and the dot needs no outline ring. The surface luminance comes from
+  `useSurfaceLuminance(--color-bg-primary | --color-bg-elevated)`, which reads the
+  theme token and recomputes on theme switch (observes the `<html>` class), so it
+  works for every theme — not a light/dark flag. Only hex colors are adapted;
+  CSS-var tokens (priority colors, type fallbacks) pass through, already
+  theme-tuned. Verified live on warm-light vs dark.
 - **Priority colors are all distinct.** `PRIORITY_DOT_COLOR` (exported) gives Low
   its own color (green) so it no longer reads identically to No-priority (gray).
 - **Filter bar (docs/173) parity.** The search box and the Priority/Status/

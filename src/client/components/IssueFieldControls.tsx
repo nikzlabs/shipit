@@ -19,7 +19,7 @@
  * so opening the menu never also opens the row's detail view.
  */
 
-import { useState, type CSSProperties, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, CircleNotchIcon } from "@phosphor-icons/react";
 import { Badge } from "./ui/badge.js";
 import {
@@ -31,6 +31,8 @@ import {
 import { PRIORITY_OPTIONS } from "./issues-filter.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { cn } from "../utils/cn.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import type { IssuePriorityLevel, TrackerIssue } from "../../server/shared/types.js";
 
 /** A tracker status option ({@link TrackerIssue.status} / `availableStatuses`). */
@@ -88,25 +90,6 @@ function statusTypeColor(type?: string): string {
  */
 export function statusDotColor(status?: { type?: string; color?: string }): string {
   return status?.color ?? statusTypeColor(status?.type);
-}
-
-/**
- * A subtle neutral outline ring for a status/priority dot, so it stays visible
- * even when its fill is near the surface color — e.g. Linear's pale Backlog/Todo
- * grays on a light theme, where an un-ringed dot all but disappears. Mid-gray at
- * low alpha reads against both light and dark surfaces, so one value covers every
- * theme. (Same trick GitHub uses for its label swatches.)
- */
-const DOT_RING = "0 0 0 1px rgb(113 113 122 / 0.45)";
-
-/** Inline style for a status dot: the tracker's color + the visibility ring. */
-export function statusDotStyle(status?: { type?: string; color?: string }): CSSProperties {
-  return { backgroundColor: statusDotColor(status), boxShadow: DOT_RING };
-}
-
-/** Inline style for a priority dot: the level's color + the visibility ring. */
-export function priorityDotStyle(level: IssuePriorityLevel): CSSProperties {
-  return { backgroundColor: PRIORITY_DOT_COLOR[level], boxShadow: DOT_RING };
 }
 
 /**
@@ -257,6 +240,9 @@ export function IssueStatusEditor({
   align?: "start" | "end";
 }) {
   const { saving, error, run } = useFieldWrite();
+  // The menu pops in a dropdown (elevated surface), so adapt the option dots to
+  // that surface's luminance — not wherever the trigger row happens to sit.
+  const menuSurface = useSurfaceLuminance("--color-bg-elevated");
 
   if (options.length === 0) return <>{trigger}</>;
 
@@ -273,7 +259,7 @@ export function IssueStatusEditor({
           >
             <span
               className="size-2 shrink-0 rounded-full"
-              style={statusDotStyle(opt)}
+              style={{ backgroundColor: adaptColorForSurface(statusDotColor(opt), menuSurface) }}
               aria-hidden="true"
             />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.name}</span>
@@ -314,7 +300,7 @@ export function IssuePriorityEditor({
           >
             <span
               className="size-2 shrink-0 rounded-full"
-              style={priorityDotStyle(opt.level)}
+              style={{ backgroundColor: PRIORITY_DOT_COLOR[opt.level] }}
               aria-hidden="true"
             />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.label}</span>
