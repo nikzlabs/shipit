@@ -264,8 +264,11 @@ function parseWindow(obj: Record<string, unknown>): SubscriptionLimitsWindow | n
     pickIso(obj, "resets_at") ?? pickIso(obj, "reset_at") ?? pickIso(obj, "resetAt");
   if (!resetAt) return null;
   if (usedRaw === null) return { usedPct: null, resetAt };
-  // Tolerate fraction (0–1) or percent (0–100).
-  const usedPct = clampPct(usedRaw <= 1 ? usedRaw * 100 : usedRaw);
+  // `/api/oauth/usage` reports percent on a 0–100 scale (e.g. a weekly value of
+  // 46 means 46%). Do NOT treat small values as 0–1 fractions: a real low
+  // session reading of `1` means 1%, and a fraction heuristic would inflate it
+  // to 100% (the bug behind the badge showing "5h 100%" at 1% actual usage).
+  const usedPct = clampPct(usedRaw);
   return { usedPct, resetAt };
 }
 

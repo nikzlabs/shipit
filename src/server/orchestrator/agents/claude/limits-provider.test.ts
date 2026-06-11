@@ -97,6 +97,26 @@ describe("ClaudeLimitsProvider", () => {
     expect(snap?.weekly?.usedPct).toBe(4);
   });
 
+  it("reads a low session percentage as percent, not a 0–1 fraction", async () => {
+    // Regression: /api/oauth/usage reports percent on a 0–100 scale. A session
+    // reading of 1 means 1%, but a fraction heuristic (`<= 1 ? *100`) inflated
+    // it to 100% — the badge showed "5h 100%" while native /usage showed 1%.
+    const fetchImpl = vi.fn().mockResolvedValue(
+      jsonResponse({
+        five_hour: { utilization: 1, resets_at: "2026-06-01T00:00:00Z" },
+        seven_day: { utilization: 0.4, resets_at: "2026-06-07T00:00:00Z" },
+      }),
+    );
+    const provider = new ClaudeLimitsProvider({
+      authManager: makeAuthStub({ token: "tok", source: "file", expiresAt: null, plan: "Pro" }),
+      fetchImpl,
+    });
+    await provider.refreshNow("manual");
+    const snap = await provider.fetch();
+    expect(snap?.session?.usedPct).toBe(1);
+    expect(snap?.weekly?.usedPct).toBe(0.4);
+  });
+
   it("a live event number wins over the API number", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(
       jsonResponse({ five_hour: { utilization: 12, resets_at: "2026-06-01T00:00:00Z" } }),
