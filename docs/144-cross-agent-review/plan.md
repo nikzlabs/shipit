@@ -1,82 +1,112 @@
 ---
-description: Globally-gated MCP tool that lets the primary agent ask the other agent for a one-shot, read-only review of the current branch diff — surfaced inline through the same chat history.
+description: Globally-gated `shipit agent` CLI primitive that lets the primary agent spawn any other registered agent with any prompt and get its output back as text — synchronously, inline in the same turn. Review is the first consumer.
 issue: https://linear.app/shipit-ai/issue/SHI-37
 ---
 
-# 144 — Cross-agent review
+# 144 — Sub-agent spawning (cross-agent delegation)
 
 ## Summary
 
 Today a session is locked to a single agent for life (docs/138). That gives
 us clean credential isolation, predictable commit attribution, and a
 coherent post-turn flow — but it also means a user who codes with Claude
-cannot get a second opinion from Codex (or vice versa) without spinning up
-a separate session, re-cloning, re-explaining context, and round-tripping
-the result themselves.
+cannot get a second opinion from Codex (or hand a self-contained sub-task to
+a different model) without spinning up a separate session, re-cloning,
+re-explaining context, and round-tripping the result themselves.
 
-This doc proposes keeping the primary-agent pin exactly as it is, and
-adding a **chat-driven, one-shot, read-only review** primitive that
-invokes the *other* agent against the current branch diff. The reviewing
-agent never becomes the session's agent. It can't edit files, can't
-commit, can't take over the runner, and its credentials are wiped from the
-container the moment the review finishes.
+This doc proposes keeping the primary-agent pin exactly as it is, and adding
+a **generic, one-shot sub-agent primitive**: the primary agent can spawn
+*any* registered agent with *any* prompt and get that agent's final output
+back **as text**, synchronously, within the same turn. The spawned agent
+never becomes the session's agent — it runs as a parallel subprocess,
+returns its text, and goes away.
 
-Mechanism: a new MCP tool `request_cross_agent_review`, exposed to the
-**primary** agent. The primary calls it the same way it calls `Read` or
-`Bash`; the worker spawns the reviewer CLI as a subprocess outside its
-agent slot; the reviewer runs to completion and returns its comments
-synchronously as the tool result; the primary continues its turn with the
-review in hand. The user invokes the feature by saying it ("review with
-Codex", "get a second opinion on this from Claude") — chat is the input
-surface (CLAUDE.md §5), the primary is the actor.
+The primary invokes it through a **`shipit agent` CLI command**, the same
+brokered-shim surface as `shipit issue` and `shipit session create`. The
+primary does not need to know how to drive `claude` vs `codex`, which flags
+each takes, or how to parse their output — it runs one command and reads
+text from stdout. The CLI brokers to the orchestrator, which spawns the
+sub-agent subprocess in the session worker and streams the result back.
 
-The whole feature is gated behind a single global setting
-(`enableCrossAgentReview`, default off). Sessions belonging to users who
-haven't enabled it behave exactly like docs/138 today — no tool exposed,
-no credentials provisioned, no behavior change.
+**Review is the first consumer of this primitive, not the primitive
+itself.** "Get a second opinion from Codex on this diff" is just *spawn the
+codex agent with a review-shaped prompt that includes the diff, and read
+its text back.* Nothing about the core primitive is review-specific. Other
+consumers (delegate a self-contained refactor, ask a different model to
+explain a subsystem, generate test fixtures) compose the same way.
 
-The primitive composes with docs/125 (chat-native AI review) — same
-review surface for comments — but uses a **separate** MCP tool
-(`submit_diff_review`) because docs/125's `submit_review_comments` is
-allow-listed per single open file, and cross-agent review writes against
-a *set* of files.
+The whole feature is gated behind a single global setting (`enableSubAgents`,
+default off). Sessions belonging to users who haven't enabled it behave
+exactly like docs/138 today — no CLI subcommand wired, no credentials
+provisioned, no behavior change.
+
+### v0 scope and the read-only decision
+
+**v0 deliberately ships without a hard read-only sandbox.** The spawned
+agent runs **full-capability** — it can read, write, and run shell, exactly
+like a normal agent in its container. When the caller wants the sub-agent to
+*only* review (or otherwise not mutate the tree), that intent is expressed
+**in the prompt**, not enforced by a tool allowlist or filesystem sandbox.
+
+This is a conscious tradeoff: **utility first.** A hard read-only gate
+(per-spawn tool allowlist, read-only FS mount, or throwaway-worktree
+isolation) is real plumbing, is impossible to enforce uniformly today
+(Codex's CLI has no per-spawn tool-restriction flag — see "Future work"),
+and would block the feature's broader purpose, which is that a sub-agent may
+legitimately do more than review. The accepted consequence: a sub-agent's
+writes land in the **shared session workspace** and are committed under the
+**primary's** turn (post-turn flow attributes them to the pinned agent, per
+docs/138). For v0 that is fine — file writes stay attributed to the pinned
+agent either way, and the user opted into the feature.
+
+Hard isolation (so a "read-only" spawn genuinely cannot write, and a
+write-capable spawn lands in an isolated worktree whose diff the primary
+chooses to apply) is documented as **future work**, not built in v0.
 
 ## Motivation
 
-Different model families have different strengths on different code.
-Users already do this manually — they paste a diff into a second tool and
-ask "what did I miss?" — and the principle (§1, §2) is that the workflow
-should happen inside ShipIt instead of routing them out.
+Different model families have different strengths on different code. Users
+already consult a second model manually — they paste a diff into another
+tool and ask "what did I miss?" — and the principle (§1, §2 of CLAUDE.md) is
+that the workflow should happen inside ShipIt instead of routing them out.
+
+But review is only the most obvious case. The deeper point: a session is
+pinned to one agent for good reasons, yet a pinned session should still be
+able to *consult* or *delegate to* another agent for a bounded, one-shot
+sub-task without surrendering the pin. Designing the primitive narrowly
+around review would bake in a rigid system that we'd have to re-open the
+moment the first non-review use case shows up. So the primitive is generic;
+review is layered on top as a prompt + (optional) output renderer.
 
 The current pin (docs/138) is the right default: it makes the session
-legible. But it shouldn't preclude a structured "ask the other one"
-affordance, which is what good engineering teams do informally every day.
+legible. This primitive doesn't change the pin — it adds a "spawn a helper"
+affordance the pinned agent drives.
 
 ## Non-goals
 
 - **Per-turn agent switching.** Alternating agents turn-by-turn breaks
-  commit attribution, post-turn auto-push, the chat history's mental
-  model, and the guarantees docs/138 was built to provide. Pin one. The
-  other is a tool, not a co-driver.
-- **Cross-agent editing.** The reviewing agent is read-only. If the user
-  wants the review's suggestions applied, the *primary* agent applies
-  them in a follow-up turn. This keeps every file write attributed to the
-  pinned agent.
-- **Multi-agent orchestration / "agent A then agent B then agent A".**
-  Out of scope. The primitive is a single review pass, model-invocable,
-  single result.
-- **A second agent slot on the worker.** The existing `/agent/start` slot
-  stays single-occupant. The reviewer runs through a *different* worker
-  endpoint (`/review/start`) that spawns a plain subprocess, outside the
-  slot machinery.
-- **A slash command for review.** The primary agent recognizes the user
-  saying "review with codex" and calls the MCP tool itself. Adding a
-  `/review-with` command would duplicate the natural-language path with
-  a parallel command surface, contrary to §5.
-- **Replacing the existing intra-agent review (docs/125).** That stays.
-  When the user wants the *primary* to review (cheaper, same context),
-  they still get it. Cross-agent is opt-in for when they want a
-  different model's eyes.
+  commit attribution, post-turn auto-push, the chat history's mental model,
+  and the guarantees docs/138 was built to provide. Pin one. The other is a
+  spawned helper, not a co-driver.
+- **A hard read-only sandbox in v0.** See "v0 scope" above and "Future
+  work" below. v0 shapes sub-agent behavior by prompt, not by enforcement.
+- **A second persistent agent slot on the worker.** The existing
+  `/agent/start` slot stays single-occupant. The sub-agent runs through a
+  *different* worker endpoint (`/agent/spawn`) that spawns a plain
+  subprocess, outside the slot machinery, and exits when done.
+- **Multi-level recursion.** A spawned sub-agent is not meant to spawn
+  another sub-agent; depth is capped at 1 by a best-effort guard (§3), with
+  the per-turn cap as the forgery-resistant backstop. Deep agent trees /
+  orchestration graphs are out of scope.
+- **A slash command.** The primary agent recognizes the user saying "review
+  with codex" / "ask claude to draft the migration" and runs the `shipit
+  agent` command itself. A `/spawn` command would duplicate the
+  natural-language path with a parallel command surface, contrary to
+  CLAUDE.md §5.
+- **Replacing the existing intra-agent review (docs/125).** That stays. When
+  the user wants the *primary* to review (cheaper, same context), they still
+  get it. Spawning a different agent is opt-in for when they want another
+  model's eyes or hands.
 
 ## Current architectural constraints
 
@@ -85,577 +115,499 @@ Confirmed by reading the code, not extrapolated:
 - **Per-session credential isolation (docs/138).** A Claude session's
   container never has `.codex` on disk, and a Codex session never has
   `.claude`. `provisionAgentCredentials()` (`session-credentials.ts`) is
-  *write-once* on first turn, copying only the pinned agent's subtree.
-- **One agent process per worker slot.** `session-worker.ts` returns 409
-  on a second `/agent/start` while `this.agent` is non-null. The
-  reviewer therefore cannot share the slot — it spawns as a parallel
-  subprocess through a new endpoint that doesn't touch `this.agent`.
+  *write-once* on first turn, copying only the pinned agent's subtree. A
+  cross-provider spawn is the only thing that puts the other agent's creds
+  on disk, and only transiently (§4).
+- **Provider-account routing (docs/150/153).** Credentials are no longer a
+  single flat root per agent. `providerAccountManager.selectRouteForTurn(agentId)`
+  resolves the active account; `provisionProviderAccountCredentials(credentialsRoot,
+  sessionId, agentId, accountId)` copies from
+  `providerAccountCredentialRoot(...)`. The flat root holds legacy-alias
+  symlinks and is **not** the freshest source for a multi-account user. The
+  sub-agent's creds must be provisioned from its *resolved account root*, not
+  the flat root (§4).
+- **One agent process per worker slot.** `session-worker.ts` returns 409 on
+  a second `/agent/start` while `this.agent` is non-null. The sub-agent
+  therefore cannot share the slot — it spawns as a parallel subprocess
+  through a new endpoint that doesn't touch `this.agent`.
 - **One agent slot per runner, SSE has no agent identifier.**
   `ContainerSessionRunner` has a single `_agent: ProxyAgentProcess | null`
   and the SSE event handler routes everything onto that field. Critical
-  consequence for this design: the reviewer must NOT emit events into
-  that SSE stream, or it will corrupt the primary's accumulators. The
-  worker subprocess approach (§3) sidesteps this entirely by returning
-  the reviewer's output synchronously over HTTP, not over SSE.
-- **`set_agent` is locked after pinning.** `index.ts` rejects a switch to
-  a different agent once `agentPinned` is set. This stays.
-- **First-turn agent resolution.** The agent is chosen from
-  `ctx.activeAgentId()` and `runner._agentId` + `agentPinned` are set
-  then; subsequent turns always use the pinned agent.
+  consequence: the sub-agent must NOT emit events into that SSE stream, or it
+  will corrupt the primary's accumulators. The subprocess approach (§3)
+  sidesteps this by returning the sub-agent's output synchronously over HTTP,
+  not over SSE.
+- **`set_agent` is locked after pinning.** `index.ts` rejects a switch to a
+  different agent once `agentPinned` is set. This stays — spawning a
+  sub-agent does not change the pin.
+- **`shipit` is a brokered shim, not the raw CLI.** Existing subcommands
+  (`shipit issue`, `shipit session create`) run inside the container and POST
+  to the **session worker** on localhost (`http://127.0.0.1:9100/agent-ops/*`);
+  the shim itself carries **no** session id. The worker's `/agent-ops/*`
+  broker (`agent-ops-routes.ts` → `orchestrator-client.ts`) injects the
+  **trusted `SESSION_ID`** env — set on the container by
+  `container-lifecycle.ts:buildEnv`, and the env name is `SESSION_ID`, not
+  `SHIPIT_SESSION_ID` — and relays to the orchestrator's session-scoped
+  routes. That worker broker is the security chokepoint: it is what prevents
+  the agent from naming a *different* session. `shipit agent` is a new
+  subcommand on that same surface — which is why it needs no MCP bridge and
+  no per-call nonce: the worker broker is already an authenticated,
+  session-scoped channel.
 
 ## Design
 
-Seven pieces. The first two are the new architectural ideas; the rest is
-how each load-bearing concern (credentials, write-back, allowlist, cost,
-scope, mode handling) settles under that architecture.
+Eight pieces. The first two are the new surface (CLI command + orchestrator
+brokering); the rest is how each load-bearing concern (credentials, output,
+caps, recursion, attribution, mode) settles under it.
 
-### 1. Global setting: `enableCrossAgentReview`
+### 1. Global setting: `enableSubAgents`
 
 A single user-level setting in the existing settings store, default
-**false**. Surfaced in the settings panel under a heading like
-"Multi-agent sessions" with copy explaining: *"Allow the primary agent in
-a session to consult the other agent for a one-shot, read-only review.
-Enabling this means a session container can briefly hold credentials for
-both agents during a review."*
+**false**. Surfaced in the settings panel under a heading like "Multi-agent
+sessions" with copy explaining: *"Allow the agent in a session to spawn
+another agent for a one-shot sub-task (e.g. a second-opinion review). The
+spawned agent runs with full tool access and its work is committed under
+your session's agent. Enabling this means a session container can briefly
+hold credentials for both agents."*
 
 When the setting is **off** (default):
 
-- The `request_cross_agent_review` MCP tool is **not registered** on the
-  bridge for any session. The primary cannot call it because it doesn't
-  exist.
-- `provisionReviewerCredentials` is never invoked. The per-session
-  credentials dir holds only the pinned agent's subtree, exactly as
-  docs/138 specifies.
+- The `shipit agent` subcommand returns an error: *"Sub-agents are disabled.
+  Enable them in Settings → Multi-agent sessions."* — so a primary that
+  tries it gets a clear, actionable tool result rather than a silent failure.
+- No credentials beyond the pinned agent's subtree are ever provisioned.
 - No behavior change vs today for the user.
 
 When the setting is **on**:
 
-- The MCP tool is registered. The primary can call it (subject to the
-  authorization rules in §2).
-- Credential provisioning fires lazily on the first invocation (§4).
+- `shipit agent run` works, subject to the authorization checks in §3.
+- Credential provisioning fires lazily on the first cross-provider spawn (§4).
 
-The setting is checked at tool-registration time (per session, when the
-bridge is set up) AND on every tool invocation. The invocation check is
-the load-bearing one: MCP tool lists are fetched once per CLI process
-boot, so toggling the setting off mid-session does NOT retroactively
-hide the tool from a streaming primary CLI that already booted. The
-registration check is best-effort for fresh sessions; the invocation
-check is what makes mid-session toggle-off safe. Off mid-session = tool
-calls return an error result to the primary: *"Cross-agent review is
-disabled for this user."*
+The setting is checked at the orchestrator on **every** `shipit agent`
+invocation (not cached at session boot), so toggling it off mid-session
+takes effect on the next spawn attempt.
 
-### 2. The `request_cross_agent_review` MCP tool
+### 2. The `shipit agent` CLI command
 
-A new tool registered on the existing `mcp-review-bridge.ts`, exposed to
-the **primary** agent.
+The primary's entire interface to the primitive. It abstracts away which
+underlying CLI runs and how it's invoked.
 
-- **Tool name:** `request_cross_agent_review`.
-- **Input:** `{ reviewerAgentId: AgentId, scope?: "branch" | "uncommitted", focus?: string }`. `focus` is a free-text hint the primary
-  can pass to direct the reviewer's attention (e.g. "focus on
-  concurrency safety in the new queue code").
-- **Output (tool result):** `{ status: "completed", reviewerAgentId, comments: [...], summary: string }` on success, or
-  `{ status: "error", message }` on failure. The primary CLI's inference
-  loop resumes with this as the tool result, so the primary can act on
-  the review in the same turn.
-- **Authorization, server-side:**
-  1. Global setting `enableCrossAgentReview` is on.
-  2. `reviewerAgentId` is registered, authed
-     (`AgentRegistry.getAuthStatus(reviewerAgentId).authenticated`), and
-     **different from** `runner._agentId`.
-  3. The caller is the primary, not a reviewer. Each CLI spawn gets its
-     own bridge subprocess (the bridge is spawned by the CLI's MCP
-     transport via stdio, see docs/125), and bridges POST to the worker
-     with no shared state. To disambiguate primary vs reviewer at the
-     worker, the orchestrator passes a per-spawn `REVIEW_ID` nonce as
-     an env var to the reviewer's bridge subprocess; the bridge
-     forwards it as an HTTP header on every tool POST. A header-less
-     POST is the primary; a `REVIEW_ID`-tagged POST is a reviewer.
-     `request_cross_agent_review` therefore rejects any call carrying a
-     `REVIEW_ID` header — primaries don't have one (see §3).
-  4. Per-turn cap (§7) not yet exceeded.
-  5. The session is pinned (`agent_pinned === true`). Pre-pin sessions
-     have no primary identity, no diff worth reviewing.
-- **Side effects:** synchronously dispatches to the orchestrator's
-  `runCrossAgentReview`, which runs the reviewer subprocess (§3), waits
-  for it, and returns the result. The primary CLI is paused on this tool
-  call for the duration — typical 30-120s for a branch-diff review.
+```
+shipit agent run --agent <agentId> --prompt-file -
+```
 
-The user-facing invocation is natural language: the user says "review
-this with Codex" and the primary picks it up. No slash command, no UI
-button.
+- **`--agent <agentId>`** — the agent to spawn (`claude`, `codex`, …). May
+  be the *same* provider as the primary (a fresh-context helper) or a
+  *different* one (cross-agent). Same-provider spawns need no extra
+  credentials; cross-provider spawns trigger §4.
+- **`--prompt-file -`** — the prompt is read from **stdin** (heredoc style,
+  consistent with `shipit issue comment --body-file -`). The caller puts
+  *all* context it wants the sub-agent to have into this prompt: the task,
+  any diff (`git diff`), file references, focus hints. There is no separate
+  `scope`/`diff` parameter — the prompt is the single context channel, which
+  is what makes the primitive generic rather than review-shaped.
+- **Output:** the sub-agent's **final assistant message**, written to
+  **stdout** as plain text. Exit code `0` on success; non-zero with a
+  message on stderr for errors (disabled, unknown agent, cap exceeded,
+  crash, timeout, cancel).
+- **Blocking:** the command blocks until the sub-agent exits — typically
+  30–120s for a review-sized task. The primary's CLI sees it as a
+  long-running shell command (it already tolerates long `Bash` calls), so no
+  MCP-tool-timeout concern applies the way it would for an MCP tool. The
+  primary continues its turn with the text in hand.
 
-### 3. Worker subprocess execution model
+The user-facing invocation stays natural language: "review this with Codex",
+"ask Claude to draft the migration script". The primary recognizes the
+intent, assembles the prompt, runs `shipit agent run`, and acts on the text.
+No slash command, no UI button (CLAUDE.md §5).
 
-The reviewer cannot use `/agent/start` (single-slot 409). Instead the
-worker exposes a parallel endpoint:
+`shipit agent` is **agent-facing platform behavior**, so when this ships it
+needs a doc in `src/server/shipit-docs/` (e.g. `agent.md`) describing the
+command, baked into the worker image at `/shipit-docs/`. (Not added now —
+shipit-docs describe *shipped* behavior.)
 
-- **`POST /review/start`** on the session worker. Body: `{ reviewerAgentId, allowedTools, prompt, reviewId }`. Returns
-  synchronously when the subprocess exits: `{ status, comments, summary, durationMs, costUsd, truncated }`.
-- The handler **reuses the existing per-agent adapter**
-  (`ClaudeAdapter` / `CodexAdapter`) — it must, because Codex's
-  `app-server` requires JSON-RPC handshake and event parsing that lives
-  in the adapter. The `/agent/start` slot machinery
-  (`wireAgentEvents()`, SSE broadcast) is the entanglement we avoid;
-  the adapter itself is the reusable primitive. New code: the handler
-  instantiates a fresh adapter, wires its events into a **local result
-  accumulator** instead of the broadcast SSE, runs the adapter to
-  completion, returns the accumulated comments + summary. The slot
-  (`this.agent`) is untouched. This is a meaningful new code path, not
-  a drop-in reuse — naming it honestly so the implementer scopes
-  correctly.
-- **Per-review identity (`REVIEW_ID`).** The orchestrator generates a
-  fresh UUID for each `runCrossAgentReview` call and passes it to the
-  worker as `reviewId`. The worker passes it as an env var
-  (`SHIPIT_REVIEW_ID=<uuid>`) to the reviewer CLI subprocess, which
-  inherits it to its MCP bridge subprocess. The bridge forwards it as
-  an HTTP header (`X-Shipit-Review-Id`) on every tool POST it sends to
-  the worker. The worker routes incoming `submit_diff_review` POSTs to
-  the per-review buffer keyed on `REVIEW_ID`. **This is how multi-
-  session safety works**: two sessions running reviews simultaneously
-  have distinct UUIDs and distinct buffers.
-- **Primary/reviewer disambiguation.** Primary CLI invocations
-  (`/agent/start`) inherit no `SHIPIT_REVIEW_ID`. The bridge forwards
-  no header. The worker treats header-less POSTs as primary; tagged
-  POSTs as reviewer. Used by §2's authorization predicate and §6's
-  `submit_diff_review` guard.
-- **Registry-membership check.** The worker maintains a set of
-  `REVIEW_ID`s currently in flight (added when `/review/start` opens a
-  per-review buffer, removed when the subprocess exits). Inbound POSTs
-  carrying `X-Shipit-Review-Id` are accepted only when the value is in
-  that set. Without this check, a misbehaving primary with `Bash`
-  access could `curl -H "X-Shipit-Review-Id: <guess>"` against the
-  worker and impersonate a reviewer. The registry lookup is the same
-  one used to demux POSTs into per-`REVIEW_ID` buffers, so the check
-  is free.
-- **Output capture.** Reviewer's structured comments arrive via
-  `submit_diff_review` MCP calls during subprocess lifetime,
-  accumulated by `REVIEW_ID`. The reviewer's free-text final assistant
-  message is captured from the adapter's event stream as the `summary`
-  field.
-- **Concurrency.** Two CLI processes alive concurrently in the worker
-  during the review window: the primary (paused on the tool result)
-  and the reviewer (active). Peak memory cost ≈ +500MB-1GB RSS for
-  typical Claude/Codex runs. **Container sizing must be confirmed
-  against this floor before shipping** — see Touchpoints. If current
-  per-session limits don't accommodate it, raise them or document the
-  requirement.
-- **Primary-side blocking duration.** Reviews typically take 30-120s.
-  This is well outside the latency profile of `Read`/`Bash`. MCP SDKs
-  in some versions impose ~60s default tool-call timeouts; **the
-  worker image's pinned CLI versions must be verified to tolerate a
-  ~5min ceiling** (matches the wall-clock cost cap in §7) and the
-  ceiling adjusted if the SDK won't budge. Document the actual ceiling
-  in user-facing copy on the global setting.
-- **User-visible progress during the wait.** The primary CLI shows
-  "thinking…" while paused on the tool call; ShipIt's chat UI doesn't
-  receive intermediate reviewer output (the reviewer's `submit_diff_review`
-  posts go to the per-review buffer, not into chat). To avoid 2 minutes
-  of silence, the orchestrator emits a single small status chip into
-  the chat when `/review/start` is dispatched: *"Asking Codex to
-  review… (typically 30-120s)"*. The chip is replaced by the result
-  chip (§7) when the tool returns. Status only, not a control surface
-  — consistent with §5.
-- **No SSE involvement.** The reviewer's output flows through the
-  synchronous HTTP response, not the SSE channel that feeds the
-  runner's `_agent`. Therefore: no `_agent` swap, no drain, no
-  `activeInvocation` flag, no `reviewer: ReviewerSession` field on the
-  runner, no reviewer queue. The whole machinery from earlier drafts
-  dissolves under synchronous-tool semantics.
-- **Crash handling.** Subprocess exits non-zero → `/review/start`
-  returns `{ status: "error", message }`. Orchestrator returns the
-  same shape as the tool result; the primary sees the error and can
-  react. Credentials wipe fires in `finally` regardless.
-- **Cancel handling.** If the user cancels the primary's turn while
-  the reviewer subprocess is running, the orchestrator forwards
-  `/review/cancel` (with `reviewId`) to the worker, which SIGTERMs
-  the subprocess. The reviewer exit triggers the wipe; the primary's
-  tool call returns `{ status: "error", message: "cancelled" }`.
-  Cancellation is symmetric: cancelling the primary cancels the
-  reviewer that's running on its behalf. **Tool-call timeout edge
-  case:** if the primary CLI's MCP SDK times out its own tool call
-  before `/review/start` returns, the orchestrator MUST still SIGTERM
-  the subprocess and wipe creds. The orchestrator tracks the in-flight
-  review independent of the tool RPC; the RPC timing out is just one
-  of the termination signals it watches for.
+### 3. Worker broker + subprocess execution model
 
-### 4. Lazy, scoped, post-review-wiped cross-agent credentials
+`shipit agent` brokers through the **session worker** like every other
+`shipit` subcommand; the worker injects the trusted `SESSION_ID` and relays
+to the orchestrator, which owns the lifecycle and the guards. No MCP bridge,
+no per-call nonce — the worker broker is already the authenticated,
+session-scoped channel the old `REVIEW_ID` mechanism was reconstructing.
 
-Carries over from earlier drafts of this doc unchanged in essentials,
-strengthened by the global gate:
+Flow:
+
+1. **Shim → worker broker.** The shim POSTs `{ agentId, prompt, depth }` to
+   the worker on localhost (`POST http://127.0.0.1:9100/agent-ops/agent/spawn`).
+   The shim carries **no** session id — it reads its own inherited
+   `SHIPIT_AGENT_DEPTH` env (absent ⇒ `0`, i.e. a primary) and forwards it as
+   `depth`; that is the **only** way the recursion guard downstream can see
+   the caller's depth, since the orchestrator runs in a different process and
+   never sees the calling subprocess's env.
+2. **Worker broker → orchestrator.** `agent-ops-routes.ts` injects the
+   trusted `SESSION_ID` (the agent cannot name a different session) and
+   relays to the orchestrator's session-scoped route
+   (`POST /api/sessions/:id/agent/spawn`), forwarding `agentId`, `prompt`,
+   and `depth`.
+3. **Orchestrator authorization** (`services/sub-agent.ts`):
+   - `enableSubAgents` is on (§1).
+   - `agentId` is registered and authed
+     (`agentRegistry.get(agentId)?.authConfigured === true`; call
+     `agentRegistry.refreshAuth(agentId)` first to re-probe).
+   - The session is pinned (`agent_pinned === true`) — a pre-pin session has
+     no primary identity.
+   - **Recursion depth (best-effort).** The forwarded `depth` is `0`. A
+     non-zero `depth` means the caller is itself a spawned sub-agent and the
+     call is rejected (*"Sub-agents cannot spawn further sub-agents."*). This
+     is the generic replacement for the old "reviewers can't review" rule and
+     stops a *well-behaved* sub-agent from recursing. It is **not** a
+     forgery-resistant boundary: `depth` rides in the request body, and a v0
+     full-capability sub-agent with shell access can override its inherited
+     `SHIPIT_AGENT_DEPTH` (e.g. `SHIPIT_AGENT_DEPTH=0 shipit agent run …`) or
+     POST the localhost worker directly with `{"depth":0}`. The worker can't
+     close this in v0 — it's a single long-lived process, so it has no trusted
+     view of an arbitrary calling subprocess's env (unlike `SESSION_ID`, which
+     it injects). The actual forgery-resistant bound on total fan-out is the
+     **per-turn cap (§5)**, which the next check enforces: it lives on the
+     runner keyed by the worker-injected `SESSION_ID`, so *every* spawn in the
+     session's turn — including any a sub-agent forges its way into —
+     decrements the same budget. Worktree isolation (Future work) is what
+     would let a later version make depth itself enforceable.
+   - Per-turn cap (§5) not yet exceeded.
+4. **Credential provisioning (§4)** runs synchronously for a cross-provider
+   spawn, before the subprocess starts.
+5. **Orchestrator → worker spawn.** `POST /agent/spawn` on the session
+   worker. Body: `{ agentId, prompt, spawnId }`. The handler **reuses the
+   existing per-agent adapter** (`ClaudeAdapter` / `CodexAdapter`) — it must,
+   because Codex's `app-server` requires JSON-RPC handshake and event parsing
+   that lives in the adapter. It instantiates a **fresh** adapter, **stamps
+   `SHIPIT_AGENT_DEPTH = <caller depth> + 1` on the subprocess env** (so the
+   sub-agent's own `shipit agent` calls forward a non-zero depth and are
+   rejected at step 3), wires the adapter's events into a **local result
+   accumulator** instead of the broadcast SSE, runs to completion, and
+   returns the accumulated final text synchronously. The slot (`this.agent`)
+   is untouched. **This is a meaningful new code path, not a drop-in reuse**
+   — naming it honestly so the implementer scopes correctly. (`spawnId` is an
+   orchestrator-internal handle for tracking and cancellation, not an
+   authorization token.)
+6. **Worker → orchestrator → worker broker → shim stdout.** The text flows
+   back up the synchronous chain and out the CLI's stdout.
+
+- **No SSE involvement.** The sub-agent's output flows through the
+  synchronous HTTP response, not the SSE channel that feeds the runner's
+  `_agent`. Therefore: no `_agent` swap, no drain, no `activeInvocation`
+  flag, no sub-agent field on the runner, no queue.
+- **Concurrency.** Two CLI processes alive concurrently during the spawn
+  window: the primary (blocked on the `shipit agent` shell call) and the
+  sub-agent (active). Peak memory cost ≈ +500MB–1GB RSS for typical
+  Claude/Codex runs. **Container sizing must be confirmed against this floor
+  before shipping** — see Touchpoints.
+- **Multi-session isolation is free.** Each `shipit agent` call is its own
+  request/response with its own subprocess and its own synchronous result.
+  Two sessions spawning simultaneously share nothing — there's no per-review
+  buffer to key, which is the other thing the old `REVIEW_ID` mechanism was
+  for.
+- **Crash handling.** Subprocess exits non-zero → the orchestrator returns
+  an error; the CLI exits non-zero with the message; the primary sees it and
+  can react. Credential wipe (§4) fires in `finally` regardless.
+- **Cancel handling.** If the user cancels the primary's turn while the
+  sub-agent subprocess is running, the orchestrator SIGTERMs the subprocess
+  (`POST /agent/cancel` with `spawnId`); the sub-agent exit triggers the
+  wipe; the `shipit agent` command exits non-zero ("cancelled"). Cancelling
+  the primary cancels the sub-agent running on its behalf.
+
+### 4. Lazy, scoped, post-spawn-wiped cross-agent credentials
+
+Only relevant for a **cross-provider** spawn (a same-provider spawn reuses
+the pinned agent's already-present credentials and provisions nothing).
 
 - **Lazy.** The other agent's subtree is provisioned *only* on a
-  `request_cross_agent_review` invocation, which only fires if the
-  global setting is on AND the primary has chosen to call the tool.
-  Pre-invocation, per-session credential isolation holds exactly as
-  docs/138 specifies.
-- **Just-in-time, just-before-spawn.** `runCrossAgentReview` calls
-  `provisionReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)`
-  synchronously before `/review/start`. The function copies *only*
-  `AGENT_CREDENTIAL_PATHS[reviewerAgentId]` plus a refresh of the
-  token-sync files; it must never touch
-  `AGENT_CREDENTIAL_PATHS[pinnedAgentId]` (would clobber the CLI's
-  in-place writes per docs/138 §"write-once").
-- **Wiped on review completion.** `removeReviewerCredentials(credentialsRoot, sessionId, reviewerAgentId)` runs in a `finally`
-  after the review subprocess exits (success, failure, crash, or
-  cancel). Deletes only the reviewer's subtree.
-- **Token-sync-back before wipe.** If the reviewer CLI rotated its
-  OAuth refresh token during the review (docs/142 — Claude and Codex
-  both have rotating refresh tokens), the new token lives in the
-  per-session subtree. `runCrossAgentReview` runs
-  `syncAgentTokenBack(reviewerAgentId)` to the orchestrator's
-  source-of-truth credentials **before** invoking the wipe — otherwise
-  the next session that lazily provisions the reviewer starts from a
-  stale refresh token and 401s. Mirrors docs/142's per-turn token-back
-  sync for primary agents, just scoped to the review window.
-- **Wipe is best-effort.** Even with the token-sync-back step, the
-  reviewer CLI may still be flushing other writes to its subtree at
-  the instant we `rm -rf` it. Tolerable: any interrupted write is the
-  reviewer's *own* transient state, and the next
-  `provisionReviewerCredentials` re-copies cleanly from
-  source-of-truth. The pinned agent's subtree is never touched by
-  either path.
+  cross-provider `shipit agent` invocation, which only fires if the setting
+  is on AND the primary chose to spawn. Pre-invocation, docs/138 isolation
+  holds exactly.
+- **Just-in-time, just-before-spawn, account-correct.** `runSubAgent`
+  resolves the sub-agent's provider-account route first —
+  `providerAccountManager.selectRouteForTurn(subAgentId)`, exactly as the
+  primary turn path does (`session-agent-env.ts`) — then provisions from
+  *that account's* root, not the flat credentials root. When the route is
+  `{ kind: "account", id: accountId }` it copies from
+  `providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)` via
+  `provisionProviderAccountCredentials(credentialsRoot, sessionId, subAgentId,
+  accountId)`; only the legacy no-account fallback copies from the flat
+  `credentialsRoot`. Post-docs/150/153 the flat root holds legacy-alias
+  symlinks into the provider-account subtrees and is **not** the freshest
+  source for a multi-account user — provisioning from it would start the
+  sub-agent CLI on stale credentials and 401. The copy pulls *only* the
+  sub-agent's subtree (`AGENT_CREDENTIAL_PATHS[subAgentId]` plus a refresh of
+  the token-sync files); it must never touch `AGENT_CREDENTIAL_PATHS[pinnedAgentId]`
+  (would clobber the CLI's in-place writes per docs/138 §"write-once").
+  Record the resolved `accountId` — the wipe and token-sync-back below must
+  target the same account root.
+- **Token-sync-back before wipe.** If the sub-agent CLI rotated its OAuth
+  refresh token during the run (docs/142 — Claude and Codex both rotate
+  refresh tokens), the new token lives in the per-session subtree.
+  `runSubAgent` runs `syncAgentTokenBack(subAgentId)` to the orchestrator's
+  source-of-truth credentials — the **same account root** resolved at
+  provision time (`providerAccountCredentialRoot(...)` for an account route,
+  the flat root only for the legacy fallback), not unconditionally the flat
+  root — **before** invoking the wipe. Otherwise the next session that lazily
+  provisions this agent starts from a stale refresh token and 401s.
+- **Wiped on completion.** `removeSubAgentCredentials(credentialsRoot,
+  sessionId, subAgentId)` runs in a `finally` after the subprocess exits
+  (success, failure, crash, or cancel). Deletes only the sub-agent's subtree.
+- **Wipe is best-effort.** The sub-agent CLI may still be flushing writes to
+  its subtree at the instant we `rm -rf` it. Tolerable: any interrupted write
+  is the sub-agent's *own* transient state, and the next provision re-copies
+  cleanly from source-of-truth. The pinned agent's subtree is never touched.
 - **Sign-out propagation.** When the user signs out of an agent
-  (`AgentRegistry` emits a sign-out for `agentX`), the orchestrator
-  runs `removeReviewerCredentials` for every session where `agentX`
-  is *not* the pinned agent — sweeping any in-flight cross-agent
-  creds that would otherwise outlive the user's authorization.
-- **Codex review MCP config provisioning.** For a Codex reviewer in a
-  Claude-pinned session, the per-session `.codex/config.toml` needs
-  the `[mcp_servers.shipit-review]` block (same registration docs/125
-  wrote via `ensureCodexReviewMcpConfig`) so the reviewer can call
-  `submit_diff_review`. Under docs/138's symlink scheme `~/.codex/` in
-  the container resolves into the per-session credentials subtree, so
-  the append lands inside the wipe scope: added in the same step as
-  `provisionReviewerCredentials`, removed along with the rest of
-  `.codex/` on review completion.
+  (`AgentRegistry` emits a sign-out for `agentX`), the orchestrator runs
+  `removeSubAgentCredentials` for every session where `agentX` is *not* the
+  pinned agent — sweeping any in-flight cross-agent creds that would
+  otherwise outlive the user's authorization.
 
-### 5. Tool-allowlist enforcement of read-only
+### 5. Caps, cost, attribution
 
-System prompt instructions are necessary but not sufficient. The
-reviewer CLI is spawned with an *explicit per-spawn allowlist*. This
-parameter **does not exist today** for the reviewer's invocation path
-(`/agent/start` accepts agent-specific params, but `/review/start` is
-new), and Claude's existing flag (`--allowedTools`) is hard-coded by
-permission mode. The feature requires:
+- **Per-turn cap (the real fan-out bound).** The runner tracks
+  `subAgentSpawnsThisTurn`, incremented on each spawn reaching
+  `services/sub-agent.ts`, reset at primary-turn start. Modest hard cap in v0
+  (**3 per turn**) — enough for "review with both other models" or a couple
+  of delegations, low enough to bound a misbehaving-primary loop. A call past
+  the cap returns an error without spawning. This is the **forgery-resistant**
+  bound (§3): the counter is keyed by the worker-injected `SESSION_ID`, which
+  a sub-agent cannot spoof, so every spawn in the turn — primary's or any a
+  sub-agent forges past the best-effort depth guard — decrements the same
+  budget. Spam across turns is not a separate concern: bounded by normal turn
+  rate and the user's intent.
+- **Cost / wall-clock cap.** Wall-clock cap on each subprocess (initial:
+  5 min); output-token cap via the sub-agent CLI's natural settings (initial:
+  8K). Hitting either truncates, with the result flagged truncated and a note
+  the primary can surface.
+- **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
+  well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
+  per-turn cap above is what bounds an adversarial sub-agent's fan-out).
+- **Usage attribution.** `UsageManager` records the sub-agent's cost against
+  `subAgentId`, not the runner's pinned `agentId`. The per-session usage UI
+  surfaces the breakdown as a separate row per agent.
+- **Visible attribution in chat.** The primary's resulting chat message is
+  naturally attributed to the primary (it's the primary speaking). The
+  orchestrator additionally emits a small inline chip on that message —
+  "Consulted Codex" / "Delegated to Claude" with timing/cost — so the user
+  sees the spawn happened. Status, not a control surface (CLAUDE.md §5).
 
-1. The `/review/start` worker endpoint accepts `allowedTools: string[]`.
-2. The endpoint forwards it as `--allowedTools` (Claude) or the Codex
-   equivalent (see §6) when spawning the subprocess.
-3. The orchestrator-side worker MCP guard rejects `submit_review_comments`
-   (the docs/125 single-file tool) when the POST carries a
-   `X-Shipit-Review-Id` header (i.e. is from a reviewer subprocess —
-   see §3). The docs/125 path gains the symmetric guard rejecting
-   `submit_diff_review` from header-less (primary) POSTs. The per-spawn
-   `REVIEW_ID` nonce mechanism (§3) is what makes this decidable —
-   there is no "MCP connection" state at the worker layer; every
-   bridge POST is an independent HTTP request.
+### 6. Output is text; review is an optional renderer
 
-Read-only subset per agent (verified against each adapter's current
-capability list at implementation time):
+The primitive returns the sub-agent's **final assistant message** as text.
+That is the whole contract. The primary reads it and does whatever the task
+needs — summarize it, act on it, paste suggestions into its own work.
 
-- **Claude reviewer:** `Read`, `Glob`, `Grep`, plus `submit_diff_review`.
-  No `Bash` for v1 (the diff is in the prompt; if a reviewer needs
-  `git log` of a specific file, that's a v2 enhancement). No `Edit`, no
-  `Write`, no `Task`. Enforced by `claude --allowedTools <subset>` at
-  spawn — a real allowlist primitive in the CLI today.
+Structured review (the inline review card from docs/125) is now an *optional
+layer on top*, not part of the primitive:
 
-**Codex asymmetry — symmetric ship, asymmetric enforcement.** Codex's
-CLI (`codex app-server`) has **no per-spawn tool-restriction flag**
-today. The worker-side MCP guard rejects ShipIt's *own* MCP tools but
-does NOT prevent Codex's built-in `file_write` / `file_edit` / `shell`
-tools from firing — those are CLI built-ins, not MCP. For Codex *as
-the reviewer*, the read-only guarantee therefore degrades to:
+- For a review-shaped spawn, the prompt asks the sub-agent to produce its
+  findings as text (file + line + comment). The primary relays them into the
+  existing review surface, or simply summarizes them in chat.
+- If we later want the sub-agent to emit *structured* comments that render
+  directly as a review card, we can give it the docs/125 `submit_review_comments`
+  MCP tool in the spawn and capture those posts — but that's a review-consumer
+  enhancement, **not** a requirement of the spawn primitive, and is out of v0
+  scope. The old `submit_diff_review` tool and its bridge/nonce plumbing are
+  dropped from this design entirely.
 
-- **Strong system prompt** that explicitly forbids edits, commits, and
-  shell-based mutations.
-- **Worker MCP guard** on the two ShipIt tools (intact).
-- **No CLI-level write-tool block.** A misbehaving Codex reviewer
-  *could* call `file_edit` and the worker would not prevent it.
+### 7. Chat surfacing
 
-**V1 decision (carried over): ship symmetric with prompt-only
-enforcement for Codex.** User-facing copy on the global setting (§1)
-and on the tool's surfaced result names the asymmetry: *"Codex review
-is advisory. Codex may, against instructions, attempt to edit files;
-commits and pushes are still blocked because the reviewer subprocess
-runs outside the primary turn's post-turn flow."* Tighten to symmetric
-CLI-level enforcement when Codex grows the primitive.
+- **The spawn chip.** A single inline chip on the primary's message: "Asking
+  Codex… (typically 30–120s)" while the `shipit agent` call is in flight,
+  replaced by "Consulted Codex · 47s · $0.03" on return. Status only.
+- **No new message-group kind.** The sub-agent's output reaches the user
+  through the *primary's voice* (the primary read the text and responded), so
+  the transcript needs no new persisted card. The chip is transient status
+  (it correctly disappears on reload — it's not transcript content). If a
+  future consumer renders a persisted sub-agent card, it must follow
+  CLAUDE.md's side-channel-card contract (`emitChatCard` + a typed
+  `PersistedMessage` field + `CARD_MESSAGE_FIELDS` + round-trip tests).
 
-The "no sub-subagents from a reviewer" rule is enforced by the
-allowlist itself (omitting `Task` for Claude). For Codex,
-`spawn_agent` falls into the same prompt-only bucket.
+### 8. Local / dogfood mode
 
-### 6. `submit_diff_review`: the reviewer's write-back tool
+In `RUNTIME_MODE=local`, agents run in-process and credential provisioning is
+a no-op (docs/138). Sub-agent spawning in local mode:
 
-Docs/125's `submit_review_comments` is allow-listed per a single open
-file (`runner.activeReviewFilePath`). Cross-agent review writes against
-a *set* of files. Add a sibling MCP tool, not a generalization of the
-existing one:
-
-- **MCP tool name:** `submit_diff_review`.
-- **Payload:** `{ comments: [{ filePath, anchor, body, severity }, ...], summary?: string }`.
-  Anchors follow docs/125's anchoring rules. `summary` is an optional
-  overall takeaway the reviewer can attach.
-- **Registration:** added to the existing `mcp-review-bridge.ts` as a
-  second exposed tool alongside `submit_review_comments`. The bridge
-  is a stateless HTTP transport (every tool call POSTs to the worker
-  with no shared state) — the bridge itself doesn't authorize;
-  authorization happens at the worker by inspecting the
-  `X-Shipit-Review-Id` header that reviewer-spawned bridges carry and
-  primary-spawned bridges don't (§3).
-- **Authorization:** valid only when the POST carries a
-  `X-Shipit-Review-Id` header matching an in-flight review buffer.
-  Primary POSTs (header-less) calling `submit_diff_review` get a tool
-  error.
-- **Capture, not relay.** Unlike docs/125's three-hop relay (bridge →
-  worker → orchestrator HTTP), `submit_diff_review` POSTs are
-  intercepted at the worker, routed into the per-review buffer keyed
-  on `REVIEW_ID`, and returned to the orchestrator as part of
-  `/review/start`'s synchronous response. There is no orchestrator
-  HTTP route for it. One less hop than docs/125's path, and no
-  broadcast plumbing — the synchronous response is the only consumer.
-- **Persisted comments:** the orchestrator persists them through the
-  existing review-store path (docs/125) with `source: "ai"`,
-  `reviewerAgentId` recorded so the unified review surface (docs/112)
-  can attribute them. Persistence happens *after* `runCrossAgentReview`
-  returns, so the primary's tool result and the persisted comments are
-  derived from the same captured payload.
-
-### 7. Per-turn cap, cost cap, attribution
-
-- **Per-turn cap.** The runner tracks `crossAgentReviewsThisTurn`,
-  incremented on each `request_cross_agent_review` invocation, reset
-  at primary-turn start. Hard cap of **1 per turn** in v1. A second
-  call in the same turn returns an error result without invoking the
-  reviewer. This prevents a misbehaving primary from chaining reviews
-  (loop or runaway-cost scenario). **Spam across turns is not a
-  separate concern**: a user typing "review with codex" repeatedly is
-  bounded by normal turn rate and their own intent — same shape as
-  any other multi-turn-repeated tool use.
-- **Cost cap.** Wall-clock cap on the reviewer subprocess (initial:
-  5 min); output-token cap via the reviewer CLI's natural settings
-  (initial: 8K). Hitting either truncates with the result flagged
-  `truncated: true` and a note in the tool result the primary can
-  surface.
-- **Usage attribution.** `UsageManager` records the reviewer's cost
-  against `reviewerAgentId`, not the runner's pinned `agentId`. The
-  existing per-session usage UI surfaces the breakdown as a separate
-  row per agent.
-- **Visible attribution in chat.** The primary's chat message that
-  results from the tool call is naturally attributed to the primary
-  (it's the primary speaking). The orchestrator additionally emits a
-  small inline chip on that message — "Consulted Codex for review"
-  with timing/cost — so the user sees the consult happened. This is
-  status, not a control surface; consistent with §5.
-
-### 8. Default review scope
-
-The primary chooses `scope` when calling the tool. Defaults if omitted:
-
-- **Default:** `scope: "branch"` — diff of `HEAD` vs
-  `mergeBase(HEAD, baseBranch)`. Matches "second opinion on the work
-  I'm about to ship."
-- **Opt-in:** `scope: "uncommitted"` for working-copy-only review.
-- **Token cap.** Diffs larger than the per-review token cap (§7) are
-  truncated; the reviewer gets the first N tokens plus a list of
-  omitted file paths. Future work: chunked review.
-
-### 9. Local / dogfood mode
-
-In `RUNTIME_MODE=local`, credential provisioning is a no-op (docs/138)
-because the agent runs in-process. Cross-agent review in local mode:
-
-- Provisioning helpers (`provisionReviewerCredentials` /
-  `removeReviewerCredentials`) short-circuit, mirroring docs/138's
-  pattern.
-- The "spawn reviewer as subprocess" path is similar to local mode's
-  primary-agent flow (in-process spawn rather than container
-  subprocess).
-- Per-turn cap, allowlist, cost cap, and the `submit_diff_review` tool
-  all behave identically.
-- The global setting still gates the feature.
-
-## Usage attribution
-
-(Folded into §7.)
+- Provisioning helpers (`provisionSubAgentCredentials` /
+  `removeSubAgentCredentials`) short-circuit, mirroring docs/138.
+- The "spawn sub-agent as subprocess" path mirrors local mode's primary-agent
+  flow (in-process spawn rather than container subprocess).
+- Setting gate, per-turn cap, cost cap, recursion cap, and the `shipit agent`
+  command all behave identically.
 
 ## Touchpoints
 
 - **Global settings (`SettingsManager` / settings store)** — add
-  `enableCrossAgentReview: boolean` (default false). UI in the settings
-  panel under "Multi-agent sessions" with the copy from §1. Server
-  reads it on bridge setup and on every tool invocation.
-- **`mcp-review-bridge.ts`** — declare `request_cross_agent_review` and
-  `submit_diff_review` alongside the existing `submit_review_comments`
-  in the bridge's tool catalogue. The bridge stays a stateless HTTP
-  transport (every tool call POSTs to the worker with no shared state);
-  the only behavior change is that the bridge reads
-  `SHIPIT_REVIEW_ID` from its environment and forwards it as
-  `X-Shipit-Review-Id` on every POST when present. Authorization stays
-  at the worker (header inspection) and orchestrator (header relay),
-  not in the bridge.
-- **`session-credentials.ts`** — add `provisionReviewerCredentials()`
-  and `removeReviewerCredentials()` (lazy + scoped + reversible per §4).
-  Also add a reviewer-scoped variant of `syncAgentTokenBack` invoked
-  from `runCrossAgentReview` before the wipe (per §4).
-- **`AgentRegistry`** — confirm `refreshAuth(agentId)` exists; add if
-  not. Additionally, `AgentRegistry` becomes an `EventEmitter` (it
-  isn't today — this is a new public API) and emits `sign-out`
-  (`agentId`) from the existing sign-out HTTP routes.
-  `services/cross-agent-review.ts` subscribes for the sign-out sweep.
-- **`session-worker.ts`** — new `POST /review/start` and
-  `POST /review/cancel` endpoints. The handler instantiates the
-  appropriate per-agent adapter (`ClaudeAdapter` / `CodexAdapter`)
-  fresh — NOT through the `/agent/start` slot — and wires its events
-  into a **local result accumulator** rather than the broadcast SSE.
-  The slot (`this.agent`) is untouched. Worker memory holds two CLI
-  processes during a review window (primary in the slot + reviewer in
-  the parallel path). Worker also adds a `submit_diff_review`
-  HTTP route that demuxes incoming POSTs on `X-Shipit-Review-Id` into
-  the per-`REVIEW_ID` accumulator. **This is a meaningful new code
-  path, not a drop-in adapter reuse** — naming it honestly so the
-  implementer scopes correctly.
+  `enableSubAgents: boolean` (default false). UI under "Multi-agent
+  sessions" with the §1 copy. Orchestrator reads it on every spawn.
+- **`shipit` CLI** — new `agent run --agent <id> --prompt-file -` subcommand
+  on the shim: read prompt from stdin, read the inherited `SHIPIT_AGENT_DEPTH`
+  env (default `0`), POST `{ agentId, prompt, depth }` to the **worker** on
+  localhost (`/agent-ops/agent/spawn`), stream stdout from the response, map
+  error shapes to non-zero exits. The shim sends no session id.
+- **`agent-ops-routes.ts` (worker broker)** — new `/agent-ops/agent/spawn`
+  route that injects the trusted `SESSION_ID` (via `orchestrator-client.ts`)
+  and relays `{ agentId, prompt, depth }` to the orchestrator's session-scoped
+  route, exactly like the other agent-ops subcommands.
+- **New orchestrator route** — `POST /api/sessions/:id/agent/spawn`,
+  delegating to `services/sub-agent.ts`. Receives the worker-injected session
+  id in the path and the forwarded `depth` in the body.
+- **New `services/sub-agent.ts`** — `runSubAgent({ sessionId, subAgentId,
+  prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
+  cap; resolves the sub-agent's provider-account route; provisions creds (§4)
+  for a cross-provider spawn; calls worker `/agent/spawn`; on completion runs
+  token-sync-back and wipes creds in `finally`; returns `{ status, text,
+  truncated, durationMs, costUsd }`. Tracks each in-flight spawn so it can
+  SIGTERM the subprocess on cancel/timeout.
+- **`session-worker.ts`** — new `POST /agent/spawn` and `POST /agent/cancel`
+  endpoints. The handler instantiates the appropriate per-agent adapter
+  (`ClaudeAdapter` / `CodexAdapter`) fresh — NOT through the `/agent/start`
+  slot — wires events into a **local result accumulator** rather than the
+  broadcast SSE, stamps `SHIPIT_AGENT_DEPTH` on the subprocess env. The slot
+  (`this.agent`) is untouched. Worker memory holds two CLI processes during a
+  spawn window. **This is a meaningful new code path, not a drop-in adapter
+  reuse.**
+- **`session-credentials.ts`** — add `provisionSubAgentCredentials()` and
+  `removeSubAgentCredentials()` (lazy + scoped + reversible + account-correct
+  per §4), plus a sub-agent-scoped variant of `syncAgentTokenBack` invoked
+  before the wipe. Reuse `provisionProviderAccountCredentials` /
+  `providerAccountCredentialRoot` (docs/150/153).
+- **`AgentRegistry`** — `refreshAuth(agentId)` and `get(id)?.authConfigured`
+  already exist (verified). `AgentRegistry` becomes an `EventEmitter` (new
+  public API) and emits `sign-out` (`agentId`) from the sign-out HTTP routes;
+  `services/sub-agent.ts` subscribes for the sign-out sweep.
+- **Recursion-depth env (`SHIPIT_AGENT_DEPTH`)** — the worker stamps it
+  (`= caller depth + 1`) on every spawned subprocess (§3 step 5); the
+  `shipit agent` shim reads its inherited value and forwards it as `depth`;
+  the orchestrator's authorization check rejects any non-zero `depth`. This is
+  a **best-effort** guard against accidental recursion only — `depth` is
+  caller-supplied and a shell-capable sub-agent can spoof it (§3); the
+  forgery-resistant fan-out bound is the per-turn cap, not this env.
 - **Worker memory headroom** — confirm container sizing tolerates a
-  +500MB-1GB peak RSS during a review window before shipping. If
-  current per-session limits don't, raise them or document the
-  requirement. Block-shipping concern, not a write-now concern.
-- **Primary MCP tool-call timeout** — the worker image's pinned CLI
-  versions (`docker/agent-cli/package-lock.json`) must be verified to
-  tolerate a ~5min tool-call ceiling (matches §7 wall-clock cap). Some
-  MCP SDK versions default to ~60s; if the pinned versions can't be
-  configured up, adjust §7's cap down to match what the SDK tolerates.
-  Document the actual ceiling in user-facing copy on the global
-  setting.
-- **`AgentRunParams` (reviewer-side) / each adapter** — pass an
-  `allowedTools?: string[]` parameter from `/review/start` through to
-  the CLI spawn args (Claude: `--allowedTools`; Codex: prompt-only per
-  §5).
-- **New `services/cross-agent-review.ts`** — `runCrossAgentReview({ sessionId, reviewerAgentId, scope, focus })`. Checks the global
-  setting; generates `REVIEW_ID` UUID; provisions creds; calls worker
-  `/review/start` with the nonce; on completion, runs reviewer token-
-  sync-back, persists resulting comments through the docs/125 review
-  store, wipes creds in `finally`; returns `{ status, comments, summary, ... }`. Independently tracks each in-flight review so it
-  can SIGTERM the worker subprocess if the primary's MCP tool-call
-  times out before `/review/start` returns (§3 cancel-handling).
-- **`ContainerSessionRunner`** — adds `crossAgentReviewsThisTurn:
-  number` (per-turn counter, reset at primary-turn start). No
-  reviewer-related slot or queue or SSE machinery; the runner is
-  otherwise unchanged.
-- **`UsageManager`** — accept a `reviewerAgentId` parameter distinct
-  from the runner's `agentId` when recording reviewer costs.
-- **Chat history rendering** — small chip on primary messages that
-  resulted from a `request_cross_agent_review` tool call: "Consulted
-  Codex for review" plus timing/cost. The review's comments persist
-  through the docs/125 review surface; no new message-group kind
-  needed since the primary's voice naturally carries the result.
-- **Integration tests** — `integration_tests/cross-agent-review.test.ts`
-  covering:
-  - Global setting off → tool is not registered, primary cannot call
-    it, no creds provisioned.
-  - Global setting on, happy path: primary calls tool, reviewer
-    subprocess runs, comments captured, tool result returned, primary
-    continues turn with review in hand, creds wiped after.
-  - Authorization: primary (header-less POST) cannot call
-    `submit_diff_review`; reviewer (header-tagged POST) cannot call
-    `submit_review_comments` or `request_cross_agent_review`.
-  - Multi-session `REVIEW_ID` isolation: two sessions running reviews
-    simultaneously produce two distinct per-`REVIEW_ID` buffers; cross-
-    contamination is rejected.
-  - Token-sync-back: reviewer rotates its OAuth token mid-review →
-    source-of-truth `auth.json` is updated before wipe; the next
-    session's lazy provision starts from the fresh token.
-  - Primary MCP tool-call timeout: orchestrator-tracked review survives
-    a primary RPC timeout; subprocess is SIGTERMed and creds wiped
-    even though the primary already gave up on the tool call.
-  - Tool allowlist: reviewer spawned with `--allowedTools` excluding
-    write tools (Claude); Codex reviewer prompt-only (asymmetry test
-    documents the gap).
-  - Lazy provisioning + wipe: `.codex` does not exist in the
-    per-session credentials dir before or after a review on a
-    Claude-pinned session.
-  - Per-turn cap: second `request_cross_agent_review` call in same
-    primary turn returns error without spawning a subprocess.
-  - Crash path: reviewer subprocess killed mid-review → primary sees
-    `status: "error"`, creds wiped.
-  - Cancel path: user cancels primary turn during reviewer
-    subprocess → reviewer SIGTERMed, creds wiped, primary's tool call
-    returns cancellation error.
-  - Sign-out propagation: signing out of the other agent wipes its
-    subtree from sessions where it was provisioned for review.
-  - Cost cap: synthetic 10K-token reviewer output truncated, result
-    flagged `truncated: true`.
-  - Two-CLI memory: primary process and reviewer process alive
-    concurrently during the review window.
-  - Local mode: review runs in-process, provisioning helpers no-op.
+  +500MB–1GB peak RSS during a spawn window before shipping. Block-shipping
+  concern, not a write-now concern.
+- **`ContainerSessionRunner`** — add `subAgentSpawnsThisTurn: number`
+  (per-turn counter, reset at primary-turn start). No sub-agent slot, queue,
+  or SSE machinery.
+- **`UsageManager`** — accept a `subAgentId` parameter distinct from the
+  runner's `agentId` when recording sub-agent costs.
+- **Chat surfacing** — the transient spawn chip on the primary's message
+  (§7). No persisted card in v0.
+- **`src/server/shipit-docs/`** — add an agent-facing `agent.md` describing
+  `shipit agent run` **when the feature ships** (not before).
+- **Integration tests** — `integration_tests/sub-agent.test.ts` covering:
+  - Setting off → `shipit agent` returns the disabled error, no creds
+    provisioned.
+  - Setting on, happy path (cross-provider): primary spawns sub-agent,
+    subprocess runs, final text returned on stdout, primary continues turn,
+    creds wiped after.
+  - Same-provider spawn: no extra credentials provisioned, runs and returns
+    text.
+  - Account-correct provisioning: multi-account user → sub-agent creds copied
+    from the resolved account root, not the flat root.
+  - Token-sync-back: sub-agent rotates its OAuth token mid-run → the resolved
+    account root's `auth.json` updated before wipe; next session's lazy
+    provision starts fresh.
+  - Recursion cap (best-effort): a spawned sub-agent whose shim forwards a
+    non-zero `depth` is rejected. Companion test documents the known v0 gap —
+    a sub-agent that spoofs `depth: 0` is *not* rejected by the depth guard
+    and is instead bounded only by the shared per-turn cap.
+  - Per-turn cap: 4th spawn in one primary turn returns error without
+    spawning.
+  - Cost cap: synthetic over-limit output truncated, result flagged.
+  - Crash path: subprocess killed → primary sees error, creds wiped.
+  - Cancel path: user cancels primary turn during sub-agent → subprocess
+    SIGTERMed, creds wiped, command exits non-zero.
+  - Sign-out propagation: signing out of the other agent wipes its subtree
+    from sessions where it was provisioned for a spawn.
+  - Two-CLI memory: primary and sub-agent processes alive concurrently.
+  - Local mode: spawn runs in-process, provisioning helpers no-op.
 
 ## Security framing
 
-Three layers of gating:
+Two layers of gating, plus one honestly-named v0 regression.
 
-1. **Global setting (§1).** The user must explicitly enable
-   `enableCrossAgentReview`. Default off. Users who never enable it see
-   docs/138's invariant intact, word-for-word, forever.
-2. **Lazy + scoped credential provisioning (§4).** Even for users who
-   enable the setting, the cross-agent credential window opens only
-   during the lifetime of an active reviewer subprocess. Outside that
-   window, the per-session credentials dir holds only the pinned
-   agent's subtree.
-3. **Tool-call gating (§2 + §7).** Inside an enabled session, the
-   primary can only open the window via a `request_cross_agent_review`
-   MCP call; the per-turn cap (1/turn) bounds how often that can
-   happen.
+1. **Global setting (§1).** The user must explicitly enable `enableSubAgents`.
+   Default off. Users who never enable it see docs/138's invariant intact,
+   word-for-word, forever.
+2. **Lazy + scoped credential provisioning (§4).** Even for users who enable
+   the setting, the cross-agent credential window opens only during the
+   lifetime of an active *cross-provider* sub-agent subprocess, and a
+   same-provider spawn opens no window at all. Outside that window the
+   per-session credentials dir holds only the pinned agent's subtree.
 
-The honest regression for users who enable the feature: during the
-window between `provisionReviewerCredentials` and
-`removeReviewerCredentials` (typically 30-120 seconds per review), a
-supply-chain compromise of *either* agent CLI inside the container
-could exfiltrate *both* agents' tokens. Without the feature, that
-compromise can exfiltrate one. The blast radius of a single agent-CLI
-supply-chain compromise *doubles* during the review window for users
-who opted in. The global setting is the user's informed consent.
+**The v0 regression, named honestly:**
 
-A fuller mitigation (egress broker with scoped ephemeral tokens) is
-the same broker work docs/138 explicitly punted as out of scope. That
-decision still holds.
+- **No write sandbox.** A spawned sub-agent runs full-capability and shares
+  the session workspace, so it *can* edit files and run shell. This is the
+  conscious "utility first" tradeoff (see "v0 scope"). The mitigations: the
+  feature is opt-in (gate), file writes are still committed under the pinned
+  agent (attribution holds), and a sub-agent can't push or alter the pin (it
+  runs outside the primary's post-turn flow and never becomes the runner's
+  agent). The hard sandbox is future work.
+- **Doubled cred blast radius during a cross-provider window.** Between
+  provision and wipe (typically 30–120s), a supply-chain compromise of
+  *either* agent CLI in the container could exfiltrate *both* agents' tokens;
+  without the feature it could exfiltrate one. The global setting is the
+  user's informed consent. A fuller mitigation (egress broker with scoped
+  ephemeral tokens) is the same broker work docs/138 punted as out of scope.
+  That decision still holds.
+
+## Future work
+
+- **Hard read-only / write isolation.** Give a spawn a `mode`:
+  - `read-only` — genuinely cannot mutate the tree (per-spawn tool allowlist
+    where the CLI supports it, or a read-only FS view), for safe second
+    opinions.
+  - `isolated` — runs in a throwaway `git worktree`; writes land there and the
+    primitive returns a **diff** the primary chooses to apply, keeping
+    canonical-tree writes primary-attributed. This is the platform's existing
+    `isolation: 'worktree'` pattern and the clean way to let a sub-agent
+    *do work* without clobbering the shared tree.
+  Worktree isolation also closes the enforcement gap that blocks an
+  allowlist-only approach today: **Codex's CLI has no per-spawn
+  tool-restriction flag**, so an allowlist can't make a Codex sub-agent
+  read-only — but a throwaway worktree sandboxes its writes regardless of
+  which tools fire.
+- **Structured review cards.** Wire the docs/125 `submit_review_comments`
+  tool into a review-shaped spawn so findings render as an inline review card
+  (§6), following CLAUDE.md's side-channel-card persistence contract.
+- **Streaming sub-agent progress.** v0 is silent for the spawn duration
+  (just the chip). A future version could stream the sub-agent's intermediate
+  output into a collapsible chat region.
 
 ## Resolved decisions
 
-Traceability for product decisions made during the design rounds:
+Traceability for the product decisions made during design:
 
-1. **Codex-as-reviewer in v1: ship symmetric with prompt-only
-   enforcement.** See §5. User-facing copy on the global setting and
-   tool result names the asymmetry. Tighten to CLI-level enforcement
-   when Codex grows the primitive.
-2. **Per-turn cap = 1 review per primary turn.** See §7. Prevents
-   loops and runaway cost without needing a more elaborate consent
-   model.
-3. **No Bash for the Claude reviewer in v1.** See §5. `git log`-style
-   read-only shell is a v2 enhancement if users hit the limit.
-4. **No slash command.** See Non-goals. The user invokes by natural
-   language; the primary calls the MCP tool. Chat is the input
-   surface (§5).
-5. **No per-session consent flag.** Subsumed by the global setting
-   (§1) plus the per-turn cap (§7). Adding a per-session flag would
-   block the user's own request when off, which is bad UX. The global
-   setting is the user's "I want this feature at all" gate; the
-   per-turn cap is the runaway-cost guard.
-6. **Synchronous tool semantics, not fire-and-forget.** §3 and §2.
-   The primary CLI is paused on the tool result for the duration of
-   the review; the reviewer's output returns as the tool result; the
-   primary continues its turn naturally with the review in hand. No
+1. **Generic primitive, not a review tool.** The primary spawns *any* agent
+   with *any* prompt and gets *text* back; review is the first consumer.
+   Designing narrowly around review would bake in a rigid system we'd reopen
+   on the first non-review use case.
+2. **CLI surface (`shipit agent`), not an MCP tool.** The primary invokes via
+   the brokered `shipit` shim so it needs no knowledge of the underlying
+   CLI's flags, and the design needs no MCP bridge or per-call nonce — the
+   shim is already an authenticated per-session channel.
+3. **v0 has no hard read-only sandbox; behavior is prompt-shaped.** Utility
+   first. Full-capability sub-agent, writes committed under the pinned agent.
+   Hard isolation (read-only / worktree modes) is future work.
+4. **Output is text.** Structured review cards are an optional renderer on
+   top, not part of the primitive.
+5. **Recursion capped at depth 1 (best-effort).** A spawned sub-agent is
+   blocked from spawning another via a body-carried `depth` guard that stops
+   well-behaved recursion; it is not forgery-resistant in v0 (a
+   shell-capable sub-agent can spoof `depth`). The per-turn cap (§5), keyed
+   by the worker-injected session id, is the forgery-resistant bound on total
+   fan-out.
+6. **Per-turn cap = 3 spawns.** Bounds runaway loops; generous enough for
+   "ask both other models" or a couple of delegations.
+7. **Synchronous, not fire-and-forget.** The `shipit agent` command blocks on
+   the result; the primary continues its turn with the text in hand. No
    "inject into next turn" mechanism needed.
-7. **Cancel = symmetric.** §3. Cancelling the primary's turn during
-   a reviewer subprocess cancels the reviewer. No queue, so no
-   "preserve the queue" question to answer.
+8. **Cancel = symmetric.** Cancelling the primary's turn cancels the
+   sub-agent running on its behalf. No queue, so no "preserve the queue"
+   question.
 
 ## Out of scope
-
-- A general "co-pilot two agents on every turn" mode — see Non-goals.
-- Cross-agent *editing*. Out of scope, by design.
-- A second agent slot on the worker. The subprocess approach (§3)
-  sidesteps the need.
-- Egress-broker mitigation of the dual-cred window — same out-of-scope
-  as docs/138's matching item.
-- Chunked / multi-pass review for diffs larger than the token cap.
-  Truncate for v1, revisit if users hit the cap often.
-- Slash commands or buttons for review. The primary handles the
-  natural-language invocation.
