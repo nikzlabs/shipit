@@ -259,7 +259,7 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       byte-for-byte unchanged until the store is enabled. **Tests** (`session-container.test.ts`): the warm
       `createStandby` path mounts the overlay nested + records `overlayVolumeNames` (flag on); overlay-free
       standby (flag off). `warm-sessions` + `standby-container` integration suites stay green.
-- [ ] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
+- [x] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
       (`main` unchanged / `main`-advanced / cold; separate network from extract/link). Set the final depth
       cap from measurement. **Instrumentation is in place** (flag-gated): the orchestrator prints a
       greppable `[overlay-measure] session=… repo=… install_ok=… install_ms=…
@@ -272,11 +272,30 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       sweep 1→16** and a **flag-off control on a large (~30 k-file) repo** — template-vue is
       too small to show the extract/link saving. `DEFAULT_DEPTH_CAP = 16` — d2 showed no
       degradation; no data contradicts 16.
+      **DONE at production scale (2026-06-11, prod VPS canary — see FINDINGS.md "Production
+      canary"):** flag-off control ~23 s serial plain install (~31k files, warm cache); cold
+      `created:d1g1` ~47 s under standby contention; `main` unchanged = pre-stamp, **npm never
+      runs**, 4 KB upper (claim floor 5.4–6.7 s, harness overhead); `main` advanced = delta-only,
+      ~22.5 s npm pass, 316 KB upper. **Depth sweep d2→d15 + flatten + post-flatten: flat
+      22.2–25 s at every depth → `DEFAULT_DEPTH_CAP = 16` stands.** The canary also found and
+      fixed two ship-blockers (PR #1256 check-ignore dir-pattern; PR #1257 install-resync race).
 - [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
       invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
       complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately
       (ideally a canary) after the measurement above. Intentionally left to the user — this PR keeps the
       flag OFF.
+      **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
+      Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
+      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) a short
+      dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
+      churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
+      currently materializes a full independent ~470 MB copy; dedup makes the disk win
+      unconditional — see the FINDINGS break-even analysis); (c) `SESSION_WORKER_IMAGE_ID` wired on
+      deploys (scope rotation on worker-image rebuilds); (d) auto-skip overlay for pnpm / Yarn-PnP
+      repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
+      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
+      deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
+      findings for the flip decision".
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 
