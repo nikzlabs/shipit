@@ -67,7 +67,9 @@ describe("PermissionBroker", () => {
     broker.resolve((events[0] as { requestId: string }).requestId, { behavior: "allow" });
     await first;
 
-    // Same path again → a fresh card surfaces (not auto-allowed).
+    // Same path again → a fresh card surfaces (not auto-allowed). The request
+    // intentionally stays pending (we only assert it was registered), so it's
+    // `void`ed rather than awaited — awaiting would block until resolve/timeout.
     void broker.request({ toolName: "Write", input: { file_path: ".npmrc" } });
     expect(broker.pendingCount).toBe(1);
   });
