@@ -244,8 +244,16 @@ export async function spawnChildSession(
   // itself: an ungraduated parent is a valid reuse-path hit, and "claiming" it
   // would hard-reset the parent's live workspace and self-parent the session
   // (whose findChildren cycle then blows the recursive archive's stack).
+  // `skipReuse: true` is the broader guard: a spawn is a background action and
+  // must NEVER recycle an ungraduated warm session, because that pool includes
+  // `/{repo}/new` drafts a user is actively typing in. Without it, the reuse
+  // path (`findUngraduatedWarm`) could alias the child onto a live draft and
+  // dispatch the child's first prompt into the session the user is viewing —
+  // a message appearing from nowhere mid-typing. Spawns take the pre-warmed
+  // pool or slow-clone instead.
   const claimed = await claimService.claim(claimUrl, {
     forceFetch: true,
+    skipReuse: true,
     excludeSessionIds: [parentSessionId],
   });
   const newSessionId = claimed.sessionId;

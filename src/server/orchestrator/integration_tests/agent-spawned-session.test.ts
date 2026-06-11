@@ -987,6 +987,52 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(child?.remoteUrl).toBe(SPAWN_REPO_URL);
   });
 
+  it("POST /spawn never recycles a user's ungraduated /{repo}/new draft", { timeout: 30_000 }, async () => {
+    // Regression: a child spawn (a background, agent-driven claim) must not
+    // alias onto a warm session a browser is actively attached to. A
+    // `/{repo}/new` page claims a warm session that stays `warm = 1` until the
+    // first message graduates it; the spawn's `claim()` reuse path
+    // (`findUngraduatedWarm`) used to scan *every* such session and could hand
+    // the user's live draft back to the spawn — graduating it and dispatching
+    // the child's first prompt into the session the user was typing in (a
+    // message appearing from nowhere). `skipReuse: true` on the spawn claim
+    // closes this: spawns take the pre-warmed pool or slow-clone, never reuse.
+    const { parentId } = await claimGraduatedParent();
+
+    // Simulate the user's `/{repo}/new` page: claim a warm session for the same
+    // repo and leave it ungraduated (`warm = 1`, no first message). This is the
+    // session the spawn must NOT steal.
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "warm before draft claim");
+    const draftRes = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(SPAWN_REPO_URL)}/claim-session`,
+    });
+    expect(draftRes.statusCode).toBe(200);
+    const { sessionId: draftId } = draftRes.json() as { sessionId: string };
+    expect(sessionManager.get(draftId)?.warm).toBe(true);
+
+    // Re-warm the pool so the spawn has a clean pool session to take.
+    await waitFor(() => !!repoStore.get(SPAWN_REPO_URL)?.warmSessionId, 10000, "re-warm after draft claim");
+
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "do the thing", title: "Do the thing" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const { sessionId: childId } = spawnRes.json() as { sessionId: string };
+
+    // The child must be its own session — NOT the user's draft.
+    expect(childId).not.toBe(draftId);
+    // The draft is untouched: still ungraduated (`warm = 1`) and not reparented
+    // into the spawn (no `parentSessionId`). Had reuse fired, the draft would
+    // have graduated (`warm = false`) and adopted `parentId`.
+    const draftAfter = sessionManager.get(draftId);
+    expect(draftAfter?.warm).toBe(true);
+    expect(draftAfter?.parentSessionId).toBeUndefined();
+    expect(sessionManager.get(childId)?.workspaceDir).not.toBe(draftAfter?.workspaceDir);
+  });
+
   it("POST /spawn rejects a parent with no registered remote URL", { timeout: 15_000 }, async () => {
     // Bypass `createParentSession`'s `setRemoteUrl` wiring so the parent has
     // no `remoteUrl` at all — spawn must refuse rather than silently fall

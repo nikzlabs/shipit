@@ -154,6 +154,48 @@ describe("Integration: quick-capture headless sessions", () => {
     }).trim()).toBe("quick/flaky-test");
   });
 
+  it("never recycles a user's ungraduated /{repo}/new draft", { timeout: 20_000 }, async () => {
+    // Regression: a headless session (quick-capture, issue-seeded start, webhook)
+    // is always a NEW session for the requested work, never a recycle of an
+    // existing draft. A `/{repo}/new` page claims a warm session that stays
+    // `warm = 1` until its first message graduates it; without `skipReuse: true`
+    // on the headless claim, the reuse path (`findUngraduatedWarm`) could hand
+    // that live draft to a concurrent quick-capture for the same repo —
+    // graduating it and dispatching the quick-capture prompt into the session
+    // the user is composing in (a message appearing from nowhere mid-compose).
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm before draft claim");
+
+    // Simulate the user's `/{repo}/new` page: claim a warm session and leave it
+    // ungraduated. This is the draft the headless create must NOT steal.
+    const draftRes = await app.inject({
+      method: "POST",
+      url: `/api/repos/${encodeURIComponent(REPO_URL)}/claim-session`,
+    });
+    expect(draftRes.statusCode).toBe(200);
+    const { sessionId: draftId } = draftRes.json() as { sessionId: string };
+    expect(sessionManager.get(draftId)?.warm).toBe(true);
+
+    // Re-warm so the headless create has a clean pool session to take.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "re-warm after draft claim");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: { repoUrl: REPO_URL, initialPrompt: "background work", title: "Background" },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    const { sessionId: headlessId } = res.json() as { sessionId: string };
+
+    // The headless session is its own session — NOT the user's draft.
+    expect(headlessId).not.toBe(draftId);
+    // The draft is untouched: still ungraduated (`warm = 1`). Had reuse fired,
+    // it would have graduated (`warm = false`) and run the headless prompt.
+    expect(sessionManager.get(draftId)?.warm).toBe(true);
+    expect(sessionManager.get(headlessId)?.workspaceDir).not.toBe(
+      sessionManager.get(draftId)?.workspaceDir,
+    );
+  });
+
   it("pins the model's agent when agent+model disagree (model is source of truth)", { timeout: 15_000 }, async () => {
     // docs/166: a caller (e.g. the quick-capture overlay with a stale
     // `vibe-agent-id`, or a legacy client) sends a Claude model with a
