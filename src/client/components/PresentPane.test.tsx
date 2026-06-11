@@ -179,11 +179,18 @@ describe("PresentPane", () => {
     expect(screen.getByLabelText("Save presentation to project")).toBeInTheDocument();
   });
 
-  it("dismisses the active presentation", () => {
+  it("offers no way to destroy a presentation from the pane", () => {
+    // The pane must never let the user delete an artifact: closing it would
+    // leave the chat card's "View" button pointing at a presentation that no
+    // longer exists, with no way to get it back. Navigating away from the
+    // Present tab (desktop tabs / mobile tab bar) leaves the store intact.
     seedPresentations();
     render(<PresentPane isActiveTab />);
-    fireEvent.click(screen.getByLabelText("Dismiss presentation"));
-    expect(usePresentStore.getState().presentations.map((p) => p.presentId)).toEqual(["pres_two"]);
+    expect(screen.queryByLabelText("Dismiss presentation")).not.toBeInTheDocument();
+    expect(usePresentStore.getState().presentations.map((p) => p.presentId)).toEqual([
+      "pres_one",
+      "pres_two",
+    ]);
   });
 });
 

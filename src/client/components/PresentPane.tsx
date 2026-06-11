@@ -23,7 +23,6 @@ import {
   CaretRightIcon,
   DownloadSimpleIcon,
   FloppyDiskIcon,
-  XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
@@ -42,7 +41,6 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const setActiveIndex = usePresentStore((s) => s.setActiveIndex);
   const markSeen = usePresentStore((s) => s.markSeen);
-  const dropOne = usePresentStore((s) => s.clear);
 
   const [saveOpen, setSaveOpen] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -150,13 +148,6 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
           <DownloadSimpleIcon size={ICON_SIZE.XS} />
           Download
         </Button>
-        <button
-          onClick={() => dropOne(active.presentId)}
-          className="inline-flex items-center justify-center w-6 h-6 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-          aria-label="Dismiss presentation"
-        >
-          <XIcon size={ICON_SIZE.SM} />
-        </button>
       </div>
 
       <div className="flex-1 min-h-0 relative bg-(--color-bg-primary)">

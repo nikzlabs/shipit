@@ -282,7 +282,7 @@ Presentations get their own **"Present" tab** in the right panel, alongside Prev
 
 - **Tab appears** on first `present_content` message in the session. Auto-switches to it.
 - **Badge** shows count: `Present (3)` when there are multiple presentations and the tab isn't focused.
-- **Tab hides** when all presentations are dismissed and there's nothing to show.
+- **Tab hides** when the list empties (server-driven clear/eviction) and there's nothing to show — there is no user-facing dismiss.
 - **Session switch** clears presentations and hides the tab.
 
 ---
@@ -318,8 +318,8 @@ The preview pane maintains an **ordered list of presentations** for the session,
 1. **New presentation** — appended to the list, auto-selected (user sees it immediately)
 2. **Revision** — agent passes `replaceId` referencing a previous `presentId`. Replaces that entry in-place, no new slot. If omitted, it's a new entry.
 3. **Navigation** — `◀ ▶` arrows or `2/3` indicator let the user flip between presentations. Keyboard shortcuts (←/→) when pane is focused.
-4. **Dismiss** — `✕` removes one entry from the list. When the last one is dismissed, presentation mode exits.
-5. **Clear all** — `present_cleared` message wipes the entire list (e.g., on session switch).
+4. **No user-facing dismiss** — the pane deliberately has **no** close/✕ button. Presentations are ephemeral (not persisted) and the chat card's "View" button re-opens one by looking it up in the store via `focusById`; a manual dismiss removed the only copy and stranded that card with no way back (especially on mobile, where the ✕ reads as "close the panel"). The user navigates away from the Present tab via the tab system / mobile tab bar, which leaves the store intact. Entries leave the list only via server-driven LRU eviction or a full clear (below).
+5. **Clear all** — `present_cleared` message wipes the entire list (e.g., on session switch), or with a `presentId` drops one entry on server-side LRU eviction.
 6. **Cap** — max ~20 presentations per session. Oldest evicted when exceeded (LRU). Prevents unbounded memory growth from long sessions.
 
 ### Why not tabs?
