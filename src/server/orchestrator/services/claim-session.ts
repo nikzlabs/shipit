@@ -90,6 +90,26 @@ export interface ClaimSessionOptions {
    * live: archive → "Maximum call stack size exceeded").
    */
   excludeSessionIds?: string[];
+  /**
+   * When `true`, skip the *reuse* path entirely — never hand back an existing
+   * ungraduated warm session via `findUngraduatedWarm`. Background, agent-driven
+   * claims (`spawnChildSession`) MUST set this.
+   *
+   * The reuse path recycles *abandoned* drafts so the home-screen quick-capture
+   * flow doesn't leak warm sessions (docs/145). But `findUngraduatedWarm` scans
+   * *every* `warm = 1` session for the repo — and a `/{repo}/new` page the user
+   * is actively typing in has already claimed a warm session that stays
+   * `warm = 1` until the first message graduates it. The reuse path cannot tell
+   * "abandoned draft" from "browser attached right now", so a concurrent spawn
+   * would alias the child onto the user's live draft, graduate it, and dispatch
+   * the child's first prompt into it — surfacing as a message appearing from
+   * nowhere while the user types their first prompt. Skipping reuse routes the
+   * spawn to the pre-warmed pool (whose `warmSessionId` pointer is always cleared
+   * the instant a browser claims it) or a slow-clone — neither of which can
+   * collide with an interactive draft. Interactive home-screen claims leave this
+   * unset so recycling your own just-abandoned draft still works.
+   */
+  skipReuse?: boolean;
 }
 
 export class ClaimAbortedError extends Error {
@@ -279,6 +299,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
+      const skipReuse = opts?.skipReuse === true;
       const excluded = new Set(opts?.excludeSessionIds ?? []);
 
       const result = await serializeClaim(url, async () => {
@@ -295,8 +316,12 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         // warming" in the integration tests for the failure mode.
         const repoAfterWarm = deps.repoStore.get(url) ?? repo;
 
-        // Reuse path: check for previously-claimed warm session.
-        const reusable = deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
+        // Reuse path: check for previously-claimed warm session. Skipped for
+        // background spawns (`skipReuse`), which must never recycle a warm
+        // session a browser may be actively attached to (see `skipReuse` docs).
+        const reusable = skipReuse
+          ? undefined
+          : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
         if (
           reusable?.workspaceDir &&
           !excluded.has(reusable.id) &&
