@@ -31,6 +31,7 @@ import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
 import { MarkdownContent } from "./message-markdown.js";
+import { labelDotColor } from "./issue-label-color.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
@@ -251,10 +252,15 @@ export function IssueDetail({
                     <div className="flex flex-wrap gap-1.5">
                       {detail.labels.map((label) => (
                         <span
-                          key={label}
-                          className="inline-flex items-center rounded-full bg-(--color-bg-tertiary) text-(--color-text-secondary) text-[11px] px-2 py-0.5"
+                          key={label.name}
+                          className="inline-flex items-center gap-1.5 rounded-full bg-(--color-bg-tertiary) text-(--color-text-secondary) text-[11px] px-2 py-0.5"
                         >
-                          {label}
+                          <span
+                            className="size-1.5 shrink-0 rounded-full"
+                            style={{ backgroundColor: label.color ?? labelDotColor(label.name) }}
+                            aria-hidden="true"
+                          />
+                          {label.name}
                         </span>
                       ))}
                     </div>

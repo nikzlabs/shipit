@@ -1,9 +1,11 @@
 import { create } from "zustand";
 import type {
   GetIssueResult,
+  IssueLabel,
   IssuePriorityLevel,
   ListIssuesResult,
   ListIssueCommentsResult,
+  ListLabelsResult,
   MutateIssueResult,
   PostIssueCommentResult,
   TrackerComment,
@@ -104,6 +106,13 @@ interface IssuesState {
    * (unlike the detail view's `availableStatuses`) have no per-issue option set.
    */
   statusesByTracker: Record<string, IssueStatusRef[]>;
+  /**
+   * Per-tracker available label set (name + color), fetched lazily and cached —
+   * mirrors `statusesByTracker`. The foundation a follow-up label filter facet /
+   * on-page editor consumes (the read-only available-labels endpoint). Distinct
+   * from the per-issue `TrackerIssue.labels`: this is the whole pickable set.
+   */
+  labelsByTracker: Record<string, IssueLabel[]>;
   loading: boolean;
   error: string | null;
 
@@ -146,6 +155,12 @@ interface IssuesState {
   setActiveTracker: (id: TrackerId) => void;
   fetchTrackers: () => Promise<void>;
   fetchIssues: (trackerId?: TrackerId) => Promise<void>;
+  /**
+   * Fetch + cache the tracker's full available-label set (name + color). Lazy:
+   * a follow-up label filter/editor calls it when it needs the pickable set;
+   * the issue list itself gets colors inline on each `TrackerIssue.labels`.
+   */
+  fetchLabels: (trackerId?: TrackerId) => Promise<void>;
   /** Open the detail view for an issue (from a list row or a chat card). */
   openIssue: (ref: OpenIssueRef) => Promise<void>;
   /** Re-fetch the open issue (refresh button inside the detail view). */
@@ -216,6 +231,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   issuesByTracker: {},
   infoByTracker: {},
   statusesByTracker: {},
+  labelsByTracker: {},
   loading: false,
   error: null,
   // Rehydrate the filter bar from the last reload (docs/173). Freeform
@@ -303,6 +319,23 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       });
     } catch (err) {
       set({ loading: false, error: err instanceof Error ? err.message : String(err) });
+    }
+  },
+
+  fetchLabels: async (trackerId) => {
+    const id = trackerId ?? get().activeTracker;
+    try {
+      const params = sessionIdParam();
+      const res = await fetch(
+        `/api/issue/labels?tracker=${encodeURIComponent(id)}${params ? `&${params}` : ""}`,
+        { headers: { Accept: "application/json" } },
+      );
+      if (!res.ok) return;
+      const body = (await res.json().catch(() => ({}))) as Partial<ListLabelsResult>;
+      const labels = body.labels ?? [];
+      set((state) => ({ labelsByTracker: { ...state.labelsByTracker, [id]: labels } }));
+    } catch (err) {
+      console.error("[issues-store] fetchLabels failed:", err);
     }
   },
 
@@ -467,6 +500,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     set({
       issuesByTracker: {},
       statusesByTracker: {},
+      labelsByTracker: {},
       loading: false,
       error: null,
       filters: emptyFilters(),

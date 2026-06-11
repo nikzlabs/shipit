@@ -260,7 +260,7 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it("surfaces labels on a read (SHI-92)", async () => {
+  it("surfaces labels with normalized colors on a read (SHI-92 + foundation)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
       repo: REPO,
@@ -271,12 +271,36 @@ describe("GitHubTracker writes (docs/177)", () => {
           title: "Bug",
           html_url: "https://github.com/octocat/hello-world/issues/42",
           state: "open",
-          labels: [{ name: "security" }, "backend"],
+          // A colored object label, a colorless one, and a bare string label.
+          labels: [{ name: "security", color: "d73a4a" }, { name: "backend" }, "infra"],
         }),
       ),
     });
     const issue = await tracker.getIssue("42");
-    expect(issue?.labels).toEqual(["security", "backend"]);
+    // GitHub's bare hex is normalized to a CSS-ready `#rrggbb`; colorless labels
+    // omit `color` (the client then hash-derives a dot).
+    expect(issue?.labels).toEqual([
+      { name: "security", color: "#d73a4a" },
+      { name: "backend" },
+      { name: "infra" },
+    ]);
+  });
+
+  it("listLabels returns the repo's labels with normalized colors", async () => {
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+      jsonResponse([
+        { name: "bug", color: "d73a4a" },
+        { name: "design", color: "#a2eeef" },
+        { name: "no-color" },
+      ]),
+    );
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    expect(await tracker.listLabels()).toEqual([
+      { name: "bug", color: "#d73a4a" },
+      { name: "design", color: "#a2eeef" },
+      { name: "no-color" },
+    ]);
+    expect(fetchImpl.mock.calls[0][0] as string).toContain("/repos/octocat/hello-world/labels");
   });
 
   it("adds a comment and returns its id for undo", async () => {

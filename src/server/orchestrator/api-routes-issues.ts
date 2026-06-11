@@ -16,6 +16,7 @@ import type { ApiDeps } from "./api-routes.js";
 import {
   listTrackers,
   listIssuesForTracker,
+  listLabelsForTracker,
   getIssueForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
@@ -146,6 +147,28 @@ export async function registerIssueRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to list issues: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/issue/labels?tracker=linear[&sessionId=...] — the tracker's full set
+  // of available labels (name + color). The foundation for a label filter facet /
+  // on-page editor, and the same fetch that yields the real chip colors. Public
+  // read, like `GET /api/issues`: Linear is workspace-wide; `sessionId` only
+  // scopes the GitHub tracker to that session's repo.
+  app.get<{ Querystring: { tracker?: string; sessionId?: string } }>(
+    "/api/issue/labels",
+    async (request, reply) => {
+      const trackerId = request.query.tracker ?? "linear";
+      const github = resolveGitHubContext(request.query.sessionId);
+      try {
+        return await listLabelsForTracker(credentialStore, trackerId, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to list labels: ${getErrorMessage(err)}` });
       }
     },
   );
@@ -490,7 +513,9 @@ export async function registerIssueRoutes(
       summary: card.summary,
       identifier: card.identifier,
       ...(card.url ? { url: card.url } : {}),
-      labels: outcome.issue.labels ?? [],
+      // The shim's `--json` expects label names (a `string[]`), so flatten the
+      // colored read shape back to names here.
+      labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
     };
   }

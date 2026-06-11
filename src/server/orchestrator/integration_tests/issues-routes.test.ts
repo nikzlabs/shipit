@@ -442,6 +442,39 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     expect(body.availableStatuses?.map((s) => s.name)).toEqual(["Todo", "In Progress", "Done"]);
   });
 
+  it("GET /api/issue/labels returns the tracker's labels with colors (SHI-92 foundation)", async () => {
+    await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
+    await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });
+
+    // The next tracker fetch is the `IssueLabels` query (`listLabels`).
+    trackerFetch.mockImplementationOnce(async () =>
+      jsonResponse({
+        data: {
+          issueLabels: {
+            nodes: [
+              { name: "bug", color: "#d73a4a" },
+              { name: "design", color: "#a2eeef" },
+            ],
+          },
+        },
+      }),
+    );
+
+    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { labels: { name: string; color?: string }[] };
+    expect(body.labels).toEqual([
+      { name: "bug", color: "#d73a4a" },
+      { name: "design", color: "#a2eeef" },
+    ]);
+  });
+
+  it("GET /api/issue/labels returns an empty set when the tracker is unconfigured", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/issue/labels?tracker=linear" });
+    expect(res.statusCode).toBe(200);
+    expect((res.json() as { labels: unknown[] }).labels).toEqual([]);
+  });
+
   it("POST /api/issue/status sets the status and returns the issue (no card)", async () => {
     await app.inject({ method: "POST", url: "/api/trackers/linear/token", payload: { token: "t" } });
     await app.inject({ method: "POST", url: "/api/trackers/linear/team", payload: TEAM });

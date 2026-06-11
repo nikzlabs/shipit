@@ -17,6 +17,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
+  IssueLabel,
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
@@ -108,7 +109,7 @@ interface LinearIssueNode {
   description?: string | null;
   priority: number;
   priorityLabel?: string | null;
-  labels?: { nodes: { name: string }[] } | null;
+  labels?: { nodes: { name: string; color?: string | null }[] } | null;
   state?: { name: string; type?: string; color?: string } | null;
   assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
   /** Only fetched by `getIssue` (the team's workflow states) — drives `availableStatuses`. */
@@ -117,7 +118,9 @@ interface LinearIssueNode {
 
 function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   const assigneeName = node.assignee?.displayName ?? node.assignee?.name ?? undefined;
-  const labels = (node.labels?.nodes ?? []).map((l) => l.name).filter(Boolean);
+  const labels: IssueLabel[] = (node.labels?.nodes ?? [])
+    .filter((l) => Boolean(l.name))
+    .map((l) => ({ name: l.name, ...(l.color ? { color: l.color } : {}) }));
   const states = node.team?.states?.nodes
     ?.slice()
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
@@ -185,7 +188,7 @@ const ISSUE_FIELDS = `
   description
   priority
   priorityLabel
-  labels { nodes { name } }
+  labels { nodes { name color } }
   state { name type color }
   assignee { id name displayName avatarUrl }
 `;
@@ -338,6 +341,21 @@ export class LinearTracker implements Tracker {
       .slice()
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
       .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}), ...(s.color ? { color: s.color } : {}) }));
+  }
+
+  async listLabels(): Promise<IssueLabel[]> {
+    if (!this.token) {
+      throw new Error("Linear is not configured (missing token)");
+    }
+    // Workspace `issueLabels` (incl. team-scoped ones), the same set
+    // `resolveLabelIds` matches against, here paired with each label's color.
+    const data = await this.gql<{ issueLabels: { nodes: { name: string; color?: string | null }[] } }>(
+      `query IssueLabels { issueLabels(first: 250) { nodes { name color } } }`,
+      {},
+    );
+    return data.issueLabels.nodes
+      .filter((l) => Boolean(l.name))
+      .map((l) => ({ name: l.name, ...(l.color ? { color: l.color } : {}) }));
   }
 
   async listComments(id: string): Promise<TrackerComment[]> {
