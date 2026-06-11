@@ -19,9 +19,8 @@
  * so opening the menu never also opens the row's detail view.
  */
 
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, CircleNotchIcon } from "@phosphor-icons/react";
-import { Badge } from "./ui/badge.js";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,31 +43,54 @@ export interface IssueStatusRef {
 }
 
 /**
- * Priority badge variant by normalized level — shared so the editor's trigger
- * and option rows match the read-only badges elsewhere in the tab.
- */
-export const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
-  urgent: "error",
-  high: "warning",
-  medium: "info",
-  low: "default",
-  none: "default",
-};
-
-/**
- * Dot color (a CSS color string for an inline `background`/`borderColor`) by
- * normalized priority level. Low and No-priority are deliberately distinct
- * (green vs gray) so they don't read as the same thing. Used as a style value
- * rather than a Tailwind class so it composes with the tracker-provided status
- * colors below — both flow through the same `style={{ backgroundColor }}` path.
+ * Priority palette — a FIXED, theme-independent set of hues, so a given priority
+ * reads the same in every theme. Priority must NOT borrow the semantic
+ * `--color-error/warning/info/success` tokens: the warm/Claude themes
+ * deliberately re-tint those (e.g. `--color-info` is terracotta there, not blue),
+ * which made "Medium" flip from blue to red across themes and collide with
+ * Urgent/High. These base hues are run through {@link adaptColorForSurface} at
+ * each use so they stay legible per theme while keeping one consistent hue.
  */
 export const PRIORITY_DOT_COLOR: Record<IssuePriorityLevel, string> = {
-  urgent: "var(--color-error)",
-  high: "var(--color-warning)",
-  medium: "var(--color-info)",
-  low: "var(--color-success)",
-  none: "var(--color-text-tertiary)",
+  urgent: "#ef4444", // red
+  high: "#f59e0b", // amber
+  medium: "#3b82f6", // blue
+  low: "#22c55e", // green
+  none: "#9ca3af", // gray
 };
+
+/** The contrast-adapted priority hue for a surface (dot fill, badge text, etc.). */
+export function priorityColor(level: IssuePriorityLevel, surfaceLum: number): string {
+  return adaptColorForSurface(PRIORITY_DOT_COLOR[level], surfaceLum);
+}
+
+/** Shared pill chrome for the priority badge/trigger. */
+const PRIORITY_PILL = "inline-flex items-center rounded-full px-2 h-[18px] text-[11px] font-medium leading-none";
+
+/** Tinted-bg + colored-text style for a priority pill, contrast-adapted. */
+function priorityPillStyle(level: IssuePriorityLevel, surfaceLum: number): CSSProperties {
+  const c = priorityColor(level, surfaceLum);
+  return { backgroundColor: `color-mix(in oklab, ${c} 16%, transparent)`, color: c };
+}
+
+/**
+ * Read-only priority pill (e.g. GitHub, where priority isn't editable). Renders
+ * nothing for "No priority". Shared so the list, detail, and trigger all match.
+ */
+export function PriorityBadge({
+  priority,
+  surfaceLum,
+}: {
+  priority: TrackerIssue["priority"];
+  surfaceLum: number;
+}) {
+  if (priority.level === "none") return null;
+  return (
+    <span className={PRIORITY_PILL} style={priorityPillStyle(priority.level, surfaceLum)}>
+      {priority.label}
+    </span>
+  );
+}
 
 /** Fallback dot color by workflow-state type, when the tracker gives no color. */
 function statusTypeColor(type?: string): string {
@@ -97,7 +119,13 @@ export function statusDotColor(status?: { type?: string; color?: string }): stri
  * badge, or a faint "No priority" placeholder when unset so an unprioritized
  * issue still has something to click. Exported for read-only-adjacent reuse.
  */
-export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority"] }) {
+export function PriorityTrigger({
+  priority,
+  surfaceLum,
+}: {
+  priority: TrackerIssue["priority"];
+  surfaceLum: number;
+}) {
   // Caret lives INSIDE the value and reveals on hover by growing from zero
   // width — so the colored pill itself widens slightly to show a "⌄" in its own
   // color, rather than a separate gray box appearing around it. `group/fe` is
@@ -118,10 +146,10 @@ export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority
     );
   }
   return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px] leading-none">
+    <span className={PRIORITY_PILL} style={priorityPillStyle(priority.level, surfaceLum)}>
       {priority.label}
       {caret}
-    </Badge>
+    </span>
   );
 }
 
@@ -286,6 +314,7 @@ export function IssuePriorityEditor({
   align?: "start" | "end";
 }) {
   const { saving, error, run } = useFieldWrite();
+  const menuSurface = useSurfaceLuminance("--color-bg-elevated");
 
   return (
     <FieldEditor ariaLabel={ariaLabel} trigger={trigger} saving={saving} error={error} align={align} chevron={false}>
@@ -300,7 +329,7 @@ export function IssuePriorityEditor({
           >
             <span
               className="size-2 shrink-0 rounded-full"
-              style={{ backgroundColor: PRIORITY_DOT_COLOR[opt.level] }}
+              style={{ backgroundColor: priorityColor(opt.level, menuSurface) }}
               aria-hidden="true"
             />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.label}</span>

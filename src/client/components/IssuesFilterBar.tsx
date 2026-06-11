@@ -2,7 +2,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
-import { PRIORITY_DOT_COLOR, statusDotColor } from "./IssueFieldControls.js";
+import { priorityColor, statusDotColor } from "./IssueFieldControls.js";
 import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -225,7 +225,7 @@ export function IssuesFilterBar({
             checked={filters.priorities.has(opt.level)}
             onToggle={() => onTogglePriority(opt.level)}
             count={priorityCounts[opt.level] ?? 0}
-            color={PRIORITY_DOT_COLOR[opt.level]}
+            color={priorityColor(opt.level, popoverSurfaceLum)}
           >
             <span>{opt.label}</span>
           </OptionRow>

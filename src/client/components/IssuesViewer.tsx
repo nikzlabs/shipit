@@ -5,13 +5,13 @@ import {
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
-import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
 import { IssuesFilterBar } from "./IssuesFilterBar.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
+  PriorityBadge,
   PriorityTrigger,
   statusDotColor,
   type IssueStatusRef,
@@ -70,15 +70,6 @@ export interface IssuesViewerProps {
   onClearFilters: () => void;
 }
 
-/** Priority badge variant + ordering hint, by normalized level. */
-const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
-  urgent: "error",
-  high: "warning",
-  medium: "info",
-  low: "default",
-  none: "default",
-};
-
 /**
  * Compact identifier for the narrow ID column. GitHub identifiers are
  * `owner/repo#123`, which overflow the 64px track and collide with the title
@@ -89,15 +80,6 @@ const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warnin
 function shortIdentifier(identifier: string): string {
   const hash = identifier.indexOf("#");
   return hash === -1 ? identifier : identifier.slice(hash + 1);
-}
-
-function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {
-  if (priority.level === "none") return null;
-  return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px]">
-      {priority.label}
-    </Badge>
-  );
 }
 
 function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assignee"]> }) {
@@ -262,11 +244,11 @@ function IssueRow({
             current={issue.priority.level}
             onSelect={(level) => onSetPriority(issue, level)}
             ariaLabel={`Change priority of ${issue.identifier} (currently ${issue.priority.label})`}
-            trigger={<PriorityTrigger priority={issue.priority} />}
+            trigger={<PriorityTrigger priority={issue.priority} surfaceLum={surfaceLum} />}
             align="end"
           />
         ) : (
-          <PriorityBadge priority={issue.priority} />
+          <PriorityBadge priority={issue.priority} surfaceLum={surfaceLum} />
         )}
       </div>
 

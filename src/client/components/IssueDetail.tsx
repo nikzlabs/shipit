@@ -27,7 +27,6 @@ import {
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
-import { Badge } from "./ui/badge.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
@@ -35,6 +34,7 @@ import { MarkdownContent } from "./message-markdown.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
+  PriorityBadge,
   PriorityTrigger,
   statusDotColor,
   type IssueStatusRef,
@@ -84,19 +84,6 @@ export interface IssueDetailProps {
   onSetPriority: (level: IssuePriorityLevel) => Promise<string | null>;
 }
 
-const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
-  urgent: "error",
-  high: "warning",
-  medium: "info",
-  low: "default",
-  none: "default",
-};
-
-/**
- * Status accent by normalized workflow-state type. Both trackers normalize onto
- * the same vocabulary (Linear's six types, GitHub's open→started / closed→
- * completed), so a single mapping colors the status dot + label across both.
- */
 /** Status-NAME text color by workflow-state type (the dot uses the tracker color). */
 function statusTextClass(type?: string): string {
   switch (type) {
@@ -111,8 +98,7 @@ function statusTextClass(type?: string): string {
   }
 }
 
-function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> }) {
-  const surfaceLum = useSurfaceLuminance("--color-bg-primary");
+function StatusPill({ status, surfaceLum }: { status: NonNullable<TrackerIssue["status"]>; surfaceLum: number }) {
   return (
     <span className="inline-flex items-center gap-1.5 h-[18px] text-[11px] font-medium leading-none">
       <span
@@ -122,15 +108,6 @@ function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> })
       />
       <span className={statusTextClass(status.type)}>{status.name}</span>
     </span>
-  );
-}
-
-function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {
-  if (priority.level === "none") return null;
-  return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px] leading-none">
-      {priority.label}
-    </Badge>
   );
 }
 
@@ -158,6 +135,8 @@ export function IssueDetail({
   const title = detail?.title ?? selection.title ?? selection.identifier;
   const url = detail?.url ?? selection.url;
   const trackerLabel = info?.label ?? (selection.tracker === "github" ? "GitHub" : "Linear");
+  // Detail body sits on the primary surface; adapt status/priority colors to it.
+  const surfaceLum = useSurfaceLuminance("--color-bg-primary");
   // A card-opened issue with no seed and no detail yet has nothing to show but
   // the identifier — render the skeleton until the first fetch lands.
   const showSkeleton = loading && !detail;
@@ -229,7 +208,7 @@ export function IssueDetail({
                   options={detail.availableStatuses ?? availableStatuses}
                   onSelect={onSetStatus}
                   ariaLabel={`Change status (currently ${detail.status.name})`}
-                  trigger={<StatusPill status={detail.status} />}
+                  trigger={<StatusPill status={detail.status} surfaceLum={surfaceLum} />}
                 />
               )}
               {detail &&
@@ -238,10 +217,10 @@ export function IssueDetail({
                     current={detail.priority.level}
                     onSelect={onSetPriority}
                     ariaLabel={`Change priority (currently ${detail.priority.label})`}
-                    trigger={<PriorityTrigger priority={detail.priority} />}
+                    trigger={<PriorityTrigger priority={detail.priority} surfaceLum={surfaceLum} />}
                   />
                 ) : (
-                  <PriorityBadge priority={detail.priority} />
+                  <PriorityBadge priority={detail.priority} surfaceLum={surfaceLum} />
                 ))}
             </div>
 

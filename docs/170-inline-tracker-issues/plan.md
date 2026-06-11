@@ -271,8 +271,18 @@ rather than a flat text table:
   works for every theme — not a light/dark flag. Only hex colors are adapted;
   CSS-var tokens (priority colors, type fallbacks) pass through, already
   theme-tuned. Verified live on warm-light vs dark.
-- **Priority colors are all distinct.** `PRIORITY_DOT_COLOR` (exported) gives Low
-  its own color (green) so it no longer reads identically to No-priority (gray).
+- **Priority colors are a fixed, theme-independent palette.** `PRIORITY_DOT_COLOR`
+  is a fixed set of hex hues (urgent red, high amber, medium blue, low green, none
+  gray) — NOT the semantic `--color-error/warning/info/success` tokens. Those
+  tokens are deliberately re-tinted by the warm/Claude themes (their `--color-info`
+  is terracotta, not blue), which made **Medium flip from blue to red across
+  themes** and collide with Urgent/High. The fixed hues run through the same
+  `adaptColorForSurface` (so they stay legible per theme) and feed every priority
+  surface through shared helpers in `IssueFieldControls.tsx` — `priorityColor`
+  (dot/checkbox) and the exported `PriorityBadge` + `PriorityTrigger` (the pills,
+  now a tinted-bg + adapted-text pill rather than a `Badge` variant). Low keeps
+  its own green so it doesn't read like No-priority (gray). Verified live: Medium
+  is `#3b82f6` on both dark and claude-light.
 - **Filter bar (docs/173) parity.** The search box and the Priority/Status/
   Assignee facet triggers are pinned to one height (`h-8`) so the bar reads as a
   single control strip. The Priority/Status options color the **checkbox itself**
