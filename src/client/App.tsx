@@ -761,17 +761,15 @@ export default function App() {
     }
   }, [handleNewSessionForRepo, navigate]);
 
-  // Quick-capture (the lightning / lightning+mic buttons) normally spawns a
-  // *background* session and intentionally does NOT navigate — docs/145. The
-  // exception: when the user is on a /{slug}/new page, that page has already
-  // claimed an ungraduated warm session, and the server's claim *reuse* path
-  // (`findUngraduatedWarm`) graduates that very session instead of minting a
-  // fresh one. In that case the "background" session IS the one we're viewing,
-  // so leaving the URL on /{slug}/new strands it — the session graduated but
-  // the address bar stayed on .../new. Detect the reuse (returned id === the
-  // session we're sitting on) and graduate the URL exactly as a normal send
-  // does (handleSend). A genuine background session (different repo, or a
-  // fresh pre-warm) returns a different id, so it stays background — no nav.
+  // Quick-capture (the lightning / lightning+mic buttons) always spawns a
+  // *background* session and does NOT navigate — docs/145. It leaves your
+  // current `/{slug}/new` draft untouched: the headless claim sets
+  // `skipReuse: true`, so the server always mints a fresh session and never
+  // recycles the ungraduated draft you're typing in (that hijack-the-draft
+  // bug is exactly what `skipReuse` fixes). The returned id therefore never
+  // equals the session we're viewing, so the guard below is a defensive
+  // no-op kept only against a future claim path that could reuse — if one
+  // ever did, we'd graduate the URL to /session/{id} as a normal send does.
   const handleQuickSessionCreated = useCallback(
     (session: SessionInfo) => {
       if (isNewSessionRoute && session.id === useSessionStore.getState().sessionId) {

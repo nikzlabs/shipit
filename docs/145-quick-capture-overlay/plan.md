@@ -222,22 +222,27 @@ container. The agent only starts when the first WS `send_message`
 message arrives. So "don't navigate" is still load-bearing — but for
 activation + first message, not for container boot.
 
-**Exception — graduating the `/{slug}/new` page's own session.** "Don't
-navigate" is the rule for *background* sessions, but it has one corner. When
-the user fires quick-capture while sitting on a `/{slug}/new` page, that page
-has already claimed an **ungraduated warm session**, and the server's claim
-*reuse* path (`claim-session.ts` → `findUngraduatedWarm`) hands that very
-session back instead of minting a fresh one. The overlay then graduates the
-session the user is *looking at* — so it isn't a background session at all,
-and leaving the URL stuck on `/{slug}/new` strands a now-real session behind a
-"new"-shaped URL (the bug: "worked in the same session, but the URL didn't
-change"). Fix: the overlay reports the created session to the app via
-`onSessionCreated`, and `App.tsx` `handleQuickSessionCreated` graduates the URL
-to `/session/{id}` **only when the returned id equals the active session id**
-(i.e. the overlay reused what we're viewing). A genuine background session — a
-different repo, or a fresh pre-warm — returns a different id, matches nothing,
-and stays background. This mirrors the existing `/{slug}/new` → `/session/{id}`
-graduation that a normal `handleSend` already performs.
+**Quick-capture never touches the `/{slug}/new` page's own draft (revised).**
+"Don't navigate" is the rule for *background* sessions, and it now holds with no
+exceptions. The original design had a corner: when the user fired quick-capture
+while sitting on a `/{slug}/new` page, that page had already claimed an
+**ungraduated warm session**, and the server's claim *reuse* path
+(`claim-session.ts` → `findUngraduatedWarm`) handed that very session back
+instead of minting a fresh one — so the overlay graduated the session the user
+was *looking at*. We coped with that by navigating the URL to `/session/{id}`
+when the returned id matched the active session.
+
+That coping was wrong. A user composing a draft and *then* firing quick-capture
+to kick off a **separate** background session expects their draft to stay put —
+not to be hijacked and graduated with the quick-capture prompt (a message
+appearing from nowhere mid-compose; the same class of bug `spawnChildSession`
+hit). So `createHeadlessSession` now claims with **`skipReuse: true`** — the
+reuse path is disabled for headless creation entirely, so quick-capture always
+mints a fresh background session and leaves the draft untouched. The
+`onSessionCreated` → `handleQuickSessionCreated` reuse-and-navigate guard
+remains as a defensive no-op (the returned id can no longer equal the draft's),
+not as live behavior. Abandoned drafts are still recycled by the *interactive*
+home-screen claim (which keeps reuse on), so nothing leaks.
 
 **But the right primitive already exists.** Look at
 `src/server/orchestrator/services/child-sessions.ts:spawnChildSession`:

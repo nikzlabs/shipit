@@ -92,8 +92,10 @@ export interface ClaimSessionOptions {
   excludeSessionIds?: string[];
   /**
    * When `true`, skip the *reuse* path entirely — never hand back an existing
-   * ungraduated warm session via `findUngraduatedWarm`. Background, agent-driven
-   * claims (`spawnChildSession`) MUST set this.
+   * ungraduated warm session via `findUngraduatedWarm`. Background, non-interactive
+   * claims that mint a *new* session for the requested work — `spawnChildSession`
+   * (agent-driven children) and `createHeadlessSession` (quick-capture,
+   * issue-seeded "Start session", webhooks) — MUST set this.
    *
    * The reuse path recycles *abandoned* drafts so the home-screen quick-capture
    * flow doesn't leak warm sessions (docs/145). But `findUngraduatedWarm` scans

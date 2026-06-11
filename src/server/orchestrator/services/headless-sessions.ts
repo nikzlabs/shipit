@@ -171,7 +171,14 @@ export async function createHeadlessSession(
   const branchName = explicitBranch || generateBranchPrefix();
   assertValidBranchName(branchName);
 
-  const claimed = await claimService.claim(repoUrl);
+  // `skipReuse: true` — a headless session is always a *new* session for the
+  // requested work (quick-capture, issue-seeded "Start session", webhooks),
+  // never a recycle of an existing draft. Without it, the claim reuse path
+  // (`findUngraduatedWarm`) could hand back an ungraduated `/{repo}/new` draft
+  // the user is actively typing in for the same repo — graduating it and
+  // dispatching this headless prompt into the session they're viewing (a
+  // message appearing from nowhere mid-compose). Mirrors `spawnChildSession`.
+  const claimed = await claimService.claim(repoUrl, { skipReuse: true });
   const newSessionId = claimed.sessionId;
   const newWorkspaceDir = claimed.workspaceDir;
 
