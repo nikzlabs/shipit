@@ -16,6 +16,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
+  IssueLabel,
 } from "../../shared/types.js";
 
 /** Options narrowing what {@link Tracker.listIssues} returns. */
@@ -98,6 +99,16 @@ export interface Tracker {
    * tracker (callers check `isConfigured()` first).
    */
   listStatuses(): Promise<{ name: string; type?: string; color?: string }[]>;
+
+  /**
+   * The full set of labels for the tracker's bound scope (SHI-92 foundation) —
+   * Linear's team/workspace `issueLabels`, GitHub's repo labels — each with its
+   * tracker-supplied color. Powers the available-labels endpoint a follow-up
+   * label filter/editor consumes, and is the same fetch that yields the real
+   * colors the chips render. Throws on an unconfigured tracker (callers check
+   * `isConfigured()` first).
+   */
+  listLabels(): Promise<IssueLabel[]>;
 
   /**
    * List an issue's comments, oldest-first, for the inline comment thread

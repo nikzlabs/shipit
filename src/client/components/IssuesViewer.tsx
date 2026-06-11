@@ -22,6 +22,7 @@ import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type {
+  IssueLabel,
   IssuePriorityLevel,
   TrackerId,
   TrackerInfo,
@@ -102,16 +103,17 @@ function AssigneeLabel({ assignee }: { assignee: NonNullable<TrackerIssue["assig
 }
 
 /**
- * Label chips shown under the issue title (SHI-92). Each chip pairs a
- * deterministic colored dot (so labels are visually distinguishable at a glance —
- * neither tracker gives us a label color on the list path) with the label name
- * in token-driven text, keeping the chip legible in every theme. We cap the row
- * at a handful of chips and roll the rest into a "+N" so a heavily-labeled issue
- * never blows out the title cell.
+ * Label chips shown under the issue title (SHI-92). Each chip pairs a colored
+ * dot with the label name in token-driven text, keeping the chip legible in
+ * every theme. The dot uses the tracker's own label color when present, falling
+ * back to a deterministic hash of the name (`labelDotColor`) when it isn't — so
+ * labels stay visually distinguishable even on a path that omits the color. We
+ * cap the row at a handful of chips and roll the rest into a "+N" so a
+ * heavily-labeled issue never blows out the title cell.
  */
 const MAX_LABELS = 4;
 
-function IssueLabels({ labels }: { labels?: string[] }) {
+function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
   if (!labels || labels.length === 0) return null;
   const shown = labels.slice(0, MAX_LABELS);
   const overflow = labels.length - shown.length;
@@ -119,19 +121,22 @@ function IssueLabels({ labels }: { labels?: string[] }) {
     <div className="mt-1.5 flex flex-wrap items-center gap-1">
       {shown.map((label) => (
         <span
-          key={label}
+          key={label.name}
           className="inline-flex items-center gap-1 max-w-[160px] rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) pl-1.5 pr-2 py-px text-[10px] font-medium text-(--color-text-secondary)"
         >
           <span
             className="size-1.5 shrink-0 rounded-full"
-            style={{ backgroundColor: labelDotColor(label) }}
+            style={{ backgroundColor: label.color ?? labelDotColor(label.name) }}
             aria-hidden="true"
           />
-          <span className="truncate">{label}</span>
+          <span className="truncate">{label.name}</span>
         </span>
       ))}
       {overflow > 0 && (
-        <span className="text-[10px] font-medium text-(--color-text-tertiary)" title={labels.slice(MAX_LABELS).join(", ")}>
+        <span
+          className="text-[10px] font-medium text-(--color-text-tertiary)"
+          title={labels.slice(MAX_LABELS).map((l) => l.name).join(", ")}
+        >
           +{overflow}
         </span>
       )}

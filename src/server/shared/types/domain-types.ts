@@ -288,6 +288,21 @@ export interface IssuePriority {
   label: string;
 }
 
+/**
+ * An issue label, by display name plus the tracker's own color (SHI-92
+ * foundation). Both trackers expose a real per-label color — Linear's
+ * `issueLabels[].color`, GitHub's repo `labels[].color` — so the Issues-tab
+ * chips can render the tracker's hue instead of a name-hashed guess. `color` is
+ * normalized to a CSS-ready hex with a leading `#` (GitHub returns it without
+ * one); it's optional because some trackers/paths may not supply it, in which
+ * case the client falls back to a deterministic hash of the name.
+ */
+export interface IssueLabel {
+  name: string;
+  /** CSS-ready hex (`#rrggbb`) from the tracker, when it supplies one. */
+  color?: string;
+}
+
 /** A single issue row returned by a tracker's `listIssues()`. */
 export interface TrackerIssue {
   /** Tracker-internal node id (Linear GraphQL id). Used for `getIssue()`. */
@@ -301,13 +316,15 @@ export interface TrackerIssue {
   description?: string;
   priority: IssuePriority;
   /**
-   * The issue's labels, by display name (SHI-92). Both trackers support labels
-   * natively — Linear's issue labels, GitHub's REST labels. Surfaced so the
-   * agent's `--json` output and the provenance card reflect what was set, and so
-   * a label edit can snapshot the prior set for undo. Absent when the issue has
-   * no labels.
+   * The issue's labels, each carrying its display name and the tracker's own
+   * color (SHI-92 + foundation). Both trackers support labels natively —
+   * Linear's issue labels, GitHub's REST labels — and both expose a real color,
+   * so the chips render the tracker's hue (falling back to a name hash when
+   * `color` is absent). Surfaced so the agent's `--json` output and the
+   * provenance card reflect what was set, and so a label edit can snapshot the
+   * prior set for undo. Absent when the issue has no labels.
    */
-  labels?: string[];
+  labels?: IssueLabel[];
   /**
    * Workflow state, e.g. { name: "In Progress", type: "started" }. `color` is the
    * tracker's own per-state color (Linear's state hex) so the UI dot matches the
@@ -397,6 +414,8 @@ export type IssueWriteUndo =
   // SHI-92 — an edit may also change labels/priority; the prior label set and
   // prior priority level are snapshotted so undo restores them (the prior labels
   // replace the post-edit set; the prior priority level is re-applied).
+  // `previousLabels` holds label *names* (the write API resolves names → ids),
+  // not the colored `IssueLabel` read shape — undo only needs to restore names.
   | {
       kind: "edit";
       previousTitle?: string;
@@ -535,6 +554,17 @@ export interface ListIssuesResult {
    * Best-effort: absent when the tracker is unconfigured or the lookup failed.
    */
   availableStatuses?: { name: string; type?: string; color?: string }[];
+}
+
+/**
+ * Response shape for `GET /api/issue/labels?tracker=[&sessionId=]` — the
+ * tracker's full set of available labels (name + color), the foundation for a
+ * label filter facet and an on-page label editor. The same fetch that yields the
+ * real per-label colors the chips render: Linear's team `issueLabels`, GitHub's
+ * repo labels. Best-effort/read-only, mirroring `availableStatuses`.
+ */
+export interface ListLabelsResult {
+  labels: IssueLabel[];
 }
 
 /**

@@ -205,6 +205,27 @@ describe("issues-store status/priority writes (docs/191)", () => {
     ]);
   });
 
+  it("fetchLabels caches the tracker's available label set (SHI-92 foundation)", async () => {
+    globalThis.fetch = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          labels: [
+            { name: "bug", color: "#d73a4a" },
+            { name: "design" },
+          ],
+        }),
+        { status: 200 },
+      ),
+    ) as typeof fetch;
+    await useIssuesStore.getState().fetchLabels("linear");
+    const url = (globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(url).toContain("/api/issue/labels?tracker=linear");
+    expect(useIssuesStore.getState().labelsByTracker.linear).toEqual([
+      { name: "bug", color: "#d73a4a" },
+      { name: "design" },
+    ]);
+  });
+
   it("setIssueStatus patches the list row + open detail and posts the native id", async () => {
     const issue = makeIssue({ id: "node-1", status: { name: "In Progress", type: "started" } });
     const updated = makeIssue({ id: "node-1", status: { name: "Done", type: "completed" } });

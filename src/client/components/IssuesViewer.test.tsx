@@ -170,7 +170,9 @@ describe("IssuesViewer", () => {
   });
 
   it("renders label chips under the title, capping with a +N overflow (SHI-92)", () => {
-    const issue = makeIssue({ labels: ["bug", "design", "infra", "ui", "git", "docs"] });
+    const issue = makeIssue({
+      labels: ["bug", "design", "infra", "ui", "git", "docs"].map((name) => ({ name })),
+    });
     const props = defaultProps({ issues: [issue] });
     render(<IssuesViewer {...props} />);
     // First MAX_LABELS (4) render as chips; the rest collapse into "+N".
