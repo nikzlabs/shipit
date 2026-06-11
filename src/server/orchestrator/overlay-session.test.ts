@@ -255,6 +255,33 @@ describe("validDepDirsForOverlay", () => {
     expect(await validDepDirsForOverlay(["node_modules"], dir)).toEqual(["node_modules"]);
   });
 
+  it("keeps a dep dir matched by a directory-only pattern when the dir does not exist yet", async () => {
+    // The fresh-clone case the overlay targets: `node_modules/` (trailing
+    // slash) is the common .gitignore form, and the dep dir is absent until
+    // the first install. `git check-ignore node_modules` does NOT match a
+    // directory-only pattern for a non-existent path — only the slash-form
+    // query does. Regression: prod fresh sessions silently got no overlay.
+    const dir = await repo({ gitignore: "node_modules/\n" });
+    expect(await validDepDirsForOverlay(["node_modules"], dir)).toEqual(["node_modules"]);
+  });
+
+  it("keeps a dep dir matched by a directory-only pattern when the dir exists", async () => {
+    const dir = await repo({ gitignore: "node_modules/\n", dirs: ["node_modules"] });
+    expect(await validDepDirsForOverlay(["node_modules"], dir)).toEqual(["node_modules"]);
+  });
+
+  it("keeps a nested dep dir under a directory-only pattern when absent", async () => {
+    const dir = await repo({ gitignore: "node_modules/\n", dirs: ["packages/app"] });
+    expect(await validDepDirsForOverlay(["packages/app/node_modules"], dir)).toEqual([
+      "packages/app/node_modules",
+    ]);
+  });
+
+  it("still drops a non-ignored dep dir that does not exist (slash query must not false-positive)", async () => {
+    const dir = await repo({ gitignore: "node_modules/\n" });
+    expect(await validDepDirsForOverlay(["vendor"], dir)).toEqual([]);
+  });
+
   it("drops a dep dir that is tracked source (not git-ignored)", async () => {
     const dir = await repo({ gitignore: "node_modules\n", dirs: ["src"] });
     // `src` exists and is committed-style source — not ignored → must not be overlaid.
