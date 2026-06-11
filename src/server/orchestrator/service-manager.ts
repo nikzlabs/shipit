@@ -363,11 +363,20 @@ export class ServiceManager extends EventEmitter {
       onRunning: (name) => {
         // Service recovered — clear any pending install-window retry state.
         this.retry.clearRetryState(name);
-        // First boot after the gate opened succeeded — leave the post-gate
-        // recovery window so a later, unrelated crash gets normal error
-        // handling rather than a silent restart.
-        this.postGateServices.delete(name);
-        this.retry.clearPostGateState(name);
+        // Leave the post-gate recovery window only after the service has been
+        // STABLY running, not at the first `running` poll: a
+        // `command: sh -c "npm install && npm run dev"` service is `running` a
+        // minute before the dev server exists, and a crash in that
+        // establishment phase (live: ETXTBSY in the service's own npm install,
+        // docs/183 FINDINGS) used to land outside the window and latch to
+        // `error` with zero retries. Flapping keeps the bounded attempt
+        // budget — the timer is cancelled on every exit, so a crash-loop
+        // still exhausts MAX_POST_GATE_RETRIES rather than looping forever.
+        if (this.postGateServices.has(name)) {
+          this.retry.armPostGateStableClear(name, () => {
+            this.postGateServices.delete(name);
+          });
+        }
         // If a previous OOM kicked off auto-retries, arm a stable-uptime
         // timer that clears the OOM counter once the service has been
         // healthy long enough. We don't clear the counter eagerly: a
@@ -377,6 +386,7 @@ export class ServiceManager extends EventEmitter {
       },
       onLeftRunning: (name) => {
         this.retry.cancelOomStableTimer(name);
+        this.retry.cancelPostGateStableTimer(name);
       },
       onExitedCleanly: (name) => {
         this.retry.clearRetryState(name);
@@ -1194,6 +1204,7 @@ export class ServiceManager extends EventEmitter {
       // next gate open re-arms a fresh one.
       this.postGateServices.delete(svc.name);
       this.retry.clearPostGateState(svc.name);
+      this.retry.cancelPostGateStableTimer(svc.name);
     }
     void this.stopGatedForReinstall([...this.gatedServices]);
   }

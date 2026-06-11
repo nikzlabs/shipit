@@ -2103,6 +2103,62 @@ services:
     expect(webUps).toBeGreaterThanOrEqual(2);
   });
 
+  it("keeps the post-gate window open while the service establishes — a crash after first `running` is retried", async () => {
+    // Regression for the live docs/183 finding: a `command: npm install && npm
+    // run dev` service is `running` a minute before the dev server exists; an
+    // ETXTBSY crash in that establishment phase used to land OUTSIDE the
+    // post-gate window (it closed at the first `running` poll) and latch to
+    // `error` with zero retries. The window must now stay open until the
+    // service has been stably running.
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+    const poll = () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+
+    // Gate opens onto a service that boots `running` immediately…
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(false);
+    await vi.advanceTimersByTimeAsync(0); // flush the gate-open up→poll chain
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // …then crashes during establishment, well before the 60s stable window.
+    await vi.advanceTimersByTimeAsync(10_000);
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 1 }));
+    await poll();
+
+    // Held in `starting` with a bounded retry pending — NOT latched to error.
+    const web = mgr.getService("web");
+    expect(web?.status).toBe("starting");
+    expect(web?.error).toBeUndefined();
+  });
+
+  it("closes the post-gate window once the service has been stably running", async () => {
+    vi.useFakeTimers();
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const { mgr, setPsResponse } = makeManager(dir);
+    const poll = () => (mgr as unknown as { poller: { pollOnce(): Promise<void> } }).poller.pollOnce();
+
+    mgr.setInstallRunning(true);
+    await mgr.start();
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "running", ExitCode: 0 }));
+    mgr.setInstallRunning(false);
+    await vi.advanceTimersByTimeAsync(0); // flush the gate-open up→poll chain
+    expect(mgr.getService("web")?.status).toBe("running");
+
+    // Stays up past the stable window (60s) → the recovery window closes.
+    await vi.advanceTimersByTimeAsync(61_000);
+
+    // A later, unrelated crash gets normal error handling.
+    setPsResponse(JSON.stringify({ Service: "web", ID: "abc", State: "exited", ExitCode: 1 }));
+    await poll();
+    expect(mgr.getService("web")?.status).toBe("error");
+  });
+
   it("latches to error after exhausting the post-gate retry budget", async () => {
     vi.useFakeTimers();
     const dir = setup();

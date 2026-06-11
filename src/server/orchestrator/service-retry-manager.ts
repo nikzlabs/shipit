@@ -34,6 +34,17 @@ const OOM_STABLE_RESET_MS = 60_000;
  * docs/137-depends-on-install.
  */
 const MAX_POST_GATE_RETRIES = 5;
+/**
+ * How long a formerly-gated service must stay `running` before it leaves the
+ * post-gate recovery window. "Running" alone is not establishment for a
+ * `command: sh -c "npm install && npm run dev"` service — the container is
+ * `running` a minute before the dev server exists, and a crash in that
+ * establishment phase (observed live: an ETXTBSY in the service's own npm
+ * install ~60s after start, docs/183 FINDINGS) used to fall outside the
+ * window and latch straight to `error` with zero retries. Same shape as the
+ * OOM stable-uptime reset.
+ */
+const POST_GATE_STABLE_MS = 60_000;
 
 export interface ServiceRetryManagerOptions {
   sessionId: string;
@@ -92,6 +103,15 @@ export class ServiceRetryManager {
    * explicit user action, or on manager-wide cleanup.
    */
   private postGateRetryAttempts = new Map<string, number>();
+  /**
+   * Per-service stable-uptime timers for the post-gate window. Armed when a
+   * formerly-gated service reaches `running`; if it stays up for
+   * `POST_GATE_STABLE_MS` the window closes (the manager drops it from
+   * `postGateServices` via the callback) and the attempt budget clears. The
+   * timer is cancelled if the service leaves `running` first, so a crash in
+   * the establishment phase still finds the window open.
+   */
+  private postGateStableTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(opts: ServiceRetryManagerOptions) {
     this.sessionId = opts.sessionId;
@@ -247,6 +267,32 @@ export class ServiceRetryManager {
   }
 
   /**
+   * Arm the post-gate stable-uptime timer for a formerly-gated service that
+   * just reached `running`. When it fires (the service stayed up for
+   * `POST_GATE_STABLE_MS`), the attempt budget clears and `onStable` runs —
+   * the manager uses it to drop the service from its post-gate window. No-op
+   * if a timer is already armed (a `running` poll repeats every cycle).
+   */
+  armPostGateStableClear(name: string, onStable: () => void): void {
+    if (this.postGateStableTimers.has(name)) return;
+    const timer = setTimeout(() => {
+      this.postGateStableTimers.delete(name);
+      this.postGateRetryAttempts.delete(name);
+      onStable();
+    }, POST_GATE_STABLE_MS);
+    this.postGateStableTimers.set(name, timer);
+  }
+
+  /** Cancel the post-gate stable timer for a service (when it leaves `running`). */
+  cancelPostGateStableTimer(name: string): void {
+    const timer = this.postGateStableTimers.get(name);
+    if (timer) {
+      clearTimeout(timer);
+      this.postGateStableTimers.delete(name);
+    }
+  }
+
+  /**
    * Arm a stable-uptime timer for a service that has reached `running`
    * after at least one OOM auto-retry. If the service stays running for
    * `OOM_STABLE_RESET_MS` the OOM counter resets; if it leaves `running`
@@ -309,6 +355,8 @@ export class ServiceRetryManager {
     for (const timer of this.oomStableTimers.values()) clearTimeout(timer);
     this.oomStableTimers.clear();
     this.oomRetryAttempts.clear();
+    for (const timer of this.postGateStableTimers.values()) clearTimeout(timer);
+    this.postGateStableTimers.clear();
     this.postGateRetryAttempts.clear();
   }
 
