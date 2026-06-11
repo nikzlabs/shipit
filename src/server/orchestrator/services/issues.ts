@@ -32,6 +32,21 @@ import {
 } from "../trackers/index.js";
 import { ServiceError } from "./types.js";
 
+/**
+ * Whether an issue's status marks it as a duplicate. A duplicate is terminal —
+ * the work lives on the issue it duplicates — so it belongs with the done set,
+ * not the open working set, and is dropped when the caller hasn't opted into
+ * done issues (the Issues tab's "Show done" toggle off; the agent's default
+ * `open` list scope). Matched on the normalized status *name* because neither
+ * tracker exposes "duplicate" as a status *type*: Linear models it as a
+ * workflow state named "Duplicate" (whose type may be `canceled` or, in some
+ * teams, a non-terminal type that the adapter's type filter wouldn't catch),
+ * and GitHub as a close-reason the read adapter folds into a plain "Closed".
+ */
+export function isDuplicateStatus(name?: string): boolean {
+  return name?.trim().toLowerCase() === "duplicate";
+}
+
 /** All known trackers + their configured state — drives the sub-tab switcher. */
 export function listTrackers(
   credentialStore: CredentialStore,
@@ -71,9 +86,15 @@ export async function listIssuesForTracker(
       tracker.listIssues(options),
       tracker.listStatuses().catch(() => [] as { name: string; type?: string; color?: string }[]),
     ]);
+    // Duplicates are terminal, so they only belong in the list once the caller
+    // opts into done issues — drop them from the default open working set
+    // (tracker-neutral; see `isDuplicateStatus`).
+    const visible = options?.includeDone
+      ? issues
+      : issues.filter((i) => !isDuplicateStatus(i.status?.name));
     return {
       tracker: tracker.info(),
-      issues,
+      issues: visible,
       ...(availableStatuses.length > 0 ? { availableStatuses } : {}),
     };
   } catch (err) {
