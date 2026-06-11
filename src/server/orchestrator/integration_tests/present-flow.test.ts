@@ -147,6 +147,10 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       // Treat the temp dir as the workspace so artifacts submitted from it count
       // as in-workspace (drives the `inWorkspace` flag the UI uses to hide Save).
       workspaceDir: tmpDir,
+      // Shrink the memory backstop so the eviction path is reachable in a test
+      // (production default is 256 MB — never hit by real sessions). There is no
+      // per-artifact or entry-count cap to exercise anymore.
+      presentBufferOptions: { maxTotalBytes: 40 },
     });
     const address = await worker.start();
     const port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
@@ -306,18 +310,21 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(runner.presentations[0].content).toBe("<p>v2</p>");
   });
 
-  it("emits present_cleared and drops the oldest entry on LRU eviction (cap 20)", async () => {
-    // Fill the buffer to its 20-entry cap, then one more to force eviction of
-    // the oldest. Capture the first id so we can assert it's the one cleared.
-    const first = await submitPresent(workerUrl, { content: "entry-0", mimeType: "text/plain" });
-    for (let i = 1; i < 20; i++) {
-      await submitPresent(workerUrl, { content: `entry-${i}`, mimeType: "text/plain" });
+  it("emits present_cleared and LRU-evicts the oldest only when the memory backstop is exceeded", async () => {
+    // The worker's backstop is shrunk to 40 bytes in beforeEach (production
+    // default is 256 MB). Four 10-byte artifacts sit exactly at budget; a fifth
+    // pushes over and evicts the oldest. There is no per-artifact size cap and
+    // no entry-count cap — only this byte ceiling bounds the buffer.
+    const first = await submitPresent(workerUrl, { content: "0123456789", mimeType: "text/plain" });
+    for (let i = 1; i < 4; i++) {
+      await submitPresent(workerUrl, { content: "0123456789", mimeType: "text/plain" });
     }
-    await waitFor(() => presentContentMsgs().length >= 20, 5000, "20 present_content messages");
-    expect(runner.presentations).toHaveLength(20);
+    await waitFor(() => presentContentMsgs().length >= 4, 5000, "4 present_content messages");
+    expect(runner.presentations).toHaveLength(4);
 
-    // The 21st submission evicts the oldest (first) entry.
-    const evictor = await submitPresent(workerUrl, { content: "entry-20", mimeType: "text/plain" });
+    // The fifth submission pushes total bytes over the 40-byte backstop, forcing
+    // eviction of the oldest (first) entry.
+    const evictor = await submitPresent(workerUrl, { content: "0123456789", mimeType: "text/plain" });
 
     await waitFor(
       () => presentClearedMsgs().some((m) => m.presentId === first.presentId),
@@ -329,8 +336,8 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(cleared.type).toBe("present_cleared");
     expect(cleared.sessionId).toBe("present-session");
 
-    // Cache stays capped at 20: oldest dropped, newest present.
-    expect(runner.presentations).toHaveLength(20);
+    // Buffer holds four entries: oldest dropped, newest present.
+    expect(runner.presentations).toHaveLength(4);
     expect(runner.presentations.some((p) => p.presentId === first.presentId)).toBe(false);
     expect(runner.presentations.some((p) => p.presentId === evictor.presentId)).toBe(true);
   });

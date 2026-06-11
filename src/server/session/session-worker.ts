@@ -51,7 +51,8 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
-import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
+import { PresentBuffer } from "./present-buffer.js";
+import type { PresentBufferOptions } from "./present-buffer.js";
 import {
   registerPresentFilesRoutes,
   inferPresentMimeType,
@@ -92,6 +93,8 @@ export interface SessionWorkerDeps {
   createTerminal?: () => TerminalProcess;
   /** Factory for the worker→orchestrator client. Injectable so tests can stub the orchestrator. */
   createOrchestratorClient?: () => OrchestratorClient;
+  /** Present buffer tuning (injectable so tests can drive the memory backstop with a small ceiling). */
+  presentBufferOptions?: PresentBufferOptions;
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +158,10 @@ export class SessionWorker extends EventEmitter {
 
   // docs/093 — present tool buffer. Holds the bytes the agent emitted via
   // `present` so the client can render them and "Save to project" can copy
-  // them into the workspace exactly as they were displayed. Bounded by entry
-  // count + total bytes (see PresentBuffer).
-  private readonly presentBuffer = new PresentBuffer();
+  // them into the workspace exactly as they were displayed. No per-artifact or
+  // entry-count cap — bounded only by a generous total-memory backstop to keep
+  // a runaway buffer from OOMing the worker (see PresentBuffer).
+  private readonly presentBuffer: PresentBuffer;
 
   constructor(deps: SessionWorkerDeps) {
     super();
@@ -168,6 +172,7 @@ export class SessionWorker extends EventEmitter {
     this._createFileWatcher = deps.createFileWatcher ?? (() => new FileWatcher());
     this._createTerminal = deps.createTerminal ?? (() => new TerminalProcess());
     this._createOrchestratorClient = deps.createOrchestratorClient;
+    this.presentBuffer = new PresentBuffer(deps.presentBufferOptions ?? {});
     this.sse = new SseBroadcaster({
       onBackpressureChange: () => this.applyTerminalBackpressure(),
     });
@@ -933,6 +938,9 @@ export class SessionWorker extends EventEmitter {
       const presentId = `pres_${crypto.randomUUID()}`;
       let result: ReturnType<PresentBuffer["put"]>;
       try {
+        // PresentBuffer never rejects (no per-artifact size cap) — the buffer
+        // only LRU-evicts against a generous memory backstop. The try/catch is
+        // a defensive 500 for genuinely unexpected failures.
         result = this.presentBuffer.put(presentId, {
           content,
           mimeType: resolvedMime,
@@ -940,9 +948,6 @@ export class SessionWorker extends EventEmitter {
           ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
         });
       } catch (err) {
-        if (err instanceof PresentBufferError) {
-          return reply.code(413).send({ error: err.message });
-        }
         return reply.code(500).send({ error: getErrorMessage(err) });
       }
 
