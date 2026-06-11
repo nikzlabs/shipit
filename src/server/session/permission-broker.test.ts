@@ -68,7 +68,7 @@ describe("PermissionBroker", () => {
     await first;
 
     // Same path again → a fresh card surfaces (not auto-allowed).
-    broker.request({ toolName: "Write", input: { file_path: ".npmrc" } });
+    void broker.request({ toolName: "Write", input: { file_path: ".npmrc" } });
     expect(broker.pendingCount).toBe(1);
   });
 
