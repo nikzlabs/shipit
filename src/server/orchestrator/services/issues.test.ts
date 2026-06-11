@@ -229,6 +229,34 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
     ]);
   });
 
+  it("drops duplicate-status issues from the default open list, keeps them when includeDone", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const nodes = [
+      {
+        id: "a", identifier: "SHI-1", title: "Open one", url: "https://linear.app/x/SHI-1",
+        priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null, labels: { nodes: [] },
+      },
+      {
+        id: "b", identifier: "SHI-2", title: "A dup", url: "https://linear.app/x/SHI-2",
+        priority: 0, state: { name: "Duplicate", type: "unstarted" }, assignee: null, labels: { nodes: [] },
+      },
+    ];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamIssues")) return jsonResponse({ data: { team: { issues: { nodes } } } });
+      if (query.includes("TeamStates")) return jsonResponse({ data: { team: { states: { nodes: [] } } } });
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+
+    const open = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    expect(open.issues.map((i) => i.identifier)).toEqual(["SHI-1"]);
+
+    const all = await listIssuesForTracker(store, "linear", fetchImpl, undefined, { includeDone: true });
+    expect(all.issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
+  });
+
   it("degrades to no availableStatuses when the states lookup fails (best-effort)", async () => {
     const store = tmpStore();
     store.setLinearToken("lin_x");

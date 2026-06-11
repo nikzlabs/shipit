@@ -33,6 +33,11 @@ and — importantly for writes — the issue's **available statuses** (the valid
 targets for `shipit issue status`). `--json` emits the raw object. The output
 shape is identical across trackers.
 
+`list --state` selects the scope: `open` (default) is the active working set —
+completed, canceled, and **duplicate** issues are excluded; `all` adds the done
+issues; `closed` is the done set only. Duplicates only surface under `all` /
+`closed`, never in the default open list.
+
 `view` also surfaces a small **navigation card** in the chat — a jump-to-issue
 affordance recording that you looked at the issue — so the user can follow along
 and open it without leaving ShipIt. It's the read-only sibling of the write
