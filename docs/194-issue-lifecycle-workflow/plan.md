@@ -111,9 +111,14 @@ The pointer is in the **tracker-neutral** form `shipit issue` already
 understands (`SHI-43`, `owner/repo#42`, or a full issue URL). Synonyms
 `Closes` / `Fixes` / `Resolves` are all accepted.
 
-On merge detection (`pr-status-poller.ts` → `onMergeDetectedCb`), ShipIt:
+Merge is detected inside `pr-status-poller.ts`'s `verifyMissingPr`, which already
+holds the full PR object — `findPullRequestAnyState` returns `pr.body` (used today
+at the `prBody:` emit sites) — at the exact point it sees `merged_at`. So the
+parse lives **there in the poller, where the body is in hand**, not in the
+`onMergeDetectedCb(sessionId)` callback, which carries only the sessionId and no
+body. At that point ShipIt:
 
-1. Fetches the merged PR body (already available on the merge path).
+1. Reads the merged `pr.body` (already in scope in `verifyMissingPr`).
 2. Parses it for `Closes/Fixes/Resolves <pointer>` lines.
 3. For **every** pointer found, calls the brokered `status completed` + posts a
    summary comment via the `Tracker` adapter — the same brokered write as 177,
@@ -152,14 +157,32 @@ just a benign duplicate.
 ### Where this respects the multi-PR thread
 
 docs/156's insight was that the **issue** is the cross-PR coordination log. This
-design leans into it:
+design honors it, but within the no-stored-linkage constraint: **ShipIt can only
+act on a merged PR when that PR's body names the issue.** Without a stored
+session↔issue record, an untagged intermediate PR gives the merge path no pointer,
+so there is nothing for ShipIt to comment on. The trail is therefore driven
+entirely by pointers in PR bodies:
 
-- Every merged PR can `reportPrMerged` a progress comment on the issue (156's
-  existing hook), regardless of whether it closes.
-- Only the PR carrying `Closes` flips the status.
+- A PR whose body carries `Closes <pointer>` flips the issue to `completed` and
+  posts the resolved-by comment.
+- A PR that wants to log progress *without* closing references the issue with a
+  non-closing `Refs <pointer>` line; the same merge-time parse posts a progress
+  comment but leaves the status untouched.
+- A PR that names no pointer produces **no** automatic comment — by design, since
+  ShipIt has no linkage to recover the issue from. (The agent can always comment
+  explicitly via `shipit issue comment` mid-session if it wants a note there.)
 
 So a feature shipping as refactor → feature → cleanup PRs leaves a readable trail
-on the issue, and the issue closes exactly once, when the agent says it's done.
+only for the PRs the agent tags (`Closes` or `Refs`), and the issue closes exactly
+once — at the `Closes` PR. This intentionally drops docs/156's "comment on *every*
+merged PR for free" framing: that framing assumed the trigger flow retained the
+issue ref per session, which this design deliberately does not.
+
+> **Note on docs/156.** The `IssueTrackerProvider` / `reportPrMerged` surface in
+> docs/156 is **design-only — it does not exist in source today.** This doc does
+> not extend an existing hook; the merge-time close/comment is implemented
+> standalone in `verifyMissingPr` (above). docs/156 is cited for its *trigger
+> flow and its cross-PR-thread insight*, not for a callable API.
 
 ## Agent-facing guidance (the prompt half)
 
@@ -172,8 +195,9 @@ Two small additions, since the agent is half the system:
   issue on merge — and that **omitting** it is how you signal "more PRs to come."
 - **The PR-creation guidance** already tells the agent to write a structured PR
   body; we extend it: if this PR fully resolves a tracked issue, add a `Closes
-  <pointer>` line; if it's partial, reference the issue without the closing
-  keyword.
+  <pointer>` line; if it's partial, add a non-closing `Refs <pointer>` line (posts
+  a progress comment on merge, leaves the issue open). A PR with no pointer at all
+  gets no automatic issue activity.
 
 The prompt makes the agent *use* the workflow; the deterministic seed-time
 `started` and the merge-time parse make the workflow *reliable* even when the
@@ -183,11 +207,12 @@ agent forgets — without ShipIt holding any session-issue state of its own.
 
 Note how short this is — no session-metadata changes, no new CLI verb.
 
-- `src/server/orchestrator/pr-status-poller.ts` — `onMergeDetectedCb` path; where
-  the merged PR body is parsed for closing pointers.
-- `src/server/orchestrator/app-lifecycle.ts:756` — the existing merge callback
-  wiring; the close-on-merge execution hangs off here, before/alongside
-  `markMergedAndPruneExcess`.
+- `src/server/orchestrator/pr-status-poller.ts` — **`verifyMissingPr`** is where
+  the close/comment lives: it already has the full PR (`findPullRequestAnyState` →
+  `pr.body`) in scope at the point it detects `merged_at`. Parse the body and
+  broker the writes here. The `onMergeDetectedCb(sessionId)` callback (poller:1271,
+  wired at `app-lifecycle.ts:756`) carries only the sessionId and **cannot** be the
+  parse site — it has no body; it stays as-is for the archive path.
 - `src/server/orchestrator/services/issues.ts` + `trackers/tracker.ts` — brokered
   `status`/`comment` writes (docs/177), reused **as-is** for both transitions
   (seed-time `started`, merge-time `completed`). No new write surface.
@@ -197,8 +222,9 @@ Note how short this is — no session-metadata changes, no new CLI verb.
 - `src/server/orchestrator/agent-instructions.ts` +
   `src/server/shipit-docs/issues.md` — agent guidance: call `status started` when
   starting non-seeded issue work, and the `Closes <pointer>` PR-body convention.
-- `docs/156-issue-to-session` — the `IssueTrackerProvider.reportPrMerged` hook and
-  trigger flow this builds on.
+- `docs/156-issue-to-session` — cited for its trigger flow and cross-PR-thread
+  insight only. Its `IssueTrackerProvider` / `reportPrMerged` surface is
+  **design-only and does not exist in source** — this work does not call into it.
 
 ## Decisions (resolved)
 

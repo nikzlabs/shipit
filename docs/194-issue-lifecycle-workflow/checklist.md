@@ -8,17 +8,18 @@ Design doc only so far. Implementation work, roughly in dependency order:
 - [ ] Confirm the `started` write reuses the docs/177 provenance card
 
 ## Completed-on-merge
-- [ ] Parse merged PR body for `Closes/Fixes/Resolves <pointer>` in the `onMergeDetectedCb` path
+- [ ] Parse merged `pr.body` for `Closes/Fixes/Resolves <pointer>` **inside `verifyMissingPr`** (where the PR body is in scope), not the `onMergeDetectedCb(sessionId)` callback (sessionId-only, no body)
 - [ ] For each pointer: brokered `status completed` + summary comment via `Tracker` adapter
-- [ ] No closing line → no-op (multi-PR case); closed-unmerged → no-op
+- [ ] Non-closing `Refs <pointer>` → progress comment only, status untouched
+- [ ] No pointer at all → no-op / no comment (multi-PR case); closed-unmerged → no-op
 - [ ] Provenance card for the completion write
 
 ## Agent guidance
-- [ ] Document `status started` (non-seeded) + the `Closes <pointer>` convention in `shipit-docs/issues.md`
-- [ ] Extend PR-creation guidance in `agent-instructions.ts` (Closes for finishing PR, plain reference for partial)
+- [ ] Document `status started` (non-seeded) + the `Closes`/`Refs <pointer>` conventions in `shipit-docs/issues.md`
+- [ ] Extend PR-creation guidance in `agent-instructions.ts` (Closes for finishing PR, Refs for partial/progress)
 
 ## Tests
-- [ ] Merge-path parse: closes / no-closes / closed-unmerged / multi-pointer (close all)
+- [ ] Merge-path parse: closes / refs-only / no-pointer / closed-unmerged / multi-pointer (close all)
 - [ ] Seed path fires `started` once at creation; idempotent if already started
 
 ## Reconciliation
