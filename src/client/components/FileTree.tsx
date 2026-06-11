@@ -50,7 +50,7 @@ function TreeNode({
       <div>
         <button
           onClick={toggle}
-          className="flex items-center gap-1.5 w-full text-left py-1 px-2 hover:bg-(--color-bg-hover) transition-colors text-sm text-(--color-text-primary)"
+          className="flex items-center gap-1.5 w-full text-left min-h-7 py-1 px-2 hover:bg-(--color-bg-hover) transition-colors text-sm text-(--color-text-primary)"
           style={{ paddingLeft }}
         >
           <CaretRightIcon size={12} className={`shrink-0 text-(--color-text-tertiary) transition-transform ${expanded ? "rotate-90" : ""}`} />
@@ -76,7 +76,7 @@ function TreeNode({
 
   return (
     <div
-      className={`group flex items-center py-1 px-2 text-sm transition-colors ${
+      className={`group flex items-center min-h-7 py-1 px-2 text-sm transition-colors ${
         isSelected
           ? "bg-(--color-accent-subtle) text-(--color-text-link)"
           : "text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
@@ -202,7 +202,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
             {uploads.filter((u) => u.status === "ready" && u.path).map((u) => (
               <div
                 key={u.id}
-                className="group flex items-center py-1 px-2 text-sm text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
+                className="group flex items-center min-h-7 py-1 px-2 text-sm text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
                 style={{ paddingLeft: 24 }}
               >
                 <button

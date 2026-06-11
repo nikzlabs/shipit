@@ -194,4 +194,23 @@ describe("FileTree", () => {
     fireEvent.click(screen.getByLabelText("Add data.csv to chat"));
     expect(onAddToChat).toHaveBeenCalledWith("/uploads/data.csv");
   });
+
+  it("reserves stable row height (min-h-7) so rows don't grow when hover action buttons appear", () => {
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onEdit={() => {}} onDownload={() => {}} onAddToChat={() => {}} />);
+
+    // File row
+    const fileRow = screen.getByText("index.ts").closest("div[draggable]");
+    expect(fileRow?.className).toContain("min-h-7");
+
+    // Folder row
+    const folderRow = screen.getByText("src").closest("button");
+    expect(folderRow?.className).toContain("min-h-7");
+
+    // Upload row
+    const uploadRow = screen.getByText("data.csv").closest("button")?.parentElement;
+    expect(uploadRow?.className).toContain("min-h-7");
+  });
 });
