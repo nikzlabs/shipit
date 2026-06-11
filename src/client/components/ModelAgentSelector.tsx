@@ -120,7 +120,12 @@ export function ModelAgentSelector({
   // previous session in the trigger while the menu rows are already correct.
   // formatModelName maps both versioned ids and our hardcoded keys to pretty
   // names, and shows the raw id for anything it doesn't recognize.
-  const displayName = formatModelName(pendingModelForCurrentSession ?? scopedLiveModel ?? persistedSelection ?? "");
+  const displayedModel = pendingModelForCurrentSession ?? scopedLiveModel ?? persistedSelection;
+  const displayName = formatModelName(displayedModel ?? "");
+  // Show the $ on the (collapsed) trigger too, so the usage-based cue stays
+  // visible once the metered model is the active one — not only while the
+  // dropdown is open.
+  const displayedModelMetered = !!displayedModel && METERED_MODELS.has(displayedModel);
 
   // The picker is interactive whenever it isn't in a loading transition.
   // Mid-session, the dropdown still opens — only cross-agent rows are locked
@@ -173,6 +178,13 @@ export function ModelAgentSelector({
             data-testid="model-agent-trigger"
           >
             <span>{displayName || "Loading..."}</span>
+            {displayedModelMetered && (
+              <CurrencyDollarIcon
+                size={ICON_SIZE.XS}
+                className="text-(--color-text-tertiary)"
+                data-testid="model-trigger-metered"
+              />
+            )}
             {canOpen && <CaretDownIcon size={ICON_SIZE.XS} />}
           </button>
         </DropdownMenuTrigger>
@@ -233,9 +245,13 @@ export function ModelAgentSelector({
                             data-testid={`model-metered-${model}`}
                           />
                         )}
-                        {isCurrentModel && (
-                          <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
-                        )}
+                        {/* Reserved trailing slot keeps the $ at a stable
+                            position whether or not the row is the selected one. */}
+                        <span className="flex w-4 shrink-0 justify-end">
+                          {isCurrentModel && (
+                            <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
+                          )}
+                        </span>
                       </DropdownMenuItem>
                     );
                   })}
