@@ -40,6 +40,7 @@ import { AutoMergeManager } from "./auto-merge-manager.js";
 import { CiGraceTracker } from "./ci-grace-tracker.js";
 import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
 import { RemediationArbiter } from "./auto-remediation-arbiter.js";
+import type { MergedPrInfo } from "./issue-lifecycle.js";
 
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
@@ -165,6 +166,14 @@ export class PrStatusPoller {
   /** Optional: called when a merged PR is detected — used to archive the session. */
   private onMergeDetectedCb?: (sessionId: string) => Promise<void>;
   /**
+   * docs/194 — called when a merged PR is detected, with the PR **body** in
+   * scope (which `onMergeDetectedCb` lacks). Drives the issue-lifecycle
+   * "→ completed" transition: parse `Closes/Refs <pointer>` lines and broker the
+   * status/comment writes. Distinct from `onMergeDetectedCb` (sessionId-only,
+   * archive path); both fire on the same merge.
+   */
+  private onMergedPr?: (info: MergedPrInfo) => Promise<void>;
+  /**
    * Optional: factory for a GitManager bound to a session's workspace dir.
    * When wired, the poller overrides GitHub's GraphQL `additions`/`deletions`
    * with a local `git diff --stat <base>...HEAD` so the PR card's diff numbers
@@ -210,6 +219,11 @@ export class PrStatusPoller {
     fetchAndFixCb?: FetchAndFixCb;
     onMergeDetectedCb?: (sessionId: string) => Promise<void>;
     /**
+     * docs/194 — merge-detected callback that receives the PR body, so the
+     * issue-lifecycle "→ completed" parse can run where the body is in scope.
+     */
+    onMergedPr?: (info: MergedPrInfo) => Promise<void>;
+    /**
      * When set, the poller swaps GitHub's GraphQL additions/deletions (which
      * lag a few seconds after each push while GitHub reindexes) for the same
      * locally-computed diff stats the click-through diff dialog uses, so the
@@ -228,6 +242,7 @@ export class PrStatusPoller {
     this.sseBroadcast = opts.sseBroadcast;
     this.runnerRegistry = opts.runnerRegistry;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
+    this.onMergedPr = opts.onMergedPr;
     this.createGitManager = opts.createGitManager;
     this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
     this.isAutoFixEnabled = opts.isAutoFixEnabled ?? (() => false);
@@ -1228,6 +1243,12 @@ export class PrStatusPoller {
       return;
     }
 
+    // Capture whether this session was already promoted to a terminal state
+    // before this verify, so the merge-driven side effects (archive,
+    // issue-lifecycle close) fire exactly once even if a forced verify races a
+    // poll that already promoted it.
+    const alreadyTerminal = this.mergedSessions.has(sessionId);
+
     // Terminal state — merged or closed-without-merge. Build a summary
     // mirroring the previous catchUpProbe shape (placeholder checks /
     // mergeable, since REST doesn't give us a rollup and the PR is now
@@ -1268,10 +1289,27 @@ export class PrStatusPoller {
     this.remediationArbiter.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 
-    if (isMerged && this.onMergeDetectedCb) {
-      this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
-        console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
-      });
+    if (isMerged && !alreadyTerminal) {
+      if (this.onMergeDetectedCb) {
+        this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
+          console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
+        });
+      }
+      // docs/194 — drive the issue-lifecycle "→ completed" transition from the
+      // merged PR body. This is the parse site the body is in scope at (the
+      // sessionId-only `onMergeDetectedCb` cannot be). Best-effort and
+      // independent of the archive path above.
+      if (this.onMergedPr) {
+        this.onMergedPr({
+          sessionId,
+          prNumber: pr.number,
+          prUrl: pr.url,
+          prTitle: pr.title,
+          body: pr.body,
+        }).catch((err: unknown) => {
+          console.error(`[pr-poller] Issue-lifecycle merge handling error for ${sessionId}:`, err);
+        });
+      }
     }
   }
 }

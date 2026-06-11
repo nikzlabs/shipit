@@ -10,6 +10,7 @@ import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
+import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
@@ -753,6 +754,26 @@ export function createPrStatusPoller(
       });
       return { outcome: "fixed" };
     },
+    // docs/194 — drive the issue-lifecycle "→ completed" transition off the
+    // merged PR body. Wired only when the tracker plumbing is present (the
+    // credential store + chat-history manager); degraded test setups that omit
+    // either leave the feature inert. Best-effort — never throws into the poller.
+    ...(credentialStore && chatHistoryManager
+      ? {
+          onMergedPr: (info: MergedPrInfo) =>
+            applyMergedPrIssueRefs(
+              {
+                credentialStore,
+                ...(deps.trackerFetchImpl ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
+                githubAuthManager,
+                sessionManager,
+                chatHistoryManager,
+                runnerRegistry,
+              },
+              info,
+            ),
+        }
+      : {}),
     onMergeDetectedCb: async (sessionId) => {
       try {
         const result = await markMergedAndPruneExcess(

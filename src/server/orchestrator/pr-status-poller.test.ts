@@ -1165,6 +1165,49 @@ describe("PrStatusPoller", () => {
     expect(mergedCall).toBeDefined();
   });
 
+  it("fires onMergedPr with the merged PR body (docs/194 issue-lifecycle)", async () => {
+    const withPr = {
+      data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+    };
+    const mergedRestResult = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42,
+      base: "main",
+      title: "Add feature",
+      body: "## Summary\nDone.\n\nCloses SHI-9",
+      state: "closed" as const,
+      merged_at: "2026-05-19T12:00:00Z",
+      additions: 100,
+      deletions: 20,
+    };
+    githubAuth = makeGitHubAuth(withPr, mergedRestResult);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const onMergedPr = vi.fn().mockResolvedValue(undefined);
+
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergedPr });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // PR drops out of the OPEN bulk view → REST verify sees merged → callback.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [] } } },
+    });
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onMergedPr).toHaveBeenCalledTimes(1);
+    expect(onMergedPr).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "s1",
+        prNumber: 42,
+        prUrl: "https://github.com/owner/repo/pull/42",
+        body: "## Summary\nDone.\n\nCloses SHI-9",
+      }),
+    );
+  });
+
   it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
     // Scenario: GraphQL returns an empty PR list (e.g. due to a rate-limit
     // response that slipped past header detection, or a transient hiccup).

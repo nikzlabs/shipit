@@ -148,6 +148,12 @@ Write a clear, descriptive title and a markdown body with the following sections
 - \`## Changes\` — bullet list of the key changes, grouped by behavior/module. For each meaningful behavior change, include the reason it was needed and the user request, bug, or tradeoff it traces back to.
 - \`## Test plan\` — how to verify the change works.
 
+If this PR is the work for a tracked issue, link it in the body so the issue's status follows the PR automatically (docs/194):
+
+- The PR **fully finishes** the issue → add a \`Closes <pointer>\` line (synonyms \`Fixes\`/\`Resolves\`). On merge ShipIt flips the issue to **completed** and posts a resolved-by comment.
+- The PR is **part** of the work, more PRs to come → add a non-closing \`Refs <pointer>\` line instead. On merge ShipIt posts a progress comment and leaves the issue open. **Omitting** \`Closes\` is how you say "not done yet."
+- The \`<pointer>\` is the same tracker-neutral form \`shipit issue\` takes (\`SHI-43\`, \`owner/repo#42\`, or a full issue URL). A PR that names no pointer gets no automatic issue activity.
+
 Set one primary \`--label\` on \`gh pr create\` that matches the change's intent (e.g. \`feature\`, \`enhancement\`, \`bug\`, \`fix\`, \`documentation\`, \`chore\`, \`refactor\`, \`ci\`, \`test\`, \`dependencies\`) so release notes group it correctly: \`gh pr create -t "<title>" --label feature --body-file - <<'EOF' … EOF\`. Pick the single best-fitting label, not several. Labeling is best-effort — the repo's label set varies, so an unknown label name is skipped without blocking the PR, and a server-side path labeler still runs as a fallback.
 
 Do not only describe what changed. Explain why the change was made. After creating a PR, or when continuing work in a session that already has one, keep the PR body current with \`gh pr edit\` whenever the turn materially changes behavior or rationale. Maintain a stable rationale section instead of appending raw logs.
@@ -293,6 +299,8 @@ Common commands:
 - Set status: \`shipit issue status <pointer> completed\`
 
 Pass the pointer the user gave you, such as \`TRACKER-123\` or \`https://linear.app/.../issue/TRACKER-123\`; the tracker is inferred from its shape. Use this before reaching for GitHub issue commands, external Linear MCP tools, or WebFetch on issue URLs.
+
+When you start implementing a tracked issue that ShipIt didn't already start for you (e.g. the user pasted a pointer in chat rather than launching the session from the Issues tab), mark it in progress: \`shipit issue status <pointer> started\`. Sessions launched *from* an issue are moved to **started** automatically at creation, so don't repeat it there. To close the loop on merge, declare the finishing PR with a \`Closes <pointer>\` line in its body (see the PR section above) — that, not a manual \`status completed\`, is how a tracked issue should reach **completed**.
 
 ## Design docs
 

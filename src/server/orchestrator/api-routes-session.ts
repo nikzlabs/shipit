@@ -56,6 +56,7 @@ import { ensureBareCache } from "./repo-git.js";
 import { parseGitHubRemote, canonicalRepoKey } from "./git-utils.js";
 import type { AgentId, IssueRef } from "../shared/types.js";
 import { getErrorMessage } from "./validation.js";
+import { markIssueStartedFromSeed } from "./issue-lifecycle.js";
 
 export async function registerSessionRoutes(
   app: FastifyInstance,
@@ -547,6 +548,28 @@ export async function registerSessionRoutes(
           },
         );
         // session_list SSE broadcast is owned by graduateSession (docs/156).
+
+        // docs/194 — seed path → started. When the session was created *from* an
+        // issue, fire the one-shot brokered `status started` from the pointer in
+        // the creation payload (idempotent; the pointer is not persisted on the
+        // session). Fire-and-forget so a slow tracker write doesn't delay the
+        // creation response; the helper is fully best-effort.
+        if (issueRef && deps.credentialStore && deps.chatHistoryManager) {
+          const lifecycleDeps = {
+            credentialStore: deps.credentialStore,
+            ...(deps.trackerFetchImpl ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
+            githubAuthManager: deps.githubAuthManager,
+            sessionManager,
+            chatHistoryManager: deps.chatHistoryManager,
+            runnerRegistry: deps.runnerRegistry,
+          };
+          void markIssueStartedFromSeed(lifecycleDeps, result.sessionId, issueRef).catch(
+            (err: unknown) => {
+              console.warn("[api-routes-session] seed 'started' failed:", err);
+            },
+          );
+        }
+
         return {
           sessionId: result.sessionId,
           branch: result.branch,

@@ -1,26 +1,27 @@
 # Issue lifecycle workflow — checklist
 
-Design doc only so far. Implementation work, roughly in dependency order:
+Implementation, roughly in dependency order:
 
 ## started (no session state)
-- [ ] Seed path: at session creation from an issue, fire one-shot brokered `status started` from the pointer in the creation payload (idempotent; pointer not persisted)
-- [ ] Non-seeded: agent guidance to call existing `shipit issue status <pointer> started` — no new code
-- [ ] Confirm the `started` write reuses the docs/177 provenance card
+- [x] Seed path: at session creation from an issue, fire one-shot brokered `status started` from the pointer in the creation payload (idempotent; pointer not persisted) — wired in `api-routes-session.ts` headless route → `markIssueStartedFromSeed` (`issue-lifecycle.ts`)
+- [x] Non-seeded: agent guidance to call existing `shipit issue status <pointer> started` — no new code (`agent-instructions.ts`, `shipit-docs/issues.md`)
+- [x] Confirm the `started` write reuses the docs/177 provenance card (`surfaceWriteCard` builds the same `IssueWriteCard`; suppressed only on a no-op transition)
 
 ## Completed-on-merge
-- [ ] Parse merged `pr.body` for `Closes/Fixes/Resolves <pointer>` **inside `verifyMissingPr`** (where the PR body is in scope), not the `onMergeDetectedCb(sessionId)` callback (sessionId-only, no body)
-- [ ] For each pointer: brokered `status completed` + summary comment via `Tracker` adapter
-- [ ] Non-closing `Refs <pointer>` → progress comment only, status untouched
-- [ ] No pointer at all → no-op / no comment (multi-PR case); closed-unmerged → no-op
-- [ ] Provenance card for the completion write
+- [x] Parse merged `pr.body` for `Closes/Fixes/Resolves <pointer>` **inside `verifyMissingPr`** (where the PR body is in scope), not the `onMergeDetectedCb(sessionId)` callback — new `onMergedPr` callback carries the body
+- [x] For each pointer: brokered `status completed` + summary comment via `Tracker` adapter (`applyMergedPrIssueRefs`)
+- [x] Non-closing `Refs <pointer>` → progress comment only, status untouched
+- [x] No pointer at all → no-op / no comment (multi-PR case); closed-unmerged → no-op (only fires on `merged_at`)
+- [x] Provenance card for the completion write
 
 ## Agent guidance
-- [ ] Document `status started` (non-seeded) + the `Closes`/`Refs <pointer>` conventions in `shipit-docs/issues.md`
-- [ ] Extend PR-creation guidance in `agent-instructions.ts` (Closes for finishing PR, Refs for partial/progress)
+- [x] Document `status started` (non-seeded) + the `Closes`/`Refs <pointer>` conventions in `shipit-docs/issues.md`
+- [x] Extend PR-creation guidance in `agent-instructions.ts` (Closes for finishing PR, Refs for partial/progress)
 
 ## Tests
-- [ ] Merge-path parse: closes / refs-only / no-pointer / closed-unmerged / multi-pointer (close all)
-- [ ] Seed path fires `started` once at creation; idempotent if already started
+- [x] Merge-path parse: closes / refs-only / no-pointer / closed-unmerged / multi-pointer (close all) — `pr-issue-refs.test.ts`, `issue-lifecycle.test.ts`
+- [x] Seed path fires `started`; card on real transition, suppressed on no-op — `issue-lifecycle.test.ts`
+- [x] Poller fires `onMergedPr` with the body on merge — `pr-status-poller.test.ts`
 
 ## Reconciliation
-- [ ] Update docs/156 non-goal note ("issue status mutation") to point here as the superseding workflow
+- [x] Update docs/156 non-goal note ("issue status mutation") to point here as the superseding workflow
