@@ -103,6 +103,11 @@ describe("distinctStatuses", () => {
   it("returns an empty list when nothing carries a status", () => {
     expect(distinctStatuses([makeIssue({ status: undefined })])).toEqual([]);
   });
+
+  it("carries the workflow-state type (for the status-dot color) when present", () => {
+    const issues = [makeIssue({ id: "1", status: { name: "In Progress", type: "started" } })];
+    expect(distinctStatuses(issues)).toEqual([{ name: "In Progress", count: 1, type: "started" }]);
+  });
 });
 
 describe("distinctAssignees", () => {

@@ -89,7 +89,7 @@ describe("GitHubTracker", () => {
       "octocat/hello-world#7",
     ]);
     expect(issues[0].priority.level).toBe("urgent");
-    expect(issues[0].status).toEqual({ name: "Open", type: "started" });
+    expect(issues[0].status).toEqual({ name: "Open", type: "started", color: "#3fb950" });
     expect(issues[0].assignee).toBeUndefined();
     expect(issues[0].id).toBe("9");
     expect(issues[1].priority.level).toBe("low");
@@ -157,8 +157,8 @@ describe("GitHubTracker", () => {
     const issue = await tracker.getIssue("42");
     expect(issue?.assigneeId).toBe("nik");
     expect(issue?.availableStatuses).toEqual([
-      { name: "Open", type: "started" },
-      { name: "Closed", type: "completed" },
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
     ]);
   });
 
@@ -166,8 +166,8 @@ describe("GitHubTracker", () => {
     const fetchImpl = vi.fn();
     const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
     expect(await tracker.listStatuses()).toEqual([
-      { name: "Open", type: "started" },
-      { name: "Closed", type: "completed" },
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
     ]);
     expect(fetchImpl).not.toHaveBeenCalled();
   });

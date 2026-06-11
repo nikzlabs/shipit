@@ -227,7 +227,131 @@ Server:
 
 Client:
 - `src/client/components/IssuesViewer.tsx` (new).
+- `src/client/components/issue-label-color.ts` (new) — deterministic per-label
+  dot color for the list label chips (see "List visual language" below).
+- `src/client/components/StartSessionButton.tsx` (new) — the shared "Start
+  session" CTA used by both the list rows and the detail footer (see below).
 - `src/client/stores/issues-store.ts` (new).
+
+## List visual language (refresh)
+
+The row grid (docs/173) is unchanged, but the cells inside it were given a
+sharper visual language so the list reads as a polished, scannable surface
+rather than a flat text table:
+
+- **Labels under the title.** `issue.labels` (already populated on the list path
+  by both adapters — Linear's `labels { nodes { name } }`, GitHub's REST labels,
+  SHI-92) render as a chip row inside the title cell, under the description. Each
+  chip is a token-driven pill with a small **deterministic colored dot** — neither
+  tracker hands us a label color on the list path, so `issue-label-color.ts`
+  folds the label name to a stable hue (`labelDotColor`). The dot carries the
+  color; chip text/background stay on design tokens so chips are legible in every
+  theme. Capped at `MAX_LABELS` (4) with a `+N` overflow (full list in `title`).
+- **Status dots use the tracker's real color.** Each status carries the
+  tracker's own state color — Linear's per-state hex (`state { … color }`),
+  GitHub's open=green / closed=purple — threaded end-to-end: `TrackerIssue.status.color`
+  + `availableStatuses[].color` + `listStatuses()` (so the inline editor's option
+  list is colored too). The client `statusDotColor(status)` (exported from
+  `IssueFieldControls.tsx`) returns the real color, falling back to a coarse
+  type→token only when the tracker gives none. This replaces the old
+  `statusDotClass` type→gray guess, under which the common Linear defaults
+  (Backlog / Todo / Duplicate) all collapsed to one gray. Used everywhere a
+  status dot renders (list row, mobile meta, detail pill, edit menu, filter).
+- **Contrast-adaptive status color (`utils/status-color.ts`).** Linear's state
+  colors are tuned for Linear's own UI — its near-white Backlog/Todo grays, and a
+  light accent like yellow "In Progress", vanish on a light theme; a dark state
+  would vanish on a dark theme. `adaptColorForSurface(color, surfaceLum)` keeps
+  the hue + saturation and nudges the **lightness away from the surface** (darker
+  on a light surface, lighter on a dark one) by the minimum needed to clear a
+  target contrast ratio (`1.8`); colors that already read are returned untouched.
+  So the same status shows a darker shade on light and a brighter one on dark,
+  and the dot needs no outline ring. The surface luminance comes from
+  `useSurfaceLuminance(--color-bg-primary | --color-bg-elevated)`, which reads the
+  theme token and recomputes on theme switch (observes the `<html>` class), so it
+  works for every theme — not a light/dark flag. Only hex colors are adapted;
+  CSS-var tokens (priority colors, type fallbacks) pass through, already
+  theme-tuned. Verified live on warm-light vs dark.
+- **Priority colors are a fixed, theme-independent palette.** `PRIORITY_DOT_COLOR`
+  is a fixed set of hex hues (urgent red, high amber, medium blue, low green, none
+  gray) — NOT the semantic `--color-error/warning/info/success` tokens. Those
+  tokens are deliberately re-tinted by the warm/Claude themes (their `--color-info`
+  is terracotta, not blue), which made **Medium flip from blue to red across
+  themes** and collide with Urgent/High. The fixed hues run through the same
+  `adaptColorForSurface` (so they stay legible per theme) and feed every priority
+  surface through shared helpers in `IssueFieldControls.tsx` — `priorityColor`
+  (dot/checkbox) and the exported `PriorityBadge` + `PriorityTrigger` (the pills,
+  now a tinted-bg + adapted-text pill rather than a `Badge` variant). Low keeps
+  its own green so it doesn't read like No-priority (gray). Verified live: Medium
+  is `#3b82f6` on both dark and claude-light.
+  The pill **text** uses a higher contrast target than the dot (`3.8` vs `1.8`):
+  a swatch only has to be *seen*, but text has to be *read*, so a light hue like
+  amber "High" must darken further to stay legible on its own faint tint (the
+  tint keeps the true hue; only the text darkens on light themes).
+- **Filter bar (docs/173) parity.** The search box and the Priority/Status/
+  Assignee facet triggers are pinned to one height (`h-8`) so the bar reads as a
+  single control strip. The Priority/Status options color the **checkbox itself**
+  (colored border + a colored check on a subtle same-color tint — legible on
+  light colors like Linear's yellow "In Progress") instead of a separate dot, so
+  the color lives in the control. `StatusOption` gained `type` + `color` (captured
+  by `distinctStatuses`).
+- **Inline-edit affordance (docs/191).** The status/priority editor triggers no
+  longer draw a gray hover box (its small corners clashed with the round pill and
+  read as a nested box). Instead the *value itself* reacts: the priority pill
+  grows slightly to reveal a "⌄" in its own color (the caret lives inside the
+  `Badge`, collapsed to zero width until `group-hover/fe`); the status trigger
+  fades in a subtle gray caret whose **space is always reserved** (only opacity
+  animates) so revealing it never changes the trigger's width — important on the
+  detail page, where status and priority share a flex row and a growing status
+  caret would otherwise shove the priority pill sideways. `FieldEditor` gained a
+  `chevron` prop so the priority editor opts out of that shared sibling caret and
+  grows its pill instead (it's always last / in its own column, so its growth
+  pushes nothing). Both reveals latch **while the menu is open**
+  (`group-data-[state=open]/fe`, set by Radix on the trigger) so opening the
+  dropdown doesn't collapse the affordance and shift the row. Keyboard focus is
+  preserved via a `focus-visible` ring + the same reveal on focus. On the detail
+  page the `StatusPill` is pinned to the priority badge's height (`h-[18px]`) so
+  the two read as vertically aligned.
+- **Row polish.** Taller rows, `font-medium` titles, an accent left-edge bar that
+  fades in on hover/focus, a hover-reveal caret that slides in, softer
+  (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
+  for unassigned/avatarless users).
+- **Container-query responsive layout.** The row grid now reflows to the **panel**
+  width via container queries (`@container` on the scroll area + `@sm:` variants),
+  not the viewport. The Issues tab lives in a resizable side panel far narrower
+  than the viewport, so the old viewport breakpoints (`md:`/`lg:`) mis-fired — a
+  wide viewport picked the widest table even in a ~520px panel, overflowing it
+  (columns overlapped into "TIPRIORITY", the action button clipped off-screen).
+  Two layouts only — **no column silently drops at mid widths** (the old
+  assignee-dropping tier is gone): a stacked **card** below `@sm`, and the **full
+  table** (Assignee included) at `@sm+`. The title track is `minmax(96px,1fr)`, so
+  the table has an intrinsic min-width; when the panel is narrower the scroll area
+  (`overflow-auto`) shows a **horizontal scrollbar** instead of crushing or
+  dropping columns. Verified live in the dogfood inner app at a 520px panel:
+  `scrollWidth 620 > clientWidth 520`, button fully reachable after scroll.
+- **Shared first-line baseline.** The row grid is `items-start`, so each cell's
+  leading element (11px id, 14px title, 18px priority pill, dot+text status, 20px
+  button) would otherwise top-align at a slightly different vertical center. Every
+  cell's first line is wrapped in one fixed-height centered band (`FIRST_LINE`,
+  24px — clears the tallest inner element) so the leading line reads as a single
+  baseline; the title uses `min-h-6` instead so a two-line title still grows
+  downward with its description + labels flowing below.
+
+- **"Start session" CTA.** Extracted to a shared `StartSessionButton` (used by
+  both the list rows and the detail footer so the treatment can't drift) on a new
+  `cta` Button variant: a subtle accent **tint at rest that fills to a solid
+  accent on hover** — calm enough to repeat on every row, where a solid primary
+  would be too loud — with a rocket that lifts off on hover. Sized to the
+  approved prototype (30px tall / 13px text / 8px radius) rather than the cramped
+  20px `sm`; the list action cell centers it on the row's first-line baseline
+  regardless of height. The `cta` variant's border is `color-mix`-derived from
+  `--color-accent` so it tracks every theme without a dedicated token. To make
+  the per-call sizing override reliable, `Button` now composes its variant/size
+  classes with the caller's `className` through `twMerge` (previously CVA just
+  concatenated, leaving conflicts to stylesheet order).
+
+Visual reference: the row before/after and the "Start session" button direction
+prototypes were presented as inline mockups during the redesign turns (not
+committed — the live components are the source of truth).
 
 ## Relationship to existing docs
 

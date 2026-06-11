@@ -23,22 +23,25 @@ import {
   ArrowSquareOutIcon,
   CaretLeftIcon,
   ChatCircleIcon,
-  RocketLaunchIcon,
   TagIcon,
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
-import { Badge } from "./ui/badge.js";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
+import { StartSessionButton } from "./StartSessionButton.js";
 import { MarkdownContent } from "./message-markdown.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
+  PriorityBadge,
   PriorityTrigger,
+  statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
 import { ICON_SIZE } from "../design-tokens.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type {
@@ -81,51 +84,30 @@ export interface IssueDetailProps {
   onSetPriority: (level: IssuePriorityLevel) => Promise<string | null>;
 }
 
-const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
-  urgent: "error",
-  high: "warning",
-  medium: "info",
-  low: "default",
-  none: "default",
-};
-
-/**
- * Status accent by normalized workflow-state type. Both trackers normalize onto
- * the same vocabulary (Linear's six types, GitHub's open→started / closed→
- * completed), so a single mapping colors the status dot + label across both.
- */
-function statusTone(type?: string): { dot: string; text: string } {
+/** Status-NAME text color by workflow-state type (the dot uses the tracker color). */
+function statusTextClass(type?: string): string {
   switch (type) {
     case "completed":
-      return { dot: "bg-(--color-success)", text: "text-(--color-success)" };
-    case "canceled":
-      return { dot: "bg-(--color-text-tertiary)", text: "text-(--color-text-tertiary)" };
+      return "text-(--color-success)";
     case "started":
-      return { dot: "bg-(--color-accent)", text: "text-(--color-text-primary)" };
-    case "unstarted":
-    case "backlog":
-    case "triage":
+      return "text-(--color-text-primary)";
+    case "canceled":
+      return "text-(--color-text-tertiary)";
     default:
-      return { dot: "bg-(--color-text-tertiary)", text: "text-(--color-text-secondary)" };
+      return "text-(--color-text-secondary)";
   }
 }
 
-function StatusPill({ status }: { status: NonNullable<TrackerIssue["status"]> }) {
-  const tone = statusTone(status.type);
+function StatusPill({ status, surfaceLum }: { status: NonNullable<TrackerIssue["status"]>; surfaceLum: number }) {
   return (
-    <span className="inline-flex items-center gap-1.5 text-xs font-medium">
-      <span className={`h-2 w-2 rounded-full ${tone.dot}`} aria-hidden="true" />
-      <span className={tone.text}>{status.name}</span>
+    <span className="inline-flex items-center gap-1.5 h-[18px] text-[11px] font-medium leading-none">
+      <span
+        className="h-2 w-2 rounded-full"
+        style={{ backgroundColor: adaptColorForSurface(statusDotColor(status), surfaceLum) }}
+        aria-hidden="true"
+      />
+      <span className={statusTextClass(status.type)}>{status.name}</span>
     </span>
-  );
-}
-
-function PriorityBadge({ priority }: { priority: TrackerIssue["priority"] }) {
-  if (priority.level === "none") return null;
-  return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px]">
-      {priority.label}
-    </Badge>
   );
 }
 
@@ -153,6 +135,8 @@ export function IssueDetail({
   const title = detail?.title ?? selection.title ?? selection.identifier;
   const url = detail?.url ?? selection.url;
   const trackerLabel = info?.label ?? (selection.tracker === "github" ? "GitHub" : "Linear");
+  // Detail body sits on the primary surface; adapt status/priority colors to it.
+  const surfaceLum = useSurfaceLuminance("--color-bg-primary");
   // A card-opened issue with no seed and no detail yet has nothing to show but
   // the identifier — render the skeleton until the first fetch lands.
   const showSkeleton = loading && !detail;
@@ -224,7 +208,7 @@ export function IssueDetail({
                   options={detail.availableStatuses ?? availableStatuses}
                   onSelect={onSetStatus}
                   ariaLabel={`Change status (currently ${detail.status.name})`}
-                  trigger={<StatusPill status={detail.status} />}
+                  trigger={<StatusPill status={detail.status} surfaceLum={surfaceLum} />}
                 />
               )}
               {detail &&
@@ -233,10 +217,10 @@ export function IssueDetail({
                     current={detail.priority.level}
                     onSelect={onSetPriority}
                     ariaLabel={`Change priority (currently ${detail.priority.label})`}
-                    trigger={<PriorityTrigger priority={detail.priority} />}
+                    trigger={<PriorityTrigger priority={detail.priority} surfaceLum={surfaceLum} />}
                   />
                 ) : (
-                  <PriorityBadge priority={detail.priority} />
+                  <PriorityBadge priority={detail.priority} surfaceLum={surfaceLum} />
                 ))}
             </div>
 
@@ -300,17 +284,12 @@ export function IssueDetail({
       {/* Footer action — seed a session from this issue (mirrors the list row). */}
       {detail && (
         <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
-          <Button
-            variant="secondary"
-            size="sm"
+          <StartSessionButton
+            label="Start session from this issue"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
-            className="inline-flex items-center gap-1.5"
-          >
-            <RocketLaunchIcon size={ICON_SIZE.SM} />
-            Start session from this issue
-          </Button>
+          />
         </div>
       )}
     </div>
