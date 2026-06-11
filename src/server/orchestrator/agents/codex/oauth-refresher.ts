@@ -52,6 +52,13 @@ export interface CodexRefreshResult {
 export interface CodexOAuthRefresherEvents {
   refreshed: [accountId: string, freshness: number];
   account_unauthenticated: [accountId: string];
+  /**
+   * A previously-revoked account's token rotated back to healthy. Recovery
+   * counterpart of `account_unauthenticated` — index.ts flips the row back to
+   * `ready` and re-broadcasts `agent_list` so the model selector clears its
+   * stale "needs auth" state. Fires only on the revoked → recovered transition.
+   */
+  account_reauthenticated: [accountId: string];
 }
 
 interface AccountState {
@@ -238,6 +245,10 @@ export class CodexOAuthRefresher extends EventEmitter {
     this.emit("refreshed", accountId, after);
     if (wasUnauthenticated) {
       this.deps.sseBroadcast("codex_account_authenticated", { accountId });
+      // Repair the persisted row + agent_list the model selector reads from
+      // (index.ts → markProviderAccountReauthenticated). The SSE above only
+      // covers docs/150 failover consumers.
+      this.emit("account_reauthenticated", accountId);
     }
     this.scheduleAccount(accountId);
     return {

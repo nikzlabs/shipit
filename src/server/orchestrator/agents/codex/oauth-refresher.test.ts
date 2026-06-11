@@ -299,6 +299,31 @@ describe("CodexOAuthRefresher", () => {
     expect(rig.sseCalls.some((c) => c.event === "codex_account_authenticated")).toBe(true);
   });
 
+  it("emits account_reauthenticated on the revoked → recovered transition", async () => {
+    const now = 1_700_000_000_000;
+    const rig = buildRig({
+      accounts: [makeAccount("codex-default")],
+      initialFreshness: { "codex-default": now + 5 * 60 * 1000 },
+      initialNow: now,
+    });
+    rigs.push(rig);
+    rig.spawnHandle.effects = [
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" },
+      { rotateTo: now + 14 * 24 * 60 * 60 * 1000 },
+    ];
+
+    const reauthEvents: string[] = [];
+    rig.refresher.on("account_reauthenticated", (accountId: string) => {
+      reauthEvents.push(accountId);
+    });
+
+    await rig.refresher.refreshNow("codex-default");
+    expect(reauthEvents).toEqual([]);
+
+    await rig.refresher.refreshNow("codex-default");
+    expect(reauthEvents).toEqual(["codex-default"]);
+  });
+
   it("single-flight: concurrent calls share one Codex CLI invocation", async () => {
     const now = 1_700_000_000_000;
     const rig = buildRig({
