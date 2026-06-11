@@ -56,7 +56,7 @@ export function PrFilesSection({
         <h3 className="text-xs font-semibold uppercase tracking-wide text-(--color-text-tertiary)">
           Files{files ? ` (${files.length})` : ""}
         </h3>
-        <Button variant="secondary" size="sm" onClick={handleViewDiff} disabled={loading}>
+        <Button variant="secondary" size="md" onClick={handleViewDiff} disabled={loading}>
           <GitDiffIcon size={ICON_SIZE.SM} />
           {loading ? "Loading diff..." : "View full diff"}
         </Button>

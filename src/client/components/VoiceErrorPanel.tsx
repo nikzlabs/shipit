@@ -43,7 +43,7 @@ export function VoiceErrorPanel({
         {onOpenSettings && (
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => {
               onOpenSettings();
               voice.dismissError();
@@ -52,20 +52,20 @@ export function VoiceErrorPanel({
             Settings
           </Button>
         )}
-        <Button variant="ghost" size="sm" onClick={() => voice.dismissError()}>
+        <Button variant="ghost" size="md" onClick={() => voice.dismissError()}>
           Dismiss
         </Button>
         {canRetryTranscription ? (
           <>
-            <Button variant="secondary" size="sm" onClick={() => voice.startRecording()}>
+            <Button variant="secondary" size="md" onClick={() => voice.startRecording()}>
               Re-record
             </Button>
-            <Button variant="primary" size="sm" onClick={() => voice.retryTranscription()}>
+            <Button variant="primary" size="md" onClick={() => voice.retryTranscription()}>
               Resend
             </Button>
           </>
         ) : (
-          <Button variant="primary" size="sm" onClick={() => voice.startRecording()}>
+          <Button variant="primary" size="md" onClick={() => voice.startRecording()}>
             Try again
           </Button>
         )}

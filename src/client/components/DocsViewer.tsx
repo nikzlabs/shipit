@@ -318,7 +318,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
           </p>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             className="mt-2"
           >
@@ -376,7 +376,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
           </button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             title="Refresh file list"
           >
@@ -401,7 +401,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssu
             variant="ghost"
             size="sm"
             onClick={closeSearch}
-            className="p-1"
+            className="h-7 w-7 p-0"
             title="Close search (Escape)"
           >
             <XIcon size={ICON_SIZE.SM} />

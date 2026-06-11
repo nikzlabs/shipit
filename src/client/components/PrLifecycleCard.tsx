@@ -290,11 +290,11 @@ function PendingReviewButton({ sessionId, count }: { sessionId: string; count: n
 
   return (
     <Button
-      size="sm"
+      size="md"
       variant="ghost"
       onClick={handleSubmit}
       disabled={submitting}
-      className="shrink-0 h-6 border border-(--color-border-secondary)"
+      className="shrink-0 border border-(--color-border-secondary)"
       title="Send local diff comments to GitHub as one review"
     >
       {submitting ? (
@@ -414,10 +414,10 @@ function ReadyPhase({
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
         {hasDiffStats && (
           <Button
-            size="sm"
+            size="md"
             onClick={onCreatePr}
             disabled={creating || !onCreatePr}
-            className="shrink-0 h-6 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
+            className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
             {creating && <CircleNotchIcon size={14} className="animate-spin" />}
             {creating ? "Creating PR..." : "Create PR"}
@@ -713,7 +713,7 @@ function ErrorPhase({
       {isAuthError && (
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={handleSignIn}
           className="shrink-0"
         >
@@ -722,7 +722,7 @@ function ErrorPhase({
       )}
       <Button
         variant="ghost"
-        size="sm"
+        size="md"
         onClick={onCreatePr}
         disabled={agentRunning || !onCreatePr}
         className="shrink-0"

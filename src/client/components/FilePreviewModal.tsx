@@ -607,7 +607,7 @@ export function FilePreviewModal({
             <div className="flex items-center gap-2 shrink-0 ml-4">
               {showAskReview && (
                 <WithTooltip label={agentRunning ? "Wait for the current turn to finish" : "Start a chat review turn"}>
-                  <Button variant="secondary" size="sm" onClick={handleAskReview} disabled={agentRunning}>
+                  <Button variant="secondary" size="md" onClick={handleAskReview} disabled={agentRunning}>
                     <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
                     Ask agent to review
                   </Button>
@@ -617,7 +617,7 @@ export function FilePreviewModal({
                 <Button
                   key={action.label}
                   variant={action.variant === "primary" ? "primary" : "secondary"}
-                  size="sm"
+                  size="md"
                   onClick={action.onClick}
                 >
                   {action.label}
@@ -711,10 +711,10 @@ export function FilePreviewModal({
               <PastReviews history={history} />
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <Button variant="ghost" size="sm" onClick={handleClose}>
+              <Button variant="ghost" size="md" onClick={handleClose}>
                 Cancel
               </Button>
-              <Button variant="primary" size="sm" onClick={handleSend} disabled={!canSend}>
+              <Button variant="primary" size="md" onClick={handleSend} disabled={!canSend}>
                 <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
                 Send {commentCount > 0 ? `${commentCount} comment${commentCount !== 1 ? "s" : ""}` : "Comments"}
               </Button>

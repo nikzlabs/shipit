@@ -194,7 +194,7 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
         {!undone && (
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             // Stop the click from also opening the issue (the card is the open
             // target); Undo is the one nested action.
             onClick={(e) => {

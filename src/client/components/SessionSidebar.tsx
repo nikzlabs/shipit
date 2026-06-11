@@ -468,7 +468,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
         >
           <OverflowMenu
             label="Session actions"
-            triggerClassName="h-6 w-6"
+            triggerClassName="h-7 w-7"
             onOpenChange={setMenuOpen}
           >
             {!isArchived && (
@@ -1298,7 +1298,7 @@ export function SessionSidebar({
           variant="ghost"
           size="sm"
           onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-          className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
           aria-label="Quick session"
         >
           <LightningIcon size={ICON_SIZE.SM} />
@@ -1310,7 +1310,7 @@ export function SessionSidebar({
             variant="ghost"
             size="sm"
             onClick={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
             aria-label="Voice quick session"
           >
             <span className="relative inline-flex h-4 w-4 items-center justify-center">
@@ -1335,7 +1335,7 @@ export function SessionSidebar({
           variant="ghost"
           size="sm"
           onClick={onToggleCollapse}
-          className="p-0! w-6 h-6"
+          className="p-0! w-7 h-7"
           aria-label="Expand sidebar"
         >
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
@@ -1345,7 +1345,7 @@ export function SessionSidebar({
         <Button
           variant="ghost"
           size="sm"
-          className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+          className="p-0! w-7 h-7 text-(--color-text-secondary) hover:text-(--color-text-primary)"
           aria-label="Repository"
         >
           <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
@@ -1368,7 +1368,7 @@ export function SessionSidebar({
             if (url) onNewSessionForRepo(url);
           }}
           disabled={repos.length === 0}
-          className="p-0! w-6 h-6 text-(--color-success) hover:text-(--color-success)"
+          className="p-0! w-7 h-7 text-(--color-success) hover:text-(--color-success)"
           aria-label="New Session"
         >
           <PlusIcon size={ICON_SIZE.SM} />
@@ -1395,7 +1395,7 @@ export function SessionSidebar({
             variant="ghost"
             size="sm"
             onClick={onToggleCollapse}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary)"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary)"
             aria-label="Collapse sidebar"
           >
             <SidebarSimpleIcon size={ICON_SIZE.SM} />
@@ -1413,7 +1413,7 @@ export function SessionSidebar({
             <Button
               variant="ghost"
               size="sm"
-              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+              className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
               aria-label="Repository"
             >
               <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />

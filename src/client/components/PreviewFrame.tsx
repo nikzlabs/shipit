@@ -431,7 +431,7 @@ export function PreviewFrame({
             {hint}
           </p>
         )}
-        {onSendCrashToAgent && <Button variant="primary" size="sm" onClick={onSendCrashToAgent}>Send to agent</Button>}
+        {onSendCrashToAgent && <Button variant="primary" size="md" onClick={onSendCrashToAgent}>Send to agent</Button>}
       </div>
     );
   } else if (showComposeHint) {
@@ -440,7 +440,7 @@ export function PreviewFrame({
         <p className="text-sm text-(--color-text-secondary)">
           Add <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">compose</code> to <code className="px-1.5 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary) text-xs">shipit.yaml</code> to enable previews
         </p>
-        {onSendComposeHintToAgent && <Button variant="primary" size="sm" onClick={onSendComposeHintToAgent}>Send to agent</Button>}
+        {onSendComposeHintToAgent && <Button variant="primary" size="md" onClick={onSendComposeHintToAgent}>Send to agent</Button>}
       </div>
     );
   } else if (showStarting && !showIframe) {
@@ -479,7 +479,7 @@ export function PreviewFrame({
         <div className="flex items-center justify-center gap-2">
           <Button
             variant="primary"
-            size="sm"
+            size="md"
             onClick={() => window.open(activeSlotUrl, "_blank")}
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
@@ -487,7 +487,7 @@ export function PreviewFrame({
           </Button>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={() => {
               setAuthBlocked(false);
               authRetryRef.current = 0;
@@ -513,7 +513,7 @@ export function PreviewFrame({
         <p className="text-sm text-(--color-text-secondary)">
           {manualOnly ? "No preview running. Start a service to launch it." : "No preview running"}
         </p>
-        <Button variant="secondary" size="sm" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
+        <Button variant="secondary" size="md" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
           Show services
         </Button>
       </div>
@@ -630,6 +630,7 @@ export function PreviewFrame({
             size="sm"
             onClick={() => setRefreshKey((k) => k + 1)}
             title="Refresh preview"
+            className="h-7 w-7 p-0"
           >
             <ArrowClockwiseIcon size={ICON_SIZE.SM} />
           </Button>
@@ -641,6 +642,7 @@ export function PreviewFrame({
             }}
             title="Open preview in new tab"
             disabled={!activeSlotUrl}
+            className="h-7 w-7 p-0"
           >
             <ArrowSquareOutIcon size={ICON_SIZE.SM} />
           </Button>
@@ -670,7 +672,7 @@ export function PreviewFrame({
           </span>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={() => {
               setPreviewProxyError(null);
               setRefreshKey((k) => k + 1);
@@ -681,7 +683,7 @@ export function PreviewFrame({
           </Button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => setPreviewProxyError(null)}
             title="Dismiss"
           >
@@ -775,7 +777,7 @@ export function PreviewFrame({
             <div className="flex items-center gap-2">
               <Button
                 variant="primary"
-                size="sm"
+                size="md"
                 onClick={() => onSendErrors(errors)}
                 title="Send all errors to the agent for fixing"
               >
@@ -783,7 +785,7 @@ export function PreviewFrame({
               </Button>
               <Button
                 variant="ghost"
-                size="sm"
+                size="md"
                 onClick={onClearErrors}
                 className="text-(--color-error)"
                 title="Clear all errors"
@@ -823,7 +825,7 @@ export function PreviewFrame({
                   </div>
                   <Button
                     variant="ghost"
-                    size="sm"
+                    size="md"
                     onClick={() => onSendErrors([err])}
                     className="shrink-0 text-(--color-text-link)"
                     title="Send this error to the agent"
@@ -877,7 +879,7 @@ function SecretsMissingBanner() {
         {label}
         <span className="ml-1 text-(--color-text-secondary)">— this project needs secrets to run.</span>
       </span>
-      <Button variant="primary" size="sm" onClick={openSecrets} data-testid="secrets-missing-configure">
+      <Button variant="primary" size="md" onClick={openSecrets} data-testid="secrets-missing-configure">
         Configure
       </Button>
     </div>

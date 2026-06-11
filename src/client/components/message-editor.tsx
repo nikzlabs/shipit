@@ -70,14 +70,14 @@ export function MessageEditor({
       <div className="flex justify-end gap-2 mt-1">
         <Button
           variant="secondary"
-          size="sm"
+          size="md"
           onClick={onCancel}
         >
           Cancel
         </Button>
         <Button
           variant="primary"
-          size="sm"
+          size="md"
           onClick={() => {
             const trimmed = text.trim();
             if (trimmed) onSave(trimmed);

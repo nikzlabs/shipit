@@ -150,7 +150,7 @@ export function HostPanel({ isActiveTab }: HostPanelProps) {
           variant="ghost"
           size="sm"
           onClick={() => void refresh()}
-          className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
           aria-label="Refresh host overview"
         >
           {loading

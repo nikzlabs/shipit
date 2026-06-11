@@ -70,7 +70,7 @@ export function SearchBar({
         size="sm"
         onClick={onPrev}
         disabled={matches.length === 0}
-        className="p-1 disabled:opacity-30"
+        className="h-7 w-7 p-0 disabled:opacity-30"
         title="Previous match (Shift+Enter)"
       >
         <CaretUpIcon size={ICON_SIZE.SM} />
@@ -80,7 +80,7 @@ export function SearchBar({
         size="sm"
         onClick={onNext}
         disabled={matches.length === 0}
-        className="p-1 disabled:opacity-30"
+        className="h-7 w-7 p-0 disabled:opacity-30"
         title="Next match (Enter)"
       >
         <CaretDownIcon size={ICON_SIZE.SM} />
@@ -91,7 +91,7 @@ export function SearchBar({
         variant="ghost"
         size="sm"
         onClick={onClose}
-        className="p-1"
+        className="h-7 w-7 p-0"
         title="Close search (Escape)"
       >
         <XIcon size={ICON_SIZE.SM} />

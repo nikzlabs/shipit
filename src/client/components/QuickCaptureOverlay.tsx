@@ -191,7 +191,7 @@ export function QuickCaptureOverlay({
               </label>
             )}
           </div>
-          <Button variant="ghost" size="sm" onClick={close} aria-label="Close quick capture">
+          <Button variant="ghost" size="sm" className="h-7 w-7 p-0" onClick={close} aria-label="Close quick capture">
             <XIcon size={ICON_SIZE.SM} />
           </Button>
         </div>

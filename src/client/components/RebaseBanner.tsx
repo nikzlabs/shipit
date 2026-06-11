@@ -49,7 +49,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
           </div>
           {pushRejected && (
             <Button
-              size="sm"
+              size="md"
               variant="secondary"
               onClick={() => startRebase(sessionId, baseBranch)}
             >
@@ -87,7 +87,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
               Branch is behind <code className="font-mono text-(--color-text-tertiary)">{baseBranch}</code>. Update to resolve.
             </span>
             <Button
-              size="sm"
+              size="md"
               variant="secondary"
               onClick={() => startRebase(sessionId, baseBranch)}
             >
@@ -124,7 +124,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
               )}
             </div>
             <Button
-              size="sm"
+              size="md"
               variant="secondary"
               onClick={() => abortRebase(sessionId)}
             >
@@ -141,7 +141,7 @@ export function RebaseBanner({ sessionId }: { sessionId: string }) {
               Agent is resolving merge conflicts…
             </span>
             <Button
-              size="sm"
+              size="md"
               variant="secondary"
               onClick={() => abortRebase(sessionId)}
             >

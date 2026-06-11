@@ -281,21 +281,21 @@ export function PreviewServicesDrawer({
             )}
             <div className="ml-auto flex items-center gap-1 shrink-0">
               {selectedSvc.status === "running" && (
-                <Button variant="ghost" size="sm" onClick={() => handleRestart(selectedSvc.name)} title={`Restart ${selectedSvc.name}`}>
+                <Button variant="ghost" size="sm" onClick={() => handleRestart(selectedSvc.name)} title={`Restart ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <ArrowClockwiseIcon size={ICON_SIZE.SM} />
                 </Button>
               )}
               {(selectedSvc.status === "stopped" || selectedSvc.status === "error") && (
-                <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedSvc.name })} title={`Start ${selectedSvc.name}`}>
+                <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedSvc.name })} title={`Start ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <PlayIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}
               {(selectedSvc.status === "running" || selectedSvc.status === "starting") && (
-                <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedSvc.name })} title={`Stop ${selectedSvc.name}`}>
+                <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedSvc.name })} title={`Stop ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <StopIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}
-              <Button variant="secondary" size="sm" onClick={handleSendToAgent} title="Send logs to agent">
+              <Button variant="secondary" size="md" onClick={handleSendToAgent} title="Send logs to agent">
                 <PaperPlaneRightIcon size={ICON_SIZE.SM} />
                 <span className="ml-1">Send to Agent</span>
               </Button>

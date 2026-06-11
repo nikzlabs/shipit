@@ -182,10 +182,10 @@ export function FileEditModal({
           <div className="border-b border-(--color-warning) bg-(--color-warning-subtle) px-6 py-2 flex items-center justify-between gap-3">
             <span className="text-sm text-(--color-text-primary)">Discard unsaved changes?</span>
             <div className="flex items-center gap-2 shrink-0">
-              <Button variant="ghost" size="sm" onClick={() => setConfirmDiscard(false)}>
+              <Button variant="ghost" size="md" onClick={() => setConfirmDiscard(false)}>
                 Keep editing
               </Button>
-              <Button variant="destructive" size="sm" onClick={onClose}>
+              <Button variant="destructive" size="md" onClick={onClose}>
                 Discard
               </Button>
             </div>
@@ -207,10 +207,10 @@ export function FileEditModal({
         </div>
 
         <div className="flex items-center justify-end gap-2 px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
-          <Button variant="ghost" size="sm" onClick={requestClose} disabled={saving}>
+          <Button variant="ghost" size="md" onClick={requestClose} disabled={saving}>
             Cancel
           </Button>
-          <Button variant="primary" size="sm" onClick={save} disabled={!canSave}>
+          <Button variant="primary" size="md" onClick={save} disabled={!canSave}>
             {saving && <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />}
             Save
           </Button>

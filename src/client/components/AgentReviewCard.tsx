@@ -74,10 +74,10 @@ export function AgentReviewCard({
         </div>
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={handleOpen}
           disabled={!onOpen}
-          className="shrink-0 gap-1"
+          className="shrink-0"
           aria-label={`Open agent review of ${filePath}`}
         >
           <ArrowSquareOutIcon size={ICON_SIZE.XS} />

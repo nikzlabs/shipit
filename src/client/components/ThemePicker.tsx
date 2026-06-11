@@ -24,6 +24,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
           size="sm"
           title="Change theme"
           aria-label="Change theme"
+          className="h-7 w-7 p-0"
         >
           <PaletteIcon size={ICON_SIZE.SM} />
         </Button>

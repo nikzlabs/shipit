@@ -5,6 +5,10 @@
  * tint that fills to solid on hover — calm enough to repeat on every list row)
  * plus a rocket that lifts off on hover. Centralized so the treatment can't
  * drift between the two surfaces.
+ *
+ * Sized with the standard `md` (32px) so it lines up with every other text
+ * button in the app — no bespoke height override anymore. Only the `cta`
+ * variant and the rocket animation are particular to this button.
  */
 
 import type { MouseEvent } from "react";
@@ -30,22 +34,17 @@ export function StartSessionButton({
   return (
     <Button
       variant="cta"
-      // Sized to the approved prototype (30px tall, 13px text, 8px radius) — not
-      // the cramped 20px `sm` nor the chunky 32px `md`. We start from `sm` and
-      // override the height/padding/text/radius; Button merges via twMerge so
-      // these win. In the list the action cell centers the button on the row's
-      // first-line baseline regardless of its height, so it still aligns.
-      size="sm"
+      // Standard `md` height (32px) so this lines up with every other text
+      // button. In the Issues list the action cell centers the button on the
+      // row's first-line baseline regardless of its height, so it still aligns.
+      size="md"
       disabled={disabled}
       title={title}
       onClick={onClick}
-      className={cn(
-        "group/ss inline-flex h-[30px] items-center gap-2 rounded-lg px-[13px] text-[13px]",
-        className,
-      )}
+      className={cn("group/ss", className)}
     >
       <RocketLaunchIcon
-        size={15}
+        size={16}
         className="transition-transform duration-200 ease-out group-hover/ss:-translate-y-0.5 group-hover/ss:translate-x-0.5"
       />
       {label}

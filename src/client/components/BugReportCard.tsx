@@ -180,12 +180,12 @@ export function BugReportCard({ cardId, onSubmit }: BugReportCardProps) {
       </div>
 
       <div className="flex items-center justify-end gap-2">
-        <Button variant="ghost" size="sm" onClick={() => setDismissed(true)} disabled={isFiling}>
+        <Button variant="ghost" size="md" onClick={() => setDismissed(true)} disabled={isFiling}>
           Cancel
         </Button>
         <Button
           variant="primary"
-          size="sm"
+          size="md"
           onClick={handleSubmit}
           disabled={isFiling || !title.trim() || !body.trim()}
         >

@@ -78,12 +78,12 @@ export function KeyboardShortcutsOverlay({ onClose, onEdit }: { onClose: () => v
           </h2>
           <div className="flex items-center gap-2">
             {onEdit && (
-              <Button variant="secondary" size="sm" onClick={onEdit} className="gap-1.5">
+              <Button variant="secondary" size="md" onClick={onEdit} className="gap-1.5">
                 <PencilSimpleIcon size={ICON_SIZE.SM} />
                 Edit
               </Button>
             )}
-            <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
+            <Button variant="ghost" size="md" onClick={onClose} aria-label="Close">
               Esc
             </Button>
           </div>

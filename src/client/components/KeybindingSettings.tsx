@@ -94,6 +94,7 @@ export function KeybindingSettings() {
                         <Button
                           variant="ghost"
                           size="sm"
+                          className="h-7 w-7 p-0"
                           aria-label={`Reset ${def.label} to default`}
                           title={`Reset to ${getKeybindingDef(def.id).defaultBinding}`}
                           onClick={() => {

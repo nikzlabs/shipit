@@ -79,7 +79,7 @@ export function KeybindingCapture({
           <KeyTokens chord={value} />
         )}
       </div>
-      <Button variant="secondary" size="sm" onClick={() => setRecording((r) => !r)}>
+      <Button variant="secondary" size="md" onClick={() => setRecording((r) => !r)}>
         {recording ? "Cancel" : "Change"}
       </Button>
     </div>

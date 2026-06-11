@@ -159,7 +159,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           </p>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             className="mt-2"
           >
@@ -179,7 +179,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           variant="ghost"
           size="sm"
           onClick={onRefresh}
-          className="shrink-0"
+          className="shrink-0 h-7 w-7 p-0"
           title="Refresh file tree"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.SM} />

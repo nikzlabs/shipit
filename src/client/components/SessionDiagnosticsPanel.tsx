@@ -173,7 +173,7 @@ export function SessionDiagnosticsPanel({ sessionId, open, onOpenChange }: Sessi
           <div className="flex items-center gap-2">
             <Button
               variant="secondary"
-              size="sm"
+              size="md"
               onClick={() => void onCopy()}
               disabled={!data}
               title="Copy the full diagnostics payload as JSON for bug reports."

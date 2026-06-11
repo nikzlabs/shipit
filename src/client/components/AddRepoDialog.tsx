@@ -180,7 +180,7 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
         <div className="flex justify-between border-t border-(--color-border-secondary) px-4 py-3">
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onCreateNew}
             className="text-(--color-text-link) hover:text-(--color-accent)"
           >
@@ -189,13 +189,13 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           <div className="flex gap-2">
             <Button
               variant="ghost"
-              size="sm"
+              size="md"
               onClick={onClose}
             >
               Cancel
             </Button>
             <Button
-              size="sm"
+              size="md"
               onClick={handleSubmitUrl}
               disabled={!query.trim() || submitting || isCloning}
             >
