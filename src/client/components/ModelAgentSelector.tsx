@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
+import { getModelBilling } from "../utils/model-billing.js";
 import { getSavedModelId } from "../utils/local-storage.js";
 import { useSessionStore } from "../stores/session-store.js";
 import {
@@ -201,12 +202,17 @@ export function ModelAgentSelector({
                   {agent.models.map((model) => {
                     const isCurrentModel = isActiveAgent && selectedModel === model;
                     const rowDisabled = !isAvailable || isAgentLocked;
+                    // Non-subscription models (e.g. Fable 5 once its promo
+                    // window closes) carry a billing pill so the per-token cost
+                    // is visible at the point of selection.
+                    const billing = getModelBilling(model);
 
                     return (
                       <DropdownMenuItem
                         key={`${agent.id}-${model}`}
                         onSelect={() => handleModelSelect(agent.id as AgentId, model)}
                         disabled={rowDisabled}
+                        title={billing?.tooltip}
                         className={`pl-5 pr-3 py-1.5 text-sm ${
                           isCurrentModel
                             ? "bg-(--color-accent-subtle) text-(--color-text-link)"
@@ -215,6 +221,18 @@ export function ModelAgentSelector({
                         data-testid={`model-option-${model}`}
                       >
                         <span className="flex-1">{formatModelName(model)}</span>
+                        {billing && (
+                          <span
+                            data-testid={`model-billing-${model}`}
+                            className={`rounded px-1.5 py-0.5 text-[10px] font-medium leading-none ${
+                              billing.tone === "metered"
+                                ? "bg-(--color-warning-subtle) text-(--color-warning)"
+                                : "bg-(--color-info-subtle) text-(--color-info)"
+                            }`}
+                          >
+                            {billing.badge}
+                          </span>
+                        )}
                         {isCurrentModel && (
                           <CheckIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
                         )}

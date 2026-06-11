@@ -138,6 +138,27 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
   });
 
+  it("renders a billing pill on a non-subscription model (Fable 5) but not on subscription models", async () => {
+    const agentsWithFable: AgentOption[] = [
+      { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
+    ];
+    const user = userEvent.setup();
+    render(
+      <ModelAgentSelector
+        agents={agentsWithFable}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    // Fable carries a billing badge; Opus (subscription-covered) does not.
+    expect(screen.getByTestId("model-billing-claude-fable-5")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-billing-claude-opus-4-8")).not.toBeInTheDocument();
+  });
+
   it("picking a model in the pinned agent emits onModelChange but NOT onAgentChange", async () => {
     setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
     const onAgentChange = vi.fn();

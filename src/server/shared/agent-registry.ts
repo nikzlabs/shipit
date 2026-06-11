@@ -36,10 +36,19 @@ const execFileAsync = promisify(execFile);
  * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
  * the same way.
  *
+ * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
+ * public model but is not covered by the Claude subscription beyond a promo
+ * window (included on Pro/Max/Team/Enterprise through June 22, 2026; metered at
+ * API rates — ~2× Opus 4.8 — from June 23). It's a deliberate opt-in, not the
+ * default, so a developer doesn't silently rack up per-token charges. The
+ * picker surfaces this with a date-aware billing pill — see
+ * `client/utils/model-billing.ts`. It's an explicit versioned id (no CLI
+ * alias); the CLI forwards `--model` as-is, verified working on CLI 2.1.162.
+ *
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-fable-5", "sonnet", "haiku"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
