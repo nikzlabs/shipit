@@ -283,6 +283,10 @@ rather than a flat text table:
   now a tinted-bg + adapted-text pill rather than a `Badge` variant). Low keeps
   its own green so it doesn't read like No-priority (gray). Verified live: Medium
   is `#3b82f6` on both dark and claude-light.
+  The pill **text** uses a higher contrast target than the dot (`3.8` vs `1.8`):
+  a swatch only has to be *seen*, but text has to be *read*, so a light hue like
+  amber "High" must darken further to stay legible on its own faint tint (the
+  tint keeps the true hue; only the text darkens on light themes).
 - **Filter bar (docs/173) parity.** The search box and the Priority/Status/
   Assignee facet triggers are pinned to one height (`h-8`) so the bar reads as a
   single control strip. The Priority/Status options color the **checkbox itself**

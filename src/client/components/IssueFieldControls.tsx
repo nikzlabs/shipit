@@ -67,10 +67,24 @@ export function priorityColor(level: IssuePriorityLevel, surfaceLum: number): st
 /** Shared pill chrome for the priority badge/trigger. */
 const PRIORITY_PILL = "inline-flex items-center rounded-full px-2 h-[18px] text-[11px] font-medium leading-none";
 
-/** Tinted-bg + colored-text style for a priority pill, contrast-adapted. */
+/**
+ * A higher contrast target for the pill's TEXT than the 1.8 used for dots: a
+ * swatch only has to be *seen*, but text has to be *read*, so on a light theme a
+ * light hue like amber "High" must darken further to stay legible on its tint.
+ */
+const PRIORITY_TEXT_CONTRAST = 3.8;
+
+/**
+ * Tinted-bg + colored-text style for a priority pill. The tint keeps the true
+ * hue (a faint version of the base color); the text is adapted to the stronger
+ * text-contrast target so it reads on that tint in every theme.
+ */
 function priorityPillStyle(level: IssuePriorityLevel, surfaceLum: number): CSSProperties {
-  const c = priorityColor(level, surfaceLum);
-  return { backgroundColor: `color-mix(in oklab, ${c} 16%, transparent)`, color: c };
+  const base = PRIORITY_DOT_COLOR[level];
+  return {
+    backgroundColor: `color-mix(in oklab, ${base} 16%, transparent)`,
+    color: adaptColorForSurface(base, surfaceLum, PRIORITY_TEXT_CONTRAST),
+  };
 }
 
 /**
