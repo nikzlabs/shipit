@@ -42,6 +42,24 @@ import { AutoConflictResolveManager, MAX_AUTO_RESOLVE_ATTEMPTS, type RebaseAndRe
 import { RemediationArbiter } from "./auto-remediation-arbiter.js";
 import type { MergedPrInfo } from "./issue-lifecycle.js";
 
+/**
+ * docs/196 — the facts the notify-on-merge watch acts on when a tracked
+ * session's PR reaches a terminal state. Fired for both merged and
+ * closed-without-merge so the watch can deliver the correct (distinct) signal.
+ */
+export interface PrTerminalStateInfo {
+  /** The session whose PR reached a terminal state (the watched child). */
+  sessionId: string;
+  outcome: "merged" | "closed";
+  prNumber: number;
+  prUrl: string;
+  prTitle: string;
+  /** The PR's head branch. */
+  branch: string;
+  /** Merge commit SHA when known (merged outcome only). */
+  mergeSha?: string;
+}
+
 // Re-export the pure parser helpers so existing callers
 // (`pr-status-poller.test.ts`, `services/github-ci-fix.ts`) keep working
 // without an import path change.
@@ -174,6 +192,15 @@ export class PrStatusPoller {
    */
   private onMergedPr?: (info: MergedPrInfo) => Promise<void>;
   /**
+   * docs/196 — called once when a tracked session's PR reaches a terminal state
+   * (merged OR closed-without-merge), with the branch + PR ref in scope. Drives
+   * the notify-on-merge watch: the handler checks whether THIS session has an
+   * armed merge-watch and, if so, fires the parent's wake-turn + merge card.
+   * Distinct from `onMergedPr` (merge-only, issue-lifecycle); this also fires on
+   * closed-unmerged so a watch can deliver the distinct "closed" signal.
+   */
+  private onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
+  /**
    * Optional: factory for a GitManager bound to a session's workspace dir.
    * When wired, the poller overrides GitHub's GraphQL `additions`/`deletions`
    * with a local `git diff --stat <base>...HEAD` so the PR card's diff numbers
@@ -224,6 +251,11 @@ export class PrStatusPoller {
      */
     onMergedPr?: (info: MergedPrInfo) => Promise<void>;
     /**
+     * docs/196 — fired once when a tracked session's PR reaches a terminal state
+     * (merged or closed-without-merge). Wired to the notify-on-merge watch.
+     */
+    onPrTerminalState?: (info: PrTerminalStateInfo) => Promise<void>;
+    /**
      * When set, the poller swaps GitHub's GraphQL additions/deletions (which
      * lag a few seconds after each push while GitHub reindexes) for the same
      * locally-computed diff stats the click-through diff dialog uses, so the
@@ -243,6 +275,7 @@ export class PrStatusPoller {
     this.runnerRegistry = opts.runnerRegistry;
     this.onMergeDetectedCb = opts.onMergeDetectedCb;
     this.onMergedPr = opts.onMergedPr;
+    this.onPrTerminalState = opts.onPrTerminalState;
     this.createGitManager = opts.createGitManager;
     this.isAutoResolveEnabled = opts.isAutoResolveEnabled ?? (() => false);
     this.isAutoFixEnabled = opts.isAutoFixEnabled ?? (() => false);
@@ -1288,6 +1321,25 @@ export class PrStatusPoller {
     this.autoFix.delete(sessionId);
     this.remediationArbiter.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
+
+    // docs/196 — fire the notify-on-merge watch hook for BOTH terminal outcomes.
+    // Guarded by `!alreadyTerminal` so it fires once per terminal transition; the
+    // watch's own `delivered`/`closed-unmerged` state machine is the second
+    // fire-once guard (covers a restart that re-observes the same merge). The
+    // handler no-ops when this session carries no armed watch.
+    if (!alreadyTerminal && this.onPrTerminalState) {
+      this.onPrTerminalState({
+        sessionId,
+        outcome: isMerged ? "merged" : "closed",
+        prNumber: pr.number,
+        prUrl: pr.url,
+        prTitle: pr.title,
+        branch,
+        ...(pr.merge_commit_sha ? { mergeSha: pr.merge_commit_sha } : {}),
+      }).catch((err: unknown) => {
+        console.error(`[pr-poller] notify-on-merge watch handling error for ${sessionId}:`, err);
+      });
+    }
 
     if (isMerged && !alreadyTerminal) {
       if (this.onMergeDetectedCb) {

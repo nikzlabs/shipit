@@ -97,7 +97,7 @@ export async function findPullRequestAnyState(
   head: string,
 ): Promise<{
   url: string; number: number; base: string; title: string; body: string;
-  state: "open" | "closed"; merged_at: string | null;
+  state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
   additions: number; deletions: number;
 } | null> {
   const res = await fetchGitHub(
@@ -108,7 +108,7 @@ export async function findPullRequestAnyState(
   if (!res.ok) return null;
   const prs = (await res.json()) as {
     html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
-    state: "open" | "closed"; merged_at: string | null;
+    state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
     additions: number; deletions: number;
   }[];
   if (prs.length === 0) return null;
@@ -142,6 +142,7 @@ export async function findPullRequestAnyState(
     body: pr.body ?? "",
     state: pr.state,
     merged_at: pr.merged_at,
+    merge_commit_sha: pr.merge_commit_sha ?? null,
     additions,
     deletions,
   };

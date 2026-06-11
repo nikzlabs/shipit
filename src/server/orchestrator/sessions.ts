@@ -1,4 +1,4 @@
-import type { ProviderRouteKind, SessionInfo } from "../shared/types.js";
+import type { ProviderRouteKind, SessionInfo, SessionMergeWatch } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -45,6 +45,8 @@ interface SessionRow {
   auto_fix_ci_paused: number;
   /** docs/110 — ISO instant the session was pinned (persistent); NULL = not pinned. */
   pinned_at: string | null;
+  /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
+  merge_watch: string | null;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -228,6 +230,13 @@ export class SessionManager {
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
+    if (row.merge_watch) {
+      try {
+        info.mergeWatch = JSON.parse(row.merge_watch) as SessionInfo["mergeWatch"];
+      } catch {
+        // Corrupt/legacy JSON — treat as no watch rather than crashing reads.
+      }
+    }
     return info;
   }
 
@@ -657,6 +666,48 @@ export class SessionManager {
         "UPDATE sessions SET closed_at = NULL WHERE id = ? AND closed_at IS NOT NULL",
       ).run(id);
     }
+  }
+
+  /**
+   * docs/196 — set (or clear, with `null`) the notify-on-merge watch on a
+   * session row. Stored as JSON so the watch — and its `armed/merge-observed/
+   * delivered/closed-unmerged` state — survives an orchestrator restart, letting
+   * the in-process poller re-derive "PR merged + watch un-delivered → enqueue"
+   * after a redeploy.
+   */
+  setMergeWatch(id: string, watch: SessionMergeWatch | null): void {
+    const json = watch === null ? null : JSON.stringify(watch);
+    this.db.prepare("UPDATE sessions SET merge_watch = ? WHERE id = ?").run(json, id);
+  }
+
+  /** docs/196 — read the notify-on-merge watch for a session, if any. */
+  getMergeWatch(id: string): SessionMergeWatch | undefined {
+    return this.get(id)?.mergeWatch;
+  }
+
+  /**
+   * docs/196 — every session that carries a merge-watch in a non-terminal state
+   * (`armed` or `merge-observed`). Used by the startup reconcile to re-fire any
+   * watch whose child PR already reached a terminal state while the orchestrator
+   * was down. Includes archived rows (a merged child is archived by the
+   * post-merge path, but its un-delivered watch must still fire).
+   */
+  listPendingMergeWatches(): { childSessionId: string; watch: SessionMergeWatch }[] {
+    const rows = this.db.prepare(
+      "SELECT id, merge_watch FROM sessions WHERE merge_watch IS NOT NULL",
+    ).all() as { id: string; merge_watch: string }[];
+    const out: { childSessionId: string; watch: SessionMergeWatch }[] = [];
+    for (const row of rows) {
+      try {
+        const watch = JSON.parse(row.merge_watch) as SessionMergeWatch;
+        if (watch.state === "armed" || watch.state === "merge-observed") {
+          out.push({ childSessionId: row.id, watch });
+        }
+      } catch {
+        // Skip corrupt JSON rather than crash startup.
+      }
+    }
+    return out;
   }
 
   /**

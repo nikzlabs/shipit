@@ -40,6 +40,7 @@ import {
   sendChildMessage,
   waitForChildIdle,
   assertArchivableChild,
+  registerMergeWatch,
   DEFAULT_WAIT_FOR_CHILD_IDLE_MS,
   MAX_WAIT_FOR_CHILD_IDLE_MS,
   ServiceError,
@@ -979,6 +980,41 @@ export async function registerSessionRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to archive child session: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:parentId/children/:childId/notify-on-merge — docs/196.
+  // Arms an async watch: when the child's PR reaches a terminal state, the
+  // orchestrator enqueues a self-describing system turn into THIS parent's
+  // message queue and surfaces a merge card. Non-blocking — returns immediately
+  // ("watch armed"); the actual firing is event-driven off the PR poller.
+  app.post<{
+    Params: { parentId: string; childId: string };
+  }>(
+    "/api/sessions/:parentId/children/:childId/notify-on-merge",
+    async (request, reply) => {
+      try {
+        const result = registerMergeWatch(
+          sessionManager,
+          request.params.parentId,
+          request.params.childId,
+        );
+        // Register-time backstop: if the child's PR ALREADY resolved before the
+        // watch was armed, the poller won't re-observe it — fire now. Off the
+        // response path so the shim still returns immediately.
+        if (deps.mergeWatchManager) {
+          void deps.mergeWatchManager.checkAndFireNow(request.params.childId).catch((err: unknown) => {
+            console.error(`[merge-watch] register-time check failed for ${request.params.childId}:`, err);
+          });
+        }
+        return { armed: true, state: result.state, alreadyArmed: result.alreadyArmed };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to register merge watch: ${getErrorMessage(err)}` });
       }
     },
   );

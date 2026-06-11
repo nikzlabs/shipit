@@ -1208,6 +1208,67 @@ describe("PrStatusPoller", () => {
     );
   });
 
+  it("fires onPrTerminalState with outcome 'merged' when a PR merges (docs/196)", async () => {
+    const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+    const mergedRest = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42, base: "main", title: "Add feature", body: "x",
+      state: "closed" as const, merged_at: "2026-05-19T12:00:00Z",
+      merge_commit_sha: "abc123def456789", additions: 100, deletions: 20,
+    };
+    githubAuth = makeGitHubAuth(withPr, mergedRest);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const onPrTerminalState = vi.fn().mockResolvedValue(undefined);
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onPrTerminalState });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [] } } },
+    });
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onPrTerminalState).toHaveBeenCalledTimes(1);
+    expect(onPrTerminalState).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: "s1", outcome: "merged", prNumber: 42,
+        branch: "shipit/abc-feature", mergeSha: "abc123def456789",
+      }),
+    );
+  });
+
+  it("fires onPrTerminalState with outcome 'closed' when a PR closes unmerged (docs/196)", async () => {
+    const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+    const closedRest = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42, base: "main", title: "Add feature", body: "x",
+      state: "closed" as const, merged_at: null, merge_commit_sha: null,
+      additions: 100, deletions: 20,
+    };
+    githubAuth = makeGitHubAuth(withPr, closedRest);
+    sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const onPrTerminalState = vi.fn().mockResolvedValue(undefined);
+    poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onPrTerminalState });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [] } } },
+    });
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(onPrTerminalState).toHaveBeenCalledTimes(1);
+    expect(onPrTerminalState).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "s1", outcome: "closed", prNumber: 42 }),
+    );
+  });
+
   it("does NOT promote to merged when REST verify reports the PR is still open (rate-limit poisoning)", async () => {
     // Scenario: GraphQL returns an empty PR list (e.g. due to a rate-limit
     // response that slipped past header detection, or a transient hiccup).

@@ -10,6 +10,7 @@ import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
+import type { MergeWatchManager } from "./merge-watch.js";
 import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
@@ -634,6 +635,12 @@ export interface PrPollerDeps {
    */
   containerManager?: SessionContainerManager | null;
   /**
+   * docs/196 — the notify-on-merge deliverer. When present, the poller's
+   * `onPrTerminalState` hook forwards every terminal PR transition (merged /
+   * closed) to it; the manager no-ops unless the session carries an armed watch.
+   */
+  mergeWatchManager?: MergeWatchManager;
+  /**
    * docs/146 — required to construct the `RebaseAndResolveCb` closure that
    * the auto-resolve manager invokes per attempt. The closure builds a
    * `RebaseDriverDeps` per-call from these shared managers + the per-session
@@ -672,7 +679,7 @@ export function createPrStatusPoller(
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
-    onRepoMainAdvanced, containerManager,
+    onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
     drainQueueForSession, agentFactory,
   } = pollerDeps;
@@ -774,6 +781,12 @@ export function createPrStatusPoller(
               info,
             ),
         }
+      : {}),
+    // docs/196 — forward every terminal PR transition (merged / closed) to the
+    // notify-on-merge deliverer. It no-ops unless the session carries an armed
+    // watch, so wiring it unconditionally is cheap.
+    ...(mergeWatchManager
+      ? { onPrTerminalState: (info) => mergeWatchManager.handleChildPrTerminal(info) }
       : {}),
     onMergeDetectedCb: async (sessionId) => {
       try {
