@@ -26,7 +26,7 @@ but PR is a per-session singleton, issues are a collection, so a re-targeting
 tab adds churn) and over a modal (ShipIt reserves modals for settings-style
 interruptions; content lives in panels).
 
-## Three entry points, one path
+## Four entry points, one path
 
 All routes go through `issues-store.openIssue(ref)`:
 
@@ -37,6 +37,11 @@ All routes go through `issues-store.openIssue(ref)`:
    that opens the detail instead of an external anchor.
 3. **`IssueWriteCard`** (agent `shipit issue comment/edit/...`) — the identifier
    chip opens the detail; the Undo button is untouched.
+4. **Doc viewer issue chip** (`DocsViewer` — a doc's `issue:` frontmatter
+   pointer, docs/168) — the chip was the last issue affordance still deep-linking
+   out. It now opens the inline detail when `App.handleOpenIssue` is wired and the
+   pointer resolves to a known tracker (via `parseIssueRef`). An unknown-shape
+   pointer keeps the external link, since there's no inline view to open it in.
 
 Cards only carry the display identifier (+ a native `issueId` on the write
 card). `issueLookupId()` derives the tracker-native lookup id from the display
@@ -109,6 +114,9 @@ action). Self-contained dark-theme HTML.
 - `src/client/components/IssuesViewer.tsx` — row opens detail (deep link removed).
 - `src/client/components/IssueRefCard.tsx` / `IssueWriteCard.tsx` — open the
   detail instead of linking out.
+- `src/client/components/DocsViewer.tsx` — the doc `issue:` chip opens the inline
+  detail (via the `onOpenIssue` prop, wired to `App.handleOpenIssue`) for a
+  known tracker; external link kept only for unknown-shape pointers.
 - `src/client/components/MessageList.tsx` + `App.tsx` — thread `onOpenIssue`
   (switches the right panel to Issues, reveals it on mobile, then `openIssue`).
 
