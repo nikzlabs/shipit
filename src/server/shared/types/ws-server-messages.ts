@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1012,6 +1012,26 @@ export interface WsSessionSpawnFailed {
 }
 
 /**
+ * Server → Client: a child session the parent registered a notify-on-merge
+ * watch on had its PR reach a terminal state — merged, or closed without merging
+ * (docs/196).
+ *
+ * Emitted on the *parent's* runner via `runner.emitMessage(...)` when a runner
+ * is attached, AND appended to the parent's chat history (the card fires from a
+ * PR-poller event, outside any turn, so it can't ride `emitChatCard`). The
+ * client renders a `ChildMergedCard` inline in the parent's chat — the child's
+ * title/branch, the PR ref, and an "Open" button that switches to the child.
+ * The actionable wake-turn is enqueued separately into the parent's message
+ * queue; this card is purely the user-facing affordance.
+ */
+export interface WsChildMergedCard {
+  type: "child_merged_card";
+  /** Parent session id — the runner this event is emitted on. */
+  sessionId: string;
+  card: ChildMergedCard;
+}
+
+/**
  * Server → Client: a file review's comment set changed out-of-band (docs/125).
  * Emitted when the chat-native review subagent writes anchored comments via the
  * `submit_review_comments` tool. Carries the full updated draft so the file
@@ -1354,6 +1374,7 @@ export type WsServerMessage =
   | WsForkBreadcrumb
   | WsSessionSpawned
   | WsSessionSpawnFailed
+  | WsChildMergedCard
   | WsServiceStatus
   | WsServiceList
   | WsServiceOom

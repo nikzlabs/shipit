@@ -73,6 +73,18 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     shipitSource: true,
     failedAt: "2026-06-05T00:00:00.000Z",
   },
+  childMerged: {
+    cardId: "child-merged-1",
+    childSessionId: "child-1",
+    childTitle: "Child",
+    branch: "shipit/child-1",
+    outcome: "merged",
+    prNumber: 42,
+    prUrl: "https://github.com/o/r/pull/42",
+    prTitle: "Foundation work",
+    mergeSha: "abc123def456",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   agentReview: {
     reviewId: "r1",
     filePath: "a.ts",

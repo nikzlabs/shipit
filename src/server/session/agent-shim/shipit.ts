@@ -40,6 +40,7 @@ Supported subcommands:
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
+  shipit session notify-on-merge <id> [--json]
   shipit session archive <id> [--json]
   shipit session help
 
@@ -1039,6 +1040,53 @@ async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void
   success(deps.io, `session-id: ${id}\narchived:   true`);
 }
 
+/**
+ * `shipit session notify-on-merge <child-id> [--json]` (docs/196).
+ *
+ * Arms an async watch: when the child's PR merges (or closes without merging),
+ * the orchestrator wakes THIS session with a queued, self-describing system turn
+ * and surfaces a merge card — no blocking wait. Returns immediately ("armed").
+ * Unlike `wait`, this does NOT hold the turn open; the turn ends here and the
+ * parent resumes event-driven, possibly days later.
+ */
+async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {},
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session notify-on-merge: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const id = parsed.positional[0];
+  if (!id) {
+    fail(deps.io, "shipit session notify-on-merge: child session id is required.");
+  }
+
+  const res = await deps.call(
+    "POST",
+    `/agent-ops/session/notify-on-merge/${encodeURIComponent(id)}`,
+    {},
+    deps.env,
+  );
+  if (res.status === 404) {
+    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to register merge watch"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const already = res.body.alreadyArmed === true;
+  success(
+    deps.io,
+    `session-id:      ${id}\nnotify-on-merge: ${already ? "already armed" : "armed"}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Read-only ShipIt source subcommands (docs/162) — Ops sessions only.
 // ---------------------------------------------------------------------------
@@ -1817,6 +1865,7 @@ const SESSION_HANDLERS: Record<
   message: handleSessionMessage,
   wait: handleSessionWait,
   archive: handleSessionArchive,
+  "notify-on-merge": handleSessionNotifyOnMerge,
 };
 
 const SOURCE_HANDLERS: Record<

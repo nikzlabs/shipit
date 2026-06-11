@@ -37,6 +37,7 @@ export {
   sendChildMessage,
   waitForChildIdle,
   assertArchivableChild,
+  registerMergeWatch,
 } from "./child-sessions.js";
 export type {
   SpawnChildSessionOptions,
@@ -45,6 +46,7 @@ export type {
   ChildViewProjections,
   SendChildMessageResult,
   WaitForChildIdleResult,
+  RegisterMergeWatchResult,
 } from "./child-sessions.js";
 
 // ---- Read operations ----

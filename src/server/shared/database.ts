@@ -522,6 +522,22 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE usage_turns ADD COLUMN sub_agent_id TEXT");
   },
+  // docs/196 — async notify-on-merge watch. `merge_watch` holds a JSON
+  // `SessionMergeWatch` on the CHILD session row (parent id + state machine), so
+  // a watch armed by `shipit session notify-on-merge` survives an orchestrator
+  // restart and the in-process PR poller can re-derive "child PR merged + watch
+  // un-delivered → enqueue a wake-turn into the parent." NULL = no watch.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merge_watch TEXT");
+  },
+  // docs/196 — persist the "Child PR merged / closed" transcript card so it
+  // survives a session switch / full reload. The card is surfaced into the
+  // parent's chat from a PR-poller event (outside any turn), so without this
+  // column it would render live but vanish on the next loadSessionHistory, which
+  // rebuilds the transcript from the DB. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN child_merged TEXT");
+  },
 ];
 
 export class DatabaseManager {

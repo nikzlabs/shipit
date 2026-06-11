@@ -190,6 +190,72 @@ export interface SessionInfo {
    * the PR card's overflow menu (only shown when the global setting is on).
    */
   autoFixCiPaused?: boolean;
+  /**
+   * docs/196 — async "notify parent when this child's PR merges" watch. Set on
+   * the CHILD session row by `shipit session notify-on-merge`; the parent that
+   * registered it is recorded in `parentSessionId` here. The PR poller fires the
+   * watch when this session's PR reaches a terminal state (merged or
+   * closed-without-merge), enqueuing a self-describing system turn into the
+   * parent's message queue and surfacing a persisted merge card. Persisted so
+   * the firing survives an orchestrator restart; the `state` machine
+   * (`armed → merge-observed → delivered`, or terminal `closed-unmerged`) makes
+   * delivery fire-once.
+   */
+  mergeWatch?: SessionMergeWatch;
+}
+
+/**
+ * docs/196 — a single parent→child merge-watch, stored on the child session row.
+ * The lifecycle is fire-once: a re-poll (or a restart-driven re-derivation) that
+ * sees a terminal state but an already-`delivered`/`closed-unmerged` watch is a
+ * no-op.
+ */
+export interface SessionMergeWatch {
+  /** Session that registered the watch and receives the wake-turn + merge card. */
+  parentSessionId: string;
+  /**
+   * - `armed` — registered, waiting for the child's PR to reach a terminal state
+   *   (the PR need not exist yet).
+   * - `merge-observed` — the poller saw the merge and surfaced the card, but the
+   *   actionable wake-turn hasn't been enqueued into the parent yet (a transient
+   *   step; re-tried on the next poll if enqueue couldn't complete).
+   * - `delivered` — the merge wake-turn was enqueued. Terminal, fire-once.
+   * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
+   *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
+   */
+  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged";
+  /** ISO instant the watch was armed. */
+  registeredAt: string;
+  /** ISO instant the terminal PR state was first observed. */
+  observedAt?: string;
+  /** ISO instant the wake-turn was enqueued into the parent. */
+  deliveredAt?: string;
+}
+
+/**
+ * docs/196 — payload for the inline "Child PR merged / closed" transcript card
+ * surfaced into the PARENT session when a watched child's PR reaches a terminal
+ * state. Static (no mutable lifecycle): persisted on the message row and
+ * rendered directly, no client store. Carries everything needed to identify the
+ * child and its PR so the card is self-explanatory after a reload.
+ */
+export interface ChildMergedCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** The watched child session's id (the card's "Open" target). */
+  childSessionId: string;
+  /** Child session title, for display. */
+  childTitle: string;
+  /** Child's branch. */
+  branch?: string;
+  /** `"merged"` or `"closed-unmerged"` — drives the card's copy + tone. */
+  outcome: "merged" | "closed-unmerged";
+  prNumber: number;
+  prUrl: string;
+  prTitle?: string;
+  /** Merge commit SHA, when known (merged outcome only). */
+  mergeSha?: string;
+  createdAt: string;
 }
 
 // ---- Repo types ----

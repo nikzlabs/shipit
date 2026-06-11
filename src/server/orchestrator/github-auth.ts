@@ -533,7 +533,7 @@ export class GitHubAuthManager extends EventEmitter {
     head: string,
   ): Promise<{
     url: string; number: number; base: string; title: string; body: string;
-    state: "open" | "closed"; merged_at: string | null;
+    state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
     additions: number; deletions: number;
   } | null> {
     if (!this._token) return null;

@@ -65,6 +65,7 @@ import {
   autoStart,
 } from "./app-lifecycle.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
+import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
@@ -498,10 +499,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   };
 
+  // ---- Notify-on-merge watches (docs/196) ----
+  // Built before the poller so the poller's `onPrTerminalState` hook can fire it.
+  // The PR-status lookup + startup reconcile are bound after the poller exists.
+  const mergeWatchManager = new MergeWatchManager({
+    sessionManager,
+    runnerRegistry,
+    chatHistoryManager,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+  });
+
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
+    mergeWatchManager,
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
@@ -525,6 +541,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
   // hook closes over.
   prStatusPollerRef.ref = prStatusPoller;
+
+  // docs/196 — bind the merge-watch PR-status lookup to the poller, then
+  // re-derive any watch whose child PR already reached a terminal state while
+  // the orchestrator was down (loadPersisted, run inside createPrStatusPoller,
+  // has already seeded the snapshots this reads). Best-effort, off the boot path.
+  mergeWatchManager.setPrStatusLookup((id) => prStatusPoller.getStatus(id));
+  void mergeWatchManager.reconcilePending().catch((err: unknown) => {
+    console.error("[merge-watch] startup reconcile failed:", err);
+  });
 
   // ---- Release Status Poller (docs/171) ----
   // Reflects the inline release lifecycle card: gate/CI status + the published
@@ -1138,6 +1163,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
+    mergeWatchManager,
     databaseManager,
     secretStore,
     reviewStore,
@@ -2043,6 +2069,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   // / DI. Adding them here just lets tests stop reaching through
   // module-private state.
   app.decorate("prStatusPoller", prStatusPoller);
+  app.decorate("mergeWatchManager", mergeWatchManager);
   app.decorate("releaseStatusPoller", releaseStatusPoller);
   app.decorate("runnerRegistry", runnerRegistry);
   app.decorate("sessionManager", sessionManager);
@@ -2056,6 +2083,8 @@ declare module "fastify" {
   interface FastifyInstance {
     /** docs/146 — test-surface decoration. See `index.ts`. */
     prStatusPoller?: PrStatusPoller;
+    /** docs/196 — test-surface decoration for the notify-on-merge deliverer. */
+    mergeWatchManager?: MergeWatchManager;
     /** docs/171 — test-surface decoration for the release lifecycle poller. */
     releaseStatusPoller?: ReleaseStatusPoller;
     runnerRegistry: SessionRunnerRegistry;

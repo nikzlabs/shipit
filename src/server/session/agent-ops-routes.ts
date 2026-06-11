@@ -443,4 +443,17 @@ export function registerAgentOpsRoutes(
         reply,
       ),
   );
+
+  // POST /agent-ops/session/notify-on-merge/:childId — docs/196. Arm an async
+  // watch that wakes this parent when the child's PR merges (or closes).
+  app.post<{ Params: { childId: string } }>(
+    "/agent-ops/session/notify-on-merge/:childId",
+    async (request, reply) =>
+      relay(
+        "POST",
+        `/children/${encodeURIComponent(request.params.childId)}/notify-on-merge`,
+        {},
+        reply,
+      ),
+  );
 }

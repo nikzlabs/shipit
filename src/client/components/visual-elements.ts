@@ -36,6 +36,7 @@ export const CARD_MESSAGE_FIELDS = [
   "spawnedSession",
   "spawnFailed",
   "forkChild",
+  "childMerged",
 ] as const satisfies readonly (keyof ChatMessage)[];
 
 export type VisualElement =

@@ -14,6 +14,7 @@ import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
 import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
+import { ChildMergedCard } from "./ChildMergedCard.js";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
 import { AgentReviewCard } from "./AgentReviewCard.js";
 import { UserReviewCard } from "./UserReviewCard.js";
@@ -171,6 +172,24 @@ export interface ChatMessage {
       targetRepo?: string;
       diagnosis?: string;
     };
+  };
+  /**
+   * docs/196 — when set, this message renders a `ChildMergedCard` inline in the
+   * PARENT's chat: a child session the parent armed a notify-on-merge watch on
+   * had its PR merge (or close without merging). Populated from `child_merged_card`
+   * WS events and from persisted history (static payload, no client store).
+   */
+  childMerged?: {
+    cardId: string;
+    childSessionId: string;
+    childTitle: string;
+    branch?: string;
+    outcome: "merged" | "closed-unmerged";
+    prNumber: number;
+    prUrl: string;
+    prTitle?: string;
+    mergeSha?: string;
+    createdAt: string;
   };
   /**
    * docs/117 cross-cutting follow-up — when set, this message renders a
@@ -790,6 +809,29 @@ export function MessageList({
                   {...(msg.spawnedSession.branch ? { branch: msg.spawnedSession.branch } : {})}
                   spawnedAt={msg.spawnedSession.spawnedAt}
                   {...(msg.spawnedSession.shipitFix ? { shipitFix: msg.spawnedSession.shipitFix } : {})}
+                  {...(onResumeSession ? { onOpen: onResumeSession } : {})}
+                />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/196 — child-merged marker carries no chat text of its own; render
+        // the inline `ChildMergedCard` and skip the bubble path. Static payload,
+        // no client store — renders identically live and after a reload.
+        if (msg.childMerged) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <ChildMergedCard
+                  childSessionId={msg.childMerged.childSessionId}
+                  childTitle={msg.childMerged.childTitle}
+                  {...(msg.childMerged.branch ? { branch: msg.childMerged.branch } : {})}
+                  outcome={msg.childMerged.outcome}
+                  prNumber={msg.childMerged.prNumber}
+                  prUrl={msg.childMerged.prUrl}
+                  {...(msg.childMerged.prTitle ? { prTitle: msg.childMerged.prTitle } : {})}
+                  {...(msg.childMerged.mergeSha ? { mergeSha: msg.childMerged.mergeSha } : {})}
                   {...(onResumeSession ? { onOpen: onResumeSession } : {})}
                 />
               </div>
