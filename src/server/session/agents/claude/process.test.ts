@@ -342,6 +342,31 @@ describe("ClaudeProcess", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
+    it("includes --permission-prompt-tool when permissionPromptTool is provided (docs/193)", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionPromptTool: "mcp__shipit-permission__permission_prompt" });
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--permission-prompt-tool", "mcp__shipit-permission__permission_prompt"]),
+        expect.any(Object),
+      );
+    });
+
+    it("omits --permission-prompt-tool when not provided", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--permission-prompt-tool");
+    });
+
     it("includes --settings flag when settingsPath is provided", () => {
       // Settings path is how the orchestrator enables the PR-enforcement
       // Stop hook (docs/129-stop-hook-pr-enforcement). Regression-protect

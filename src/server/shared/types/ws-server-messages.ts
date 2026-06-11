@@ -1158,6 +1158,38 @@ export interface WsBugReportFailed {
 }
 
 /**
+ * docs/193 / SHI-112 — the inline permission-request card (agent-agnostic).
+ * Emitted when an agent backend raises a gated action the user must approve (a
+ * sensitive-file edit, an escalated command). Carries everything the card
+ * renders; the user's answer comes back as `resolve_permission`.
+ */
+export interface WsPermissionRequestCard {
+  type: "permission_request_card";
+  sessionId: string;
+  /** Stable id (the broker requestId) — used to update the card in place. */
+  requestId: string;
+  /** The gated tool (e.g. "Write", "Edit", "Bash", "apply_patch"). */
+  toolName: string;
+  /** The file/resource the gate fired on, when one could be derived. */
+  path?: string;
+  /** One-line human summary of what is being requested. */
+  summary?: string;
+  /** Which agent raised it (display only). */
+  agentId?: string;
+  createdAt: string;
+}
+
+/** docs/193 — terminal state for a permission-request card. */
+export interface WsPermissionResolved {
+  type: "permission_resolved";
+  sessionId: string;
+  requestId: string;
+  phase: "approved" | "denied" | "expired";
+  /** True when the user approved with "remember this file for the session". */
+  remembered?: boolean;
+}
+
+/**
  * docs/177 — the do-then-surface provenance card for an agent issue write,
  * emitted via `runner.emitMessage` (so it buffers into the turn-event log and
  * survives reconnects) right after a brokered write completes. Carries the full
@@ -1231,6 +1263,8 @@ export type WsServerMessage =
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsPermissionRequestCard
+  | WsPermissionResolved
   | WsIssueWriteCard
   | WsIssueWriteUpdate
   | WsIssueRefCard

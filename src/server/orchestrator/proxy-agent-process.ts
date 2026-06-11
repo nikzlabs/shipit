@@ -5,7 +5,7 @@
 
 import { EventEmitter } from "node:events";
 import { randomUUID } from "node:crypto";
-import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode } from "../shared/types.js";
+import type { AgentProcess, AgentId, AgentEvent, AgentMcpWriteContext, AgentMcpWriteResult, AgentRunParams, PermissionMode, PermissionDecision } from "../shared/types.js";
 import { WorkerTimeoutError } from "./worker-http.js";
 
 /**
@@ -45,6 +45,7 @@ export interface ProxyAgentRunner {
   killAgentOnWorker(): Promise<void>;
   setAgentPermissionModeOnWorker(mode: PermissionMode | undefined): Promise<void>;
   compactAgentOnWorker(instructions?: string): Promise<void>;
+  resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void>;
 }
 
 /**
@@ -162,6 +163,20 @@ export class ProxyAgentProcess extends EventEmitter<{
     this.runner.setAgentPermissionModeOnWorker(mode).catch((err: unknown) => {
       const msgText = err instanceof Error ? err.message : String(err);
       this.emit("log", "server", `Failed to change permission mode on worker: ${msgText}`);
+    });
+  }
+
+  /**
+   * docs/193 — fire-and-forget POST to worker /agent/permission/resolve,
+   * delivering the user's approve/deny answer to the broker (which unblocks the
+   * held bridge/RPC call). Failures land on the Logs panel rather than `error`:
+   * a failed resolve shouldn't tear down the turn — the broker's timeout is the
+   * backstop, and the user can re-answer.
+   */
+  resolvePermission(requestId: string, decision: PermissionDecision): void {
+    this.runner.resolvePermissionOnWorker(requestId, decision).catch((err: unknown) => {
+      const msgText = err instanceof Error ? err.message : String(err);
+      this.emit("log", "server", `Failed to resolve permission on worker: ${msgText}`);
     });
   }
 

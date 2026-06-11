@@ -26,7 +26,7 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode } from "../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
@@ -926,6 +926,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   async compactAgentOnWorker(instructions?: string): Promise<void> {
     await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
+  }
+
+  /**
+   * docs/193 — deliver the user's approve/deny answer for a pending permission
+   * request to the worker's broker, which unblocks the held bridge/RPC call.
+   */
+  async resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/permission/resolve", {
+      requestId,
+      behavior: decision.behavior,
+      ...(decision.remember ? { remember: true } : {}),
+      ...(decision.message ? { message: decision.message } : {}),
+    });
   }
 
   // --- Worker communication: terminal ---

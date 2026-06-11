@@ -30,10 +30,12 @@ import type {
   AgentMcpVoiceBridge,
   AgentMcpAskBridge,
   AgentMcpBugBridge,
+  AgentMcpPermissionBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
-import type { PermissionMode } from "../shared/types.js";
+import type { PermissionDecision, PermissionMode } from "../shared/types.js";
+import { PermissionBroker } from "./permission-broker.js";
 import { substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
@@ -159,6 +161,12 @@ export class SessionWorker extends EventEmitter {
   // count + total bytes (see PresentBuffer).
   private readonly presentBuffer = new PresentBuffer();
 
+  // SHI-112 / docs/193 — agent-agnostic approval broker. Holds pending
+  // sensitive-action requests (Claude via the `--permission-prompt-tool`
+  // bridge; Codex via its app-server approval channel), broadcasts the
+  // canonical request/resolved events, and tracks the per-session remember-set.
+  private readonly permissionBroker: PermissionBroker;
+
   constructor(deps: SessionWorkerDeps) {
     super();
     this.agentFactory = deps.agentFactory;
@@ -171,6 +179,12 @@ export class SessionWorker extends EventEmitter {
     this.sse = new SseBroadcaster({
       onBackpressureChange: () => this.applyTerminalBackpressure(),
     });
+    // docs/193 — the broker broadcasts its canonical request/resolved events on
+    // the same `agent_event` SSE frame the ask bridge uses, so they reach the
+    // orchestrator's agent-listeners and render/persist the permission card.
+    this.permissionBroker = new PermissionBroker({
+      broadcast: (event) => this.broadcastSSE({ type: "agent_event", data: event }),
+    });
     this.app = this.buildApp();
   }
 
@@ -181,6 +195,7 @@ export class SessionWorker extends EventEmitter {
     this.registerSessionEndpoints(app);
     this.registerSSEEndpoint(app);
     this.registerAskEndpoint(app);
+    this.registerPermissionEndpoints(app);
     registerAgentOpsRoutes(app, {
       createOrchestratorClient: this._createOrchestratorClient,
     });
@@ -205,6 +220,7 @@ export class SessionWorker extends EventEmitter {
       voiceBridge: this.voiceBridgePaths(),
       askBridge: this.askBridgePaths(),
       bugBridge: this.bugBridgePaths(),
+      permissionBridge: this.permissionBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -288,6 +304,22 @@ export class SessionWorker extends EventEmitter {
     return { tsxBin, bridgePath };
   }
 
+  /**
+   * Resolve the absolute paths needed to launch the permission-prompt MCP
+   * bridge (docs/193). Same lifecycle and graceful-degradation rules as the
+   * other bridges — if the bridge or `tsx` is missing, return null and the
+   * adapter omits the `--permission-prompt-tool` wiring rather than failing
+   * agent start. Only Claude registers it; Codex uses its native approval
+   * channel.
+   */
+  private permissionBridgePaths(): AgentMcpPermissionBridge | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-permission-bridge.ts");
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
   private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
     const previous = new Map<string, string | undefined>();
     for (const [key, value] of Object.entries(values)) {
@@ -328,6 +360,12 @@ export class SessionWorker extends EventEmitter {
         // runtimeEnv?, cleanup? } result.
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent, runToken);
+        // docs/193 — give an adapter with a native blocking approval channel
+        // (Codex) the broker so its escalation requests surface the same
+        // approve/deny card as Claude's sensitive-file gate, rather than being
+        // silently auto-approved. Claude has no such channel here — its gate is
+        // bridged via `--permission-prompt-tool` (mcp-permission-bridge).
+        this.agent.setPermissionRequester?.((input) => this.permissionBroker.request(input));
         const mcpWrite = this.invokeAgentMcpWriter(this.agent, params);
 
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
@@ -850,6 +888,62 @@ export class SessionWorker extends EventEmitter {
         });
 
         return { status: "asked" };
+      },
+    );
+  }
+
+  /**
+   * docs/193 — the two halves of the permission round-trip.
+   *
+   * `/agent-ops/permission/request` is called by the Claude
+   * `--permission-prompt-tool` bridge: it opens a broker request and HOLDS the
+   * HTTP response open until the user answers, then replies with the decision
+   * the bridge maps to the CLI's allow/deny envelope. (Codex doesn't hit this
+   * route — its adapter calls `broker.request` directly via the injected
+   * requester.)
+   *
+   * `/agent/permission/resolve` is the orchestrator→worker push: the user's
+   * approve/deny answer, delivered via `ProxyAgentProcess.resolvePermission`.
+   * It resolves the broker entry, which unblocks BOTH the held bridge response
+   * (Claude) and the awaited `broker.request` promise (Codex) uniformly.
+   */
+  private registerPermissionEndpoints(app: FastifyInstance): void {
+    app.post<{ Body: { toolName?: string; input?: Record<string, unknown>; toolUseId?: string } }>(
+      "/agent-ops/permission/request",
+      async (request, reply) => {
+        const body = request.body ?? {};
+        if (typeof body.toolName !== "string" || !body.toolName) {
+          return reply.code(400).send({ error: "toolName is required" });
+        }
+        // Holds until resolve()/timeout settles the broker entry.
+        const decision = await this.permissionBroker.request({
+          toolName: body.toolName,
+          input: body.input,
+          agentId: this.agent?.agentId,
+        });
+        return { behavior: decision.behavior, ...(decision.message ? { message: decision.message } : {}) };
+      },
+    );
+
+    app.post<{ Body: { requestId?: string; behavior?: string; remember?: boolean; message?: string } }>(
+      "/agent/permission/resolve",
+      async (request, reply) => {
+        const body = request.body ?? {};
+        if (typeof body.requestId !== "string" || !body.requestId) {
+          return reply.code(400).send({ error: "requestId is required" });
+        }
+        if (body.behavior !== "allow" && body.behavior !== "deny") {
+          return reply.code(400).send({ error: "behavior must be 'allow' or 'deny'" });
+        }
+        const decision: PermissionDecision = {
+          behavior: body.behavior,
+          ...(body.remember ? { remember: true } : {}),
+          ...(typeof body.message === "string" ? { message: body.message } : {}),
+        };
+        const found = this.permissionBroker.resolve(body.requestId, decision);
+        // `found:false` → a stale card (e.g. worker restarted since the prompt);
+        // the orchestrator patches it to expired on this signal.
+        return { resolved: found };
       },
     );
   }
@@ -1439,6 +1533,9 @@ export class SessionWorker extends EventEmitter {
     // identity, so it compares this token (see container-session-runner.ts
     // `isStaleSpawnEvent`).
     agent.on("done", (exitCode: number) => {
+      // docs/193 — flip any permission card still pending when the turn ends to
+      // its terminal (expired) state so it can't spin forever.
+      this.permissionBroker.rejectAllPending();
       this.broadcastSSE({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
@@ -1446,6 +1543,7 @@ export class SessionWorker extends EventEmitter {
     });
 
     agent.on("error", (err: Error) => {
+      this.permissionBroker.rejectAllPending();
       this.broadcastSSE({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;

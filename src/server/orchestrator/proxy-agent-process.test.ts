@@ -15,6 +15,7 @@ function makeRunner(overrides: Partial<ProxyAgentRunner> = {}): ProxyAgentRunner
     killAgentOnWorker: () => Promise.resolve(),
     setAgentPermissionModeOnWorker: () => Promise.resolve(),
     compactAgentOnWorker: () => Promise.resolve(),
+    resolvePermissionOnWorker: () => Promise.resolve(),
     ...overrides,
   };
 }

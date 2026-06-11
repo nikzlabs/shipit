@@ -93,6 +93,14 @@ export class ClaudeAdapter
 
   private inner: ClaudeProcess | StreamingClaudeProcess;
   private _isStreaming = false;
+  /**
+   * docs/193 — the `--permission-prompt-tool` value to pass at spawn, set in
+   * `writeMcpConfig` when the permission bridge is present. Routes the CLI's
+   * built-in sensitive-file gate to ShipIt's approve/deny card instead of a
+   * headless auto-deny. Undefined → flag omitted (gate auto-denies, the
+   * pre-fix behavior — only when the bridge files are missing).
+   */
+  private _permissionPromptTool: string | undefined;
 
   constructor(inner?: ClaudeProcess) {
     super();
@@ -328,6 +336,8 @@ export class ClaudeAdapter
       model: params.model,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
+      // docs/193 — set when writeMcpConfig registered the permission bridge.
+      permissionPromptTool: this._permissionPromptTool,
     });
   }
 
@@ -485,6 +495,21 @@ export class ClaudeAdapter
         command: ctx.bugBridge.tsxBin,
         args: [ctx.bugBridge.bridgePath],
       };
+    }
+
+    // docs/193 — permission-prompt tool. Registered as the CLI's
+    // `--permission-prompt-tool` (set below at run time): instead of
+    // auto-denying a gated sensitive-file edit in headless mode, the CLI calls
+    // this bridge, which surfaces an approve/deny card and blocks on the
+    // answer. Same stdio→HTTP bridge pattern; never model-callable.
+    if (ctx.permissionBridge) {
+      mcpServers["shipit-permission"] = {
+        command: ctx.permissionBridge.tsxBin,
+        args: [ctx.permissionBridge.bridgePath],
+      };
+      this._permissionPromptTool = "mcp__shipit-permission__permission_prompt";
+    } else {
+      this._permissionPromptTool = undefined;
     }
 
     // docs/088: merge user-configured MCP servers. Configs arrive UNRESOLVED

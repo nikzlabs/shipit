@@ -29,6 +29,7 @@ import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
+import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -1954,6 +1955,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
           }
           case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
+          case "resolve_permission": { permissionHandlers.handleResolvePermission(ctx, msg); return; }
           case "undo_issue_write": return issueWriteHandlers.handleUndoIssueWrite(ctx, msg);
         }
       };

@@ -29,6 +29,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   codeRollbackHash: "c0ffee",
   voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
+  permissionPrompt: { cardId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   issueWrite: {
     cardId: "iw1",
@@ -274,6 +275,59 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", draftCard("bug-card-1"));
       expect(mgr.updateBugReportCard("sess-1", "missing", { phase: "filed" })).toBe(false);
+    });
+  });
+
+  describe("permission-request card persistence (docs/193)", () => {
+    const pendingCard = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      permissionPrompt: {
+        cardId,
+        phase: "pending",
+        toolName: "Write",
+        path: ".npmrc",
+        summary: "Write .npmrc",
+        agentId: "claude",
+        createdAt: "2026-06-11T00:00:00.000Z",
+      },
+    });
+
+    it("persists a pending permission card so it replays on session attach", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      const msg = pendingCard("perm-1");
+      mgr.append("sess-1", msg);
+      const loaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(loaded[0].permissionPrompt).toEqual(msg.permissionPrompt);
+    });
+
+    it("updatePermissionCard flips a card to approved+remembered, preserving fields", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "add a line to .npmrc" });
+      mgr.append("sess-1", pendingCard("perm-1"));
+
+      const found = mgr.updatePermissionCard("sess-1", "perm-1", { phase: "approved", remembered: true });
+      expect(found).toBe(true);
+
+      const card = mgr.load("sess-1")[1].permissionPrompt;
+      expect(card?.phase).toBe("approved");
+      expect(card?.remembered).toBe(true);
+      // Original request fields survive the merge.
+      expect(card?.toolName).toBe("Write");
+      expect(card?.path).toBe(".npmrc");
+    });
+
+    it("updatePermissionCard records a denied terminal state", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+      mgr.updatePermissionCard("sess-1", "perm-1", { phase: "denied" });
+      expect(mgr.load("sess-1")[0].permissionPrompt?.phase).toBe("denied");
+    });
+
+    it("returns false when no permission card matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingCard("perm-1"));
+      expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
     });
   });
 

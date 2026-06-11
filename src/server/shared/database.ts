@@ -506,6 +506,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pinned_at TEXT");
   },
+  // docs/193 / SHI-112 — persist sensitive-action permission-request cards (and
+  // their approved/denied/expired terminal state) so they survive a session
+  // switch / full reload. The card arrives off the agent-event stream (the
+  // PermissionBroker's `agent_permission_request` broadcast) and is recorded
+  // in-band via emitChatCard; without this column it renders live but vanishes
+  // on the next loadSessionHistory, which rebuilds the transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN permission_prompt TEXT");
+  },
 ];
 
 export class DatabaseManager {

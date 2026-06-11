@@ -486,6 +486,67 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
+  it("round-trips a permission request: broadcasts the card, holds the bridge, then resolves (docs/193)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "codex",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+
+    interface PermEvent { type: string; requestId?: string; path?: string; behavior?: string }
+    let requestId: string | undefined;
+    const gotRequest = new Promise<void>((resolve) => {
+      proxy.on("event", (event: { type: string }) => {
+        const e = event as PermEvent;
+        if (e.type === "agent_permission_request") {
+          requestId = e.requestId;
+          resolve();
+        }
+      });
+    });
+
+    // The mcp-permission-bridge POSTs here and BLOCKS until resolved.
+    const requestPromise = fetch(`${workerUrl}/agent-ops/permission/request`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ toolName: "Write", input: { file_path: ".npmrc" } }),
+    });
+
+    await gotRequest;
+    expect(requestId).toBeTruthy();
+
+    // The orchestrator pushes the user's answer here.
+    const resolveRes = await fetch(`${workerUrl}/agent/permission/resolve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId, behavior: "allow", remember: true }),
+    });
+    expect(resolveRes.status).toBe(200);
+    expect(await resolveRes.json()).toEqual({ resolved: true });
+
+    // The held bridge request now returns the decision the CLI maps to its envelope.
+    const reply = await requestPromise;
+    expect(reply.status).toBe(200);
+    expect(await reply.json()).toEqual({ behavior: "allow" });
+
+    runner.dispose();
+  });
+
+  it("resolving an unknown permission requestId reports not-found (stale card)", async () => {
+    const res = await worker.getApp().inject({
+      method: "POST",
+      url: "/agent/permission/resolve",
+      payload: { requestId: "perm_missing", behavior: "allow" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ resolved: false });
+  });
+
   it("rejects a malformed AskUserQuestion submit with 400 (so the bridge errors instead of hanging)", async () => {
     const res = await worker.getApp().inject({
       method: "POST",

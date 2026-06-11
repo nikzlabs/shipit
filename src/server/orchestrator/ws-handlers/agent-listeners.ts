@@ -2,7 +2,7 @@ import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
-import type { ChatHistoryManager } from "../chat-history.js";
+import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
 import type { AuthManager } from "../agents/claude/auth-manager.js";
@@ -776,6 +776,74 @@ export function wireAgentListeners(
           { role: "assistant", text: "", compaction: card },
           { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
+      }
+      return;
+    }
+
+    // docs/193 / SHI-112 — an agent backend raised a gated action the user must
+    // approve (sensitive-file edit, escalated command). This IS transcript
+    // content: persist a pending card via `emitChatCard` so it survives a
+    // reconnect / switch / reload, and the user can still answer it after a
+    // reload (the worker holds the request). This block sits BEFORE the raw
+    // `agent_event` broadcast below, so returning here means the bare
+    // `agent_permission_request` event isn't double-sent — only the card. The
+    // user's answer arrives as a `resolve_permission` WS message.
+    if (event.type === "agent_permission_request") {
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId && runner) {
+        const createdAt = new Date().toISOString();
+        const card: PersistedPermissionRequest = {
+          cardId: event.requestId,
+          phase: "pending",
+          toolName: event.toolName,
+          ...(event.path ? { path: event.path } : {}),
+          ...(event.summary ? { summary: event.summary } : {}),
+          ...(event.agentId ? { agentId: event.agentId } : {}),
+          createdAt,
+        };
+        emitChatCard(
+          runner,
+          {
+            type: "permission_request_card",
+            sessionId: turnSessionId,
+            requestId: event.requestId,
+            toolName: event.toolName,
+            ...(event.path ? { path: event.path } : {}),
+            ...(event.summary ? { summary: event.summary } : {}),
+            ...(event.agentId ? { agentId: event.agentId } : {}),
+            createdAt,
+          },
+          { role: "assistant", text: "", permissionPrompt: card },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
+        );
+      }
+      return;
+    }
+
+    // docs/193 — the broker settled a permission request (user decision,
+    // timeout, or teardown). Patch the persisted card to its terminal state and
+    // emit the terminal WS message so the live card flips. Driving the patch
+    // from this single broadcast keeps the user-click, timeout, and teardown
+    // paths consistent and idempotent by requestId.
+    if (event.type === "agent_permission_resolved") {
+      const turnSessionId = opts.capturedSessionId;
+      if (turnSessionId && runner) {
+        const phase = event.expired
+          ? "expired"
+          : event.behavior === "allow"
+            ? "approved"
+            : "denied";
+        deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
+          phase,
+          ...(event.remembered ? { remembered: true } : {}),
+        });
+        runner.emitMessage({
+          type: "permission_resolved",
+          sessionId: turnSessionId,
+          requestId: event.requestId,
+          phase,
+          ...(event.remembered ? { remembered: true } : {}),
+        });
       }
       return;
     }

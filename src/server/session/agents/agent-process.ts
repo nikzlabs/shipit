@@ -22,8 +22,14 @@ export type {
   AgentMcpVoiceBridge,
   AgentMcpAskBridge,
   AgentMcpBugBridge,
+  AgentMcpPermissionBridge,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
+  AgentPermissionRequestEvent,
+  AgentPermissionResolvedEvent,
+  PermissionDecision,
+  PermissionRequestInput,
+  PermissionRequester,
 } from "../../shared/types/agent-types.js";
 
 export type {
