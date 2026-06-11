@@ -46,6 +46,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
       voiceBridge: null,
       askBridge: null,
       bugBridge: null,
+      permissionBridge: null,
       onServerFailed,
     });
     if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
@@ -73,6 +74,32 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
     const { config } = write([], null);
     const servers = config.mcpServers as Record<string, unknown>;
     expect(servers["shipit-review"]).toBeUndefined();
+  });
+
+  it("registers the permission-prompt bridge (docs/193) when its paths are supplied", () => {
+    const result = adapter.writeMcpConfig({
+      servers: [],
+      reviewBridge: null,
+      presentBridge: null,
+      voiceBridge: null,
+      askBridge: null,
+      bugBridge: null,
+      permissionBridge: { tsxBin: "/opt/tsx", bridgePath: "/opt/mcp-permission-bridge.ts" },
+      onServerFailed,
+    });
+    if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
+    writtenPaths.push(result.mcpConfigPath);
+    const servers = (JSON.parse(fs.readFileSync(result.mcpConfigPath, "utf-8")) as { mcpServers: Record<string, unknown> }).mcpServers;
+    expect(servers["shipit-permission"]).toEqual({
+      command: "/opt/tsx",
+      args: ["/opt/mcp-permission-bridge.ts"],
+    });
+  });
+
+  it("omits the permission-prompt bridge when none is available", () => {
+    const { config } = write();
+    const servers = config.mcpServers as Record<string, unknown>;
+    expect(servers["shipit-permission"]).toBeUndefined();
   });
 
   it("substitutes $secret: placeholders against process.env", () => {
@@ -117,6 +144,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
       voiceBridge: null,
       askBridge: null,
       bugBridge: null,
+      permissionBridge: null,
       onServerFailed,
     });
     expect(result.mcpConfigPath).toBeDefined();

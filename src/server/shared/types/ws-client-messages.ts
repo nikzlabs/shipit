@@ -169,10 +169,26 @@ export interface WsUndoIssueWrite {
   cardId: string;
 }
 
+/**
+ * Client → Server: answer a sensitive-action permission request (docs/193 /
+ * SHI-112). Sent when the user clicks Approve / Deny on the inline
+ * `PermissionRequestCard`. The server forwards the decision to the worker's
+ * broker (keyed by `requestId`), which unblocks the held bridge/RPC call.
+ * `remember` (approve only) adds the file path to the session allow-set so the
+ * same file isn't re-prompted.
+ */
+export interface WsResolvePermission {
+  type: "resolve_permission";
+  requestId: string;
+  behavior: "allow" | "deny";
+  remember?: boolean;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
   | WsUndoIssueWrite
+  | WsResolvePermission
   | WsSendReviewMessage
   | WsSubscribeLogs
   | WsLogClear

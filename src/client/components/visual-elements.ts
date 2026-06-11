@@ -29,6 +29,7 @@ export const CARD_MESSAGE_FIELDS = [
   "agentReview",
   "voiceNote",
   "bugReport",
+  "permissionPrompt",
   "issueWrite",
   "issueRef",
   "compaction",

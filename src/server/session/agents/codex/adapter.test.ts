@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CodexAdapter, unwrapShellCommand } from "./adapter.js";
+import { CodexAdapter, unwrapShellCommand, buildCodexPermissionInput } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
@@ -404,6 +404,22 @@ describe("CodexAdapter", () => {
       expect(unwrapShellCommand("ls -la")).toBe("ls -la");
       expect(unwrapShellCommand("npm run build")).toBe("npm run build");
       expect(unwrapShellCommand("")).toBe("");
+    });
+  });
+
+  describe("buildCodexPermissionInput (docs/193)", () => {
+    it("derives the first changed path for a fileChange approval (v2 + v1)", () => {
+      expect(buildCodexPermissionInput("item/fileChange/requestApproval", { item: { changes: [{ path: ".npmrc" }] } }))
+        .toEqual({ toolName: "apply_patch", input: { file_path: ".npmrc" } });
+      expect(buildCodexPermissionInput("applyPatchApproval", { changes: [{ path: ".env" }] }))
+        .toEqual({ toolName: "apply_patch", input: { file_path: ".env" } });
+    });
+
+    it("derives the unwrapped command for a commandExecution approval (string + argv)", () => {
+      expect(buildCodexPermissionInput("item/commandExecution/requestApproval", { item: { command: "/bin/bash -lc 'npm i'", cwd: "/workspace" } }))
+        .toEqual({ toolName: "shell", input: { command: "npm i", cwd: "/workspace" } });
+      expect(buildCodexPermissionInput("execCommandApproval", { command: ["ls", "-la"] }))
+        .toEqual({ toolName: "shell", input: { command: "ls -la" } });
     });
   });
 
@@ -1407,6 +1423,52 @@ describe("CodexAdapter", () => {
       result: { decision: string };
     };
     expect(reply.result).toEqual({ decision: "approved" });
+  });
+
+  it("routes a v2 approval through the injected permission requester and denies (docs/193)", async () => {
+    await createAndInit("Edit a protected file");
+    const requester = vi.fn().mockResolvedValue({ behavior: "deny" });
+    adapter.setPermissionRequester(requester);
+    fakeProc.stdin.written.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9101,
+      method: "item/fileChange/requestApproval",
+      params: { changes: [{ path: ".npmrc" }] },
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9101)).toBeDefined();
+    });
+    expect(requester).toHaveBeenCalledWith(
+      expect.objectContaining({ toolName: "apply_patch", agentId: "codex", input: { file_path: ".npmrc" } }),
+    );
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9101) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "reject" });
+  });
+
+  it("routes a v2 command approval through the requester and accepts on allow (docs/193)", async () => {
+    await createAndInit("Run a command");
+    adapter.setPermissionRequester(() => Promise.resolve({ behavior: "allow" }));
+    fakeProc.stdin.written.length = 0;
+
+    const reqLine = `${JSON.stringify({
+      id: 9102,
+      method: "item/commandExecution/requestApproval",
+      params: { command: "npm install" },
+    })}\n`;
+    fakeProc.stdout.emit("data", Buffer.from(reqLine));
+
+    await vi.waitFor(() => {
+      expect(fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9102)).toBeDefined();
+    });
+    const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9102) as unknown as {
+      result: { decision: string };
+    };
+    expect(reply.result).toEqual({ decision: "accept" });
   });
 
   it("replies with a JSON-RPC error to an unhandled server request (no hang)", async () => {

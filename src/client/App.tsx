@@ -1279,6 +1279,9 @@ export default function App() {
             onSubmitBugReport={(cardId, title, body) =>
               send({ type: "submit_bug_report", cardId, title, body })
             }
+            onResolvePermission={(requestId, behavior, remember) =>
+              send({ type: "resolve_permission", requestId, behavior, ...(remember ? { remember: true } : {}) })
+            }
             onUndoIssueWrite={(cardId) => send({ type: "undo_issue_write", cardId })}
             onOpenIssue={handleOpenIssue}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}

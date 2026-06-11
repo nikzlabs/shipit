@@ -24,6 +24,7 @@ import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
+import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
 import { IssueRefCard } from "./IssueRefCard.js";
@@ -261,6 +262,26 @@ export interface ChatMessage {
     scopeError?: boolean;
   };
   /**
+   * docs/193 / SHI-112 — when set, this message renders a `PermissionRequestCard`
+   * inline (approve/deny + remember) for a gated agent action. The live
+   * `permission_request_card` WS handler appends a `{ requestId }`-only marker;
+   * a message rehydrated from persisted history additionally carries the full
+   * payload + phase so `loadSessionHistory` can seed the permission store (the
+   * card's state lives there so an approved/denied/expired update can swap it in
+   * place). `PermissionRequestCard` reads only `requestId` and pulls the rest
+   * from the store.
+   */
+  permissionPrompt?: {
+    requestId: string;
+    phase?: "pending" | "approved" | "denied";
+    toolName?: string;
+    path?: string;
+    summary?: string;
+    agentId?: string;
+    createdAt?: string;
+    remembered?: boolean;
+  };
+  /**
    * docs/177 — when set, this message renders an `IssueWriteCard` inline. The
    * live `issue_write_card` WS handler appends a `{ cardId }`-only marker; a
    * message rehydrated from persisted history additionally carries the full
@@ -365,6 +386,7 @@ export function MessageList({
   onRequestRewindPreview,
   onRewindAtGap,
   onSubmitBugReport,
+  onResolvePermission,
   onUndoIssueWrite,
   onOpenIssue,
   onResumeSession,
@@ -380,6 +402,8 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  /** docs/193 — answer a permission request (approve/deny + remember). */
+  onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
   onUndoIssueWrite?: (cardId: string) => void;
   /**
@@ -833,6 +857,19 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <BugReportCard cardId={msg.bugReport.cardId} onSubmit={onSubmitBugReport} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/193 / SHI-112 — permission-request card. Carries no chat text of
+        // its own; render the inline `PermissionRequestCard` (which reads its
+        // payload + phase from the permission store) and skip the bubble path.
+        if (msg.permissionPrompt) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <PermissionRequestCard requestId={msg.permissionPrompt.requestId} onResolve={onResolvePermission} />
               </div>
             </div>
           );
