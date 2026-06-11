@@ -94,9 +94,10 @@ affordance the pinned agent drives.
   `/agent/start` slot stays single-occupant. The sub-agent runs through a
   *different* worker endpoint (`/agent/spawn`) that spawns a plain
   subprocess, outside the slot machinery, and exits when done.
-- **Multi-level recursion.** A spawned sub-agent cannot itself spawn another
-  sub-agent. Depth is capped at 1 (§3). Deep agent trees / orchestration
-  graphs are out of scope.
+- **Multi-level recursion.** A spawned sub-agent is not meant to spawn
+  another sub-agent; depth is capped at 1 by a best-effort guard (§3), with
+  the per-turn cap as the forgery-resistant backstop. Deep agent trees /
+  orchestration graphs are out of scope.
 - **A slash command.** The primary agent recognizes the user saying "review
   with codex" / "ask claude to draft the migration" and runs the `shipit
   agent` command itself. A `/spawn` command would duplicate the
@@ -140,12 +141,18 @@ Confirmed by reading the code, not extrapolated:
   different agent once `agentPinned` is set. This stays — spawning a
   sub-agent does not change the pin.
 - **`shipit` is a brokered shim, not the raw CLI.** Existing subcommands
-  (`shipit issue`, `shipit session create`) run inside the container, carry
-  the session identity (`SHIPIT_SESSION_ID` and friends) the orchestrator
-  already injects, and broker through the orchestrator over HTTP. `shipit
-  agent` is a new subcommand on that same surface — which is why it needs no
-  MCP bridge and no per-call nonce: the shim is already an authenticated,
-  per-session channel.
+  (`shipit issue`, `shipit session create`) run inside the container and POST
+  to the **session worker** on localhost (`http://127.0.0.1:9100/agent-ops/*`);
+  the shim itself carries **no** session id. The worker's `/agent-ops/*`
+  broker (`agent-ops-routes.ts` → `orchestrator-client.ts`) injects the
+  **trusted `SESSION_ID`** env — set on the container by
+  `container-lifecycle.ts:buildEnv`, and the env name is `SESSION_ID`, not
+  `SHIPIT_SESSION_ID` — and relays to the orchestrator's session-scoped
+  routes. That worker broker is the security chokepoint: it is what prevents
+  the agent from naming a *different* session. `shipit agent` is a new
+  subcommand on that same surface — which is why it needs no MCP bridge and
+  no per-call nonce: the worker broker is already an authenticated,
+  session-scoped channel.
 
 ## Design
 
@@ -219,47 +226,71 @@ needs a doc in `src/server/shipit-docs/` (e.g. `agent.md`) describing the
 command, baked into the worker image at `/shipit-docs/`. (Not added now —
 shipit-docs describe *shipped* behavior.)
 
-### 3. Orchestrator brokering + subprocess execution model
+### 3. Worker broker + subprocess execution model
 
-`shipit agent` brokers to the orchestrator like every other `shipit`
-subcommand; the orchestrator owns the lifecycle and the guards. No MCP
-bridge, no per-call nonce header — the brokered shim already carries session
-identity, which is what the old `REVIEW_ID` mechanism was reconstructing.
+`shipit agent` brokers through the **session worker** like every other
+`shipit` subcommand; the worker injects the trusted `SESSION_ID` and relays
+to the orchestrator, which owns the lifecycle and the guards. No MCP bridge,
+no per-call nonce — the worker broker is already the authenticated,
+session-scoped channel the old `REVIEW_ID` mechanism was reconstructing.
 
 Flow:
 
-1. **CLI → orchestrator.** The shim POSTs `{ sessionId, agentId, prompt }`
-   to an orchestrator route (`POST /api/sessions/:id/agent/spawn`). Session
-   identity comes from the shim's injected env, not from the prompt.
-2. **Orchestrator authorization** (`services/sub-agent.ts`):
+1. **Shim → worker broker.** The shim POSTs `{ agentId, prompt, depth }` to
+   the worker on localhost (`POST http://127.0.0.1:9100/agent-ops/agent/spawn`).
+   The shim carries **no** session id — it reads its own inherited
+   `SHIPIT_AGENT_DEPTH` env (absent ⇒ `0`, i.e. a primary) and forwards it as
+   `depth`; that is the **only** way the recursion guard downstream can see
+   the caller's depth, since the orchestrator runs in a different process and
+   never sees the calling subprocess's env.
+2. **Worker broker → orchestrator.** `agent-ops-routes.ts` injects the
+   trusted `SESSION_ID` (the agent cannot name a different session) and
+   relays to the orchestrator's session-scoped route
+   (`POST /api/sessions/:id/agent/spawn`), forwarding `agentId`, `prompt`,
+   and `depth`.
+3. **Orchestrator authorization** (`services/sub-agent.ts`):
    - `enableSubAgents` is on (§1).
    - `agentId` is registered and authed
      (`agentRegistry.get(agentId)?.authConfigured === true`; call
      `agentRegistry.refreshAuth(agentId)` first to re-probe).
    - The session is pinned (`agent_pinned === true`) — a pre-pin session has
      no primary identity.
-   - **Recursion depth.** The call is not itself coming from a spawned
-     sub-agent. The orchestrator stamps each spawned subprocess's environment
-     with a depth marker (`SHIPIT_AGENT_DEPTH`); a `shipit agent` call whose
-     originating process carries a non-zero depth is rejected (*"Sub-agents
-     cannot spawn further sub-agents."*). This is the generic replacement for
-     the old "reviewers can't review" rule and caps the tree at depth 1.
+   - **Recursion depth (best-effort).** The forwarded `depth` is `0`. A
+     non-zero `depth` means the caller is itself a spawned sub-agent and the
+     call is rejected (*"Sub-agents cannot spawn further sub-agents."*). This
+     is the generic replacement for the old "reviewers can't review" rule and
+     stops a *well-behaved* sub-agent from recursing. It is **not** a
+     forgery-resistant boundary: `depth` rides in the request body, and a v0
+     full-capability sub-agent with shell access can override its inherited
+     `SHIPIT_AGENT_DEPTH` (e.g. `SHIPIT_AGENT_DEPTH=0 shipit agent run …`) or
+     POST the localhost worker directly with `{"depth":0}`. The worker can't
+     close this in v0 — it's a single long-lived process, so it has no trusted
+     view of an arbitrary calling subprocess's env (unlike `SESSION_ID`, which
+     it injects). The actual forgery-resistant bound on total fan-out is the
+     **per-turn cap (§5)**, which the next check enforces: it lives on the
+     runner keyed by the worker-injected `SESSION_ID`, so *every* spawn in the
+     session's turn — including any a sub-agent forges its way into —
+     decrements the same budget. Worktree isolation (Future work) is what
+     would let a later version make depth itself enforceable.
    - Per-turn cap (§5) not yet exceeded.
-3. **Credential provisioning (§4)** runs synchronously for a cross-provider
+4. **Credential provisioning (§4)** runs synchronously for a cross-provider
    spawn, before the subprocess starts.
-4. **Orchestrator → worker.** `POST /agent/spawn` on the session worker.
-   Body: `{ agentId, prompt, spawnId }`. The handler **reuses the existing
-   per-agent adapter** (`ClaudeAdapter` / `CodexAdapter`) — it must, because
-   Codex's `app-server` requires JSON-RPC handshake and event parsing that
-   lives in the adapter. It instantiates a **fresh** adapter, wires its
-   events into a **local result accumulator** instead of the broadcast SSE,
-   runs to completion, and returns the accumulated final text synchronously.
-   The slot (`this.agent`) is untouched. **This is a meaningful new code
-   path, not a drop-in reuse** — naming it honestly so the implementer scopes
-   correctly. (`spawnId` is an orchestrator-internal handle for tracking and
-   cancellation, not an authorization token.)
-5. **Worker → orchestrator → CLI.** The text flows back up the synchronous
-   chain and out the CLI's stdout.
+5. **Orchestrator → worker spawn.** `POST /agent/spawn` on the session
+   worker. Body: `{ agentId, prompt, spawnId }`. The handler **reuses the
+   existing per-agent adapter** (`ClaudeAdapter` / `CodexAdapter`) — it must,
+   because Codex's `app-server` requires JSON-RPC handshake and event parsing
+   that lives in the adapter. It instantiates a **fresh** adapter, **stamps
+   `SHIPIT_AGENT_DEPTH = <caller depth> + 1` on the subprocess env** (so the
+   sub-agent's own `shipit agent` calls forward a non-zero depth and are
+   rejected at step 3), wires the adapter's events into a **local result
+   accumulator** instead of the broadcast SSE, runs to completion, and
+   returns the accumulated final text synchronously. The slot (`this.agent`)
+   is untouched. **This is a meaningful new code path, not a drop-in reuse**
+   — naming it honestly so the implementer scopes correctly. (`spawnId` is an
+   orchestrator-internal handle for tracking and cancellation, not an
+   authorization token.)
+6. **Worker → orchestrator → worker broker → shim stdout.** The text flows
+   back up the synchronous chain and out the CLI's stdout.
 
 - **No SSE involvement.** The sub-agent's output flows through the
   synchronous HTTP response, not the SSE channel that feeds the runner's
@@ -335,18 +366,24 @@ the pinned agent's already-present credentials and provisions nothing).
 
 ### 5. Caps, cost, attribution
 
-- **Per-turn cap.** The runner tracks `subAgentSpawnsThisTurn`, incremented
-  on each `shipit agent` invocation, reset at primary-turn start. Modest hard
-  cap in v0 (**3 per turn**) — enough for "review with both other models" or
-  a couple of delegations, low enough to bound a misbehaving-primary loop. A
-  call past the cap returns an error without spawning. Spam across turns is
-  not a separate concern: bounded by normal turn rate and the user's intent.
+- **Per-turn cap (the real fan-out bound).** The runner tracks
+  `subAgentSpawnsThisTurn`, incremented on each spawn reaching
+  `services/sub-agent.ts`, reset at primary-turn start. Modest hard cap in v0
+  (**3 per turn**) — enough for "review with both other models" or a couple
+  of delegations, low enough to bound a misbehaving-primary loop. A call past
+  the cap returns an error without spawning. This is the **forgery-resistant**
+  bound (§3): the counter is keyed by the worker-injected `SESSION_ID`, which
+  a sub-agent cannot spoof, so every spawn in the turn — primary's or any a
+  sub-agent forges past the best-effort depth guard — decrements the same
+  budget. Spam across turns is not a separate concern: bounded by normal turn
+  rate and the user's intent.
 - **Cost / wall-clock cap.** Wall-clock cap on each subprocess (initial:
   5 min); output-token cap via the sub-agent CLI's natural settings (initial:
   8K). Hitting either truncates, with the result flagged truncated and a note
   the primary can surface.
-- **Recursion cap.** Depth 1 (§3) — the structural guard against an
-  exponential spawn tree, independent of the per-turn count.
+- **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
+  well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
+  per-turn cap above is what bounds an adversarial sub-agent's fan-out).
 - **Usage attribution.** `UsageManager` records the sub-agent's cost against
   `subAgentId`, not the runner's pinned `agentId`. The per-session usage UI
   surfaces the breakdown as a separate row per agent.
@@ -406,10 +443,17 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   `enableSubAgents: boolean` (default false). UI under "Multi-agent
   sessions" with the §1 copy. Orchestrator reads it on every spawn.
 - **`shipit` CLI** — new `agent run --agent <id> --prompt-file -` subcommand
-  on the brokered shim: read prompt from stdin, POST to the orchestrator,
-  stream stdout from the response, map error shapes to non-zero exits.
+  on the shim: read prompt from stdin, read the inherited `SHIPIT_AGENT_DEPTH`
+  env (default `0`), POST `{ agentId, prompt, depth }` to the **worker** on
+  localhost (`/agent-ops/agent/spawn`), stream stdout from the response, map
+  error shapes to non-zero exits. The shim sends no session id.
+- **`agent-ops-routes.ts` (worker broker)** — new `/agent-ops/agent/spawn`
+  route that injects the trusted `SESSION_ID` (via `orchestrator-client.ts`)
+  and relays `{ agentId, prompt, depth }` to the orchestrator's session-scoped
+  route, exactly like the other agent-ops subcommands.
 - **New orchestrator route** — `POST /api/sessions/:id/agent/spawn`,
-  delegating to `services/sub-agent.ts`.
+  delegating to `services/sub-agent.ts`. Receives the worker-injected session
+  id in the path and the forwarded `depth` in the body.
 - **New `services/sub-agent.ts`** — `runSubAgent({ sessionId, subAgentId,
   prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
   cap; resolves the sub-agent's provider-account route; provisions creds (§4)
@@ -434,9 +478,13 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   already exist (verified). `AgentRegistry` becomes an `EventEmitter` (new
   public API) and emits `sign-out` (`agentId`) from the sign-out HTTP routes;
   `services/sub-agent.ts` subscribes for the sign-out sweep.
-- **Recursion-depth env (`SHIPIT_AGENT_DEPTH`)** — stamped by the worker on
-  every spawned subprocess; read by the orchestrator's authorization check to
-  reject depth-2 spawns.
+- **Recursion-depth env (`SHIPIT_AGENT_DEPTH`)** — the worker stamps it
+  (`= caller depth + 1`) on every spawned subprocess (§3 step 5); the
+  `shipit agent` shim reads its inherited value and forwards it as `depth`;
+  the orchestrator's authorization check rejects any non-zero `depth`. This is
+  a **best-effort** guard against accidental recursion only — `depth` is
+  caller-supplied and a shell-capable sub-agent can spoof it (§3); the
+  forgery-resistant fan-out bound is the per-turn cap, not this env.
 - **Worker memory headroom** — confirm container sizing tolerates a
   +500MB–1GB peak RSS during a spawn window before shipping. Block-shipping
   concern, not a write-now concern.
@@ -462,8 +510,10 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   - Token-sync-back: sub-agent rotates its OAuth token mid-run → the resolved
     account root's `auth.json` updated before wipe; next session's lazy
     provision starts fresh.
-  - Recursion cap: a spawned sub-agent attempting `shipit agent` (depth 2) is
-    rejected.
+  - Recursion cap (best-effort): a spawned sub-agent whose shim forwards a
+    non-zero `depth` is rejected. Companion test documents the known v0 gap —
+    a sub-agent that spoofs `depth: 0` is *not* rejected by the depth guard
+    and is instead bounded only by the shared per-turn cap.
   - Per-turn cap: 4th spawn in one primary turn returns error without
     spawning.
   - Cost cap: synthetic over-limit output truncated, result flagged.
@@ -545,7 +595,12 @@ Traceability for the product decisions made during design:
    Hard isolation (read-only / worktree modes) is future work.
 4. **Output is text.** Structured review cards are an optional renderer on
    top, not part of the primitive.
-5. **Recursion capped at depth 1.** A spawned sub-agent cannot spawn another.
+5. **Recursion capped at depth 1 (best-effort).** A spawned sub-agent is
+   blocked from spawning another via a body-carried `depth` guard that stops
+   well-behaved recursion; it is not forgery-resistant in v0 (a
+   shell-capable sub-agent can spoof `depth`). The per-turn cap (§5), keyed
+   by the worker-injected session id, is the forgery-resistant bound on total
+   fan-out.
 6. **Per-turn cap = 3 spawns.** Bounds runaway loops; generous enough for
    "ask both other models" or a couple of delegations.
 7. **Synchronous, not fire-and-forget.** The `shipit agent` command blocks on
