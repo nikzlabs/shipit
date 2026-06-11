@@ -51,7 +51,9 @@ export function getModelBilling(modelId: string, now: Date = new Date()): ModelB
   }
 
   return {
-    badge: "Free until Jun 22",
+    // Short pill — "Included" (not "Free": it draws from the subscription, it
+    // isn't zero-cost). The "through June 22" detail lives in the tooltip.
+    badge: "Included",
     tone: "included",
     tooltip: `Included in your Pro / Max / Team / Enterprise plan through June 22, 2026. From June 23 it switches to metered usage credits at API rates — ${FABLE_PRICING}.`,
   };

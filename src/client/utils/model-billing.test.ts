@@ -12,7 +12,7 @@ describe("getModelBilling", () => {
   it("shows the included-until pill for Fable 5 during the promo window", () => {
     const billing = getModelBilling("claude-fable-5", new Date("2026-06-11T00:00:00Z"));
     expect(billing?.tone).toBe("included");
-    expect(billing?.badge).toBe("Free until Jun 22");
+    expect(billing?.badge).toBe("Included");
     expect(billing?.tooltip).toContain("through June 22, 2026");
   });
 
