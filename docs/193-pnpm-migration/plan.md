@@ -52,12 +52,22 @@ has open bugs where `pnpm deploy` yields an empty `node_modules`
 (pnpm/pnpm#6682) — the exact prod-image path this plan depends on. Validate it on a real
 image build before trusting it.
 
-### Alternative considered: stay on npm + `min-release-age`
+### Alternative considered: stay on npm + `min-release-age` — **IMPLEMENTED**
 Lowest-cost option, captures the motivating security benefit, zero migration risk. The
 trade-off vs pnpm is opt-in-vs-default safety and the disk/speed/strictness wins — none of
 which are urgent for a working single-package repo. This is the recommended near-term path;
 the full migration below remains the documented option for when the durable advantages
 start to matter.
+
+**Shipped in this PR:** `.npmrc` now sets `min-release-age=7` (alongside the existing
+`save-exact=true`). npm implements this by computing a `before` cutoff of *now − 7 days* at
+each invocation — verifiable via `npm config ls`, which shows the derived
+`before = <date>` in the project config (note: `npm config get min-release-age` returns
+`null` because npm exposes only the computed `before`, not the source key). `npm ci`
+installs the lockfile verbatim and is unaffected; the gate only bites when *resolving* new
+versions (`npm install <pkg>`, `npm update`, lockfile regen). Requires npm ≥ 11.10 on
+Node 24 — already the repo's baseline. The full pnpm migration below is now explicitly the
+*deferred* option.
 
 ## Scope — read this first
 
