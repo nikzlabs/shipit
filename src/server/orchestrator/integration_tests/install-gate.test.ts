@@ -49,6 +49,12 @@ interface StubOpts {
   installResponse: Record<string, unknown>;
   /** GET /install/status body (worker's view). */
   status: { running: boolean; lastResult: { ok: boolean; message?: string; command?: string } | null };
+  /** Delay (ms) before POST /install responds — widens the SSE-connect-vs-POST race window. */
+  installDelayMs?: number;
+  /** When set, /install/status reports this AFTER POST /install has been served (pre-POST it reports `status`). */
+  statusAfterPost?: StubOpts["status"];
+  /** When set, broadcast a real SSE `install_done` this many ms after POST /install is served. */
+  installDoneAfterPostMs?: number;
 }
 
 /**
@@ -58,12 +64,27 @@ interface StubOpts {
  * `install_done` — either from the HTTP response or the first-connect
  * `/install/status` resync.
  */
-async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; url: string; agentStarted: () => boolean }> {
+async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; url: string; agentStarted: () => boolean; installPosted: () => boolean; installDoneSent: () => boolean }> {
   const app = Fastify();
   let agentStarted = false;
+  let installPosted = false;
+  let installDoneSent = false;
+  const sseClients = new Set<NodeJS.WritableStream>();
 
-  app.post("/install", async () => opts.installResponse);
-  app.get("/install/status", async () => opts.status);
+  app.post("/install", async () => {
+    if (opts.installDelayMs) await new Promise((r) => setTimeout(r, opts.installDelayMs));
+    installPosted = true;
+    if (opts.installDoneAfterPostMs !== undefined) {
+      setTimeout(() => {
+        installDoneSent = true;
+        for (const c of sseClients) {
+          try { c.write(`event: install_done\ndata: {}\n\n`); } catch { /* closed */ }
+        }
+      }, opts.installDoneAfterPostMs);
+    }
+    return opts.installResponse;
+  });
+  app.get("/install/status", async () => (installPosted && opts.statusAfterPost ? opts.statusAfterPost : opts.status));
   app.get("/agent/status", async () => ({ running: agentStarted }));
   app.post("/agent/start", async () => { agentStarted = true; return { started: true }; });
   app.post("/agent/kill", async () => ({ ok: true }));
@@ -77,18 +98,25 @@ async function startStubWorker(opts: StubOpts): Promise<{ app: FastifyInstance; 
       Connection: "keep-alive",
     });
     reply.raw.write(": connected\n\n");
+    sseClients.add(reply.raw);
     const ka = setInterval(() => { try { reply.raw.write(": keepalive\n\n"); } catch { clearInterval(ka); } }, 1000);
-    request.raw.on("close", () => clearInterval(ka));
-    // Deliberately never write an `install_done` event.
+    request.raw.on("close", () => { clearInterval(ka); sseClients.delete(reply.raw); });
+    // Writes an `install_done` only when opts.installDoneAfterPostMs is set.
   });
 
   const address = await app.listen({ port: 0, host: "127.0.0.1" });
   const match = /:(\d+)$/.exec(address);
-  return { app, url: `http://127.0.0.1:${match ? Number(match[1]) : 0}`, agentStarted: () => agentStarted };
+  return {
+    app,
+    url: `http://127.0.0.1:${match ? Number(match[1]) : 0}`,
+    agentStarted: () => agentStarted,
+    installPosted: () => installPosted,
+    installDoneSent: () => installDoneSent,
+  };
 }
 
 describe("Integration: install gate — resolution without SSE install_done (docs/162)", () => {
-  let stub: { app: FastifyInstance; url: string; agentStarted: () => boolean } | null = null;
+  let stub: { app: FastifyInstance; url: string; agentStarted: () => boolean; installPosted: () => boolean; installDoneSent: () => boolean } | null = null;
 
   afterEach(async () => {
     if (stub) { await stub.app.close(); stub = null; }
@@ -147,6 +175,45 @@ describe("Integration: install gate — resolution without SSE install_done (doc
     try {
       const result = await withTimeout(runner.runInstall(["npm install"]), 5000, "runInstall (first-connect resync)");
       expect(result.ok).toBe(true);
+    } finally {
+      runner.dispose({ force: true });
+    }
+  });
+
+  it("does not resolve the gate from a pre-POST status probe (docs/183 early-resolve race)", async () => {
+    // The SSE stream opens inside runInstall BEFORE the POST is sent, so the
+    // first-connect resync can probe /install/status while the worker hasn't
+    // seen the install at all — `{ running: false, lastResult: null }`. The
+    // old "worker restarted" heuristic synthesized a completion from that,
+    // so the moment the (delayed) POST returned `{ started: true }`, the
+    // already-resolved promise made runInstall settle instantly — while the
+    // worker reported `running: true` and no `install_done` had been emitted.
+    // Observed live on the docs/183 canary: install_ms read ~1.5s for a 20s+
+    // npm install and the overlay publish hook snapshotted a not-yet-installed
+    // dep dir. The fix skips the pre-POST probe and re-probes after the POST;
+    // the gate must now stay open until the real `install_done` (sent here
+    // 300ms after the POST).
+    stub = await startStubWorker({
+      installResponse: { started: true },
+      installDelayMs: 250,
+      status: { running: false, lastResult: null },           // pre-POST: worker never saw an install
+      statusAfterPost: { running: true, lastResult: null },   // post-POST: install genuinely in progress
+      installDoneAfterPostMs: 300,
+    });
+
+    const runner = new ContainerSessionRunner({
+      sessionId: "gate-pre-post-race",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl: stub.url,
+    });
+
+    try {
+      const result = await withTimeout(runner.runInstall(["npm install"]), 5000, "runInstall (pre-POST race)");
+      expect(result.ok).toBe(true);
+      // The gate must have stayed open until the worker actually finished —
+      // resolving before install_done is exactly the early-resolve bug.
+      expect(stub.installDoneSent()).toBe(true);
     } finally {
       runner.dispose({ force: true });
     }

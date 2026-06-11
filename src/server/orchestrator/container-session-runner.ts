@@ -1079,6 +1079,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * worker's install state via `/install/status` and synthesize a completion.
    */
   private _installInFlight = false;
+  /**
+   * True once the current install cycle's POST /install has returned. Guards
+   * `resyncInstallStateAfterReconnect`: the SSE stream is opened inside
+   * `runInstall` BEFORE the POST is sent, so the first-connect resync can
+   * probe `/install/status` while the worker has not yet seen the install at
+   * all — `{ running: false, lastResult: null }` — and the "worker restarted"
+   * heuristic would synthesize a completion for an install that hasn't
+   * started. Observed live on the docs/183 canary: the install gate resolved
+   * ~100ms after worker-ready while npm ran 20s+ in the background, so the
+   * overlay publish hook snapshotted a not-yet-installed dep dir.
+   */
+  private _installPostIssued = false;
 
   /**
    * Run agent.install commands on the session worker. Returns a promise that
@@ -1114,6 +1126,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._resolveInstallComplete = resolve;
     });
     this._installInFlight = true;
+    this._installPostIssued = false;
 
     await this._workerReady;
     if (this._disposed) {
@@ -1144,6 +1157,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       const result = await workerInstall(this.workerUrl, commands, {
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
       }) as { skipped?: boolean; started?: boolean; ok?: boolean };
+      this._installPostIssued = true;
       if (result.skipped) {
         this.emitMessage({
           type: "install_status",
@@ -1155,6 +1169,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       }
       // Started — wait for SSE-delivered install_done / install_error to
       // resolve the completion promise with the success/failure outcome.
+      // Re-run the status resync once now that the POST has landed: the
+      // SSE-open resync may have fired before the POST (and correctly
+      // skipped via the post-issued guard), so the lost-install_done
+      // recovery must not depend on SSE-connect timing. If the worker is
+      // mid-install this probe is a no-op (`running: true` → wait for the
+      // real event); if the install already settled and the event was
+      // lost, it resolves the gate deterministically.
+      void this.resyncInstallStateAfterReconnect();
       return await completion;
     } catch (err) {
       this.emitMessage({
@@ -1199,6 +1221,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   private async resyncInstallStateAfterReconnect(): Promise<void> {
     if (!this._installInFlight || this._disposed) return;
+    // The current cycle's POST /install hasn't returned yet — the worker may
+    // not have seen the install at all, so a `{ running: false, lastResult:
+    // null }` probe result means "not started", NOT "worker restarted".
+    // `runInstall` re-runs this resync right after the POST lands, so the
+    // lost-event recovery is preserved without racing the POST.
+    if (!this._installPostIssued) return;
     let status: { running?: boolean; lastResult?: { ok: boolean; message?: string; command?: string } };
     try {
       status = await workerGet(this.workerUrl, "/install/status") as typeof status;
