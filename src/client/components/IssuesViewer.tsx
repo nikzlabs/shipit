@@ -1,6 +1,5 @@
 import {
   ArrowClockwiseIcon,
-  CaretRightIcon,
   CheckCircleIcon,
   PlugIcon,
   UserIcon,
@@ -235,14 +234,12 @@ function IssueRow({
         <span className="truncate">{shortIdentifier(issue.identifier)}</span>
       </span>
 
-      {/* Title (+ optional description preview + labels), wraps to two lines. */}
+      {/* Title (+ optional description preview + labels), wraps to two lines. The
+          row is clickable as a whole (hover bg + accent left-bar already signal
+          that), so there's no hover caret to misalign against a wrapped title. */}
       <div className="[grid-area:title] min-w-0">
-        <div className="flex items-center min-h-6 gap-1 text-sm font-medium text-(--color-text-primary)">
+        <div className="flex items-center min-h-6 text-sm font-medium text-(--color-text-primary)">
           <span className="line-clamp-2">{issue.title}</span>
-          <CaretRightIcon
-            size={ICON_SIZE.XS}
-            className="shrink-0 text-(--color-text-tertiary) opacity-0 -translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all"
-          />
         </div>
         {issue.description && (
           <div className="text-[11px] text-(--color-text-tertiary) line-clamp-1 mt-0.5">
