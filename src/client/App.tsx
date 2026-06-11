@@ -864,7 +864,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; enableSubAgents?: boolean; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -875,6 +875,7 @@ export default function App() {
       if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
       if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
       if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+      if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
       if (data.settings.voiceDeliveryMode !== undefined) useSettingsStore.getState().setVoiceDeliveryMode(data.settings.voiceDeliveryMode);
       if (data.settings.voiceWebhookConfigured !== undefined) useSettingsStore.getState().setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);
       if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);

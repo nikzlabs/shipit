@@ -184,6 +184,63 @@ function provisionAgentCredentialsFromRoot(
 }
 
 /**
+ * docs/144 — provision a **sub-agent's** credential subtree into a session's
+ * credentials dir, on a cross-provider `shipit agent run` spawn. Mirrors
+ * {@link provisionProviderAccountCredentials} but is named for the sub-agent
+ * lifecycle: lazy (only on a spawn), scoped (only the sub-agent's subtree, never
+ * the pinned agent's), account-correct (copies from the resolved provider-account
+ * root, not the flat root — the flat root holds stale legacy-alias symlinks for a
+ * multi-account user), and reversible ({@link removeSubAgentCredentials}).
+ *
+ * The copy is placed in the **same** per-session dir that already holds the
+ * pinned agent's subtree — the container's `/root/.codex` (or `/root/.claude`)
+ * symlink resolves into it immediately, so the sub-agent CLI finds its creds
+ * with no remount. `replaceExistingProviderSubtree` is always true so a stale
+ * leftover (e.g. from a crashed prior spawn whose wipe didn't complete) is
+ * cleared before the fresh copy.
+ *
+ * `accountId` is the resolved provider-account id (`selectRouteForTurn(subAgentId)`
+ * → `{ kind: "account", id }`); pass `undefined` for the legacy no-account
+ * fallback (env-token / api-key routes), which copies from the flat root.
+ */
+export function provisionSubAgentCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+  accountId?: string,
+): void {
+  const sourceRoot = accountId
+    ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
+    : credentialsRoot;
+  provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
+}
+
+/**
+ * docs/144 — remove a **sub-agent's** credential subtree from a session's
+ * credentials dir after a spawn completes (success, failure, crash, or cancel).
+ * Deletes ONLY the sub-agent's paths (`.codex` for a Codex sub-agent, `.claude`
+ * + `.claude.json` for a Claude one) — the pinned agent's subtree and the rest
+ * of the per-session dir are untouched. Best-effort: the sub-agent CLI may still
+ * be flushing writes to its own subtree at the instant we delete it, which is
+ * tolerable (the next provision re-copies cleanly from source-of-truth).
+ */
+export function removeSubAgentCredentials(
+  credentialsRoot: string,
+  sessionId: string,
+  subAgentId: AgentId,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
+    try {
+      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+    } catch {
+      // Best-effort — a leftover is reclaimed by the next provision's
+      // replace-existing pass, or the disk-janitor's session sweep.
+    }
+  }
+}
+
+/**
  * Remove a session's credentials subtree (e.g. on full reset, or as a
  * disk-janitor sweep for sessions no longer tracked). Best-effort; never
  * throws. Removing the parent `<credentialsRoot>/sessions` dir is supported by

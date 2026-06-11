@@ -69,6 +69,11 @@ import {
 } from "../shared/install-marker.js";
 import { overlayBackedEmptyDepDirs } from "./overlay-dep-check.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
+import {
+  runAgentToCompletion,
+  buildSubAgentRunParams,
+  type SubAgentRunHandle,
+} from "../shared/sub-agent-run.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -113,6 +118,13 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
+
+  // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
+  // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
+  // subprocesses and never broadcast to SSE; their output is returned
+  // synchronously over the `/agent/spawn` HTTP response. Tracked so an explicit
+  // `/agent/cancel` (or a primary-turn interrupt/kill) can SIGTERM them.
+  private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
   private terminal: TerminalProcess | null = null;
   private fileWatcher: FileWatcher | null = null;
@@ -336,6 +348,13 @@ export class SessionWorker extends EventEmitter {
     }
   }
 
+  /** docs/144 — SIGTERM every in-flight sub-agent spawn (symmetric cancel). */
+  private cancelAllSpawns(): void {
+    for (const handle of this.spawnedAgents.values()) {
+      try { handle.cancel(); } catch { /* best-effort */ }
+    }
+  }
+
   // --- Session mode endpoints (agent, terminal, file watcher) ---
 
   private registerSessionEndpoints(app: FastifyInstance): void {
@@ -388,6 +407,10 @@ export class SessionWorker extends EventEmitter {
     });
 
     app.post("/agent/interrupt", async (_request, reply) => {
+      // docs/144 — interrupting the primary turn cancels any sub-agent running
+      // on its behalf (symmetric cancel). Do this even when `this.agent` is null
+      // (a sub-agent can outlive a transient primary-slot gap).
+      this.cancelAllSpawns();
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -396,12 +419,79 @@ export class SessionWorker extends EventEmitter {
     });
 
     app.post("/agent/kill", async (_request, reply) => {
+      this.cancelAllSpawns();
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
       this.agent = null;
       return { killed: true };
+    });
+
+    // docs/144 — spawn a one-shot SUB-AGENT subprocess. This is a NEW code path,
+    // not a reuse of `/agent/start`: it instantiates a fresh per-agent adapter
+    // OUTSIDE the single-occupant slot (`this.agent` is untouched), wires its
+    // events into a local result accumulator instead of the broadcast SSE, and
+    // returns the accumulated final assistant text synchronously. The
+    // orchestrator (`services/sub-agent.ts`) owns authorization, credentials,
+    // and the per-turn cap; the worker just runs the adapter. Two CLI processes
+    // are alive during the spawn window (the primary, blocked on the caller's
+    // `shipit agent` shell call, and this sub-agent).
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; timeoutMs?: number; maxOutputChars?: number } }>(
+      "/agent/spawn",
+      async (request, reply) => {
+        const { agentId, prompt, spawnId, depth, model, timeoutMs, maxOutputChars } = request.body ?? {};
+        if (!agentId || typeof prompt !== "string" || !spawnId) {
+          return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
+        }
+        let agent: AgentProcess;
+        try {
+          agent = this.agentFactory(agentId);
+        } catch (err) {
+          return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
+        }
+
+        const runOpts = {
+          prompt,
+          cwd: this.workspaceDir,
+          ...(model !== undefined ? { model } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
+        };
+        const handle = runAgentToCompletion(agent, runOpts, Date.now());
+        this.spawnedAgents.set(spawnId, handle);
+        try {
+          // Stamp SHIPIT_AGENT_DEPTH = caller depth + 1 on the subprocess env so
+          // the sub-agent's own `shipit agent` calls forward a non-zero depth and
+          // are rejected by the orchestrator's recursion guard. withTemporaryEnv
+          // restores process.env after the synchronous spawn; the child has
+          // already captured the value.
+          const childDepth = String((depth ?? 0) + 1);
+          this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
+            agent.run(buildSubAgentRunParams(runOpts));
+          });
+          return await handle.promise;
+        } catch (err) {
+          return await reply.code(500).send({ error: getErrorMessage(err) });
+        } finally {
+          this.spawnedAgents.delete(spawnId);
+          try { agent.kill(); } catch { /* already exited */ }
+        }
+      },
+    );
+
+    // docs/144 — explicitly cancel an in-flight sub-agent spawn by id.
+    app.post<{ Body: { spawnId?: string } }>("/agent/cancel", async (request, reply) => {
+      const spawnId = request.body?.spawnId;
+      if (!spawnId) {
+        return reply.code(400).send({ error: "spawnId is required" });
+      }
+      const handle = this.spawnedAgents.get(spawnId);
+      if (!handle) {
+        return reply.code(404).send({ error: "No such spawn" });
+      }
+      handle.cancel();
+      return { cancelled: true };
     });
 
     app.post<{ Body: { data: string } }>("/agent/stdin", async (request, reply) => {

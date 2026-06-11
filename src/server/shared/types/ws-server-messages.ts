@@ -25,6 +25,28 @@ export interface WsError {
   message: string;
 }
 
+/**
+ * docs/144 — transient status chip for an in-flight or just-completed sub-agent
+ * spawn. Status only (CLAUDE.md §5): emit-only, never persisted (it correctly
+ * disappears on reload — it is not transcript content; the sub-agent's output
+ * reaches the user through the primary's own voice). `phase: "running"` fires
+ * when the `shipit agent` call begins; `phase: "done"` replaces it with timing
+ * and cost on return.
+ */
+export interface WsSubAgentSpawn {
+  type: "sub_agent_spawn";
+  /** Correlates the running → done transition for one spawn. */
+  spawnId: string;
+  /** The agent that was spawned (display: "Asking Codex…" / "Consulted Codex"). */
+  subAgentId: AgentId;
+  phase: "running" | "done";
+  /** Terminal status, present on `phase: "done"`. */
+  status?: "success" | "error" | "timeout" | "cancelled";
+  durationMs?: number;
+  costUsd?: number;
+  truncated?: boolean;
+}
+
 export interface WsPreviewStatus {
   type: "preview_status";
   running: boolean;
@@ -241,6 +263,8 @@ export interface WsGlobalSettings {
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi?: boolean;
+  /** docs/144 — global gate for sub-agent spawning. */
+  enableSubAgents?: boolean;
 }
 
 // ---- Template messages ----
@@ -1290,6 +1314,7 @@ export type WsServerMessage =
   | WsTurnUsageUpdate
   | WsTemplateApplied
   | WsGlobalSettings
+  | WsSubAgentSpawn
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult

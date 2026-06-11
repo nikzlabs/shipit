@@ -19,6 +19,7 @@ import { AgentReviewCard } from "./AgentReviewCard.js";
 import { UserReviewCard } from "./UserReviewCard.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import type { SubAgentSpawnChip } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
@@ -448,6 +449,8 @@ export function MessageList({
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
   const compacting = useSessionStore((s) => s.compacting);
+  // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
+  const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
 
   // Per-completed-turn Play button (docs/144). A "turn" is the run of
   // assistant messages between one user message and the next. We mark the
@@ -1102,7 +1105,51 @@ export function MessageList({
         </div>
       )}
 
+      {Object.values(subAgentSpawns).map((chip) => (
+        <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
+      ))}
+
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
+    </div>
+  );
+}
+
+/** Display names for the spawn chip. */
+const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
+
+/**
+ * docs/144 — transient sub-agent spawn chip. "Asking Codex…" with a spinner
+ * while the `shipit agent` call is in flight; "Consulted Codex · 47s · $0.03"
+ * once it returns. Status only — emit-only, not persisted (CLAUDE.md §5).
+ */
+function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
+  const name = SUB_AGENT_DISPLAY_NAMES[chip.subAgentId] ?? chip.subAgentId;
+  if (chip.phase === "running") {
+    return (
+      <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
+        <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
+          <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+          Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
+        </div>
+      </div>
+    );
+  }
+  const secs = chip.durationMs ? Math.round(chip.durationMs / 1000) : null;
+  const cost = chip.costUsd && chip.costUsd > 0 ? `$${chip.costUsd.toFixed(2)}` : null;
+  const verb =
+    chip.status === "success" ? "Consulted"
+    : chip.status === "cancelled" ? "Cancelled"
+    : chip.status === "timeout" ? "Timed out asking"
+    : "Asked";
+  const parts = [`${verb} ${name}`];
+  if (secs !== null) parts.push(`${secs}s`);
+  if (cost) parts.push(cost);
+  if (chip.truncated) parts.push("truncated");
+  return (
+    <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
+      <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)">
+        {parts.join(" · ")}
+      </div>
     </div>
   );
 }

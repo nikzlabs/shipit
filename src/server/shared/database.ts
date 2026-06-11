@@ -515,6 +515,13 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN permission_prompt TEXT");
   },
+  // docs/144 — attribute a recorded turn's cost to a SUB-AGENT distinct from the
+  // session's pinned agent. NULL for ordinary primary turns; set to the spawned
+  // agent's id (e.g. "codex") for a sub-agent run so the per-session usage
+  // breakdown can split cost per agent.
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN sub_agent_id TEXT");
+  },
 ];
 
 export class DatabaseManager {

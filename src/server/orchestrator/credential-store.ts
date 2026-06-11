@@ -49,6 +49,13 @@ interface CredentialData {
    */
   autoFixCi?: boolean;
   /**
+   * docs/144 — global gate for sub-agent spawning. When true, a pinned session's
+   * agent may spawn another registered agent for a one-shot sub-task via the
+   * `shipit agent run` CLI. Default off; when off the feature is fully inert and
+   * no cross-agent credentials are ever provisioned.
+   */
+  enableSubAgents?: boolean;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -540,6 +547,17 @@ export class CredentialStore {
 
   setAutoFixCi(enabled: boolean): void {
     this.data.autoFixCi = enabled;
+    this.save();
+  }
+
+  // ---- Sub-agent spawning (docs/144) ----
+
+  getEnableSubAgents(): boolean {
+    return this.data.enableSubAgents ?? false;
+  }
+
+  setEnableSubAgents(enabled: boolean): void {
+    this.data.enableSubAgents = enabled;
     this.save();
   }
 

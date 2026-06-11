@@ -610,4 +610,56 @@ Traceability for the product decisions made during design:
    sub-agent running on its behalf. No queue, so no "preserve the queue"
    question.
 
+## Implementation status (v0)
+
+v0 is implemented end-to-end behind the `enableSubAgents` global setting
+(default off). Key files:
+
+- **Setting (`enableSubAgents`)** — `credential-store.ts`
+  (`get/setEnableSubAgents`), `services/settings.ts` + `services/types.ts`
+  (`GlobalSettings`), `api-routes-bootstrap.ts` (`PUT /api/settings`), client
+  `settings-store.ts` / `Settings.tsx` (`MultiAgentSettings`) /
+  `session-data.ts` / `App.tsx` / `message-handlers/global-settings.ts`.
+- **CLI surface** — `agent-shim/shipit.ts` (`shipit agent run`,
+  `inheritedAgentDepth`, `dispatchAgent`). Reads the prompt from stdin, forwards
+  the inherited `SHIPIT_AGENT_DEPTH`, prints the sub-agent's text on stdout.
+- **Worker broker** — `agent-ops-routes.ts` (`POST /agent-ops/agent/spawn`,
+  unbounded timeout) → orchestrator session-scoped route.
+- **Orchestrator route + service** — `api-routes-agent.ts`
+  (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
+  with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct
+  credential provisioning, usage attribution, the spawn chip, and token-sync-back
+  + wipe in `finally`; `sweepSubAgentCredentialsOnSignOut`).
+- **Worker spawn execution** — `session-worker.ts` (`POST /agent/spawn` +
+  `/agent/cancel`, a fresh adapter outside the slot, `SHIPIT_AGENT_DEPTH`
+  stamping, `cancelAllSpawns` on interrupt/kill), sharing the adapter-run core
+  with local mode via `shared/sub-agent-run.ts` (`runAgentToCompletion`).
+- **Runner wiring** — `session-runner.ts` (interface + in-process
+  `SessionRunner.spawnSubAgent`, `subAgentSpawnsThisTurn` reset in
+  `resetRunnerTurnState`), `container-session-runner.ts`
+  (`ContainerSessionRunner.spawnSubAgent` → worker).
+- **Credentials** — `session-credentials.ts`
+  (`provisionSubAgentCredentials` / `removeSubAgentCredentials`, scoped to the
+  sub-agent subtree; token-sync-back reuses the existing `syncAgentTokenBack` /
+  `syncProviderAccountTokenBack`).
+- **Registry sign-out** — `shared/agent-registry.ts` (now an `EventEmitter`,
+  emits `sign-out` on a configured→not-configured edge), wired in
+  `app-lifecycle.ts`.
+- **Usage attribution** — `usage.ts` + a `sub_agent_id` column migration in
+  `shared/database.ts`.
+- **Chip** — `ws-server-messages.ts` (`WsSubAgentSpawn`), client
+  `session-store.ts` (`subAgentSpawns`), `message-handlers/sub-agent-spawn.ts`,
+  `MessageList.tsx` (`SubAgentSpawnChipRow`).
+- **Agent-facing doc** — `src/server/shipit-docs/agent.md`.
+
+Tests: `shared/sub-agent-run.test.ts`, `services/sub-agent.test.ts`,
+`session-credentials.test.ts` (sub-agent block), `shared/agent-registry-signout.test.ts`,
+`agent-shim/shipit.test.ts` (`agent run` block), client
+`message-handlers/sub-agent-spawn.test.ts`.
+
+Deferred from the plan's full test list (the v0 behavior is covered at the
+unit/service level above rather than through a Docker-backed integration run):
+the two-CLI-memory floor confirmation and the live token-rotation-mid-run
+assertion. See `checklist.md`.
+
 ## Out of scope

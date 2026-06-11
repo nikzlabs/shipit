@@ -34,6 +34,7 @@ import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/t
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
 import { listAgents } from "./services/settings.js";
+import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 
 // ---- Re-exports for extracted modules ----
 //
@@ -928,6 +929,14 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       supportedPermissionModes: a.capabilities.supportedPermissionModes,
       skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
     })),
+  });
+
+  // docs/144 — sign-out sweep. When an agent's auth drops to not-configured,
+  // wipe any in-flight cross-agent credential subtree provisioned for a spawn
+  // from sessions where this agent is NOT the pinned agent, so a sub-agent's
+  // creds never outlive the user's authorization.
+  agentRegistry.on("sign-out", (agentId: AgentId) => {
+    sweepSubAgentCredentialsOnSignOut(agentId, { sessionManager, credentialsDir });
   });
 
   // ---- Per-agent auth wiring (docs/155 Phase 2 + 2b) ----
