@@ -54,51 +54,49 @@ is exactly what we now build, using 177's brokered write as the mechanism and
 
 ## Design
 
-### Two transitions, two different sources of truth
+### Two transitions, two different sources of truth — and **no session state**
 
 The key structural decision: **started** and **completed** are driven by
-different signals, and deliberately so.
+different signals, and deliberately so. The second key decision: **ShipIt never
+stores the issue on the session.** Each transition needs the pointer only at the
+instant it acts, and at that instant the pointer is already in hand — so there is
+no `issueRef` field, no metadata migration, and no session↔issue record to keep
+in sync.
 
-| Transition | Trigger | Source of truth | Who decides |
+| Transition | Trigger | Source of truth | Who acts |
 |---|---|---|---|
-| → **started** | Session takes on the issue | Session ↔ issue **linkage** | Deterministic (ShipIt) |
-| → **completed** | Finishing PR merges | The merged PR **body** (`Closes <pointer>`) | Agent (per-PR) |
+| → **started** | Session takes on the issue | The seed payload (creation) **or** the agent's own judgment | ShipIt one-shot (seeded) / agent (non-seeded) |
+| → **completed** | Finishing PR merges | The merged PR **body** (`Closes <pointer>`) | ShipIt parses & brokers, agent decided per-PR |
 
 This split is what makes the multi-PR case fall out for free. The close decision
 lives in the PR body — the exact artifact where the agent already declares what a
 PR does — so "this PR finishes the issue" is a one-line, per-PR choice, not a
 piece of session state the agent has to remember to flip.
 
-### → started: deterministic, from linkage
+### → started: a one-shot at seed-time, otherwise the agent's own call
 
-A session becomes **issue-linked** through one of two paths. The moment linkage is
-established, ShipIt sets the issue to `started` (brokered, idempotent — a no-op if
-already started) and records the pointer as `issueRef` on the session.
+There is nothing to "link." The issue moves to `started` one of two ways, neither
+of which persists anything:
 
-- **Seed path (UI / tracker trigger).** When the session is created *from* an
-  issue — the docs/156 push trigger, or a future "work on this issue" button /
-  the docs/168 Issues tab — the `issueRef` is known at creation. This reuses the
-  existing `headless-sessions.create({ issueRef })` seeding primitive. ShipIt
-  marks `started` at session creation; no agent involvement.
+- **Seed path (UI / tracker trigger) — deterministic.** When the session is
+  created *from* an issue (the docs/156 push trigger, a future "work on this
+  issue" button, or the docs/168 Issues tab), ShipIt already holds the pointer in
+  the creation payload. It fires a single brokered `status started` right there at
+  session creation and is done — the pointer is not stored, because nothing later
+  needs it. Idempotent (a no-op if already started). No agent involvement.
 
-- **Attach path (agent).** When a session was *not* seeded from an issue but the
-  agent determines mid-session that it's implementing one (e.g. the user pasted a
-  pointer in chat), the agent calls a new **`shipit issue attach <pointer>`**.
-  This records `issueRef` on the session **and** marks `started` in one step. It
-  is the explicit, discoverable counterpart to the seed path.
+- **Non-seeded — the agent's call.** A session that wasn't created from an issue
+  gives ShipIt no pointer to act on, so there's nothing deterministic to do. When
+  the agent determines it's implementing an issue (e.g. the user pasted a pointer
+  in chat), it simply runs the **existing** `shipit issue status <pointer>
+  started` (docs/177). No new subcommand, no session field — just the brokered
+  write that already exists, on agent initiative.
 
 Marking `started` is low-risk and reversible (it's a soft signal, and 177 gives
-every write an Undo card), so doing it deterministically — rather than hoping the
-agent remembers — is the right call. This revisits docs/156's "behind explicit
-user action" non-goal: seeding from a trigger/button *is* the explicit user
-action; the attach call is the agent's explicit action. Neither is a silent
-side-effect.
-
-> **Why linkage need not precede turn 1.** An earlier framing worried that
-> deterministic `started` requires the link before the first turn. It doesn't:
-> `started` fires *when linkage is established*, from whichever path. Seed path
-> establishes it at creation; attach path establishes it mid-session. There is no
-> chicken/egg.
+every write an Undo card). This revisits docs/156's "behind explicit user action"
+non-goal: seeding from a trigger/button *is* the explicit user action; the agent's
+`status started` is its explicit action. Neither is a silent side-effect, and
+neither leaves ShipIt holding session-issue state.
 
 ### → completed: agent-declared in the PR body, ShipIt-executed on merge
 
@@ -117,9 +115,10 @@ On merge detection (`pr-status-poller.ts` → `onMergeDetectedCb`), ShipIt:
 
 1. Fetches the merged PR body (already available on the merge path).
 2. Parses it for `Closes/Fixes/Resolves <pointer>` lines.
-3. For each pointer, calls the brokered `status completed` + posts a summary
-   comment via the `Tracker` adapter — the same brokered write as 177, surfacing
-   the same provenance card.
+3. For **every** pointer found, calls the brokered `status completed` + posts a
+   summary comment via the `Tracker` adapter — the same brokered write as 177,
+   surfacing the same provenance card. Multiple closing lines are all honored
+   (one PR may legitimately finish several small issues).
 
 If the PR body has **no** closing line, nothing happens — the issue stays
 `started`. That is the multi-PR case: intermediate PRs simply don't carry
@@ -167,18 +166,22 @@ on the issue, and the issue closes exactly once, when the agent says it's done.
 Two small additions, since the agent is half the system:
 
 - **`shipit-docs/issues.md` + the system prompt (`agent-instructions.ts`):**
-  document `shipit issue attach <pointer>` and the convention that a `Closes
-  <pointer>` line in a PR body closes the issue on merge — and that **omitting**
-  it is how you signal "more PRs to come."
+  tell the agent to run `shipit issue status <pointer> started` when it begins
+  implementing an issue that ShipIt didn't already mark (the non-seeded case), and
+  document the convention that a `Closes <pointer>` line in a PR body closes the
+  issue on merge — and that **omitting** it is how you signal "more PRs to come."
 - **The PR-creation guidance** already tells the agent to write a structured PR
   body; we extend it: if this PR fully resolves a tracked issue, add a `Closes
   <pointer>` line; if it's partial, reference the issue without the closing
   keyword.
 
-The prompt makes the agent *use* the workflow; the deterministic `started` and
-the merge-time parse make the workflow *reliable* even when the agent forgets.
+The prompt makes the agent *use* the workflow; the deterministic seed-time
+`started` and the merge-time parse make the workflow *reliable* even when the
+agent forgets — without ShipIt holding any session-issue state of its own.
 
 ## Key files (anticipated)
+
+Note how short this is — no session-metadata changes, no new CLI verb.
 
 - `src/server/orchestrator/pr-status-poller.ts` — `onMergeDetectedCb` path; where
   the merged PR body is parsed for closing pointers.
@@ -186,30 +189,32 @@ the merge-time parse make the workflow *reliable* even when the agent forgets.
   wiring; the close-on-merge execution hangs off here, before/alongside
   `markMergedAndPruneExcess`.
 - `src/server/orchestrator/services/issues.ts` + `trackers/tracker.ts` — brokered
-  `status`/`comment` writes (docs/177) reused for the completion transition.
-- `src/server/session/agent-shim/shipit.ts` + `api-routes-issues.ts` +
-  `services/issues.ts` — the new `attach` subcommand (records `issueRef` + marks
-  started).
-- `src/server/orchestrator/sessions.ts` + `shared/types/domain-types.ts` —
-  `issueRef` field on session metadata (today there is none).
+  `status`/`comment` writes (docs/177), reused **as-is** for both transitions
+  (seed-time `started`, merge-time `completed`). No new write surface.
+- Session creation path (docs/156 trigger / docs/168 Issues tab / a "work on this
+  issue" action) — fires the one-shot `status started` from the pointer in the
+  creation payload. The pointer is consumed, not persisted.
 - `src/server/orchestrator/agent-instructions.ts` +
-  `src/server/shipit-docs/issues.md` — agent guidance for `attach` and the
-  `Closes <pointer>` convention.
-- `docs/156-issue-to-session` — `headless-sessions.create({ issueRef })` seeding
-  primitive and the `IssueTrackerProvider.reportPrMerged` hook this builds on.
+  `src/server/shipit-docs/issues.md` — agent guidance: call `status started` when
+  starting non-seeded issue work, and the `Closes <pointer>` PR-body convention.
+- `docs/156-issue-to-session` — the `IssueTrackerProvider.reportPrMerged` hook and
+  trigger flow this builds on.
 
-## Open questions
+## Decisions (resolved)
 
-- **Pointer parsing precedence.** If a PR body lists multiple `Closes` pointers,
-  close all of them — assume that's intentional (one PR finishing several small
-  issues). Confirm.
-- **Native GitHub double-close.** Accept the benign duplicate (above), or instruct
-  the agent to use the tracker-neutral pointer form (`owner/repo#42`) rather than
-  bare `#42` so GitHub's native parser doesn't also fire? Leaning: accept the
-  duplicate, it's a no-op.
-- **`started` on seed but no work done.** A session seeded from an issue that the
-  user then abandons will have marked the issue `started`. Acceptable (started is
-  soft and Undo-able), or should `started` wait for the first agent turn rather
-  than session creation?
-- **Reopen on revert.** Out of scope for v1; if a closing PR is later reverted, the
-  issue is not reopened automatically.
+- **No session-stored linkage.** ShipIt does not keep an `issueRef` on the
+  session. `started` is a one-shot at seed-time (or the agent's own `status`
+  call); `completed` reads the PR body. Neither needs persisted state. *(This is
+  the simplification that removed the metadata migration and the `attach`
+  subcommand from an earlier draft.)*
+- **`started` fires at session creation** for seeded sessions, not at first agent
+  turn. If a seeded session is then abandoned, the issue is left `started` — an
+  acceptable soft, Undo-able state.
+- **Multiple `Closes` pointers → close all of them.** One PR may finish several
+  small issues; each gets `completed` + a comment.
+- **GitHub native double-close → accept it.** For a same-repo GitHub issue,
+  GitHub's native keyword close and ShipIt's brokered close may both fire. It's a
+  no-op duplicate and ShipIt still adds the comment + provenance card; we don't
+  special-case it.
+- **No reopen on revert (v1).** If a closing PR is later reverted, the issue is not
+  reopened automatically; the user reopens manually. Revisit if it comes up.
