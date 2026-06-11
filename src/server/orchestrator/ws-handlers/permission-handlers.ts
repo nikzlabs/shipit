@@ -9,8 +9,8 @@
  * broker via `agent.resolvePermission` (ProxyAgentProcess → worker
  * `/agent/permission/resolve`), which unblocks the held bridge/RPC call. The
  * terminal card state is NOT patched here — the broker's resulting
- * `agent_permission_resolved` broadcast drives the patch in agent-listeners, so
- * the user-click, timeout, and teardown paths all settle the card identically.
+ * `agent_permission_resolved` broadcast drives the patch in agent-listeners,
+ * keeping the live and persisted card in sync from one place.
  *
  * Per the WS-lifecycle contract, the runner is resolved via the registry so a
  * reconnect mid-prompt doesn't lose the resolution path.

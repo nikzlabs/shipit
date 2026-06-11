@@ -29,7 +29,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   codeRollbackHash: "c0ffee",
   voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
-  permissionPrompt: { cardId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
+  permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   issueWrite: {
     cardId: "iw1",
@@ -279,11 +279,11 @@ describe("ChatHistoryManager", () => {
   });
 
   describe("permission-request card persistence (docs/193)", () => {
-    const pendingCard = (cardId: string): PersistedMessage => ({
+    const pendingCard = (requestId: string): PersistedMessage => ({
       role: "assistant",
       text: "",
       permissionPrompt: {
-        cardId,
+        requestId,
         phase: "pending",
         toolName: "Write",
         path: ".npmrc",

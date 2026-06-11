@@ -39,12 +39,15 @@ export interface PersistedBugReport {
  * (agent-agnostic: Claude's sensitive-file gate, Codex's escalation approval).
  * Recorded in-band with the turn that raised it (off the agent-event stream via
  * the broker's `agent_permission_request` broadcast), so it lands at its true
- * transcript position and its terminal state (approved / denied / expired)
- * survives a reload. Lifecycle transitions patch this record in place via
- * `updatePermissionCard`. `cardId` is the broker's `requestId`.
+ * transcript position and its terminal state (approved / denied) survives a
+ * reload. Lifecycle transitions patch this record in place via
+ * `updatePermissionCard`. `requestId` is the broker's id — the SAME key the WS
+ * card, the client store, and the `resolve_permission` round-trip use, so a
+ * rehydrated card lines up with its live counterpart (don't rename it to
+ * `cardId`: the client keys on `requestId`).
  */
 export interface PersistedPermissionRequest {
-  cardId: string;
+  requestId: string;
   phase: "pending" | "approved" | "denied";
   toolName: string;
   path?: string;
@@ -151,7 +154,7 @@ export interface PersistedMessage {
    * `PermissionRequestCard` (approve/deny + remember). Like the bug-report card
    * it arrives off the agent-event stream (the broker's `agent_permission_request`
    * broadcast) so it's recorded in-band with the proposing turn and persisted
-   * here; the approved/denied/expired transition patches this record in place via
+   * here; the approved/denied transition patches this record in place via
    * `updatePermissionCard` so a resolved card stays resolved on reload.
    */
   permissionPrompt?: PersistedPermissionRequest;
@@ -503,15 +506,15 @@ export class ChatHistoryManager {
 
   /**
    * docs/193 — patch a persisted permission-request card's lifecycle in place,
-   * keyed by `cardId` (the broker's requestId). Driven by the broker's
-   * `agent_permission_resolved` broadcast (user decision, timeout, or teardown)
-   * so the card's terminal state (approved / denied / expired) survives a
-   * reload. The proposing-turn row is finalized by resolution time, so a direct
-   * update is safe. Returns true if a matching card was found.
+   * keyed by `requestId` (the broker's id). Driven by the broker's
+   * `agent_permission_resolved` broadcast (the user's decision) so the card's
+   * terminal state (approved / denied) survives a reload. The proposing-turn row
+   * is finalized by resolution time, so a direct update is safe. Returns true if
+   * a matching card was found.
    */
   updatePermissionCard(
     sessionId: string,
-    cardId: string,
+    requestId: string,
     patch: Partial<PersistedPermissionRequest>,
   ): boolean {
     return this.db.transaction(() => {
@@ -519,7 +522,7 @@ export class ChatHistoryManager {
       for (const row of rows) {
         if (!row.permission_prompt) continue;
         const card = JSON.parse(row.permission_prompt) as PersistedPermissionRequest;
-        if (card.cardId !== cardId) continue;
+        if (card.requestId !== requestId) continue;
         const merged: PersistedPermissionRequest = { ...card, ...patch };
         const msg = this.fromRow(row);
         msg.permissionPrompt = merged;

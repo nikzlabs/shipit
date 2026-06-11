@@ -941,8 +941,9 @@ export class SessionWorker extends EventEmitter {
           ...(typeof body.message === "string" ? { message: body.message } : {}),
         };
         const found = this.permissionBroker.resolve(body.requestId, decision);
-        // `found:false` → a stale card (e.g. worker restarted since the prompt);
-        // the orchestrator patches it to expired on this signal.
+        // `found:false` → a stale card (e.g. the worker restarted since the
+        // prompt, so the held request is gone). The card simply stays pending —
+        // there's no live call left to unblock and ShipIt adds no terminal state.
         return { resolved: found };
       },
     );

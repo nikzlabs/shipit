@@ -20,9 +20,10 @@
  * same channel the ask bridge uses) so the orchestrator renders + persists a
  * card; the user's answer arrives via {@link resolve} (driven by the
  * `resolve_permission` WS message → `/agent/permission/resolve`) and unblocks
- * the held promise. Every resolution — user, timeout, or teardown — also
- * broadcasts `agent_permission_resolved` so the orchestrator patches the card
- * to its terminal state from one place.
+ * the held promise, broadcasting `agent_permission_resolved` so the orchestrator
+ * patches the card to its terminal state. There is no timeout — the request
+ * stays pending until the user answers (or teardown drops it; see
+ * {@link clearPending}).
  *
  * "Remember" is a per-session allow-set keyed by resource path: an approved
  * remember makes subsequent requests for the same path auto-resolve to `allow`

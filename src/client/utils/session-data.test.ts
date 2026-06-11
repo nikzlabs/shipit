@@ -4,6 +4,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useFileStore } from "../stores/file-store.js";
+import { usePermissionStore } from "../stores/permission-store.js";
 
 /**
  * Repro for the bug where the cost/context dial disappeared from below the
@@ -188,5 +189,51 @@ describe("loadSessionHistory — modelInfo seeding", () => {
     expect(useSessionStore.getState().historyLoaded).toBe(false);
     expect(useGitStore.getState().commits).toEqual([]);
     expect(useFileStore.getState().tree).toEqual([]);
+  });
+
+  // docs/193 — guards the client/server key alignment: the persisted card uses
+  // `requestId` (the broker id, same key the store/render/resolve use). If it
+  // ever drifts back to `cardId`, this rehydrate seeds nothing and the card
+  // vanishes on reload.
+  it("rehydrates the permission store from a persisted card on reload", async () => {
+    usePermissionStore.getState().reset();
+    useSessionStore.getState().setSessionId("perm-sess");
+    fetchSpy.mockImplementation((url: string) => {
+      if (url.includes("/history")) {
+        return Promise.resolve({
+          ok: true,
+          json: () => Promise.resolve({
+            messages: [
+              {
+                role: "assistant",
+                text: "",
+                permissionPrompt: {
+                  requestId: "perm-abc",
+                  phase: "approved",
+                  toolName: "Write",
+                  path: ".npmrc",
+                  summary: "Write .npmrc",
+                  agentId: "claude",
+                  createdAt: "2026-06-11T00:00:00.000Z",
+                  remembered: true,
+                },
+              },
+            ],
+            commits: [],
+            fileTree: [],
+            agentRunning: false,
+          }),
+        });
+      }
+      return Promise.resolve({ ok: false, status: 404 });
+    });
+
+    await loadSessionHistory("perm-sess");
+
+    const card = usePermissionStore.getState().cards["perm-abc"];
+    expect(card).toBeDefined();
+    expect(card?.phase).toBe("approved");
+    expect(card?.remembered).toBe(true);
+    expect(card?.path).toBe(".npmrc");
   });
 });

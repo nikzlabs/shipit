@@ -23,8 +23,8 @@
  * blocked CLI call, so it mirrors the voice/present bridges' request/response
  * shape: a real round-trip whose response the worker holds open until resolved.
  *
- * Pure transport: no state, no policy. The remember-set, timeout, and event
- * broadcasting all live in the worker's broker.
+ * Pure transport: no state, no policy. The remember-set and event broadcasting
+ * all live in the worker's broker.
  */
 
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";

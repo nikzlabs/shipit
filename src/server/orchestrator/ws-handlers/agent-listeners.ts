@@ -793,7 +793,7 @@ export function wireAgentListeners(
       if (turnSessionId && runner) {
         const createdAt = new Date().toISOString();
         const card: PersistedPermissionRequest = {
-          cardId: event.requestId,
+          requestId: event.requestId,
           phase: "pending",
           toolName: event.toolName,
           ...(event.path ? { path: event.path } : {}),
