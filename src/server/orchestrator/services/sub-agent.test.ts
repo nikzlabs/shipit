@@ -46,7 +46,7 @@ function makeDeps(opts: {
   };
   const deps = {
     sessionManager: {
-      get: vi.fn((id: string) => (session && session.id === id ? session : undefined)),
+      get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
       list: vi.fn(() => opts.sessions ?? []),
     } as never,
     credentialStore: { getEnableSubAgents: () => opts.enableSubAgents ?? true } as never,
