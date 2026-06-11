@@ -248,6 +248,65 @@ export async function fetchAndResolveDefaultBranch(
 }
 
 /**
+ * Force the local default-branch ref (`main` / `master`) to match
+ * `origin/<default>`, so commands the agent runs against the bare branch name
+ * — `git log main..HEAD`, `git diff main...HEAD` — line up with what the PR
+ * actually contains.
+ *
+ * Why this is needed: every session clone is cut with `git clone --local` from
+ * the bare cache, whose `main` is a *snapshot* that can sit behind the real
+ * `origin/main`. The session branch is then created off the freshly-fetched
+ * `origin/HEAD` (the genuine tip via `fetchAndResolveDefaultBranch`), but the
+ * local `main` ref is left pointing at the stale snapshot. The gap between the
+ * two — commits already on `origin/main` but not on the local `main` ref —
+ * then shows up in `main..HEAD`. An agent asked to "review the PR I created"
+ * runs exactly that kind of comparison and reports those already-merged
+ * commits as if they were part of the branch (docs/194). ShipIt's own diff
+ * helpers (`diffStatVsBranch`, `resolveBaseBranchRef`) prefer `origin/<branch>`
+ * and are unaffected; this only realigns the *local* ref the agent reaches for.
+ *
+ * Best-effort and non-fatal. It is a pure ref move (`git branch -f`) that never
+ * touches the working tree or index, and it refuses to move the checked-out
+ * branch — at every call site the session is already on its `shipit/*` branch,
+ * so `main`/`master` is never current. A detached HEAD, a missing `origin/*`
+ * ref, or any git error just skips the sync.
+ */
+export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Promise<void> {
+  const sg = simpleGit(workspaceDir);
+  // Resolve origin's default branch name (origin/HEAD → main/master), then
+  // fall back to probing the common names if the symbolic ref isn't set.
+  let branch: string | undefined;
+  try {
+    const head = (await sg.raw(["symbolic-ref", "refs/remotes/origin/HEAD"])).trim();
+    const match = /refs\/remotes\/origin\/(.+)/.exec(head);
+    if (match) branch = match[1];
+  } catch { /* origin/HEAD not set — fall through to probing */ }
+  if (!branch) {
+    for (const candidate of ["main", "master"]) {
+      try {
+        await sg.raw(["rev-parse", "--verify", `origin/${candidate}`]);
+        branch = candidate;
+        break;
+      } catch { /* try next */ }
+    }
+  }
+  if (!branch) return;
+  try {
+    // Never force-update the branch we're standing on. `git branch -f` rejects
+    // it anyway, but skipping avoids a noisy warning — at our call sites HEAD
+    // is always a `shipit/*` branch, so this only guards an unexpected state.
+    const current = (await sg.raw(["rev-parse", "--abbrev-ref", "HEAD"])).trim();
+    if (current === branch) return;
+    await sg.raw(["branch", "-f", branch, `origin/${branch}`]);
+  } catch (err) {
+    console.warn(
+      `[git] syncLocalDefaultBranchToOrigin: could not move ${branch} to origin/${branch} ` +
+        `for ${workspaceDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
  * Cheap local agreement check: does the workspace clone's `origin/HEAD`
  * (or `origin/main` / `origin/master`) point to the same commit as the
  * bare cache's HEAD?

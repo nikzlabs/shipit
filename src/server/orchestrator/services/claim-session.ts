@@ -30,6 +30,7 @@ import {
   generateBranchPrefix,
   fetchAndResolveDefaultBranch,
   isWorkspaceCloneInSyncWithCache,
+  syncLocalDefaultBranchToOrigin,
 } from "../git-utils.js";
 import { resolveAgentDockerLimits } from "../session-container.js";
 import { ensureBareCache } from "../repo-git.js";
@@ -209,6 +210,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     if (resetTarget) {
       await sessionGit.rollback(resetTarget);
     }
+    // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
+    // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
+    await syncLocalDefaultBranchToOrigin(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
@@ -387,6 +391,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
         await simpleGit(workspaceDir).raw(branchArgs);
+
+        // Realign local `main` with `origin/main` (see syncLocalDefaultBranchToOrigin):
+        // the branch was just cut from the freshly-fetched `origin/HEAD`, but
+        // local `main` still points at the stale bare-cache snapshot, which
+        // would make a later `main..HEAD` PR review include already-merged
+        // commits (docs/194).
+        await syncLocalDefaultBranchToOrigin(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);
         deps.sessionManager.setBranch(appSessionId, branchPrefix);

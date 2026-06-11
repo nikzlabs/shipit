@@ -7,7 +7,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
-import { generateBranchPrefix, fetchAndResolveDefaultBranch } from "./git-utils.js";
+import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
@@ -162,6 +162,12 @@ export function createWarmPool(
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
         await simpleGit(workspaceDir).raw(branchArgs);
+
+        // Realign the local default branch (`main`) with `origin/main` so a
+        // later "review the PR" comparison against `main` doesn't pick up
+        // commits that are already on main but ahead of the stale bare-cache
+        // snapshot this clone was cut from (docs/194).
+        await syncLocalDefaultBranchToOrigin(workspaceDir);
 
         sessionManager.setBranch(appSessionId, branchPrefix);
 
