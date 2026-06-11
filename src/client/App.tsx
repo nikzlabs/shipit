@@ -782,12 +782,7 @@ export default function App() {
   );
 
   useKeyboardShortcuts({
-    searchOpen,
-    shortcutsOpen,
     setShortcutsOpen: (updater) => setShortcutsOpen(updater),
-    isLoading,
-    settingsOpen,
-    handleInterrupt: () => send({ type: "interrupt_agent" }),
     handleNewSession: handleNewSessionShortcut,
   });
 

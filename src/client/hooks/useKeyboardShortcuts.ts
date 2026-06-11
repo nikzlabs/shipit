@@ -4,15 +4,10 @@ import { eventMatchesChord } from "../keybindings/registry.js";
 import { useKeybinding } from "../keybindings/use-keybinding.js";
 
 export function useKeyboardShortcuts(params: {
-  searchOpen: boolean;
-  shortcutsOpen: boolean;
   setShortcutsOpen: (updater: (prev: boolean) => boolean) => void;
-  isLoading: boolean;
-  settingsOpen: boolean;
-  handleInterrupt: () => void;
   handleNewSession: () => void;
 }): void {
-  const { setShortcutsOpen, isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt, handleNewSession } = params;
+  const { setShortcutsOpen, handleNewSession } = params;
 
   // Chords come from the registry/overrides (docs/180) so they stay in sync
   // with the Keyboard settings tab and the ? overlay.
@@ -54,18 +49,8 @@ export function useKeyboardShortcuts(params: {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [handleNewSession, newSessionChord]);
 
-  // Escape key to interrupt the agent while loading (only when not typing in an input or overlay open)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape" && !e.defaultPrevented && isLoading && !searchOpen && !shortcutsOpen && !settingsOpen) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        if (tag === "INPUT" || tag === "SELECT") return;
-        e.preventDefault();
-        handleInterrupt();
-      }
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isLoading, searchOpen, shortcutsOpen, settingsOpen, handleInterrupt]);
+  // Note: the agent is intentionally NOT cancellable via the Escape key. Escape
+  // fires globally regardless of focus, so an errant press (e.g. while the
+  // preview pane is focused) would cancel a running turn by accident. The only
+  // way to stop the agent is the explicit stop button in the chat input.
 }

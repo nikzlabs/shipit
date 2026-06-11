@@ -11,7 +11,6 @@ export type KeybindingId =
   | "voice-mode-a"
   | "voice-mode-b"
   // Fixed reference rows (editable: false) — shown for completeness only.
-  | "interrupt-agent"
   | "send-message"
   | "newline"
   | "chat-search"
@@ -81,14 +80,6 @@ export const KEYBINDINGS: readonly KeybindingDef[] = [
     defaultBinding: "ctrl+shift+m",
     editable: true,
     requiresSecondModifier: true,
-  },
-  {
-    id: "interrupt-agent",
-    label: "Stop the agent while it's running",
-    group: "Chat",
-    defaultBinding: "",
-    editable: false,
-    fixedHint: "Esc",
   },
   {
     id: "send-message",
