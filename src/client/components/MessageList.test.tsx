@@ -899,20 +899,16 @@ describe("MessageList", () => {
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_chart",
-          content: "<h1>chart</h1>",
           mimeType: "text/html",
           title: "Sales Chart",
           filePath: "/tmp/chart.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:00.000Z",
         },
         {
           presentId: "pres_other",
-          content: "<h1>other</h1>",
           mimeType: "text/html",
           title: "Other",
           filePath: "/tmp/other.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:01.000Z",
         },
       ]);
@@ -955,11 +951,9 @@ describe("MessageList", () => {
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_bare",
-          content: "<h1>bare</h1>",
           mimeType: "text/html",
           title: "Bare Object",
           filePath: "/tmp/bare.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:00.000Z",
         },
       ]);

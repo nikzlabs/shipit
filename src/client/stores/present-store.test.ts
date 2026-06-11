@@ -7,11 +7,9 @@ import { usePresentStore } from "./present-store.js";
 function makePresent(overrides: Partial<Parameters<ReturnType<typeof usePresentStore.getState>["addOrReplace"]>[0]> = {}) {
   return {
     presentId: "p1",
-    content: "<p>hi</p>",
     mimeType: "text/html",
     title: "Hi",
     filePath: "/tmp/hi.html",
-    inWorkspace: false,
     createdAt: "2026-05-29T00:00:00.000Z",
     ...overrides,
   };
@@ -70,12 +68,34 @@ describe("present-store", () => {
 
   it("hydrate replaces the whole list without bumping the unseen count", () => {
     usePresentStore.getState().hydrate([
-      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", inWorkspace: false, createdAt: "2026-05-29T00:00:00.000Z" },
-      { presentId: "p2", content: "<p>b</p>", mimeType: "text/html", filePath: "/tmp/b.html", inWorkspace: false, createdAt: "2026-05-29T00:00:01.000Z" },
+      { presentId: "p1", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p2", mimeType: "text/html", filePath: "/tmp/b.html", createdAt: "2026-05-29T00:00:01.000Z" },
     ]);
     const { presentations, unseenCount } = usePresentStore.getState();
     expect(presentations.map((p) => p.presentId)).toEqual(["p1", "p2"]);
     expect(unseenCount).toBe(0);
+  });
+
+  it("setContent caches fetched bytes onto the matching entry", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    expect(usePresentStore.getState().presentations[0].content).toBeUndefined();
+    usePresentStore.getState().setContent("p1", "<p>hi</p>");
+    expect(usePresentStore.getState().presentations[0].content).toBe("<p>hi</p>");
+    // No-op for an unknown id.
+    usePresentStore.getState().setContent("missing", "x");
+    expect(usePresentStore.getState().presentations).toHaveLength(1);
+  });
+
+  it("hydrate preserves already-fetched content for surviving ids (no refetch on reconnect)", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().setContent("p1", "<p>cached</p>");
+    usePresentStore.getState().hydrate([
+      { presentId: "p1", mimeType: "text/html", filePath: "/tmp/hi.html", createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p2", mimeType: "text/html", filePath: "/tmp/b.html", createdAt: "2026-05-29T00:00:01.000Z" },
+    ]);
+    const { presentations } = usePresentStore.getState();
+    expect(presentations[0].content).toBe("<p>cached</p>");
+    expect(presentations[1].content).toBeUndefined();
   });
 
   it("hydrate clamps the active index into the new bounds", () => {
@@ -84,7 +104,7 @@ describe("present-store", () => {
     usePresentStore.getState().setActiveIndex(1);
     // Hydrate to a shorter list — active index must clamp.
     usePresentStore.getState().hydrate([
-      { presentId: "p1", content: "<p>a</p>", mimeType: "text/html", filePath: "/tmp/a.html", inWorkspace: false, createdAt: "2026-05-29T00:00:00.000Z" },
+      { presentId: "p1", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
     ]);
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });

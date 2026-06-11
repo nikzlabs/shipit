@@ -189,29 +189,17 @@ export async function registerSessionRoutes(
     return { worktrees: listWorktrees(sessionManager, request.params.id) };
   });
 
-  // POST /api/sessions/:id/present/save — copy a buffered presentation
-  // (docs/093) to the workspace. The bytes live only in the session worker's
-  // in-memory PresentBuffer; we proxy through to the worker which performs
-  // the byte-exact copy and lets the file watcher + auto-commit pipeline pick
-  // it up. Client-driven (not agent-mediated) because after context
-  // compaction or several turns the agent may not have the exact bytes any
-  // more — save must match what the user saw.
-  app.post<{
-    Params: { id: string };
-    Body: { presentId?: string; destPath?: string };
-  }>("/api/sessions/:id/present/save", async (request, reply) => {
+  // GET /api/sessions/:id/present/:presentId/content — fetch a presentation's
+  // raw bytes on demand (docs/093). The worker holds only metadata; this proxies
+  // a one-time disk read and returns `{ content, mimeType }`, retaining nothing.
+  // Authenticated session API (not the public preview proxy), so the Present tab
+  // renders byte-for-byte while artifacts stay off any routable URL.
+  app.get<{
+    Params: { id: string; presentId: string };
+  }>("/api/sessions/:id/present/:presentId/content", async (request, reply) => {
     const session = sessionManager.get(request.params.id);
     if (!session) {
       reply.code(404).send({ error: "Session not found" });
-      return;
-    }
-    const { presentId, destPath } = request.body ?? {};
-    if (typeof presentId !== "string" || !presentId) {
-      reply.code(400).send({ error: "presentId is required" });
-      return;
-    }
-    if (typeof destPath !== "string" || !destPath) {
-      reply.code(400).send({ error: "destPath is required" });
       return;
     }
     const runner = deps.runnerRegistry.get(request.params.id);
@@ -219,24 +207,27 @@ export async function registerSessionRoutes(
       reply.code(404).send({ error: "Session is not active" });
       return;
     }
-    const proxy = runner as { proxyPresentSave?: (id: string, path: string) => Promise<unknown> };
-    if (typeof proxy.proxyPresentSave !== "function") {
-      reply.code(501).send({ error: "Present save is not supported on this runner" });
+    const proxy = runner as { proxyPresentRaw?: (id: string) => Promise<unknown> };
+    if (typeof proxy.proxyPresentRaw !== "function") {
+      reply.code(501).send({ error: "Present content is not supported on this runner" });
       return;
     }
     try {
-      const result = await proxy.proxyPresentSave(presentId, destPath) as {
-        ok?: boolean;
-        savedPath?: string;
-        error?: string;
+      const result = await proxy.proxyPresentRaw(request.params.presentId) as {
+        content: string;
+        mimeType: string;
       };
-      if (result.ok === false || result.error) {
-        reply.code(400).send({ error: result.error ?? "Save failed" });
+      reply.header("Cache-Control", "no-store");
+      return result;
+    } catch (err) {
+      const message = getErrorMessage(err);
+      // The worker 404s when the id is unknown or the file is gone from disk;
+      // surface that as a 404 so the client can show "no longer available".
+      if (/not found|no longer on disk/i.test(message)) {
+        reply.code(404).send({ error: message });
         return;
       }
-      return { ok: true, savedPath: result.savedPath };
-    } catch (err) {
-      reply.code(500).send({ error: `Failed to save presentation: ${getErrorMessage(err)}` });
+      reply.code(500).send({ error: `Failed to fetch presentation: ${message}` });
     }
   });
 

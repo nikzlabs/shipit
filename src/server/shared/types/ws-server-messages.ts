@@ -1010,7 +1010,11 @@ export interface WsReviewUpdated {
  *
  * If `replaceId` is set and matches a previous presentation's `presentId`, the
  * client replaces that entry in-place (revision flow); otherwise the entry is
- * appended and auto-selected. Size of `content` is capped at ~1 MB worker-side.
+ * appended and auto-selected.
+ *
+ * Metadata only — it carries NO artifact bytes. The client fetches the bytes on
+ * demand from `GET /api/sessions/:id/present/:presentId/content` (a one-time
+ * disk read proxied to the worker), so nothing large is retained server-side.
  */
 export interface WsPresentContentMessage {
   type: "present_content";
@@ -1019,16 +1023,12 @@ export interface WsPresentContentMessage {
   presentId: string;
   /** When set, replaces the entry with this id in-place. */
   replaceId?: string;
-  /** The actual artifact — HTML string, SVG markup, markdown, or data URI for binaries. */
-  content: string;
   /** "text/html", "image/svg+xml", "text/markdown", "image/png", etc. */
   mimeType: string;
   /** Optional display title (the artifact's name) for the carousel header. */
   title?: string;
   /** The path the agent presented (`present`'s `file` arg), shown in the header. */
   filePath: string;
-  /** Whether `filePath` resolves inside the workspace (already tracked → hide Save). */
-  inWorkspace: boolean;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
 }
@@ -1036,9 +1036,8 @@ export interface WsPresentContentMessage {
 /**
  * Server → Client: drop one or all presentations (docs/093).
  *
- * `presentId` set → drop just that entry (used by the worker-side LRU when it
- * evicts an old presentation). `presentId` omitted → wipe the whole list
- * (session switch, full clear).
+ * `presentId` set → drop just that entry (a revision superseding an old id).
+ * `presentId` omitted → wipe the whole list (session switch, full clear).
  */
 export interface WsPresentClearedMessage {
   type: "present_cleared";
@@ -1046,14 +1045,15 @@ export interface WsPresentClearedMessage {
   presentId?: string;
 }
 
-/** A single presentation entry as carried in a `present_state` replay. */
+/**
+ * A single presentation entry as carried in a `present_state` replay. Metadata
+ * only — the client fetches the bytes on demand (see {@link WsPresentContentMessage}).
+ */
 export interface PresentStateEntry {
   presentId: string;
-  content: string;
   mimeType: string;
   title?: string;
   filePath: string;
-  inWorkspace: boolean;
   createdAt: string;
 }
 

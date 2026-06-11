@@ -9,11 +9,31 @@ description: Let the agent display visual artifacts (HTML, SVG, charts, markdown
 > writes a file and presents it by path (`present({ file })`), instead of passing
 > an inline `content` string. The MIME type is inferred from the extension. A
 > file written under the workspace is **tracked** (committed + in the file tree)
-> *and* rendered in the Present tab; a file under `/tmp` stays ephemeral. The
-> inline `content` parameter described below is superseded; everything
-> downstream of the `PresentBuffer` (rendering, sandboxing, `present_state`
-> replay, Save to project, the docs/170 `viewUrl` screenshot loop) is unchanged.
+> *and* rendered in the Present tab; a file under `/tmp` stays ephemeral.
 > See `docs/188-present-from-file/plan.md`.
+>
+> **Update (serve-from-disk — supersedes the buffer/Save design below):** the
+> server retains **no artifact bytes**. The worker keeps a `PresentRegistry` of
+> metadata only (`presentId → { path, mimeType, title }`); the bytes are read
+> from disk on demand each time an artifact is served. Consequences:
+> - **No size or count caps, no eviction.** The old `PresentBuffer` 1 MB / 16 MB
+>   / 20-entry caps are gone — a presentation always shows and every artifact
+>   stays in the carousel. The only `present_cleared` paths are a revision
+>   superseding an id and a full clear on session switch.
+> - **WS messages carry metadata only** (no `content` field). The client fetches
+>   bytes lazily from `GET /api/sessions/:id/present/:presentId/content` (an
+>   authenticated one-time disk read proxied to the worker's `/present/:id/raw`)
+>   and caches them in the browser. A reload re-fetches; nothing large lives in
+>   the worker or orchestrator. `runner.presentations` is a metadata cache.
+> - **"Save to project" is removed** — no rigid-path dialog. To keep a `/tmp`
+>   artifact, the user asks the agent to write it into the repo. **Download**
+>   (client-side blob → local machine) stays. The user-facing **dismiss (✕)**
+>   button is also gone (see Interaction below).
+> - **The two serving routes** both read disk via the registry: `/present-files/:id`
+>   (rendered, for the agent's screenshot loop, worker-local) and `/present/:id/raw`
+>   (raw JSON, for the Present tab via the authenticated session API). Neither
+>   uses the public preview proxy. Mentions of `PresentBuffer`, byte retention,
+>   `inWorkspace`, and Save in the design below are historical.
 
 ## Problem
 
@@ -305,7 +325,7 @@ The preview pane maintains an **ordered list of presentations** for the session,
 
 ```
 ┌─────────────────────────────────────────────┐
-│ ◀ 2/3 ▶  Sales Chart     💾 Save  ✕ Close  │  ← header: nav + title + actions
+│ ◀ 2/3 ▶  Sales Chart        ⬇ Download     │  ← header: nav + title + Download (no Save/✕)
 ├─────────────────────────────────────────────┤
 │                                             │
 │            [rendered content]               │
@@ -319,8 +339,8 @@ The preview pane maintains an **ordered list of presentations** for the session,
 2. **Revision** — agent passes `replaceId` referencing a previous `presentId`. Replaces that entry in-place, no new slot. If omitted, it's a new entry.
 3. **Navigation** — `◀ ▶` arrows or `2/3` indicator let the user flip between presentations. Keyboard shortcuts (←/→) when pane is focused.
 4. **No user-facing dismiss** — the pane deliberately has **no** close/✕ button. Presentations are ephemeral (not persisted) and the chat card's "View" button re-opens one by looking it up in the store via `focusById`; a manual dismiss removed the only copy and stranded that card with no way back (especially on mobile, where the ✕ reads as "close the panel"). The user navigates away from the Present tab via the tab system / mobile tab bar, which leaves the store intact.
-5. **Clear all** — `present_cleared` message wipes the entire list (e.g., on session switch), or with a `presentId` drops one entry (the rare memory-backstop eviction, below).
-6. **No artifact-size or entry-count caps** — a presentation always shows, no matter how large, and the carousel keeps every artifact of the session. The earlier limits (1 MB per artifact → outright rejection; ~20 entries → silent eviction of the oldest) made the UX worse and were the *only* remaining way an artifact could vanish after the dismiss button was removed, so they're gone. The buffer's sole bound is a generous **total-memory backstop** (default 256 MB, see `PresentBuffer`) that exists only to stop a runaway buffer from OOMing the worker container — a worse failure than dropping the oldest artifact. Real sessions never reach it; if one somehow does, the oldest entries are LRU-evicted (best-effort, newest always kept) and a `present_cleared` is broadcast. The backstop is injectable via `SessionWorkerDeps.presentBufferOptions` (tests drive it with a tiny ceiling).
+5. **Clear all** — `present_cleared` message wipes the entire list (e.g., on session switch), or with a `presentId` drops one entry (a revision superseding an old id).
+6. **No artifact-size or entry-count caps, no eviction** — a presentation always shows, no matter how large, and the carousel keeps every artifact of the session. The server retains no bytes (metadata-only `PresentRegistry`; bytes read from disk on demand), so there is nothing to cap. The earlier `PresentBuffer` limits (1 MB per artifact → outright rejection; ~20 entries → silent eviction of the oldest) made the UX worse and were a way an artifact could vanish, so they're gone. See the serve-from-disk banner at the top.
 
 ### Why not tabs?
 
@@ -366,22 +386,28 @@ This connects the conversation to the visual output without rendering the full a
 
 ### New types
 
+> NOTE: the shape below is historical — the message no longer carries `content`.
+> See the serve-from-disk banner: messages are metadata only, and the client
+> fetches bytes lazily. Current shape:
+
 ```typescript
-// ws-server-messages.ts
-interface PresentContentMessage {
+// ws-server-messages.ts (current — metadata only, no bytes)
+interface WsPresentContentMessage {
   type: "present_content";
   sessionId: string;
   presentId: string;        // unique ID for this presentation
   replaceId?: string;       // if set, replaces this existing presentation in-place
-  content: string;          // the content (HTML string, SVG string, data URI, markdown)
   mimeType: string;         // "text/html", "image/svg+xml", "text/markdown", "image/png"
   title?: string;           // display title for the header
+  filePath: string;         // the presented path (verbatim), shown in the header
+  createdAt: string;        // ISO8601
+  // No `content` — fetched on demand from /api/sessions/:id/present/:presentId/content
 }
 
-interface PresentClearedMessage {
+interface WsPresentClearedMessage {
   type: "present_cleared";
   sessionId: string;
-  presentId?: string;       // if set, clear just this entry (eviction); otherwise clear all
+  presentId?: string;       // set → drop one (a revision); otherwise clear all
 }
 ```
 
@@ -405,11 +431,11 @@ The tool description the agent sees must be explicit enough that Claude/Codex pi
 3. Emits `present_content` via SSE (with `replaceId` if provided)
 4. Returns `{ presentId, status: "presented" }` through the bridge to the agent
 
-### Server-side buffer (load-bearing for "Save to project")
+### Server-side registry (metadata only — supersedes the buffer)
 
-The session worker keeps a `Map<presentId, { content, mimeType, title, createdAt }>` for the lifetime of the container. This is what lets the "Save to project" path copy the exact bytes the user saw — see the action description below for why agent-mediated save is not viable.
+The session worker keeps a `PresentRegistry`: a `Map<presentId, { resolvedPath, filePath, mimeType, title, createdAt }>` for the lifetime of the container — **no bytes**. The artifact is read from disk on demand each time it's served (the agent's rendered `/present-files/:id` screenshot URL; the user's raw `/present/:id/raw` fetch proxied through the authenticated session API). Nothing is cached server-side.
 
-Bounds: there is **no** artifact-size cap and **no** entry-count cap — a presentation always shows and every artifact of the session stays in the carousel. The buffer's only bound is a generous total-memory backstop (default 256 MB) that exists solely so a runaway buffer can't OOM the worker container. Eviction is rare and best-effort: when the backstop is exceeded it drops the oldest entries (never the newest) and broadcasts `present_cleared` with a `presentId` so the client drops only those. When `presentId` is omitted (session switch, full clear) the client wipes the entire list. The container's `/tmp` lifetime already bounds this in the worst case.
+Bounds: **none** — no artifact-size cap, no entry-count cap, no eviction. A presentation always shows and every artifact stays in the carousel. `present_cleared` fires only on a revision (`replaceId` superseding an old id) or a full clear (session switch). The file on disk is the single source of truth; if the agent overwrites or deletes it, the next read reflects that. (Historically this was a `PresentBuffer` that held bytes and capped them — see the top banner for why that was removed.)
 
 For images/SVG, the agent can pass inline content directly:
 ```
@@ -561,9 +587,12 @@ return.
 - `src/server/session/agents/claude-adapter.ts` — declare `present` MCP server in `writeMcpConfig`
 - `src/server/session/agents/codex-adapter.ts` — declare `present` MCP server in the codex MCP writer
 - `src/server/session/agent-ops-routes.ts` — `POST /agent-ops/present/submit` broker (matches the existing `gh` / `shipit` / `review` routes)
-- `src/server/session/session-worker.ts` — in-memory `presentBuffer` map, `POST /api/sessions/:id/present/save` worker route that copies bytes from the buffer to the workspace
-- `src/server/orchestrator/api-routes-session.ts` — `POST /api/sessions/:id/present/save` orchestrator route, forwards to the worker
-- `src/server/shared/types/ws-server-messages.ts` — `PresentContentMessage`, `PresentClearedMessage`
+- `src/server/session/present-registry.ts` — **`PresentRegistry`**, the metadata-only `presentId → { resolvedPath, filePath, mimeType, title }` map (replaced the old byte-holding `present-buffer.ts`)
+- `src/server/session/present-view.ts` — `readArtifactContent` + the two disk-reading routes: `/present-files/:id` (rendered, for the agent screenshot loop) and `/present/:id/raw` (raw JSON, for the Present tab)
+- `src/server/session/session-worker.ts` — `POST /agent-ops/present/submit` records metadata (no byte read), wires `registerPresentFilesRoutes`
+- `src/server/orchestrator/api-routes-session.ts` — `GET /api/sessions/:id/present/:presentId/content`, proxies a one-time disk read to the worker (replaced the removed `present/save` route)
+- `src/server/orchestrator/container-session-runner.ts` — `runner.presentations` metadata cache + `proxyPresentRaw`
+- `src/server/shared/types/ws-server-messages.ts` — `WsPresentContentMessage`, `WsPresentClearedMessage`, `PresentStateEntry` (metadata only)
 - `src/server/shipit-docs/` — document `present` tool semantics (when to use vs. `Write`)
 - `src/client/components/PresentPane.tsx` — **new component**, the Present tab
 - `src/client/stores/present-store.ts` — **new store**, presentation list + active index

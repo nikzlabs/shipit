@@ -982,20 +982,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * Save a buffered presentation to the workspace (docs/093). The worker
-   * owns the buffered bytes — this proxy keeps the orchestrator route thin
-   * and mirrors how `proxyMcpTest` reaches into the container.
+   * Fetch a presentation's raw bytes on demand (docs/093). The worker reads the
+   * file from disk fresh and returns `{ content, mimeType }`; nothing is cached
+   * orchestrator-side. Backs the authenticated `GET …/present/:id/content`
+   * route the Present tab renders from.
    */
-  async proxyPresentSave(
+  async proxyPresentRaw(
     presentId: string,
-    destPath: string,
-  ): Promise<{ ok: boolean; savedPath?: string; error?: string }> {
+  ): Promise<{ content: string; mimeType: string }> {
     await this._workerReady;
-    return workerPost(
+    return workerGet(
       this.workerUrl,
-      "/present/save",
-      { presentId, destPath },
-    ) as Promise<{ ok: boolean; savedPath?: string; error?: string }>;
+      `/present/${encodeURIComponent(presentId)}/raw`,
+    ) as Promise<{ content: string; mimeType: string }>;
   }
 
   // --- Worker resource lifecycle ---
@@ -1454,27 +1453,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const evt = data as {
             presentId?: string;
             replaceId?: string;
-            content?: string;
             mimeType?: string;
             title?: string;
             filePath?: string;
-            inWorkspace?: boolean;
             createdAt?: string;
           };
           if (
             typeof evt.presentId === "string"
-            && typeof evt.content === "string"
             && typeof evt.mimeType === "string"
             && typeof evt.filePath === "string"
-            && typeof evt.inWorkspace === "boolean"
           ) {
             const entry: PresentStateEntry = {
               presentId: evt.presentId,
-              content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
               filePath: evt.filePath,
-              inWorkspace: evt.inWorkspace,
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
@@ -1483,11 +1476,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               sessionId: this.sessionId,
               presentId: entry.presentId,
               ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
-              content: entry.content,
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
               filePath: entry.filePath,
-              inWorkspace: entry.inWorkspace,
               createdAt: entry.createdAt,
             });
           }

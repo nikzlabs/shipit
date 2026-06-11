@@ -533,12 +533,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   detectedPorts: number[];
 
   /**
-   * Authoritative cache of agent-emitted presentations (docs/093), mirroring
-   * the worker's PresentBuffer. Container-only — direct/in-process runners
-   * don't host the present MCP tool and omit this. Maintained from the SSE
-   * `present_content` / `present_cleared` stream so `attachToRunner` can replay
-   * a `present_state` message to a late- or re-connecting viewer whose Present
-   * tab would otherwise be empty after a session switch.
+   * Authoritative cache of agent-emitted presentation METADATA (docs/093),
+   * mirroring the worker's PresentRegistry — no artifact bytes. Container-only:
+   * direct/in-process runners don't host the present MCP tool and omit this.
+   * Maintained from the SSE `present_content` / `present_cleared` stream so
+   * `attachToRunner` can replay a `present_state` message to a late- or
+   * re-connecting viewer whose Present tab would otherwise be empty after a
+   * session switch (the client then re-fetches each artifact's bytes on demand).
    */
   readonly presentations?: PresentStateEntry[];
 

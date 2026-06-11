@@ -1,5 +1,5 @@
 import { afterEach, describe, it, expect, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import {
   PresentPane,
   mimeTypeToExtension,
@@ -9,27 +9,45 @@ import {
 import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
+function meta(over: { presentId: string; title?: string; filePath?: string; mimeType?: string }) {
+  return {
+    presentId: over.presentId,
+    mimeType: over.mimeType ?? "text/html",
+    filePath: over.filePath ?? `/tmp/${over.presentId}.html`,
+    createdAt: "2026-05-31T00:00:00.000Z",
+    ...(over.title !== undefined ? { title: over.title } : {}),
+  };
+}
+
 function seedPresentations() {
   usePresentStore.getState().hydrate([
-    {
-      presentId: "pres_one",
-      content: "<h1>One</h1>",
-      mimeType: "text/html",
-      title: "One",
-      filePath: "/tmp/one.html",
-      inWorkspace: false,
-      createdAt: "2026-05-31T00:00:00.000Z",
-    },
-    {
-      presentId: "pres_two",
-      content: "<h1>Two</h1>",
-      mimeType: "text/html",
-      title: "Two",
-      filePath: "/tmp/two.html",
-      inWorkspace: false,
-      createdAt: "2026-05-31T00:00:01.000Z",
-    },
+    meta({ presentId: "pres_one", title: "One", filePath: "/tmp/one.html" }),
+    meta({ presentId: "pres_two", title: "Two", filePath: "/tmp/two.html" }),
   ]);
+}
+
+/**
+ * Stub the lazy content fetch (`GET …/present/:id/content`). `bytes` maps a
+ * presentId to the artifact text returned; an unknown id yields a 404.
+ */
+function mockContentFetch(bytes: Record<string, string>, mimeType = "text/html") {
+  return vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+    const url = input instanceof Request ? input.url : input.toString();
+    const id = /\/present\/([^/]+)\/content$/.exec(url)?.[1];
+    const content = id ? bytes[id] : undefined;
+    if (content === undefined) {
+      return Promise.resolve({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: "Presentation not found" }),
+      } as unknown as Response);
+    }
+    return Promise.resolve({
+      ok: true,
+      status: 200,
+      json: async () => ({ content, mimeType }),
+    } as unknown as Response);
+  });
 }
 
 afterEach(() => {
@@ -45,38 +63,49 @@ describe("PresentPane", () => {
     expect(screen.getByText(/Nothing to present yet/)).toBeInTheDocument();
   });
 
-  it("hides carousel controls for a single presentation and sandboxes HTML", () => {
-    usePresentStore.getState().hydrate([
-      {
-        presentId: "pres_one",
-        content: "<h1>One</h1>",
-        mimeType: "text/html",
-        title: "One",
-        filePath: "/tmp/one.html",
-        inWorkspace: false,
-        createdAt: "2026-05-31T00:00:00.000Z",
-      },
-    ]);
+  it("lazily fetches the active artifact and renders it sandboxed", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    mockContentFetch({ pres_one: "<h1>One</h1>" });
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
 
     render(<PresentPane isActiveTab />);
 
+    // Header is immediate; bytes arrive after the fetch resolves.
     expect(screen.getByText("One")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Previous presentation")).toBeNull();
-    const iframe = screen.getByTitle("Presentation");
+    const iframe = await screen.findByTitle("Presentation");
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
+    expect(iframe).toHaveAttribute("srcdoc", "<h1>One</h1>");
+    // Cached back onto the entry so re-selecting doesn't refetch.
+    expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One</h1>");
+    expect(screen.queryByLabelText("Previous presentation")).toBeNull();
+  });
+
+  it("shows a fetch error and a recovery hint when content can't be loaded", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    mockContentFetch({}); // every id 404s
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_gone", title: "Gone" })]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(await screen.findByText(/Presentation not found/)).toBeInTheDocument();
+    expect(screen.getByText(/Ask the agent to present it again/)).toBeInTheDocument();
+  });
+
+  it("disables Download until the bytes have loaded", async () => {
+    useSessionStore.getState().setSessionId("sess_1");
+    mockContentFetch({ pres_one: "<h1>One</h1>" });
+    usePresentStore.getState().hydrate([meta({ presentId: "pres_one", title: "One" })]);
+
+    render(<PresentPane isActiveTab />);
+
+    expect(screen.getByLabelText("Download presentation")).toBeDisabled();
+    await screen.findByTitle("Presentation");
+    expect(screen.getByLabelText("Download presentation")).toBeEnabled();
   });
 
   it("shows the full file path beneath the title in the header", () => {
     usePresentStore.getState().hydrate([
-      {
-        presentId: "pres_one",
-        content: "<h1>One</h1>",
-        mimeType: "text/html",
-        title: "Landing page",
-        filePath: "docs/mockups/landing.html",
-        inWorkspace: false,
-        createdAt: "2026-05-31T00:00:00.000Z",
-      },
+      meta({ presentId: "pres_one", title: "Landing page", filePath: "docs/mockups/landing.html" }),
     ]);
 
     render(<PresentPane isActiveTab />);
@@ -87,14 +116,7 @@ describe("PresentPane", () => {
 
   it("falls back to the file's basename as the heading when no title is given", () => {
     usePresentStore.getState().hydrate([
-      {
-        presentId: "pres_one",
-        content: "<h1>One</h1>",
-        mimeType: "text/html",
-        filePath: "/tmp/sales-chart.html",
-        inWorkspace: false,
-        createdAt: "2026-05-31T00:00:00.000Z",
-      },
+      meta({ presentId: "pres_one", filePath: "/tmp/sales-chart.html" }),
     ]);
 
     render(<PresentPane isActiveTab />);
@@ -117,66 +139,12 @@ describe("PresentPane", () => {
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });
 
-  it("posts the selected presentation id and workspace path when saving", async () => {
+  it("exposes no Save control — keeping an artifact is the agent's job", () => {
     seedPresentations();
-    useSessionStore.getState().setSessionId("sess_123");
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue({
-      ok: true,
-      json: async () => ({}),
-    } as Response);
-
     render(<PresentPane isActiveTab />);
-    fireEvent.click(screen.getByLabelText("Save presentation to project"));
-    fireEvent.change(screen.getByLabelText("Workspace path"), {
-      target: { value: "docs/chart.html" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(fetchMock).toHaveBeenCalledWith("/api/sessions/sess_123/present/save", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presentId: "pres_one", destPath: "docs/chart.html" }),
-      });
-    });
-  });
-
-  it("hides the Save button for an artifact that already lives in the workspace", () => {
-    usePresentStore.getState().hydrate([
-      {
-        presentId: "pres_tracked",
-        content: "<h1>tracked</h1>",
-        mimeType: "text/html",
-        title: "Tracked",
-        filePath: "docs/mockups/landing.html",
-        inWorkspace: true,
-        createdAt: "2026-05-31T00:00:00.000Z",
-      },
-    ]);
-
-    render(<PresentPane isActiveTab />);
-
     expect(screen.queryByLabelText("Save presentation to project")).toBeNull();
     // Download stays — it targets the user's local machine, not the workspace.
     expect(screen.getByLabelText("Download presentation")).toBeInTheDocument();
-  });
-
-  it("shows the Save button for a throwaway (/tmp) artifact", () => {
-    usePresentStore.getState().hydrate([
-      {
-        presentId: "pres_tmp",
-        content: "<h1>tmp</h1>",
-        mimeType: "text/html",
-        title: "Throwaway",
-        filePath: "/tmp/chart.html",
-        inWorkspace: false,
-        createdAt: "2026-05-31T00:00:00.000Z",
-      },
-    ]);
-
-    render(<PresentPane isActiveTab />);
-
-    expect(screen.getByLabelText("Save presentation to project")).toBeInTheDocument();
   });
 
   it("offers no way to destroy a presentation from the pane", () => {
