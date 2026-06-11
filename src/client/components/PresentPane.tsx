@@ -129,7 +129,7 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             <button
               onClick={onPrev}
               disabled={safeIndex === 0}
-              className="inline-flex items-center justify-center w-6 h-6 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
               aria-label="Previous presentation"
             >
               <CaretLeftIcon size={ICON_SIZE.SM} />
@@ -140,7 +140,7 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             <button
               onClick={onNext}
               disabled={safeIndex >= presentations.length - 1}
-              className="inline-flex items-center justify-center w-6 h-6 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
+              className="inline-flex items-center justify-center w-7 h-7 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:cursor-not-allowed"
               aria-label="Next presentation"
             >
               <CaretRightIcon size={ICON_SIZE.SM} />
@@ -160,7 +160,7 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
         </div>
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={() => downloadPresentation(active)}
           disabled={active.content === undefined}
           className="shrink-0"

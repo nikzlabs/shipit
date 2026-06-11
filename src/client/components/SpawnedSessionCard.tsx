@@ -125,10 +125,10 @@ export function SpawnedSessionCard({
         </div>
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={handleOpen}
           disabled={sessionMissing}
-          className="shrink-0 gap-1"
+          className="shrink-0"
           aria-label={`Open spawned session ${title}`}
         >
           <ArrowSquareOutIcon size={ICON_SIZE.XS} />

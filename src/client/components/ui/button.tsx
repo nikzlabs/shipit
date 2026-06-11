@@ -20,7 +20,12 @@ const buttonVariants = cva(
       },
       size: {
         sm: "h-5 text-xs px-2 gap-1",
-        md: "text-sm px-3 py-1.5 gap-1.5",
+        // The standard for text/label actions across the app: a fixed 32px so
+        // every button matches regardless of variant (a content-driven height
+        // drifts to ~34px once a 1px border is added, e.g. `secondary`). `h-8`
+        // pins it border-independently; `items-center` (from the base) makes the
+        // dropped vertical padding irrelevant.
+        md: "h-8 text-sm px-3 gap-1.5",
         lg: "text-sm px-4 py-2 gap-2",
       },
     },

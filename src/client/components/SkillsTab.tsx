@@ -223,7 +223,7 @@ function DiscoverList({
           </div>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => onRefreshMarketplace(m.id)}
             className="rounded-md shrink-0"
           >
@@ -275,7 +275,7 @@ function DiscoverList({
             </div>
             <Button
               variant="primary"
-              size="sm"
+              size="md"
               onClick={() => onInstallClick(p)}
               className="rounded-md shrink-0"
               data-testid={`skills-install-${p.name}`}

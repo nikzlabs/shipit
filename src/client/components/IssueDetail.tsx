@@ -148,7 +148,7 @@ export function IssueDetail({
       <div className="flex items-center gap-2 px-3 h-11 shrink-0 border-b border-(--color-border-secondary) bg-(--color-bg-secondary)">
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={onBack}
           className="shrink-0 -ml-1"
           title="Back to issues"
@@ -169,7 +169,7 @@ export function IssueDetail({
           onClick={onRefresh}
           disabled={loading}
           title="Refresh issue"
-          className="shrink-0"
+          className="shrink-0 h-7 w-7 p-0"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.SM} className={loading ? "animate-spin" : ""} />
         </Button>
@@ -193,7 +193,7 @@ export function IssueDetail({
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
             <WarningCircleIcon size={ICON_SIZE.XL} className="text-(--color-text-tertiary)" />
             <p className="text-sm text-(--color-text-secondary)">{error}</p>
-            <Button variant="secondary" size="sm" onClick={onRefresh}>
+            <Button variant="secondary" size="md" onClick={onRefresh}>
               Try again
             </Button>
           </div>

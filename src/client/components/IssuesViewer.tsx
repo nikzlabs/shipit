@@ -421,7 +421,7 @@ export function IssuesViewer({
           {configured && (
             <Button
               variant="ghost"
-              size="sm"
+              size="md"
               onClick={onToggleIncludeDone}
               disabled={loading}
               aria-pressed={includeDone}
@@ -440,7 +440,7 @@ export function IssuesViewer({
           )}
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             disabled={loading}
             title="Refresh issues"
@@ -503,7 +503,7 @@ export function IssuesViewer({
                   Add a {activeInfo?.label ?? "Linear"} API token and pick a team to see your
                   prioritized issues here and start a session from any of them.
                 </p>
-                <Button variant="primary" size="sm" onClick={onConnect}>
+                <Button variant="primary" size="md" onClick={onConnect}>
                   Connect {activeInfo?.label ?? "Linear"}
                 </Button>
               </div>
@@ -516,7 +516,7 @@ export function IssuesViewer({
         ) : filteredIssues.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-3 text-center px-6">
             <p className="text-sm text-(--color-text-secondary)">No issues match your filters.</p>
-            <Button variant="secondary" size="sm" onClick={onClearFilters}>
+            <Button variant="secondary" size="md" onClick={onClearFilters}>
               Clear filters
             </Button>
           </div>

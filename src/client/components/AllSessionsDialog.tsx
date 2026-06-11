@@ -187,7 +187,7 @@ export function AllSessionsDialog({
         <div className="flex justify-end border-t border-(--color-border-secondary) px-4 py-3">
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onClose}
           >
             Close

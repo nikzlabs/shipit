@@ -573,7 +573,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => setDiagnosticsOpen(true)}
             title="Open the full diagnostics panel — services, runner, recent logs. Use this for bug reports."
           >
@@ -582,7 +582,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </Button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => void onKill()}
             disabled={isKilling || isRestarting || !canKillAgent}
             title={canKillAgent ? "Force-kill the agent process (SIGKILL). Use when interrupt didn't take." : "No agent running"}
@@ -594,7 +594,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </Button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => void onRestartAgent()}
             disabled={isRestarting}
             title="Destroy and recreate just the agent container. Leaves the compose stack running — use when the agent is wedged but your preview/dev-server are fine."
@@ -606,7 +606,7 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
           </Button>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={() => void onRestart()}
             disabled={isRestarting}
             title="Stop the compose stack, destroy the agent container, then recreate everything from scratch. Use when the session is wedged."

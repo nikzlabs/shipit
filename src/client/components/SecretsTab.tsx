@@ -202,7 +202,7 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
                 variant="ghost"
                 size="sm"
                 onClick={() => removeCustomRow(idx)}
-                className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0"
+                className="text-(--color-text-tertiary) hover:text-(--color-error) shrink-0 h-7 w-7 p-0"
                 aria-label="Remove secret"
                 data-testid={`secret-remove-${idx}`}
               >

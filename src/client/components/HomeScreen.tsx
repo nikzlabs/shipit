@@ -51,7 +51,7 @@ export function HomeScreen({ onAddRepo, hasRepos }: HomeScreenProps) {
         <div className="pt-2 text-center">
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onAddRepo}
           >
             + Add another repository

@@ -66,7 +66,7 @@ export function PrDescriptionSection({
         {editable && !editing && (
           <button
             onClick={startEditing}
-            className="flex h-6 w-6 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+            className="flex h-7 w-7 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
             aria-label="Edit description"
           >
             <PencilSimpleIcon size={ICON_SIZE.SM} />

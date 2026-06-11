@@ -71,7 +71,7 @@ export function TerminalPanel({ onClear, terminalMode, onTerminalModeChange, she
           </button>
         </div>
         {terminalMode === "logs" && (
-          <Button variant="ghost" size="sm" onClick={onClear} title="Clear logs">
+          <Button variant="ghost" size="md" onClick={onClear} title="Clear logs">
             Clear
           </Button>
         )}

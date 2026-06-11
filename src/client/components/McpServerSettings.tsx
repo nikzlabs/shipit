@@ -456,7 +456,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                       {managedServer && !authExpired && (
                         <>
                           <Button
-                            size="sm"
+                            size="md"
                             variant="ghost"
                             onClick={() => void toggleEnabled(managedServer)}
                             disabled={isToggling || inFlight}
@@ -464,7 +464,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                             {isToggling ? "…" : managedServer.enabled ? "Disable" : "Enable"}
                           </Button>
                           <Button
-                            size="sm"
+                            size="md"
                             variant="ghost"
                             onClick={() => void runTest(managedServer)}
                             disabled={!hasActiveSession || isTesting || inFlight}
@@ -477,7 +477,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                       {authExpired ? (
                         <>
                           <Button
-                            size="sm"
+                            size="md"
                             variant="primary"
                             disabled={inFlight}
                             onClick={() => void connectProvider(provider.id)}
@@ -485,7 +485,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                             {inFlight ? "Connecting…" : "Reconnect"}
                           </Button>
                           <Button
-                            size="sm"
+                            size="md"
                             variant="ghost"
                             disabled={inFlight}
                             onClick={() => void disconnectProvider(provider.id)}
@@ -495,7 +495,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                         </>
                       ) : connected ? (
                         <Button
-                          size="sm"
+                          size="md"
                           variant="ghost"
                           disabled={inFlight}
                           onClick={() => void disconnectProvider(provider.id)}
@@ -504,7 +504,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                         </Button>
                       ) : (
                         <Button
-                          size="sm"
+                          size="md"
                           variant="primary"
                           disabled={inFlight}
                           onClick={() => void connectProvider(provider.id)}
@@ -594,7 +594,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                   </div>
                   <div className="flex items-center gap-1 shrink-0">
                     <Button
-                      size="sm"
+                      size="md"
                       variant="ghost"
                       onClick={() => void toggleEnabled(server)}
                       disabled={isToggling || isDeleting}
@@ -602,7 +602,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                       {isToggling ? "…" : server.enabled ? "Disable" : "Enable"}
                     </Button>
                     <Button
-                      size="sm"
+                      size="md"
                       variant="ghost"
                       onClick={() => void runTest(server)}
                       disabled={!hasActiveSession || isTesting || isDeleting}
@@ -614,12 +614,12 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                         connection — editing them by hand would only desync the
                         pairing, so the Edit affordance is hidden for them. */}
                     {!managedBy && (
-                      <Button size="sm" variant="ghost" onClick={() => startEdit(server)} disabled={isDeleting}>
+                      <Button size="md" variant="ghost" onClick={() => startEdit(server)} disabled={isDeleting}>
                         Edit
                       </Button>
                     )}
                     <Button
-                      size="sm"
+                      size="md"
                       variant="ghost"
                       onClick={() => void deleteServer(server.name)}
                       disabled={isDeleting}
@@ -749,7 +749,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
                   onChange={(e) => setKv(idx, { value: e.target.value })}
                 />
                 <Button
-                  size="sm"
+                  size="md"
                   variant="ghost"
                   onClick={() =>
                     updateForm({ kv: form.kv.filter((_, i) => i !== idx) })
@@ -760,7 +760,7 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
               </div>
             ))}
             <Button
-              size="sm"
+              size="md"
               variant="secondary"
               onClick={() => updateForm({ kv: [...form.kv, { key: "", value: "" }] })}
             >

@@ -53,7 +53,7 @@ export function Toast({ toast }: ToastProps) {
       {toast.action && (
         <Button
           variant="primary"
-          size="sm"
+          size="md"
           onClick={() => {
             toast.action!.onClick();
             handleDismiss();
@@ -65,7 +65,7 @@ export function Toast({ toast }: ToastProps) {
       )}
       <Button
         variant="ghost"
-        size="sm"
+        size="md"
         onClick={handleDismiss}
         aria-label="Dismiss"
         className="ml-1 shrink-0"

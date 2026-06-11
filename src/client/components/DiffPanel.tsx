@@ -304,7 +304,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
             variant="ghost"
             size="sm"
             onClick={onClose}
-            className="text-(--color-text-tertiary)"
+            className="text-(--color-text-tertiary) h-7 w-7 p-0"
             aria-label="Close diff panel"
           >
             <XIcon size={ICON_SIZE.SM} />
@@ -325,7 +325,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           {isMobile && mobileView === "detail" && (
             <Button
               variant="ghost"
-              size="sm"
+              size="md"
               onClick={() => setMobileView("list")}
               className="text-(--color-text-secondary) p-0.5 shrink-0 flex items-center gap-0.5"
               aria-label="Back to file list"
@@ -343,7 +343,7 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
           variant="ghost"
           size="sm"
           onClick={onClose}
-          className="text-(--color-text-tertiary) p-0.5"
+          className="text-(--color-text-tertiary) h-7 w-7 p-0"
           aria-label="Close diff panel"
         >
           <XIcon size={ICON_SIZE.SM} />
@@ -444,13 +444,13 @@ export function DiffPanel({ diff, onClose, commitMessage, onSendComments }: Diff
       <div className="flex items-center gap-2 px-3 py-1.5 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0">
         <Button
           variant="secondary"
-          size="sm"
+          size="md"
           onClick={onClose}
         >
           Close
         </Button>
         {onSendComments && commentCount > 0 && (
-          <Button variant="primary" size="sm" onClick={handleSendComments}>
+          <Button variant="primary" size="md" onClick={handleSendComments}>
             <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
             Send {commentCount} comment{commentCount !== 1 ? "s" : ""}
           </Button>

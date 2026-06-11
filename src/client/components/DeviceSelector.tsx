@@ -179,7 +179,7 @@ export function DeviceSelector({
               />
               <Button
                 variant="secondary"
-                size="sm"
+                size="md"
                 onClick={submitCustom}
                 disabled={!customValid}
                 title={customValid ? "Apply custom size" : `Width and height must be between ${CUSTOM_SIZE_MIN} and ${CUSTOM_SIZE_MAX}`}
@@ -199,6 +199,7 @@ export function DeviceSelector({
         <Button
           variant="ghost"
           size="sm"
+          className="h-7 w-7 p-0"
           onClick={onToggleLandscape}
           title={isLandscape ? "Switch to portrait" : "Switch to landscape"}
           aria-label={isLandscape ? "Switch to portrait" : "Switch to landscape"}

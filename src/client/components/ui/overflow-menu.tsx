@@ -38,7 +38,7 @@ export function OverflowMenu({
       <DropdownMenuTrigger asChild>
         <button
           className={cn(
-            "inline-flex h-6 w-6 items-center justify-center rounded text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
+            "inline-flex h-7 w-7 items-center justify-center rounded text-(--color-text-tertiary) transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)",
             triggerClassName,
           )}
           title={label}

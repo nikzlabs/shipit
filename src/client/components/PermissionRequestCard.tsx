@@ -104,15 +104,15 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
       </div>
 
       <div className="flex items-center justify-end gap-2 flex-wrap">
-        <Button variant="ghost" size="sm" onClick={() => resolve("deny")}>
+        <Button variant="ghost" size="md" onClick={() => resolve("deny")}>
           Deny
         </Button>
         {canRemember && (
-          <Button variant="secondary" size="sm" onClick={() => resolve("allow", true)}>
+          <Button variant="secondary" size="md" onClick={() => resolve("allow", true)}>
             Approve &amp; remember
           </Button>
         )}
-        <Button variant="primary" size="sm" onClick={() => resolve("allow")}>
+        <Button variant="primary" size="md" onClick={() => resolve("allow")}>
           Approve
         </Button>
       </div>

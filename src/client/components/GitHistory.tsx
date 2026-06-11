@@ -28,7 +28,7 @@ export function GitHistory({
           variant="ghost"
           size="sm"
           onClick={onRefresh}
-          className="text-(--color-text-tertiary)"
+          className="text-(--color-text-tertiary) h-7 w-7 p-0"
           aria-label="Refresh"
         >
           <ArrowsClockwiseIcon size={14} />
