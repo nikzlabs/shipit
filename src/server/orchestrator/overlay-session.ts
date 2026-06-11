@@ -285,8 +285,15 @@ export async function validDepDirsForOverlay(
   const parentExists = depDirs.filter((d) => fs.existsSync(path.join(workspaceDir, path.dirname(d))));
   if (parentExists.length === 0) return [];
   try {
-    const ignored = new Set(await simpleGit(workspaceDir).checkIgnore(parentExists));
-    return parentExists.filter((d) => ignored.has(d));
+    // Query each dir in both bare and trailing-slash forms. A directory-only
+    // .gitignore pattern (`node_modules/` — the common form) only matches the
+    // bare name once the directory exists on disk, and a fresh clone never has
+    // its dep dirs materialized yet — so the bare query alone silently drops
+    // every dep dir on exactly the sessions the overlay targets. The slash
+    // form matches the pattern regardless of on-disk presence.
+    const queries = parentExists.flatMap((d) => [d, `${d}/`]);
+    const ignored = new Set(await simpleGit(workspaceDir).checkIgnore(queries));
+    return parentExists.filter((d) => ignored.has(d) || ignored.has(`${d}/`));
   } catch {
     return [];
   }
