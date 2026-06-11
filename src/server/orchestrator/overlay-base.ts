@@ -169,6 +169,15 @@ export type MaterializeFn = (
   snapshotDir: string,
   scopeHash: string,
   generation: number,
+  /**
+   * The scope's CURRENT generation dir (the one this publish supersedes), when
+   * one exists. The default materializer hardlinks snapshot files that are
+   * byte-identical to this generation's instead of copying them, so an advance
+   * costs ≈ its delta on disk rather than a full independent tree. Optional —
+   * absent for the first base of a scope, and safely ignorable by custom
+   * materializers (tests).
+   */
+  linkDedupBaseDir?: string,
 ) => Promise<string>;
 
 /**
@@ -274,6 +283,109 @@ async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promis
 }
 
 // ---------------------------------------------------------------------------
+// Hardlink-dedup materialize helpers
+// ---------------------------------------------------------------------------
+
+async function isDirectory(p: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Byte-compare two regular files (streamed, early-exit on first difference).
+ * Content is the ONLY authority for "unchanged" here: npm normalizes package
+ * file mtimes to a fixed epoch for reproducibility, so a size+mtime quick
+ * check would treat any same-size content change as unchanged — silently
+ * linking the wrong bytes into a shared base. Sizes are checked by the caller
+ * before this runs, so the compare only pays for genuinely plausible matches.
+ */
+async function filesContentEqual(a: string, b: string): Promise<boolean> {
+  const CHUNK = 64 * 1024;
+  const [fa, fb] = await Promise.all([fs.open(a, "r"), fs.open(b, "r")]);
+  const bufA = Buffer.alloc(CHUNK);
+  const bufB = Buffer.alloc(CHUNK);
+  try {
+    for (;;) {
+      const [ra, rb] = await Promise.all([
+        fa.read(bufA, 0, CHUNK),
+        fb.read(bufB, 0, CHUNK),
+      ]);
+      if (ra.bytesRead !== rb.bytesRead) return false;
+      if (ra.bytesRead === 0) return true;
+      if (!bufA.subarray(0, ra.bytesRead).equals(bufB.subarray(0, rb.bytesRead))) {
+        return false;
+      }
+    }
+  } finally {
+    await Promise.all([fa.close().catch(() => {}), fb.close().catch(() => {})]);
+  }
+}
+
+/**
+ * Materialize `srcDir` into `dstDir`, hardlinking any regular file that is
+ * byte-identical (and mode-identical) to the file at the same relative path in
+ * `linkDir`, and copying everything else. Directories are recreated with the
+ * source's mode; symlinks are recreated verbatim (never hardlinked — a future
+ * relink of the old generation must not alias the new one's link targets
+ * through a shared symlink inode's metadata). Any per-file `link(2)` failure
+ * (EXDEV, EMLINK, EPERM) degrades to a plain copy of that file — dedup is an
+ * optimization, never a correctness dependency.
+ */
+async function materializeWithLinkDedup(
+  srcDir: string,
+  dstDir: string,
+  linkDir: string,
+): Promise<void> {
+  const srcStat = await fs.lstat(srcDir);
+  await fs.mkdir(dstDir, { recursive: true, mode: srcStat.mode & 0o7777 });
+  const entries = await fs.readdir(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const src = path.join(srcDir, entry.name);
+    const dst = path.join(dstDir, entry.name);
+    const lnk = path.join(linkDir, entry.name);
+    if (entry.isDirectory()) {
+      await materializeWithLinkDedup(src, dst, lnk);
+    } else if (entry.isSymbolicLink()) {
+      await fs.symlink(await fs.readlink(src), dst);
+    } else if (entry.isFile()) {
+      if (await canHardlink(src, lnk)) {
+        try {
+          await fs.link(lnk, dst);
+          continue;
+        } catch {
+          /* fall through to a plain copy */
+        }
+      }
+      // COPYFILE_FICLONE: reflink when the fs supports it (btrfs/xfs), plain
+      // copy otherwise (ext4) — same call either way, free where available.
+      await fs.copyFile(src, dst, fsSync.constants.COPYFILE_FICLONE);
+    } else {
+      // FIFOs / devices should never appear in a dep snapshot (it comes from a
+      // tar of a dep dir) — preserve fidelity with the generic copier.
+      await fs.cp(src, dst, { recursive: true, verbatimSymlinks: true });
+    }
+  }
+}
+
+/** Same relative path in the previous generation is a regular file with equal size, mode, and content. */
+async function canHardlink(srcFile: string, linkFile: string): Promise<boolean> {
+  let prev;
+  try {
+    prev = await fs.lstat(linkFile);
+  } catch {
+    return false; // path is new in this snapshot
+  }
+  if (!prev.isFile()) return false;
+  const cur = await fs.lstat(srcFile);
+  if (prev.size !== cur.size) return false;
+  if ((prev.mode & 0o7777) !== (cur.mode & 0o7777)) return false;
+  return filesContentEqual(srcFile, linkFile);
+}
+
+// ---------------------------------------------------------------------------
 // Default materialize: atomic swap of a snapshot copy over the base dir
 // ---------------------------------------------------------------------------
 
@@ -295,6 +407,7 @@ export async function copySnapshotToBase(
   snapshotDir: string,
   scopeHash: string,
   generation: number,
+  linkDedupBaseDir?: string,
 ): Promise<string> {
   const genDir = overlayBaseGenDir(stateDir, scopeHash, generation);
   const scopeDir = path.dirname(genDir);
@@ -303,9 +416,22 @@ export async function copySnapshotToBase(
   const rand = crypto.randomBytes(4).toString("hex");
   const tmp = path.join(scopeDir, `.tmp-g${generation}-${rand}`);
   try {
-    // recursive copy; preserve symlinks rather than dereferencing them so a venv
-    // or a pnpm store inside the tree round-trips faithfully.
-    await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+    if (linkDedupBaseDir && (await isDirectory(linkDedupBaseDir))) {
+      // Hardlink-dedup materialize: files byte-identical to the superseded
+      // generation become hardlinks to its inodes, so an advance costs ≈ its
+      // delta instead of a full independent ~0.5 GB tree (the docs/183 canary
+      // measured consecutive generations sharing no inodes while differing by
+      // hundreds of KB). Safe because generations are immutable read-only
+      // lowerdirs — overlayfs never writes through a lower, the publish path
+      // never edits an existing generation, and the janitor's reclaim of an
+      // old generation only unlinks names (shared inodes survive in newer
+      // generations by definition of hardlinks).
+      await materializeWithLinkDedup(snapshotDir, tmp, linkDedupBaseDir);
+    } else {
+      // recursive copy; preserve symlinks rather than dereferencing them so a venv
+      // or a pnpm store inside the tree round-trips faithfully.
+      await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+    }
   } catch (err) {
     // A partial copy must not leak a `.tmp-…` dir under the scope dir.
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
@@ -363,7 +489,8 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
   const scopeHash = scopeHashOf(scope);
   const materialize: MaterializeFn =
     args.materialize ??
-    ((snapshotDir, hash, generation) => copySnapshotToBase(stateDir, snapshotDir, hash, generation));
+    ((snapshotDir, hash, generation, linkDedupBaseDir) =>
+      copySnapshotToBase(stateDir, snapshotDir, hash, generation, linkDedupBaseDir));
 
   if (
     candidate.exitCode !== 0 ||
@@ -397,17 +524,21 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     if (await isAncestor(current.commit, candidate.commit)) {
       const wouldBeDepth = current.depth + 1;
       if (wouldBeDepth >= depthCap) {
+        // Dedup against the superseded generation is safe for a flatten too:
+        // the snapshot's CONTENT comes from the clean reinstall (that is the
+        // reproducibility reset); hardlinking bytes that happen to be
+        // identical changes storage, not the tree.
         return finalize(stateDir, materialize, candidate, scopeHash, {
           outcome: "flattened",
           depth: 1,
           generation: current.generation + 1,
-        });
+        }, current.baseDir);
       }
       return finalize(stateDir, materialize, candidate, scopeHash, {
         outcome: "advanced",
         depth: wouldBeDepth,
         generation: current.generation + 1,
-      });
+      }, current.baseDir);
     }
 
     // Behind the current base → CAS loser, decline (an older default commit
@@ -426,7 +557,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
         outcome: "reset",
         depth: 1,
         generation: current.generation + 1,
-      });
+      }, current.baseDir);
     }
     return { outcome: "skipped-not-forward", pointer: current };
   });
@@ -438,8 +569,10 @@ async function finalize(
   candidate: PublishCandidate,
   scopeHash: string,
   next: { outcome: PublishOutcome; depth: number; generation: number },
+  /** The superseded generation's dir — hardlink-dedup source (absent for a scope's first base). */
+  linkDedupBaseDir?: string,
 ): Promise<PublishResult> {
-  const baseDir = await materialize(candidate.snapshotDir, scopeHash, next.generation);
+  const baseDir = await materialize(candidate.snapshotDir, scopeHash, next.generation, linkDedupBaseDir);
   const pointer: BasePointer = {
     scopeHash,
     commit: candidate.commit,

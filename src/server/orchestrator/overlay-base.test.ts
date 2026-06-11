@@ -454,6 +454,172 @@ describe("overlay-base: copySnapshotToBase", () => {
   });
 });
 
+describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)", () => {
+  let tmpDir: string;
+  let stateDir: string;
+  const scopeHash = "feedfacefeedface";
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ob-dedup-"));
+    stateDir = path.join(tmpDir, "state");
+    fs.mkdirSync(stateDir, { recursive: true });
+  });
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }));
+
+  function snap(name: string, files: Record<string, string>): string {
+    const dir = path.join(tmpDir, name);
+    for (const [rel, content] of Object.entries(files)) {
+      const p = path.join(dir, rel);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, content);
+    }
+    return dir;
+  }
+
+  function ino(p: string): number {
+    return fs.lstatSync(p).ino;
+  }
+
+  it("hardlinks unchanged files to the previous generation and copies changed ones", async () => {
+    const g1 = await copySnapshotToBase(
+      stateDir,
+      snap("s1", { "node_modules/lib/index.js": "unchanged", "node_modules/lib/v.js": "1.0.0" }),
+      scopeHash,
+      1,
+    );
+    const g2 = await copySnapshotToBase(
+      stateDir,
+      snap("s2", { "node_modules/lib/index.js": "unchanged", "node_modules/lib/v.js": "2.0.0" }),
+      scopeHash,
+      2,
+      g1,
+    );
+    // Identical content → shared inode; changed content → its own inode.
+    expect(ino(path.join(g2, "node_modules/lib/index.js"))).toBe(
+      ino(path.join(g1, "node_modules/lib/index.js")),
+    );
+    expect(ino(path.join(g2, "node_modules/lib/v.js"))).not.toBe(
+      ino(path.join(g1, "node_modules/lib/v.js")),
+    );
+    expect(fs.readFileSync(path.join(g2, "node_modules/lib/v.js"), "utf8")).toBe("2.0.0");
+    // g1 untouched — a live mount may pin it.
+    expect(fs.readFileSync(path.join(g1, "node_modules/lib/v.js"), "utf8")).toBe("1.0.0");
+  });
+
+  it("does NOT link a same-size, same-mtime file whose content changed (npm's constant mtimes)", async () => {
+    const s1 = snap("s1", { "node_modules/x.js": "AAAA" });
+    const s2 = snap("s2", { "node_modules/x.js": "BBBB" });
+    // npm normalizes package mtimes to a fixed epoch — reproduce that worst case
+    // so a size+mtime heuristic would wrongly call these "unchanged".
+    const epoch = new Date("1985-10-26T08:15:00Z");
+    fs.utimesSync(path.join(s1, "node_modules/x.js"), epoch, epoch);
+    fs.utimesSync(path.join(s2, "node_modules/x.js"), epoch, epoch);
+
+    const g1 = await copySnapshotToBase(stateDir, s1, scopeHash, 1);
+    const g2 = await copySnapshotToBase(stateDir, s2, scopeHash, 2, g1);
+    expect(fs.readFileSync(path.join(g2, "node_modules/x.js"), "utf8")).toBe("BBBB");
+    expect(ino(path.join(g2, "node_modules/x.js"))).not.toBe(ino(path.join(g1, "node_modules/x.js")));
+  });
+
+  it("handles added and removed paths (no stale carry-over from the link base)", async () => {
+    const g1 = await copySnapshotToBase(
+      stateDir,
+      snap("s1", { "node_modules/old-dep/index.js": "x", "node_modules/keep.js": "k" }),
+      scopeHash,
+      1,
+    );
+    const g2 = await copySnapshotToBase(
+      stateDir,
+      snap("s2", { "node_modules/new-dep/index.js": "y", "node_modules/keep.js": "k" }),
+      scopeHash,
+      2,
+      g1,
+    );
+    expect(fs.existsSync(path.join(g2, "node_modules/old-dep"))).toBe(false);
+    expect(fs.readFileSync(path.join(g2, "node_modules/new-dep/index.js"), "utf8")).toBe("y");
+    expect(ino(path.join(g2, "node_modules/keep.js"))).toBe(ino(path.join(g1, "node_modules/keep.js")));
+  });
+
+  it("recreates symlinks verbatim instead of hardlinking them", async () => {
+    const s1 = snap("s1", { "node_modules/.bin-real.js": "bin" });
+    fs.symlinkSync(".bin-real.js", path.join(s1, "node_modules", "alias.js"));
+    const g1 = await copySnapshotToBase(stateDir, s1, scopeHash, 1);
+
+    const s2 = snap("s2", { "node_modules/.bin-real.js": "bin" });
+    fs.symlinkSync(".bin-real.js", path.join(s2, "node_modules", "alias.js"));
+    const g2 = await copySnapshotToBase(stateDir, s2, scopeHash, 2, g1);
+
+    const l = path.join(g2, "node_modules", "alias.js");
+    expect(fs.lstatSync(l).isSymbolicLink()).toBe(true);
+    expect(fs.readlinkSync(l)).toBe(".bin-real.js");
+  });
+
+  it("does not link files whose modes differ even with identical content", async () => {
+    const s1 = snap("s1", { "node_modules/run.sh": "#!/bin/sh" });
+    fs.chmodSync(path.join(s1, "node_modules/run.sh"), 0o755);
+    const g1 = await copySnapshotToBase(stateDir, s1, scopeHash, 1);
+
+    const s2 = snap("s2", { "node_modules/run.sh": "#!/bin/sh" });
+    fs.chmodSync(path.join(s2, "node_modules/run.sh"), 0o644);
+    const g2 = await copySnapshotToBase(stateDir, s2, scopeHash, 2, g1);
+
+    expect(ino(path.join(g2, "node_modules/run.sh"))).not.toBe(ino(path.join(g1, "node_modules/run.sh")));
+    expect(fs.lstatSync(path.join(g2, "node_modules/run.sh")).mode & 0o777).toBe(0o644);
+  });
+
+  it("falls back to a plain copy when the link base is missing", async () => {
+    const g2 = await copySnapshotToBase(
+      stateDir,
+      snap("s1", { "node_modules/a.js": "a" }),
+      scopeHash,
+      2,
+      path.join(tmpDir, "no-such-generation"),
+    );
+    expect(fs.readFileSync(path.join(g2, "node_modules/a.js"), "utf8")).toBe("a");
+  });
+
+  it("publishBase advance dedups against the superseded generation end-to-end", async () => {
+    const { dir: repoDir, commit } = makeRepo();
+    const isAncestor = async (anc: string, desc: string): Promise<boolean> => {
+      try {
+        execFileSync("git", ["-C", repoDir, "merge-base", "--is-ancestor", anc, desc]);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const candidate = (commitSha: string, dir: string): PublishCandidate => ({
+      commit: commitSha,
+      exitCode: 0,
+      preUserInstall: true,
+      sourceIsDefaultBranch: true,
+      snapshotDir: dir,
+    });
+
+    const c1 = commit("one");
+    const r1 = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate(c1, snap("p1", { "node_modules/same.js": "S", "node_modules/v.js": "1" })),
+      isAncestor,
+    });
+    expect(r1.outcome).toBe("created");
+
+    const c2 = commit("two");
+    const r2 = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate(c2, snap("p2", { "node_modules/same.js": "S", "node_modules/v.js": "2" })),
+      isAncestor,
+    });
+    expect(r2.outcome).toBe("advanced");
+    const g1 = r1.pointer!.baseDir;
+    const g2 = r2.pointer!.baseDir;
+    expect(ino(path.join(g2, "node_modules/same.js"))).toBe(ino(path.join(g1, "node_modules/same.js")));
+    expect(ino(path.join(g2, "node_modules/v.js"))).not.toBe(ino(path.join(g1, "node_modules/v.js")));
+  });
+});
+
 it("DEFAULT_DEPTH_CAP is well below the overlay hard limit", () => {
   expect(DEFAULT_DEPTH_CAP).toBeGreaterThanOrEqual(8);
   expect(DEFAULT_DEPTH_CAP).toBeLessThan(128);
