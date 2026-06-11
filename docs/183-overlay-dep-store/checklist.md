@@ -98,10 +98,16 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
       nested, mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
       at the mountpoint, tracked-source→[], no-state-volume→[]); **end-to-end** populator →
       `buildConfigForWorkspace` → `create` mounts the volume nested at `/workspace/node_modules`.
-- [ ] **(host-gated) Validate the recursive file-tree watcher descends into the nested submount**
-      (same-namespace inotify across a mount boundary) — the one item the nested-overlay spike
-      deliberately did not cover. Needs a running container on real overlay; see `host-overlay-spike.sh`'s
-      inotify rung. Not verifiable in-environment (no real Docker overlay), like the host spikes.
+- [x] **Watcher × nested submount — RESOLVED (2026-06-11, two halves).** (1) The production
+      watcher never descends into a dep dir at all: `FileWatcher` is chokidar with a
+      per-segment `ignored` matcher over `WORKSPACE_SKIP_DIRS` (which includes
+      `node_modules`), deliberately so ignored subtrees consume zero inotify watches —
+      so the original question is moot for the production path. (2) The kernel half was
+      verified anyway with a privileged spike on the measurement host (exact topology:
+      overlay mounted nested at `<ws>/node_modules`): same-namespace inotify fires for
+      writes into the merged submount, for copy-up modifications of lower-layer files,
+      AND for siblings across the mount boundary — so even a future watcher that opted
+      into dep dirs would receive events.
 
 ### Phase 4 — Snapshot + publish, per dep dir (split into 4a/4b)
 
