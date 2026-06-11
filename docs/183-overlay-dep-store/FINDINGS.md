@@ -814,10 +814,19 @@ warm-pool standby install (the pool replenishes on every claim and pre-installs 
 the serial flag-off control is the clean baseline.
 
 **What the feature buys, honestly:**
-- **Disk: the dominant, unambiguous win.** Per-session dep cost for same-commit and delta
-  sessions drops 491 MB → 4–316 KB (≈1500–125 000×). At 1200 sessions on this host, that is
-  the difference between dep storage scaling with session count vs scaling with publish count.
-- **Time: the win is the pre-stamp path.** A pre-stamped standby skips npm entirely (~23 s
+- **Disk: a conditional win — it holds iff concurrent sessions outnumber retained base
+  generations.** Per-session dep cost drops 491 MB → 4–316 KB, but the store pays ~0.5 GB per
+  *publish* (every default-branch advance followed by a fresh session — source-only commits
+  included, as the shipit `advanced:d2g2` row shows), and superseded generations are retained
+  until reclaim. Both sides of the ledger are ~0.5 GB units, so the net is
+  `(concurrent sessions) − (retained generations)` × 0.5 GB. Under today's reclaim policy
+  (30-day cutoff, startup-only sweep) an actively-merged repo retains *more* generations than
+  it has live sessions — i.e. **as currently configured the disk claim can invert on busy
+  repos**. With a 2–3-day cutoff the win holds for any repo with more than a handful of
+  concurrent sessions (the parallel-sessions workflow ShipIt is built around, and the warm
+  pool's shape — every standby used to be a full private copy). With generation hardlink-dedup
+  (finding 1 below) the win becomes unconditional.
+- **Time: the win is the pre-stamp path, and it is unconditional.** A pre-stamped standby skips npm entirely (~23 s
   saved per fresh session at an unchanged tip — the common case). The `advanced` path is
   time-neutral vs plain (~22.5 s either way: npm's idealTree/reify pass over a complete 31k-file
   tree costs about the same as a full extract on a warm cache); its win is disk-only.
@@ -833,14 +842,25 @@ mount-option length, not performance).
 
 ### Operational findings for the flip decision
 
-1. **Generation accumulation is the main pre-flip risk.** The sweep left
+1. **Generation accumulation is the main pre-flip risk — it decides whether the disk win
+   exists at all.** The sweep left
    `overlay-base/<canary-scope>/` holding 17 immutable generations ≈ **7.9 GB for one repo in
    ~30 min of churn** (8.9 GB total with shipit's 3). Superseded generations are reclaimed by
    the disk-janitor only **at orchestrator startup** and only past the `DISK_JANITOR_CACHE_DAYS`
    cutoff (**30 days** on this host). A busy repo advancing a few times/day at ~0.5 GB/gen
-   accumulates tens of GB between deploys. Before any fleet flip: give stale generations their
-   own much shorter cutoff (2–3 days — the sweep's own justification, "no session container
-   plausibly outlives the cutoff without recreate", holds there too) and/or a periodic sweep.
+   accumulates tens of GB between deploys — run the break-even: two merges/day retains ~60
+   generations ≈ 30 GB, versus the ~5–10 × 0.5 GB the same repo would have spent on
+   per-session copies without overlay. Two fixes, in order of leverage:
+   **(a) hardlink-dedup between generations** — consecutive generations differ by deltas
+   measured in hundreds of KB, yet each publish materializes a full independent ~470 MB copy
+   (verified: g1…g17 share no inodes). Hardlinking unchanged files from the previous
+   generation at publish time makes each advance cost ≈ its delta — the same per-version
+   dedup property a content-addressed store gives — and removes the accumulation concern
+   outright. **(b) a short dedicated cutoff (2–3 days) plus a sweep that isn't startup-only**
+   — the sweep's own justification ("no session container plausibly outlives the cutoff
+   without recreate") holds at 2–3 days too. At least one — preferably both — should land
+   before any fleet flip; without either, the feature trades per-session disk for store-side
+   disk and loses on actively-merged, low-concurrency repos.
 2. **`SESSION_WORKER_IMAGE_ID` is not set on the VPS**, so `overlayRuntimeKey()` =
    `unknown|x64` and worker-image rebuilds do NOT rotate base scopes. Correctness still holds
    (the worker-side marker key carries glibc/node and forces a real install on ABI change),
@@ -871,15 +891,54 @@ mount-option length, not performance).
    shipit/overlay-dep-store-c27joi: remote: Write access to repository not granted` — the
    host-side PAT is read-only; unrelated to the overlay but noisy.
 
+### Would pnpm / Yarn give better savings? (considered 2026-06-11)
+
+Worth asking, because pnpm's design solves the same two problems the overlay targets — and
+the comparison clarifies what the overlay is actually for.
+
+- **pnpm** keeps a content-addressable store and **hardlinks** files into each project's
+  `node_modules`. For a repo that uses it: per-session disk ≈ KBs (same ballpark as overlay),
+  warm installs are link-speed (typically faster than npm's ~22 s reify pass — it skips the
+  extract entirely), and — the part the overlay currently lacks — **per-version dedup is
+  free**: two dependency states share every unchanged file in the store, so there is no
+  generation-accumulation problem at all. On disk economics alone, a pnpm repo beats
+  overlay-over-npm today.
+- **Yarn v1** materializes full copies like npm — no structural saving. **Yarn Berry PnP
+  (zero-installs)** eliminates `node_modules` entirely (zipped cache + `.pnp.cjs`) — the
+  largest possible saving, but an invasive compatibility choice (native postinstalls, tools
+  that expect a real `node_modules`).
+
+**Why this doesn't replace the overlay: the package manager is the repo author's lever, not
+the platform's.** ShipIt runs whatever the repo declares in `agent.install`; it cannot migrate
+user repos from npm (the overwhelming default) to pnpm, and the overlay's design goal is
+ecosystem-agnostic dep-dir caching (any git-ignored artifact dir, not just the npm layout).
+The right reading is: **adopt pnpm's key idea platform-side** — content/hardlink dedup between
+base generations (finding 1a) gives the overlay the same per-version economics for every npm
+repo, no repo cooperation needed.
+
+**Interaction warning — overlay actively hurts pnpm repos.** A hardlink cannot cross the
+overlayfs boundary: linking from the store (plain ext4 mount) into an overlay-merged
+`node_modules` fails with `EXDEV`, and pnpm silently falls back to **copying** — restoring the
+full ~0.5 GB per-session upper *and* losing pnpm's link-speed installs. A repo already using
+pnpm gets strictly worse under overlay than on a plain bind. Today the escape hatch is the
+`agent.dep-dirs: []` opt-out in `shipit.yaml`; before any fleet flip the platform should skip
+overlay automatically when the repo's lockfile is `pnpm-lock.yaml` (likewise Yarn Berry's
+PnP mode, which has no `node_modules` to overlay). Filed as a follow-up; not exercised live on
+this canary (no pnpm repo on the host).
+
 ### Recommendation
 
 **No fleet flip yet — keep the canary on and soak.** The mechanism is correct end-to-end at
 production scale (all publish outcomes incl. flatten exercised; bases verified complete; no
-broken-readdir or EBUSY events; generational model behaved exactly as designed), and the
-per-session disk win is decisive. But the canary itself found two ship-blocking defects on day
-one, so the soak it interrupted has effectively just started. Flip preconditions:
+broken-readdir or EBUSY events; generational model behaved exactly as designed), the pre-stamp
+time win is unconditional, and the disk win is real for the high-concurrency workflow the
+product targets but conditional on generation reclaim (finding 1's break-even). But the
+canary itself found two ship-blocking defects on day one, so the soak it interrupted has
+effectively just started. Flip preconditions:
 (a) ≥ a few quiet days of canary soak — zero `skipped-empty`, zero compose failures mentioning
-overlay volumes, disk growth under `overlay-base/` bounded; (b) the generation-reclaim cutoff
-work (finding 1); (c) `SESSION_WORKER_IMAGE_ID` wired (finding 2). The rollback-marker
-follow-up (finding 3) should land before the flip too, since flag-off is the documented
-incident response.
+overlay volumes, disk growth under `overlay-base/` bounded; (b) generation storage work
+(finding 1): hardlink-dedup and/or the short dedicated reclaim cutoff — without at least one,
+the disk claim inverts on busy repos; (c) `SESSION_WORKER_IMAGE_ID` wired (finding 2);
+(d) auto-skip overlay for pnpm / Yarn-PnP repos (the EXDEV copy degradation above). The
+rollback-marker follow-up (finding 3) should land before the flip too, since flag-off is the
+documented incident response.

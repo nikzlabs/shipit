@@ -288,8 +288,12 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
       `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) a short
       dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
-      churn vs a 30-day startup-only sweep); (c) `SESSION_WORKER_IMAGE_ID` wired on deploys (scope
-      rotation on worker-image rebuilds); (d) the flag-rollback marker fix (a marker written while
+      churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
+      currently materializes a full independent ~470 MB copy; dedup makes the disk win
+      unconditional — see the FINDINGS break-even analysis); (c) `SESSION_WORKER_IMAGE_ID` wired on
+      deploys (scope rotation on worker-image rebuilds); (d) auto-skip overlay for pnpm / Yarn-PnP
+      repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
+      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
       deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
       findings for the flip decision".
 
