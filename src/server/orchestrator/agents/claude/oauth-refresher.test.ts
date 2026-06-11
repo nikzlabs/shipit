@@ -421,6 +421,57 @@ describe("ClaudeOAuthRefresher", () => {
     expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(false);
   });
 
+  it("emits account_reauthenticated on the revoked → recovered transition (drives the picker un-stick)", async () => {
+    const now = 1_700_000_000_000;
+    const nearExpiry = now + 5 * 60 * 1000;
+    const rotatedTo = now + 8 * 60 * 60 * 1000;
+    const rig = buildRig({
+      accounts: [makeAccount("claude-default")],
+      initialExpiries: { "claude-default": nearExpiry },
+      initialNow: now,
+    });
+    rigs.push(rig);
+    rig.spawnHandle.effects = [
+      { stderr: "invalid_grant" }, { stderr: "invalid_grant" }, // revoked
+      { rotateTo: rotatedTo }, // recovered
+    ];
+
+    const reauthEvents: string[] = [];
+    rig.refresher.on("account_reauthenticated", (accountId: string) => {
+      reauthEvents.push(accountId);
+    });
+
+    await rig.refresher.refreshNow("claude-default");
+    // Revoked tick must NOT signal recovery.
+    expect(reauthEvents).toEqual([]);
+
+    await rig.refresher.refreshNow("claude-default");
+    // The recovery tick fires exactly one reauth signal for the account.
+    expect(reauthEvents).toEqual(["claude-default"]);
+  });
+
+  it("does NOT emit account_reauthenticated on a routine healthy rotation (no prior revoke)", async () => {
+    const now = 1_700_000_000_000;
+    const nearExpiry = now + 5 * 60 * 1000;
+    const rotatedTo = now + 8 * 60 * 60 * 1000;
+    const rig = buildRig({
+      accounts: [makeAccount("claude-default")],
+      initialExpiries: { "claude-default": nearExpiry },
+      initialNow: now,
+    });
+    rigs.push(rig);
+    rig.spawnHandle.effects = [{ rotateTo: rotatedTo }];
+
+    const reauthEvents: string[] = [];
+    rig.refresher.on("account_reauthenticated", (accountId: string) => {
+      reauthEvents.push(accountId);
+    });
+
+    const [result] = await rig.refresher.refreshNow("claude-default");
+    expect(result!.outcome).toBe("rotated_tier1");
+    expect(reauthEvents).toEqual([]);
+  });
+
   it("single-flight: two concurrent refreshNow calls spawn the CLI exactly once", async () => {
     const now = 1_700_000_000_000;
     const future = now + 8 * 60 * 60 * 1000;

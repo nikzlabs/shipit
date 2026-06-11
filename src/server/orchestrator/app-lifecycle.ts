@@ -909,6 +909,45 @@ export function markProviderAccountUnauthenticated(opts: {
   sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
 }
 
+/**
+ * Recovery counterpart to {@link markProviderAccountUnauthenticated}. When the
+ * OAuth refresher rotates a previously-revoked account's token back to a
+ * healthy state, the account is genuinely usable again — flip its persisted
+ * status back to `ready`, recompute the agent's cached `authConfigured`, and
+ * re-broadcast so the model selector clears its stale "needs auth" state.
+ *
+ * Without this, an account that was marked `auth_failed` (by the refresher's
+ * revoked classification — sometimes a transient/misclassified failure) stays
+ * stuck `auth_failed` forever: the refresher's own success path only cleared an
+ * in-memory flag and emitted an unconsumed SSE, so the agent kept working
+ * (its on-disk token is valid and re-pushed to sessions) while the picker kept
+ * showing "needs auth" and refused model changes.
+ *
+ * Idempotent: a no-op when the account is already `ready`, so the refresher can
+ * signal recovery without forcing a redundant `agent_list` broadcast on every
+ * routine healthy rotation.
+ */
+export function markProviderAccountReauthenticated(opts: {
+  agentId: AgentId;
+  accountId: string;
+  providerAccountManager: ProviderAccountManager;
+  agentRegistry: AgentRegistry;
+  sseBroadcast: (event: string, data: unknown) => void;
+}): void {
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  const current = providerAccountManager.get(agentId, accountId);
+  if (!current || current.status === "ready") return;
+  try {
+    providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+  } catch (err) {
+    console.error(`[auth] failed to mark account ${accountId} ready:`, err);
+    return;
+  }
+  agentRegistry.refreshAuth(agentId);
+  sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+}
+
 /** Wire auth event handlers. */
 export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   const { authManagers, githubAuthManager, agentRegistry, providerAccountManager, sseBroadcast, credentialsDir, sessionManager } = eventDeps;

@@ -53,6 +53,7 @@ import {
   createLogBuffer,
   wireEventHandlers,
   markProviderAccountUnauthenticated,
+  markProviderAccountReauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -97,6 +98,7 @@ export {
   createLogBuffer,
   wireEventHandlers,
   markProviderAccountUnauthenticated,
+  markProviderAccountReauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -599,6 +601,18 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         sseBroadcast,
       });
     });
+    // Recovery counterpart: when a revoked account's token rotates back to
+    // healthy, un-stick the `auth_failed` row + agent_list so the model
+    // selector stops showing a false "needs auth". See docs/195.
+    refresher.on("account_reauthenticated", (accountId: string) => {
+      markProviderAccountReauthenticated({
+        agentId: "claude",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
     // to this event for its own bookkeeping; EventEmitter supports multiple
     // handlers so the two coexist without ordering constraints.
@@ -617,6 +631,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
+    // Recovery counterpart (mirrors the Claude wiring above): a background
+    // rotation that heals a `auth_failed` Codex row clears the selector's
+    // stale "needs auth". `markProviderAccountReauthenticated` is a no-op when
+    // the row is already `ready`. See docs/195.
+    codexRefresher.on("account_reauthenticated", (accountId: string) => {
+      markProviderAccountReauthenticated({
+        agentId: "codex",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     authManagers.get("codex")?.on("complete", () => {
       codexRefresher.refreshNow().catch((err: unknown) => {
         console.error("[codex-oauth-refresh] post-auth refresh failed:", err);

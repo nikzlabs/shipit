@@ -133,6 +133,14 @@ export interface RefreshResult {
 export interface ClaudeOAuthRefresherEvents {
   refreshed: [accountId: string, expiresAt: number];
   account_unauthenticated: [accountId: string];
+  /**
+   * A previously-revoked account's token rotated back to healthy. The recovery
+   * counterpart of `account_unauthenticated`: consumers (index.ts) flip the
+   * provider-account row back to `ready` and re-broadcast `agent_list` so the
+   * model selector clears its stale "needs auth" state. Fires only on the
+   * revoked → recovered transition, not on routine healthy rotations.
+   */
+  account_reauthenticated: [accountId: string];
 }
 
 /**
@@ -502,6 +510,11 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       // The card is back online; clear the warning state (docs/150 failover
       // consumers should see this and un-mark the account as needing sign-in).
       this.deps.sseBroadcast("claude_account_authenticated", { accountId });
+      // Flip the persisted account row back to `ready` + refresh the agent
+      // registry so the model selector clears its stale "needs auth" state.
+      // The SSE above only repairs failover consumers, not the agent_list the
+      // picker reads from. (index.ts wires this to markProviderAccountReauthenticated.)
+      this.emit("account_reauthenticated", accountId);
     }
     this.scheduleAccount(accountId);
     return {
