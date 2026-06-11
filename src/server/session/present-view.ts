@@ -1,12 +1,11 @@
 /**
- * present-view — render a buffered `present` artifact into a servable HTTP
- * document so the agent's in-container browser can navigate to it and
- * screenshot the rendered result (docs/170).
+ * present-view — read a `present` artifact from disk and serve it, either
+ * rendered into a servable HTML document (for the agent's in-container browser
+ * to screenshot, docs/170) or raw (for the user's Present tab, docs/093).
  *
- * This is the serving half of docs/093's "Tier 2": the `present` MCP tool
- * stores bytes in {@link PresentBuffer}, and `GET /present-files/:presentId`
- * (session-worker.ts) hands them to this renderer. The agent then drives its
- * existing Playwright browser at `127.0.0.1:${WORKER_PORT}/present-files/...`
+ * The `present` MCP tool records only a path in {@link PresentRegistry}; these
+ * routes read the bytes from disk on demand — nothing is retained. The agent
+ * drives its Playwright browser at `127.0.0.1:${WORKER_PORT}/present-files/...`
  * to *see* what it produced and iterate via `replaceId`.
  *
  * Everything is wrapped into an HTML document (except raw image bytes) so a
@@ -24,9 +23,10 @@
  * imported lazily so the worker only pays for them when an artifact is markdown.
  */
 
+import fsp from "node:fs/promises";
 import { createElement } from "react";
 import type { FastifyInstance, FastifyReply } from "fastify";
-import type { PresentBuffer, PresentEntry } from "./present-buffer.js";
+import type { PresentRegistry, PresentMeta } from "./present-registry.js";
 
 export interface RenderedPresentDocument {
   contentType: string;
@@ -152,7 +152,7 @@ function decodeDataUri(uri: string): { mime: string; bytes: Buffer } | null {
  * - anything else — embedded as escaped preformatted text.
  */
 export async function renderPresentDocument(
-  entry: PresentEntry,
+  entry: { content: string; mimeType: string },
 ): Promise<RenderedPresentDocument> {
   const mime = entry.mimeType.toLowerCase();
 
@@ -201,39 +201,89 @@ export async function renderPresentDocument(
 }
 
 /** Readable 404 body so the agent self-corrects rather than guessing. */
-const EVICTED_404_BODY =
-  "Presentation not found. It was evicted (the buffer keeps a bounded, " +
-  "most-recent set) or never existed. Re-present the artifact to get a fresh URL.";
+const MISSING_404_BODY =
+  "Presentation not found — the id is unknown or its file is no longer on " +
+  "disk. Re-present the artifact to get a fresh URL.";
 
 /**
- * Register the worker-local artifact-serving routes (docs/170).
+ * Read an artifact's bytes from disk into the `content` string the present
+ * pipeline carries: binary images become a `data:` base64 URI, everything else
+ * (HTML/SVG markup, markdown, plain text) is read as UTF-8. Lazy by design —
+ * nothing is cached, so the read reflects the file's current contents.
+ */
+export async function readArtifactContent(
+  meta: PresentMeta,
+): Promise<{ content: string; mimeType: string; title?: string }> {
+  const content = isBinaryPresentMime(meta.mimeType)
+    ? `data:${meta.mimeType};base64,${(await fsp.readFile(meta.resolvedPath)).toString("base64")}`
+    : await fsp.readFile(meta.resolvedPath, "utf8");
+  return {
+    content,
+    mimeType: meta.mimeType,
+    ...(meta.title !== undefined ? { title: meta.title } : {}),
+  };
+}
+
+/**
+ * Register the artifact-serving routes (docs/170, docs/093).
  *
- * `GET /present-files/:presentId` (and the `/*` variant reserved for future
- * multi-file Tier 2 artifacts) reads the buffered entry and serves it via
- * {@link renderPresentDocument}. Worker-local by design: only the in-container
- * agent browser consumes this, so it deliberately does NOT route through the
- * orchestrator preview proxy. Extracted from `session-worker.ts` so the 404 /
- * serving behavior is unit-testable with `app.inject`.
+ * Both routes resolve a `presentId` to its on-disk path via the
+ * {@link PresentRegistry} and read the bytes fresh — the worker never retains
+ * artifact content.
+ *
+ *  - `GET /present-files/:presentId` (+ `/*`) — RENDERED into a servable HTML
+ *    document for the agent's in-container Playwright browser to screenshot and
+ *    iterate (docs/170). Worker-local by design: only `127.0.0.1:${WORKER_PORT}`
+ *    reaches it, so it does NOT route through the orchestrator preview proxy.
+ *  - `GET /present/:presentId/raw` — the RAW `content`+`mimeType` as JSON, for
+ *    the user's Present tab to render. Reached only through the orchestrator's
+ *    authenticated session API (never the public preview proxy), so artifacts
+ *    stay off any routable URL while the browser still renders byte-for-byte.
+ *
+ * Extracted from `session-worker.ts` so the 404 / serving behavior is
+ * unit-testable with `app.inject`.
  */
 export function registerPresentFilesRoutes(
   app: FastifyInstance,
-  buffer: PresentBuffer,
+  registry: PresentRegistry,
 ): void {
-  const serve = async (
+  const serveRendered = async (
     request: { params: { presentId?: string } },
     reply: FastifyReply,
   ): Promise<unknown> => {
-    const presentId = request.params.presentId ?? "";
-    const entry = buffer.get(presentId);
-    if (!entry) {
-      return reply.code(404).type("text/plain; charset=utf-8").send(EVICTED_404_BODY);
+    const meta = registry.get(request.params.presentId ?? "");
+    if (!meta) {
+      return reply.code(404).type("text/plain; charset=utf-8").send(MISSING_404_BODY);
     }
-    const rendered = await renderPresentDocument(entry);
+    let artifact: { content: string; mimeType: string };
+    try {
+      artifact = await readArtifactContent(meta);
+    } catch {
+      return reply.code(404).type("text/plain; charset=utf-8").send(MISSING_404_BODY);
+    }
+    const rendered = await renderPresentDocument(artifact);
     return reply
       .header("Cache-Control", "no-store")
       .type(rendered.contentType)
       .send(rendered.body);
   };
-  app.get<{ Params: { presentId?: string } }>("/present-files/:presentId", serve);
-  app.get<{ Params: { presentId?: string } }>("/present-files/:presentId/*", serve);
+  app.get<{ Params: { presentId?: string } }>("/present-files/:presentId", serveRendered);
+  app.get<{ Params: { presentId?: string } }>("/present-files/:presentId/*", serveRendered);
+
+  app.get<{ Params: { presentId?: string } }>(
+    "/present/:presentId/raw",
+    async (request, reply): Promise<unknown> => {
+      const meta = registry.get(request.params.presentId ?? "");
+      if (!meta) {
+        return reply.code(404).send({ error: "Presentation not found" });
+      }
+      let artifact: { content: string; mimeType: string; title?: string };
+      try {
+        artifact = await readArtifactContent(meta);
+      } catch {
+        return reply.code(404).send({ error: "Presentation file is no longer on disk" });
+      }
+      return reply.header("Cache-Control", "no-store").send(artifact);
+    },
+  );
 }

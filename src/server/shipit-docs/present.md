@@ -86,8 +86,8 @@ has to:
 
 This is the same browser you use for live previews — nothing new to set up. The
 artifact renders in real Chromium, so what you screenshot is what the user sees.
-If a navigate returns 404, the presentation was evicted (the buffer keeps a
-bounded most-recent set) — just call `present` again to get a fresh URL.
+If a navigate returns 404, the `presentId` is unknown or its file is no longer
+on disk — just call `present` again to get a fresh URL.
 
 **Always screenshot `viewUrl`, never the file directly** (no `file://`, no
 opening the path in the browser). `viewUrl` runs the same renderer as the user's
@@ -97,16 +97,20 @@ what the user sees and would defeat the point of the check.
 
 ## Limits
 
-- Single presentation: ~1 MB. Larger files are rejected with a clear error.
-  Strip embedded base64 assets, simplify the artifact, or split it into
-  multiple presentations. (Images are base64-encoded for transport, which
-  inflates size ~33%.)
-- At most ~20 simultaneous presentations per session — older entries get
-  LRU-evicted from both the buffer and the user's carousel.
-- Presentations live in the agent container's memory only. They disappear
-  when the container is stopped or the session is archived. A presentation
-  backed by a tracked workspace file still survives there as a committed file
-  — re-present it to bring it back into the tab.
+- No artifact-size or count caps. A presentation always shows, no matter how
+  large, and every artifact of the session stays in the carousel.
+- The worker keeps only the file's PATH, not its bytes — they're read from disk
+  on demand whenever the artifact is served (your screenshot `viewUrl`, the
+  user's Present tab). So the file must still exist when it's viewed: a `/tmp`
+  throwaway survives for the container's lifetime; a workspace file survives as
+  long as it's there. If you overwrite or delete the file, the next view
+  reflects that. Re-present (or write the file again) to restore it.
+- Presentations disappear when the container is stopped or the session is
+  archived. A presentation backed by a tracked workspace file still survives as
+  a committed file — re-present it to bring it back into the tab.
+- There is no user-facing "save" button. If the user wants to keep a `/tmp`
+  artifact, they'll ask you to write it into the repo — just `present` a file
+  you've written to the workspace, or write it there on request.
 
 ## Examples
 

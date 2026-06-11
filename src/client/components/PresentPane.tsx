@@ -3,27 +3,27 @@
  *
  * Renders agent-emitted artifacts (HTML, SVG, markdown, images) from the
  * `present` MCP tool. Single visible entry at a time, with a `◀ N/M ▶`
- * carousel header when there's more than one. "Save" copies the byte-exact
- * content from the worker's buffer to a user-picked workspace path; the file
- * watcher and auto-commit pipeline take it from there. "Download" is the
- * complementary escape hatch — a purely client-side `Blob` + `<a download>`
- * that pulls the artifact onto the user's local machine (for a slide deck,
- * email, design tool, etc.), a destination ShipIt can't reach since the
- * workspace lives inside a container.
+ * carousel header when there's more than one. The store holds only metadata;
+ * the bytes are fetched lazily from the authenticated session API
+ * (`GET /api/sessions/:id/present/:presentId/content`, a one-time disk read
+ * proxied to the worker) and cached back onto the entry, so nothing large is
+ * retained server-side and a reload re-fetches. "Download" is the escape hatch
+ * — a purely client-side `Blob` + `<a download>` that pulls the artifact onto
+ * the user's local machine (a destination ShipIt can't reach since the
+ * workspace lives inside a container). To keep an artifact in the repo, ask the
+ * agent to write it there.
  *
  * Sandboxing: HTML/SVG content renders in an iframe with `sandbox="allow-scripts"`.
  * That lets charts and interactive markup run JS but prevents same-origin
  * access to cookies, storage, parent frame, or top-level navigation.
  */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: clear unseen badge on tab focus + global keydown subscription
-import { useEffect, useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: clear unseen badge on tab focus, global keydown subscription, lazy content fetch
+import { useEffect, useRef, useState } from "react";
 import {
   CaretLeftIcon,
   CaretRightIcon,
   DownloadSimpleIcon,
-  FloppyDiskIcon,
-  XIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
@@ -42,10 +42,17 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
   const sessionId = useSessionStore((s) => s.sessionId);
   const setActiveIndex = usePresentStore((s) => s.setActiveIndex);
   const markSeen = usePresentStore((s) => s.markSeen);
-  const dropOne = usePresentStore((s) => s.clear);
 
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [fetchError, setFetchError] = useState<string | null>(null);
+  // Ids with an in-flight content fetch, so a re-render doesn't double-fetch.
+  const fetching = useRef<Set<string>>(new Set());
+
+  // Active entry (computed before any early return so the hooks below see it).
+  const hasEntries = presentations.length > 0;
+  const safeIndex = hasEntries ? Math.max(0, Math.min(activeIndex, presentations.length - 1)) : -1;
+  const active = hasEntries ? presentations[safeIndex] : undefined;
+  const activePresentId = active?.presentId;
+  const activeContent = active?.content;
 
   // eslint-disable-next-line no-restricted-syntax -- intentional unseen-clear on tab focus
   useEffect(() => {
@@ -72,7 +79,35 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
     return () => window.removeEventListener("keydown", onKey);
   }, [isActiveTab]);
 
-  if (presentations.length === 0) {
+  // Lazily fetch the active artifact's bytes from disk the first time it's
+  // shown (and again after a reload, when the store holds metadata only). The
+  // server retains nothing; this one-time fetch is how the browser gets a copy.
+  // eslint-disable-next-line no-restricted-syntax -- lazy content fetch keyed on the active entry
+  useEffect(() => {
+    setFetchError(null);
+    if (!activePresentId || activeContent !== undefined || !sessionId) return;
+    if (fetching.current.has(activePresentId)) return;
+    const id = activePresentId;
+    fetching.current.add(id);
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch(`/api/sessions/${sessionId}/present/${id}/content`);
+        const body = (await res.json().catch(() => ({}))) as { content?: string; error?: string };
+        if (!res.ok || typeof body.content !== "string") {
+          throw new Error(body.error ?? `Could not load presentation (HTTP ${res.status})`);
+        }
+        if (!cancelled) usePresentStore.getState().setContent(id, body.content);
+      } catch (err) {
+        if (!cancelled) setFetchError(err instanceof Error ? err.message : String(err));
+      } finally {
+        fetching.current.delete(id);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [activePresentId, activeContent, sessionId]);
+
+  if (!active) {
     return (
       <div className="absolute inset-0 flex flex-col items-center justify-center text-sm text-(--color-text-tertiary) p-6 text-center">
         <p className="max-w-xs">
@@ -82,9 +117,6 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
       </div>
     );
   }
-
-  const safeIndex = Math.max(0, Math.min(activeIndex, presentations.length - 1));
-  const active = presentations[safeIndex];
 
   const onPrev = () => setActiveIndex(safeIndex - 1);
   const onNext = () => setActiveIndex(safeIndex + 1);
@@ -126,57 +158,39 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             {active.filePath}
           </div>
         </div>
-        {/* Already-in-workspace artifacts are tracked + auto-committed, so
-            there's nothing to save — hide the button for them. */}
-        {!active.inWorkspace && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => { setSaveError(null); setSaveOpen(true); }}
-            className="shrink-0"
-            aria-label="Save presentation to project"
-          >
-            <FloppyDiskIcon size={ICON_SIZE.XS} />
-            Save
-          </Button>
-        )}
         <Button
           variant="ghost"
           size="sm"
           onClick={() => downloadPresentation(active)}
+          disabled={active.content === undefined}
           className="shrink-0"
           aria-label="Download presentation"
         >
           <DownloadSimpleIcon size={ICON_SIZE.XS} />
           Download
         </Button>
-        <button
-          onClick={() => dropOne(active.presentId)}
-          className="inline-flex items-center justify-center w-6 h-6 rounded transition-colors text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-          aria-label="Dismiss presentation"
-        >
-          <XIcon size={ICON_SIZE.SM} />
-        </button>
       </div>
 
       <div className="flex-1 min-h-0 relative bg-(--color-bg-primary)">
-        <PresentationContent
-          key={active.presentId}
-          content={active.content}
-          mimeType={active.mimeType}
-        />
+        {fetchError ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
+            <p className="max-w-xs">{fetchError}</p>
+            <p className="max-w-xs text-xs">
+              The artifact may no longer be on disk. Ask the agent to present it again.
+            </p>
+          </div>
+        ) : active.content === undefined ? (
+          <div className="absolute inset-0 flex items-center justify-center text-sm text-(--color-text-tertiary)">
+            Loading…
+          </div>
+        ) : (
+          <PresentationContent
+            key={active.presentId}
+            content={active.content}
+            mimeType={active.mimeType}
+          />
+        )}
       </div>
-
-      {saveOpen && (
-        <SaveDialog
-          sessionId={sessionId}
-          presentId={active.presentId}
-          defaultName={suggestFilename(active.title, active.mimeType)}
-          error={saveError}
-          onError={setSaveError}
-          onClose={() => setSaveOpen(false)}
-        />
-      )}
     </div>
   );
 }
@@ -248,112 +262,15 @@ function PresentationContent({
   );
 }
 
-function SaveDialog({
-  sessionId,
-  presentId,
-  defaultName,
-  error,
-  onError,
-  onClose,
-}: {
-  sessionId: string | undefined;
-  presentId: string;
-  defaultName: string;
-  error: string | null;
-  onError: (msg: string | null) => void;
-  onClose: () => void;
-}) {
-  const [path, setPath] = useState(defaultName);
-  const [saving, setSaving] = useState(false);
-
-  const onSave = async () => {
-    if (!sessionId) {
-      onError("No active session to save into.");
-      return;
-    }
-    const trimmed = path.trim();
-    if (!trimmed) {
-      onError("Pick a destination path inside the workspace.");
-      return;
-    }
-    onError(null);
-    setSaving(true);
-    try {
-      const res = await fetch(`/api/sessions/${sessionId}/present/save`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ presentId, destPath: trimmed }),
-      });
-      const body = (await res.json().catch(() => ({}))) as { error?: string };
-      if (!res.ok) {
-        onError(body.error ?? `Save failed (HTTP ${res.status})`);
-        setSaving(false);
-        return;
-      }
-      onClose();
-    } catch (err) {
-      onError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div
-      className="absolute inset-0 z-30 flex items-center justify-center bg-(--color-bg-overlay) p-4"
-      role="dialog"
-      aria-label="Save presentation to project"
-    >
-      <div className="w-full max-w-md rounded-lg bg-(--color-bg-primary) border border-(--color-border-primary) p-4 shadow-xl flex flex-col gap-3">
-        <div className="text-sm font-semibold text-(--color-text-primary)">
-          Save presentation to project
-        </div>
-        <div className="text-xs text-(--color-text-tertiary)">
-          Choose where to save this presentation inside the workspace. The path
-          is relative to the repository root.
-        </div>
-        <label className="flex flex-col gap-1 text-xs text-(--color-text-secondary)">
-          Workspace path
-          <input
-            type="text"
-            value={path}
-            onChange={(e) => setPath(e.target.value)}
-            className="rounded border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) outline-none focus:border-(--color-border-focus)"
-            placeholder="docs/preview.html"
-            autoFocus
-          />
-        </label>
-        {error && (
-          <div className="text-xs text-(--color-error) bg-(--color-error)/10 rounded px-2 py-1">
-            {error}
-          </div>
-        )}
-        <div className="flex items-center justify-end gap-2 pt-1">
-          <Button variant="ghost" size="md" onClick={onClose} disabled={saving}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary"
-            size="md"
-            onClick={() => { void onSave(); }}
-            disabled={saving}
-          >
-            {saving ? "Saving…" : "Save"}
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 /**
- * Trigger a client-side download of the active presentation. The artifact
- * content already lives in the browser (the present-store holds the exact
- * bytes the user saw), so this is a pure `Blob` + temporary `<a download>` —
- * no server round-trip. Unlike "Save", the destination is the user's local
- * machine, not the workspace.
+ * Trigger a client-side download of the active presentation. By the time the
+ * Download button is enabled the bytes have been fetched and cached on the
+ * entry, so this is a pure `Blob` + temporary `<a download>` — no further
+ * round-trip. The destination is the user's local machine, not the workspace;
+ * to keep an artifact in the repo, ask the agent to write it there.
  */
 function downloadPresentation(p: Presentation): void {
+  if (p.content === undefined) return; // button is disabled until loaded
   const blob = presentationToBlob(p.content, p.mimeType);
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -394,16 +311,6 @@ function dataUriToBlob(dataUri: string): Blob {
     return new Blob([bytes], { type: mime });
   }
   return new Blob([decodeURIComponent(data)], { type: mime });
-}
-
-/**
- * Pick a sensible default filename for the save dialog. Title-based when
- * available; otherwise mime-type-driven. Slugifies the title so the user
- * doesn't have to. Prefixed with `presentations/` so saves land in a tidy
- * subdirectory of the workspace.
- */
-function suggestFilename(title: string | undefined, mimeType: string): string {
-  return `presentations/${suggestDownloadName(title, mimeType)}`;
 }
 
 /**

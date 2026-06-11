@@ -21,11 +21,9 @@ export const handlePresentState: Handler<WsPresentStateMessage> = (_ctx, data) =
   usePresentStore.getState().hydrate(
     data.presentations.map((p) => ({
       presentId: p.presentId,
-      content: p.content,
       mimeType: p.mimeType,
       createdAt: p.createdAt,
       filePath: p.filePath,
-      inWorkspace: p.inWorkspace,
       ...(p.title !== undefined ? { title: p.title } : {}),
     })),
   );

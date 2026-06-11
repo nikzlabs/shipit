@@ -53,11 +53,10 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
-import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
+import { PresentRegistry } from "./present-registry.js";
 import {
   registerPresentFilesRoutes,
   inferPresentMimeType,
-  isBinaryPresentMime,
 } from "./present-view.js";
 import { runtimeKey, tuneNpmInstall } from "./install-runtime.js";
 import {
@@ -155,11 +154,10 @@ export class SessionWorker extends EventEmitter {
   private _mcpInstallMutex = new Map<string, Promise<void>>();
   private static readonly MCP_INSTALLED_MARKER = "/tmp/mcp-installed.json";
 
-  // docs/093 — present tool buffer. Holds the bytes the agent emitted via
-  // `present` so the client can render them and "Save to project" can copy
-  // them into the workspace exactly as they were displayed. Bounded by entry
-  // count + total bytes (see PresentBuffer).
-  private readonly presentBuffer = new PresentBuffer();
+  // docs/093 — present tool registry. Holds only metadata (the on-disk path,
+  // MIME, title) per artifact the agent emitted via `present`. The bytes are
+  // read from disk lazily on each serve, never retained (see PresentRegistry).
+  private readonly presentRegistry = new PresentRegistry();
 
   // SHI-112 / docs/193 — agent-agnostic approval broker. Holds pending
   // sensitive-action requests (Claude via the `--permission-prompt-tool`
@@ -952,20 +950,18 @@ export class SessionWorker extends EventEmitter {
   // --- Present tool endpoints (docs/093) ---
 
   /**
-   * Wire the two HTTP surfaces the `present` tool needs:
+   * Wire the `present` tool's HTTP surfaces:
    *
-   *  - `POST /agent-ops/present/submit` — receives the artifact from the
-   *    `mcp-present-bridge` subprocess (which runs as a child of the agent
-   *    CLI). Stores it in the buffer, broadcasts `present_content` over SSE,
-   *    and returns the new `presentId` to the bridge.
-   *  - `POST /present/save` — the orchestrator forwards the user's "Save to
-   *    project" click here. Copies the buffered bytes to the requested
-   *    workspace path. Path is checked to live under the workspace so a
-   *    crafted body can't escape with `..`.
+   *  - `POST /agent-ops/present/submit` — receives the artifact PATH from the
+   *    `mcp-present-bridge` subprocess (a child of the agent CLI). Validates the
+   *    file is readable, records its metadata in the registry, broadcasts
+   *    `present_content` (metadata only) over SSE, and returns the `presentId` +
+   *    a worker-local screenshot URL to the bridge. It does NOT read the bytes.
+   *  - the artifact-serving routes (`registerPresentFilesRoutes`) read bytes
+   *    from disk on demand — see there.
    *
    * The submit route lives under `/agent-ops/*` to stay alongside the other
-   * shim brokers (review, gh, shipit). Save lives under `/present/*` because
-   * the orchestrator initiates it on the user's behalf, not the agent.
+   * shim brokers (review, gh, shipit).
    */
   private registerPresentEndpoints(app: FastifyInstance): void {
     app.post<{
@@ -986,33 +982,17 @@ export class SessionWorker extends EventEmitter {
       const resolvedPath = path.isAbsolute(file)
         ? file
         : path.resolve(this.workspaceDir, file);
-      // Whether the presented file already lives inside the workspace (so it's
-      // tracked + auto-committed already). The client uses this to hide the
-      // "Save to project" button — there's nothing to save. A relative arg
-      // always resolves under the workspace; an absolute arg counts only when
-      // it's actually within the workspace root (a `path.relative` that doesn't
-      // climb out via `..` and isn't itself absolute).
-      const relToWorkspace = path.relative(this.workspaceDir, resolvedPath);
-      const inWorkspace =
-        relToWorkspace === ""
-        || (!relToWorkspace.startsWith("..") && !path.isAbsolute(relToWorkspace));
       // MIME is inferred from the extension unless the caller overrides it.
       const overrideMime =
         typeof mimeType === "string" && mimeType.length > 0 ? mimeType : undefined;
       const resolvedMime =
         overrideMime ?? (inferPresentMimeType(resolvedPath) || "text/plain");
 
-      // Read the file into the same `content` string the buffer/WS pipeline
-      // already carries: binary images become a `data:` URI, everything else is
-      // UTF-8 text (HTML/SVG markup, markdown, plain text).
-      let content: string;
+      // Validate the file is readable now (clear error to the agent), but DON'T
+      // read its bytes — the registry holds only the path. The bytes are read
+      // from disk lazily whenever the artifact is served.
       try {
-        if (isBinaryPresentMime(resolvedMime)) {
-          const bytes = await fsp.readFile(resolvedPath);
-          content = `data:${resolvedMime};base64,${bytes.toString("base64")}`;
-        } else {
-          content = await fsp.readFile(resolvedPath, "utf8");
-        }
+        await fsp.access(resolvedPath, fs.constants.R_OK);
       } catch (err) {
         return reply.code(400).send({
           error: `Could not read file "${file}": ${getErrorMessage(err)}`,
@@ -1026,20 +1006,17 @@ export class SessionWorker extends EventEmitter {
       const sessionId = process.env.SESSION_ID ?? "";
 
       const presentId = `pres_${crypto.randomUUID()}`;
-      let result: ReturnType<PresentBuffer["put"]>;
-      try {
-        result = this.presentBuffer.put(presentId, {
-          content,
-          mimeType: resolvedMime,
-          ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
-          ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
-        });
-      } catch (err) {
-        if (err instanceof PresentBufferError) {
-          return reply.code(413).send({ error: err.message });
-        }
-        return reply.code(500).send({ error: getErrorMessage(err) });
-      }
+      const createdAt = new Date().toISOString();
+      const result = this.presentRegistry.put(presentId, {
+        resolvedPath,
+        // The presented path (verbatim — relative or absolute), shown in the
+        // Present tab header. `file` is validated non-empty above.
+        filePath: file,
+        mimeType: resolvedMime,
+        createdAt,
+        ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
+        ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
+      });
 
       this.broadcastSSE({
         type: "present_content",
@@ -1047,15 +1024,10 @@ export class SessionWorker extends EventEmitter {
           sessionId,
           presentId,
           ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
-          content: result.entry.content,
-          mimeType: result.entry.mimeType,
-          ...(result.entry.title !== undefined ? { title: result.entry.title } : {}),
-          // The presented path (verbatim — relative or absolute), shown in the
-          // Present tab header. `file` is validated non-empty above, so the
-          // field is always present downstream.
-          filePath: file,
-          inWorkspace,
-          createdAt: result.entry.createdAt,
+          mimeType: result.meta.mimeType,
+          ...(result.meta.title !== undefined ? { title: result.meta.title } : {}),
+          filePath: result.meta.filePath,
+          createdAt: result.meta.createdAt,
         },
       });
 
@@ -1074,72 +1046,14 @@ export class SessionWorker extends EventEmitter {
       return { presentId, status: "presented", viewUrl };
     });
 
-    // docs/170 — serve buffered artifacts at a worker-local URL so the agent's
-    // own Playwright browser can render and screenshot them. Worker-local by
-    // design: only the in-container agent browser (which already reaches
-    // 127.0.0.1:${WORKER_PORT}) consumes this; it does NOT route through the
-    // orchestrator preview proxy, keeping ephemeral artifacts off any publicly
-    // routable URL. Registration lives in present-view.ts so it stays unit-testable.
-    registerPresentFilesRoutes(app, this.presentBuffer);
-
-    app.post<{
-      Body: { presentId?: string; destPath?: string };
-    }>("/present/save", async (request, reply) => {
-      const { presentId, destPath } = request.body ?? {};
-      if (typeof presentId !== "string" || presentId.length === 0) {
-        return reply.code(400).send({ error: "presentId is required" });
-      }
-      if (typeof destPath !== "string" || destPath.length === 0) {
-        return reply.code(400).send({ error: "destPath is required" });
-      }
-      const entry = this.presentBuffer.get(presentId);
-      if (!entry) {
-        return reply.code(404).send({ error: "Presentation not found or already evicted" });
-      }
-
-      // Resolve the destination strictly inside the workspace. Reject any
-      // attempt to escape via leading `/`, `..`, or symlink-like games. The
-      // path is mounted by the user via the Save dialog, so a redirect to
-      // /etc/passwd would be a real footgun.
-      const workspaceRoot = path.resolve(this.workspaceDir);
-      const normalized = destPath.startsWith("/")
-        ? destPath.slice(1)
-        : destPath;
-      const absolutePath = path.resolve(workspaceRoot, normalized);
-      const inside = absolutePath === workspaceRoot
-        || absolutePath.startsWith(`${workspaceRoot}${path.sep}`);
-      if (!inside) {
-        return reply.code(400).send({
-          error: "destPath must resolve inside the workspace",
-        });
-      }
-
-      try {
-        await fsp.mkdir(path.dirname(absolutePath), { recursive: true });
-        // Binary content arrives as a data URI; decode it before writing so
-        // the saved file isn't a base64-encoded text blob.
-        if (entry.content.startsWith("data:")) {
-          const match = /^data:[^;]+;base64,(.+)$/.exec(entry.content);
-          if (match) {
-            await fsp.writeFile(absolutePath, Buffer.from(match[1], "base64"));
-          } else {
-            // Non-base64 data URI (rare): write the raw string after the comma.
-            const comma = entry.content.indexOf(",");
-            await fsp.writeFile(
-              absolutePath,
-              comma >= 0 ? entry.content.slice(comma + 1) : entry.content,
-            );
-          }
-        } else {
-          await fsp.writeFile(absolutePath, entry.content, "utf8");
-        }
-      } catch (err) {
-        return reply.code(500).send({ error: getErrorMessage(err) });
-      }
-
-      const relPath = path.relative(workspaceRoot, absolutePath);
-      return { ok: true, savedPath: relPath };
-    });
+    // docs/170, docs/093 — serve artifacts (rendered for the agent's Playwright
+    // browser at 127.0.0.1:${WORKER_PORT}; raw for the user's Present tab via the
+    // orchestrator's authenticated session API). Both read the file from disk on
+    // demand via the registry — the worker retains no artifact bytes. Worker-local
+    // by design: neither route goes through the public preview proxy, keeping
+    // ephemeral artifacts off any routable URL. Lives in present-view.ts so the
+    // 404/serving behavior stays unit-testable.
+    registerPresentFilesRoutes(app, this.presentRegistry);
   }
 
   // --- MCP helpers (docs/088) ---
