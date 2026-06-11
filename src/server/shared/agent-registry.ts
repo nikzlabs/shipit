@@ -39,7 +39,7 @@ const execFileAsync = promisify(execFile);
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "claude-fable-5", "sonnet", "haiku"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
