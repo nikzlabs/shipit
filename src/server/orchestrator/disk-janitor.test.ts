@@ -464,6 +464,38 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(tmpDir, "dep-cache", staleHash))).toBe(false);
   });
 
+  it("sweeps unreferenced repo-memory dirs but keeps live ones (docs/155)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveRepo = "https://github.com/example/live.git";
+    const liveHash = repoUrlToHash(liveRepo);
+    const staleHash = repoUrlToHash("https://github.com/example/stale.git");
+    repoStore.add(liveRepo);
+    repoStore.setReady(liveRepo);
+
+    const credentialsDir = path.join(tmpDir, "credentials");
+    for (const hash of [liveHash, staleHash]) {
+      const dir = path.join(credentialsDir, "repo-memory", hash);
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "MEMORY.md"), "");
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      credentialsDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.repoMemoryDirsRemoved).toBe(1);
+    expect(fs.existsSync(path.join(credentialsDir, "repo-memory", liveHash))).toBe(true);
+    expect(fs.existsSync(path.join(credentialsDir, "repo-memory", staleHash))).toBe(false);
+  });
+
   it("reclaims the dead nm-store subtree wholesale under tracked repos (docs/183)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);

@@ -130,6 +130,19 @@ session start, but it's not required to ship.
 - `src/server/orchestrator/disk-janitor.ts` — orphan sweep for
   `repo-memory/<hash>`.
 
+## Status
+
+Implemented. `session-credentials.ts` carries `repoMemoryDir` /
+`REPO_MEMORY_SUBDIR`, `provisionRepoMemory` (first-turn copy-in), and
+`syncMemoryBack` (turn-end copy-back). Both copy paths preserve mtimes and
+mirror only newer-or-missing files, so an unchanged file never copies back and
+a session's edit (newer mtime) wins on sync-back. `session-agent-env.ts` calls
+provision in `prepareSessionAgentEnvironment`'s first-turn agent-pin block and
+sync-back in `finalizeSessionAgentEnvironment`, both gated on `agentId ===
+"claude"` (eslint-disabled per-CLI-shape exception, docs/155) and a non-empty
+`remoteUrl`. GC lives in `disk-janitor.ts` (`sweepOrphanedRepoMemory`), keyed on
+the same recently-used-repo-hash live-set as the `repo-cache`/`dep-cache` sweep.
+
 ## Out of scope
 
 - Sharing memory **across repos** (e.g. global user-level memory). The

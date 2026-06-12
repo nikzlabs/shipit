@@ -27,11 +27,14 @@ import { ContainerSessionRunner } from "./container-session-runner.js";
 import {
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
+  provisionRepoMemory,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
   syncAgentTokenBack,
   syncProviderAccountTokenBack,
+  syncMemoryBack,
 } from "./session-credentials.js";
+import { repoUrlToHash } from "./git-utils.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
@@ -219,6 +222,15 @@ export async function prepareSessionAgentEnvironment(
         } else {
           provisionAgentCredentials(deps.credentialsDir, sessionId, agentId);
         }
+        // docs/155 — seed the shared per-repo Claude memory dir into this
+        // session's memory subtree (write-once, on first turn). Only Claude
+        // has the `.claude/projects/-workspace/memory` layout, and only a
+        // session with a remote URL has a stable repo hash to share by;
+        // sessions without one keep memory ephemeral in their per-session dir.
+        // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-only memory dir layout, see provisionRepoMemory
+        if (agentId === "claude" && session.remoteUrl) {
+          provisionRepoMemory(deps.credentialsDir, sessionId, repoUrlToHash(session.remoteUrl));
+        }
       } catch (err) {
         console.warn("[credentials] provisioning failed:", getErrorMessage(err));
       }
@@ -375,5 +387,17 @@ export function finalizeSessionAgentEnvironment(
     }
   } catch (err) {
     console.warn("[credentials] token sync-back failed:", getErrorMessage(err));
+  }
+
+  // docs/155 — mirror any memory files the Claude CLI wrote this turn back to
+  // the shared per-repo dir. Same gate as provisioning: Claude-only layout,
+  // and only when the session has a remote URL to key the shared dir by.
+  // eslint-disable-next-line no-restricted-syntax -- docs/155: Claude-only memory dir layout, see syncMemoryBack
+  if (args.agentId === "claude" && session?.remoteUrl) {
+    try {
+      syncMemoryBack(args.deps.credentialsDir, args.sessionId, repoUrlToHash(session.remoteUrl));
+    } catch (err) {
+      console.warn("[credentials] memory sync-back failed:", getErrorMessage(err));
+    }
   }
 }

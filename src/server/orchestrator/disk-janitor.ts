@@ -37,6 +37,10 @@
  *   - **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories**
  *     whose repo URL has no `repos` row or whose `last_used_at` is older
  *     than `DISK_JANITOR_CACHE_DAYS` (default 30).
+ *   - **Orphan `repo-memory/<hash>` directories** (docs/155) — shared
+ *     per-repo Claude memory keyed by the same repo hash. Swept on the
+ *     same liveness rule as the caches above, but lives under
+ *     `credentialsDir`, so it only runs when that dep is wired.
  *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
  *     lockfile-keyed `node_modules` copy store (docs/148) was removed in
  *     docs/183 Phase 1 (superseded by the overlay rolling base), so the whole
@@ -114,7 +118,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
 import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
-import { sessionCredentialsRoot } from "./session-credentials.js";
+import { sessionCredentialsRoot, REPO_MEMORY_SUBDIR } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
 
@@ -210,6 +214,8 @@ export interface DiskJanitorResult {
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
   credentialDirsRemoved: number;
+  /** docs/155 — shared per-repo Claude memory dirs removed (unreferenced repo hash). */
+  repoMemoryDirsRemoved: number;
   /** docs/192 — per-session `logs/` dirs removed (archived or untracked sessions). */
   logDirsRemoved: number;
 }
@@ -232,6 +238,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     overlayBasesRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
+    repoMemoryDirsRemoved: 0,
     logDirsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
@@ -302,6 +309,13 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     } catch (err) {
       console.warn("[disk-janitor] credential-dir sweep failed:", getMessage(err));
     }
+    try {
+      result.repoMemoryDirsRemoved = await sweepOrphanedRepoMemory(
+        deps.credentialsDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] repo-memory sweep failed:", getMessage(err));
+    }
   }
 
   if (deps.sessionsRoot) {
@@ -343,6 +357,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `overlay-bases=${result.overlayBasesRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
+    + `repo-memory=${result.repoMemoryDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved}`,
   );
   return result;
@@ -393,6 +408,57 @@ async function sweepOrphanCredentialDirs(
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
       console.log(`[disk-janitor] removed orphan credentials dir ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+/**
+ * docs/155 — remove shared per-repo Claude memory dirs under
+ * `<credentialsDir>/repo-memory/<repoHash>` whose repo hash is no longer
+ * referenced by a recently-used repo. Keyed exactly like
+ * {@link sweepOrphanedCaches}: a hash is "live" iff some `repos` row resolves to
+ * it AND that repo's `lastUsedAt` is within `days`. An orphaned memory dir is
+ * one whose repo was removed or has gone untouched past the cutoff.
+ *
+ * Memory is regeneratable accumulation, not the only copy of anything, so this
+ * is safe to do without coordinating with live sessions — same posture as the
+ * cache sweep. Returns the count of memory dirs removed.
+ */
+async function sweepOrphanedRepoMemory(
+  credentialsDir: string,
+  repoStore: RepoStore,
+  days: number,
+  paceMs: number,
+): Promise<number> {
+  const cutoffMs = Date.now() - days * 86_400_000;
+  const liveHashes = new Set<string>();
+  for (const repo of repoStore.list()) {
+    const lastUsedMs = Date.parse(repo.lastUsedAt);
+    if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {
+      liveHashes.add(repoUrlToHash(repo.url));
+    }
+  }
+
+  const dir = path.join(credentialsDir, REPO_MEMORY_SUBDIR);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return 0; // No repo-memory subtree yet — nothing to sweep.
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (liveHashes.has(entry)) continue;
+    const full = path.join(dir, entry);
+    try {
+      await sleep(paceMs);
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed orphan repo-memory ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }
