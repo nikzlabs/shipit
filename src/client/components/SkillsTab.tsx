@@ -13,7 +13,6 @@
  * keeps its UI because it adds value the agent can't replicate cheaply: catalog
  * discovery, preview-before-consent, and the namespaced flat-dir write.
  *
- * v1 supports Claude only — the tab shows a "v1b" empty state on Codex.
  */
 
 // eslint-disable-next-line no-restricted-imports -- useEffect: catalog fetches as the agent/marketplaces change
@@ -25,6 +24,11 @@ import { parseRepoLabel } from "../utils/repo-label.js";
 import { Button } from "./ui/button.js";
 import { SkillInstallSheet, type InstallRepoOption } from "./SkillInstallSheet.js";
 import type { PluginInfo } from "../../server/shared/types.js";
+
+const INSTALL_PATH_LABELS: Record<string, string> = {
+  claude: ".claude/skills",
+  codex: ".codex/skills",
+};
 
 export function SkillsTab() {
   const [installingSheet, setInstallingSheet] = useState<PluginInfo | null>(null);
@@ -61,8 +65,6 @@ export function SkillsTab() {
   // the route-backed external system.
   // eslint-disable-next-line no-restricted-syntax -- effect for one-shot fetch when the active agent flips
   useEffect(() => {
-    // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: marketplace install is Claude-only in v1; becomes a capability flag once Codex install (v1b) lands.
-    if (agentId !== "claude") return;
     void fetchMarketplaces(agentId);
   }, [agentId, fetchMarketplaces]);
 
@@ -111,21 +113,6 @@ export function SkillsTab() {
     return data.content;
   };
 
-  // Codex is v1b — show a friendly empty state on the tab rather than half-rendering.
-  // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: marketplace install is Claude-only in v1; becomes a capability flag once Codex install (v1b) lands.
-  if (agentId !== "claude") {
-    return (
-      <div className="px-5 py-4 text-sm text-(--color-text-secondary)">
-        <h3 className="text-sm font-medium text-(--color-text-primary) mb-2">Skills</h3>
-        <p>
-          Skill discovery and install is currently only available for Claude. Codex support is
-          tracked in <code>docs/149</code> as v1b — it&apos;s pending the upstream catalog format
-          spike before we can ship it.
-        </p>
-      </div>
-    );
-  }
-
   return (
     <div className="flex flex-col h-full">
       <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3">
@@ -144,7 +131,7 @@ export function SkillsTab() {
       {installingSheet && (
         <SkillInstallSheet
           plugin={installingSheet}
-          installPathLabel=".claude/skills"
+          installPathLabel={INSTALL_PATH_LABELS[agentId] ?? ".claude/skills"}
           installing={loading}
           repos={repoOptions}
           selectedRepoUrl={effectiveRepoUrl}
@@ -156,6 +143,7 @@ export function SkillsTab() {
             try {
               const result = await installToRepo(
                 effectiveRepoUrl,
+                agentId,
                 installingSheet.marketplaceId,
                 installingSheet.name,
               );

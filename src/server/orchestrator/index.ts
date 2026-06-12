@@ -201,8 +201,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const getDepCacheDir = createDepCacheDirHelper(stateDir);
 
   // ---- Marketplace store (docs/149 — skill install UX) ----
-  // App-wide catalog list (Settings → Skills → Discover). v1 ships with one
-  // pre-seeded row (the official Claude catalog) and never inserts/deletes
+  // App-wide catalog list (Settings → Skills → Discover). v1 ships with
+  // pre-seeded official Claude and Codex catalogs and never inserts/deletes
   // after that — v2 adds the add/remove verbs. The background pre-clone is
   // kicked off below, after the route table is registered.
   const marketplaceStore = new MarketplaceStore(databaseManager);
@@ -210,6 +210,12 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     id: "claude-plugins-official",
     source: { kind: "github", ownerRepo: "anthropics/claude-plugins-official" },
     agentId: "claude",
+    autoUpdate: true,
+  });
+  marketplaceStore.seedIfMissing({
+    id: "openai-curated",
+    source: { kind: "github", ownerRepo: "openai/plugins" },
+    agentId: "codex",
     autoUpdate: true,
   });
 

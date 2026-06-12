@@ -173,18 +173,17 @@ and the surface's session-awareness change.
 
 ## v1b — Codex support
 
-Tracked but out of scope for this branch. Requires the v0 spikes that were
-deferred above:
-
-- [ ] Verify `codex app-server` re-injects `<skills_instructions>` on respawn
-  so `killAgent` is sufficient for Codex skill reload.
-- [ ] Re-verify whether `.codex/skills/` or `.agents/skills/` is canonical
-  in the pinned Codex CLI version.
-- [ ] Document Codex's marketplace manifest format from the official catalog.
-- [ ] Lift the `agentId !== "claude"` guard in `services/marketplace.ts`
+- [x] Verify current official Codex docs: repo skills are documented under
+  `.agents/skills`, while ShipIt's existing Codex project-skill scanner and
+  composer path remain `.codex/skills` for this implementation.
+- [x] Document Codex's marketplace manifest format from the official catalog:
+  `openai/plugins` exposes `openai-curated` at
+  `.agents/plugins/marketplace.json`, with plugin entries using
+  `source: { source: "local", path: "./plugins/<name>" }`.
+- [x] Lift the `agentId !== "claude"` guard in `services/marketplace.ts`
   (`installPlugin`) and the Codex empty-state branch in `SkillsTab.tsx`.
-- [ ] Add `.codex/skills/` writer with frontmatter `name: <plugin>:<skill>`.
-- [ ] Seed the official Codex catalog row in `marketplace-store` startup.
+- [x] Add `.codex/skills/` writer with frontmatter `name: <plugin>:<skill>`.
+- [x] Seed the official Codex catalog row in `marketplace-store` startup.
 
 ## v2 — Custom marketplaces + Errors sub-tab
 

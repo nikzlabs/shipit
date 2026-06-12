@@ -26,6 +26,7 @@ import {
 } from "./test-helpers.js";
 
 const CATALOG_ID = "claude-plugins-official"; // seeded by buildApp
+const CODEX_CATALOG_ID = "openai-curated"; // seeded by buildApp
 
 function writeFakeCatalog(stateDir: string): void {
   const cacheDir = path.join(stateDir, "marketplace-cache", CATALOG_ID);
@@ -115,6 +116,15 @@ describe("Integration: marketplace HTTP routes (docs/149)", () => {
     const seeded = data.marketplaces.find((m) => m.id === CATALOG_ID);
     expect(seeded).toBeDefined();
     expect(seeded?.agentId).toBe("claude");
+  });
+
+  it("seeds the official Codex catalog at startup and lists it via GET /api/marketplaces", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/marketplaces?agent=codex" });
+    expect(res.statusCode).toBe(200);
+    const data = res.json() as { marketplaces: { id: string; agentId: string }[] };
+    const seeded = data.marketplaces.find((m) => m.id === CODEX_CATALOG_ID);
+    expect(seeded).toBeDefined();
+    expect(seeded?.agentId).toBe("codex");
   });
 
   it("lists installable plugins from the pre-populated catalog cache", async () => {

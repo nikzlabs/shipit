@@ -33,7 +33,7 @@ export async function registerMarketplaceRoutes(
   const { marketplaceStore, stateDir } = deps;
   const cacheRoot = getCatalogCacheRoot(stateDir);
 
-  // GET /api/marketplaces?agent=claude — list the catalogs the user can browse.
+  // GET /api/marketplaces?agent=claude|codex — list the catalogs the user can browse.
   app.get<{ Querystring: { agent?: string } }>(
     "/api/marketplaces",
     async (request) => {
@@ -91,14 +91,22 @@ export async function registerMarketplaceRoutes(
   // PR. The current session (if any) is never touched. The session-scoped
   // `POST /api/sessions/:id/plugins/install` route is retained in
   // api-routes-files.ts for the future "install into this workspace" option.
-  app.post<{ Body: { marketplaceId?: unknown; pluginName?: unknown; repoUrl?: unknown } }>(
+  app.post<{ Body: { marketplaceId?: unknown; pluginName?: unknown; repoUrl?: unknown; agentId?: unknown } }>(
     "/api/plugins/install",
     async (request, reply) => {
       const marketplaceId = typeof request.body.marketplaceId === "string" ? request.body.marketplaceId : null;
       const pluginName = typeof request.body.pluginName === "string" ? request.body.pluginName : null;
       const repoUrl = typeof request.body.repoUrl === "string" ? request.body.repoUrl.trim() : null;
+      const requestedAgentId = typeof request.body.agentId === "string" ? request.body.agentId : null;
+      const agentId = requestedAgentId
+        ? deps.agentRegistry.list().find((agent) => agent.id === requestedAgentId)?.id ?? null
+        : null;
       if (!marketplaceId || !pluginName || !repoUrl) {
         reply.code(400).send({ error: "marketplaceId, pluginName, and repoUrl are required" });
+        return;
+      }
+      if (requestedAgentId !== null && !agentId) {
+        reply.code(400).send({ error: "agentId must be claude or codex" });
         return;
       }
       if (!deps.claimSessionService) {
@@ -123,7 +131,7 @@ export async function registerMarketplaceRoutes(
             ...(deps.prStatusPoller ? { prStatusPoller: deps.prStatusPoller } : {}),
             ...(deps.ensureAgentTokenFresh ? { ensureAgentTokenFresh: deps.ensureAgentTokenFresh } : {}),
           },
-          { repoUrl, marketplaceId, pluginName },
+          { repoUrl, marketplaceId, pluginName, ...(agentId ? { agentId } : {}) },
         );
         return result;
       } catch (err) {

@@ -134,8 +134,9 @@ export async function installPluginAsSession(
 
   // 4. Push + open the PR directly (NOT via the viewer-gated lifecycle card).
   const title = `Install ${opts.pluginName} skill`;
+  const skillsDirName = deps.agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";
   const body = [
-    `Installs the **${opts.pluginName}** skill from \`${opts.marketplaceId}\` into this repo's \`.claude/skills/\`.`,
+    `Installs the **${opts.pluginName}** skill from \`${opts.marketplaceId}\` into this repo's \`${skillsDirName}/skills/\`.`,
     "",
     "Opened automatically by ShipIt's skill installer. Merge to make the skill available in sessions on this repo.",
   ].join("\n");
