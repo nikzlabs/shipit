@@ -2,11 +2,16 @@
  * PermissionRequestCard — inline approve/deny card for a gated agent action
  * (docs/193 / SHI-112).
  *
- * Rendered where an agent backend asked the user to approve a sensitive action
- * it can't auto-approve headlessly — most commonly editing a file ShipIt's
- * backend classifies as sensitive (`.npmrc`, `.env`). Approving lets the agent's
- * next write succeed; "Approve & remember" also stops re-prompting for that file
- * this session. Denying tells the agent to find another path.
+ * Rendered where an agent backend gated an action it can't auto-approve
+ * headlessly and asked the user to approve it. The classification is the
+ * BACKEND's, not ShipIt's — ShipIt has no sensitive-file matcher of its own; it
+ * faithfully surfaces whatever the CLI routed through its permission gate (a
+ * file it deems sensitive like `.npmrc` / `.env`, or any other action it won't
+ * take unattended). The copy is deliberately generic ("needs your approval")
+ * rather than asserting a specific reason ShipIt doesn't actually know.
+ * Approving lets the agent's next write succeed; "Approve & remember" also stops
+ * re-prompting for that file this session. Denying tells the agent to find
+ * another path.
  *
  * Agent-agnostic: the same card renders for Claude (its `--permission-prompt-tool`
  * gate) and Codex (its app-server escalation approval). Lifecycle (from the
@@ -93,10 +98,10 @@ export function PermissionRequestCard({ requestId, onResolve }: PermissionReques
             <code className="rounded bg-(--color-bg-primary) px-1 py-0.5 font-mono text-[11px] break-all">
               {card.path}
             </code>
-            , which is a protected file.
+            {" "}and needs your approval.
           </>
         ) : (
-          <>: {card.summary ?? "a protected action"}.</>
+          <>: {card.summary ?? "an action that needs your approval"}.</>
         )}
       </div>
       <div className="text-(--color-text-tertiary) text-[11px]">

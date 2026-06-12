@@ -132,6 +132,45 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
     client.close();
   });
 
+  it("answer_question preserves plan mode on the resumed turn (no silent plan-mode exit)", async () => {
+    // Regression (Thread A): a clarifying AskUserQuestion answered while the
+    // session is in plan mode must resume IN plan mode. An answer is a fresh
+    // `--resume` turn; before the fix `handleAnswerQuestion` forwarded no
+    // permission mode, so the resumed CLI dropped to default and the agent
+    // started implementing — silently "exiting plan mode" the user never
+    // approved. The client now forwards the chip and the server re-pins it.
+    sessionManager.track("plan-sess", "Plan session");
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Plan this", sessionId: "plan-sess", permissionMode: "plan" });
+    const firstClaude = await waitForClaude(() => lastClaude);
+    expect(firstClaude.lastPermissionMode).toBe("plan");
+
+    // Finish the planning turn so the answer takes the fresh-spawn `--resume`
+    // path (no resident process).
+    firstClaude.finish("plan-sess");
+    await new Promise((r) => setTimeout(r, 100));
+
+    client.send({
+      type: "answer_question",
+      toolUseId: "tool-plan",
+      answers: { "0": "Frontend" },
+      text: "Frontend",
+      permissionMode: "plan",
+    });
+    const resumed = await waitForClaude(() => lastClaude, firstClaude);
+
+    expect(resumed).not.toBe(firstClaude);
+    expect(resumed.runCalled).toBe(true);
+    expect(resumed.lastPrompt).toBe("Frontend");
+    // The crux: the resumed turn re-pins plan mode rather than dropping to default.
+    expect(resumed.lastPermissionMode).toBe("plan");
+
+    client.close();
+  });
+
   it("answer_question fall-through emits session_status running=true to viewers", async () => {
     // Regression test for: after answering an agent question, the UI's
     // "Thinking..." indicator and sidebar active-runner dot fail to appear

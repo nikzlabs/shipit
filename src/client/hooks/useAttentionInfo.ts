@@ -8,6 +8,8 @@ export interface AttentionInputs {
   card: PrCardState | undefined;
   status: PrStatusSummary | undefined;
   isAgentRunning: boolean;
+  /** docs/193 (Thread C) — the session is blocked awaiting a permission answer. */
+  awaitingPermission: boolean;
   /** Global `autoFixCi` setting — when on, a CI failure has a fix loop coming. */
   autoFixEnabled: boolean;
   /** Global `autoResolveConflicts` setting — when on, a conflict has a resolve loop coming. */
@@ -32,6 +34,7 @@ export function computeAttentionReason({
   card,
   status,
   isAgentRunning,
+  awaitingPermission,
   autoFixEnabled,
   autoResolveEnabled,
 }: AttentionInputs): string | null {
@@ -41,6 +44,12 @@ export function computeAttentionReason({
   const autoMerge = card?.autoMerge;
   const prState = status?.prState;
   const mergeable = status?.mergeable;
+
+  // A blocked permission prompt is the user's to answer and outranks every
+  // other reason — including the `isAgentRunning` short-circuit below, because
+  // the agent IS "running" (held inside the gated tool call) while it waits.
+  // This is what makes a permission prompt visible from another session.
+  if (awaitingPermission) return "Needs your approval to continue";
 
   if (isAgentRunning) return null;
 
@@ -83,7 +92,8 @@ export function useAttentionInfo(sessionId: string): string | null {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
   const status = usePrStore((s) => s.statusBySession[sessionId]);
   const isAgentRunning = useSessionStore((s) => s.activeRunnerSessions.has(sessionId));
+  const awaitingPermission = useSessionStore((s) => s.awaitingPermissionSessions.has(sessionId));
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
-  return computeAttentionReason({ card, status, isAgentRunning, autoFixEnabled, autoResolveEnabled });
+  return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, autoFixEnabled, autoResolveEnabled });
 }

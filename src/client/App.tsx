@@ -641,10 +641,24 @@ export default function App() {
 
   const handleAnswerQuestion = useCallback(
     (toolUseId: string, answers: Record<string, string>, text: string) => {
+      // Forward the session's current permission mode so answering a clarifying
+      // question stays in the same mode it was asked in. Without this, an answer
+      // given in plan mode resumes the CLI in default mode and the agent starts
+      // implementing — silently "exiting plan mode" the user never approved.
+      // Mirrors handleSendFollowUp's permission-mode plumbing.
+      const session = useSessionStore.getState();
+      const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
       sendUserMessage({
         bubble: { role: "user", text },
         activity: "Thinking...",
-        dispatch: () => send({ type: "answer_question", toolUseId, answers, text }),
+        dispatch: () =>
+          send({
+            type: "answer_question",
+            toolUseId,
+            answers,
+            text,
+            ...(pm !== "auto" ? { permissionMode: pm } : {}),
+          }),
       });
     },
     [send],

@@ -999,18 +999,30 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * docs/193 — the two halves of the permission round-trip.
+   * docs/193 — the permission round-trip, as a long poll (Thread B / SHI-112).
    *
-   * `/agent-ops/permission/request` is called by the Claude
-   * `--permission-prompt-tool` bridge: it opens a broker request and HOLDS the
-   * HTTP response open until the user answers, then replies with the decision
-   * the bridge maps to the CLI's allow/deny envelope. (Codex doesn't hit this
-   * route — its adapter calls `broker.request` directly via the injected
-   * requester.)
+   * The Claude `--permission-prompt-tool` bridge drives it in two steps so a
+   * long wait rides over a transient worker blip instead of dying on one
+   * indefinitely-held HTTP fetch (which surfaced as "fetch failed" → a
+   * fail-closed deny → a model retry that STACKED a fresh card):
+   *
+   * - `POST /agent-ops/permission/request` opens the request and returns
+   *   IMMEDIATELY — either `{ behavior }` for a pre-approved action (handled
+   *   interrupt tool / remembered path) or `{ requestId }` for the bridge to
+   *   poll. Idempotent on `toolUseId`, so a retried open re-attaches to the one
+   *   card instead of opening a second.
+   * - `POST /agent-ops/permission/await` holds for a BOUNDED window and returns
+   *   `{ behavior }` once answered or `{ pending: true }` to poll again. Short
+   *   holds mean a slow user never trips a client timeout and a brief
+   *   unreachability is a quick retry, not a hard failure.
+   *
+   * (Codex doesn't hit these routes — its adapter calls `broker.request`
+   * directly via the injected requester, awaiting the decision on its own
+   * blocking app-server RPC.)
    *
    * `/agent/permission/resolve` is the orchestrator→worker push: the user's
    * approve/deny answer, delivered via `ProxyAgentProcess.resolvePermission`.
-   * It resolves the broker entry, which unblocks BOTH the held bridge response
+   * It resolves the broker entry, which unblocks BOTH the bridge's next poll
    * (Claude) and the awaited `broker.request` promise (Codex) uniformly.
    */
   private registerPermissionEndpoints(app: FastifyInstance): void {
@@ -1021,12 +1033,36 @@ export class SessionWorker extends EventEmitter {
         if (typeof body.toolName !== "string" || !body.toolName) {
           return reply.code(400).send({ error: "toolName is required" });
         }
-        // Holds until resolve()/timeout settles the broker entry.
-        const decision = await this.permissionBroker.request({
+        // Non-blocking: register (or re-attach to) the request and return.
+        const opened = this.permissionBroker.openRequest({
           toolName: body.toolName,
           input: body.input,
-          agentId: this.agent?.agentId,
+          ...(body.toolUseId ? { toolUseId: body.toolUseId } : {}),
+          ...(this.agent?.agentId ? { agentId: this.agent.agentId } : {}),
         });
+        if (opened.immediate) {
+          return {
+            behavior: opened.immediate.behavior,
+            ...(opened.immediate.message ? { message: opened.immediate.message } : {}),
+          };
+        }
+        return { requestId: opened.requestId };
+      },
+    );
+
+    app.post<{ Body: { requestId?: string; timeoutMs?: number } }>(
+      "/agent-ops/permission/await",
+      async (request, reply) => {
+        const body = request.body ?? {};
+        if (typeof body.requestId !== "string" || !body.requestId) {
+          return reply.code(400).send({ error: "requestId is required" });
+        }
+        // Clamp the client-supplied hold to a sane bound (and ignore garbage).
+        const timeoutMs = typeof body.timeoutMs === "number" && body.timeoutMs > 0
+          ? Math.min(body.timeoutMs, 60_000)
+          : undefined;
+        const { settled, decision } = await this.permissionBroker.poll(body.requestId, timeoutMs);
+        if (!settled || !decision) return { pending: true };
         return { behavior: decision.behavior, ...(decision.message ? { message: decision.message } : {}) };
       },
     );

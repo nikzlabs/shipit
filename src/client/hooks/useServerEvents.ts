@@ -88,6 +88,33 @@ export function useServerEvents(): void {
       useSessionStore.getState().setActiveRunnerSessions(() => new Set(data.sessionIds));
     });
 
+    // docs/193 (Thread C) — a session is blocked awaiting a permission answer.
+    // Two shapes: the connect snapshot (`awaitingPermissionSessionIds`, replaces
+    // the set wholesale so a reconnect converges) and the live per-session toggle
+    // (`sessionId` + `awaitingPermission`). Drives the sidebar "needs your
+    // approval" attention signal even while the user is on another session.
+    es.addEventListener("session_attention", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as {
+        awaitingPermissionSessionIds?: string[];
+        sessionId?: string;
+        awaitingPermission?: boolean;
+      };
+      const store = useSessionStore.getState();
+      if (Array.isArray(data.awaitingPermissionSessionIds)) {
+        store.setAwaitingPermissionSessions(() => new Set(data.awaitingPermissionSessionIds));
+        return;
+      }
+      if (data.sessionId) {
+        const sid = data.sessionId;
+        store.setAwaitingPermissionSessions((prev) => {
+          const next = new Set(prev);
+          if (data.awaitingPermission) next.add(sid);
+          else next.delete(sid);
+          return next;
+        });
+      }
+    });
+
     es.addEventListener("repo_list", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { repos: RepoInfo[] };
       useRepoStore.getState().setRepos(data.repos);

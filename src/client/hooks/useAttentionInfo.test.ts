@@ -9,6 +9,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     card: undefined,
     status: undefined,
     isAgentRunning: false,
+    awaitingPermission: false,
     autoFixEnabled: false,
     autoResolveEnabled: false,
     ...overrides,
@@ -30,6 +31,22 @@ describe("computeAttentionReason", () => {
     expect(
       computeAttentionReason(inputs({ isAgentRunning: true, card: card({ checks: FAILURE }) })),
     ).toBeNull();
+  });
+
+  describe("awaiting permission (Thread C)", () => {
+    it("surfaces a blocked permission prompt as the highest-priority reason", () => {
+      expect(computeAttentionReason(inputs({ awaitingPermission: true }))).toBe(
+        "Needs your approval to continue",
+      );
+    });
+
+    it("outranks the agent-running short-circuit (the agent is held inside the gated call)", () => {
+      expect(
+        computeAttentionReason(
+          inputs({ awaitingPermission: true, isAgentRunning: true, card: card({ checks: FAILURE }) }),
+        ),
+      ).toBe("Needs your approval to continue");
+    });
   });
 
   describe("CI failure", () => {

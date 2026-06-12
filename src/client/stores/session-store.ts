@@ -73,6 +73,8 @@ interface SessionState {
   sessions: SessionInfo[];
   authUrl: string | null;
   activeRunnerSessions: Set<string>;
+  /** docs/193 (Thread C) — sessions blocked awaiting a permission answer. */
+  awaitingPermissionSessions: Set<string>;
   queuedMessages: { text: string; position: number }[];
   rewindPreviews: Record<string, WsRewindPreview>;
   rewindRecoveries: Record<string, RewindRecovery>;
@@ -180,6 +182,9 @@ interface SessionState {
   setActiveRunnerSessions: (
     updater: (prev: Set<string>) => Set<string>,
   ) => void;
+  setAwaitingPermissionSessions: (
+    updater: (prev: Set<string>) => Set<string>,
+  ) => void;
   setQueuedMessages: (
     messages:
       | { text: string; position: number }[]
@@ -277,6 +282,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
+  awaitingPermissionSessions: new Set<string>(),
   rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
@@ -427,6 +433,11 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setActiveRunnerSessions: (updater) =>
     set((state) => ({
       activeRunnerSessions: updater(state.activeRunnerSessions),
+    })),
+
+  setAwaitingPermissionSessions: (updater) =>
+    set((state) => ({
+      awaitingPermissionSessions: updater(state.awaitingPermissionSessions),
     })),
 
   setQueuedMessages: (messages) =>
