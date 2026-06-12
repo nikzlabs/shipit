@@ -286,18 +286,20 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       flag OFF.
       **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
       Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
-      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) a short
-      dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
-      churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
-      currently materializes a full independent ~470 MB copy; dedup makes the disk win
-      unconditional — see the FINDINGS break-even analysis); (c) **DONE — `SESSION_WORKER_IMAGE_ID`
-      is now wired at runtime** (see "Worker-image scope rotation" below); (d) auto-skip overlay for pnpm / Yarn-PnP
-      repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
-      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) ✅ **RESOLVED** — the flag-rollback marker fix:
-      the `/install` gate now distrusts a matching marker over any present-but-empty declared dep dir regardless
-      of mount type (`emptyDepDirsContradictingMarker`), so a marker written while deps lived in overlay no longer
-      skips into a dep-less session after the flag is rolled off. See FINDINGS.md "Operational
-      findings for the flip decision".
+      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) **SATISFIED
+      2026-06-12 by #1267** — hardlink-dedup between generations, verified live on the canary
+      (100%-linked no-change advance = 13 MB real; mixed `+dayjs` advance = ~15 MB real vs 470 MB;
+      +0.4–3.4 s publish cost — see FINDINGS "Generation hardlink-dedup (#1267) verified live");
+      (c) **DONE — `SESSION_WORKER_IMAGE_ID` is now wired at runtime** (see "Worker-image scope
+      rotation" below); (d) re-evaluated 2026-06-12: pnpm works end-to-end under overlay with a 9×
+      skip-path win, so auto-skip would forfeit real value — the EXDEV cost is a ~464 MB
+      *per-session upper* copy (disposable); the longer-term answer is the shared pnpm store of
+      docs/197. Yarn PnP (no `node_modules`) remains a skip; (e) ✅ **RESOLVED** — the flag-rollback
+      marker fix: the `/install` gate now distrusts a matching marker over any present-but-empty
+      declared dep dir regardless of mount type (`emptyDepDirsContradictingMarker`), so a marker
+      written while deps lived in overlay no longer skips into a dep-less session after the flag is
+      rolled off. See FINDINGS.md "Operational findings for the flip decision" and the 2026-06-12
+      dedup/pnpm/Python section.
 
 ### Worker-image scope rotation — `SESSION_WORKER_IMAGE_ID` wired (flip precondition (c))
 
