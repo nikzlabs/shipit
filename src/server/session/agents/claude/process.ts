@@ -215,7 +215,7 @@ export class ClaudeProcess extends EventEmitter {
       ...process.env,
       HOME: "/root",
       NODE_ENV: "development",
-    } as Record<string, string>;
+    };
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
@@ -409,7 +409,7 @@ export class StreamingClaudeProcess extends EventEmitter {
       ...process.env,
       HOME: "/root",
       NODE_ENV: "development",
-    } as Record<string, string>;
+    };
     if (autoCreatePr) {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {

@@ -311,7 +311,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
 
   constructor(opts: CodexAuthManagerOptions = {}) {
     super();
-    this.spawnFn = opts.spawn ?? (spawn as unknown as SpawnFn);
+    this.spawnFn = opts.spawn ?? (spawn);
     this.checkAuthFile = opts.checkAuthFile ?? authFileExists;
     this.timeoutMs = opts.timeoutMs ?? DEVICE_AUTH_TIMEOUT_MS;
   }

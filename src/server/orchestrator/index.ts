@@ -1467,7 +1467,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
               type: "compose_error",
               sessionId: runner.sessionId,
               message: mgr.startError,
-            } as WsServerMessage);
+            });
           }
           const services = mgr.getServices();
           if (services.length > 0) {
@@ -1481,7 +1481,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 preview: s.preview,
                 error: s.error,
               })),
-            } as WsServerMessage);
+            });
           }
         }
         // Replay agent-emitted presentations (docs/093) so the Present tab
@@ -1506,7 +1506,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
             type: "compose_error",
             sessionId: runner.sessionId,
             message: warning,
-          } as WsServerMessage);
+          });
         }
         // Replay compose-not-configured hint so the preview panel shows
         // the setup prompt after page reload.
@@ -1514,7 +1514,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           send({
             type: "compose_not_configured",
             sessionId: runner.sessionId,
-          } as WsServerMessage);
+          });
         }
         // Don't send preview_status here — it's sent once after the log
         // buffer replay (see below) so React 18 batching can't swallow it.

@@ -172,7 +172,7 @@ interface UiState {
 }
 
 const initialState = {
-  rightTab: getSavedRightTab() as RightTab,
+  rightTab: getSavedRightTab(),
   mobilePanel: "chat" as MobilePanel,
   showTemplates: false,
   templates: [] as TemplateInfo[],

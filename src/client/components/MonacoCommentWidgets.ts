@@ -367,11 +367,13 @@ export function createCommentWidgetManager(
   }
 
   // Glyph margin click handler
-  const GLYPH_MARGIN_TYPE = 2; // Monaco MouseTargetType.GUTTER_GLYPH_MARGIN
+  // Monaco MouseTargetType.GUTTER_GLYPH_MARGIN — literal because the monaco
+  // import is type-only (the editor instance is passed in by the caller).
+  const GLYPH_MARGIN_TYPE = 2 as monaco.editor.MouseTargetType;
   const glyphDisposable = editor.onMouseDown((e) => {
     if (options.readOnly) return;
     if (
-      (e.target.type as number) === GLYPH_MARGIN_TYPE &&
+      e.target.type === GLYPH_MARGIN_TYPE &&
       e.target.position
     ) {
       createInputZone(e.target.position.lineNumber);

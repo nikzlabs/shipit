@@ -630,7 +630,7 @@ export class CodexAdapter
           // at turn end. Without this, an accepted Codex steer that produced no
           // further assistant group would be misread as a lost gap-steer and
           // re-sent (double-processed) by `requeueUndeliveredSteers`.
-          this.emit("event", { type: "agent_user_replay", text: steerText } as AgentEvent);
+          this.emit("event", { type: "agent_user_replay", text: steerText });
         } catch (err: unknown) {
           // A rejection here (e.g. ActiveTurnNotSteerable during a
           // review/compaction turn, or the turn ending as we send) means the
@@ -641,7 +641,7 @@ export class CodexAdapter
           // diagnostics.
           const reason = err instanceof Error ? err.message : String(err);
           this.emit("log", "codex", `turn/steer rejected: ${reason}`);
-          this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
+          this.emit("event", { type: "agent_steer_rejected", text: steerText });
         }
       })();
     }
@@ -1171,7 +1171,7 @@ export class CodexAdapter
               type: "agent_assistant",
               content: [{ type: "text", text: item.text }],
               isStreamCompletion: true,
-            } as AgentEvent);
+            });
           }
           return;
         }
@@ -1189,7 +1189,7 @@ export class CodexAdapter
         const trigger: "manual" | "auto" = this.compactionRequested ? "manual" : "auto";
         if (phase === "started") {
           this.compactionPreTokens = this.lastTokenUsage?.last?.totalTokens;
-          this.emit("event", { type: "agent_compaction_started", trigger } as AgentEvent);
+          this.emit("event", { type: "agent_compaction_started", trigger });
         } else {
           const post = this.lastTokenUsage?.last?.totalTokens;
           const event: AgentEvent = { type: "agent_compacted", trigger };
@@ -1206,7 +1206,7 @@ export class CodexAdapter
               status: "success",
               sessionId: this.threadId ?? "unknown",
               durationMs: Date.now() - this.turnStartTime,
-            } as AgentEvent);
+            });
             this.kill();
           }
         }
@@ -1365,7 +1365,7 @@ export class CodexAdapter
 
   /** Emit an assistant event with the given content blocks. */
   private emitAssistant(content: AgentContentBlock[]): void {
-    this.emit("event", { type: "agent_assistant", content } as AgentEvent);
+    this.emit("event", { type: "agent_assistant", content });
   }
 
   /** Emit one tool_use block for a Codex item id, synthesizing starts as needed. */
@@ -1380,7 +1380,7 @@ export class CodexAdapter
     this.emit("event", {
       type: "agent_tool_result",
       content: [{ type: "tool_result", tool_use_id: toolUseId, content }],
-    } as AgentEvent);
+    });
   }
 
   /**
@@ -1426,7 +1426,7 @@ export class CodexAdapter
       contextWindow: usage?.modelContextWindow,
       durationMs,
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
-    } as AgentEvent);
+    });
 
     // Turn is over — no active turn to steer until the next one starts.
     this.currentTurnId = null;
@@ -1453,7 +1453,7 @@ export class CodexAdapter
     if (!session && !weekly) return;
 
     this.lastRateLimits = { session, weekly };
-    this.emit("event", { type: "agent_rate_limits", session, weekly } as AgentEvent);
+    this.emit("event", { type: "agent_rate_limits", session, weekly });
   }
 
   /** Normalize one Codex rate-limit window into `{ usedPct, resetAt }`. */
@@ -1560,7 +1560,7 @@ export class CodexAdapter
       sessionId: this.threadId ?? `codex-${Date.now()}`,
       model: params.model ?? "gpt-5.5",
       tools: this.capabilities.toolNames,
-    } as AgentEvent);
+    });
 
     // docs/178 — compact-spawn run: the orchestrator intercepted `/compact`
     // with no live app-server to call `compact()` on, so we spawned this

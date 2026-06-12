@@ -35,7 +35,7 @@ export function ThemePicker({ theme, onSelectTheme }: ThemePickerProps) {
       >
         <DropdownMenuRadioGroup
           value={theme}
-          onValueChange={(value) => onSelectTheme(value as Theme)}
+          onValueChange={(value) => onSelectTheme(value)}
           className="grid grid-cols-2 gap-1.5"
         >
           {THEME_OPTIONS.map((opt: { id: string; label: string; description: string }) => {

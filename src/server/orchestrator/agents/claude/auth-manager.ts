@@ -503,7 +503,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
       name: "xterm-256color",
       cols: 200,
       rows: 24,
-      env: { ...process.env, HOME: home } as Record<string, string>,
+      env: { ...process.env, HOME: home },
     });
     console.log("[auth] Spawned claude /login (pid %d)", this.proc.pid);
 

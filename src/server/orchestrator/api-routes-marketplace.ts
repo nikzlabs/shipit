@@ -20,7 +20,6 @@ import {
   readPluginSkillBody,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
-import type { AgentId } from "../shared/types.js";
 
 export interface MarketplaceRouteDeps {
   marketplaceStore: MarketplaceStore;
@@ -39,7 +38,7 @@ export async function registerMarketplaceRoutes(
     "/api/marketplaces",
     async (request) => {
       const agent = request.query.agent === "codex" || request.query.agent === "claude"
-        ? (request.query.agent as AgentId)
+        ? request.query.agent
         : undefined;
       return { marketplaces: listMarketplaces(marketplaceStore, agent) };
     },

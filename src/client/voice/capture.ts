@@ -110,7 +110,7 @@ export async function startCapture(): Promise<ActiveCapture> {
           recorder.stop();
         } catch (err) {
           releaseStream();
-          reject(err as Error);
+          reject(err instanceof Error ? err : new Error(String(err)));
         }
       });
     },

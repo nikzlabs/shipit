@@ -17,7 +17,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import { listTemplates } from "../templates.js";
 import { ServiceError } from "./types.js";
-import type { BootstrapData } from "./types.js";
+import type { BootstrapData, GlobalSettings } from "./types.js";
 import type { RuntimeMode } from "../../shared/types.js";
 import { listSessions } from "./session.js";
 import { listAgents, getGlobalSettings } from "./settings.js";
@@ -57,7 +57,7 @@ export async function getBootstrapData(deps: {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
     }),
-    getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown) => {
+    getGlobalSettings(deps.agentRegistry, deps.workspaceDir, deps.credentialStore, deps.providerAccountManager).catch((err: unknown): GlobalSettings => {
       console.error("[bootstrap] Failed to get global settings:", err);
       return {
         gitIdentity: { name: "", email: "" },
@@ -74,7 +74,7 @@ export async function getBootstrapData(deps: {
         voiceDeliveryMode: "native",
         voiceWebhookConfigured: false,
         providerAccounts: [],
-      } as Awaited<ReturnType<typeof getGlobalSettings>>;
+      };
     }),
   ]);
 

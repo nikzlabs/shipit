@@ -51,7 +51,7 @@ export function HighlightedText({
     parts.push(
       <mark
         key={`${match.start}-${match.length}`}
-        ref={isCurrent ? currentMatchRef as React.RefObject<HTMLElement> : undefined}
+        ref={isCurrent ? currentMatchRef : undefined}
         className={
           isCurrent
             ? "search-highlight search-highlight--current"
