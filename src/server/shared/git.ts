@@ -4,6 +4,50 @@ import path from "node:path";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
+/**
+ * docs/198 — keep pnpm's relocated store out of git WITHOUT mutating any tracked
+ * file. pnpm 11 ignores `npm_config_store_dir`/`store-dir` config and relocates
+ * its content-addressable store to `<nearest mountpoint of project>/.pnpm-store`
+ * when HOME's default store is on a different device than the project — i.e.
+ * `/workspace/.pnpm-store` inside a session container, where we mount the shared
+ * store. That mountpoint is visible to `git status` at the workspace root, and the
+ * repo's own `.gitignore` doesn't cover it, so the post-turn auto-commit would
+ * otherwise stage the store's internals (`.pnpm-store/v11/index.db`, …) onto the
+ * branch (observed on the canary 2026-06-12).
+ *
+ * Writing the pattern to `.git/info/exclude` — a per-clone, NON-tracked ignore
+ * list — keeps `git status` / `git add -A` from ever seeing it, with zero change
+ * to the committed tree. Applied to every clone (not gated on the overlay flag):
+ * pnpm's relocation happens regardless of our flag, so the exclude is a
+ * universally-safe defensive entry (`.pnpm-store/` is never something you want
+ * committed in any repo). Idempotent — appends the line only when absent.
+ * Best-effort: a missing/non-writable `.git` (e.g. a worktree pointer file, or a
+ * read-only fs in tests) must never block clone prep or a commit.
+ */
+export function ensurePnpmStoreGitExcluded(repoDir: string): void {
+  const PNPM_STORE_EXCLUDE_ENTRY = ".pnpm-store/";
+  const excludePath = path.join(repoDir, ".git", "info", "exclude");
+  try {
+    let contents = "";
+    try {
+      contents = fs.readFileSync(excludePath, "utf-8");
+    } catch {
+      // info/exclude may not exist yet — fall through to create it.
+    }
+    if (contents.split("\n").some((line) => line.trim() === PNPM_STORE_EXCLUDE_ENTRY)) {
+      return;
+    }
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    const sep = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
+    fs.appendFileSync(excludePath, `${sep}${PNPM_STORE_EXCLUDE_ENTRY}\n`);
+  } catch (err) {
+    console.warn(
+      `[git] failed to write .pnpm-store exclude to ${excludePath}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 export interface GitCommitInfo {
   hash: string;
   message: string;
@@ -48,13 +92,15 @@ export interface AutoCommitResult {
 
 export class GitManager {
   private git: SimpleGit;
+  private workspaceDir: string;
 
   /**
    * @param workspaceDir - Git working directory. Defaults to `/workspace`.
    *   Override in tests to use a temp directory.
    */
   constructor(workspaceDir?: string) {
-    this.git = simpleGit(workspaceDir ?? DEFAULT_WORKSPACE_DIR);
+    this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
+    this.git = simpleGit(this.workspaceDir);
   }
 
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
@@ -97,6 +143,12 @@ export class GitManager {
    * `<<<<<<<` etc. (test fixtures, docs, this very codebase).
    */
   async autoCommit(summary: string): Promise<AutoCommitResult> {
+    // docs/198 — defensively ensure pnpm's relocated `/workspace/.pnpm-store` is
+    // excluded before we read status / stage. The primary write happens at clone
+    // prep (RepoGit.cloneFromCache), but sessions cloned before this fix — and any
+    // non-clone workspace — heal here on their next turn, so the store can never
+    // leak into a commit. Idempotent + best-effort, so it never blocks the commit.
+    ensurePnpmStoreGitExcluded(this.workspaceDir);
     const status = await this.git.status();
     const rebaseInProgress = await this.isRebaseInProgress();
     const conflictedFiles = [...status.conflicted];

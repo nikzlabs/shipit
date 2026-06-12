@@ -86,20 +86,23 @@ describe("buildMounts", () => {
     expect(depMount!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
   });
 
-  // docs/197 Part 2 — shared pnpm store mount.
-  it("mounts pnpmStoreDir at /pnpm-store as a volume subpath of the state volume", () => {
+  // docs/198 — shared pnpm store mounts at pnpm 11's relocation target.
+  it("mounts pnpmStoreDir at pnpm 11's relocation target /workspace/.pnpm-store as a volume subpath", () => {
     const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
     const result = buildMounts(config, "my-workspace-vol", undefined);
     const storeMount = result.mounts.find((m) => m.Target === PNPM_STORE_CONTAINER_PATH);
     expect(storeMount).toBeDefined();
+    // The target IS pnpm's relocation dir — pnpm relocates straight into the shared store.
+    expect(PNPM_STORE_CONTAINER_PATH).toBe("/workspace/.pnpm-store");
     expect(storeMount!.Source).toBe("my-workspace-vol");
+    // Host subpath is still the runtime-keyed store dir on the state volume.
     expect(storeMount!.VolumeOptions?.Subpath).toBe("pnpm-store/deadbeefcafe0001");
   });
 
   it("mounts pnpmStoreDir as a bind when no workspaceVolume (dev mode)", () => {
     const config = baseConfig({ pnpmStoreDir: "/state/pnpm-store/deadbeefcafe0001" });
     const result = buildMounts(config, undefined, undefined);
-    expect(result.binds).toContain("/state/pnpm-store/deadbeefcafe0001:/pnpm-store:rw");
+    expect(result.binds).toContain("/state/pnpm-store/deadbeefcafe0001:/workspace/.pnpm-store:rw");
   });
 
   it("adds no pnpm store mount when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
@@ -290,11 +293,11 @@ describe("buildEnv", () => {
     expect(cacheVars).toHaveLength(0);
   });
 
-  // docs/197 Part 2 — point pnpm at the shared store via npm_config_store_dir.
-  it("sets npm_config_store_dir when pnpmStoreDir is set", () => {
+  // docs/198 — point older pnpm at the shared store (pnpm 11 relocates there on its own).
+  it("sets npm_config_store_dir to the relocation target when pnpmStoreDir is set", () => {
     const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
-    expect(env).toContain("npm_config_store_dir=/pnpm-store");
+    expect(env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
   });
 
   it("does not set npm_config_store_dir when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {

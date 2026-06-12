@@ -3,6 +3,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
+import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 
 /**
  * Validate a bare cache directory and re-clone it from the remote if it's
@@ -208,6 +209,11 @@ export class RepoGit {
     if (remoteUrl) {
       await sessionGit.raw(["remote", "set-url", "origin", remoteUrl]);
     }
+    // docs/198 — keep pnpm's relocated `/workspace/.pnpm-store` (a mountpoint at the
+    // workspace root for pnpm repos) out of git via `.git/info/exclude`, so the
+    // post-turn auto-commit never stages the store's internals. Non-tracked, so the
+    // committed tree is unchanged; idempotent + best-effort.
+    ensurePnpmStoreGitExcluded(sessionDir);
     console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
   }
 

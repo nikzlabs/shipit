@@ -206,6 +206,33 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(out).toEqual([]);
   });
 
+  // docs/198 — pnpm repos never overlay, so the publish hook must skip them at the
+  // same `isPnpmRepo` decision point the mount side uses. Otherwise it exports +
+  // publishes a never-mounted base generation (480 MB leak observed on the canary).
+  it("no-ops for a pnpm repo (no base published), while an npm repo still publishes", async () => {
+    // pnpm repo: a root pnpm-lock.yaml is the conventional signal.
+    fs.writeFileSync(path.join(workspaceDir, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    const out = await publishDepDirOverlayBases(
+      { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
+      depsWith(),
+    );
+    expect(out).toEqual([]);
+    expect(pointerFor("node_modules")).toBeNull();
+    expect(baseContentFor("node_modules")).toBeNull();
+
+    // An otherwise-identical npm repo (no pnpm signal) still publishes its base.
+    const npmWs = makeWorkspace(["node_modules"]);
+    try {
+      const npmOut = await publishDepDirOverlayBases(
+        { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir: npmWs }, workerUrl: "http://w", installOk: true },
+        depsWith(),
+      );
+      expect(npmOut).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    } finally {
+      fs.rmSync(npmWs, { recursive: true, force: true });
+    }
+  });
+
   it("skips (no base) when the install failed", async () => {
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: false },

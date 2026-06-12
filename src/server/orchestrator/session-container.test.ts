@@ -767,15 +767,16 @@ describe("SessionContainerManager", () => {
         });
         await mgr.create(config);
         const call = mockDocker.createContainer.mock.calls.at(-1)![0];
-        // The store is mounted at /pnpm-store as a Subpath of the state volume…
-        const storeMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/pnpm-store");
+        // docs/198 — the store is mounted at pnpm 11's relocation target
+        // /workspace/.pnpm-store (nested under /workspace) as a Subpath of the state volume…
+        const storeMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/.pnpm-store");
         expect(storeMount?.Source).toBe(STATE_VOL);
         expect(storeMount?.VolumeOptions?.Subpath).toContain("pnpm-store/");
         // …and no nested node_modules overlay mount exists.
         const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
         expect(nested).toBeUndefined();
-        // …and pnpm is pointed at it via npm_config_store_dir.
-        expect(call.Env).toContain("npm_config_store_dir=/pnpm-store");
+        // …and older pnpm is pointed at the same path via npm_config_store_dir.
+        expect(call.Env).toContain("npm_config_store_dir=/workspace/.pnpm-store");
       } finally {
         await mgr.dispose();
       }
