@@ -74,6 +74,8 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
     onOpenIssue: vi.fn(),
+    initialScrollTop: 0,
+    onPersistScroll: vi.fn(),
     onSetStatus: vi.fn(async () => null),
     onSetPriority: vi.fn(async () => null),
     onStartSession: vi.fn(),
@@ -289,6 +291,25 @@ describe("IssuesViewer", () => {
     expect(screen.getByText(/No issues match your filters/i)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Clear filters/i }));
     expect(props.onClearFilters).toHaveBeenCalledOnce();
+  });
+
+  // ---- docs/189: scroll restoration across the detail round-trip ----
+
+  it("restores the saved scroll offset on mount and persists it on unmount", () => {
+    const onPersistScroll = vi.fn();
+    const props = defaultProps({
+      issues: [makeIssue({ id: "1", title: "Row one" })],
+      initialScrollTop: 120,
+      onPersistScroll,
+    });
+    const { container, unmount } = render(<IssuesViewer {...props} />);
+    const scroller = container.querySelector<HTMLElement>(".overflow-auto")!;
+    // The layout effect restored the parent's stashed offset before paint.
+    expect(scroller.scrollTop).toBe(120);
+    // User scrolls further, then opens an issue (which unmounts the list).
+    scroller.scrollTop = 340;
+    unmount();
+    expect(onPersistScroll).toHaveBeenCalledWith(340);
   });
 
   it("opens the status facet and toggles a status", () => {

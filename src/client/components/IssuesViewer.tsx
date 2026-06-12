@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from "react";
 import {
   ArrowClockwiseIcon,
   CheckCircleIcon,
@@ -58,6 +59,13 @@ export interface IssuesViewerProps {
   onToggleIncludeDone: () => void;
   /** Open the inline detail view for a row (docs/189). */
   onOpenIssue: (issue: TrackerIssue) => void;
+  /**
+   * Scroll offset to restore on mount — the list unmounts behind the detail
+   * view, so its DOM `scrollTop` is gone on return; the parent stashes it (docs/189).
+   */
+  initialScrollTop: number;
+  /** Persist the list's scroll offset on unmount so the next mount can restore it. */
+  onPersistScroll: (top: number) => void;
   /** Set a row's status inline; resolves to an error message, or null (docs/191). */
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   /** Set a row's priority inline (Linear-only); resolves to an error, or null. */
@@ -360,6 +368,8 @@ export function IssuesViewer({
   onRefresh,
   onToggleIncludeDone,
   onOpenIssue,
+  initialScrollTop,
+  onPersistScroll,
   onSetStatus,
   onSetPriority,
   onStartSession,
@@ -378,6 +388,21 @@ export function IssuesViewer({
   // Rows sit on the primary surface; adapt status-dot colors to its luminance
   // so pale states stay legible on light themes (computed once for all rows).
   const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
+
+  // Restore the saved scroll offset on mount and stash the current one on
+  // unmount, so opening an issue and pressing back lands on the same row
+  // (docs/189). Rows render synchronously from the cached list, so the
+  // scrollable content already exists here — `useLayoutEffect` sets `scrollTop`
+  // before paint, with no visible jump. Empty deps: this is a mount/unmount
+  // pair, and the captured `initialScrollTop`/`onPersistScroll` are exactly the
+  // values we want (the offset at mount, the persist fn for unmount).
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    el.scrollTop = initialScrollTop;
+    return () => onPersistScroll(el.scrollTop);
+  }, []);
 
   return (
     <div className="flex flex-col h-full">
@@ -475,7 +500,7 @@ export function IssuesViewer({
           viewport; `overflow-auto` so a too-narrow panel scrolls the table
           horizontally (the grid's title-min keeps columns from crushing) rather
           than clipping the action column. */}
-      <div className="@container flex-1 overflow-auto">
+      <div ref={scrollRef} className="@container flex-1 overflow-auto">
         {error && (
           <div className="flex items-start gap-2 m-3 p-3 rounded bg-(--color-error-subtle) text-(--color-error) text-xs">
             <WarningCircleIcon size={ICON_SIZE.SM} className="shrink-0 mt-0.5" />
