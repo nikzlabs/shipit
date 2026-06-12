@@ -376,11 +376,30 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     expect(ok).toBe(true);
     const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
     expect(written).toMatchObject({
-      version: 1,
+      version: 2,
       sourceCommit: head,
       runtimeKey: WORKER_RT,
       installCommands: ["npm install"],
     });
+    // docs/197 — no package.json/lockfile in this workspace, so there is nothing
+    // to content-key: the pre-stamp records a null depsHash (commit-only).
+    expect(written.depsHash).toBeNull();
+  });
+
+  it("stamps a content depsHash when the dep input files exist (docs/197)", async () => {
+    const { dir, head } = await gitWorkspace();
+    fs.writeFileSync(path.join(dir, "package.json"), '{"name":"x"}');
+    fs.writeFileSync(path.join(dir, "package-lock.json"), '{"lockfileVersion":3}');
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(true);
+    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    expect(typeof written.depsHash).toBe("string");
+    expect(written.depsHash).toHaveLength(64);
   });
 
   it("declines on commit mismatch, generation mismatch, command mismatch, or a pointer without marker", async () => {

@@ -67,6 +67,8 @@ import {
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
 import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
+import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import {
   runAgentToCompletion,
@@ -791,6 +793,11 @@ export class SessionWorker extends EventEmitter {
         sourceCommit: await this.readSourceCommit(),
         runtimeKey: runtimeKey(),
         installCommands: commands,
+        // docs/197 — content key over the dependency input files. Lets a
+        // different commit whose dep files are byte-identical skip the install.
+        // `null` (codegen install / no `install-inputs` / no input files) falls
+        // back to commit-only matching.
+        depsHash: this.computeDepsHash(commands),
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
         // docs/183 — a matching marker is only trustworthy if every declared dep
@@ -1355,6 +1362,23 @@ export class SessionWorker extends EventEmitter {
     }
     const marker = parseMarker(raw);
     return marker !== null && markerMatches(marker, stamp);
+  }
+
+  /**
+   * Compute the install marker's `depsHash` (docs/197) — a content hash of the
+   * dependency input files, gated by the `agent.install` command allowlist and
+   * an optional `agent.install-inputs` override (read from `shipit.yaml`). A
+   * config-read failure or a non-content-keyable install both yield `null`,
+   * which keeps the marker on the commit-only path.
+   */
+  private computeDepsHash(commands: string[]): string | null {
+    let installInputs: string[] | null = null;
+    try {
+      installInputs = resolveShipitConfig(this.workspaceDir).agent.installInputs;
+    } catch {
+      // Unreadable/invalid config — fall back to the command-derived inputs.
+    }
+    return computeInstallDepsHash(this.workspaceDir, commands, installInputs);
   }
 
   /**

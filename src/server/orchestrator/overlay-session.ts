@@ -31,6 +31,7 @@ import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.j
 import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpec } from "./overlay-volume.js";
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
+import { computeInstallDepsHash } from "../shared/deps-hash.js";
 
 // ---------------------------------------------------------------------------
 // Feature flag + eligibility
@@ -362,8 +363,11 @@ export async function preStampInstallMarker(args: {
   if (!head) return false;
 
   let installCommands: string[];
+  let installInputs: string[] | null;
   try {
-    installCommands = resolveShipitConfig(workspaceDir).agent.install;
+    const agent = resolveShipitConfig(workspaceDir).agent;
+    installCommands = agent.install;
+    installInputs = agent.installInputs;
   } catch {
     return false;
   }
@@ -383,8 +387,12 @@ export async function preStampInstallMarker(args: {
   }
   if (!runtimeKey) return false;
 
+  // docs/197 — stamp the content key too, so a LATER session on a different
+  // commit with byte-identical dep files can still content-key-skip against this
+  // pre-stamped marker (the worker gate re-derives + re-checks it).
+  const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
   const marker = makeMarker(
-    { sourceCommit: head, runtimeKey, installCommands },
+    { sourceCommit: head, runtimeKey, installCommands, depsHash },
     new Date().toISOString(),
   );
   fs.mkdirSync(path.dirname(markerFile), { recursive: true });

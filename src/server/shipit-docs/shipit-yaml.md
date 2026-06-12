@@ -48,6 +48,9 @@ agent:
     - npx prisma generate
   dep-dirs:           # Dependency dirs for the overlay store (default: [node_modules])
     - node_modules
+  install-inputs:     # Dependency input files for the content-keyed install skip
+    - package.json
+    - package-lock.json
 ```
 
 | Field | Type | Default | Description |
@@ -57,6 +60,7 @@ agent:
 | `pids` | integer | 4096 | Max processes |
 | `install` | string or string[] | none | Install commands, run sequentially |
 | `dep-dirs` | string or string[] | `[node_modules]` | Dependency directories eligible for the overlay store |
+| `install-inputs` | string or string[] | auto (from `install`) | Dependency input files whose content keys the install-skip (see below) |
 
 A declared resource value is honored up to a deployment-level ceiling. By
 default that ceiling tracks the host: memory is capped at ~75% of total host
@@ -76,11 +80,55 @@ values fall back to defaults.
 - The `.shipit/.install-done` marker is only written after all steps succeed.
   It is *stamped* with the source commit, the container's runtime fingerprint,
   and the install commands it ran.
-- On resume, install is skipped only when that stamp still matches — i.e. the
-  checked-out commit, the runtime, and the install commands are all unchanged.
-  A new commit, a changed `install` in `shipit.yaml`, or a different runtime
-  re-runs install (a warm dependency cache keeps the re-run fast).
+- On resume, install is skipped when the stamp still matches. The runtime and
+  the install commands must always match; given those, the deps are current when
+  **either** the checked-out commit is unchanged **or** the dependency input
+  files hash identically to the last install (the *content key* — see
+  `install-inputs` below). So a new commit that only edits source or docs — but
+  not `package.json`/the lockfile — still skips install. A different runtime or a
+  changed `install` always re-runs (a warm dependency cache keeps it fast).
 - When `install` is a string, it's treated as a single-element list.
+
+#### Content-keyed install skip (`install-inputs`)
+
+The install-skip is also keyed on the **content of your dependency files**, not
+just the commit. When a resume lands on a new commit, ShipIt compares a hash of
+the dependency input files against the last install; if they're identical, the
+deps are already correct and install is skipped.
+
+By default the input files are inferred from your `install` commands when **every**
+command is a recognized pure dependency install:
+
+| Command (common flags tolerated) | Hashed input files |
+|---|---|
+| `npm install` / `npm ci` / `npm i` | `package.json`, `package-lock.json` |
+| `pnpm install` | `package.json`, `pnpm-lock.yaml`, `pnpm-workspace.yaml` |
+| `yarn` / `yarn install` | `package.json`, `yarn.lock` |
+| `pip install -r <file>` | the named requirements file(s) |
+| `uv sync` | `pyproject.toml`, `uv.lock` |
+
+If **any** `install` command is something else (a build, codegen, a custom
+script — e.g. `npx prisma generate`), content-keying is **disabled** and the skip
+falls back to commit-only, because the install's output isn't fully described by
+those files. To opt back in, declare the inputs explicitly:
+
+```yaml
+agent:
+  install:
+    - npm ci
+    - npx prisma generate
+  install-inputs:        # replaces the inferred set; opts content-keying back on
+    - package.json
+    - package-lock.json
+    - prisma/schema.prisma
+```
+
+- **Literal relative paths only** — no globs, no `..`, not the workspace root.
+  Invalid entries are ignored with a warning.
+- An explicit list **replaces** the inferred set (it does not add to it), so list
+  every file whose change should re-run install.
+- Omit the key to use the inferred set. A missing or mismatched hash only ever
+  causes a (safe, one-time) reinstall — it can never cause a stale skip.
 
 > **Python projects usually have no `install` step.** A Python virtualenv is
 > pinned to the interpreter that creates it, so deps must be installed by the
