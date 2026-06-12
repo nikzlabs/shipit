@@ -301,7 +301,7 @@ describe("wireAgentListeners", () => {
           {
             type: "tool_use",
             id: "v1",
-            name: "mcp__shipit-voice__voice_note",
+            name: "mcp__shipit__voice_note",
             input: { summary: "Big finding — your call on the direction.", needsAttention: true, context: { repo: "acme/app" } },
           },
         ],
@@ -331,7 +331,7 @@ describe("wireAgentListeners", () => {
       agent.emit("event", {
         type: "agent_assistant",
         content: [
-          { type: "tool_use", id: "v1", name: "mcp__shipit-voice__voice_note", input: { summary: "Authored headline.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Authored headline.", needsAttention: true } },
           { type: "tool_use", id: "q1", name: "AskUserQuestion", input: { questions: [{ header: "direction", question: "Which way?" }] } },
         ],
       } satisfies AgentEvent);
@@ -371,7 +371,7 @@ describe("wireAgentListeners", () => {
         type: "agent_assistant",
         content: [
           { type: "text", text: "Here's the summary." },
-          { type: "tool_use", id: "v1", name: "mcp__shipit-voice__voice_note", input: { summary: "Done — your call.", needsAttention: true } },
+          { type: "tool_use", id: "v1", name: "mcp__shipit__voice_note", input: { summary: "Done — your call.", needsAttention: true } },
         ],
       } satisfies AgentEvent);
 

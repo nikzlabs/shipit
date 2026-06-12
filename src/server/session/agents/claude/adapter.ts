@@ -454,60 +454,27 @@ export class ClaudeAdapter
       },
     };
 
-    // docs/125 — internal review tool. The bridge is a thin stdio→HTTP shim
-    // (mcp-review-bridge.ts) launched via tsx-by-absolute-path, mirroring the
-    // `gh`/`shipit` shim install in the Dockerfile (bare `tsx` fails to
-    // resolve when the agent's cwd is a user repo without a tsx dep). Skipped
-    // if the bridge isn't present (e.g. a stripped-down test image) so agent
-    // start never fails on it.
-    if (ctx.reviewBridge) {
-      mcpServers["shipit-review"] = {
-        command: ctx.reviewBridge.tsxBin,
-        args: [ctx.reviewBridge.bridgePath],
+    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // internal tools under the single `shipit` server, instead of five separate
+    // processes. The bridge (`mcp-shipit-bridge`) is launched via
+    // node/tsx-by-absolute-path (mirroring the `gh`/`shipit` shim install — bare
+    // `tsx` fails to resolve when the agent's cwd is a user repo without a tsx
+    // dep) and the `SHIPIT_MCP_TOOLS` env selects which tools to expose. Claude
+    // gets review (docs/125), present (docs/093), voice (docs/163), bug
+    // (docs/164), and permission (docs/193) — NOT ask (it has a native
+    // AskUserQuestion). Skipped if the bridge isn't present (stripped-down test
+    // image) so agent start never fails on it.
+    if (ctx.shipitBridge) {
+      mcpServers.shipit = {
+        command: ctx.shipitBridge.tsxBin,
+        args: [ctx.shipitBridge.bridgePath],
+        env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission" },
       };
-    }
-
-    // docs/093 — internal `present` tool. Same stdio→HTTP bridge pattern as
-    // the review tool; lets the agent display HTML/SVG/markdown to the user
-    // in the Present tab without writing files to the workspace.
-    if (ctx.presentBridge) {
-      mcpServers["shipit-present"] = {
-        command: ctx.presentBridge.tsxBin,
-        args: [ctx.presentBridge.bridgePath],
-      };
-    }
-
-    // docs/163 — built-in `voice_note` tool. Same stdio→HTTP bridge pattern;
-    // the agent emits an ear-shaped summary and the orchestrator's router
-    // decides delivery (native note, external webhook, or both).
-    if (ctx.voiceBridge) {
-      mcpServers["shipit-voice"] = {
-        command: ctx.voiceBridge.tsxBin,
-        args: [ctx.voiceBridge.bridgePath],
-      };
-    }
-
-    // docs/164 — `report_shipit_bug` tool. Same stdio→HTTP bridge pattern; the
-    // agent hands a draft, the orchestrator redacts it and posts a consent
-    // card. Nothing is filed without the user's explicit confirmation.
-    if (ctx.bugBridge) {
-      mcpServers["shipit-bug"] = {
-        command: ctx.bugBridge.tsxBin,
-        args: [ctx.bugBridge.bridgePath],
-      };
-    }
-
-    // docs/193 — permission-prompt tool. Registered as the CLI's
-    // `--permission-prompt-tool` (set below at run time): instead of
-    // auto-denying a gated sensitive-file edit in headless mode, the CLI calls
-    // this bridge, which surfaces an approve/deny card and blocks on the
-    // answer. Same stdio→HTTP bridge pattern; never model-callable.
-    if (ctx.permissionBridge) {
-      mcpServers["shipit-permission"] = {
-        command: ctx.permissionBridge.tsxBin,
-        args: [ctx.permissionBridge.bridgePath],
-      };
-      this._permissionPromptTool = "mcp__shipit-permission__permission_prompt";
+      // The permission tool is the CLI's `--permission-prompt-tool` (set below
+      // at run time): instead of auto-denying a gated sensitive-file edit in
+      // headless mode, the CLI calls it, which surfaces an approve/deny card and
+      // blocks on the answer. Never model-callable (kept out of allowed-tools).
+      this._permissionPromptTool = "mcp__shipit__permission_prompt";
     } else {
       this._permissionPromptTool = undefined;
     }

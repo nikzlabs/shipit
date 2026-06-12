@@ -277,8 +277,8 @@ function normalizeWebSearchItem(item: CodexItem): { name: "WebFetch" | "WebSearc
 /**
  * The bare tool name the ShipIt-managed ask bridge exposes (docs/147). The
  * Codex app-server may surface an MCP tool under a server-qualified name
- * (`AskUserQuestion`, `shipit-ask__AskUserQuestion`, `shipit-ask.AskUserQuestion`,
- * `shipit-ask/AskUserQuestion`), so match the bare name or any of those
+ * (`AskUserQuestion`, `shipit__AskUserQuestion`, `shipit.AskUserQuestion`,
+ * `shipit/AskUserQuestion`), so match the bare name or any of those
  * separator-prefixed forms rather than assuming one shape. Used only to IGNORE
  * the ask tool on the event stream — the question card is surfaced by the
  * bridge's worker round-trip, not from here (see handleItem's mcpToolCall case).
@@ -386,7 +386,7 @@ export class CodexAdapter
     // needs: subagents (model spawns them via the `spawn_agent` collab tool on
     // explicit instruction — exactly what the composed review prompt asks for)
     // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
-    // writes the `shipit-review` bridge into the Codex config before spawn
+    // writes the consolidated `shipit` bridge into the Codex config before spawn
     // (see CodexAdapter.writeMcpConfig), so `submit_review_comments`
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
@@ -761,56 +761,23 @@ export class CodexAdapter
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
     );
 
-    // docs/125 — internal review tool bridge.
-    if (ctx.reviewBridge) {
+    // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
+    // internal tools under the single `shipit` server, instead of five separate
+    // processes. The `SHIPIT_MCP_TOOLS` env selects which tools to expose; Codex
+    // gets review (docs/125), present (docs/093), voice (docs/163), ask
+    // (docs/147 — Codex lacks a Default-mode native question tool, so this
+    // exposes one whose output handleItem normalizes into an AskUserQuestion
+    // tool_use), and bug (docs/164) — NOT permission (Codex uses its native
+    // approval channel). The value is passed through `runtimeEnv` (the child's
+    // env) and allowlisted via `env_vars`, matching how user-server env is wired.
+    if (ctx.shipitBridge) {
+      runtimeEnv.SHIPIT_MCP_TOOLS = "review,present,voice,ask,bug";
       lines.push(
         "",
-        "[mcp_servers.shipit-review]",
-        `command = ${tomlString(ctx.reviewBridge.tsxBin)}`,
-        `args = ${tomlArray([ctx.reviewBridge.bridgePath])}`,
-      );
-    }
-
-    // docs/093 — internal present tool bridge.
-    if (ctx.presentBridge) {
-      lines.push(
-        "",
-        "[mcp_servers.shipit-present]",
-        `command = ${tomlString(ctx.presentBridge.tsxBin)}`,
-        `args = ${tomlArray([ctx.presentBridge.bridgePath])}`,
-      );
-    }
-
-    // docs/163 — built-in voice_note tool bridge.
-    if (ctx.voiceBridge) {
-      lines.push(
-        "",
-        "[mcp_servers.shipit-voice]",
-        `command = ${tomlString(ctx.voiceBridge.tsxBin)}`,
-        `args = ${tomlArray([ctx.voiceBridge.bridgePath])}`,
-      );
-    }
-
-    // docs/147 — structured AskUserQuestion tool bridge. Codex lacks a
-    // Default-mode native question tool, so this exposes one whose output the
-    // adapter normalizes into an AskUserQuestion tool_use (handleItem), reusing
-    // ShipIt's existing question/interrupt/resume flow.
-    if (ctx.askBridge) {
-      lines.push(
-        "",
-        "[mcp_servers.shipit-ask]",
-        `command = ${tomlString(ctx.askBridge.tsxBin)}`,
-        `args = ${tomlArray([ctx.askBridge.bridgePath])}`,
-      );
-    }
-
-    // docs/164 — report_shipit_bug tool bridge.
-    if (ctx.bugBridge) {
-      lines.push(
-        "",
-        "[mcp_servers.shipit-bug]",
-        `command = ${tomlString(ctx.bugBridge.tsxBin)}`,
-        `args = ${tomlArray([ctx.bugBridge.bridgePath])}`,
+        "[mcp_servers.shipit]",
+        `command = ${tomlString(ctx.shipitBridge.tsxBin)}`,
+        `args = ${tomlArray([ctx.shipitBridge.bridgePath])}`,
+        `env_vars = ${tomlArray(["SHIPIT_MCP_TOOLS"])}`,
       );
     }
 
@@ -1257,7 +1224,7 @@ export class CodexAdapter
 
       case "mcpToolCall":
       case "dynamicToolCall": {
-        // docs/147 — the ShipIt-managed `shipit-ask` bridge surfaces its
+        // docs/147 — the ShipIt-managed `shipit` bridge's ask tool surfaces its
         // AskUserQuestion card directly through the worker (the bridge POSTs to
         // `/agent-ops/ask/submit`, which injects a synthetic `AskUserQuestion`
         // tool_use), NOT through this event stream. The Codex app-server emits

@@ -24,12 +24,7 @@ import type {
   AgentRunParams,
   AgentEvent,
   AgentId,
-  AgentMcpReviewBridge,
-  AgentMcpPresentBridge,
-  AgentMcpVoiceBridge,
-  AgentMcpAskBridge,
-  AgentMcpBugBridge,
-  AgentMcpPermissionBridge,
+  AgentMcpBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
@@ -227,12 +222,7 @@ export class SessionWorker extends EventEmitter {
   ): AgentMcpWriteResult {
     return agent.writeMcpConfig({
       servers: params?.mcpServers ?? [],
-      reviewBridge: this.reviewBridgePaths(),
-      presentBridge: this.presentBridgePaths(),
-      voiceBridge: this.voiceBridgePaths(),
-      askBridge: this.askBridgePaths(),
-      bugBridge: this.bugBridgePaths(),
-      permissionBridge: this.permissionBridgePaths(),
+      shipitBridge: this.shipitBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -243,41 +233,19 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Resolve how to launch each internal MCP bridge. All six share one resolver
-   * (`resolveBridge`, docs/199): it prefers the precompiled JS bundle in
+   * Resolve how to launch the consolidated internal MCP bridge (SHI-128).
+   * `resolveBridge` (docs/199) prefers the precompiled JS bundle in
    * `dist/mcp-bridges/` (launched with `node` — no per-spawn tsx compile, which
-   * is what made these bridges miss the CLI's 2000ms MCP pre-wait at the
-   * 0.5-CPU AGENT_DEFAULTS) and falls back to running the `.ts` source through
-   * tsx in dev/local images. Returns null when neither exists (stripped-down
-   * test image) so the adapter omits the entry rather than failing agent start.
-   *
-   *   - review (docs/125), present (docs/093), voice (docs/163), bug (docs/164):
-   *     registered by adapters that expose those tools.
-   *   - ask (docs/147): only Codex (Claude has a native `AskUserQuestion`).
-   *   - permission (docs/193): only Claude, as `--permission-prompt-tool`.
+   * is what made the bridges miss the CLI's 2000ms MCP pre-wait at the 0.5-CPU
+   * AGENT_DEFAULTS) and falls back to running the `.ts` source through tsx in
+   * dev/local images. Returns null when neither exists (stripped-down test
+   * image) so the adapter omits the entry rather than failing agent start. The
+   * adapter selects which tools the `shipit` server exposes (review/present/
+   * voice/bug/permission for Claude; review/present/voice/ask/bug for Codex) via
+   * the `SHIPIT_MCP_TOOLS` env — there is one process, not six.
    */
-  private reviewBridgePaths(): AgentMcpReviewBridge | null {
-    return resolveBridge("mcp-review-bridge");
-  }
-
-  private presentBridgePaths(): AgentMcpPresentBridge | null {
-    return resolveBridge("mcp-present-bridge");
-  }
-
-  private voiceBridgePaths(): AgentMcpVoiceBridge | null {
-    return resolveBridge("mcp-voice-bridge");
-  }
-
-  private askBridgePaths(): AgentMcpAskBridge | null {
-    return resolveBridge("mcp-ask-bridge");
-  }
-
-  private bugBridgePaths(): AgentMcpBugBridge | null {
-    return resolveBridge("mcp-bug-bridge");
-  }
-
-  private permissionBridgePaths(): AgentMcpPermissionBridge | null {
-    return resolveBridge("mcp-permission-bridge");
+  private shipitBridgePaths(): AgentMcpBridge | null {
+    return resolveBridge("mcp-shipit-bridge");
   }
 
   private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
@@ -331,7 +299,7 @@ export class SessionWorker extends EventEmitter {
         // (Codex) the broker so its escalation requests surface the same
         // approve/deny card as Claude's sensitive-file gate, rather than being
         // silently auto-approved. Claude has no such channel here — its gate is
-        // bridged via `--permission-prompt-tool` (mcp-permission-bridge).
+        // bridged via `--permission-prompt-tool` (the `shipit` bridge's permission tool).
         this.agent.setPermissionRequester?.((input) => this.permissionBroker.request(input));
         const mcpWrite = this.invokeAgentMcpWriter(this.agent, params);
 
@@ -904,7 +872,7 @@ export class SessionWorker extends EventEmitter {
 
   /**
    * `POST /agent-ops/ask/submit` — receives a structured question from the
-   * `mcp-ask-bridge` subprocess (a child of the Codex CLI) and injects it into
+   * `shipit` bridge's ask tool (a child of the Codex CLI) and injects it into
    * the agent event stream as an `AskUserQuestion` tool_use.
    *
    * Why inject here instead of letting the adapter parse it off Codex's event
@@ -1045,7 +1013,7 @@ export class SessionWorker extends EventEmitter {
    * Wire the `present` tool's HTTP surfaces:
    *
    *  - `POST /agent-ops/present/submit` — receives the artifact PATH from the
-   *    `mcp-present-bridge` subprocess (a child of the agent CLI). Validates the
+   *    `shipit` bridge's present tool (a child of the agent CLI). Validates the
    *    file is readable, records its metadata in the registry, broadcasts
    *    `present_content` (metadata only) over SSE, and returns the `presentId` +
    *    a worker-local screenshot URL to the bridge. It does NOT read the bytes.

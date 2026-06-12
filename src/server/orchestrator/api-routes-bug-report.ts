@@ -4,7 +4,7 @@
  * Surface:
  *   POST /api/sessions/:sessionId/bug-report   { title, body }
  *
- * The agent's `report_shipit_bug` tool (mcp-bug-bridge → worker
+ * The agent's `report_shipit_bug` tool (the `shipit` bridge → worker
  * `/agent-ops/bug/report` → here) relays the draft. This route runs the
  * mandatory server-side redaction pipeline, stamps the platform build, and
  * emits a `bug_report_card` into the chat for the user to review. It does NOT

@@ -449,7 +449,7 @@ describe("Integration: Session Worker IPC", () => {
       });
     });
 
-    // The mcp-ask-bridge POSTs here when Codex calls the AskUserQuestion tool.
+    // The `shipit` bridge's ask tool POSTs here when Codex calls AskUserQuestion.
     const res = await fetch(`${workerUrl}/agent-ops/ask/submit`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

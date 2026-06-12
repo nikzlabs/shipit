@@ -3,13 +3,16 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CodexAdapter } from "./adapter.js";
-import type { AgentMcpReviewBridge, McpServerConfig } from "../agent-process.js";
+import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
 /**
- * docs/125 / docs/155 hair 10 — Codex registers its MCP servers via a
+ * docs/125 / docs/155 hair 10 / SHI-128 — Codex registers its MCP servers via a
  * `[mcp_servers.*]` block in `~/.codex/config.toml`, not a per-run path like
  * Claude. These tests cover CodexAdapter.writeMcpConfig() in isolation:
- *  - it appends the ShipIt-managed block (review bridge + user servers),
+ *  - it appends the ShipIt-managed block (one consolidated `shipit` bridge +
+ *    user servers),
+ *  - the `shipit` server selects Codex's tool subset via `SHIPIT_MCP_TOOLS`,
+ *    passed through runtimeEnv and allowlisted with `env_vars`,
  *  - it's idempotent across repeat calls,
  *  - it never clobbers a user's own config outside the managed block,
  *  - secrets in stdio `env` / HTTP `headers` arrive via runtimeEnv (env
@@ -18,13 +21,13 @@ import type { AgentMcpReviewBridge, McpServerConfig } from "../agent-process.js"
  * The test stubs `hasFileAuth` so the adapter constructor stays cheap (no
  * filesystem checks); writeMcpConfig() doesn't depend on the spawn path.
  */
-describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
+describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", () => {
   let codexHome: string;
   let adapter: CodexAdapter;
   const prevHome = process.env.CODEX_HOME;
-  const reviewBridge: AgentMcpReviewBridge = {
-    tsxBin: "/opt/tsx",
-    bridgePath: "/opt/mcp-review-bridge.ts",
+  const shipitBridge: AgentMcpBridge = {
+    tsxBin: "/opt/node",
+    bridgePath: "/opt/dist/mcp-bridges/mcp-shipit-bridge.js",
   };
   let onServerFailed: ReturnType<typeof vi.fn<(name: string, reason: string) => void>>;
 
@@ -43,16 +46,11 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
 
   function write(
     servers: McpServerConfig[] = [],
-    bridge: AgentMcpReviewBridge | null = reviewBridge,
+    bridge: AgentMcpBridge | null = shipitBridge,
   ): Record<string, string> | undefined {
     return adapter.writeMcpConfig({
       servers,
-      reviewBridge: bridge,
-      presentBridge: null,
-      voiceBridge: null,
-      askBridge: null,
-      bugBridge: null,
-      permissionBridge: null,
+      shipitBridge: bridge,
       onServerFailed,
     }).runtimeEnv;
   }
@@ -68,44 +66,36 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
     expect(cfg).toContain("--browser chromium");
   });
 
-  it("appends a managed [mcp_servers.shipit-review] block pointing at the bridge", () => {
-    write();
+  it("appends a single managed [mcp_servers.shipit] block selecting Codex's tool subset", () => {
+    const runtimeEnv = write();
     const cfg = configText();
-    expect(cfg).toContain("[mcp_servers.shipit-review]");
-    expect(cfg).toContain("mcp-review-bridge.ts");
-    expect(cfg).toMatch(/command = ".+tsx"/);
+    expect(cfg).toContain("[mcp_servers.shipit]");
+    expect(cfg).toContain("mcp-shipit-bridge.js");
+    expect(cfg).toMatch(/command = ".+node"/);
+    // Tool subset is passed via the child env, allowlisted with env_vars.
+    expect(cfg).toContain('env_vars = ["SHIPIT_MCP_TOOLS"]');
+    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "review,present,voice,ask,bug" });
+    // No per-tool servers remain.
+    expect(cfg).not.toContain("[mcp_servers.shipit-review]");
+    expect(cfg).not.toContain("[mcp_servers.shipit-ask]");
   });
 
-  it("omits the review bridge when no bridge paths are supplied", () => {
-    write([], null);
-    expect(configText()).not.toContain("[mcp_servers.shipit-review]");
+  it("omits the shipit bridge when no bridge paths are supplied", () => {
+    const runtimeEnv = write([], null);
+    expect(configText()).not.toContain("[mcp_servers.shipit]");
+    expect(runtimeEnv?.SHIPIT_MCP_TOOLS).toBeUndefined();
   });
 
-  it("registers the ask-user bridge (docs/147) when askBridge paths are supplied", () => {
-    adapter.writeMcpConfig({
-      servers: [],
-      reviewBridge: null,
-      presentBridge: null,
-      voiceBridge: null,
-      askBridge: { tsxBin: "/opt/tsx", bridgePath: "/opt/mcp-ask-bridge.ts" },
-      bugBridge: null,
-      permissionBridge: null,
-      onServerFailed,
-    });
-    const cfg = configText();
-    expect(cfg).toContain("[mcp_servers.shipit-ask]");
-    expect(cfg).toContain("mcp-ask-bridge.ts");
-  });
-
-  it("omits the ask-user bridge when askBridge is null", () => {
-    write();
-    expect(configText()).not.toContain("[mcp_servers.shipit-ask]");
+  it("includes ask (docs/147) in the Codex tool subset but not permission", () => {
+    const runtimeEnv = write();
+    expect(runtimeEnv?.SHIPIT_MCP_TOOLS).toContain("ask");
+    expect(runtimeEnv?.SHIPIT_MCP_TOOLS).not.toContain("permission");
   });
 
   it("is idempotent — repeat calls do not duplicate the block", () => {
     write();
     write();
-    const occurrences = configText().split("[mcp_servers.shipit-review]").length - 1;
+    const occurrences = configText().split("[mcp_servers.shipit]").length - 1;
     expect(occurrences).toBe(1);
   });
 
@@ -115,7 +105,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
     write();
     const cfg = configText();
     expect(cfg).toContain("[mcp_servers.linear]");
-    expect(cfg).toContain("[mcp_servers.shipit-review]");
+    expect(cfg).toContain("[mcp_servers.shipit]");
   });
 
   it("writes enabled stdio MCP servers for Codex without persisting env secrets", () => {
@@ -202,7 +192,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10)", () => {
 
     const cfg = configText();
     expect(cfg).not.toContain("[mcp_servers.linear]");
-    expect(cfg).toContain("[mcp_servers.shipit-review]");
+    expect(cfg).toContain("[mcp_servers.shipit]");
   });
 
   it("drops servers with missing secrets and reports them via onServerFailed", () => {

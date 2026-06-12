@@ -78,7 +78,7 @@ export interface ClaudeRunOptions {
   autoCreatePr?: boolean;
   /**
    * docs/193 — the MCP tool the CLI calls for permission prompts
-   * (`--permission-prompt-tool`, e.g. `mcp__shipit-permission__permission_prompt`).
+   * (`--permission-prompt-tool`, e.g. `mcp__shipit__permission_prompt`).
    * Routes the CLI's built-in sensitive-file gate to ShipIt's approve/deny card
    * instead of a headless auto-deny (SHI-112). Omitted when the permission
    * bridge couldn't be located.
@@ -109,16 +109,21 @@ export class ClaudeProcess extends EventEmitter {
     // that plan mode is no longer guaranteed read-only when a user
     // deliberately invokes a side-effecting skill. See docs/138.
     //
-    // `mcp__shipit-review__*`, `mcp__shipit-present__*`, and
-    // `mcp__shipit-voice__*` are allowlisted alongside playwright because these
-    // bridges are built-in MCP servers the worker registers in mcp.json
-    // (docs/125, docs/093, docs/163), not user-configured ones — so they never
-    // flow through `mcpServerNames`. Without these entries the CLI gates the
-    // bridge tools behind an interactive prompt that headless `-p` mode cannot
-    // satisfy ("permission not yet granted", docs/149). All three write only to
-    // ShipIt's own state (review drafts, present buffer, a voice note), so they
-    // are safe under plan mode — and the voice tool is needed in plan mode so the
-    // agent can author a headline before ExitPlanMode.
+    // The internal `shipit` tools (`mcp__shipit__submit_review_comments`,
+    // `mcp__shipit__present`, `mcp__shipit__voice_note`,
+    // `mcp__shipit__report_shipit_bug`) are allowlisted by exact name alongside
+    // playwright because they're served by the built-in consolidated `shipit`
+    // MCP server the worker registers (SHI-128; docs/125, docs/093, docs/163,
+    // docs/164), not a user-configured one — so they never flow through
+    // `mcpServerNames`. Without these entries the CLI gates the tools behind an
+    // interactive prompt that headless `-p` mode cannot satisfy ("permission not
+    // yet granted", docs/149). They write only to ShipIt's own state (review
+    // drafts, present buffer, a voice note, a bug-report proposal), so they are
+    // safe under plan mode — and the voice tool is needed in plan mode so the
+    // agent can author a headline before ExitPlanMode. We list the four
+    // model-facing tools by name rather than a `mcp__shipit__*` glob so the
+    // server's `permission_prompt` tool (the CLI's --permission-prompt-tool, not
+    // model-callable) is deliberately NOT allowlisted.
     //
     // `ExitPlanMode` is allowlisted in both modes — including plan, where it
     // matters most. It's read-only/safe (it only signals the plan is complete),
@@ -128,8 +133,8 @@ export class ClaudeProcess extends EventEmitter {
     // so the session is stranded in plan mode (no working PlanApproval card, no
     // file edits). Allowlisting it lets the CLI surface the tool_use, which lets
     // the docs/140 §6.8 live-steering guard render an interactive card.
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit-review__*,mcp__shipit-present__*,mcp__shipit-voice__*,mcp__shipit-bug__*";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit-review__*,mcp__shipit-present__*,mcp__shipit-voice__*,mcp__shipit-bug__*";
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
 
     // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
     // the `auto` allowlist. `plan` mode deliberately omits them
@@ -366,11 +371,10 @@ export class StreamingClaudeProcess extends EventEmitter {
   run(opts: ClaudeRunOptions): void {
     const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, permissionPromptTool } = opts;
 
-    // See ClaudeProcess.run above for why `mcp__shipit-review__*` and
-    // `mcp__shipit-present__*` join `mcp__playwright__*` in both lists
-    // (docs/125, docs/149).
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit-review__*,mcp__shipit-present__*,mcp__shipit-voice__*,mcp__shipit-bug__*";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit-review__*,mcp__shipit-present__*,mcp__shipit-voice__*,mcp__shipit-bug__*";
+    // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
+    // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;

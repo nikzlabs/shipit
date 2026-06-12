@@ -1054,7 +1054,7 @@ describe("CodexAdapter", () => {
 
   // ---- AskUserQuestion bridge (docs/147) ----
   //
-  // The `shipit-ask` MCP tool surfaces its question card through the worker
+  // The `shipit` bridge's ask tool surfaces its question card through the worker
   // round-trip (the bridge POSTs to `/agent-ops/ask/submit`, which injects a
   // synthetic AskUserQuestion tool_use), NOT through Codex's event stream — the
   // app-server only emits an `mcpToolCall` item on `completed`, which never
@@ -1062,7 +1062,7 @@ describe("CodexAdapter", () => {
   // both phases: any tool_use here would duplicate the bridge's card, and any
   // tool_result would flip it to "answered".
 
-  it("ignores a shipit-ask mcpToolCall on item/started (the bridge surfaces it)", async () => {
+  it("ignores a shipit ask mcpToolCall on item/started (the bridge surfaces it)", async () => {
     await createAndInit("Hello");
     events.length = 0;
 
@@ -1071,7 +1071,7 @@ describe("CodexAdapter", () => {
         type: "mcpToolCall",
         id: "call-ask-1",
         // Server-qualified and bare names both match isAskUserQuestionTool.
-        tool: "shipit-ask__AskUserQuestion",
+        tool: "shipit__AskUserQuestion",
         arguments: JSON.stringify({
           questions: [
             {
@@ -1119,7 +1119,7 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-other-1",
-        tool: "shipit-review__submit_review_comments",
+        tool: "shipit__submit_review_comments",
         arguments: JSON.stringify({ filePath: "a.ts", comments: [] }),
       },
     });
@@ -1129,7 +1129,7 @@ describe("CodexAdapter", () => {
     });
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
-      content: [{ type: "tool_use", id: "call-other-1", name: "shipit-review__submit_review_comments" }],
+      content: [{ type: "tool_use", id: "call-other-1", name: "shipit__submit_review_comments" }],
     });
   });
 

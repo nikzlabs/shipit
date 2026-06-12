@@ -1,7 +1,7 @@
 /**
  * Shared AskUserQuestion normalization (docs/147).
  *
- * The ShipIt-managed `shipit-ask` MCP bridge lets Codex ask structured
+ * The ShipIt-managed `shipit` MCP bridge's ask tool lets Codex ask structured
  * multiple-choice questions. The bridge POSTs the raw `questions` argument to
  * the worker (`POST /agent-ops/ask/submit`), which normalizes it here into the
  * exact shape the question card requires and injects it into the agent event

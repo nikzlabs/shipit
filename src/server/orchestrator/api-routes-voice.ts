@@ -180,7 +180,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     return { configured: !!wh, url: wh?.url ?? null };
   });
 
-  // Built-in voice_note tool write-back. The mcp-voice-bridge → worker
+  // Built-in voice_note tool write-back. The `shipit` bridge → worker
   // `/agent-ops/voice/note` relays here with the trusted session id.
   //
   // docs/163 — delivery (the native card + the webhook) is driven entirely by

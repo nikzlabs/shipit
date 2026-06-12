@@ -2,22 +2,22 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import { ClaudeAdapter } from "./adapter.js";
-import type { AgentMcpReviewBridge, McpServerConfig } from "../agent-process.js";
+import type { AgentMcpBridge, McpServerConfig } from "../agent-process.js";
 
 /**
- * docs/088 / docs/125 / docs/155 hair 10 — ClaudeAdapter writes a per-turn
- * `--mcp-config` JSON file bundling the built-in Playwright server, the
- * internal review bridge (when present), and any user-configured MCP servers
- * (with `$secret:` placeholders resolved against process.env). Missing
+ * docs/088 / docs/125 / docs/155 hair 10 / SHI-128 — ClaudeAdapter writes a
+ * per-turn `--mcp-config` JSON file bundling the built-in Playwright server, the
+ * consolidated `shipit` bridge (when present), and any user-configured MCP
+ * servers (with `$secret:` placeholders resolved against process.env). Missing
  * secrets drop the server and report it back via onServerFailed.
  */
-describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
+describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10, SHI-128)", () => {
   let adapter: ClaudeAdapter;
   let onServerFailed: ReturnType<typeof vi.fn<(name: string, reason: string) => void>>;
   const writtenPaths: string[] = [];
-  const reviewBridge: AgentMcpReviewBridge = {
-    tsxBin: "/opt/tsx",
-    bridgePath: "/opt/mcp-review-bridge.ts",
+  const shipitBridge: AgentMcpBridge = {
+    tsxBin: "/opt/node",
+    bridgePath: "/opt/dist/mcp-bridges/mcp-shipit-bridge.js",
   };
 
   beforeEach(() => {
@@ -35,18 +35,13 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
     writtenPaths.length = 0;
   });
 
-  function write(servers: McpServerConfig[] = [], bridge: AgentMcpReviewBridge | null = reviewBridge): {
+  function write(servers: McpServerConfig[] = [], bridge: AgentMcpBridge | null = shipitBridge): {
     config: Record<string, unknown>;
     cleanup?: () => void;
   } {
     const result = adapter.writeMcpConfig({
       servers,
-      reviewBridge: bridge,
-      presentBridge: null,
-      voiceBridge: null,
-      askBridge: null,
-      bugBridge: null,
-      permissionBridge: null,
+      shipitBridge: bridge,
       onServerFailed,
     });
     if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
@@ -61,45 +56,24 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
     expect(servers.playwright).toBeDefined();
   });
 
-  it("includes the review bridge when the worker resolved its paths", () => {
+  it("registers ONE consolidated shipit server selecting Claude's tool subset", () => {
     const { config } = write();
-    const servers = config.mcpServers as Record<string, { command: string }>;
-    expect(servers["shipit-review"]).toEqual({
-      command: reviewBridge.tsxBin,
-      args: [reviewBridge.bridgePath],
+    const servers = config.mcpServers as Record<string, { command: string; args: string[]; env: Record<string, string> }>;
+    // No per-tool servers — just `shipit`.
+    expect(servers["shipit-review"]).toBeUndefined();
+    expect(servers["shipit-present"]).toBeUndefined();
+    expect(servers["shipit-permission"]).toBeUndefined();
+    expect(servers.shipit).toEqual({
+      command: shipitBridge.tsxBin,
+      args: [shipitBridge.bridgePath],
+      env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission" },
     });
   });
 
-  it("omits the review bridge when none is available", () => {
+  it("omits the shipit server when no bridge is available", () => {
     const { config } = write([], null);
     const servers = config.mcpServers as Record<string, unknown>;
-    expect(servers["shipit-review"]).toBeUndefined();
-  });
-
-  it("registers the permission-prompt bridge (docs/193) when its paths are supplied", () => {
-    const result = adapter.writeMcpConfig({
-      servers: [],
-      reviewBridge: null,
-      presentBridge: null,
-      voiceBridge: null,
-      askBridge: null,
-      bugBridge: null,
-      permissionBridge: { tsxBin: "/opt/tsx", bridgePath: "/opt/mcp-permission-bridge.ts" },
-      onServerFailed,
-    });
-    if (!result.mcpConfigPath) throw new Error("expected mcpConfigPath");
-    writtenPaths.push(result.mcpConfigPath);
-    const servers = (JSON.parse(fs.readFileSync(result.mcpConfigPath, "utf-8")) as { mcpServers: Record<string, unknown> }).mcpServers;
-    expect(servers["shipit-permission"]).toEqual({
-      command: "/opt/tsx",
-      args: ["/opt/mcp-permission-bridge.ts"],
-    });
-  });
-
-  it("omits the permission-prompt bridge when none is available", () => {
-    const { config } = write();
-    const servers = config.mcpServers as Record<string, unknown>;
-    expect(servers["shipit-permission"]).toBeUndefined();
+    expect(servers.shipit).toBeUndefined();
   });
 
   it("substitutes $secret: placeholders against process.env", () => {
@@ -139,12 +113,7 @@ describe("ClaudeAdapter.writeMcpConfig (docs/155 hair 10)", () => {
   it("returns a cleanup that unlinks the per-turn config file", () => {
     const result = adapter.writeMcpConfig({
       servers: [],
-      reviewBridge,
-      presentBridge: null,
-      voiceBridge: null,
-      askBridge: null,
-      bugBridge: null,
-      permissionBridge: null,
+      shipitBridge,
       onServerFailed,
     });
     expect(result.mcpConfigPath).toBeDefined();

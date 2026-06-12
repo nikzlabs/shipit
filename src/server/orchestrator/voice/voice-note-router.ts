@@ -41,13 +41,13 @@ export const MAX_ATTENTION_NOTES_PER_TURN = 3;
 
 /**
  * The namespaced name of the built-in `voice_note` tool as it appears in the
- * agent event stream (`mcp__<server>__<tool>`, server `shipit-voice`). The
+ * agent event stream (`mcp__<server>__<tool>`, server `shipit`). The
  * orchestrator matches this to deliver an authored note's native card the
  * instant it OBSERVES the call — without waiting for the slower bridge → worker
- * → orchestrator HTTP relay (see `agent-listeners.ts`). Keep in sync with
- * `mcp-voice-bridge.ts` (`name: "shipit-voice"`, tool `"voice_note"`).
+ * → orchestrator HTTP relay (see `agent-listeners.ts`). Keep in sync with the
+ * consolidated `mcp-shipit-bridge` (`name: "shipit"`, tool `"voice_note"`; SHI-128).
  */
-export const VOICE_NOTE_TOOL_NAME = "mcp__shipit-voice__voice_note";
+export const VOICE_NOTE_TOOL_NAME = "mcp__shipit__voice_note";
 
 interface VoiceTurnState {
   /** True once an *authored* note (the built-in tool) routed this turn. */

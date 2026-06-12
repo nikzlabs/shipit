@@ -9,4 +9,4 @@
 - [x] Tests: resolution order + end-to-end self-contained bundle spawn
 - [x] test:dev / lint / typecheck green
 - [ ] Operator: validate on `pnpm-canary-183` / `py-canary-183` / OPS at default limits after image ships
-- [ ] Follow-up (separate PR): consolidate the 5 bridges into ONE stdio process serving all tools (further cuts process count 5→1 and memory ~138MB→~30MB for extra density/margin)
+- [x] Follow-up (SHI-128): consolidate the bridges into ONE `shipit` stdio process serving all tools (cuts process count 5→1 and memory ~138MB→~30MB). Per-agent tool subset via `SHIPIT_MCP_TOOLS`; tool names now `mcp__shipit__<tool>`. See plan.md "Consolidation into one process (SHI-128)".
