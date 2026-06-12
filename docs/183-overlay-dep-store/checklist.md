@@ -286,16 +286,17 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       flag OFF.
       **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
       Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
-      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) a short
-      dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
-      churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
-      currently materializes a full independent ~470 MB copy; dedup makes the disk win
-      unconditional — see the FINDINGS break-even analysis); (c) `SESSION_WORKER_IMAGE_ID` wired on
-      deploys (scope rotation on worker-image rebuilds); (d) auto-skip overlay for pnpm / Yarn-PnP
-      repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
-      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
+      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) **SATISFIED
+      2026-06-12 by #1267** — hardlink-dedup between generations, verified live on the canary
+      (100%-linked no-change advance = 13 MB real; mixed `+dayjs` advance = ~15 MB real vs 470 MB;
+      +0.4–3.4 s publish cost — see FINDINGS "Generation hardlink-dedup (#1267) verified live");
+      (c) `SESSION_WORKER_IMAGE_ID` wired on deploys (scope rotation on worker-image rebuilds);
+      (d) re-evaluated 2026-06-12: pnpm works end-to-end under overlay with a 9× skip-path win, so
+      auto-skip would forfeit real value — the EXDEV cost is a ~464 MB *per-session upper* copy
+      (disposable); document it for pnpm repos instead of skipping. Yarn PnP (no `node_modules`)
+      remains a skip; (e) the flag-rollback marker fix (a marker written while
       deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
-      findings for the flip decision".
+      findings for the flip decision" and the 2026-06-12 dedup/pnpm/Python section.
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

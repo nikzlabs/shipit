@@ -942,3 +942,109 @@ the disk claim inverts on busy repos; (c) `SESSION_WORKER_IMAGE_ID` wired (findi
 (d) auto-skip overlay for pnpm / Yarn-PnP repos (the EXDEV copy degradation above). The
 rollback-marker follow-up (finding 3) should land before the flip too, since flag-off is the
 documented incident response.
+
+## Generation hardlink-dedup (#1267) verified live + pnpm/Python canaries (2026-06-12, `shipit-16gb`)
+
+Day-2 canary work after #1267 (hardlink-dedup of base generations against their
+predecessor) merged and self-deployed (`e5d71e6c`). Three questions: does dedup deliver
+on the real fleet, what does it cost in publish time, and how do non-npm package
+managers (pnpm; pip/venv) behave under the overlay store end-to-end.
+
+### Dedup verified on production publishes
+
+The first post-deploy publish was already deduped — the shipit repo's scope advanced
+g4→g5 ~2.5 min after the orchestrator restarted onto the new build:
+
+| Publish | Files | Hardlinked to predecessor | Unique inodes | Real disk added |
+|---|---|---|---|---|
+| shipit g4→g5 (no dep change in the advance commit) | 29 341 | **29 341 (100%)** | 0 | **13 MB** (dirs/metadata) vs 503 MB before |
+| canary g17→g18 (`+dayjs`, driven for the mixed case) | 29 815 | 29 363 | **452 = exactly the 451 dayjs files + the regenerated `.package-lock.json`** | **~15 MB** vs 470 MB |
+
+The mixed case is surgical: byte-compare (the authority, since npm normalizes package
+mtimes to a constant epoch) linked everything unchanged and copied only the new
+package's files. Spot-checked inode equality across generations (`nlink=2`, same inode
+numbers); `du` of consecutive generations together confirms the per-generation cost
+collapsed from ~0.5 GB to the delta.
+
+### Publish-time cost (benchmarked with the real `copySnapshotToBase` on the real tree)
+
+503 MB / 29 341-file base generation, prod host, single runs after a warm-up:
+
+| Materialize mode | Wall time |
+|---|---|
+| Plain copy (pre-#1267 behavior) | 15.1 s (×2 runs, ±0.01 s) |
+| Dedup, predecessor page-cache-warm | 15.5–15.7 s (**+3%**) |
+| Dedup, predecessor cold (read from disk for compare) | 18.5 s (**+22%**) |
+| Live g17→g18 publish (first-file ctime → pointer write) | 17.0 s |
+
+End-to-end `install_ms` for advances stayed in the pre-dedup 22–25 s band. The
+byte-compare reads both trees once when equal — that's the whole cost, and it is off
+the user's critical path (publish happens after the gate opens).
+
+**Flip precondition (b) is satisfied**: generation accumulation no longer threatens the
+disk break-even. 17 retained generations of a ~0.5 GB scope now cost ~0.5 GB + Σdeltas,
+not 8 GB. The short dedicated reclaim cutoff remains nice-to-have, not load-bearing.
+
+### pnpm under the overlay store (`pnpm-canary-183`, shipit's full dep set, pnpm 11.6)
+
+Mechanically works end-to-end; the predicted EXDEV degradation is real but turns out to
+be a *per-session upper* cost, not a correctness or base-sharing problem:
+
+- **EXDEV confirmed**: pnpm's store-to-`node_modules` hardlinks can't cross the
+  overlayfs boundary, so every cold install full-copies into the session upper —
+  measured **464 MB of upper per installing session** (vs ~0.3 MB for npm advances).
+  pnpm degrades silently; no errors.
+- **Timings**: cold `created:g1` 191 s (includes native builds at the default
+  0.5-CPU limit); `skipped-equal` re-install over the base **20.4 s — 9.3× faster than
+  cold**; advance (`+dayjs`) 62 s.
+- **Base round-trip is faithful**: 1 853 top-level relative symlinks into `.pnpm`
+  recreated verbatim by both the snapshot and the dedup materialize; a bind-mounted
+  base resolves `react`/`fastify` and **loads the `better-sqlite3` native binding**
+  built in-session.
+- **Dedup across pnpm generations**: g1→g2 (`+dayjs`) linked 29 579 / 30 043 files;
+  464 unique = the 451 dayjs files + pnpm state files; **+24 MB real**; symlink count
+  1 853→1 854 (the new `dayjs` toplevel link).
+- **pnpm 11 friction (repo config, not overlay)**: `ERR_PNPM_IGNORED_BUILDS` now makes
+  `pnpm install` exit 1 when native build scripts aren't approved, and **pnpm 11 no
+  longer reads the `pnpm` field in package.json** — approval must live in
+  `pnpm-workspace.yaml` (`allowBuilds:` map, what `pnpm approve-builds --all` writes).
+  Two of the canary's three install failures were this; the third was the known
+  stale-warm-clone race.
+
+**Precondition (d) re-evaluated**: auto-*skipping* overlay for pnpm repos would forfeit
+a real 9× skip-path win. The honest cost is the 464 MB per-session upper (disposable,
+reclaimed with the session). Recommend documenting the upper-copy cost for pnpm repos
+instead of skipping; Yarn PnP (no `node_modules` at all) remains a skip.
+
+### Python venv under the overlay store (`py-canary-183`, fastapi/uvicorn/numpy/httpx)
+
+Works end-to-end **when configured explicitly** (`agent.dep-dirs: [.venv]` plus a
+venv-building `agent.install`). Note the scaffolded Python templates deliberately have
+no Python `agent.install` (the preview service owns the venv, interpreter-pinned —
+docs/168), so the overlay store only engages for Python via explicit shipit.yaml opt-in.
+
+- Cold `created:g1`: 46 s, 137 MB base (4 185 files, 4 symlinks).
+- `skipped-equal`: 20.5 s (pre-stamp skipped under standby contention, so pip re-ran
+  and found everything satisfied — the known-benign path).
+- Advance (`+rich`): g2 with **+21 MB real** — 3 820 / 5 238 files linked; unique =
+  exactly rich + its deps (pygments, markdown-it) + the 2 venv bin scripts the
+  `python3 -m venv` re-run rewrites.
+- venv symlinks (absolute `bin/python3 → /usr/bin/python3` and relative
+  `python/python3.11 → python3`) round-trip through snapshot, publish, and dedup;
+  `pyvenv.cfg`'s interpreter pinning is safe across sessions because the runtimeKey in
+  the scope hash already guards interpreter identity. A bind-mounted base venv imports
+  all packages.
+
+### Side discovery (not overlay): default agent limits break the CLI's MCP bridges
+
+During the canary, **every agent turn on a repo running at the default agent limits
+(1536 MB / 0.5 CPU) failed** with `MCP tool mcp__shipit-permission__permission_prompt
+not found` — the four tsx-spawned ShipIt stdio bridges (permission/present/voice/bug)
+never connect under those limits (the plain-JS playwright MCP does), and the CLI treats
+a missing `--permission-prompt-tool` target as fatal. A/B-proven on the same repo, same
+host, quiet load: defaults fail 100%; `memory: 4096, cpu: 2.0` succeeds immediately
+(both raised together — binding constraint not isolated). Scaffolded templates ship no
+limits raise, so fresh template repos are in the failing class. Installs/publishes
+(worker-side) are unaffected — overlay results above are untainted. Filed as its own
+follow-up: raise `AGENT_DEFAULTS`, precompile the bridges to plain JS, and/or extend
+the CLI's MCP connect timeout.
