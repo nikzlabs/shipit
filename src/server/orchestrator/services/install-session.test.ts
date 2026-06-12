@@ -175,6 +175,29 @@ describe("installPluginAsSession (docs/149 v1c)", () => {
     expect(session?.branch).toBe("shipit/install-commit-commands-rand123");
   });
 
+  it("targets Codex sessions when agentId is codex", async () => {
+    const result = await installPluginAsSession(deps(), {
+      repoUrl,
+      marketplaceId: "test-catalog",
+      pluginName: PLUGIN_NAME,
+      agentId: "codex",
+    });
+
+    expect(result.sessionId).toBe("install-1");
+    const ws = path.join(tmp, "install-1", "workspace");
+    const skillMd = path.join(ws, ".codex", "skills", `${PLUGIN_NAME}__commit`, "SKILL.md");
+    expect(fs.existsSync(skillMd)).toBe(true);
+    expect(fs.readFileSync(skillMd, "utf-8")).toContain("name: commit-commands:commit");
+    expect(sessionManager.get("install-1")?.agentId).toBe("codex");
+    expect(agentCreatePrMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({
+        body: expect.stringContaining("`.codex/skills/`"),
+      }),
+    );
+  });
+
   it("leaves a pre-existing session untouched", async () => {
     // A "current" session the user is working in.
     const currentWs = path.join(tmp, "current", "workspace");

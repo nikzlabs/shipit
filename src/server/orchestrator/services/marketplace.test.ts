@@ -82,6 +82,44 @@ function makeFakeCatalog(cacheRoot: string, id: string): string {
   return cacheDir;
 }
 
+function makeFakeCodexCatalog(cacheRoot: string, id: string): string {
+  const cacheDir = path.join(cacheRoot, id);
+  fs.mkdirSync(path.join(cacheDir, ".agents", "plugins"), { recursive: true });
+  fs.writeFileSync(
+    path.join(cacheDir, ".agents", "plugins", "marketplace.json"),
+    JSON.stringify({
+      name: id,
+      plugins: [
+        {
+          name: "codex-tools",
+          source: { source: "local", path: "./plugins/codex-tools" },
+          category: "Developer Tools",
+        },
+      ],
+    }),
+  );
+
+  const pluginRoot = path.join(cacheDir, "plugins", "codex-tools");
+  fs.mkdirSync(path.join(pluginRoot, ".codex-plugin"), { recursive: true });
+  fs.writeFileSync(
+    path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+    JSON.stringify({
+      name: "codex-tools",
+      description: "Codex workflows",
+      author: { name: "OpenAI" },
+      skills: "./skills/",
+    }),
+  );
+  const skillDir = path.join(pluginRoot, "skills", "review");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, "SKILL.md"),
+    "---\nname: review\ndescription: review code\n---\n\nReview code\n",
+  );
+
+  return cacheDir;
+}
+
 async function initRepo(workspace: string): Promise<GitManager> {
   fs.mkdirSync(workspace, { recursive: true });
   // Need an initial commit so commitPaths has a base. We also configure
@@ -115,6 +153,13 @@ describe("services/marketplace (docs/149)", () => {
     });
     cacheRoot = path.join(tmp, "marketplace-cache");
     makeFakeCatalog(cacheRoot, "test-catalog");
+    makeFakeCodexCatalog(cacheRoot, "codex-catalog");
+    store.seedIfMissing({
+      id: "codex-catalog",
+      source: { kind: "github", ownerRepo: "openai/plugins" },
+      agentId: "codex",
+      autoUpdate: true,
+    });
     // Populate the real registry from AGENT_DEFS — feeds skillsDirName /
     // skillInvocationPrefix into install/uninstall via capability reads.
     agentRegistry = new AgentRegistry({ checkBinary: () => Promise.resolve(true) });
@@ -138,6 +183,19 @@ describe("services/marketplace (docs/149)", () => {
 
     it("rejects unknown marketplaces", async () => {
       await expect(listPlugins(store, "nope", cacheRoot)).rejects.toThrow(ServiceError);
+    });
+
+    it("reads Codex .agents/plugins marketplace files with local source.path entries", async () => {
+      const plugins = await listPlugins(store, "codex-catalog", cacheRoot);
+      expect(plugins).toHaveLength(1);
+      expect(plugins[0]).toMatchObject({
+        marketplaceId: "codex-catalog",
+        name: "codex-tools",
+        description: "Codex workflows",
+        author: "OpenAI",
+        category: "Developer Tools",
+      });
+      expect(plugins[0].skills.map((s) => s.name)).toEqual(["review"]);
     });
   });
 
@@ -312,21 +370,26 @@ describe("services/marketplace (docs/149)", () => {
       expect(fs.readFileSync(installed, "utf-8")).toMatch(/^name: hookify:writing-hookify-rules$/m);
     });
 
-    it("refuses Codex installs in v1 (Codex is v1b)", async () => {
+    it("installs Codex skills into .codex/skills and returns $ invocation tokens", async () => {
       const workspace = path.join(tmp, "ws-codex");
       const git = await initRepo(workspace);
-      await expect(
+      const result = await withWorkspaceLock(workspace, async () =>
         installPlugin({
           workspaceDir: workspace,
           agentId: "codex",
-          marketplaceId: "test-catalog",
-          pluginName: PLUGIN_NAME,
+          marketplaceId: "codex-catalog",
+          pluginName: "codex-tools",
           cacheRoot,
           store,
           git,
           agentRegistry,
         }),
-      ).rejects.toMatchObject({ statusCode: 400 });
+      );
+
+      expect(result.invocationTokens).toEqual(["$codex-tools:review"]);
+      const skillMd = path.join(workspace, ".codex", "skills", "codex-tools__review", "SKILL.md");
+      expect(fs.existsSync(skillMd)).toBe(true);
+      expect(fs.readFileSync(skillMd, "utf-8")).toMatch(/^name: codex-tools:review$/m);
     });
   });
 

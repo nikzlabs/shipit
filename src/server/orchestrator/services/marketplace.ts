@@ -6,12 +6,12 @@
  * that wants live install progress.
  *
  * v1 scope:
- *   - One pre-seeded official Claude catalog (`claude-plugins-official`).
+ *   - Pre-seeded official Claude and Codex catalogs.
  *   - Discover lists plugins whose `marketplace.json` source is an in-repo
  *     relative path AND that contain at least one `skills/<name>/SKILL.md`.
  *     External plugins (git URL sources) are visible in the upstream CLI but
  *     not installable from ShipIt in v1 — deferred to v2.
- *   - Install writes `.claude/skills/<plugin>__<skill>/SKILL.md` + an
+ *   - Install writes `<agent skills dir>/skills/<plugin>__<skill>/SKILL.md` + an
  *     install marker (`.shipit-installed.json`) and auto-commits with a
  *     path-scoped `git add` so unrelated working-tree edits stay out.
  *   - Per-workspace install mutex serializes install↔install AND
@@ -115,11 +115,9 @@ export async function ensureCatalogCloned(
 
   // A pre-populated cache directory that isn't a git repo (test fixtures,
   // or an admin-placed catalog) is treated as authoritative — we don't
-  // re-fetch over it. The presence of `marketplace.json` is the signal.
+  // re-fetch over it. The presence of a marketplace manifest is the signal.
   const hasGit = await pathExists(path.join(cacheDir, ".git"));
-  const hasManifest = await pathExists(
-    path.join(cacheDir, ".claude-plugin", "marketplace.json"),
-  );
+  const hasManifest = await findMarketplaceManifestPath(cacheDir) !== null;
   if (!hasGit && hasManifest) {
     store.setFetchStatus(marketplaceId, "ok", {
       lastFetchedAt: new Date().toISOString(),
@@ -205,9 +203,29 @@ interface RawMarketplacePlugin {
   category?: string;
   homepage?: string;
   author?: { name?: string };
+  interface?: {
+    displayName?: string;
+    shortDescription?: string;
+    developerName?: string;
+    category?: string;
+    websiteURL?: string;
+  };
   source?:
     | string
     | { source?: string; url?: string; path?: string; ref?: string; sha?: string };
+}
+
+interface RawPluginManifest {
+  name?: string;
+  description?: string;
+  homepage?: string;
+  author?: { name?: string };
+  interface?: {
+    shortDescription?: string;
+    developerName?: string;
+    category?: string;
+    websiteURL?: string;
+  };
 }
 
 /**
@@ -237,15 +255,22 @@ export async function listPlugins(
     const skills = await readPluginSkills(pluginRoot);
     if (skills.length === 0) continue;
     const estimatedContextBytes = await estimatePluginContextBytes(pluginRoot, skills);
-    const author = raw.author?.name;
+    const pluginManifest = await readPluginManifest(pluginRoot);
+    const author = raw.author?.name ?? pluginManifest?.author?.name ?? pluginManifest?.interface?.developerName;
     const pinnedSha = typeof raw.source === "object" && raw.source?.sha ? raw.source.sha : undefined;
     out.push({
       marketplaceId,
       name: raw.name,
-      ...(raw.description !== undefined ? { description: raw.description } : {}),
+      ...(raw.description ?? raw.interface?.shortDescription ?? pluginManifest?.description ?? pluginManifest?.interface?.shortDescription
+        ? { description: raw.description ?? raw.interface?.shortDescription ?? pluginManifest?.description ?? pluginManifest?.interface?.shortDescription }
+        : {}),
       ...(author !== undefined ? { author } : {}),
-      ...(raw.category !== undefined ? { category: raw.category } : {}),
-      ...(raw.homepage !== undefined ? { homepage: raw.homepage } : {}),
+      ...(raw.category ?? raw.interface?.category ?? pluginManifest?.interface?.category
+        ? { category: raw.category ?? raw.interface?.category ?? pluginManifest?.interface?.category }
+        : {}),
+      ...(raw.homepage ?? raw.interface?.websiteURL ?? pluginManifest?.homepage ?? pluginManifest?.interface?.websiteURL
+        ? { homepage: raw.homepage ?? raw.interface?.websiteURL ?? pluginManifest?.homepage ?? pluginManifest?.interface?.websiteURL }
+        : {}),
       skills,
       estimatedContextBytes,
       ...(pinnedSha !== undefined ? { pinnedSha } : {}),
@@ -287,7 +312,10 @@ export async function readPluginSkillBody(
 }
 
 async function readMarketplaceManifest(cacheDir: string): Promise<RawMarketplaceManifest> {
-  const manifestPath = path.join(cacheDir, ".claude-plugin", "marketplace.json");
+  const manifestPath = await findMarketplaceManifestPath(cacheDir);
+  if (!manifestPath) {
+    throw new ServiceError(500, "Failed to read marketplace manifest: marketplace.json not found");
+  }
   try {
     const raw = await fs.readFile(manifestPath, "utf-8");
     return JSON.parse(raw) as RawMarketplaceManifest;
@@ -296,10 +324,46 @@ async function readMarketplaceManifest(cacheDir: string): Promise<RawMarketplace
   }
 }
 
+async function findMarketplaceManifestPath(cacheDir: string): Promise<string | null> {
+  const candidates = [
+    // Claude Code marketplace repos.
+    path.join(cacheDir, ".claude-plugin", "marketplace.json"),
+    // Codex repo/personal marketplace layout.
+    path.join(cacheDir, ".agents", "plugins", "marketplace.json"),
+    // Local marketplace roots may put the file at the root.
+    path.join(cacheDir, "marketplace.json"),
+  ];
+  for (const candidate of candidates) {
+    if (await pathExists(candidate)) return candidate;
+  }
+  return null;
+}
+
+async function readPluginManifest(pluginRoot: string): Promise<RawPluginManifest | null> {
+  const candidates = [
+    path.join(pluginRoot, ".codex-plugin", "plugin.json"),
+    path.join(pluginRoot, ".claude-plugin", "plugin.json"),
+  ];
+  for (const candidate of candidates) {
+    try {
+      const raw = await fs.readFile(candidate, "utf-8");
+      return JSON.parse(raw) as RawPluginManifest;
+    } catch {
+      // Optional metadata only; listing can proceed from marketplace fields.
+    }
+  }
+  return null;
+}
+
 /** Return the in-repo relative path if the plugin source is a string like "./plugins/foo". */
 function inRepoSourcePath(source: RawMarketplacePlugin["source"]): string | null {
-  if (typeof source !== "string") return null;
-  const trimmed = source.replace(/^\.\//, "");
+  const rawPath = typeof source === "string"
+    ? source
+    : source?.source === "local" && typeof source.path === "string"
+      ? source.path
+      : null;
+  if (!rawPath) return null;
+  const trimmed = rawPath.replace(/^\.\//, "");
   if (trimmed.startsWith("/") || trimmed.startsWith("..")) return null;
   return trimmed;
 }
@@ -348,12 +412,12 @@ export function targetSkillDirName(pluginName: string, skillName: string): strin
 }
 
 /**
- * Workspace skills root for an agent — `.claude/skills/` on Claude,
- * `.codex/skills/` on Codex. The dotfolder name comes from
+ * Workspace skills root for an agent — `.claude/skills/` on Claude and the
+ * configured project skill directory for Codex. The dotfolder name comes from
  * `AgentCapabilities.skillsDirName`; adding a backend means one entry in
  * `AGENT_DEFS`, not a new branch here. Falls back to `.claude` if the
  * registry doesn't know the agent (defensive; should not happen in normal
- * runtime). (Codex install is v1b — see plan.) (docs/155)
+ * runtime). (docs/155)
  */
 export function skillsRootFor(
   workspaceDir: string,
@@ -412,10 +476,6 @@ export async function installPlugin(opts: {
   agentRegistry: AgentRegistry;
 }): Promise<InstallResult> {
   const { workspaceDir, agentId, marketplaceId, pluginName, cacheRoot, store, git, agentRegistry } = opts;
-  // eslint-disable-next-line no-restricted-syntax -- docs/155 hair 7: v1 marketplace install gates Claude only. Becomes a capability flag (`supportsMarketplaceInstall`) once Codex install (v1b) lands; deliberately not pre-generalized.
-  if (agentId !== "claude") {
-    throw new ServiceError(400, "v1 only supports Claude installs (Codex is v1b)");
-  }
   const info = store.get(marketplaceId);
   if (!info) throw new ServiceError(404, `Unknown marketplace: ${marketplaceId}`);
   const cacheDir = path.join(cacheRoot, marketplaceId);

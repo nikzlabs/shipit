@@ -33,6 +33,7 @@ interface SkillsState {
    */
   installToRepo: (
     repoUrl: string,
+    agentId: string,
     marketplaceId: string,
     pluginName: string,
   ) => Promise<InstallToRepoResult>;
@@ -111,14 +112,14 @@ export const useSkillsStore = create<SkillsState>((set, get) => ({
     }
   },
 
-  installToRepo: async (repoUrl, marketplaceId, pluginName) => {
+  installToRepo: async (repoUrl, agentId, marketplaceId, pluginName) => {
     set({ loading: true, error: null });
     try {
       const data = await jsonOrThrow<InstallToRepoResult>(
         await fetch(`/api/plugins/install`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ repoUrl, marketplaceId, pluginName }),
+          body: JSON.stringify({ repoUrl, agentId, marketplaceId, pluginName }),
         }),
       );
       return data;

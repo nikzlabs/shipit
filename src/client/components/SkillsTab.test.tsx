@@ -6,7 +6,7 @@
  *  - The install sheet's repo picker + repo-targeted install (app-wide route,
  *    NOT the session-scoped route).
  *  - Install is disabled when no repository is available.
- *  - Codex agent shows the v1b "Claude-only for now" empty state.
+ *  - Codex agent fetches the Codex marketplace and posts Codex installs.
  *  - Per-marketplace fetch-failed Retry row.
  *
  * Stubs fetch via a tiny capture-and-respond double (same shape as
@@ -32,7 +32,7 @@ const originalFetch = globalThis.fetch;
 
 class FakeFetch {
   routes: { match: RegExp; method: string; respond: (body: unknown) => unknown }[] = [];
-  calls: { method: string; url: string }[] = [];
+  calls: { method: string; url: string; body?: unknown }[] = [];
 
   on(method: string, match: RegExp, respond: (body: unknown) => unknown): this {
     this.routes.push({ method, match, respond });
@@ -43,7 +43,7 @@ class FakeFetch {
     globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : (input as URL).toString();
       const method = init?.method ?? "GET";
-      this.calls.push({ method, url });
+      this.calls.push({ method, url, body: init?.body });
       const route = this.routes.find((r) => r.method === method && r.match.test(url));
       if (!route) {
         return Promise.resolve(
@@ -73,6 +73,23 @@ const fakePlugin: PluginInfo = {
   author: "Anthropic",
   skills: [{ name: "hello", description: "say hi" }],
   estimatedContextBytes: 256,
+};
+
+const fakeCodexMarketplace: MarketplaceInfo = {
+  id: "openai-curated",
+  source: { kind: "github", ownerRepo: "openai/plugins" },
+  agentId: "codex",
+  autoUpdate: true,
+  status: "ok",
+};
+
+const fakeCodexPlugin: PluginInfo = {
+  marketplaceId: "openai-curated",
+  name: "codex-tools",
+  description: "A Codex plugin",
+  author: "OpenAI",
+  skills: [{ name: "review", description: "review code" }],
+  estimatedContextBytes: 512,
 };
 
 const fakeRepo: RepoInfo = {
@@ -148,6 +165,8 @@ describe("SkillsTab (docs/149 v1c)", () => {
     await waitFor(() => {
       expect(fake.calls.some((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"))).toBe(true);
     });
+    const post = fake.calls.find((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"));
+    expect(JSON.parse(String(post?.body))).toMatchObject({ agentId: "claude" });
     expect(
       fake.calls.some((c) => c.url.includes("/sessions/") && c.url.endsWith("/plugins/install")),
     ).toBe(false);
@@ -169,11 +188,42 @@ describe("SkillsTab (docs/149 v1c)", () => {
     expect(screen.getByTestId("skill-install-confirm")).toBeDisabled();
   });
 
-  it("shows the Claude-only empty state when the active agent is Codex", () => {
+  it("uses Codex marketplaces and posts Codex as the install target", async () => {
     useUiStore.setState({ activeAgentId: "codex" });
+    const fake = new FakeFetch();
+    fake.on("GET", /\/api\/marketplaces\?agent=codex/, () => ({ marketplaces: [fakeCodexMarketplace] }));
+    fake.on("GET", /\/api\/marketplaces\/[^/]+\/plugins$/, () => ({
+      plugins: [fakeCodexPlugin],
+      marketplace: fakeCodexMarketplace,
+    }));
+    fake.on("GET", /\/skills\/review$/, () => ({ content: "# review skill" }));
+    fake.on("POST", /\/api\/plugins\/install$/, () => ({
+      sessionId: "codex-install-session",
+      branch: "shipit/install-codex-tools-abc",
+      pr: { number: 43, url: "https://github.com/acme/widgets/pull/43" },
+      installedDirs: ["/ws/.codex/skills/codex-tools__review"],
+    }));
+    fake.install();
+
     render(<SkillsTab />);
-    expect(screen.getByText(/Skill discovery and install/i)).toBeInTheDocument();
-    expect(screen.getByText(/Codex support is/i)).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(screen.getByTestId("skills-install-codex-tools")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("skills-install-codex-tools"));
+    await waitFor(() => {
+      expect(screen.getByText(".codex/skills")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByTestId("skill-install-confirm"));
+    await waitFor(() => {
+      const post = fake.calls.find((c) => c.method === "POST" && c.url.endsWith("/api/plugins/install"));
+      expect(post).toBeTruthy();
+      expect(JSON.parse(String(post?.body))).toMatchObject({
+        agentId: "codex",
+        marketplaceId: "openai-curated",
+        pluginName: "codex-tools",
+      });
+    });
   });
 
   it("Discover renders a Retry button per fetch-failed marketplace", async () => {

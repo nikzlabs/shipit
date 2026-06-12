@@ -788,7 +788,7 @@ export interface PluginInfo {
   author?: string;
   category?: string;
   homepage?: string;
-  /** Skills the plugin will install into `.claude/skills/<plugin>__<skill>/`. */
+  /** Skills the plugin will install into `<agent skills dir>/skills/<plugin>__<skill>/`. */
   skills: SkillRef[];
   /** Rough sum of skill `SKILL.md` byte sizes — the v1 "context cost" proxy. */
   estimatedContextBytes: number;
@@ -817,7 +817,7 @@ export interface InstallMarker {
 
 /** Returned from `installPlugin()` so the client can refresh + report status. */
 export interface InstallResult {
-  /** The directories written under `.claude/skills/` (one per skill). */
+  /** The directories written under the active agent's project skills dir (one per skill). */
   installedDirs: string[];
   /** Auto-commit hash. `null` when nothing was committed (e.g. no-op upgrade). */
   commitHash: string | null;
