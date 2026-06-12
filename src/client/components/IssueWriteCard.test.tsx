@@ -134,7 +134,24 @@ describe("IssueWriteCard (docs/189)", () => {
       identifier: "SHI-48",
       title: "Rewind handle hugs long user bubbles",
       url: "https://linear.app/x/issue/SHI-48",
+      // A comment write threads the created comment's id so the detail view
+      // lands on that exact comment (SHI-103).
+      anchorCommentId: "c-1",
     });
+  });
+
+  it("does not anchor to a comment for a non-comment write (SHI-103)", () => {
+    const onOpen = vi.fn();
+    seed({ verb: "status", undo: { kind: "status", previousStatus: "In Progress" } });
+    render(<IssueWriteCard cardId={CARD_ID} onOpen={onOpen} />);
+    fireEvent.click(screen.getByTestId("issue-write-card"));
+    expect(onOpen).toHaveBeenCalledWith({
+      tracker: "linear",
+      identifier: "SHI-48",
+      title: "Rewind handle hugs long user bubbles",
+      url: "https://linear.app/x/issue/SHI-48",
+    });
+    expect(onOpen.mock.calls[0][0]).not.toHaveProperty("anchorCommentId");
   });
 
   it("opens the issue on Enter/Space when the card is focused (keyboard)", () => {

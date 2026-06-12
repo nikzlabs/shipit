@@ -174,6 +174,31 @@ describe("issues-store comments (docs/189 follow-up)", () => {
     useIssuesStore.getState().closeIssue();
     expect(useIssuesStore.getState().comments).toBeNull();
   });
+
+  it("openIssue carries an anchorCommentId onto the selection (SHI-103)", async () => {
+    globalThis.fetch = routeFetch();
+    await useIssuesStore.getState().openIssue({
+      tracker: "linear",
+      identifier: "SHI-1",
+      seed: makeIssue(),
+      anchorCommentId: "c-2",
+    });
+    expect(useIssuesStore.getState().selected?.anchorCommentId).toBe("c-2");
+  });
+
+  it("clearAnchorComment drops the anchor while keeping the rest of the selection", async () => {
+    globalThis.fetch = routeFetch();
+    await useIssuesStore.getState().openIssue({
+      tracker: "linear",
+      identifier: "SHI-1",
+      seed: makeIssue(),
+      anchorCommentId: "c-2",
+    });
+    useIssuesStore.getState().clearAnchorComment();
+    const sel = useIssuesStore.getState().selected;
+    expect(sel?.anchorCommentId).toBeUndefined();
+    expect(sel?.identifier).toBe("SHI-1");
+  });
 });
 
 describe("issues-store status/priority writes (docs/191)", () => {
