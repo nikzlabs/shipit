@@ -42,6 +42,43 @@ pick up changes automatically. No need to restart dev servers after code edits.
 Docker Compose containers managed by ShipIt. Define them in
 `docker-compose.yml`. See [compose.md](compose.md) for details.
 
+## Session container lifecycle — idle containers are destroyed, not paused
+
+When a session sits idle (no one viewing it and no agent turn running), ShipIt
+**stops and removes** its container to reclaim host resources. The UI may call
+this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
+`docker rm`, **not** `docker pause`. The container is not frozen and later
+thawed; it is deleted. When the user sends the next message, a **brand-new**
+container is created and `/workspace` is re-cloned from git.
+
+**What this means for you:**
+
+- **In-container background work does not survive.** Anything you start at
+  runtime — a `setInterval`, a `sleep && …`, a backgrounded `node script.js`,
+  a cron entry, a polling loop, an in-memory queue or timer — is killed on
+  eviction and does **not** come back. The next message lands in a fresh
+  container with none of it running.
+- **Only `/workspace` (the git repo) persists**, via re-clone. In-memory
+  state, processes, and files written outside `/workspace` and outside declared
+  volumes are gone after eviction.
+- **There is a grace period of 10 minutes** after the last viewer detaches
+  before a container becomes eligible for eviction (host memory pressure can
+  cut this short). A short-lived timer may fire within that window, but **do
+  not rely on it** — it is a cushion, not a guarantee.
+
+**If something needs to keep running or run on every (re)start, declare it —
+don't start it at runtime:**
+
+| Need | Use |
+|------|-----|
+| Long-running process (dev server, scheduler, log tailer, queue worker) | A `docker-compose.yml` service — ShipIt rebuilds it on every container (re)start. See [compose.md](compose.md). |
+| One-time setup on a fresh container (install, codegen, migrations) | `agent.install` in `shipit.yaml` — re-runs when a new container starts. See [shipit-yaml.md](shipit-yaml.md). |
+| A recurring task the user wants run | Ask in chat — a new turn re-warms the container. |
+
+A timer you install with a shell command is the wrong primitive: it's invisible
+to ShipIt and dies on the next eviction. Move it into compose or
+`agent.install` so it's reconstructed deterministically.
+
 ## Resource limits
 
 Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that

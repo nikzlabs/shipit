@@ -656,11 +656,11 @@ export function SessionHealthStrip({ sessionId, onReconnectWs }: SessionHealthSt
         >
           <span className="flex-1 text-(--color-text-primary)">
             {pauseNotice.reason === "memory-pressure"
-              ? "Session paused under memory pressure."
+              ? "Session container shut down to reclaim memory."
               : pauseNotice.idleMs && pauseNotice.idleMs > 0
-                ? `Session paused after ${formatIdleDuration(pauseNotice.idleMs)} idle.`
-                : "Session paused after idle timeout."}
-            <span className="ml-1 text-(--color-text-secondary)">Send a message to resume.</span>
+                ? `Session container shut down after ${formatIdleDuration(pauseNotice.idleMs)} idle.`
+                : "Session container shut down after idle timeout."}
+            <span className="ml-1 text-(--color-text-secondary)">Your workspace is preserved — send a message to resume.</span>
           </span>
           <button
             type="button"
