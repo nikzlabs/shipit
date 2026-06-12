@@ -11,6 +11,15 @@ RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 COPY tsconfig.json ./
 COPY src/server/session/ ./src/server/session/
 COPY src/server/shared/ ./src/server/shared/
+COPY scripts/build-mcp-bridges.mjs ./scripts/
+
+# Precompile the internal stdio MCP bridges to self-contained plain-JS bundles
+# (docs/199). Running them with `node` instead of `tsx <bridge>.ts` removes the
+# ~1.5-2s per-spawn esbuild compile that, at the 0.5-CPU AGENT_DEFAULTS, made the
+# permission bridge miss the Claude CLI's 2000ms MCP pre-wait and fail the turn.
+# MUST run before the prune below — esbuild is a devDependency. The worker's
+# resolveBridge() falls back to tsx-on-source when dist/mcp-bridges is absent.
+RUN node scripts/build-mcp-bridges.mjs
 
 # Prune devDependencies so we can copy a clean node_modules to prod
 RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
@@ -86,6 +95,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/package.json ./
 COPY --from=build /app/tsconfig.json ./
 COPY --from=build /app/src ./src
+# Precompiled MCP bridge bundles (docs/199) — resolveBridge() prefers these over
+# the tsx-compiled .ts source, removing the per-spawn compile cost.
+COPY --from=build /app/dist/mcp-bridges ./dist/mcp-bridges
 
 # Platform docs for the agent (accessible at /shipit-docs inside the container)
 COPY src/server/shipit-docs/ /shipit-docs/

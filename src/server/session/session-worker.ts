@@ -16,7 +16,6 @@ import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
@@ -36,6 +35,7 @@ import type {
 } from "./agents/agent-process.js";
 import type { PermissionDecision, PermissionMode } from "../shared/types.js";
 import { PermissionBroker } from "./permission-broker.js";
+import { resolveBridge } from "./mcp-bridge-paths.js";
 import { substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
@@ -243,93 +243,41 @@ export class SessionWorker extends EventEmitter {
   }
 
   /**
-   * Resolve the absolute paths needed to launch the review MCP bridge
-   * (docs/125): the `tsx` binary and `mcp-review-bridge.ts`, both relative to
-   * this module. Returns null if either is missing so a stripped-down or
-   * non-container environment doesn't break agent start. Mirrors the Dockerfile
-   * `gh` shim's tsx-by-absolute-path invocation.
+   * Resolve how to launch each internal MCP bridge. All six share one resolver
+   * (`resolveBridge`, docs/199): it prefers the precompiled JS bundle in
+   * `dist/mcp-bridges/` (launched with `node` — no per-spawn tsx compile, which
+   * is what made these bridges miss the CLI's 2000ms MCP pre-wait at the
+   * 0.5-CPU AGENT_DEFAULTS) and falls back to running the `.ts` source through
+   * tsx in dev/local images. Returns null when neither exists (stripped-down
+   * test image) so the adapter omits the entry rather than failing agent start.
+   *
+   *   - review (docs/125), present (docs/093), voice (docs/163), bug (docs/164):
+   *     registered by adapters that expose those tools.
+   *   - ask (docs/147): only Codex (Claude has a native `AskUserQuestion`).
+   *   - permission (docs/193): only Claude, as `--permission-prompt-tool`.
    */
   private reviewBridgePaths(): AgentMcpReviewBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-review-bridge.ts");
-    // <root>/src/server/session → <root>/node_modules/.bin/tsx
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-review-bridge");
   }
 
-  /**
-   * Resolve the absolute paths needed to launch the present MCP bridge
-   * (docs/093). Same lifecycle and graceful-degradation rules as the review
-   * bridge above — if the bridge or `tsx` is missing (e.g. a stripped-down
-   * test image), return null and the adapter omits the entry rather than
-   * failing agent start.
-   */
   private presentBridgePaths(): AgentMcpPresentBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-present-bridge.ts");
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-present-bridge");
   }
 
-  /**
-   * Resolve the absolute paths needed to launch the voice-note MCP bridge
-   * (docs/163). Same lifecycle and graceful-degradation rules as the review
-   * and present bridges — if the bridge or `tsx` is missing, return null and
-   * the adapter omits the entry rather than failing agent start.
-   */
   private voiceBridgePaths(): AgentMcpVoiceBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-voice-bridge.ts");
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-voice-bridge");
   }
 
-  /**
-   * Resolve the absolute paths needed to launch the ask-user MCP bridge
-   * (docs/147). Same lifecycle and graceful-degradation rules as the other
-   * bridges — if the bridge or `tsx` is missing, return null and the adapter
-   * omits the entry rather than failing agent start. Only Codex registers it;
-   * Claude has a native `AskUserQuestion` tool and ignores this.
-   */
   private askBridgePaths(): AgentMcpAskBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-ask-bridge.ts");
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-ask-bridge");
   }
 
-  /**
-   * Resolve the absolute paths needed to launch the bug-report MCP bridge
-   * (docs/164). Same lifecycle and graceful-degradation rules as the review,
-   * present, and voice bridges — if the bridge or `tsx` is missing, return
-   * null and the adapter omits the entry rather than failing agent start.
-   */
   private bugBridgePaths(): AgentMcpBugBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-bug-bridge.ts");
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-bug-bridge");
   }
 
-  /**
-   * Resolve the absolute paths needed to launch the permission-prompt MCP
-   * bridge (docs/193). Same lifecycle and graceful-degradation rules as the
-   * other bridges — if the bridge or `tsx` is missing, return null and the
-   * adapter omits the `--permission-prompt-tool` wiring rather than failing
-   * agent start. Only Claude registers it; Codex uses its native approval
-   * channel.
-   */
   private permissionBridgePaths(): AgentMcpPermissionBridge | null {
-    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
-    const bridgePath = path.join(sessionDir, "mcp-permission-bridge.ts");
-    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
-    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
-    return { tsxBin, bridgePath };
+    return resolveBridge("mcp-permission-bridge");
   }
 
   private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
