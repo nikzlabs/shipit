@@ -75,7 +75,7 @@ export function registerAgentOpsRoutes(
   }
 
   // POST /agent-ops/review/submit — chat-native AI review write-back (docs/125).
-  // The mcp-review-bridge subprocess forwards `submit_review_comments` here;
+  // The consolidated `shipit` bridge forwards `submit_review_comments` here;
   // the worker relays to the orchestrator with the trusted SESSION_ID injected.
   app.post<{ Body: { filePath?: string; comments?: unknown[] } }>(
     "/agent-ops/review/submit",
@@ -83,7 +83,7 @@ export function registerAgentOpsRoutes(
   );
 
   // POST /agent-ops/voice/note — built-in voice_note tool write-back (docs/163).
-  // The mcp-voice-bridge subprocess forwards `voice_note` here; the worker
+  // The consolidated `shipit` bridge forwards `voice_note` here; the worker
   // relays to the orchestrator with the trusted SESSION_ID injected. The
   // orchestrator's router decides delivery (native / external / both).
   app.post<{ Body: { summary?: string; needsAttention?: boolean; context?: unknown } }>(
@@ -92,7 +92,7 @@ export function registerAgentOpsRoutes(
   );
 
   // POST /agent-ops/bug/report — user bug filing against ShipIt (docs/164).
-  // The mcp-bug-bridge subprocess forwards `report_shipit_bug` here; the
+  // The consolidated `shipit` bridge forwards `report_shipit_bug` here; the
   // worker relays to the orchestrator with the trusted SESSION_ID injected.
   // The orchestrator redacts the draft and posts a consent card — nothing is
   // filed until the user confirms.

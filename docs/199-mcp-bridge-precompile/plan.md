@@ -80,32 +80,65 @@ as a limitation rather than guessed.)
 Precompile each bridge to a **self-contained** plain-JS bundle at image-build
 time and run it with plain `node`:
 
-- `scripts/build-mcp-bridges.mjs` — esbuild-bundles the six bridges
-  (review/present/voice/ask/bug/permission) to `dist/mcp-bridges/*.js`. The
-  `@modelcontextprotocol/sdk` is **inlined**, so the bundle has zero runtime
-  `node_modules` dependency. A `createRequire` banner covers any transitive CJS
-  `require`. npm script: `build:bridges`.
+- `scripts/build-mcp-bridges.mjs` — esbuild-bundles the consolidated bridge
+  (`mcp-shipit-bridge`, which pulls in every `mcp-tools/*` module) to
+  `dist/mcp-bridges/mcp-shipit-bridge.js`. The `@modelcontextprotocol/sdk` is
+  **inlined**, so the bundle has zero runtime `node_modules` dependency. A
+  `createRequire` banner covers any transitive CJS `require`. npm script:
+  `build:bridges`. (Pre-SHI-128 this built six separate bundles.)
 - `src/server/session/mcp-bridge-paths.ts` — `resolveBridge(basename)` prefers
   `dist/mcp-bridges/<basename>.js` (launched with `process.execPath`) and falls
   back to running the `.ts` source through tsx when the bundle is absent
-  (dev/local images), or returns `null` (stripped-down test image). This
-  replaces the six near-identical resolver methods in `session-worker.ts`.
+  (dev/local images), or returns `null` (stripped-down test image). The worker
+  calls it once for `mcp-shipit-bridge`.
 - `docker/Dockerfile.session-worker.prod` — runs `node
   scripts/build-mcp-bridges.mjs` **before** the devDependency prune (esbuild is a
   devDep) and copies `/app/dist/mcp-bridges` into the prod image.
 
-Consolidating the five bridges into a single stdio process is a **follow-up**
-(see checklist) — precompile alone clears the window with comfortable margin and
-is the smaller, lower-risk change.
+Consolidating the five bridges into a single stdio process was deferred as a
+**follow-up** (precompile alone clears the window with comfortable margin and was
+the smaller, lower-risk change). That follow-up is now done — see below.
+
+## Consolidation into one process (SHI-128)
+
+The precompile fixed correctness; this follow-up cuts the per-tool stdio
+processes from **5 → 1** for density (~138 MB → ~30 MB resident). All six tools
+now live in ONE server named `shipit`, so their names are `mcp__shipit__<tool>`
+(was `mcp__shipit-<x>__<tool>`).
+
+- `src/server/session/mcp-tools/` — one `ToolDescriptor` module per tool
+  (`review`/`present`/`voice`/`bug`/`permission`/`ask`), each holding the tool
+  def + the worker-forwarding `call()` lifted verbatim from the old per-tool
+  bridge (voice's `delivered` echo, permission's resilient request→await poll,
+  ask's hold-open-forever all preserved).
+- `src/server/session/mcp-shipit-bridge.ts` — the single stdio entry. Reads the
+  enabled subset from the `SHIPIT_MCP_TOOLS` env (comma-separated ids), builds
+  one `Server({ name: "shipit" })`, registers ListTools/CallTool for the subset.
+  `createShipitBridgeServer(tools, deps)` is factored out for tests.
+- Per-agent subset is chosen by the adapters via that env: **Claude** →
+  `review,present,voice,bug,permission` (native AskUserQuestion, so no ask);
+  **Codex** → `review,present,voice,ask,bug` (native approval, so no permission).
+- The worker resolves ONE bridge (`resolveBridge("mcp-shipit-bridge")`); the
+  `AgentMcpWriteContext` carries a single `shipitBridge` instead of six fields.
+- Allowed-tools (`claude/process.ts`) list the four model-facing tools by exact
+  name (`mcp__shipit__submit_review_comments`, `…__present`, `…__voice_note`,
+  `…__report_shipit_bug`) — NOT a `mcp__shipit__*` glob — so the permission tool
+  (the CLI's `--permission-prompt-tool`, never model-callable) stays unlisted.
+- Client present-card detection (`message-tools.tsx`) matches both `shipit` and
+  the legacy `shipit-present` server so pre-SHI-128 persisted cards still render.
 
 ## Key files
 
-- `scripts/build-mcp-bridges.mjs` — the esbuild precompile step.
+- `scripts/build-mcp-bridges.mjs` — the esbuild precompile step (one bundle).
+- `src/server/session/mcp-shipit-bridge.ts` — consolidated stdio server + `selectTools`/`createShipitBridgeServer` (SHI-128).
+- `src/server/session/mcp-tools/*.ts` — per-tool `ToolDescriptor` modules + shared `types.ts` (SHI-128).
 - `src/server/session/mcp-bridge-paths.ts` — `resolveBridge()` (compiled-JS-first, tsx fallback).
-- `src/server/session/session-worker.ts` — the six `*BridgePaths()` methods now delegate to `resolveBridge`.
+- `src/server/session/session-worker.ts` — `shipitBridgePaths()` delegates to `resolveBridge`.
+- `src/server/session/agents/{claude,codex}/adapter.ts` — write one `shipit` server with the per-agent `SHIPIT_MCP_TOOLS` subset.
 - `docker/Dockerfile.session-worker.prod` — build step + `dist/mcp-bridges` copy.
 - `src/server/session/mcp-bridge-paths.test.ts` — resolution order (compiled → tsx → null).
-- `src/server/session/mcp-bridge-bundle.test.ts` — end-to-end: bundle runs under `node` with no `node_modules` and registers its tool.
+- `src/server/session/mcp-bridge-bundle.test.ts` — end-to-end: bundle runs under `node` with no `node_modules` and registers the selected tools.
+- `src/server/session/mcp-shipit-bridge.test.ts` — tool selection, dispatch, permission resilient poll, unknown-tool guard.
 
 ## Operator validation
 

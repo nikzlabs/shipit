@@ -39,48 +39,40 @@ describe("resolveBridge (docs/199)", () => {
   const dirs = () => ({ compiledDir, sourceDir, nodeBin, tsxBin });
 
   it("prefers the precompiled JS bundle, launched with node", () => {
-    fs.writeFileSync(path.join(compiledDir, "mcp-permission-bridge.js"), "//");
-    fs.writeFileSync(path.join(sourceDir, "mcp-permission-bridge.ts"), "//");
+    fs.writeFileSync(path.join(compiledDir, "mcp-shipit-bridge.js"), "//");
+    fs.writeFileSync(path.join(sourceDir, "mcp-shipit-bridge.ts"), "//");
 
-    expect(resolveBridge("mcp-permission-bridge", dirs())).toEqual({
+    expect(resolveBridge("mcp-shipit-bridge", dirs())).toEqual({
       tsxBin: nodeBin,
-      bridgePath: path.join(compiledDir, "mcp-permission-bridge.js"),
+      bridgePath: path.join(compiledDir, "mcp-shipit-bridge.js"),
     });
   });
 
   it("falls back to the .ts source via tsx when no bundle exists", () => {
-    fs.writeFileSync(path.join(sourceDir, "mcp-permission-bridge.ts"), "//");
+    fs.writeFileSync(path.join(sourceDir, "mcp-shipit-bridge.ts"), "//");
 
-    expect(resolveBridge("mcp-permission-bridge", dirs())).toEqual({
+    expect(resolveBridge("mcp-shipit-bridge", dirs())).toEqual({
       tsxBin,
-      bridgePath: path.join(sourceDir, "mcp-permission-bridge.ts"),
+      bridgePath: path.join(sourceDir, "mcp-shipit-bridge.ts"),
     });
   });
 
   it("returns null when neither bundle nor source is present", () => {
-    expect(resolveBridge("mcp-permission-bridge", dirs())).toBeNull();
+    expect(resolveBridge("mcp-shipit-bridge", dirs())).toBeNull();
   });
 
   it("returns null when source exists but the tsx binary is missing", () => {
-    fs.writeFileSync(path.join(sourceDir, "mcp-permission-bridge.ts"), "//");
+    fs.writeFileSync(path.join(sourceDir, "mcp-shipit-bridge.ts"), "//");
     fs.rmSync(tsxBin);
 
-    expect(resolveBridge("mcp-permission-bridge", dirs())).toBeNull();
+    expect(resolveBridge("mcp-shipit-bridge", dirs())).toBeNull();
   });
 
-  it("resolves each real bridge basename the worker registers", () => {
-    for (const name of [
-      "mcp-review-bridge",
-      "mcp-present-bridge",
-      "mcp-voice-bridge",
-      "mcp-ask-bridge",
-      "mcp-bug-bridge",
-      "mcp-permission-bridge",
-    ]) {
-      fs.writeFileSync(path.join(compiledDir, `${name}.js`), "//");
-      const resolved = resolveBridge(name, dirs());
-      expect(resolved?.bridgePath).toBe(path.join(compiledDir, `${name}.js`));
-      expect(resolved?.tsxBin).toBe(nodeBin);
-    }
+  it("resolves the consolidated bridge basename the worker registers (SHI-128)", () => {
+    const name = "mcp-shipit-bridge";
+    fs.writeFileSync(path.join(compiledDir, `${name}.js`), "//");
+    const resolved = resolveBridge(name, dirs());
+    expect(resolved?.bridgePath).toBe(path.join(compiledDir, `${name}.js`));
+    expect(resolved?.tsxBin).toBe(nodeBin);
   });
 });

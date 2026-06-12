@@ -916,7 +916,7 @@ describe("MessageList", () => {
         {
           type: "tool_use",
           id: "t1",
-          name: "mcp__shipit-present__present",
+          name: "mcp__shipit__present",
           input: { title: "Sales Chart" },
         },
       ];
@@ -947,7 +947,10 @@ describe("MessageList", () => {
       expect(screen.queryByLabelText("Show output")).toBeNull();
     });
 
-    it("renders a view chip when the bridge payload is a bare JSON object", () => {
+    it("renders a view chip when the bridge payload is a bare JSON object (legacy shipit-present name)", () => {
+      // SHI-128 consolidated the per-tool servers into `shipit`, but pre-SHI-128
+      // sessions persisted the tool call under `mcp__shipit-present__present`.
+      // isPresentTool still recognizes the legacy server name so those cards render.
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_bare",

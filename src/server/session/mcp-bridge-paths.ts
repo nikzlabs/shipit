@@ -57,7 +57,7 @@ export interface ResolveBridgeDirs {
 
 /**
  * Resolve the launch command + entry path for an internal MCP bridge by its base
- * name (e.g. `"mcp-permission-bridge"`). Prefers the precompiled JS bundle and
+ * name (e.g. `"mcp-shipit-bridge"`). Prefers the precompiled JS bundle and
  * falls back to the tsx-compiled source; returns null when neither exists.
  */
 export function resolveBridge(basename: string, dirs: ResolveBridgeDirs = {}): ResolvedBridge | null {

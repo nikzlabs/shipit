@@ -400,7 +400,11 @@ function extractPresentPayload(raw: string): { presentId?: unknown; title?: unkn
 function isPresentTool(name: string): boolean {
   if (name === "present") return true;
   const parsed = parseMcpToolName(name);
-  return parsed?.server === "shipit-present" && parsed.tool === "present";
+  if (parsed?.tool !== "present") return false;
+  // The consolidated `shipit` server (SHI-128) replaced the per-tool
+  // `shipit-present` server; match both so already-persisted present cards in
+  // pre-SHI-128 sessions (whose tool names are stored verbatim) still render.
+  return parsed.server === "shipit" || parsed.server === "shipit-present";
 }
 
 function PresentToolChip({

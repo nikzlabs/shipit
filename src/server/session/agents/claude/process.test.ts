@@ -347,11 +347,11 @@ describe("ClaudeProcess", () => {
       mockPtySpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
-      claude.run({ prompt: "test", permissionPromptTool: "mcp__shipit-permission__permission_prompt" });
+      claude.run({ prompt: "test", permissionPromptTool: "mcp__shipit__permission_prompt" });
 
       expect(mockPtySpawn).toHaveBeenCalledWith(
         "claude",
-        expect.arrayContaining(["--permission-prompt-tool", "mcp__shipit-permission__permission_prompt"]),
+        expect.arrayContaining(["--permission-prompt-tool", "mcp__shipit__permission_prompt"]),
         expect.any(Object),
       );
     });
@@ -484,15 +484,16 @@ describe("ClaudeProcess", () => {
       expect(tools).toContain("mcp__playwright__");
     });
 
-    // docs/149 — the worker-registered `shipit-review` MCP bridge isn't a
-    // user-configured server, so it never flows through `mcpServerNames`. The
-    // tool must still be allowlisted explicitly or headless `-p` mode rejects
-    // it as "permission not yet granted" — including from review subagents.
+    // docs/149 / SHI-128 — the worker-registered `shipit` MCP server isn't a
+    // user-configured server, so its tools never flow through `mcpServerNames`.
+    // They must be allowlisted explicitly by name or headless `-p` mode rejects
+    // them as "permission not yet granted" — including from review subagents.
+    // After SHI-128 the named tools live under the single `shipit` server.
     it.each([
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
-    ])("allowlists mcp__shipit-review__* in %s mode", (_label, permissionMode) => {
+    ])("allowlists mcp__shipit__submit_review_comments in %s mode", (_label, permissionMode) => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
@@ -501,17 +502,16 @@ describe("ClaudeProcess", () => {
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
-      expect(tools.split(",")).toContain("mcp__shipit-review__*");
+      expect(tools.split(",")).toContain("mcp__shipit__submit_review_comments");
     });
 
-    // Same rationale as shipit-review: the worker-registered `shipit-present`
-    // bridge isn't user-configured, so it must be allowlisted explicitly or
-    // headless `-p` mode rejects `present` as "permission not yet granted".
+    // Same rationale: `present` must be allowlisted explicitly or headless `-p`
+    // mode rejects it as "permission not yet granted".
     it.each([
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
-    ])("allowlists mcp__shipit-present__* in %s mode", (_label, permissionMode) => {
+    ])("allowlists mcp__shipit__present in %s mode", (_label, permissionMode) => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
@@ -520,17 +520,17 @@ describe("ClaudeProcess", () => {
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
-      expect(tools.split(",")).toContain("mcp__shipit-present__*");
+      expect(tools.split(",")).toContain("mcp__shipit__present");
     });
 
-    // docs/163: the worker-registered `shipit-voice` bridge (the built-in
-    // `voice_note` tool) must be allowlisted in every mode — including plan, so
-    // the agent can author a spoken headline before ExitPlanMode.
+    // docs/163: the built-in `voice_note` tool must be allowlisted in every mode
+    // — including plan, so the agent can author a spoken headline before
+    // ExitPlanMode.
     it.each([
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
-    ])("allowlists mcp__shipit-voice__* in %s mode", (_label, permissionMode) => {
+    ])("allowlists mcp__shipit__voice_note in %s mode", (_label, permissionMode) => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
@@ -539,7 +539,24 @@ describe("ClaudeProcess", () => {
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
-      expect(tools.split(",")).toContain("mcp__shipit-voice__*");
+      expect(tools.split(",")).toContain("mcp__shipit__voice_note");
+    });
+
+    // SHI-128: the consolidated server's `permission_prompt` tool is the CLI's
+    // --permission-prompt-tool and is deliberately NOT model-callable, so it must
+    // NOT appear in the allowlist (we list the four model-facing tools by name
+    // rather than a `mcp__shipit__*` glob to keep it out).
+    it("does NOT allowlist mcp__shipit__permission_prompt", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).not.toContain("mcp__shipit__permission_prompt");
+      expect(tools).not.toContain("mcp__shipit__*");
     });
 
     // docs/138: `Skill` must be allowlisted in every permission mode so an

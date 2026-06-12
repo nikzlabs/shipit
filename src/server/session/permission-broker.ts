@@ -9,8 +9,8 @@
  * approve/deny card — regardless of which agent raised it:
  *
  * - **Claude** routes its built-in gate to ShipIt's `--permission-prompt-tool`
- *   MCP bridge (`mcp-permission-bridge.ts`), which POSTs the request to the
- *   worker; the worker calls {@link PermissionBroker.request}.
+ *   (the `shipit` bridge's permission tool, `mcp-tools/permission.ts`), which
+ *   POSTs the request to the worker; the worker calls {@link PermissionBroker.request}.
  * - **Codex** routes its app-server's blocking approval requests through the
  *   injected `requestPermission` callback (bound to {@link request}) instead of
  *   auto-accepting them.

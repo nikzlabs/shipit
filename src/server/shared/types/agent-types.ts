@@ -317,8 +317,8 @@ export interface AgentCompactedEvent {
  * which adapter produced it:
  *
  * - **Claude** routes its built-in sensitive-file gate to ShipIt's
- *   `--permission-prompt-tool` MCP bridge (`mcp-permission-bridge.ts`), which
- *   POSTs the request to the worker.
+ *   `--permission-prompt-tool` (the `shipit` bridge's permission tool,
+ *   `mcp-tools/permission.ts`), which POSTs the request to the worker.
  * - **Codex** routes the app-server's blocking approval requests
  *   (`item/.../requestApproval`) through the same broker instead of
  *   auto-accepting them.
@@ -476,70 +476,18 @@ export interface AgentRunParams {
 // ---- Per-agent MCP config writer (docs/155 hair 10) ----
 
 /**
- * Resolved paths to the internal review MCP bridge (docs/125). The worker
- * resolves these once and hands them to the adapter so the adapter doesn't
- * have to know where the bridge lives in the session worker layout.
+ * Resolved launch paths for the consolidated internal MCP bridge
+ * (SHI-128 / docs/199). The worker resolves this ONCE (`resolveBridge`,
+ * preferring the precompiled bundle over tsx-on-source) and hands it to the
+ * adapter, which writes a single `shipit` MCP server entry. The set of tools
+ * that server exposes is selected per agent via the `SHIPIT_MCP_TOOLS` env, not
+ * via separate bridges — Claude gets review/present/voice/bug/permission, Codex
+ * gets review/present/voice/ask/bug. `tsxBin` is the spawn command (the `node`
+ * binary for the compiled bundle, or `tsx` for `.ts` source); the field keeps
+ * its historical name. The whole bridge is omitted when null (stripped-down test
+ * image) so agent start never fails on it.
  */
-export interface AgentMcpReviewBridge {
-  tsxBin: string;
-  bridgePath: string;
-}
-
-/**
- * Resolved paths to the internal present MCP bridge (docs/093). Same shape
- * and lifecycle as {@link AgentMcpReviewBridge} — kept as a separate type so
- * the two bridges can evolve independently and a future adapter can choose
- * to expose one without the other.
- */
-export interface AgentMcpPresentBridge {
-  tsxBin: string;
-  bridgePath: string;
-}
-
-/**
- * Resolved paths to the internal voice-note MCP bridge (docs/163). Same shape
- * and lifecycle as the review/present bridges — the agent calls the built-in
- * `voice_note` tool and the bridge forwards the payload to the worker.
- */
-export interface AgentMcpVoiceBridge {
-  tsxBin: string;
-  bridgePath: string;
-}
-
-/**
- * Resolved paths to the internal ask-user MCP bridge (docs/147). Same shape and
- * lifecycle as the other bridges. Registered only by adapters that LACK a
- * native structured-question tool (Codex): it exposes a normalized
- * `AskUserQuestion` tool so the orchestrator's existing question/interrupt/
- * resume flow can be reused. Claude ignores it — it has `AskUserQuestion`
- * natively.
- */
-export interface AgentMcpAskBridge {
-  tsxBin: string;
-  bridgePath: string;
-}
-
-/**
- * Resolved paths to the internal bug-report MCP bridge (docs/164). Same shape
- * and lifecycle as the review/present/voice bridges — the agent calls the
- * `report_shipit_bug` tool and the bridge forwards the draft to the worker,
- * which redacts it and posts a consent card.
- */
-export interface AgentMcpBugBridge {
-  tsxBin: string;
-  bridgePath: string;
-}
-
-/**
- * Resolved paths to the internal permission-prompt MCP bridge (docs/193). Same
- * shape and lifecycle as the other bridges. Registered for Claude as the CLI's
- * `--permission-prompt-tool`: instead of auto-denying a gated (sensitive-file)
- * edit in headless mode, the CLI calls this bridge, which forwards the request
- * to the worker's `PermissionBroker` and blocks until the user approves/denies.
- * Codex doesn't use it (its app-server has a native blocking approval channel
- * the adapter routes through the same broker).
- */
-export interface AgentMcpPermissionBridge {
+export interface AgentMcpBridge {
   tsxBin: string;
   bridgePath: string;
 }
@@ -561,41 +509,14 @@ export interface AgentMcpWriteContext {
    */
   servers: McpServerConfig[];
   /**
-   * The internal review bridge (docs/125), or `null` when the worker can't
-   * locate the bridge files (stripped-down test image). Adapters that
-   * support the review tool skip the entry when this is null; others ignore it.
+   * The consolidated internal MCP bridge (SHI-128 / docs/199), or `null` when
+   * the worker can't locate the bridge files (stripped-down test image). Each
+   * adapter writes a single `shipit` MCP server entry pointing at it and selects
+   * the tools to expose via the `SHIPIT_MCP_TOOLS` env (Claude:
+   * review/present/voice/bug/permission; Codex: review/present/voice/ask/bug).
+   * When null the adapter omits the entry rather than failing agent start.
    */
-  reviewBridge: AgentMcpReviewBridge | null;
-  /**
-   * The internal present bridge (docs/093), or `null` when the worker can't
-   * locate the bridge files. Adapters add it as another MCP entry so the
-   * agent CLI can call the `present` tool.
-   */
-  presentBridge: AgentMcpPresentBridge | null;
-  /**
-   * The internal voice-note bridge (docs/163), or `null` when the worker can't
-   * locate the bridge files. Adapters add it as another MCP entry so the agent
-   * CLI can call the built-in `voice_note` tool.
-   */
-  voiceBridge: AgentMcpVoiceBridge | null;
-  /**
-   * The internal ask-user bridge (docs/147), or `null` when the worker can't
-   * locate the bridge files. Only adapters without a native structured-question
-   * tool register it (Codex); Claude ignores it.
-   */
-  askBridge: AgentMcpAskBridge | null;
-  /**
-   * The internal bug-report bridge (docs/164), or `null` when the worker can't
-   * locate the bridge files. Adapters add it as another MCP entry so the agent
-   * CLI can call the `report_shipit_bug` tool.
-   */
-  bugBridge: AgentMcpBugBridge | null;
-  /**
-   * The internal permission-prompt bridge (docs/193), or `null` when the worker
-   * can't locate the bridge files. Claude registers it as
-   * `--permission-prompt-tool`; other adapters ignore it.
-   */
-  permissionBridge: AgentMcpPermissionBridge | null;
+  shipitBridge: AgentMcpBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped
