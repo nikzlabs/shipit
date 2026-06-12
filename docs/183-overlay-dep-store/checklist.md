@@ -290,12 +290,35 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
       churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
       currently materializes a full independent ~470 MB copy; dedup makes the disk win
-      unconditional — see the FINDINGS break-even analysis); (c) `SESSION_WORKER_IMAGE_ID` wired on
-      deploys (scope rotation on worker-image rebuilds); (d) auto-skip overlay for pnpm / Yarn-PnP
+      unconditional — see the FINDINGS break-even analysis); (c) **DONE — `SESSION_WORKER_IMAGE_ID`
+      is now wired at runtime** (see "Worker-image scope rotation" below); (d) auto-skip overlay for pnpm / Yarn-PnP
       repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
       see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
       deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
       findings for the flip decision".
+
+### Worker-image scope rotation — `SESSION_WORKER_IMAGE_ID` wired (flip precondition (c))
+
+Closes FINDINGS "Operational findings" finding 2: in production `overlayRuntimeKey()` was
+`unknown|x64` because nothing set `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST`, so a worker-image
+rebuild that bumped Node/glibc silently reused an ABI-stale base. Now the orchestrator resolves
+the value at runtime so self-updates rotate the scope too (not hardcoded in `deploy.sh`).
+
+- [x] **`SessionContainerManager.resolveWorkerImageId()`** — one `docker.getImage(imageName).inspect()`
+      → `.Id`, cached (a failed inspect is cached as a miss), so there is no per-session Docker call.
+- [x] **Startup wiring** (`app-lifecycle.ts`, `setupContainerManager`) — after `ensureNetwork`, when
+      `isOverlayEnabled()` and no operator value is set, resolves the id and publishes it into the
+      orchestrator's own `process.env.SESSION_WORKER_IMAGE_ID`. That env is the channel both
+      `overlayRuntimeKey()` (orchestrator-side scope, incl. the disk-janitor live-set, which runs after
+      this) and `buildEnv` read. Gated on the flag → flag-off deployments are byte-for-byte unchanged.
+- [x] **`buildEnv` forwards `SESSION_WORKER_IMAGE_ID` (or `IMAGE_DIGEST`) into every session container**,
+      so the worker's `install-runtime.ts:runtimeKey()` shares the same image fingerprint — the overlay
+      base scope, the published base's marker key, and the in-clone install marker all rotate together.
+- [x] Local/test mode (no Docker) and the flag-off path keep the `"unknown"` fallback (no forwarded var,
+      no rotation) — verified by unit tests.
+- [x] Tests: `resolveWorkerImageId` (returns id, caches, caches-the-miss) in `session-container.test.ts`;
+      `buildEnv` forwarding (`SESSION_WORKER_IMAGE_ID`, `IMAGE_DIGEST` fallback, neither set) in
+      `container-lifecycle.test.ts`.
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

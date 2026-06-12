@@ -220,6 +220,7 @@ export function buildEnv(
   workerPort: number,
   dockerProxyHost: string | undefined,
   dockerProxyPort: number | undefined,
+  procEnv: NodeJS.ProcessEnv = process.env,
 ): string[] {
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
@@ -234,6 +235,19 @@ export function buildEnv(
     // etc.) inherits the user's configured identity automatically.
     "GIT_CONFIG_GLOBAL=/credentials/.gitconfig",
   ];
+
+  // docs/183 — forward the session-worker image id so the worker's
+  // install-runtime `runtimeKey()` shares the orchestrator's ABI fingerprint.
+  // The orchestrator resolves it once at startup (`resolveWorkerImageId` →
+  // `process.env.SESSION_WORKER_IMAGE_ID`) so a worker-image rebuild rotates the
+  // overlay base scope AND invalidates a stale install marker. Mirrors the
+  // worker's own precedence (`SESSION_WORKER_IMAGE_ID ?? IMAGE_DIGEST`). Absent
+  // in dev/local (no Docker) and when the overlay store is off → not forwarded,
+  // and the worker falls back to `"unknown"` exactly as before.
+  const workerImageId = procEnv.SESSION_WORKER_IMAGE_ID ?? procEnv.IMAGE_DIGEST;
+  if (workerImageId) {
+    env.push(`SESSION_WORKER_IMAGE_ID=${workerImageId}`);
+  }
 
   // Point npm/yarn/pnpm caches at the shared per-repo cache mount so
   // subsequent sessions skip network downloads for already-cached packages.

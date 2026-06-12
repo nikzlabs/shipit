@@ -276,6 +276,29 @@ describe("buildEnv", () => {
     expect(env).toContain("HOME=/root");
   });
 
+  // docs/183 — the orchestrator resolves the worker image id at startup into
+  // SESSION_WORKER_IMAGE_ID; buildEnv forwards it so the worker's
+  // install-runtime runtimeKey() shares the same ABI fingerprint and a
+  // worker-image rebuild rotates the overlay base scope + the install marker.
+  it("docs/183: forwards SESSION_WORKER_IMAGE_ID into the container env", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+      SESSION_WORKER_IMAGE_ID: "sha256:abc123",
+    } as NodeJS.ProcessEnv);
+    expect(env).toContain("SESSION_WORKER_IMAGE_ID=sha256:abc123");
+  });
+
+  it("docs/183: falls back to IMAGE_DIGEST when SESSION_WORKER_IMAGE_ID is unset", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+      IMAGE_DIGEST: "sha256:def456",
+    } as NodeJS.ProcessEnv);
+    expect(env).toContain("SESSION_WORKER_IMAGE_ID=sha256:def456");
+  });
+
+  it("docs/183: forwards nothing when neither image var is set (dev/local, flag off)", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+    expect(env.some((e) => e.startsWith("SESSION_WORKER_IMAGE_ID="))).toBe(false);
+  });
+
   it("docs/128: points an ops session at the read-only docker-socket-proxy", () => {
     const config = baseConfig({ opsSession: true });
     const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
