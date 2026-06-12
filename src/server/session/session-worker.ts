@@ -66,7 +66,7 @@ import {
   serializeMarker,
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
-import { overlayBackedEmptyDepDirs } from "./overlay-dep-check.js";
+import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
 import {
   runAgentToCompletion,
@@ -793,21 +793,32 @@ export class SessionWorker extends EventEmitter {
         installCommands: commands,
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
-        // docs/183 — a matching marker is only trustworthy if the overlay-backed
-        // dep dirs actually hold content. The marker lives in the host clone;
-        // the deps live in the overlay. A container recreated with the overlay
-        // flag newly on mounts an EMPTY overlay over previously-installed deps,
-        // and skipping here would leave the session dep-less AND let the publish
-        // hook capture the empty view as the scope's shared base. Non-overlay
-        // sessions have no overlay mount at a dep dir, so this returns [] and
-        // the gate behaves exactly as before.
-        const contradicted = overlayBackedEmptyDepDirs(this.workspaceDir);
+        // docs/183 — a matching marker is only trustworthy if every declared dep
+        // dir actually holds content. The marker lives in the host clone; the
+        // deps live in the dep dir (an overlay mount when OVERLAY_DEP_STORE is on,
+        // a plain dir in the clone otherwise), and the two can disagree:
+        //   • Flag newly ON: a container recreated with the flag enabled mounts an
+        //     EMPTY overlay over previously-installed deps — skipping would leave
+        //     the session dep-less AND let the publish hook capture the empty view
+        //     as the scope's shared base.
+        //   • Flag rolled OFF (the documented incident response, FINDINGS #3): a
+        //     session whose deps lived in the overlay gets its container recreated
+        //     with the flag off — no overlay mount, but the dep dir left behind in
+        //     the host clone is EMPTY. The marker still matches exactly, so the
+        //     old overlay-mount-only check skipped → dep-less session.
+        // Distrusting a matching marker over a present-but-EMPTY dep dir,
+        // regardless of mount type, closes both. An ABSENT dep dir is NOT a
+        // contradiction, so a legitimately dep-less repo (e.g. default
+        // node_modules on a non-Node repo) and the `agent.dep-dirs: []` opt-out
+        // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
+        const contradicted = emptyDepDirsContradictingMarker(this.workspaceDir);
         if (contradicted.length === 0) {
           return { skipped: true, reason: "marker" };
         }
         console.warn(
-          `[install] marker matched but overlay-backed dep dir(s) are empty: ` +
-          `${contradicted.join(", ")} — treating as a miss and reinstalling`,
+          `[install] marker matched but declared dep dir(s) are empty: ` +
+          `${contradicted.map((c) => (c.overlay ? `${c.depDir} (overlay)` : c.depDir)).join(", ")} ` +
+          `— treating as a miss and reinstalling`,
         );
       }
       // Stale / legacy / mismatched marker — whiteout it before reinstalling so

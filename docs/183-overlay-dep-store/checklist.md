@@ -293,8 +293,10 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       unconditional — see the FINDINGS break-even analysis); (c) **DONE — `SESSION_WORKER_IMAGE_ID`
       is now wired at runtime** (see "Worker-image scope rotation" below); (d) auto-skip overlay for pnpm / Yarn-PnP
       repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
-      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
-      deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
+      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) ✅ **RESOLVED** — the flag-rollback marker fix:
+      the `/install` gate now distrusts a matching marker over any present-but-empty declared dep dir regardless
+      of mount type (`emptyDepDirsContradictingMarker`), so a marker written while deps lived in overlay no longer
+      skips into a dep-less session after the flag is rolled off. See FINDINGS.md "Operational
       findings for the flip decision".
 
 ### Worker-image scope rotation — `SESSION_WORKER_IMAGE_ID` wired (flip precondition (c))
