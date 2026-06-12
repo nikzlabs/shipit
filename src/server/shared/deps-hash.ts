@@ -16,7 +16,9 @@
  *
  * **Codegen safety.** The content path is only active when the install is a
  * recognized *pure dependency install* — `npm install|ci`, `pnpm install`,
- * `yarn install`, `pip install -r`, `uv sync` (common flags tolerated). A repo
+ * `yarn install`, `pip install -r`, `uv sync`, `uv pip install -r` / `uv pip
+ * sync`, plus input-free virtualenv creation (`uv venv`, `python3 -m venv`)
+ * which consumes no manifest (common flags tolerated). A repo
  * whose `agent.install` runs codegen, a build, or anything that consumes files
  * beyond the manifest could change its output without the hashed inputs moving,
  * so for those we fall back to commit-only (the hash resolves to `null`, which
@@ -48,6 +50,8 @@ export function depInputsForCommand(command: string): string[] | null {
   // Positional (non-flag) words after the tool. For npm/pnpm/yarn/uv the only
   // legitimate positional is the subcommand; a value-bearing flag (e.g.
   // `--prefix foo`) leaves `foo` as a positional and is conservatively rejected.
+  // (venv creation is the exception — it takes an optional path positional; see
+  // `isVenvCreation`.)
   const positionals = args.filter((t) => !t.startsWith("-"));
 
   switch (tool) {
@@ -68,7 +72,20 @@ export function depInputsForCommand(command: string): string[] | null {
     case "pip3":
       return pipRequirementInputs(args);
     case "uv":
-      return isBareSubcommand(positionals, ["sync"]) ? ["pyproject.toml", "uv.lock"] : null;
+      // `uv sync` → pyproject + lock; `uv venv [path]` → input-free; `uv pip
+      // install -r` / `uv pip sync <file>` → same requirements-file inputs as pip.
+      if (positionals[0] === "sync") {
+        return isBareSubcommand(positionals, ["sync"]) ? ["pyproject.toml", "uv.lock"] : null;
+      }
+      if (isVenvCreation(positionals)) return [];
+      if (positionals[0] === "pip") return uvPipInputs(args);
+      return null;
+    case "python":
+    case "python3":
+      // `python3 -m venv [path]` — stdlib virtualenv creation, input-free like
+      // `uv venv`. (`python -m venv` leaves `venv` as a positional after the
+      // `-m` value, alongside the optional path.)
+      return isVenvCreation(positionals) ? [] : null;
     default:
       return null;
   }
@@ -77,6 +94,36 @@ export function depInputsForCommand(command: string): string[] | null {
 /** True when the only positional is exactly one of the accepted subcommands. */
 function isBareSubcommand(positionals: string[], accepted: string[]): boolean {
   return positionals.length === 1 && accepted.includes(positionals[0]);
+}
+
+/**
+ * `uv venv [path]` / `python3 -m venv [path]` — virtualenv creation. These
+ * consume **no** dependency manifest, so they are a recognized *input-free*
+ * install: they must NOT disable the content path (returning `[]`, not `null`),
+ * and they contribute no files to the hash. The subcommand takes an optional
+ * positional path (`.venv`), so we accept the `venv` positional plus at most one
+ * trailing path positional; a value-bearing flag that leaves extra positionals
+ * (e.g. `--python 3.12 .venv`) is conservatively rejected (→ null).
+ */
+function isVenvCreation(positionals: string[]): boolean {
+  return positionals[0] === "venv" && positionals.length <= 2;
+}
+
+/**
+ * `uv pip install -r <file>` / `uv pip sync <file>`, given the token list after
+ * `uv` (`['pip', <sub>, …]`). `install` reuses pip's requirements extraction
+ * (`-r`/`--requirement`, so ad-hoc package args like `uv pip install foo` →
+ * null, same as bare pip); `sync` takes requirements files as bare positionals
+ * (pip-tools style). Any other subcommand, or no file, → null.
+ */
+function uvPipInputs(args: string[]): string[] | null {
+  const afterPip = args.slice(1); // [<sub>, …]
+  if (afterPip[0] === "install") return pipRequirementInputs(afterPip);
+  if (afterPip[0] === "sync") {
+    const files = afterPip.slice(1).filter((a) => !a.startsWith("-"));
+    return files.length > 0 ? files : null;
+  }
+  return null;
 }
 
 /**

@@ -92,6 +92,29 @@ Fix (PR — content-key the pre-stamp):
       key, or when commands/runtime differ.
 - [x] **No flag defaults changed.**
 
+### Part 1 — uv allowlist too narrow (PR — uv venv / uv pip)
+
+Prod canary (2026-06-12): a repo with `agent.install: [uv venv .venv, uv pip
+install -r requirements.txt]` produced markers and base pointers with `depsHash`
+**absent**. `depInputsForCommand` recognized only `uv sync`, so both entries fell
+to the unrecognized branch and one unrecognized entry conservatively disables the
+content path for the whole stamp (correct rule, too-small allowlist).
+
+Fix (`deps-hash.ts`, allowlist only — no flag-default changes):
+- [x] **`uv venv [path]` → input-free (`[]`).** Consumes no manifest, so it must
+      not disable the content path and contributes no files to the hash. New
+      `isVenvCreation` accepts the `venv` positional plus an optional path
+      positional (value-bearing flags that leave extra positionals → null).
+- [x] **`uv pip install -r <file>` / `uv pip sync <file>` recognized.** New
+      `uvPipInputs` reuses `pipRequirementInputs` for `install` (so ad-hoc
+      `uv pip install foo` stays null) and bare-positional files for `sync`.
+- [x] **`python3 -m venv [path]` recognized** as input-free, mirroring `uv venv`.
+      (It was NOT previously recognized — the earlier pip canary's install used a
+      bare `pip install -r` with no venv step.) `uv sync` unchanged.
+- [x] **Tests.** `uv venv` alone → `[]`; the live canary command pair →
+      `depsHash` over `requirements.txt`; `uv pip install foo` (no `-r`) → null;
+      `uv pip sync file.txt` → recognized; `python3 -m venv` → `[]`.
+
 ### Part 2 — pnpm store gaps (PR #1285)
 
 Three gaps found running Part 2 (PR #1279) on the production canary (pnpm 11.6.0,
