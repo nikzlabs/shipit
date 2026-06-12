@@ -26,6 +26,7 @@ export function useAttentionNotifications(
 ): void {
   const sessions = useSessionStore((s) => s.sessions);
   const activeRunnerSessions = useSessionStore((s) => s.activeRunnerSessions);
+  const awaitingPermissionSessions = useSessionStore((s) => s.awaitingPermissionSessions);
   const cardBySession = usePrStore((s) => s.cardBySession);
   const statusBySession = usePrStore((s) => s.statusBySession);
   const autoFixEnabled = useSettingsStore((s) => s.autoFixCi);
@@ -42,6 +43,7 @@ export function useAttentionNotifications(
         card: cardBySession[session.id],
         status: statusBySession[session.id],
         isAgentRunning: activeRunnerSessions.has(session.id),
+        awaitingPermission: awaitingPermissionSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
       });
@@ -59,5 +61,5 @@ export function useAttentionNotifications(
       }
     }
     prevReasonsRef.current = next;
-  }, [sessions, activeRunnerSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, notify]);
+  }, [sessions, activeRunnerSessions, awaitingPermissionSessions, cardBySession, statusBySession, autoFixEnabled, autoResolveEnabled, notify]);
 }

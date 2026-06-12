@@ -427,6 +427,16 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   guardedUnavailable: boolean;
   /**
+   * docs/193 (Thread C) — requestIds of permission prompts this session is
+   * currently BLOCKED awaiting an answer on. The agent is held inside the gated
+   * tool call until the user approves/denies, so a non-empty set means "this
+   * session needs your approval" — surfaced as a cross-session sidebar
+   * attention signal so a user focused elsewhere can see it. Mutated by the
+   * permission request/resolved listeners; volatile (a rebuilt runner starts
+   * empty, and the worker re-broadcasts pending requests it still holds).
+   */
+  readonly awaitingPermissionIds: Set<string>;
+  /**
    * docs/140 — true when the orchestrator believes the *currently-resident*
    * agent process was spawned with `useStreaming: true` (Claude
    * `StreamingClaudeProcess`, or any future adapter whose `run({ useStreaming })`
@@ -682,6 +692,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _wasInterrupted = false;
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
+  readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;

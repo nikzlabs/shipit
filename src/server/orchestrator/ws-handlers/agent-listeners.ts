@@ -816,6 +816,16 @@ export function wireAgentListeners(
           { role: "assistant", text: "", permissionPrompt: card },
           { chatHistoryManager: deps.chatHistoryManager, sessionId: turnSessionId },
         );
+
+        // docs/193 (Thread C) — the agent is now BLOCKED awaiting this answer.
+        // Broadcast a cross-session attention signal over the global SSE so a
+        // user focused on another session sees "needs your approval" in the
+        // sidebar, not just inside this session's transcript.
+        runner.awaitingPermissionIds.add(event.requestId);
+        deps.sseBroadcast("session_attention", {
+          sessionId: turnSessionId,
+          awaitingPermission: true,
+        });
       }
       return;
     }
@@ -839,6 +849,16 @@ export function wireAgentListeners(
           phase,
           ...(event.remembered ? { remembered: true } : {}),
         });
+
+        // docs/193 (Thread C) — clear the cross-session attention signal once no
+        // permission prompt is left outstanding for this session.
+        runner.awaitingPermissionIds.delete(event.requestId);
+        if (runner.awaitingPermissionIds.size === 0) {
+          deps.sseBroadcast("session_attention", {
+            sessionId: turnSessionId,
+            awaitingPermission: false,
+          });
+        }
       }
       return;
     }

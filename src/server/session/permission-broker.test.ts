@@ -114,6 +114,67 @@ describe("PermissionBroker", () => {
     expect(broker.resolve("perm_missing", { behavior: "allow" })).toBe(false);
   });
 
+  it("openRequest returns a requestId and poll holds until resolved (long-poll, Thread B)", async () => {
+    const { broker, events } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "tu" });
+    expect(opened.requestId).toBeTruthy();
+    expect(opened.immediate).toBeUndefined();
+    expect(events).toHaveLength(1);
+    expect(events[0].type).toBe("agent_permission_request");
+
+    const poll = broker.poll(opened.requestId!, 5000);
+    // Resolve while the poll is held; it should return the decision and consume.
+    expect(broker.resolve(opened.requestId!, { behavior: "allow" })).toBe(true);
+    await expect(poll).resolves.toEqual({ settled: true, decision: { behavior: "allow" } });
+    expect(broker.pendingCount).toBe(0);
+  });
+
+  it("poll returns { settled: false } when the bounded hold elapses (request stays pending)", async () => {
+    const { broker } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".env" }, toolUseId: "tu" });
+    // A short hold elapses with no answer → poll again, request still pending.
+    await expect(broker.poll(opened.requestId!, 5)).resolves.toEqual({ settled: false });
+    expect(broker.pendingCount).toBe(1);
+  });
+
+  it("is idempotent on toolUseId — a duplicate open re-attaches to one card", () => {
+    const { broker, events } = makeBroker();
+    const a = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "dup" });
+    const b = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "dup" });
+    expect(b.requestId).toBe(a.requestId);
+    // Only ONE card broadcast despite two opens (no stacking).
+    expect(events).toHaveLength(1);
+    expect(broker.pendingCount).toBe(1);
+  });
+
+  it("a distinct toolUseId opens its own card (real model retries aren't merged)", () => {
+    const { broker, events } = makeBroker();
+    broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "one" });
+    broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "two" });
+    expect(events).toHaveLength(2);
+    expect(broker.pendingCount).toBe(2);
+  });
+
+  it("poll on an unknown id fails closed so the bridge stops looping", async () => {
+    const { broker } = makeBroker();
+    await expect(broker.poll("perm_missing", 5000)).resolves.toEqual({
+      settled: true,
+      decision: { behavior: "deny" },
+    });
+  });
+
+  it("a poll arriving just after resolution still gets the decision", async () => {
+    const { broker } = makeBroker();
+    const opened = broker.openRequest({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "tu" });
+    broker.resolve(opened.requestId!, { behavior: "deny", message: "nope" });
+    // The entry is retained (settled) until a consumer reads it.
+    await expect(broker.poll(opened.requestId!, 5000)).resolves.toEqual({
+      settled: true,
+      decision: { behavior: "deny", message: "nope" },
+    });
+    expect(broker.pendingCount).toBe(0);
+  });
+
   it("auto-allows ShipIt-handled interrupt tools without surfacing a card", async () => {
     // AskUserQuestion / ExitPlanMode are handled by ShipIt's own interrupt flow
     // (question card / PlanApproval card). The Claude CLI still routes them

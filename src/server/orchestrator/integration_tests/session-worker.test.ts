@@ -487,7 +487,7 @@ describe("Integration: Session Worker IPC", () => {
     runner.dispose();
   });
 
-  it("round-trips a permission request: broadcasts the card, holds the bridge, then resolves (docs/193)", async () => {
+  it("round-trips a permission request: open returns a requestId, await holds, then resolves (docs/193, Thread B)", async () => {
     const runner = new ContainerSessionRunner({
       sessionId: "test-perm",
       sessionDir: "/tmp/test",
@@ -500,40 +500,90 @@ describe("Integration: Session Worker IPC", () => {
     const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
 
     interface PermEvent { type: string; requestId?: string; path?: string; behavior?: string }
-    let requestId: string | undefined;
+    let cardRequestId: string | undefined;
     const gotRequest = new Promise<void>((resolve) => {
       proxy.on("event", (event: { type: string }) => {
         const e = event as PermEvent;
         if (e.type === "agent_permission_request") {
-          requestId = e.requestId;
+          cardRequestId = e.requestId;
           resolve();
         }
       });
     });
 
-    // The mcp-permission-bridge POSTs here and BLOCKS until resolved.
-    const requestPromise = fetch(`${workerUrl}/agent-ops/permission/request`, {
+    // Step 1: the bridge opens the request — returns IMMEDIATELY with a
+    // requestId (not held), and the card broadcasts off the same call.
+    const openRes = await fetch(`${workerUrl}/agent-ops/permission/request`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ toolName: "Write", input: { file_path: ".npmrc" } }),
+      body: JSON.stringify({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "tu-1" }),
     });
+    expect(openRes.status).toBe(200);
+    const opened = (await openRes.json()) as { requestId?: string };
+    expect(opened.requestId).toBeTruthy();
 
     await gotRequest;
-    expect(requestId).toBeTruthy();
+    expect(cardRequestId).toBe(opened.requestId);
 
-    // The orchestrator pushes the user's answer here.
+    // Step 2: the bridge polls /await, which holds until resolved.
+    const awaitPromise = fetch(`${workerUrl}/agent-ops/permission/await`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ requestId: opened.requestId, timeoutMs: 5000 }),
+    });
+
+    // Give the poll a beat to register before the orchestrator pushes the answer.
+    await new Promise((r) => setTimeout(r, 50));
     const resolveRes = await fetch(`${workerUrl}/agent/permission/resolve`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ requestId, behavior: "allow", remember: true }),
+      body: JSON.stringify({ requestId: opened.requestId, behavior: "allow", remember: true }),
     });
     expect(resolveRes.status).toBe(200);
     expect(await resolveRes.json()).toEqual({ resolved: true });
 
-    // The held bridge request now returns the decision the CLI maps to its envelope.
-    const reply = await requestPromise;
+    // The held poll now returns the decision the CLI maps to its envelope.
+    const reply = await awaitPromise;
     expect(reply.status).toBe(200);
     expect(await reply.json()).toEqual({ behavior: "allow" });
+
+    runner.dispose();
+  });
+
+  it("a duplicated permission open re-attaches to one card (idempotent on toolUseId, Thread B)", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-perm-idem",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "codex",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = await runner.startAgentOnWorker("codex", { prompt: "edit .npmrc", cwd: "/workspace" });
+
+    let cards = 0;
+    proxy.on("event", (event: { type: string }) => {
+      if (event.type === "agent_permission_request") cards += 1;
+    });
+
+    const open = async (): Promise<{ requestId?: string }> => {
+      const r = await fetch(`${workerUrl}/agent-ops/permission/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ toolName: "Write", input: { file_path: ".npmrc" }, toolUseId: "same-tu" }),
+      });
+      return (await r.json()) as { requestId?: string };
+    };
+
+    const first = await open();
+    const second = await open();
+
+    // Same gated call → same requestId, and only ONE card was broadcast.
+    expect(first.requestId).toBeTruthy();
+    expect(second.requestId).toBe(first.requestId);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(cards).toBe(1);
 
     runner.dispose();
   });

@@ -535,6 +535,16 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
   // + re-wire unconditional, which is the fix.
   const runnerEarly = resolveRunner(ctx);
 
+  // Preserve the session's permission mode across the answer. An AskUserQuestion
+  // answer is a fresh `--resume` turn; if we don't re-pin the mode, a session
+  // asked a clarifying question *in plan mode* resumes the CLI in default mode
+  // and the agent starts implementing — silently exiting plan mode the user
+  // never approved (only ExitPlanMode should do that). Prefer the client-sent
+  // mode (the chip the user sees), and fall back to the runner's last-applied
+  // mode captured NOW — before the stale-kill below calls `setAgent(null)`,
+  // which resets `appliedPermissionMode` to undefined.
+  const capturedPermissionMode = msg.permissionMode ?? runnerEarly?.appliedPermissionMode;
+
   // Kill any stale resident agent before the new turn — EXCEPT a persistent
   // streaming agent we can reuse. Mirrors `handleSendMessage`'s stale-kill
   // (docs/140): a steering-capable adapter with `liveSteering` on and a still-
@@ -615,6 +625,7 @@ export async function handleAnswerQuestion(ctx: FullCtx, msg: WsAnswerQuestion):
     userText: answerText,
     validatedFiles: [],
     ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+    ...(capturedPermissionMode !== undefined ? { permissionMode: capturedPermissionMode } : {}),
     isNewSession: false,
   });
 }

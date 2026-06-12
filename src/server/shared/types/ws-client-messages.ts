@@ -32,6 +32,17 @@ export interface WsAnswerQuestion {
    * with older clients — the server falls back to joining the answers map.
    */
   text?: string;
+  /**
+   * The session's current permission mode, forwarded so answering a clarifying
+   * AskUserQuestion resumes in the SAME mode it was asked in. Critical for plan
+   * mode: an answer is a fresh `--resume` turn, and without re-pinning
+   * `--permission-mode plan` the resumed CLI drops to default mode and starts
+   * implementing — i.e. it silently exits plan mode even though the user only
+   * answered a clarifying question and never approved a plan (the bug this
+   * fixes). Optional for back-compat; the server falls back to the runner's
+   * last-applied mode.
+   */
+  permissionMode?: PermissionMode;
 }
 
 /**

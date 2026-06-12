@@ -90,6 +90,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _wasInterrupted = false;
   private _lastTurnErrored = false;
   private _guardedUnavailable = false;
+  readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;

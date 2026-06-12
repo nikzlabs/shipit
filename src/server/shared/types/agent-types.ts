@@ -386,6 +386,13 @@ export interface PermissionRequestInput {
   summary?: string;
   /** Which agent raised it (display only). */
   agentId?: AgentId;
+  /**
+   * The gated tool call's id. Used as the broker's idempotency key (docs/193,
+   * Thread B): a retried/duplicated open for the same call re-attaches to the
+   * one pending card instead of stacking another. Codex doesn't supply it (its
+   * approval RPC is one-shot, not retried), so it stays optional.
+   */
+  toolUseId?: string;
 }
 
 /**
