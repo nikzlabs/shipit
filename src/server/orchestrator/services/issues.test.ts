@@ -21,6 +21,7 @@ import {
   addIssueCommentForTracker,
   userSetIssueStatus,
   userSetIssuePriority,
+  userSetIssueLabels,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -370,6 +371,42 @@ describe("user-initiated inline writes (docs/191)", () => {
     await expect(
       userSetIssuePriority(tmpStore(), "github", "42", "high", ghFetch(), GH),
     ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("userSetIssueLabels replaces the full set (wholesale) and returns the updated issue", async () => {
+    const fetchImpl = ghFetchWithLabels(["security", "bug", "design"], {
+      issue: { labels: [{ name: "security" }, { name: "bug" }] },
+    });
+    const out = await userSetIssueLabels(tmpStore(), "github", "42", ["security", "design"], fetchImpl, GH);
+    expect(out.issue.labels).toEqual([{ name: "security" }, { name: "design" }]);
+    // Wholesale replace: the PATCH carried exactly the requested set (not a merge
+    // with the issue's prior labels), since the editor commits the end-state.
+    const patch = fetchImpl.mock.calls.find(([, i]) => (i?.method ?? "GET") === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string).labels).toEqual(["security", "design"]);
+    // Inline user write — just the issue, no provenance card / undo.
+    expect(out).not.toHaveProperty("undo");
+    expect(out).not.toHaveProperty("verb");
+  });
+
+  it("userSetIssueLabels accepts an empty set to clear all labels", async () => {
+    const fetchImpl = ghFetchWithLabels(["security"], { issue: { labels: [{ name: "security" }] } });
+    const out = await userSetIssueLabels(tmpStore(), "github", "42", [], fetchImpl, GH);
+    const patch = fetchImpl.mock.calls.find(([, i]) => (i?.method ?? "GET") === "PATCH")!;
+    expect(JSON.parse(patch[1]?.body as string).labels).toEqual([]);
+    expect(out.issue.labels).toBeUndefined();
+  });
+
+  it("userSetIssueLabels rejects an unknown label name with a 422", async () => {
+    const fetchImpl = ghFetchWithLabels(["security", "bug"]);
+    await expect(
+      userSetIssueLabels(tmpStore(), "github", "42", ["nope"], fetchImpl, GH),
+    ).rejects.toMatchObject({ statusCode: 422 });
+  });
+
+  it("userSetIssueLabels 400s on a blank issue id", async () => {
+    await expect(
+      userSetIssueLabels(tmpStore(), "github", "  ", ["bug"], ghFetch(), GH),
+    ).rejects.toMatchObject({ statusCode: 400 });
   });
 });
 

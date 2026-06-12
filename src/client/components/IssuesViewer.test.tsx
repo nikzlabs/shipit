@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { IssuesViewer, type IssuesViewerProps } from "./IssuesViewer.js";
 import {
   distinctAssignees,
+  distinctLabels,
   distinctStatuses,
   filterIssues,
   type IssueFilters,
@@ -38,6 +39,7 @@ function emptyFilters(over?: Partial<IssueFilters>): IssueFilters {
     priorities: new Set<IssuePriorityLevel>(),
     statuses: new Set<string>(),
     assignees: new Set<string>(),
+    labels: new Set<string>(),
     ...over,
   };
 }
@@ -59,6 +61,7 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     filters,
     statusOptions: distinctStatuses(issues),
     assigneeOptions: distinctAssignees(issues),
+    labelOptions: distinctLabels(issues),
     priorityCounts: priorityCounts(issues),
     info: LINEAR_CONFIGURED,
     loading: false,
@@ -79,6 +82,7 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onTogglePriority: vi.fn(),
     onToggleStatus: vi.fn(),
     onToggleAssignee: vi.fn(),
+    onToggleLabel: vi.fn(),
     onClearFilters: vi.fn(),
   };
   // `filteredIssues` derives from issues+filters unless explicitly overridden.
