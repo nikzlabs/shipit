@@ -874,6 +874,13 @@ mount-option length, not performance).
    marker whenever a declared dep dir is empty/missing, regardless of mount type. Until then,
    rolling the flag off on a host that ran overlay sessions should be paired with clearing
    `.shipit/.install-done` from unclaimed warm clones.
+   **RESOLVED:** the `/install` gate now distrusts a matching marker over any *present-but-empty*
+   declared dep dir regardless of mount type (`emptyDepDirsContradictingMarker`, generalizing the
+   old overlay-mount-only check) — the empty leftover mountpoint left in the host clone after a
+   flag-off recreate is exactly that signature, so the session reinstalls instead of skipping into
+   a dep-less state. An *absent* dep dir is intentionally still skippable so legitimately dep-less
+   repos (e.g. default `node_modules` on a non-Node repo) and the `dep-dirs: []` opt-out keep their
+   marker-skip; the manual `.install-done` clearing workaround is no longer required.
 4. **Publish eligibility lags pushes by ~one session.** Eligibility compares the session HEAD
    against the *bare cache's* default tip, and a session created seconds after a push usually
    claims a warm clone cut pre-push — observed as `skipped-equal`/`skipped-ineligible` on the
