@@ -157,18 +157,18 @@ describe("mcp-present-bridge", () => {
 
   it("surfaces isError with the worker's error text on a non-OK response", async () => {
     vi.spyOn(globalThis, "fetch").mockResolvedValue(
-      jsonResponse(413, { error: "Content too large for inline presentation" }),
+      jsonResponse(400, { error: "Could not read file: missing.html" }),
     );
 
     const result = await bridge.client.callTool({
       name: "present",
-      arguments: { file: "huge.html" },
+      arguments: { file: "missing.html" },
     });
 
     expect(result.isError).toBe(true);
     const content = result.content as { type: string; text: string }[];
     expect(content[0].text).toContain("present failed");
-    expect(content[0].text).toContain("Content too large for inline presentation");
+    expect(content[0].text).toContain("Could not read file: missing.html");
   });
 
   it("falls back to an HTTP-status message when a non-OK response has no error body", async () => {

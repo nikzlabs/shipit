@@ -80,9 +80,9 @@ function BashResult({ content, isError, maxLines }: { content: string; isError?:
       {truncated && (
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
+          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -126,9 +126,9 @@ function ReadResult({ content, maxLines }: { content: string; maxLines?: number 
       {truncated && (
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
+          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -186,9 +186,9 @@ function GrepResult({ content, maxLines }: { content: string; maxLines?: number 
       {truncated && (
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
+          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}
@@ -226,9 +226,9 @@ function GenericResult({ content, isError, maxLines }: { content: string; isErro
       {truncated && (
         <Button
           variant="ghost"
-          size="sm"
+          size="md"
           onClick={() => setExpanded(!expanded)}
-          className="w-full text-center py-1 rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
+          className="w-full text-center rounded-none bg-(--color-bg-secondary) hover:bg-(--color-bg-tertiary) border-t border-(--color-border-secondary)/50"
           aria-label={expanded ? "Show less output" : "Show more output"}
         >
           {expanded ? "Show less" : `Show all ${totalLines} lines`}

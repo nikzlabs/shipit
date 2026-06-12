@@ -8,6 +8,7 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
 import { CLAUDE_PERMISSION_MODES } from "./types/agent-types.js";
 
@@ -36,10 +37,17 @@ const execFileAsync = promisify(execFile);
  * Opus 4.8 (or newer), we can swap the explicit versioned entry for the alias
  * the same way.
  *
+ * `claude-fable-5` is listed LAST on purpose: it is Anthropic's most capable
+ * public model but bills per token (usage-based) rather than against the
+ * subscription plan limit, so it's a deliberate opt-in, not the default. The
+ * picker flags it with a $ icon (see `METERED_MODELS` in
+ * `ModelAgentSelector.tsx`). It's an explicit versioned id (no CLI alias); the
+ * CLI forwards `--model` as-is, verified working on CLI 2.1.162.
+ *
  * Consumed by both the orchestrator-side `AGENT_DEFS` and the session-side
  * `ClaudeAdapter.capabilities` — keep this the only place to add a model.
  */
-export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku"];
+export const CLAUDE_MODELS = ["claude-opus-4-8", "sonnet", "haiku", "claude-fable-5"];
 
 export const CLAUDE_TOOL_NAMES = [
   "Agent",
@@ -254,7 +262,18 @@ export {
   getContextWindowForModel,
 } from "./model-windows.js";
 
-export class AgentRegistry {
+/** Events emitted by {@link AgentRegistry}. */
+export interface AgentRegistryEvents {
+  /**
+   * docs/144 — fired when an agent's auth transitions configured → not
+   * configured (a sign-out). `services/sub-agent.ts` subscribes to sweep any
+   * in-flight cross-agent credentials provisioned for a spawn from sessions
+   * where this agent is NOT the pinned agent.
+   */
+  "sign-out": [agentId: AgentId];
+}
+
+export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
   private agents = new Map<AgentId, AgentInfo>();
 
   /**
@@ -285,6 +304,7 @@ export class AgentRegistry {
     checkClaudeAuth?: () => boolean;
     checkCodexAuth?: () => boolean;
   }) {
+    super();
     this.checkBinary = opts?.checkBinary ?? defaultCheckBinary;
     this.checkClaudeAuth = opts?.checkClaudeAuth ?? (() => true);
     this.checkCodexAuth = opts?.checkCodexAuth ?? (() => false);
@@ -325,7 +345,13 @@ export class AgentRegistry {
   refreshAuth(id: AgentId): void {
     const info = this.agents.get(id);
     if (info) {
+      const wasConfigured = info.authConfigured;
       info.authConfigured = this.isAuthConfigured(id);
+      // docs/144 — emit on a configured → not-configured edge so the sub-agent
+      // service can sweep cross-agent creds left over from a spawn.
+      if (wasConfigured && !info.authConfigured) {
+        this.emit("sign-out", id);
+      }
     }
   }
 

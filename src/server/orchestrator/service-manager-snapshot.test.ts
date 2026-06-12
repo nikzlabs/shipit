@@ -41,6 +41,9 @@ vi.mock("node:child_process", () => ({
 }));
 
 const { ServiceManager } = await import("./service-manager.js");
+const { LogStore } = await import("./log-store.js");
+
+const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 20));
 
 describe("ServiceManager.snapshotLogs", () => {
   let tmpDir: string;
@@ -53,7 +56,7 @@ describe("ServiceManager.snapshotLogs", () => {
   });
 
   /** Build a manager and white-box-register a service (no docker start). */
-  function makeManager(): InstanceType<typeof ServiceManager> {
+  function makeManager(logStore?: InstanceType<typeof LogStore>): InstanceType<typeof ServiceManager> {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-"));
     fs.writeFileSync(
       path.join(tmpDir, "docker-compose.yml"),
@@ -65,6 +68,7 @@ describe("ServiceManager.snapshotLogs", () => {
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },
       composeRunner: () => Promise.resolve(),
       pollIntervalMs: 0,
+      ...(logStore ? { logStore } : {}),
     });
     // Register `web` without going through start() (which spawns docker).
     (mgr as unknown as { services: Map<string, { name: string }> }).services.set("web", { name: "web" });
@@ -88,6 +92,38 @@ describe("ServiceManager.snapshotLogs", () => {
     // (the `-f` that is present belongs to the `-f <compose-file>` flags).
     const logsIdx = snapArgs!.indexOf("logs");
     expect(snapArgs![logsIdx + 1]).not.toBe("-f");
+  });
+
+  it("prefers the durable LogStore as the source of truth (docs/192), without spawning docker", async () => {
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-store-"));
+    try {
+      const logStore = new LogStore(storeRoot);
+      const mgr = makeManager(logStore);
+      // Stale Docker output must be ignored when the store has content.
+      snapshotStdout = "DOCKER STALE\n";
+      logStore.append("test-session", "service:web", "durable line one\ndurable line two\n");
+      await flush();
+
+      const out = await mgr.snapshotLogs("web");
+      expect(out).toBe("durable line one\ndurable line two\n");
+      // Store hit → no `docker compose logs` snapshot spawned at all.
+      expect(spawnCalls.find((a) => a.includes("logs"))).toBeUndefined();
+    } finally {
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to `docker logs` before the store is seeded", async () => {
+    const storeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "svc-snap-empty-"));
+    try {
+      const mgr = makeManager(new LogStore(storeRoot));
+      snapshotStdout = "from docker\n";
+      const out = await mgr.snapshotLogs("web");
+      expect(out).toBe("from docker\n");
+      expect(spawnCalls.find((a) => a.includes("logs"))).toBeDefined();
+    } finally {
+      fs.rmSync(storeRoot, { recursive: true, force: true });
+    }
   });
 
   it("returns empty string for an unknown service without spawning docker", async () => {

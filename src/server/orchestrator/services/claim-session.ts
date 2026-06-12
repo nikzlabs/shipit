@@ -30,6 +30,7 @@ import {
   generateBranchPrefix,
   fetchAndResolveDefaultBranch,
   isWorkspaceCloneInSyncWithCache,
+  syncLocalDefaultBranchToOrigin,
 } from "../git-utils.js";
 import { resolveAgentDockerLimits } from "../session-container.js";
 import { ensureBareCache } from "../repo-git.js";
@@ -79,6 +80,48 @@ export interface ClaimSessionOptions {
    * latency (currently: `spawnChildSession`) opt in with `forceFetch: true`.
    */
   forceFetch?: boolean;
+  /**
+   * Session ids the claim must NEVER hand back. `spawnChildSession` passes the
+   * calling parent's id: an ungraduated parent is otherwise a valid hit for
+   * the reuse path, and "claiming" it returns the parent AS its own child —
+   * which hard-resets the parent's live workspace onto fresh `origin/main`
+   * (`refreshClaimedSession`) and records a self-parented session whose
+   * `findChildren` cycle then blows the recursive archive's stack (observed
+   * live: archive → "Maximum call stack size exceeded").
+   */
+  excludeSessionIds?: string[];
+  /**
+   * When `true`, skip the *reuse* path entirely — never hand back an existing
+   * ungraduated warm session via `findUngraduatedWarm`.
+   *
+   * THE RULE (applies to every caller of `claim()`, present and future):
+   * reuse is for *interactive* claims ONLY — a user claiming a session to work
+   * in, where recycling their own just-abandoned `/{repo}/new` draft is the
+   * intended behavior. Any *background, non-interactive* claim that mints a
+   * *new* session for some requested work MUST set `skipReuse: true`. If you
+   * are adding a new `claim()` call and the caller is not the user interactively
+   * claiming the session they're about to look at, you set this. No exceptions.
+   *
+   * Current callers that set it: `spawnChildSession` (agent-driven children) and
+   * `createHeadlessSession` (quick-capture, issue-seeded "Start session",
+   * webhooks). The single caller that leaves it unset is the interactive
+   * home-screen claim route (`POST /api/repos/:url/claim-session`).
+   *
+   * The reuse path recycles *abandoned* drafts so the home-screen quick-capture
+   * flow doesn't leak warm sessions (docs/145). But `findUngraduatedWarm` scans
+   * *every* `warm = 1` session for the repo — and a `/{repo}/new` page the user
+   * is actively typing in has already claimed a warm session that stays
+   * `warm = 1` until the first message graduates it. The reuse path cannot tell
+   * "abandoned draft" from "browser attached right now", so a concurrent spawn
+   * would alias the child onto the user's live draft, graduate it, and dispatch
+   * the child's first prompt into it — surfacing as a message appearing from
+   * nowhere while the user types their first prompt. Skipping reuse routes the
+   * spawn to the pre-warmed pool (whose `warmSessionId` pointer is always cleared
+   * the instant a browser claims it) or a slow-clone — neither of which can
+   * collide with an interactive draft. Interactive home-screen claims leave this
+   * unset so recycling your own just-abandoned draft still works.
+   */
+  skipReuse?: boolean;
 }
 
 export class ClaimAbortedError extends Error {
@@ -199,6 +242,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     if (resetTarget) {
       await sessionGit.rollback(resetTarget);
     }
+    // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
+    // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
+    await syncLocalDefaultBranchToOrigin(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
@@ -265,6 +311,8 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       const claimStart = Date.now();
       let claimPath: ClaimSessionResult["claimPath"] = "slow-clone";
       const forceFetch = opts?.forceFetch === true;
+      const skipReuse = opts?.skipReuse === true;
+      const excluded = new Set(opts?.excludeSessionIds ?? []);
 
       const result = await serializeClaim(url, async () => {
         const inFlightWarming = deps.waitForWarmSession?.(url);
@@ -280,9 +328,17 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         // warming" in the integration tests for the failure mode.
         const repoAfterWarm = deps.repoStore.get(url) ?? repo;
 
-        // Reuse path: check for previously-claimed warm session.
-        const reusable = deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
-        if (reusable?.workspaceDir && existsSync(path.join(reusable.workspaceDir, ".git"))) {
+        // Reuse path: check for previously-claimed warm session. Skipped for
+        // background spawns (`skipReuse`), which must never recycle a warm
+        // session a browser may be actively attached to (see `skipReuse` docs).
+        const reusable = skipReuse
+          ? undefined
+          : deps.sessionManager.findUngraduatedWarm(url, repoAfterWarm.warmSessionId ?? undefined);
+        if (
+          reusable?.workspaceDir &&
+          !excluded.has(reusable.id) &&
+          existsSync(path.join(reusable.workspaceDir, ".git"))
+        ) {
           claimPath = "reuse";
           const fetchDurationMs = await refreshClaimedSession(url, reusable.id, reusable.workspaceDir, forceFetch);
           return { sessionId: reusable.id, workspaceDir: reusable.workspaceDir, fetchDurationMs };
@@ -290,7 +346,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
 
         // Warm path: claim the pre-warmed session.
         const currentRepo = deps.repoStore.get(url);
-        if (currentRepo?.warmSessionId) {
+        if (currentRepo?.warmSessionId && !excluded.has(currentRepo.warmSessionId)) {
           const warmSession = deps.sessionManager.get(currentRepo.warmSessionId);
           if (warmSession?.workspaceDir) {
             claimPath = "warm";
@@ -307,7 +363,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         if (warmingPromise) {
           await warmingPromise;
           const freshRepo = deps.repoStore.get(url);
-          if (freshRepo?.warmSessionId) {
+          if (freshRepo?.warmSessionId && !excluded.has(freshRepo.warmSessionId)) {
             const warmSession = deps.sessionManager.get(freshRepo.warmSessionId);
             if (warmSession?.workspaceDir) {
               claimPath = "waiting";
@@ -372,6 +428,13 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
         await simpleGit(workspaceDir).raw(branchArgs);
+
+        // Realign local `main` with `origin/main` (see syncLocalDefaultBranchToOrigin):
+        // the branch was just cut from the freshly-fetched `origin/HEAD`, but
+        // local `main` still points at the stale bare-cache snapshot, which
+        // would make a later `main..HEAD` PR review include already-merged
+        // commits (docs/194).
+        await syncLocalDefaultBranchToOrigin(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);
         deps.sessionManager.setBranch(appSessionId, branchPrefix);

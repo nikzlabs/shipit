@@ -10,7 +10,7 @@
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import type { SessionInfo, AgentId } from "../../shared/types.js";
+import type { SessionInfo, AgentId, SessionMergeWatch } from "../../shared/types.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
@@ -240,7 +240,22 @@ export async function spawnChildSession(
   // claim accepts up to ~6 minutes of bare-cache staleness for latency, but a
   // child spawned moments after a merge must see the merged commit on `main`,
   // not the pre-merge snapshot the cache happens to hold.
-  const claimed = await claimService.claim(claimUrl, { forceFetch: true });
+  // `excludeSessionIds` keeps the claim from handing back the calling parent
+  // itself: an ungraduated parent is a valid reuse-path hit, and "claiming" it
+  // would hard-reset the parent's live workspace and self-parent the session
+  // (whose findChildren cycle then blows the recursive archive's stack).
+  // `skipReuse: true` is the broader guard: a spawn is a background action and
+  // must NEVER recycle an ungraduated warm session, because that pool includes
+  // `/{repo}/new` drafts a user is actively typing in. Without it, the reuse
+  // path (`findUngraduatedWarm`) could alias the child onto a live draft and
+  // dispatch the child's first prompt into the session the user is viewing —
+  // a message appearing from nowhere mid-typing. Spawns take the pre-warmed
+  // pool or slow-clone instead.
+  const claimed = await claimService.claim(claimUrl, {
+    forceFetch: true,
+    skipReuse: true,
+    excludeSessionIds: [parentSessionId],
+  });
   const newSessionId = claimed.sessionId;
   const newWorkspaceDir = claimed.workspaceDir;
 
@@ -642,6 +657,55 @@ export async function sendChildMessage(
     queuePosition: wasRunning ? runner.queueLength : 0,
     enqueued: wasRunning,
   };
+}
+
+// ---- Notify-on-merge watch (docs/196) ----
+
+export interface RegisterMergeWatchResult {
+  childId: string;
+  state: SessionMergeWatch["state"];
+  /** True when an armed watch already existed (the call is idempotent). */
+  alreadyArmed: boolean;
+}
+
+/**
+ * docs/196 — arm an async notify-on-merge watch: when `childSessionId`'s PR
+ * later merges (or closes without merging), the orchestrator enqueues a
+ * self-describing system turn into the parent's message queue and surfaces a
+ * merge card. Non-blocking — this just persists the watch and returns.
+ *
+ * Reuses the same parent→child cross-tenancy guard as the other child
+ * operations (`assertChildOfParent`, 404 on wrong-parent / not-found), so only
+ * the parent that spawned the child may watch it. The child's PR need not exist
+ * yet — the watch arms and fires once a terminal state is observed.
+ *
+ * Idempotent: re-arming an already-armed (or mid-delivery) watch is a no-op that
+ * reports the current state. Re-arming after a previous watch already delivered
+ * (terminal) starts a fresh `armed` watch — useful if the child opens a new PR.
+ */
+export function registerMergeWatch(
+  sessionManager: SessionManager,
+  parentSessionId: string,
+  childSessionId: string,
+): RegisterMergeWatchResult {
+  const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
+  if (child.archived) {
+    throw new ServiceError(400, "Child session is archived");
+  }
+  const existing = child.mergeWatch;
+  const liveForThisParent =
+    existing?.parentSessionId === parentSessionId
+    && (existing?.state === "armed" || existing?.state === "merge-observed");
+  if (existing && liveForThisParent) {
+    return { childId: childSessionId, state: existing.state, alreadyArmed: true };
+  }
+  const watch: SessionMergeWatch = {
+    parentSessionId,
+    state: "armed",
+    registeredAt: new Date().toISOString(),
+  };
+  sessionManager.setMergeWatch(childSessionId, watch);
+  return { childId: childSessionId, state: "armed", alreadyArmed: false };
 }
 
 /**

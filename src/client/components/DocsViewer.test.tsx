@@ -75,7 +75,7 @@ describe("DocsViewer", () => {
       expect(screen.getByText("README.md")).toBeInTheDocument();
     });
 
-    it("renders a jump-to-issue chip for docs with an issue pointer", () => {
+    it("links out to the tracker for a known issue pointer when no inline handler is wired", () => {
       const props = defaultProps();
       props.files = [
         makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
@@ -87,6 +87,53 @@ describe("DocsViewer", () => {
       expect(link).not.toBeNull();
       expect(link).toHaveAttribute("href", LINEAR_URL);
       expect(link).toHaveAttribute("target", "_blank");
+    });
+
+    it("opens a known issue pointer inline (not link-out) when onOpenIssue is wired", () => {
+      const onOpenIssue = vi.fn();
+      const props = { ...defaultProps(), onOpenIssue };
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
+      ];
+      render(<DocsViewer {...props} />);
+      const chip = screen.getByText("TRACKER-28");
+      // No external link — it's a button that opens the inline view.
+      expect(chip.closest("a")).toBeNull();
+      const button = chip.closest("button");
+      expect(button).not.toBeNull();
+      fireEvent.click(button!);
+      expect(onOpenIssue).toHaveBeenCalledWith({
+        tracker: "linear",
+        identifier: "TRACKER-28",
+        id: "TRACKER-28",
+        url: LINEAR_URL,
+      });
+    });
+
+    it("clicking the issue chip does not also open the doc modal", () => {
+      const onOpenIssue = vi.fn();
+      const props = { ...defaultProps(), onOpenIssue };
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: LINEAR_URL }),
+      ];
+      render(<DocsViewer {...props} />);
+      fireEvent.click(screen.getByText("TRACKER-28").closest("button")!);
+      expect(onOpenIssue).toHaveBeenCalledTimes(1);
+      expect(props.onFileClick).not.toHaveBeenCalled();
+    });
+
+    it("falls back to an external link for an unknown-shape pointer even with onOpenIssue wired", () => {
+      const onOpenIssue = vi.fn();
+      const props = { ...defaultProps(), onOpenIssue };
+      const RAW_URL = "https://example.com/tracker/42";
+      props.files = [
+        makeDoc({ path: "docs/001-auth/plan.md", title: "Auth", issue: RAW_URL }),
+      ];
+      render(<DocsViewer {...props} />);
+      const chip = screen.getByText(RAW_URL);
+      const link = chip.closest("a");
+      expect(link).toHaveAttribute("href", RAW_URL);
+      expect(onOpenIssue).not.toHaveBeenCalled();
     });
 
     it("treats a non-plan doc with an issue pointer as tracked", () => {

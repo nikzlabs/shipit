@@ -4,14 +4,17 @@
  * boot, and the privileged template can only ever create a *fresh* session.
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { applyTemplate } from "./templates.js";
+import { execSync } from "node:child_process";
+import { applyTemplate, createRepoWithTemplate } from "./templates.js";
 import { ServiceError } from "./types.js";
+import { GitManager } from "../../shared/git.js";
+import { RepoGit } from "../repo-git.js";
+import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import type { SessionManager } from "../sessions.js";
-import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
 
 function fakeGitManager(): GitManager {
@@ -179,5 +182,91 @@ describe("applyTemplate (service) — ops session", () => {
     );
 
     expect(state.kinds["new-sess"]).toBeUndefined();
+  });
+});
+
+/**
+ * docs/192 — regression guard for the non-bare-cache bug. The template
+ * creation path used to `git init` the shared cache dir as a *non-bare*
+ * working tree with `main` checked out, which made every later cache fetch
+ * fail with "refusing to fetch into branch 'refs/heads/main' checked out".
+ * The cache must be a genuine bare repo, identical to the add-by-URL path.
+ */
+describe("createRepoWithTemplate (service) — bare cache", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "tmpl-repo-test-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates the shared repo cache as a bare repo (not a non-bare working tree)", async () => {
+    // A local bare repo stands in for the freshly-created GitHub remote, so the
+    // scaffold push and the cache's `cloneBare` operate against a real origin
+    // without needing network or credentials.
+    const originDir = path.join(tmpDir, "origin.git");
+    fs.mkdirSync(originDir, { recursive: true });
+    execSync("git init --bare -b main", { cwd: originDir, stdio: "pipe" });
+
+    const cacheDir = path.join(tmpDir, "repo-cache", "abc123");
+
+    const result = await createRepoWithTemplate(
+      (dir) => new GitManager(dir),
+      (dir) => new RepoGit(dir),
+      {
+        authenticated: true,
+        createRepo: async () => ({ success: true, cloneUrl: originDir }),
+      },
+      () => cacheDir,
+      "my-static-site",
+      "static-html",
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.repoUrl).toBe(originDir);
+
+    // The cache is a genuine bare repo …
+    const isBare = execSync("git rev-parse --is-bare-repository", { cwd: cacheDir })
+      .toString()
+      .trim();
+    expect(isBare).toBe("true");
+
+    // … with NO checked-out working tree (the file the template scaffolds must
+    // not be sitting at the top level of the cache dir).
+    expect(fs.existsSync(path.join(cacheDir, "index.html"))).toBe(false);
+    expect(fs.existsSync(path.join(cacheDir, ".git"))).toBe(false);
+
+    // … carrying the pushed template in its object store …
+    const tree = execSync("git ls-tree --name-only main", { cwd: cacheDir }).toString();
+    expect(tree).toContain("index.html");
+
+    // … and no repo-local credential helper (the bare cache is orchestrator-only
+    // and never mounted into a session container, so it needs no broker helper).
+    const localHelper = execSync("git config --local --get-all credential.helper || true", {
+      cwd: cacheDir,
+    })
+      .toString()
+      .trim();
+    expect(localHelper).toBe("");
+
+    // … and origin repointed at the real remote, not the throwaway scaffold dir
+    // (which is deleted — a stale origin would break every future cache fetch).
+    const originUrl = execSync("git config --get remote.origin.url", { cwd: cacheDir })
+      .toString()
+      .trim();
+    expect(originUrl).toBe(originDir);
+
+    // The remote actually received the scaffold push on main.
+    const originLog = execSync("git log --format=%s main", { cwd: originDir }).toString();
+    expect(originLog).toContain("Initial setup: Static HTML");
   });
 });

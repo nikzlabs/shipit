@@ -1,7 +1,8 @@
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { DockerMemoryStats, WsLogEntry } from "../shared/types.js";
+import type { DockerMemoryStats } from "../shared/types.js";
+import type { LogSource } from "../shared/types.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -42,7 +43,7 @@ export interface IdleEnforcementDeps {
    * into the per-session Logs ring buffer so a viewer that reconnects
    * later still sees why their container went away.
    */
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
 }
 
 /**

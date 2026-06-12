@@ -27,6 +27,7 @@ import type {
   AgentProcessEvents,
   AgentRunParams,
   AgentContentBlock,
+  PermissionRequester,
 } from "../agent-process.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { getErrorMessage } from "../../../shared/utils.js";
@@ -291,6 +292,42 @@ function isAskUserQuestionTool(tool: string | undefined): boolean {
 }
 
 /**
+ * docs/193 — derive a `{ toolName, input }` for the permission broker from a
+ * Codex approval request. Best-effort across the v2 (`item.*`) and v1
+ * (top-level) param shapes: a file-change approval yields the first changed
+ * path as `file_path` (so the broker can render + remember it); a command
+ * approval yields the unwrapped shell command. The broker uses these to derive
+ * the card's path and summary, falling back to the tool name when absent.
+ */
+export function buildCodexPermissionInput(
+  method: string,
+  params: Record<string, unknown>,
+): { toolName: string; input: Record<string, unknown> } {
+  const item = (params.item ?? params) as Record<string, unknown>;
+  if (method.includes("fileChange") || method.includes("applyPatch")) {
+    const changes = (item.changes ?? params.changes) as { path?: string }[] | undefined;
+    const firstPath = Array.isArray(changes)
+      ? changes.find((c) => typeof c?.path === "string")?.path
+      : undefined;
+    return { toolName: "apply_patch", input: firstPath ? { file_path: firstPath } : {} };
+  }
+  const rawCommand = item.command ?? params.command;
+  const command = Array.isArray(rawCommand)
+    ? rawCommand.filter((p) => typeof p === "string").join(" ")
+    : typeof rawCommand === "string"
+      ? rawCommand
+      : undefined;
+  const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
+  return {
+    toolName: "shell",
+    input: {
+      ...(command ? { command: unwrapShellCommand(command) } : {}),
+      ...(cwd ? { cwd } : {}),
+    },
+  };
+}
+
+/**
  * Token usage snapshot from a `thread/tokenUsage/updated` notification.
  * `total` is the cumulative turn rollup (billing); `last` is the most recent
  * API call (real context-window occupancy — see AgentResultEvent.contextTokens).
@@ -435,6 +472,17 @@ export class CodexAdapter
   >();
 
   /**
+   * docs/193 — the worker's `PermissionBroker.request`, injected before run.
+   * When set, the app-server's blocking approval requests are routed through it
+   * (surfacing the shared approve/deny card) instead of being auto-accepted.
+   */
+  private requestPermission: PermissionRequester | null = null;
+
+  setPermissionRequester(requester: PermissionRequester): void {
+    this.requestPermission = requester;
+  }
+
+  /**
    * Spawn the Codex App Server process.
    * The process stays alive across turns — we create threads and turns within it.
    */
@@ -568,22 +616,34 @@ export class CodexAdapter
     // with -32600 "invalid type: string, expected a sequence".
     if (this.proc && this.threadId && this.currentTurnId) {
       const steerText = data.trim();
-      this.sendRequest("turn/steer", {
-        threadId: this.threadId,
-        expectedTurnId: this.currentTurnId,
-        input: [{ type: "text", text: steerText }],
-      }).catch((err: unknown) => {
-        // A rejection here (e.g. ActiveTurnNotSteerable during a
-        // review/compaction turn, or the turn ending as we send) means the
-        // steer didn't land. The orchestrator already optimistically rendered
-        // the message, so emit `agent_steer_rejected` (docs/140) — the
-        // listener removes the optimistic bubble and re-queues the text so it
-        // runs as the next turn instead of silently vanishing. Also log for
-        // diagnostics.
-        const reason = err instanceof Error ? err.message : String(err);
-        this.emit("log", "codex", `turn/steer rejected: ${reason}`);
-        this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
-      });
+      void (async () => {
+        try {
+          await this.sendRequest("turn/steer", {
+            threadId: this.threadId,
+            expectedTurnId: this.currentTurnId,
+            input: [{ type: "text", text: steerText }],
+          });
+          // docs/140 — the request resolved, so the app-server accepted the
+          // steer into the active turn. Emit the delivery ACK (the same event
+          // Claude surfaces from its --replay-user-messages echo) so the
+          // orchestrator marks this steer `delivered` and does NOT re-queue it
+          // at turn end. Without this, an accepted Codex steer that produced no
+          // further assistant group would be misread as a lost gap-steer and
+          // re-sent (double-processed) by `requeueUndeliveredSteers`.
+          this.emit("event", { type: "agent_user_replay", text: steerText } as AgentEvent);
+        } catch (err: unknown) {
+          // A rejection here (e.g. ActiveTurnNotSteerable during a
+          // review/compaction turn, or the turn ending as we send) means the
+          // steer didn't land. The orchestrator already optimistically rendered
+          // the message, so emit `agent_steer_rejected` (docs/140) — the
+          // listener removes the optimistic bubble and re-queues the text so it
+          // runs as the next turn instead of silently vanishing. Also log for
+          // diagnostics.
+          const reason = err instanceof Error ? err.message : String(err);
+          this.emit("log", "codex", `turn/steer rejected: ${reason}`);
+          this.emit("event", { type: "agent_steer_rejected", text: steerText } as AgentEvent);
+        }
+      })();
     }
   }
 
@@ -933,34 +993,36 @@ export class CodexAdapter
   /**
    * Answer a server→client request from the app-server.
    *
-   * ShipIt runs Codex inside its own session container — the container IS the
-   * sandbox and the agent is meant to operate the box autonomously (CLAUDE.md
-   * §5), exactly like the Claude adapter, which auto-approves everything. So we
-   * auto-approve every approval request. `approvalPolicy: "never"` (see
-   * `initializeAndRun`) suppresses MOST prompts, but the model can still
-   * request escalated permissions explicitly, which forces an approval request
-   * regardless of policy. Leaving that unanswered is THE bug behind "Codex
-   * stuck on Thinking…": the turn blocks (status flips to waitingOnApproval)
-   * waiting for a response that never comes.
+   * Approval requests (the `item/.../requestApproval` pair, legacy
+   * `execCommandApproval` / `applyPatchApproval`) are the app-server's blocking
+   * permission gate: it holds the turn (status → waitingOnApproval) until we
+   * respond. The model can
+   * raise one even under `approvalPolicy: "never"` by explicitly requesting
+   * escalated permissions; leaving it unanswered is THE bug behind "Codex stuck
+   * on Thinking…".
    *
-   * Decision enums come straight from the generated v2 schema
-   * (`codex app-server generate-json-schema`): CommandExecution/FileChange
-   * approvals take `"accept"`; the legacy v1 ReviewDecision takes `"approved"`.
+   * docs/193 — instead of always auto-accepting (which routed around the user
+   * for genuinely escalated actions), route the request through the shared
+   * `PermissionBroker` when one is injected, so it surfaces the same approve/
+   * deny card as Claude's sensitive-file gate. When no requester is wired
+   * (tests / the broker is unavailable) OR the broker path throws, fall back to
+   * the historical auto-accept so a turn can never hang waiting on a human who
+   * isn't being asked.
+   *
+   * Decision enums come from the generated v2 schema (`codex app-server
+   * generate-json-schema`): CommandExecution/FileChange ApprovalDecision is
+   * `"accept"`/`"reject"`; the legacy v1 ReviewDecision is `"approved"`/`"denied"`.
    */
   private handleServerRequest(req: JsonRpcServerRequest): void {
     switch (req.method) {
-      // v2 protocol (turn/start) — CommandExecution/FileChange ApprovalDecision.
       case "item/commandExecution/requestApproval":
-      case "item/fileChange/requestApproval": {
-        this.sendResponse(req.id, { decision: "accept" });
+      case "item/fileChange/requestApproval":
+        this.resolveApproval(req, "v2");
         return;
-      }
-      // v1 (legacy) protocol — ReviewDecision.
       case "execCommandApproval":
-      case "applyPatchApproval": {
-        this.sendResponse(req.id, { decision: "approved" });
+      case "applyPatchApproval":
+        this.resolveApproval(req, "v1");
         return;
-      }
       default: {
         // Any other server→client request (tool input, MCP elicitation, …) we
         // can't satisfy without a human. Reply with a JSON-RPC error rather
@@ -970,6 +1032,35 @@ export class CodexAdapter
         this.sendErrorResponse(req.id, -32601, `Method not handled by ShipIt: ${req.method}`);
       }
     }
+  }
+
+  /**
+   * docs/193 — surface a Codex approval request as the shared approve/deny card
+   * (when a broker requester is wired) and answer the blocking JSON-RPC request
+   * with the user's decision, mapped to the protocol's enum. Auto-accepts when
+   * no requester is available or the broker path errors (never hang the turn).
+   */
+  private resolveApproval(req: JsonRpcServerRequest, protocol: "v1" | "v2"): void {
+    const accept = protocol === "v2" ? "accept" : "approved";
+    const reject = protocol === "v2" ? "reject" : "denied";
+
+    if (!this.requestPermission) {
+      this.sendResponse(req.id, { decision: accept });
+      return;
+    }
+
+    const input = buildCodexPermissionInput(req.method, req.params ?? {});
+    const requester = this.requestPermission;
+    void (async () => {
+      try {
+        const decision = await requester({ ...input, agentId: "codex" });
+        this.sendResponse(req.id, { decision: decision.behavior === "allow" ? accept : reject });
+      } catch (err: unknown) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.emit("log", "codex-rpc", `permission broker error, auto-accepting: ${reason}`);
+        this.sendResponse(req.id, { decision: accept });
+      }
+    })();
   }
 
   /** Handle streaming notifications from the Codex App Server. */

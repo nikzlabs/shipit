@@ -1453,3 +1453,112 @@ describe("shipit issue", () => {
     expect(out.calls).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// shipit agent run (docs/144 — sub-agent spawn)
+// ---------------------------------------------------------------------------
+
+describe("runShim — agent run", () => {
+  it("requires --agent", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review this");
+    const out = await run(["agent", "run", "--prompt-file", file]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--agent is required");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("requires --prompt-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "run", "--agent", "codex"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--prompt-file is required");
+  });
+
+  it("rejects inline prompt flags with a redirect to --prompt-file", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "run", "--agent", "codex", "-p", "hi"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--prompt-file");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("posts {agentId, prompt, depth} and prints the sub-agent's text", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("Review this diff");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "Found 2 bugs at foo.ts:10", truncated: false, durationMs: 4200, costUsd: 0.03 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toBe("/agent-ops/agent/spawn");
+    expect(out.calls[0].body).toMatchObject({ agentId: "codex", prompt: "Review this diff", depth: 0 });
+    expect(out.stdout).toContain("Found 2 bugs at foo.ts:10");
+  });
+
+  it("forwards the inherited SHIPIT_AGENT_DEPTH as depth", async () => {
+    const prev = process.env.SHIPIT_AGENT_DEPTH;
+    process.env.SHIPIT_AGENT_DEPTH = "1";
+    try {
+      const { run } = makeRunner();
+      const file = await promptFile("nested");
+      const out = await run(["agent", "run", "--agent", "claude", "--prompt-file", file], {
+        "POST /agent-ops/agent/spawn": { status: 403, body: { error: "Sub-agents cannot spawn further sub-agents." } },
+      });
+      expect(out.calls[0].body).toMatchObject({ depth: 1 });
+      expect(out.exitCode).toBe(1);
+    } finally {
+      if (prev === undefined) delete process.env.SHIPIT_AGENT_DEPTH;
+      else process.env.SHIPIT_AGENT_DEPTH = prev;
+    }
+  });
+
+  it("surfaces the disabled error with a non-zero exit", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 403,
+        body: { error: "Sub-agents are disabled. Enable them in Settings → Multi-agent sessions." },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("disabled");
+  });
+
+  it("prints text but exits non-zero on a non-success terminal status", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "timeout", text: "partial...", truncated: true, durationMs: 300000, costUsd: 0.1 },
+      },
+    });
+    expect(out.stdout).toContain("partial...");
+    expect(out.stderr).toContain("timeout");
+    expect(out.exitCode).toBe(1);
+  });
+
+  it("prints the raw result object with --json", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run(["agent", "run", "--agent", "codex", "--prompt-file", file, "--json"], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "ok", truncated: false, durationMs: 100, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toMatchObject({ status: "success", text: "ok" });
+  });
+
+  it("rejects an unknown agent subcommand", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "frobnicate"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Unsupported shipit agent subcommand");
+  });
+});

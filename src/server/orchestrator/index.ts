@@ -7,7 +7,9 @@ import fs from "node:fs/promises";
 import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
 import { getAuthEnvKey } from "../shared/agent-registry.js";
-import type { WsClientMessage, WsServerMessage, WsLogEntry } from "../shared/types.js";
+import type { WsClientMessage, WsServerMessage, WsLogRecord, LogSource } from "../shared/types.js";
+import { LogStore } from "./log-store.js";
+import { agentLogAppend } from "./log-emit.js";
 import { isUnderEvictionPressure } from "./memory-pressure.js";
 import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
@@ -27,6 +29,7 @@ import * as miscHandlers from "./ws-handlers/misc-handlers.js";
 import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
+import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -49,6 +52,8 @@ import {
   createPrStatusPoller,
   createLogBuffer,
   wireEventHandlers,
+  markProviderAccountUnauthenticated,
+  markProviderAccountReauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -60,12 +65,13 @@ import {
   autoStart,
 } from "./app-lifecycle.js";
 import { createOomCircuitBreaker } from "./oom-circuit-breaker.js";
+import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled } from "./overlay-session.js";
-import { publishDepDirOverlayBases } from "./overlay-publish.js";
+import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
@@ -92,6 +98,8 @@ export {
   createPrStatusPoller,
   createLogBuffer,
   wireEventHandlers,
+  markProviderAccountUnauthenticated,
+  markProviderAccountReauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
@@ -179,7 +187,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
-    deps, isTestMode, credentialsDir, sessionManager, runtimeMode,
+    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode,
   });
 
   // ---- Docker instance for memory stats ----
@@ -209,7 +217,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const { sseClients, sseBroadcast } = createSSE();
 
   // ---- Log buffer ----
-  const { getLogBuffer, clearLogBuffer, broadcastLog } = createLogBuffer();
+  // Durable per-session log store (docs/192) — backs both the agent "Logs" tab
+  // and the preview-service log panels so history survives orchestrator
+  // restart, idle eviction, and container destruction. The in-memory ring in
+  // createLogBuffer stays as a hot, synchronous cache for diagnostics.
+  const logStore = new LogStore(sessionsRoot);
+  const { getLogBuffer, clearLogBuffer, removeLogBuffer, broadcastLog } = createLogBuffer(logStore);
+  // docs/192 — drop a session's durable logs dir + in-memory ring when it goes
+  // away for good (archive / delete / full reset). The disk-janitor sweep is
+  // the startup backstop for paths that don't call this.
+  const removeSessionLogs = (sid: string): void => {
+    logStore.remove(sid);
+    removeLogBuffer(sid);
+  };
 
   // ---- OOM circuit breaker ----
   // One process-local instance shared between the health monitor (which
@@ -413,15 +433,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
   // HTTP-agnostic. Cheap flag gate first so a flag-off session never awaits worker
   // readiness. Inert unless `OVERLAY_DEP_STORE` is on.
-  const publishOverlayBases = async ({ runner, session, installOk }: {
+  const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
-  }): Promise<void> => {
-    if (!isOverlayEnabled() || !session.remoteUrl) return;
+    installCommands?: string[];
+  }): Promise<DepDirPublishOutcome[]> => {
+    if (!isOverlayEnabled() || !session.remoteUrl) return [];
     await runner.whenWorkerReady();
-    await publishDepDirOverlayBases(
-      { session, workerUrl: runner.getWorkerUrl(), installOk },
+    return publishDepDirOverlayBases(
+      { session, workerUrl: runner.getWorkerUrl(), installOk, installCommands },
       { stateDir, createRepoGit, getBareCacheDir },
     );
   };
@@ -437,6 +458,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     publishOverlayBases,
+    logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
@@ -477,10 +499,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   };
 
+  // ---- Notify-on-merge watches (docs/196) ----
+  // Built before the poller so the poller's `onPrTerminalState` hook can fire it.
+  // The PR-status lookup + startup reconcile are bound after the poller exists.
+  const mergeWatchManager = new MergeWatchManager({
+    sessionManager,
+    runnerRegistry,
+    chatHistoryManager,
+    defaultAgentId,
+    credentialsDir,
+    credentialStore,
+    providerAccountManager,
+    containerManager,
+  });
+
   // ---- PR Status Poller ----
   const prStatusPoller = createPrStatusPoller({
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, createGitManager, getBareCacheDir,
+    mergeWatchManager,
     // Skip the volume-prune fallback in test mode so the poller's
     // auto-archive-on-merge path doesn't shell out to docker from tests.
     pruneSessionVolumes: isTestMode ? undefined : pruneSessionVolumes,
@@ -504,6 +541,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // docs/149 — fill in the lazy reference that the system-turn PR-lifecycle
   // hook closes over.
   prStatusPollerRef.ref = prStatusPoller;
+
+  // docs/196 — bind the merge-watch PR-status lookup to the poller, then
+  // re-derive any watch whose child PR already reached a terminal state while
+  // the orchestrator was down (loadPersisted, run inside createPrStatusPoller,
+  // has already seeded the snapshots this reads). Best-effort, off the boot path.
+  mergeWatchManager.setPrStatusLookup((id) => prStatusPoller.getStatus(id));
+  void mergeWatchManager.reconcilePending().catch((err: unknown) => {
+    console.error("[merge-watch] startup reconcile failed:", err);
+  });
 
   // ---- Release Status Poller (docs/171) ----
   // Reflects the inline release lifecycle card: gate/CI status + the published
@@ -571,6 +617,27 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
     claudeOAuthRefresherRef.ref = refresher;
     refresher.start();
+    refresher.on("account_unauthenticated", (accountId: string) => {
+      markProviderAccountUnauthenticated({
+        agentId: "claude",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
+    // Recovery counterpart: when a revoked account's token rotates back to
+    // healthy, un-stick the `auth_failed` row + agent_list so the model
+    // selector stops showing a false "needs auth". See docs/195.
+    refresher.on("account_reauthenticated", (accountId: string) => {
+      markProviderAccountReauthenticated({
+        agentId: "claude",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     // Rearm immediately on a fresh sign-in. `wireEventHandlers` also listens
     // to this event for its own bookkeeping; EventEmitter supports multiple
     // handlers so the two coexist without ordering constraints.
@@ -589,6 +656,19 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
+    // Recovery counterpart (mirrors the Claude wiring above): a background
+    // rotation that heals a `auth_failed` Codex row clears the selector's
+    // stale "needs auth". `markProviderAccountReauthenticated` is a no-op when
+    // the row is already `ready`. See docs/195.
+    codexRefresher.on("account_reauthenticated", (accountId: string) => {
+      markProviderAccountReauthenticated({
+        agentId: "codex",
+        accountId,
+        providerAccountManager,
+        agentRegistry,
+        sseBroadcast,
+      });
+    });
     authManagers.get("codex")?.on("complete", () => {
       codexRefresher.refreshNow().catch((err: unknown) => {
         console.error("[codex-oauth-refresh] post-auth refresh failed:", err);
@@ -927,6 +1007,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       sessionManager,
       repoStore,
       stateDir,
+      sessionsRoot,
       credentialsDir,
       archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
       cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
@@ -1082,6 +1163,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
+    mergeWatchManager,
     databaseManager,
     secretStore,
     reviewStore,
@@ -1098,6 +1180,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // this and the route derives the per-session CLI runner.
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
+    removeSessionLogs,
     agentFactory,
     oomBreaker,
     loopDetector,
@@ -1362,7 +1445,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         // replay paths (`terminal_start` handler + `onSseOpen`) that prefix
         // with `\x1bc` to keep xterm.js renderer state coherent.
         for (const buffered of runner.getTurnEventBuffer().slice(runner.lastPersistedBufferIndex)) {
-          if (buffered.type === "log_entry") continue;
+          // Agent log lines are re-seeded by the `log_snapshot` above, so skip
+          // the buffered `log_append`s here to avoid duplicating the backlog.
+          if (buffered.type === "log_append") continue;
           if (buffered.type === "terminal_output") continue;
           if (buffered.type === "terminal_exit") continue;
           if (buffered.type === "terminal_reconnecting") continue;
@@ -1510,14 +1595,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
                 ? "Auto-push failed: your GitHub token is invalid or expired. Sign in again in Settings → GitHub."
                 : `Auto-push failed: ${errMsg}`;
               broadcastLog(runner.sessionId, "server", text);
-              runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+              runner.emitMessage(agentLogAppend("server", text));
               return;
             }
             const text = errMsg.includes("workflow")
               ? "Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files. Update your token at https://github.com/settings/tokens."
               : `Auto-push failed: ${errMsg}`;
             broadcastLog(runner.sessionId, "server", text);
-            runner.emitMessage({ type: "log_entry", source: "server", text, timestamp: new Date().toISOString() });
+            runner.emitMessage(agentLogAppend("server", text));
           }
         }, autoPushDebounceMs));
       };
@@ -1598,13 +1683,13 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // this connection belongs to this session, so it goes into THIS
       // session's buffer only. This is what isolates one session's terminal
       // panel from another session's logs.
-      const sessionBroadcastLog = (source: WsLogEntry["source"], text: string) => {
-        broadcastLog(sessionId, source, text); // per-session buffer
-        const entry: WsLogEntry = { type: "log_entry", source, text, timestamp: new Date().toISOString() };
+      const sessionBroadcastLog = (source: LogSource, text: string) => {
+        broadcastLog(sessionId, source, text); // per-session buffer + durable store
+        const msg = agentLogAppend(source, text);
         if (attachedRunner) {
-          attachedRunner.emitMessage(entry);
+          attachedRunner.emitMessage(msg);
         } else {
-          send(entry);
+          send(msg);
         }
       };
 
@@ -1656,6 +1741,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         ensureAgentTokenFresh,
         workspaceDir, sessionsRoot, defaultAgentId, credentialsDir,
         getServiceManager: () => serviceManagers.get(sessionId) ?? null,
+        logStore,
+        removeSessionLogs,
       };
 
       // Auto-activate the session on connect
@@ -1665,14 +1752,23 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // Replay only THIS session's buffered entries so a newly-connected
       // viewer doesn't see logs that belong to other sessions.
       //
-      // Send `clear_logs` first so reconnecting viewers replace their local
-      // terminal store with the server buffer (the source of truth) instead
-      // of appending the replay on top of the entries they already have.
-      // Without this, every WS reconnect (network blip, tab visibility flip,
-      // session re-attach) would duplicate the buffered log lines in the UI.
-      send({ type: "clear_logs" });
-      const logBuffer = getLogBuffer(sessionId);
-      for (const entry of logBuffer) { send(entry); }
+      // Re-seed the agent Logs channel from the durable store (docs/192) on
+      // every WS (re)connect. A single `log_snapshot` REPLACES the client
+      // model wholesale — so a reconnect can't duplicate the backlog (the old
+      // `clear_logs` + per-entry replay dance is gone), and the snapshot
+      // survives orchestrator restart / idle eviction / container destruction,
+      // which is what fixes "logs only from the moment I attached". Agent
+      // entries are written synchronously (see LogStore.appendEntry), so the
+      // file is always complete and current and this can't race a just-emitted
+      // line. `<LogView>` also subscribes on mount; both paths send the same
+      // idempotent snapshot. Live lines then arrive via `sessionBroadcastLog`.
+      send({
+        type: "log_snapshot",
+        channel: "agent",
+        records: logStore.snapshotEntries(sessionId, "agent").map(
+          (e): WsLogRecord => ({ ts: e.ts, source: (e.source || undefined) as LogSource | undefined, text: e.text }),
+        ),
+      });
       if (!getGitIdentity()) { send({ type: "git_identity_required" }); }
 
       // Send preview_status after the log buffer so it's the last
@@ -1738,7 +1834,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
           case "terminal_start": return terminalHandlers.handleTerminalStart(ctx, msg);
           case "terminal_input": return terminalHandlers.handleTerminalInput(ctx, msg);
           case "terminal_resize": return terminalHandlers.handleTerminalResize(ctx, msg);
-          case "clear_logs": { terminalHandlers.handleClearLogs(ctx); return; }
+          case "subscribe_logs": return serviceHandlers.handleSubscribeLogs(ctx, msg);
+          case "log_clear": { serviceHandlers.handleLogClear(ctx, msg); return; }
           case "set_agent": {
             const agentId = msg.agentId;
             // docs/138 — once the session has taken its first turn the agent is
@@ -1885,7 +1982,6 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
           }
           case "start_service": return serviceHandlers.handleStartService(ctx, msg);
           case "stop_service": return serviceHandlers.handleStopService(ctx, msg);
-          case "subscribe_service_logs": return serviceHandlers.handleSubscribeServiceLogs(ctx, msg);
           case "send_message": {
             // docs/146 — WS-typed user input resets the auto-resolve attempt
             // budget. Only fired from the dispatch switch (not inside the
@@ -1912,6 +2008,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
           }
           case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
+          case "resolve_permission": { permissionHandlers.handleResolvePermission(ctx, msg); return; }
           case "undo_issue_write": return issueWriteHandlers.handleUndoIssueWrite(ctx, msg);
         }
       };
@@ -1972,6 +2069,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   // / DI. Adding them here just lets tests stop reaching through
   // module-private state.
   app.decorate("prStatusPoller", prStatusPoller);
+  app.decorate("mergeWatchManager", mergeWatchManager);
   app.decorate("releaseStatusPoller", releaseStatusPoller);
   app.decorate("runnerRegistry", runnerRegistry);
   app.decorate("sessionManager", sessionManager);
@@ -1985,6 +2083,8 @@ declare module "fastify" {
   interface FastifyInstance {
     /** docs/146 — test-surface decoration. See `index.ts`. */
     prStatusPoller?: PrStatusPoller;
+    /** docs/196 — test-surface decoration for the notify-on-merge deliverer. */
+    mergeWatchManager?: MergeWatchManager;
     /** docs/171 — test-surface decoration for the release lifecycle poller. */
     releaseStatusPoller?: ReleaseStatusPoller;
     runnerRegistry: SessionRunnerRegistry;

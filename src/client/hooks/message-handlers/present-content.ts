@@ -26,11 +26,9 @@ export const handlePresentContent: Handler<WsPresentContentMessage> = (_ctx, dat
   const before = usePresentStore.getState().presentations.length;
   usePresentStore.getState().addOrReplace({
     presentId: data.presentId,
-    content: data.content,
     mimeType: data.mimeType,
     createdAt: data.createdAt,
     filePath: data.filePath,
-    inWorkspace: data.inWorkspace,
     ...(data.replaceId !== undefined ? { replaceId: data.replaceId } : {}),
     ...(data.title !== undefined ? { title: data.title } : {}),
   });

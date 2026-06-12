@@ -40,6 +40,7 @@ Supported subcommands:
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
   shipit session wait    <id...> [--timeout SECONDS] [--any|--all] [--json]
+  shipit session notify-on-merge <id> [--json]
   shipit session archive <id> [--json]
   shipit session help
 
@@ -63,6 +64,23 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   created. On 'edit' labels are added to the issue's existing set. --priority is
   urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
   label there instead.
+
+Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
+  shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
+
+  Spawns ANOTHER registered agent with the prompt from --prompt-file (or
+  --prompt-file - for stdin) and prints its final text on stdout. Use it for a
+  second-opinion review or a bounded delegation: put ALL context the sub-agent
+  needs into the prompt (the task, any \`git diff\`, file references, focus
+  hints). The spawned agent runs full-capability in this same workspace and its
+  work is committed under your session's agent. Requires the "Multi-agent
+  sessions" setting to be enabled. Blocks until the sub-agent finishes (30–120s
+  typical). Example:
+
+    shipit agent run --agent codex --prompt-file - <<'EOF'
+    Review this diff for bugs. Report findings as file:line — comment.
+    $(git diff)
+    EOF
 
 Ops-only (read-only ShipIt source, docs/162):
   shipit source status   [--json]
@@ -1022,6 +1040,53 @@ async function handleSessionArchive(args: string[], deps: RunDeps): Promise<void
   success(deps.io, `session-id: ${id}\narchived:   true`);
 }
 
+/**
+ * `shipit session notify-on-merge <child-id> [--json]` (docs/196).
+ *
+ * Arms an async watch: when the child's PR merges (or closes without merging),
+ * the orchestrator wakes THIS session with a queued, self-describing system turn
+ * and surfaces a merge card — no blocking wait. Returns immediately ("armed").
+ * Unlike `wait`, this does NOT hold the turn open; the turn ends here and the
+ * parent resumes event-driven, possibly days later.
+ */
+async function handleSessionNotifyOnMerge(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {},
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session notify-on-merge: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+  const id = parsed.positional[0];
+  if (!id) {
+    fail(deps.io, "shipit session notify-on-merge: child session id is required.");
+  }
+
+  const res = await deps.call(
+    "POST",
+    `/agent-ops/session/notify-on-merge/${encodeURIComponent(id)}`,
+    {},
+    deps.env,
+  );
+  if (res.status === 404) {
+    fail(deps.io, "Spawned session not found, or not a descendant of this parent.", 1);
+  }
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to register merge watch"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+  const already = res.body.alreadyArmed === true;
+  success(
+    deps.io,
+    `session-id:      ${id}\nnotify-on-merge: ${already ? "already armed" : "armed"}`,
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Read-only ShipIt source subcommands (docs/162) — Ops sessions only.
 // ---------------------------------------------------------------------------
@@ -1675,6 +1740,118 @@ const ISSUE_HANDLERS: Record<
 };
 
 // ---------------------------------------------------------------------------
+// Sub-agent spawning (docs/144)
+//
+// `shipit agent run --agent <id> --prompt-file -` spawns ANOTHER registered
+// agent for a one-shot sub-task and prints its final text on stdout. The prompt
+// (the single context channel — task, diff, focus hints) is read from stdin, so
+// backticks and $(...) are never shell-evaluated. The shim forwards its
+// inherited SHIPIT_AGENT_DEPTH so the orchestrator's recursion guard can reject
+// a sub-agent spawning a sub-agent. Review is just a review-shaped prompt.
+// ---------------------------------------------------------------------------
+
+const AGENT_RUN_INLINE_REDIRECT = `shipit agent run: inline prompt flags (-p/--prompt/-m) are not supported.
+Pass the prompt via --prompt-file FILE, or --prompt-file - to read it from stdin,
+so backticks and $(...) in the prompt are not evaluated by the shell. Use a
+single-quoted heredoc, exactly like \`gh pr create --body-file -\`:
+
+  shipit agent run --agent codex --prompt-file - <<'EOF'
+  Review this diff and list any bugs as file:line — comment. Diff:
+  $(git diff)
+  EOF`;
+
+/** Read the inherited recursion depth (absent ⇒ 0, i.e. a primary). */
+function inheritedAgentDepth(): number {
+  const raw = process.env.SHIPIT_AGENT_DEPTH;
+  const n = raw ? Number.parseInt(raw, 10) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function handleAgentRun(args: string[], deps: RunDeps): Promise<void> {
+  const usedInline = args.some(
+    (a) => INLINE_PROMPT_FLAGS.includes(a) || a.startsWith("--prompt=") || a.startsWith("--message="),
+  );
+  if (usedInline) {
+    fail(deps.io, AGENT_RUN_INLINE_REDIRECT);
+  }
+
+  const parsed = parseFlags(args, {
+    values: {
+      "--agent": "agent", "-a": "agent",
+      "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
+      "--model": "model",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit agent run: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const agentId = parsed.values.agent;
+  if (!agentId) {
+    fail(deps.io, "shipit agent run: --agent is required (e.g. --agent codex).");
+  }
+  const promptFile = parsed.values.promptFile;
+  if (!promptFile) {
+    fail(deps.io, "shipit agent run: --prompt-file is required (a file, or `-` for stdin, holding the sub-agent's prompt).");
+  }
+  let prompt: string;
+  try {
+    prompt = promptFile === "-" ? await readStdin() : await fsp.readFile(promptFile, "utf8");
+  } catch (err) {
+    fail(deps.io, `shipit agent run: could not read prompt file ${promptFile}: ${err instanceof Error ? err.message : String(err)}`);
+    return;
+  }
+  if (prompt.trim().length === 0) {
+    fail(deps.io, "shipit agent run: the prompt is empty. --prompt-file must hold the sub-agent's task.");
+  }
+  if (prompt.length > 200_000) {
+    fail(deps.io, "shipit agent run: the prompt exceeds 200,000 characters.");
+  }
+
+  const payload: Record<string, unknown> = { agentId, prompt, depth: inheritedAgentDepth() };
+  if (parsed.values.model) payload.model = parsed.values.model;
+
+  // No timeout: the spawn blocks until the sub-agent exits (30–120s typical, up
+  // to the worker's wall-clock cap). The orchestrator holds the request open.
+  const res = await deps.call("POST", "/agent-ops/agent/spawn", payload, deps.env);
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Sub-agent spawn failed"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const text = asString(res.body.text);
+  const status = asString(res.body.status) || "success";
+  const truncated = res.body.truncated === true;
+
+  // Print the sub-agent's final text on stdout regardless of terminal status, so
+  // the primary always sees whatever the sub-agent produced.
+  if (text) deps.io.stdout(text.endsWith("\n") ? text : `${text}\n`);
+
+  if (status !== "success") {
+    deps.io.stderr(`shipit agent run: sub-agent ${status}${truncated ? " (output truncated)" : ""}.\n`);
+    deps.io.exit(1);
+    return;
+  }
+  if (truncated) {
+    deps.io.stderr("shipit agent run: note — the sub-agent's output was truncated at the cost cap.\n");
+  }
+  deps.io.exit(0);
+}
+
+const AGENT_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  run: handleAgentRun,
+};
+
+// ---------------------------------------------------------------------------
 // Top-level dispatch
 // ---------------------------------------------------------------------------
 
@@ -1688,6 +1865,7 @@ const SESSION_HANDLERS: Record<
   message: handleSessionMessage,
   wait: handleSessionWait,
   archive: handleSessionArchive,
+  "notify-on-merge": handleSessionNotifyOnMerge,
 };
 
 const SOURCE_HANDLERS: Record<
@@ -1742,6 +1920,11 @@ export async function runShim(
 
   if (command === "issue") {
     await dispatchIssue(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "agent") {
+    await dispatchAgent(args.slice(1), deps, io);
     return;
   }
 
@@ -1819,6 +2002,23 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = ISSUE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  await handler(args.slice(1), deps);
+}
+
+/**
+ * Dispatch a `shipit agent <sub>` invocation (docs/144). Only `run` exists —
+ * the one-shot sub-agent spawn primitive.
+ */
+async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  const handler = AGENT_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
   }
   await handler(args.slice(1), deps);
 }

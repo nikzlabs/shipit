@@ -163,6 +163,19 @@ export function useServerEvents(): void {
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
         useSessionStore.getState().setAuthUrl(null);
+        if (data.reason === "revoked") {
+          useUiStore.getState().setToast({
+            message: data.message ?? "Claude authentication expired. Sign in again.",
+            action: {
+              label: "Sign in",
+              onClick: () => {
+                useUiStore.getState().setSettingsTab("agent-claude");
+                useUiStore.getState().setSettingsOpen(true);
+              },
+            },
+            duration: 12000,
+          });
+        }
       // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
       } else if (data.agentId === "codex") {
         useSettingsStore.getState().setCodexDeviceAuth(null);

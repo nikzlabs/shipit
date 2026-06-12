@@ -138,6 +138,60 @@ describe("ModelAgentSelector — mid-session model picking", () => {
     expect(screen.getByTestId("model-option-gpt-5.4")).not.toHaveAttribute("aria-disabled", "true");
   });
 
+  it("flags a usage-based model (Fable 5) with a $ icon but not subscription models", async () => {
+    const agentsWithFable: AgentOption[] = [
+      { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
+    ];
+    const user = userEvent.setup();
+    render(
+      <ModelAgentSelector
+        agents={agentsWithFable}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={false}
+      />,
+    );
+    await user.click(screen.getByTestId("model-agent-trigger"));
+    // Fable carries the metered $ icon; Opus (subscription-covered) does not.
+    expect(screen.getByTestId("model-metered-claude-fable-5")).toBeInTheDocument();
+    expect(screen.queryByTestId("model-metered-claude-opus-4-8")).not.toBeInTheDocument();
+  });
+
+  it("shows the $ on the collapsed trigger when the selected model is usage-based", () => {
+    const agentsWithFable: AgentOption[] = [
+      { ...agents[0], models: ["claude-opus-4-8", "claude-fable-5"] },
+    ];
+    setSessionState(makeSession({ id: "s1", model: "claude-fable-5", agentId: "claude", agentPinned: true }));
+    const { rerender } = render(
+      <ModelAgentSelector
+        agents={agentsWithFable}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={true}
+      />,
+    );
+    // Fable selected → the trigger carries the $ even while collapsed.
+    expect(screen.getByTestId("model-trigger-metered")).toBeInTheDocument();
+
+    // Switch the session to Opus → the trigger $ disappears.
+    setSessionState(makeSession({ id: "s1", model: "claude-opus-4-8", agentId: "claude", agentPinned: true }));
+    rerender(
+      <ModelAgentSelector
+        agents={agentsWithFable}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        modelInfo={null}
+        hasActiveSession={true}
+      />,
+    );
+    expect(screen.queryByTestId("model-trigger-metered")).not.toBeInTheDocument();
+  });
+
   it("picking a model in the pinned agent emits onModelChange but NOT onAgentChange", async () => {
     setSessionState(makeSession({ id: "s1", model: "sonnet", agentId: "claude", agentPinned: true }));
     const onAgentChange = vi.fn();

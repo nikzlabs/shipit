@@ -33,6 +33,11 @@ and — importantly for writes — the issue's **available statuses** (the valid
 targets for `shipit issue status`). `--json` emits the raw object. The output
 shape is identical across trackers.
 
+`list --state` selects the scope: `open` (default) is the active working set —
+completed, canceled, and **duplicate** issues are excluded; `all` adds the done
+issues; `closed` is the done set only. Duplicates only surface under `all` /
+`closed`, never in the default open list.
+
 `view` also surfaces a small **navigation card** in the chat — a jump-to-issue
 affordance recording that you looked at the issue — so the user can follow along
 and open it without leaving ShipIt. It's the read-only sibling of the write
@@ -121,6 +126,37 @@ to mark work done; there is no `issue close`.
 `assign` resolves a `me` / login / email / display-name to the tracker's
 internal id. `--none` unassigns. On no/ambiguous match it returns candidates —
 retry with a specific one.
+
+## Issue lifecycle — started on start, completed on merge
+
+ShipIt keeps a tracked issue's status in sync with the session that implements
+it, so you rarely set status by hand. Two transitions:
+
+- **→ started.** A session launched **from** an issue (the Issues tab's "Start
+  session", a tracker trigger) is moved to **started** automatically at
+  creation — you don't need to do anything. If instead you're working an issue
+  the session was *not* seeded with (the user pasted a pointer in chat), mark it
+  yourself when you begin: `shipit issue status <pointer> started`.
+
+- **→ completed (on merge).** Don't run `status completed` manually for the
+  finishing PR. Instead, declare it in the **PR body**: a `Closes <pointer>`
+  line (synonyms `Fixes` / `Resolves`) tells ShipIt that *this* PR finishes the
+  issue. When the PR **merges**, ShipIt flips the issue to **completed** and
+  posts a resolved-by comment — brokered the same way as every other write, with
+  a provenance card and Undo.
+
+  - For an intermediate PR in a multi-PR effort, use a non-closing
+    `Refs <pointer>` line instead. On merge that posts a *progress* comment and
+    leaves the issue open. **Omitting** `Closes` is exactly how you signal
+    "more PRs to come."
+  - A PR that names no pointer gets no automatic issue activity.
+  - `<pointer>` is the tracker-neutral form above (`SHI-43`, `owner/repo#42`,
+    or a full issue URL).
+
+This works across both trackers (it's ShipIt parsing the body and routing
+through the brokered path), so don't rely on GitHub's native `Closes #N`
+keyword closing — it only covers same-repo GitHub issues and bypasses the
+provenance card and the resolved-by comment.
 
 ## What you can't do
 

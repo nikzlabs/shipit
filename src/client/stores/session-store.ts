@@ -2,7 +2,22 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview } from "../../server/shared/types.js";
+import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
+
+/**
+ * docs/144 — a transient sub-agent spawn chip. Mirrors the `sub_agent_spawn` WS
+ * message: `running` while the `shipit agent` call is in flight, `done` with
+ * timing/cost on return. Status only; never persisted.
+ */
+export interface SubAgentSpawnChip {
+  spawnId: string;
+  subAgentId: AgentId;
+  phase: "running" | "done";
+  status?: "success" | "error" | "timeout" | "cancelled";
+  durationMs?: number;
+  costUsd?: number;
+  truncated?: boolean;
+}
 
 /**
  * Live state for an in-flight Rescue session ("Restart container") operation.
@@ -45,6 +60,14 @@ interface SessionState {
    * the matching card lands). Never persisted — purely a live progress signal.
    */
   compacting: boolean;
+  /**
+   * docs/144 — transient sub-agent spawn chips keyed by spawnId. Set from
+   * `sub_agent_spawn` WS messages; "Asking Codex…" while in flight, replaced by
+   * "Consulted Codex · 47s · $0.03" on return. Status only, never persisted —
+   * resets on reload/switch (the sub-agent's output reaches the user through the
+   * primary's own voice).
+   */
+  subAgentSpawns: Record<string, SubAgentSpawnChip>;
   selectedRepoUrl: string | null;
   creatingRepo: boolean;
   sessions: SessionInfo[];
@@ -121,6 +144,8 @@ interface SessionState {
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
   setCompacting: (compacting: boolean) => void;
+  /** docs/144 — upsert a sub-agent spawn chip keyed by spawnId. */
+  upsertSubAgentSpawn: (chip: SubAgentSpawnChip) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
   setRecoveryActionError: (error: string | null) => void;
@@ -228,6 +253,7 @@ const initialResettableState = {
   isLoading: false,
   activity: undefined as StreamingActivity | undefined,
   compacting: false,
+  subAgentSpawns: {},
   selectedRepoUrl: null as string | null,
   creatingRepo: false,
   queuedMessages: [] as { text: string; position: number }[],
@@ -280,6 +306,8 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setActivity: (activity) => set({ activity }),
 
   setCompacting: (compacting) => set({ compacting }),
+  upsertSubAgentSpawn: (chip) =>
+    set((s) => ({ subAgentSpawns: { ...s.subAgentSpawns, [chip.spawnId]: chip } })),
 
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 

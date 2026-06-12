@@ -293,6 +293,10 @@ export async function handleSendMessage(
               images: historyImages,
               files: historyFiles,
               uploadPaths: steerUploadPaths,
+              // docs/140 — the CLI echoes this exact prompt; storing it lets the
+              // delivery-ack matcher confirm the steer landed, and lets a steer
+              // that fell into the turn-end gap be re-queued instead of lost.
+              assembledPrompt: steerPrompt,
             });
             persistTurnInProgress(ctx.chatHistoryManager, runnerForQueue, capturedSessionId);
           }

@@ -4,8 +4,10 @@
 
 import fs from "node:fs/promises";
 import os from "node:os";
+import path from "node:path";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
+import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "../templates.js";
 import { ServiceError } from "./types.js";
@@ -14,10 +16,10 @@ import { ServiceError } from "./types.js";
  *  Does NOT create a session — the caller should warm one via warmSessionForRepo(). */
 export async function createRepoWithTemplate(
   createGitManager: (dir: string) => GitManager,
+  createRepoGit: (dir: string) => RepoGit,
   githubAuthManager: {
     authenticated: boolean;
     createRepo: (name: string, opts: { description?: string; isPrivate?: boolean }) => Promise<{ success: boolean; cloneUrl?: string; message?: string }>;
-    configureGitCredentials: (dir: string) => void;
   },
   getSharedRepoDir: (repoUrl: string) => string,
   repoName: string,
@@ -42,26 +44,48 @@ export async function createRepoWithTemplate(
   if (!repoResult.success || !repoResult.cloneUrl) {
     return { success: false, message: repoResult.message || "Failed to create repository" };
   }
+  const cloneUrl = repoResult.cloneUrl;
 
-  // 2. Set up the bare repo cache dir — acts as the reference clone for all sessions
-  const repoDir = getSharedRepoDir(repoResult.cloneUrl);
-  await fs.mkdir(repoDir, { recursive: true });
-  const sharedGit = createGitManager(repoDir);
-  await sharedGit.init();
-  await sharedGit.addRemote("origin", repoResult.cloneUrl);
-  githubAuthManager.configureGitCredentials(repoDir);
+  // 2. Scaffold the template in a throwaway working tree, commit, and push to
+  //    establish the repo's base on GitHub. We deliberately do NOT scaffold
+  //    into the shared cache dir: that dir must be a *bare* repo (step 3), and
+  //    a bare repo has no working tree to write files into. The push
+  //    authenticates via the orchestrator's global git credential helper
+  //    (installed whenever a token exists), so no per-dir credential setup is
+  //    needed here.
+  const scaffoldDir = await fs.mkdtemp(path.join(os.tmpdir(), "shipit-template-"));
+  try {
+    const scaffoldGit = createGitManager(scaffoldDir);
+    await scaffoldGit.init();
+    await scaffoldGit.addRemote("origin", cloneUrl);
+    await applyTemplateFiles(template, scaffoldDir);
+    if (template.files["package.json"]) {
+      try { await generatePackageLock(scaffoldDir); } catch { /* non-fatal */ }
+    }
+    await scaffoldGit.autoCommit(`Initial setup: ${template.name}`);
+    await scaffoldGit.push("origin", "main");
 
-  // 3. Apply template, generate lock file, and push to main (establishes repo base)
-  await applyTemplateFiles(template, repoDir);
-  if (template.files["package.json"]) {
-    try { await generatePackageLock(repoDir); } catch { /* non-fatal */ }
+    // 3. Create the shared cache as a *bare* repo. Bare-clone from the local
+    //    scaffold — which already holds the pushed history — instead of
+    //    re-downloading from the remote we just pushed to, then repoint origin
+    //    at the real remote for future fetches. The result matches the
+    //    add-by-URL path (a bare cache with `main` and origin = the GitHub URL)
+    //    without a redundant network round-trip. The previous implementation
+    //    `git init`'d this dir as a *non-bare* working tree with `main` checked
+    //    out, which made every later cache fetch fail with "refusing to fetch
+    //    into branch 'refs/heads/main' checked out" (docs/192).
+    const repoDir = getSharedRepoDir(cloneUrl);
+    await fs.mkdir(repoDir, { recursive: true });
+    const cacheGit = createRepoGit(repoDir);
+    await cacheGit.cloneBare(scaffoldDir);
+    await cacheGit.setRemoteUrl(cloneUrl);
+  } finally {
+    await fs.rm(scaffoldDir, { recursive: true, force: true });
   }
-  await sharedGit.autoCommit(`Initial setup: ${template.name}`);
-  await sharedGit.push("origin", "main");
 
   return {
     success: true,
-    repoUrl: repoResult.cloneUrl,
+    repoUrl: cloneUrl,
   };
 }
 

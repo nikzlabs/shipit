@@ -1,8 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect/useLayoutEffect: DOM scroll sync, window keydown listener, xterm auto-scroll
-import { Fragment, useMemo, useEffect, useLayoutEffect, useRef } from "react";
-import {
-  TypingDots,
-} from "./StreamingIndicator.js";
+import { Fragment, useMemo, useEffect, useLayoutEffect, useRef, useDeferredValue } from "react";
 import { TodoPanel, type TodoItem } from "./TodoPanel.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../hooks/useSearch.js";
@@ -17,16 +14,19 @@ import { getSegmentMatches, HighlightedText } from "./message-highlighting.js";
 import { MessageFileAttachments, MessageImages } from "./message-media.js";
 import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
+import { ChildMergedCard } from "./ChildMergedCard.js";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
 import { AgentReviewCard } from "./AgentReviewCard.js";
 import { UserReviewCard } from "./UserReviewCard.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import type { SubAgentSpawnChip } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
+import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
 import { IssueRefCard } from "./IssueRefCard.js";
@@ -174,6 +174,24 @@ export interface ChatMessage {
     };
   };
   /**
+   * docs/196 — when set, this message renders a `ChildMergedCard` inline in the
+   * PARENT's chat: a child session the parent armed a notify-on-merge watch on
+   * had its PR merge (or close without merging). Populated from `child_merged_card`
+   * WS events and from persisted history (static payload, no client store).
+   */
+  childMerged?: {
+    cardId: string;
+    childSessionId: string;
+    childTitle: string;
+    branch?: string;
+    outcome: "merged" | "closed-unmerged";
+    prNumber: number;
+    prUrl: string;
+    prTitle?: string;
+    mergeSha?: string;
+    createdAt: string;
+  };
+  /**
    * docs/117 cross-cutting follow-up — when set, this message renders a
    * `SpawnFailedCard` inline in the parent's chat. Populated from
    * `session_spawn_failed` WS events. Counterpart to `spawnedSession` for the
@@ -262,6 +280,26 @@ export interface ChatMessage {
     issueUrl?: string;
     errorMessage?: string;
     scopeError?: boolean;
+  };
+  /**
+   * docs/193 / SHI-112 — when set, this message renders a `PermissionRequestCard`
+   * inline (approve/deny + remember) for a gated agent action. The live
+   * `permission_request_card` WS handler appends a `{ requestId }`-only marker;
+   * a message rehydrated from persisted history additionally carries the full
+   * payload + phase so `loadSessionHistory` can seed the permission store (the
+   * card's state lives there so an approved/denied/expired update can swap it in
+   * place). `PermissionRequestCard` reads only `requestId` and pulls the rest
+   * from the store.
+   */
+  permissionPrompt?: {
+    requestId: string;
+    phase?: "pending" | "approved" | "denied";
+    toolName?: string;
+    path?: string;
+    summary?: string;
+    agentId?: string;
+    createdAt?: string;
+    remembered?: boolean;
   };
   /**
    * docs/177 — when set, this message renders an `IssueWriteCard` inline. The
@@ -368,6 +406,7 @@ export function MessageList({
   onRequestRewindPreview,
   onRewindAtGap,
   onSubmitBugReport,
+  onResolvePermission,
   onUndoIssueWrite,
   onOpenIssue,
   onResumeSession,
@@ -383,6 +422,8 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  /** docs/193 — answer a permission request (approve/deny + remember). */
+  onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
   onUndoIssueWrite?: (cardId: string) => void;
   /**
@@ -412,11 +453,23 @@ export function MessageList({
   const currentMatchRef = useRef<HTMLElement | null>(null);
   const hasRewindControls = !!onRewindAtGap;
 
-  const messages = messagesProp;
+  // Coalesce streaming re-renders. The agent appends to the streaming message
+  // once per token (a separate WS macrotask each), so `messagesProp` changes
+  // dozens of times a second during a turn. `useDeferredValue` lets React
+  // render this heavy transcript at a lower priority: under a burst it skips
+  // intermediate values and re-parses the streaming message's markdown once
+  // per painted frame instead of once per token, always converging to the
+  // latest text at the trailing edge. Combined with the per-message
+  // `MarkdownContent` memo, this turns the old O(messages × tokens) parse
+  // storm into roughly O(frames). WS delivery is untouched, so no message is
+  // dropped — only the render cadence is throttled.
+  const messages = useDeferredValue(messagesProp);
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
   const compacting = useSessionStore((s) => s.compacting);
+  // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
+  const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
 
   // Per-completed-turn Play button (docs/144). A "turn" is the run of
   // assistant messages between one user message and the next. We mark the
@@ -618,13 +671,16 @@ export function MessageList({
   };
 
   return (
-    <div ref={containerRef} className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2">
+    <div
+      ref={containerRef}
+      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
+    >
       {/* SHI-10 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      {buildVisualElements(messages).map((el, elIdx, allElements) => {
+      {buildVisualElements(messages).map((el) => {
         // ── Tool-group: grouped tool calls from consecutive assistant messages ──
         if (el.kind === "tool-group") {
           return (
@@ -760,6 +816,29 @@ export function MessageList({
           );
         }
 
+        // docs/196 — child-merged marker carries no chat text of its own; render
+        // the inline `ChildMergedCard` and skip the bubble path. Static payload,
+        // no client store — renders identically live and after a reload.
+        if (msg.childMerged) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <ChildMergedCard
+                  childSessionId={msg.childMerged.childSessionId}
+                  childTitle={msg.childMerged.childTitle}
+                  {...(msg.childMerged.branch ? { branch: msg.childMerged.branch } : {})}
+                  outcome={msg.childMerged.outcome}
+                  prNumber={msg.childMerged.prNumber}
+                  prUrl={msg.childMerged.prUrl}
+                  {...(msg.childMerged.prTitle ? { prTitle: msg.childMerged.prTitle } : {})}
+                  {...(msg.childMerged.mergeSha ? { mergeSha: msg.childMerged.mergeSha } : {})}
+                  {...(onResumeSession ? { onOpen: onResumeSession } : {})}
+                />
+              </div>
+            </div>
+          );
+        }
+
         // docs/151 — agent review marker carries no chat text of its own;
         // render the inline `AgentReviewCard` and skip the bubble path. The
         // card's open action triggers a lazy fetch of the snapshot + comments
@@ -823,6 +902,19 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <BugReportCard cardId={msg.bugReport.cardId} onSubmit={onSubmitBugReport} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/193 / SHI-112 — permission-request card. Carries no chat text of
+        // its own; render the inline `PermissionRequestCard` (which reads its
+        // payload + phase from the permission store) and skip the bubble path.
+        if (msg.permissionPrompt) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <PermissionRequestCard requestId={msg.permissionPrompt.requestId} onResolve={onResolvePermission} />
               </div>
             </div>
           );
@@ -949,11 +1041,17 @@ export function MessageList({
               {useMarkdown ? (
                 <MarkdownContent text={msg.text} />
               ) : hasCodeBlocks ? (
-                segments.map((seg, segIdx) => {
+                segments.map((seg) => {
+                  // Key on the segment's character offset, not its array index.
+                  // While a user message with code blocks is being composed/
+                  // streamed, indices stay stable but a content-derived key is
+                  // sturdier against re-segmentation — it keeps each `CodeBlock`
+                  // instance mounted so its memoized `hljs.highlight` cache
+                  // survives instead of remounting and re-highlighting.
                   if (seg.type === "code") {
                     return (
                       <CodeBlock
-                        key={segIdx}
+                        key={seg.offset}
                         code={seg.content}
                         language={seg.language}
                       />
@@ -965,7 +1063,7 @@ export function MessageList({
                     seg.content.length
                   );
                   return (
-                    <span key={segIdx} className="whitespace-pre-wrap">
+                    <span key={seg.offset} className="whitespace-pre-wrap">
                       <HighlightedText
                         text={seg.content}
                         matches={segMatches}
@@ -1021,12 +1119,6 @@ export function MessageList({
                 </div>
               )}
 
-              {msg.streaming && allElements[elIdx + 1]?.kind !== "tool-group" && !latestTodoTool && (
-                <span className="inline-flex items-center ml-1 align-middle">
-                  <TypingDots />
-                </span>
-              )}
-
               {voicePlaybackEnabled && turnProseByLastIndex.has(i) && (
                 <div className="mt-1.5 flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
                   <PlayTurnButton turnId={msg.commitHash ?? `turn-${i}`} text={turnProseByLastIndex.get(i)!} />
@@ -1055,7 +1147,51 @@ export function MessageList({
         </div>
       )}
 
+      {Object.values(subAgentSpawns).map((chip) => (
+        <SubAgentSpawnChipRow key={chip.spawnId} chip={chip} />
+      ))}
+
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
+    </div>
+  );
+}
+
+/** Display names for the spawn chip. */
+const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
+
+/**
+ * docs/144 — transient sub-agent spawn chip. "Asking Codex…" with a spinner
+ * while the `shipit agent` call is in flight; "Consulted Codex · 47s · $0.03"
+ * once it returns. Status only — emit-only, not persisted (CLAUDE.md §5).
+ */
+function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
+  const name = SUB_AGENT_DISPLAY_NAMES[chip.subAgentId] ?? chip.subAgentId;
+  if (chip.phase === "running") {
+    return (
+      <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
+        <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
+          <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+          Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
+        </div>
+      </div>
+    );
+  }
+  const secs = chip.durationMs ? Math.round(chip.durationMs / 1000) : null;
+  const cost = chip.costUsd && chip.costUsd > 0 ? `$${chip.costUsd.toFixed(2)}` : null;
+  const verb =
+    chip.status === "success" ? "Consulted"
+    : chip.status === "cancelled" ? "Cancelled"
+    : chip.status === "timeout" ? "Timed out asking"
+    : "Asked";
+  const parts = [`${verb} ${name}`];
+  if (secs !== null) parts.push(`${secs}s`);
+  if (cost) parts.push(cost);
+  if (chip.truncated) parts.push("truncated");
+  return (
+    <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
+      <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)">
+        {parts.join(" · ")}
+      </div>
     </div>
   );
 }

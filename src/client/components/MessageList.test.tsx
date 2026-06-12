@@ -899,20 +899,16 @@ describe("MessageList", () => {
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_chart",
-          content: "<h1>chart</h1>",
           mimeType: "text/html",
           title: "Sales Chart",
           filePath: "/tmp/chart.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:00.000Z",
         },
         {
           presentId: "pres_other",
-          content: "<h1>other</h1>",
           mimeType: "text/html",
           title: "Other",
           filePath: "/tmp/other.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:01.000Z",
         },
       ]);
@@ -955,11 +951,9 @@ describe("MessageList", () => {
       usePresentStore.getState().hydrate([
         {
           presentId: "pres_bare",
-          content: "<h1>bare</h1>",
           mimeType: "text/html",
           title: "Bare Object",
           filePath: "/tmp/bare.html",
-          inWorkspace: false,
           createdAt: "2026-05-31T00:00:00.000Z",
         },
       ]);
@@ -1507,23 +1501,6 @@ describe("MessageList", () => {
   });
 
   describe("single active indicator", () => {
-    it("does not show TypingDots when message is followed by a tool-group", () => {
-      const messages: ChatMessage[] = [
-        { role: "assistant", text: "Let me read the file", toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }], streaming: true },
-      ];
-      render(<MessageList messages={messages} isLoading={true} />);
-      // The message bubble should NOT show typing dots because a tool-group follows
-      expect(document.querySelector(".typing-dot")).not.toBeInTheDocument();
-    });
-
-    it("shows TypingDots when streaming message is the last visual element (no tools)", () => {
-      const messages: ChatMessage[] = [
-        { role: "assistant", text: "Thinking about this...", streaming: true },
-      ];
-      render(<MessageList messages={messages} isLoading={true} />);
-      expect(document.querySelector(".typing-dot")).toBeInTheDocument();
-    });
-
     it("only the last tool-group shows a spinner when multiple groups exist", () => {
       const messages: ChatMessage[] = [
         { role: "assistant", text: "Reading", toolUse: [{ type: "tool_use", id: "t1", name: "Read", input: { file_path: "a.ts" } }], streaming: true },
@@ -1547,36 +1524,6 @@ describe("MessageList", () => {
       ];
       render(<MessageList messages={messages} isLoading={true} />);
       expect(document.querySelector(".tool-spinner")).not.toBeInTheDocument();
-    });
-
-    it("does not show TypingDots when streaming message has a TodoPanel below it", () => {
-      // Avoids showing a redundant inline indicator inside the bubble when
-      // the TodoPanel rendered below the bubble already signals activity
-      // (its in-progress task spinner). The dots otherwise appear awkwardly
-      // wedged between the message text and the Tasks panel.
-      const messages: ChatMessage[] = [
-        {
-          role: "assistant",
-          text: "The review found one really important issue.",
-          toolUse: [
-            {
-              type: "tool_use",
-              id: "todo1",
-              name: "TodoWrite",
-              input: {
-                todos: [
-                  { content: "Fix bug", status: "in_progress", activeForm: "Fixing bug" },
-                ],
-              },
-            },
-          ],
-          streaming: true,
-        },
-      ];
-      render(<MessageList messages={messages} isLoading={true} />);
-      expect(document.querySelector(".typing-dot")).not.toBeInTheDocument();
-      // Sanity check: the TodoPanel still renders
-      expect(document.querySelector("[data-testid='todo-panel']")).toBeInTheDocument();
     });
   });
 

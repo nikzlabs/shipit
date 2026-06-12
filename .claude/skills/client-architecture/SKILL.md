@@ -203,4 +203,4 @@ useMessageHandler receives WS responses:
 
 ## Styling
 
-Tailwind CSS v4 with dark-mode-only color scheme (gray-950 backgrounds). Custom animations defined in `src/client/index.css`: typing-bounce, spin-slow, resize-handle cursor. All components use utility classes directly — no CSS modules or styled-components.
+Tailwind CSS v4 with dark-mode-only color scheme (gray-950 backgrounds). Custom animations defined in `src/client/index.css`: spin-slow, resize-handle cursor. All components use utility classes directly — no CSS modules or styled-components.

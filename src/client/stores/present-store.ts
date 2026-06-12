@@ -3,26 +3,42 @@
  *
  * Backs the Present tab in the right panel: an ordered list of artifacts the
  * agent showed via the `present` MCP tool, with a single "active" entry shown
- * at a time. New `present_content` messages append + activate (or replace
- * in-place when `replaceId` matches). `present_cleared` drops one entry (LRU
- * eviction) or wipes the list (session switch / full clear).
+ * at a time. Entries are METADATA only — the artifact bytes (`content`) are
+ * fetched lazily by the Present pane from the authenticated session API and
+ * cached back onto the entry via `setContent`. New `present_content` messages
+ * append + activate (or replace in-place when `replaceId` matches).
+ * `present_cleared` drops one entry (a revision superseding an id) or wipes the
+ * list (session switch / full clear).
  *
- * Presentations are intentionally NOT persisted across browser refresh —
- * they're ephemeral by design and the server-side buffer is the source of
- * truth. If the user wants to keep one, they hit "Save to project" first.
+ * Nothing is persisted across browser refresh — the list rehydrates from the
+ * orchestrator's `present_state` replay (metadata), and the pane re-fetches the
+ * bytes from disk on demand. The server retains no artifact bytes.
  */
 
 import { create } from "zustand";
 
 export interface Presentation {
   presentId: string;
-  content: string;
   mimeType: string;
   title?: string;
   /** Path the agent presented — shown in the Present tab header. */
   filePath: string;
-  /** Whether the file already lives in the workspace (hides the Save button). */
-  inWorkspace: boolean;
+  createdAt: string;
+  /**
+   * Lazily-fetched artifact bytes (a `data:` URI for binary images, raw text
+   * for HTML/SVG/markdown). `undefined` until the pane fetches it; cached here
+   * so re-selecting the entry doesn't refetch.
+   */
+  content?: string;
+}
+
+/** The metadata carried by a `present_content` / `present_state` message. */
+interface PresentationMeta {
+  presentId: string;
+  replaceId?: string;
+  mimeType: string;
+  title?: string;
+  filePath: string;
   createdAt: string;
 }
 
@@ -36,15 +52,17 @@ interface PresentState {
    */
   unseenCount: number;
 
-  /** Apply a `present_content` WS message. */
-  addOrReplace: (p: { presentId: string; replaceId?: string; content: string; mimeType: string; title?: string; filePath: string; inWorkspace: boolean; createdAt: string }) => void;
+  /** Apply a `present_content` WS message (metadata). */
+  addOrReplace: (p: PresentationMeta) => void;
   /**
-   * Apply a `present_state` WS message — a full snapshot replayed on viewer
-   * attach. Replaces the list wholesale WITHOUT bumping the unseen badge or
-   * auto-switching the panel (it's a silent sync, not a fresh arrival). The
-   * active index is clamped so the carousel stays in bounds.
+   * Apply a `present_state` WS message — a full metadata snapshot replayed on
+   * viewer attach. Replaces the list wholesale WITHOUT bumping the unseen badge
+   * or auto-switching the panel (it's a silent sync). Already-fetched `content`
+   * is preserved for ids that survive, so a reconnect doesn't refetch.
    */
-  hydrate: (presentations: Presentation[]) => void;
+  hydrate: (presentations: Omit<PresentationMeta, "replaceId">[]) => void;
+  /** Cache fetched bytes onto an entry (no-op if the id is gone). */
+  setContent: (presentId: string, content: string) => void;
   /** Apply a `present_cleared` WS message. `presentId` undefined → wipe all. */
   clear: (presentId?: string) => void;
   /** Switch the visible entry (carousel navigation, click handler). */
@@ -63,25 +81,30 @@ const initialState = {
   unseenCount: 0,
 };
 
+/** Build a metadata entry (no content yet). */
+function toEntry(p: PresentationMeta, content?: string): Presentation {
+  return {
+    presentId: p.presentId,
+    mimeType: p.mimeType,
+    filePath: p.filePath,
+    createdAt: p.createdAt,
+    ...(p.title !== undefined ? { title: p.title } : {}),
+    ...(content !== undefined ? { content } : {}),
+  };
+}
+
 export const usePresentStore = create<PresentState>((set) => ({
   ...initialState,
 
   addOrReplace: (p) =>
     set((s) => {
       // Revision flow: replace in-place if replaceId points at a known entry.
+      // It's a new file version, so drop any cached bytes — the pane refetches.
       if (p.replaceId) {
         const idx = s.presentations.findIndex((q) => q.presentId === p.replaceId);
         if (idx >= 0) {
           const next = [...s.presentations];
-          next[idx] = {
-            presentId: p.presentId,
-            content: p.content,
-            mimeType: p.mimeType,
-            ...(p.title !== undefined ? { title: p.title } : {}),
-            filePath: p.filePath,
-            inWorkspace: p.inWorkspace,
-            createdAt: p.createdAt,
-          };
+          next[idx] = toEntry(p);
           return {
             presentations: next,
             activePresentIndex: idx,
@@ -91,20 +114,12 @@ export const usePresentStore = create<PresentState>((set) => ({
       }
 
       // Idempotent re-delivery: a `present_state` hydrate may overlap with a
-      // live `present_content` for the same id. Replace in place rather than
-      // appending a duplicate.
+      // live `present_content` for the same id. Replace in place, preserving
+      // any already-fetched bytes (same id → same file).
       const dupeIdx = s.presentations.findIndex((q) => q.presentId === p.presentId);
       if (dupeIdx >= 0) {
         const next = [...s.presentations];
-        next[dupeIdx] = {
-          presentId: p.presentId,
-          content: p.content,
-          mimeType: p.mimeType,
-          ...(p.title !== undefined ? { title: p.title } : {}),
-          filePath: p.filePath,
-          inWorkspace: p.inWorkspace,
-          createdAt: p.createdAt,
-        };
+        next[dupeIdx] = toEntry(p, s.presentations[dupeIdx].content);
         return {
           presentations: next,
           activePresentIndex: dupeIdx,
@@ -113,16 +128,7 @@ export const usePresentStore = create<PresentState>((set) => ({
       }
 
       // Brand-new entry — append + activate so the user sees the latest.
-      const next: Presentation = {
-        presentId: p.presentId,
-        content: p.content,
-        mimeType: p.mimeType,
-        ...(p.title !== undefined ? { title: p.title } : {}),
-        filePath: p.filePath,
-        inWorkspace: p.inWorkspace,
-        createdAt: p.createdAt,
-      };
-      const presentations = [...s.presentations, next];
+      const presentations = [...s.presentations, toEntry(p)];
       return {
         presentations,
         activePresentIndex: presentations.length - 1,
@@ -132,11 +138,26 @@ export const usePresentStore = create<PresentState>((set) => ({
 
   hydrate: (presentations) =>
     set((s) => {
+      // Preserve already-fetched bytes for ids that survive the snapshot, so a
+      // WS reconnect (browser still holds content) doesn't trigger a refetch.
+      const priorContent = new Map(
+        s.presentations.filter((p) => p.content !== undefined).map((p) => [p.presentId, p.content]),
+      );
+      const entries = presentations.map((p) => toEntry(p, priorContent.get(p.presentId)));
       const activePresentIndex =
-        presentations.length === 0
+        entries.length === 0
           ? 0
-          : Math.max(0, Math.min(s.activePresentIndex, presentations.length - 1));
-      return { presentations, activePresentIndex };
+          : Math.max(0, Math.min(s.activePresentIndex, entries.length - 1));
+      return { presentations: entries, activePresentIndex };
+    }),
+
+  setContent: (presentId, content) =>
+    set((s) => {
+      const idx = s.presentations.findIndex((p) => p.presentId === presentId);
+      if (idx < 0) return s;
+      const next = [...s.presentations];
+      next[idx] = { ...next[idx], content };
+      return { presentations: next };
     }),
 
   clear: (presentId) =>

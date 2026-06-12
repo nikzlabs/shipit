@@ -63,7 +63,7 @@ export function LocalModeBanner() {
         type="button"
         onClick={dismiss}
         aria-label="Dismiss local mode notice"
-        className="ml-auto shrink-0 inline-flex items-center justify-center w-5 h-5 rounded hover:bg-(--color-bg-hover) transition-colors"
+        className="ml-auto shrink-0 inline-flex items-center justify-center w-7 h-7 rounded hover:bg-(--color-bg-hover) transition-colors"
       >
         <XIcon size={ICON_SIZE.XS} />
       </button>

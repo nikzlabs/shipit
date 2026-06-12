@@ -468,7 +468,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
         >
           <OverflowMenu
             label="Session actions"
-            triggerClassName="h-6 w-6"
+            triggerClassName="h-7 w-7"
             onOpenChange={setMenuOpen}
           >
             {!isArchived && (
@@ -862,24 +862,30 @@ function RepoGroup({
       {/* Session list — hidden when collapsed */}
       {!isCollapsed && (
         <div ref={listRef} className="flex flex-col gap-1 pb-2">
-          {/* New session row — matches SessionItem shape so it can render as selected */}
-          <button
-            type="button"
-            onClick={onNewSession}
-            disabled={repo.status === "cloning"}
-            className={`group flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 border-x-2 border-x-transparent disabled:opacity-50 disabled:cursor-not-allowed ${
-              isNewSessionSelected
-                ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
-                : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
-            }`}
-            aria-current={isNewSessionSelected ? "page" : undefined}
-          >
-            <span className="w-5 h-5 flex items-center justify-center shrink-0 opacity-70">
-              <PlusIcon size={ICON_SIZE.MD} weight="bold" />
-            </span>
-            <span className="truncate leading-snug">New session</span>
-          </button>
-          {sessions.length === 0 ? null : (
+          {(() => {
+            // New session row — matches SessionItem shape so it can render as
+            // selected. docs/110 — rendered below the pinned sub-section (see the
+            // return) so pinned sessions stay anchored to the very top; when there
+            // are no sessions at all it's the only row.
+            const newSessionButton = (
+              <button
+                type="button"
+                onClick={onNewSession}
+                disabled={repo.status === "cloning"}
+                className={`group flex items-center gap-1.5 px-2 py-1.5 text-xs transition-colors rounded mx-1 border-x-2 border-x-transparent disabled:opacity-50 disabled:cursor-not-allowed ${
+                  isNewSessionSelected
+                    ? "bg-(--color-bg-secondary) text-(--color-text-primary)"
+                    : "text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+                }`}
+                aria-current={isNewSessionSelected ? "page" : undefined}
+              >
+                <span className="w-5 h-5 flex items-center justify-center shrink-0 opacity-70">
+                  <PlusIcon size={ICON_SIZE.MD} weight="bold" />
+                </span>
+                <span className="truncate leading-snug">New session</span>
+              </button>
+            );
+            if (sessions.length === 0) return newSessionButton;
             // docs/117 Phase 2 — render agent-spawned children indented under
             // their parent. We bucket children by `parentSessionId`, iterate
             // top-level sessions in the existing stable order, then immediately
@@ -887,7 +893,7 @@ function RepoGroup({
             // child whose parent isn't visible in this repo group (archived
             // out of the list, cross-repo, etc.) is rendered at top level as
             // a fallback so it never silently disappears from the sidebar.
-            (() => {
+            return (() => {
               const childrenByParent = new Map<string, SessionInfo[]>();
               const orphanedChildren = new Set<string>();
               for (const s of sessions) {
@@ -993,17 +999,17 @@ function RepoGroup({
                     </div>
                   )}
                   {pinned}
-                  {/* docs/110 — divider closes the pinned sub-section. Active rows
-                      carry no header of their own, so without this line the last
-                      pinned row and the first active row run together visually.
-                      Only render it when active/resolved rows actually follow. */}
-                  {pinned.length > 0 && (active.length > 0 || resolved.length > 0) && (
+                  {/* docs/110 — divider closes the pinned sub-section. The New
+                      session row always follows, so render it whenever there are
+                      pinned sessions to keep the sub-section visually distinct. */}
+                  {pinned.length > 0 && (
                     <div
                       data-testid="pinned-divider"
                       className="h-px bg-(--color-border-primary) mx-3 mt-1.5 mb-0.5"
                       aria-hidden
                     />
                   )}
+                  {newSessionButton}
                   {active}
                   {resolved.length > 0 && (
                     <div className="flex items-center gap-1.5 px-2 pt-2 pb-0.5 mx-1" aria-hidden>
@@ -1016,8 +1022,8 @@ function RepoGroup({
                   {resolved}
                 </>
               );
-            })()
-          )}
+            })();
+          })()}
         </div>
       )}
     </div>
@@ -1292,7 +1298,7 @@ export function SessionSidebar({
           variant="ghost"
           size="sm"
           onClick={() => useUiStore.getState().setQuickCaptureOpen(true)}
-          className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+          className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
           aria-label="Quick session"
         >
           <LightningIcon size={ICON_SIZE.SM} />
@@ -1304,7 +1310,7 @@ export function SessionSidebar({
             variant="ghost"
             size="sm"
             onClick={() => useUiStore.getState().setQuickCaptureOpen(true, true)}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
             aria-label="Voice quick session"
           >
             <span className="relative inline-flex h-4 w-4 items-center justify-center">
@@ -1329,7 +1335,7 @@ export function SessionSidebar({
           variant="ghost"
           size="sm"
           onClick={onToggleCollapse}
-          className="p-0! w-6 h-6"
+          className="p-0! w-7 h-7"
           aria-label="Expand sidebar"
         >
           <SidebarSimpleIcon size={ICON_SIZE.SM} />
@@ -1339,7 +1345,7 @@ export function SessionSidebar({
         <Button
           variant="ghost"
           size="sm"
-          className="p-0! w-6 h-6 text-(--color-text-secondary) hover:text-(--color-text-primary)"
+          className="p-0! w-7 h-7 text-(--color-text-secondary) hover:text-(--color-text-primary)"
           aria-label="Repository"
         >
           <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
@@ -1362,7 +1368,7 @@ export function SessionSidebar({
             if (url) onNewSessionForRepo(url);
           }}
           disabled={repos.length === 0}
-          className="p-0! w-6 h-6 text-(--color-success) hover:text-(--color-success)"
+          className="p-0! w-7 h-7 text-(--color-success) hover:text-(--color-success)"
           aria-label="New Session"
         >
           <PlusIcon size={ICON_SIZE.SM} />
@@ -1389,7 +1395,7 @@ export function SessionSidebar({
             variant="ghost"
             size="sm"
             onClick={onToggleCollapse}
-            className="p-0! w-6 h-6 text-(--color-text-tertiary)"
+            className="p-0! w-7 h-7 text-(--color-text-tertiary)"
             aria-label="Collapse sidebar"
           >
             <SidebarSimpleIcon size={ICON_SIZE.SM} />
@@ -1407,7 +1413,7 @@ export function SessionSidebar({
             <Button
               variant="ghost"
               size="sm"
-              className="p-0! w-6 h-6 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
+              className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
               aria-label="Repository"
             >
               <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />

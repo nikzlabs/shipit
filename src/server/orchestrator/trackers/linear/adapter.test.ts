@@ -96,7 +96,7 @@ describe("LinearTracker", () => {
                   description: null,
                   priority: 1,
                   priorityLabel: "Urgent",
-                  state: { name: "In Progress", type: "started" },
+                  state: { name: "In Progress", type: "started", color: "#f2c94c" },
                   assignee: null,
                 },
               ],
@@ -112,7 +112,7 @@ describe("LinearTracker", () => {
     // Urgent sorts before Low.
     expect(issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
     expect(issues[0].priority).toEqual({ level: "urgent", sortOrder: 0, label: "Urgent" });
-    expect(issues[0].status).toEqual({ name: "In Progress", type: "started" });
+    expect(issues[0].status).toEqual({ name: "In Progress", type: "started", color: "#f2c94c" });
     expect(issues[0].assignee).toBeUndefined();
     expect(issues[1].priority.level).toBe("low");
     expect(issues[1].assignee).toEqual({ name: "Nik", avatarUrl: "http://a/avatar.png" });
@@ -332,13 +332,44 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
-  it("surfaces labels on a read (SHI-92)", async () => {
+  it("surfaces labels with their colors on a read (SHI-92 + foundation)", async () => {
     const fetchImpl = routerFetch([
-      { match: "query Issue", data: { issue: issueNode({ labels: { nodes: [{ name: "security" }, { name: "backend" }] } }) } },
+      {
+        match: "query Issue",
+        data: {
+          issue: issueNode({
+            labels: { nodes: [{ name: "security", color: "#d73a4a" }, { name: "backend" }] },
+          }),
+        },
+      },
     ]);
     const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
     const issue = await tracker.getIssue("SHI-1");
-    expect(issue?.labels).toEqual(["security", "backend"]);
+    // Linear's color is already `#`-prefixed; a colorless label omits `color`.
+    expect(issue?.labels).toEqual([{ name: "security", color: "#d73a4a" }, { name: "backend" }]);
+  });
+
+  it("listLabels returns the workspace labels with their colors", async () => {
+    const fetchImpl = routerFetch([
+      {
+        match: "query IssueLabels",
+        data: {
+          issueLabels: {
+            nodes: [
+              { name: "security", color: "#d73a4a" },
+              { name: "backend", color: "#0e8a16" },
+              { name: "no-color" },
+            ],
+          },
+        },
+      },
+    ]);
+    const tracker = new LinearTracker({ token: "t", team: TEAM, fetchImpl });
+    expect(await tracker.listLabels()).toEqual([
+      { name: "security", color: "#d73a4a" },
+      { name: "backend", color: "#0e8a16" },
+      { name: "no-color" },
+    ]);
   });
 
   it("edits title/description via issueUpdate", async () => {

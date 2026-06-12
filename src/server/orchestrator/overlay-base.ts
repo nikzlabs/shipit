@@ -33,16 +33,26 @@
  *   - A short **per-scope lock** makes the read-compare-swap atomic, so a
  *     late-but-older publisher reads the newer base under the lock and declines.
  *
+ * ## Generational bases (the swap-breaks-live-mounts fix)
+ *
+ * Base contents are **immutable generations**: `overlay-base/<scope-hash>/g<N>`.
+ * A publish NEVER mutates or replaces an existing generation — it materializes
+ * `g<N+1>` beside it and moves the pointer. The previous design renamed the new
+ * contents over the single scope-hash path, assuming live mounts "keep the old,
+ * now-unlinked inodes" unaffected; that assumption is FALSE — spike-proven on
+ * the docs/183 measurement host (kernel 6.6): unlinking a mounted lowerdir
+ * breaks merged-READDIR for every live same-scope mount (readdir returns empty
+ * while path lookups still resolve), silently corrupting npm/tar/ls inside
+ * those containers. Old generations are reaped by the disk-janitor once they
+ * are no longer the pointer's current generation and have aged past the cutoff
+ * (no plausible container pins a lowerdir that long).
+ *
  * ## GC contract (plan §4 / disk-janitor `sweepOrphanedOverlayBases`)
  *
- * The base lives in a single long-lived `overlay-base/<scope-hash>/` directory
- * that rolls forward in place. POSIX only bumps a directory's own mtime on a
- * direct-child change, so the disk-janitor's mtime liveness fallback is sound
- * ONLY if every advance **rewrites the top-level dir entry**. We therefore
- * materialize every new base into a temp sibling and atomically swap it over the
- * scope-hash path (which also keeps any live overlay mount referencing the old,
- * now-unlinked inodes — overlay requires an immutable lower). The swap gives the
- * dir a fresh mtime for free; we additionally `utimes` it to be explicit.
+ * The scope dir `overlay-base/<scope-hash>/` is long-lived; each publish creates
+ * a new `g<N>` child, which bumps the scope dir's own mtime (POSIX direct-child
+ * change), so the disk-janitor's mtime liveness fallback stays sound. We
+ * additionally `utimes` the scope dir to be explicit.
  */
 
 import crypto from "node:crypto";
@@ -50,7 +60,7 @@ import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
 
-import { OVERLAY_BASE_SUBDIR, overlayBaseDir, overlayScopeHash } from "./overlay-volume.js";
+import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
 
 // ---------------------------------------------------------------------------
 // Scope + pointer types
@@ -85,10 +95,22 @@ export interface BasePointer {
   depth: number;
   /** Generation counter — bumps on every advance, flatten, and lineage reset. */
   generation: number;
-  /** Absolute orchestrator-visible path to the base contents (`overlay-base/<hash>`). */
+  /** Absolute orchestrator-visible path to this generation's contents (`overlay-base/<hash>/g<N>`). */
   baseDir: string;
   /** ISO timestamp of the last advance — diagnostics only, never an ordering input. */
   updatedAt: string;
+  /**
+   * The publisher's install-marker stamp ingredients, recorded so a fresh
+   * session that mounts THIS base at the SAME commit can be pre-stamped with a
+   * `.shipit/.install-done` the worker gate accepts — turning the "main
+   * unchanged" scenario into a marker-skip instead of a full reinstall over the
+   * populated base (see `preStampInstallMarker`). `runtimeKey` is the
+   * publisher's WORKER-side fingerprint (`install-runtime.ts:runtimeKey()`,
+   * what the gate compares against), NOT the orchestrator-side scope key.
+   * Absent on pointers written before this field existed or when the publish
+   * couldn't resolve the worker's runtime key — pre-stamp then declines.
+   */
+  marker?: { runtimeKey: string; installCommands: string[] };
 }
 
 /**
@@ -109,6 +131,12 @@ export interface PublishCandidate {
   sourceIsDefaultBranch: boolean;
   /** Worker-exported merged-workspace snapshot to copy into the next base. */
   snapshotDir: string;
+  /**
+   * Install-marker ingredients recorded on the resulting pointer (see
+   * `BasePointer.marker`). Optional — a publish without it still advances the
+   * base; only the pre-stamp optimization is forgone.
+   */
+  markerStamp?: { runtimeKey: string; installCommands: string[] };
 }
 
 export type PublishOutcome =
@@ -130,14 +158,26 @@ export interface PublishResult {
 export type IsAncestorFn = (ancestor: string, descendant: string) => Promise<boolean>;
 
 /**
- * Substrate hook — materialize `snapshotDir` as the scope's base contents and
- * return the base dir. The default (`copySnapshotToBase`) atomically swaps a
- * fresh copy over `overlay-base/<scope-hash>`. Injectable so tests don't copy
- * real trees and a future reflink/hardlink optimization can drop in.
+ * Substrate hook — materialize `snapshotDir` as the scope's NEXT base
+ * generation and return that generation's dir. The default
+ * (`copySnapshotToBase`) writes a fresh `overlay-base/<scope-hash>/g<generation>`
+ * and never touches earlier generations (live mounts pin them — see the module
+ * header). Injectable so tests don't copy real trees and a future
+ * reflink/hardlink optimization can drop in.
  */
 export type MaterializeFn = (
   snapshotDir: string,
   scopeHash: string,
+  generation: number,
+  /**
+   * The scope's CURRENT generation dir (the one this publish supersedes), when
+   * one exists. The default materializer hardlinks snapshot files that are
+   * byte-identical to this generation's instead of copying them, so an advance
+   * costs ≈ its delta on disk rather than a full independent tree. Optional —
+   * absent for the first base of a scope, and safely ignorable by custom
+   * materializers (tests).
+   */
+  linkDedupBaseDir?: string,
 ) => Promise<string>;
 
 /**
@@ -174,7 +214,10 @@ export function readBasePointer(stateDir: string, scope: OverlayScope): BasePoin
 // tiny, and the read-compare-swap must not yield mid-CAS inside the per-scope
 // lock. Do not "modernize" these to `fs/promises` — an await here would open a
 // window for an interleaving the lock is meant to prevent.
-function readBasePointerByHash(stateDir: string, scopeHash: string): BasePointer | null {
+//
+// Exported by-hash variant: the overlay spec populator resolves the mount's
+// base generation per dep-dir scope hash (it has the hash, not the scope).
+export function readBasePointerByHash(stateDir: string, scopeHash: string): BasePointer | null {
   try {
     const raw = fsSync.readFileSync(pointerPath(stateDir, scopeHash), "utf8");
     return JSON.parse(raw) as BasePointer;
@@ -240,60 +283,172 @@ async function withScopeLock<T>(scopeHash: string, fn: () => Promise<T>): Promis
 }
 
 // ---------------------------------------------------------------------------
+// Hardlink-dedup materialize helpers
+// ---------------------------------------------------------------------------
+
+async function isDirectory(p: string): Promise<boolean> {
+  try {
+    return (await fs.lstat(p)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Byte-compare two regular files (streamed, early-exit on first difference).
+ * Content is the ONLY authority for "unchanged" here: npm normalizes package
+ * file mtimes to a fixed epoch for reproducibility, so a size+mtime quick
+ * check would treat any same-size content change as unchanged — silently
+ * linking the wrong bytes into a shared base. Sizes are checked by the caller
+ * before this runs, so the compare only pays for genuinely plausible matches.
+ */
+async function filesContentEqual(a: string, b: string): Promise<boolean> {
+  const CHUNK = 64 * 1024;
+  const [fa, fb] = await Promise.all([fs.open(a, "r"), fs.open(b, "r")]);
+  const bufA = Buffer.alloc(CHUNK);
+  const bufB = Buffer.alloc(CHUNK);
+  try {
+    for (;;) {
+      const [ra, rb] = await Promise.all([
+        fa.read(bufA, 0, CHUNK),
+        fb.read(bufB, 0, CHUNK),
+      ]);
+      if (ra.bytesRead !== rb.bytesRead) return false;
+      if (ra.bytesRead === 0) return true;
+      if (!bufA.subarray(0, ra.bytesRead).equals(bufB.subarray(0, rb.bytesRead))) {
+        return false;
+      }
+    }
+  } finally {
+    await Promise.all([fa.close().catch(() => {}), fb.close().catch(() => {})]);
+  }
+}
+
+/**
+ * Materialize `srcDir` into `dstDir`, hardlinking any regular file that is
+ * byte-identical (and mode-identical) to the file at the same relative path in
+ * `linkDir`, and copying everything else. Directories are recreated with the
+ * source's mode; symlinks are recreated verbatim (never hardlinked — a future
+ * relink of the old generation must not alias the new one's link targets
+ * through a shared symlink inode's metadata). Any per-file `link(2)` failure
+ * (EXDEV, EMLINK, EPERM) degrades to a plain copy of that file — dedup is an
+ * optimization, never a correctness dependency.
+ */
+async function materializeWithLinkDedup(
+  srcDir: string,
+  dstDir: string,
+  linkDir: string,
+): Promise<void> {
+  const srcStat = await fs.lstat(srcDir);
+  await fs.mkdir(dstDir, { recursive: true, mode: srcStat.mode & 0o7777 });
+  const entries = await fs.readdir(srcDir, { withFileTypes: true });
+  for (const entry of entries) {
+    const src = path.join(srcDir, entry.name);
+    const dst = path.join(dstDir, entry.name);
+    const lnk = path.join(linkDir, entry.name);
+    if (entry.isDirectory()) {
+      await materializeWithLinkDedup(src, dst, lnk);
+    } else if (entry.isSymbolicLink()) {
+      await fs.symlink(await fs.readlink(src), dst);
+    } else if (entry.isFile()) {
+      if (await canHardlink(src, lnk)) {
+        try {
+          await fs.link(lnk, dst);
+          continue;
+        } catch {
+          /* fall through to a plain copy */
+        }
+      }
+      // COPYFILE_FICLONE: reflink when the fs supports it (btrfs/xfs), plain
+      // copy otherwise (ext4) — same call either way, free where available.
+      await fs.copyFile(src, dst, fsSync.constants.COPYFILE_FICLONE);
+    } else {
+      // FIFOs / devices should never appear in a dep snapshot (it comes from a
+      // tar of a dep dir) — preserve fidelity with the generic copier.
+      await fs.cp(src, dst, { recursive: true, verbatimSymlinks: true });
+    }
+  }
+}
+
+/** Same relative path in the previous generation is a regular file with equal size, mode, and content. */
+async function canHardlink(srcFile: string, linkFile: string): Promise<boolean> {
+  let prev;
+  try {
+    prev = await fs.lstat(linkFile);
+  } catch {
+    return false; // path is new in this snapshot
+  }
+  if (!prev.isFile()) return false;
+  const cur = await fs.lstat(srcFile);
+  if (prev.size !== cur.size) return false;
+  if ((prev.mode & 0o7777) !== (cur.mode & 0o7777)) return false;
+  return filesContentEqual(srcFile, linkFile);
+}
+
+// ---------------------------------------------------------------------------
 // Default materialize: atomic swap of a snapshot copy over the base dir
 // ---------------------------------------------------------------------------
 
 /**
- * Copy `snapshotDir` into a fresh temp sibling, then atomically swap it over
- * `overlay-base/<scope-hash>`. Live overlay mounts keep the old (now-unlinked)
- * inodes — overlay pins lowerdir dentries at mount time — so an in-flight
- * session is unaffected while new sessions resolve the new contents. The swap
- * gives the dir a fresh mtime, satisfying the disk-janitor liveness contract;
- * we `utimes` it explicitly so the contract doesn't silently depend on rename
- * semantics.
+ * Copy `snapshotDir` into a fresh temp sibling inside the scope dir, then
+ * atomically rename it to `overlay-base/<scope-hash>/g<generation>` — a brand-new
+ * path. Earlier generations are NEVER touched: live overlay mounts pin their
+ * lowerdir dentries, and unlinking a mounted lowerdir breaks merged-readdir for
+ * every same-scope session (see the module header). Creating the new child
+ * refreshes the scope dir's mtime (disk-janitor liveness contract); we `utimes`
+ * it explicitly so the contract doesn't silently depend on rename semantics.
+ *
+ * Runs under the per-scope publish lock. If the target generation dir already
+ * exists (a crash after a previous rename but before its pointer write), it is
+ * unreferenced — no pointer ever named it — so it is cleared and rebuilt.
  */
 export async function copySnapshotToBase(
   stateDir: string,
   snapshotDir: string,
   scopeHash: string,
+  generation: number,
+  linkDedupBaseDir?: string,
 ): Promise<string> {
-  const baseDir = overlayBaseDir(stateDir, scopeHash);
-  const overlayRoot = path.join(stateDir, OVERLAY_BASE_SUBDIR);
-  await fs.mkdir(overlayRoot, { recursive: true });
+  const genDir = overlayBaseGenDir(stateDir, scopeHash, generation);
+  const scopeDir = path.dirname(genDir);
+  await fs.mkdir(scopeDir, { recursive: true });
 
   const rand = crypto.randomBytes(4).toString("hex");
-  const tmp = path.join(overlayRoot, `.tmp-${scopeHash}-${rand}`);
+  const tmp = path.join(scopeDir, `.tmp-g${generation}-${rand}`);
   try {
-    // recursive copy; preserve symlinks rather than dereferencing them so a venv
-    // or a pnpm store inside the tree round-trips faithfully.
-    await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+    if (linkDedupBaseDir && (await isDirectory(linkDedupBaseDir))) {
+      // Hardlink-dedup materialize: files byte-identical to the superseded
+      // generation become hardlinks to its inodes, so an advance costs ≈ its
+      // delta instead of a full independent ~0.5 GB tree (the docs/183 canary
+      // measured consecutive generations sharing no inodes while differing by
+      // hundreds of KB). Safe because generations are immutable read-only
+      // lowerdirs — overlayfs never writes through a lower, the publish path
+      // never edits an existing generation, and the janitor's reclaim of an
+      // old generation only unlinks names (shared inodes survive in newer
+      // generations by definition of hardlinks).
+      await materializeWithLinkDedup(snapshotDir, tmp, linkDedupBaseDir);
+    } else {
+      // recursive copy; preserve symlinks rather than dereferencing them so a venv
+      // or a pnpm store inside the tree round-trips faithfully.
+      await fs.cp(snapshotDir, tmp, { recursive: true, verbatimSymlinks: true });
+    }
   } catch (err) {
-    // A partial copy must not leak a `.tmp-…` dir under overlay-base/.
+    // A partial copy must not leak a `.tmp-…` dir under the scope dir.
     await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
     throw err;
   }
 
-  // Swap so a crash never leaves the scope-hash path *missing*: move the old
-  // contents aside first, rename the fresh copy into place, then drop the old.
-  // A crash between any two steps leaves either the old or the new dir at
-  // `baseDir`, never neither. Live overlay mounts keep their pinned (now-
-  // unlinked) lowerdir inodes, so an in-flight session is unaffected. All of
-  // this runs under the per-scope publish lock, so no publisher races it.
-  const old = `${baseDir}.old-${rand}`;
-  let hadOld = true;
-  try {
-    await fs.rename(baseDir, old);
-  } catch {
-    hadOld = false; // ENOENT on the first publish for this scope — nothing to move
-  }
-  await fs.rename(tmp, baseDir);
-  if (hadOld) await fs.rm(old, { recursive: true, force: true }).catch(() => {});
+  // A leftover gen dir from a crashed prior attempt (rename done, pointer write
+  // not) was never referenced by a pointer and no mount can have resolved it
+  // (specs read the pointer) — safe to clear before the rename.
+  await fs.rm(genDir, { recursive: true, force: true }).catch(() => {});
+  await fs.rename(tmp, genDir);
 
   const now = new Date();
-  await fs.utimes(baseDir, now, now).catch(() => {
-    // Best-effort: the rename already refreshed the mtime on every real fs.
+  await fs.utimes(scopeDir, now, now).catch(() => {
+    // Best-effort: the child create already refreshed the mtime on every real fs.
   });
-  return baseDir;
+  return genDir;
 }
 
 // ---------------------------------------------------------------------------
@@ -334,7 +489,8 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
   const scopeHash = scopeHashOf(scope);
   const materialize: MaterializeFn =
     args.materialize ??
-    ((snapshotDir, hash) => copySnapshotToBase(stateDir, snapshotDir, hash));
+    ((snapshotDir, hash, generation, linkDedupBaseDir) =>
+      copySnapshotToBase(stateDir, snapshotDir, hash, generation, linkDedupBaseDir));
 
   if (
     candidate.exitCode !== 0 ||
@@ -368,17 +524,21 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     if (await isAncestor(current.commit, candidate.commit)) {
       const wouldBeDepth = current.depth + 1;
       if (wouldBeDepth >= depthCap) {
+        // Dedup against the superseded generation is safe for a flatten too:
+        // the snapshot's CONTENT comes from the clean reinstall (that is the
+        // reproducibility reset); hardlinking bytes that happen to be
+        // identical changes storage, not the tree.
         return finalize(stateDir, materialize, candidate, scopeHash, {
           outcome: "flattened",
           depth: 1,
           generation: current.generation + 1,
-        });
+        }, current.baseDir);
       }
       return finalize(stateDir, materialize, candidate, scopeHash, {
         outcome: "advanced",
         depth: wouldBeDepth,
         generation: current.generation + 1,
-      });
+      }, current.baseDir);
     }
 
     // Behind the current base → CAS loser, decline (an older default commit
@@ -397,7 +557,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
         outcome: "reset",
         depth: 1,
         generation: current.generation + 1,
-      });
+      }, current.baseDir);
     }
     return { outcome: "skipped-not-forward", pointer: current };
   });
@@ -409,8 +569,10 @@ async function finalize(
   candidate: PublishCandidate,
   scopeHash: string,
   next: { outcome: PublishOutcome; depth: number; generation: number },
+  /** The superseded generation's dir — hardlink-dedup source (absent for a scope's first base). */
+  linkDedupBaseDir?: string,
 ): Promise<PublishResult> {
-  const baseDir = await materialize(candidate.snapshotDir, scopeHash);
+  const baseDir = await materialize(candidate.snapshotDir, scopeHash, next.generation, linkDedupBaseDir);
   const pointer: BasePointer = {
     scopeHash,
     commit: candidate.commit,
@@ -418,6 +580,7 @@ async function finalize(
     generation: next.generation,
     baseDir,
     updatedAt: new Date().toISOString(),
+    ...(candidate.markerStamp ? { marker: candidate.markerStamp } : {}),
   };
   writeBasePointer(stateDir, pointer);
   return { outcome: next.outcome, pointer };

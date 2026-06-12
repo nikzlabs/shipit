@@ -67,6 +67,7 @@ export async function getGlobalSettings(
   const liveSteering = credentialStore?.getLiveSteering() ?? true;
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
+  const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -78,7 +79,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -129,6 +130,8 @@ export interface SaveGlobalSettingsOptions {
   autoResolveConflicts?: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi?: boolean;
+  /** docs/144 — global gate for sub-agent spawning. */
+  enableSubAgents?: boolean;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -141,7 +144,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -189,6 +192,11 @@ export async function saveGlobalSettings(
   // Save live steering toggle if provided
   if (liveSteering !== undefined) {
     credentialStore.setLiveSteering(liveSteering);
+  }
+
+  // docs/144 — save sub-agent spawning gate if provided
+  if (enableSubAgents !== undefined) {
+    credentialStore.setEnableSubAgents(enableSubAgents);
   }
 
   // docs/163 — save voice-note delivery mode if provided

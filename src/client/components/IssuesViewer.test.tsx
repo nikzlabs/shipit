@@ -169,6 +169,19 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("High")).toBeInTheDocument();
   });
 
+  it("renders label chips under the title, capping with a +N overflow (SHI-92)", () => {
+    const issue = makeIssue({
+      labels: ["bug", "design", "infra", "ui", "git", "docs"].map((name) => ({ name })),
+    });
+    const props = defaultProps({ issues: [issue] });
+    render(<IssuesViewer {...props} />);
+    // First MAX_LABELS (4) render as chips; the rest collapse into "+N".
+    expect(screen.getByText("bug")).toBeInTheDocument();
+    expect(screen.getByText("ui")).toBeInTheDocument();
+    expect(screen.queryByText("git")).toBeNull();
+    expect(screen.getByText("+2")).toBeInTheDocument();
+  });
+
   it("does not open the detail view when Start session is clicked", () => {
     const issue = makeIssue();
     const props = defaultProps({ issues: [issue] });

@@ -12,9 +12,11 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
-import type { AgentId, AgentProcess, WsLogEntry, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
+import type { AgentId, AgentProcess, LogSource, SubscriptionLimitsMap, SessionInfo } from "../shared/types.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
+import type { DepDirPublishOutcome } from "./overlay-publish.js";
 import type { RuntimeMode } from "./app-di.js";
+import type { LogStore } from "./log-store.js";
 import type { UsageManager } from "./usage.js";
 import type { AuthManager } from "./agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
@@ -100,6 +102,8 @@ export interface RunnerRegistryDeps {
    * → `ServiceManager`. See `ServiceManagerOptions.serviceEnvDir`.
    */
   serviceEnvDir?: string;
+  /** docs/192 — durable log store, forwarded to `setupServiceManager` for service-log persistence. */
+  logStore?: LogStore;
   /**
    * Runtime mode. In `"local"` mode, ServiceManager is not constructed for
    * inner sessions (no Docker → no Compose). The compose-not-configured
@@ -114,7 +118,7 @@ export interface RunnerRegistryDeps {
    * land in the user-visible Logs view rather than the orchestrator's
    * stdout. See docs/124-session-rescue-and-diagnostics §1.1.
    */
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * docs/149 — credentials root used by the post-system-turn finalize hook
    * (writes a CLI-rotated OAuth token back to the orchestrator source).
@@ -228,7 +232,8 @@ export interface RunnerRegistryDeps {
     runner: ContainerSessionRunner;
     session: SessionInfo;
     installOk: boolean;
-  }) => Promise<void>;
+    installCommands?: string[];
+  }) => Promise<DepDirPublishOutcome[]>;
 }
 
 /**
@@ -242,7 +247,7 @@ export function createRunnerRegistry(
     githubAuthManager, agentFactory, chatHistoryManager,
     autoPushDebounceMs, sseBroadcast, enforceIdleContainerLimit,
     getDepCacheDir, serviceManagers, composeStopPromises, composeWarnings, composeNotConfigured, containerManager,
-    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, runtimeMode, broadcastLog,
+    credentialStore, secretStore, dockerSecretsConfig, serviceEnvDir, logStore, runtimeMode, broadcastLog,
     credentialsDir, readSystemPrompt, generateText, getPrStatusPoller,
     usageManager, authManager, authManagers, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
@@ -279,7 +284,7 @@ export function createRunnerRegistry(
         usageManager,
         authManager,
         sseBroadcast,
-        broadcastLog: (source: WsLogEntry["source"], text: string) =>
+        broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
         ...(authManagers ? { authManagers } : {}),
@@ -472,6 +477,7 @@ export function createRunnerRegistry(
           secretStore,
           dockerSecretsConfig,
           serviceEnvDir,
+          logStore,
           broadcastLog,
           credentialStore,
           publishOverlayBases,

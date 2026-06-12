@@ -149,10 +149,10 @@ export function SettingsTrackers() {
             </div>
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" size="sm" disabled={busy} onClick={handleChangeTeam}>
+            <Button variant="secondary" size="md" disabled={busy} onClick={handleChangeTeam}>
               Change team
             </Button>
-            <Button variant="ghost" size="sm" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
+            <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
               Disconnect
             </Button>
           </div>
@@ -196,7 +196,7 @@ export function SettingsTrackers() {
             Create a personal API key in Linear → Settings → Security &amp; access → Personal API keys.
             Stored server-side and never shown again.
           </p>
-          <Button variant="primary" size="sm" disabled={busy || !token.trim()} onClick={handleConnect}>
+          <Button variant="primary" size="md" disabled={busy || !token.trim()} onClick={handleConnect}>
             {busy ? "Connecting…" : "Connect Linear"}
           </Button>
         </div>

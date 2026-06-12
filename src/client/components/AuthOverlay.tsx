@@ -168,7 +168,7 @@ export function AuthOverlay({ url, onPasteCode, onApiKey, onDismiss }: AuthOverl
         ) : (
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={() => setShowApiKey(true)}
             className="text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
           >

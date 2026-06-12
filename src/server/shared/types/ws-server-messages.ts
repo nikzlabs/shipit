@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -10,7 +10,7 @@ import type {
   WsPrStatus,
   WsPrLifecycleUpdate,
 } from "./github-types.js";
-import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogEntry, WsClearLogs } from "./terminal-types.js";
+import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogSnapshot, WsLogAppend } from "./terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "./usage-types.js";
 import type { SubscriptionLimitsMap } from "./usage-limits-types.js";
 import type { VoiceNoteSource } from "./voice-note-types.js";
@@ -23,6 +23,28 @@ export interface WsAgentEvent {
 export interface WsError {
   type: "error";
   message: string;
+}
+
+/**
+ * docs/144 — transient status chip for an in-flight or just-completed sub-agent
+ * spawn. Status only (CLAUDE.md §5): emit-only, never persisted (it correctly
+ * disappears on reload — it is not transcript content; the sub-agent's output
+ * reaches the user through the primary's own voice). `phase: "running"` fires
+ * when the `shipit agent` call begins; `phase: "done"` replaces it with timing
+ * and cost on return.
+ */
+export interface WsSubAgentSpawn {
+  type: "sub_agent_spawn";
+  /** Correlates the running → done transition for one spawn. */
+  spawnId: string;
+  /** The agent that was spawned (display: "Asking Codex…" / "Consulted Codex"). */
+  subAgentId: AgentId;
+  phase: "running" | "done";
+  /** Terminal status, present on `phase: "done"`. */
+  status?: "success" | "error" | "timeout" | "cancelled";
+  durationMs?: number;
+  costUsd?: number;
+  truncated?: boolean;
 }
 
 export interface WsPreviewStatus {
@@ -241,6 +263,8 @@ export interface WsGlobalSettings {
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi?: boolean;
+  /** docs/144 — global gate for sub-agent spawning. */
+  enableSubAgents?: boolean;
 }
 
 // ---- Template messages ----
@@ -475,22 +499,6 @@ export interface WsServiceList {
     preview: ComposeServicePreviewMode;
     error?: string;
   }[];
-}
-
-/** Server → Client: log output from a compose service. */
-export interface WsServiceLog {
-  type: "service_log";
-  sessionId: string;
-  name: string;
-  text: string;
-}
-
-/** Server → Client: buffered log replay for a compose service. */
-export interface WsServiceLogBuffer {
-  type: "service_log_buffer";
-  sessionId: string;
-  name: string;
-  buffer: string;
 }
 
 // ---- Rebase messages (server → client) ----
@@ -1004,6 +1012,26 @@ export interface WsSessionSpawnFailed {
 }
 
 /**
+ * Server → Client: a child session the parent registered a notify-on-merge
+ * watch on had its PR reach a terminal state — merged, or closed without merging
+ * (docs/196).
+ *
+ * Emitted on the *parent's* runner via `runner.emitMessage(...)` when a runner
+ * is attached, AND appended to the parent's chat history (the card fires from a
+ * PR-poller event, outside any turn, so it can't ride `emitChatCard`). The
+ * client renders a `ChildMergedCard` inline in the parent's chat — the child's
+ * title/branch, the PR ref, and an "Open" button that switches to the child.
+ * The actionable wake-turn is enqueued separately into the parent's message
+ * queue; this card is purely the user-facing affordance.
+ */
+export interface WsChildMergedCard {
+  type: "child_merged_card";
+  /** Parent session id — the runner this event is emitted on. */
+  sessionId: string;
+  card: ChildMergedCard;
+}
+
+/**
  * Server → Client: a file review's comment set changed out-of-band (docs/125).
  * Emitted when the chat-native review subagent writes anchored comments via the
  * `submit_review_comments` tool. Carries the full updated draft so the file
@@ -1026,7 +1054,11 @@ export interface WsReviewUpdated {
  *
  * If `replaceId` is set and matches a previous presentation's `presentId`, the
  * client replaces that entry in-place (revision flow); otherwise the entry is
- * appended and auto-selected. Size of `content` is capped at ~1 MB worker-side.
+ * appended and auto-selected.
+ *
+ * Metadata only — it carries NO artifact bytes. The client fetches the bytes on
+ * demand from `GET /api/sessions/:id/present/:presentId/content` (a one-time
+ * disk read proxied to the worker), so nothing large is retained server-side.
  */
 export interface WsPresentContentMessage {
   type: "present_content";
@@ -1035,16 +1067,12 @@ export interface WsPresentContentMessage {
   presentId: string;
   /** When set, replaces the entry with this id in-place. */
   replaceId?: string;
-  /** The actual artifact — HTML string, SVG markup, markdown, or data URI for binaries. */
-  content: string;
   /** "text/html", "image/svg+xml", "text/markdown", "image/png", etc. */
   mimeType: string;
   /** Optional display title (the artifact's name) for the carousel header. */
   title?: string;
   /** The path the agent presented (`present`'s `file` arg), shown in the header. */
   filePath: string;
-  /** Whether `filePath` resolves inside the workspace (already tracked → hide Save). */
-  inWorkspace: boolean;
   /** ISO8601 timestamp the worker accepted the presentation. */
   createdAt: string;
 }
@@ -1052,9 +1080,8 @@ export interface WsPresentContentMessage {
 /**
  * Server → Client: drop one or all presentations (docs/093).
  *
- * `presentId` set → drop just that entry (used by the worker-side LRU when it
- * evicts an old presentation). `presentId` omitted → wipe the whole list
- * (session switch, full clear).
+ * `presentId` set → drop just that entry (a revision superseding an old id).
+ * `presentId` omitted → wipe the whole list (session switch, full clear).
  */
 export interface WsPresentClearedMessage {
   type: "present_cleared";
@@ -1062,14 +1089,15 @@ export interface WsPresentClearedMessage {
   presentId?: string;
 }
 
-/** A single presentation entry as carried in a `present_state` replay. */
+/**
+ * A single presentation entry as carried in a `present_state` replay. Metadata
+ * only — the client fetches the bytes on demand (see {@link WsPresentContentMessage}).
+ */
 export interface PresentStateEntry {
   presentId: string;
-  content: string;
   mimeType: string;
   title?: string;
   filePath: string;
-  inWorkspace: boolean;
   createdAt: string;
 }
 
@@ -1174,6 +1202,38 @@ export interface WsBugReportFailed {
 }
 
 /**
+ * docs/193 / SHI-112 — the inline permission-request card (agent-agnostic).
+ * Emitted when an agent backend raises a gated action the user must approve (a
+ * sensitive-file edit, an escalated command). Carries everything the card
+ * renders; the user's answer comes back as `resolve_permission`.
+ */
+export interface WsPermissionRequestCard {
+  type: "permission_request_card";
+  sessionId: string;
+  /** Stable id (the broker requestId) — used to update the card in place. */
+  requestId: string;
+  /** The gated tool (e.g. "Write", "Edit", "Bash", "apply_patch"). */
+  toolName: string;
+  /** The file/resource the gate fired on, when one could be derived. */
+  path?: string;
+  /** One-line human summary of what is being requested. */
+  summary?: string;
+  /** Which agent raised it (display only). */
+  agentId?: string;
+  createdAt: string;
+}
+
+/** docs/193 — terminal state for a permission-request card. */
+export interface WsPermissionResolved {
+  type: "permission_resolved";
+  sessionId: string;
+  requestId: string;
+  phase: "approved" | "denied";
+  /** True when the user approved with "remember this file for the session". */
+  remembered?: boolean;
+}
+
+/**
  * docs/177 — the do-then-surface provenance card for an agent issue write,
  * emitted via `runner.emitMessage` (so it buffers into the turn-event log and
  * survives reconnects) right after a brokered write completes. Carries the full
@@ -1247,6 +1307,8 @@ export type WsServerMessage =
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsPermissionRequestCard
+  | WsPermissionResolved
   | WsIssueWriteCard
   | WsIssueWriteUpdate
   | WsIssueRefCard
@@ -1265,12 +1327,14 @@ export type WsServerMessage =
   | WsDocContent
   | WsFileTree
   | WsFileContent
-  | WsLogEntry
+  | WsLogSnapshot
+  | WsLogAppend
   | WsUsageStats
   | WsUsageUpdate
   | WsTurnUsageUpdate
   | WsTemplateApplied
   | WsGlobalSettings
+  | WsSubAgentSpawn
   | WsFilesChanged
   | WsGitHubStatus
   | WsGitHubPushResult
@@ -1291,7 +1355,6 @@ export type WsServerMessage =
   | WsAgentInterrupted
   | WsContainerRestarting
   | WsFullResetComplete
-  | WsClearLogs
   | WsTurnDiff
   | WsSessionStatus
   | WsSessionAgentStarted
@@ -1311,10 +1374,9 @@ export type WsServerMessage =
   | WsForkBreadcrumb
   | WsSessionSpawned
   | WsSessionSpawnFailed
+  | WsChildMergedCard
   | WsServiceStatus
   | WsServiceList
-  | WsServiceLog
-  | WsServiceLogBuffer
   | WsServiceOom
   | WsSessionMemoryExhausted
   | WsPreviewError

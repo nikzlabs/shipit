@@ -20,7 +20,7 @@ import type { SessionContainerManager } from "../session-container.js";
 import { applyEnvCaps, type EffectiveAgentResources } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { ServiceManager, ManagedService } from "../service-manager.js";
-import type { WsLogEntry } from "../../shared/types.js";
+import type { LogRingEntry } from "../../shared/types.js";
 import { getContainerHealth, type ContainerHealth } from "./health.js";
 import { ServiceError } from "./types.js";
 import {
@@ -113,7 +113,7 @@ export interface SessionDiagnostics {
   stackStartError: string | null;
   runner: RunnerDiagnostic | null;
   /** Last {@link RECENT_LOG_LINES} orchestrator log entries for this session. */
-  recentLogs: WsLogEntry[];
+  recentLogs: LogRingEntry[];
   /**
    * Parsed `shipit.yaml` for this session — `null` when the workspace
    * directory isn't resolvable (e.g. session has no workspaceDir yet).
@@ -132,7 +132,7 @@ export interface DiagnosticsDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
   serviceManagers: Map<string, ServiceManager>;
-  getLogBuffer: (sessionId: string) => WsLogEntry[];
+  getLogBuffer: (sessionId: string) => LogRingEntry[];
   /**
    * Returns the on-disk workspace directory for a session, or `null` when
    * the session has no workspace assigned yet. Used to parse and surface

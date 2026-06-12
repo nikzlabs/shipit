@@ -79,6 +79,7 @@ import { useFileStore, markUploadDeleted } from "./stores/file-store.js";
 import { usePreviewStore } from "./stores/preview-store.js";
 import { usePresentStore } from "./stores/present-store.js";
 import { useTerminalStore } from "./stores/terminal-store.js";
+import { useLogStore } from "./stores/log-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
@@ -172,8 +173,6 @@ export default function App() {
   const composeServices = usePreviewStore((s) => s.services);
   const presentations = usePresentStore((s) => s.presentations);
   const presentUnseenCount = usePresentStore((s) => s.unseenCount);
-
-  const logEntries = useTerminalStore((s) => s.entries);
 
   const terminalMode = useTerminalStore((s) => s.mode);
   const shellStarted = useTerminalStore((s) => s.shellStarted);
@@ -762,17 +761,15 @@ export default function App() {
     }
   }, [handleNewSessionForRepo, navigate]);
 
-  // Quick-capture (the lightning / lightning+mic buttons) normally spawns a
-  // *background* session and intentionally does NOT navigate — docs/145. The
-  // exception: when the user is on a /{slug}/new page, that page has already
-  // claimed an ungraduated warm session, and the server's claim *reuse* path
-  // (`findUngraduatedWarm`) graduates that very session instead of minting a
-  // fresh one. In that case the "background" session IS the one we're viewing,
-  // so leaving the URL on /{slug}/new strands it — the session graduated but
-  // the address bar stayed on .../new. Detect the reuse (returned id === the
-  // session we're sitting on) and graduate the URL exactly as a normal send
-  // does (handleSend). A genuine background session (different repo, or a
-  // fresh pre-warm) returns a different id, so it stays background — no nav.
+  // Quick-capture (the lightning / lightning+mic buttons) always spawns a
+  // *background* session and does NOT navigate — docs/145. It leaves your
+  // current `/{slug}/new` draft untouched: the headless claim sets
+  // `skipReuse: true`, so the server always mints a fresh session and never
+  // recycles the ungraduated draft you're typing in (that hijack-the-draft
+  // bug is exactly what `skipReuse` fixes). The returned id therefore never
+  // equals the session we're viewing, so the guard below is a defensive
+  // no-op kept only against a future claim path that could reuse — if one
+  // ever did, we'd graduate the URL to /session/{id} as a normal send does.
   const handleQuickSessionCreated = useCallback(
     (session: SessionInfo) => {
       if (isNewSessionRoute && session.id === useSessionStore.getState().sessionId) {
@@ -783,12 +780,7 @@ export default function App() {
   );
 
   useKeyboardShortcuts({
-    searchOpen,
-    shortcutsOpen,
     setShortcutsOpen: (updater) => setShortcutsOpen(updater),
-    isLoading,
-    settingsOpen,
-    handleInterrupt: () => send({ type: "interrupt_agent" }),
     handleNewSession: handleNewSessionShortcut,
   });
 
@@ -865,7 +857,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; enableSubAgents?: boolean; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -876,6 +868,7 @@ export default function App() {
       if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
       if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
       if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+      if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
       if (data.settings.voiceDeliveryMode !== undefined) useSettingsStore.getState().setVoiceDeliveryMode(data.settings.voiceDeliveryMode);
       if (data.settings.voiceWebhookConfigured !== undefined) useSettingsStore.getState().setVoiceWebhookConfigured(data.settings.voiceWebhookConfigured);
       if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
@@ -1193,14 +1186,14 @@ export default function App() {
                 it only shows on the Preview tab. */}
             <RepoTrustBanner key={currentRepoUrl} repoUrl={currentRepoUrl} />
           </div>
-          <PreviewServicesDrawer services={composeServices} sessionId={sessionId} active={previewVisible} lastMessage={lastMessage} drainMessages={drainMessages} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
+          <PreviewServicesDrawer services={composeServices} sessionId={sessionId} active={previewVisible} send={send} onSendToAgent={handleSendServiceLogsToAgent} onSelectPreviewPort={(port) => usePreviewStore.getState().setSelectedPort(port)} />
         </div>
         {rightTab === "docs" ? (
-          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} />
+          <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onOpenIssue={handleOpenIssue} />
         ) : rightTab === "issues" ? (
           <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("trackers"); }} />
         ) : rightTab === "terminal" ? (
-          <TerminalPanel entries={logEntries} onClear={() => { useTerminalStore.getState().clearEntries(); send({ type: "clear_logs" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
+          <TerminalPanel onClear={() => { useLogStore.getState().clearChannel("agent"); send({ type: "log_clear", channel: "agent" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} send={send} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (
               <InteractiveTerminal ref={terminalRef} onInput={(d) => send({ type: "terminal_input", data: d })} onResize={(cols, rows) => send({ type: "terminal_resize", cols, rows })} onStart={(cols, rows) => { send({ type: "terminal_start", cols, rows }); useTerminalStore.getState().setShellStarted(true); }} />
             ) : null
@@ -1279,6 +1272,9 @@ export default function App() {
             onRewindAtGap={handleRewindAtGap}
             onSubmitBugReport={(cardId, title, body) =>
               send({ type: "submit_bug_report", cardId, title, body })
+            }
+            onResolvePermission={(requestId, behavior, remember) =>
+              send({ type: "resolve_permission", requestId, behavior, ...(remember ? { remember: true } : {}) })
             }
             onUndoIssueWrite={(cardId) => send({ type: "undo_issue_write", cardId })}
             onOpenIssue={handleOpenIssue}

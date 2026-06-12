@@ -30,10 +30,12 @@ import type {
   AgentMcpVoiceBridge,
   AgentMcpAskBridge,
   AgentMcpBugBridge,
+  AgentMcpPermissionBridge,
   AgentMcpWriteResult,
   McpServerConfig,
 } from "./agents/agent-process.js";
-import type { PermissionMode } from "../shared/types.js";
+import type { PermissionDecision, PermissionMode } from "../shared/types.js";
+import { PermissionBroker } from "./permission-broker.js";
 import { substituteMcpPlaceholders } from "./mcp-resolve.js";
 import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
@@ -51,11 +53,10 @@ import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
 import { SseBroadcaster } from "./sse-broadcaster.js";
 import type { SseClient, WorkerSSEEvent } from "./sse-broadcaster.js";
-import { PresentBuffer, PresentBufferError } from "./present-buffer.js";
+import { PresentRegistry } from "./present-registry.js";
 import {
   registerPresentFilesRoutes,
   inferPresentMimeType,
-  isBinaryPresentMime,
 } from "./present-view.js";
 import { runtimeKey, tuneNpmInstall } from "./install-runtime.js";
 import {
@@ -64,8 +65,14 @@ import {
   parseMarker,
   serializeMarker,
   type InstallMarkerStamp,
-} from "./install-marker.js";
+} from "../shared/install-marker.js";
+import { overlayBackedEmptyDepDirs } from "./overlay-dep-check.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
+import {
+  runAgentToCompletion,
+  buildSubAgentRunParams,
+  type SubAgentRunHandle,
+} from "../shared/sub-agent-run.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 
@@ -111,6 +118,13 @@ export class SessionWorker extends EventEmitter {
   private host: string;
   private workspaceDir: string;
 
+  // docs/144 — in-flight sub-agent spawns, keyed by orchestrator-supplied
+  // spawnId. These run OUTSIDE the single-occupant `this.agent` slot as plain
+  // subprocesses and never broadcast to SSE; their output is returned
+  // synchronously over the `/agent/spawn` HTTP response. Tracked so an explicit
+  // `/agent/cancel` (or a primary-turn interrupt/kill) can SIGTERM them.
+  private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
+
   private terminal: TerminalProcess | null = null;
   private fileWatcher: FileWatcher | null = null;
   private _createFileWatcher: () => FileWatcher;
@@ -152,11 +166,16 @@ export class SessionWorker extends EventEmitter {
   private _mcpInstallMutex = new Map<string, Promise<void>>();
   private static readonly MCP_INSTALLED_MARKER = "/tmp/mcp-installed.json";
 
-  // docs/093 — present tool buffer. Holds the bytes the agent emitted via
-  // `present` so the client can render them and "Save to project" can copy
-  // them into the workspace exactly as they were displayed. Bounded by entry
-  // count + total bytes (see PresentBuffer).
-  private readonly presentBuffer = new PresentBuffer();
+  // docs/093 — present tool registry. Holds only metadata (the on-disk path,
+  // MIME, title) per artifact the agent emitted via `present`. The bytes are
+  // read from disk lazily on each serve, never retained (see PresentRegistry).
+  private readonly presentRegistry = new PresentRegistry();
+
+  // SHI-112 / docs/193 — agent-agnostic approval broker. Holds pending
+  // sensitive-action requests (Claude via the `--permission-prompt-tool`
+  // bridge; Codex via its app-server approval channel), broadcasts the
+  // canonical request/resolved events, and tracks the per-session remember-set.
+  private readonly permissionBroker: PermissionBroker;
 
   constructor(deps: SessionWorkerDeps) {
     super();
@@ -170,6 +189,12 @@ export class SessionWorker extends EventEmitter {
     this.sse = new SseBroadcaster({
       onBackpressureChange: () => this.applyTerminalBackpressure(),
     });
+    // docs/193 — the broker broadcasts its canonical request/resolved events on
+    // the same `agent_event` SSE frame the ask bridge uses, so they reach the
+    // orchestrator's agent-listeners and render/persist the permission card.
+    this.permissionBroker = new PermissionBroker({
+      broadcast: (event) => this.broadcastSSE({ type: "agent_event", data: event }),
+    });
     this.app = this.buildApp();
   }
 
@@ -180,6 +205,7 @@ export class SessionWorker extends EventEmitter {
     this.registerSessionEndpoints(app);
     this.registerSSEEndpoint(app);
     this.registerAskEndpoint(app);
+    this.registerPermissionEndpoints(app);
     registerAgentOpsRoutes(app, {
       createOrchestratorClient: this._createOrchestratorClient,
     });
@@ -204,6 +230,7 @@ export class SessionWorker extends EventEmitter {
       voiceBridge: this.voiceBridgePaths(),
       askBridge: this.askBridgePaths(),
       bugBridge: this.bugBridgePaths(),
+      permissionBridge: this.permissionBridgePaths(),
       onServerFailed: (name, reason) => {
         this.broadcastSSE({
           type: "mcp_server_status",
@@ -287,6 +314,22 @@ export class SessionWorker extends EventEmitter {
     return { tsxBin, bridgePath };
   }
 
+  /**
+   * Resolve the absolute paths needed to launch the permission-prompt MCP
+   * bridge (docs/193). Same lifecycle and graceful-degradation rules as the
+   * other bridges — if the bridge or `tsx` is missing, return null and the
+   * adapter omits the `--permission-prompt-tool` wiring rather than failing
+   * agent start. Only Claude registers it; Codex uses its native approval
+   * channel.
+   */
+  private permissionBridgePaths(): AgentMcpPermissionBridge | null {
+    const sessionDir = path.dirname(fileURLToPath(import.meta.url));
+    const bridgePath = path.join(sessionDir, "mcp-permission-bridge.ts");
+    const tsxBin = path.resolve(sessionDir, "../../../node_modules/.bin/tsx");
+    if (!fs.existsSync(bridgePath) || !fs.existsSync(tsxBin)) return null;
+    return { tsxBin, bridgePath };
+  }
+
   private withTemporaryEnv<T>(values: Record<string, string>, fn: () => T): T {
     const previous = new Map<string, string | undefined>();
     for (const [key, value] of Object.entries(values)) {
@@ -300,6 +343,13 @@ export class SessionWorker extends EventEmitter {
         if (value === undefined) Reflect.deleteProperty(process.env, key);
         else process.env[key] = value;
       }
+    }
+  }
+
+  /** docs/144 — SIGTERM every in-flight sub-agent spawn (symmetric cancel). */
+  private cancelAllSpawns(): void {
+    for (const handle of this.spawnedAgents.values()) {
+      try { handle.cancel(); } catch { /* best-effort */ }
     }
   }
 
@@ -327,6 +377,12 @@ export class SessionWorker extends EventEmitter {
         // runtimeEnv?, cleanup? } result.
         this.agent = this.agentFactory(agentId);
         this.wireAgentEvents(this.agent, runToken);
+        // docs/193 — give an adapter with a native blocking approval channel
+        // (Codex) the broker so its escalation requests surface the same
+        // approve/deny card as Claude's sensitive-file gate, rather than being
+        // silently auto-approved. Claude has no such channel here — its gate is
+        // bridged via `--permission-prompt-tool` (mcp-permission-bridge).
+        this.agent.setPermissionRequester?.((input) => this.permissionBroker.request(input));
         const mcpWrite = this.invokeAgentMcpWriter(this.agent, params);
 
         this.withTemporaryEnv(mcpWrite.runtimeEnv ?? {}, () => {
@@ -349,6 +405,10 @@ export class SessionWorker extends EventEmitter {
     });
 
     app.post("/agent/interrupt", async (_request, reply) => {
+      // docs/144 — interrupting the primary turn cancels any sub-agent running
+      // on its behalf (symmetric cancel). Do this even when `this.agent` is null
+      // (a sub-agent can outlive a transient primary-slot gap).
+      this.cancelAllSpawns();
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
@@ -357,12 +417,79 @@ export class SessionWorker extends EventEmitter {
     });
 
     app.post("/agent/kill", async (_request, reply) => {
+      this.cancelAllSpawns();
       if (!this.agent) {
         return reply.code(404).send({ error: "No agent running" });
       }
       this.agent.kill();
       this.agent = null;
       return { killed: true };
+    });
+
+    // docs/144 — spawn a one-shot SUB-AGENT subprocess. This is a NEW code path,
+    // not a reuse of `/agent/start`: it instantiates a fresh per-agent adapter
+    // OUTSIDE the single-occupant slot (`this.agent` is untouched), wires its
+    // events into a local result accumulator instead of the broadcast SSE, and
+    // returns the accumulated final assistant text synchronously. The
+    // orchestrator (`services/sub-agent.ts`) owns authorization, credentials,
+    // and the per-turn cap; the worker just runs the adapter. Two CLI processes
+    // are alive during the spawn window (the primary, blocked on the caller's
+    // `shipit agent` shell call, and this sub-agent).
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; timeoutMs?: number; maxOutputChars?: number } }>(
+      "/agent/spawn",
+      async (request, reply) => {
+        const { agentId, prompt, spawnId, depth, model, timeoutMs, maxOutputChars } = request.body ?? {};
+        if (!agentId || typeof prompt !== "string" || !spawnId) {
+          return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
+        }
+        let agent: AgentProcess;
+        try {
+          agent = this.agentFactory(agentId);
+        } catch (err) {
+          return reply.code(400).send({ error: `Unknown agent: ${agentId} (${getErrorMessage(err)})` });
+        }
+
+        const runOpts = {
+          prompt,
+          cwd: this.workspaceDir,
+          ...(model !== undefined ? { model } : {}),
+          ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+          ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
+        };
+        const handle = runAgentToCompletion(agent, runOpts, Date.now());
+        this.spawnedAgents.set(spawnId, handle);
+        try {
+          // Stamp SHIPIT_AGENT_DEPTH = caller depth + 1 on the subprocess env so
+          // the sub-agent's own `shipit agent` calls forward a non-zero depth and
+          // are rejected by the orchestrator's recursion guard. withTemporaryEnv
+          // restores process.env after the synchronous spawn; the child has
+          // already captured the value.
+          const childDepth = String((depth ?? 0) + 1);
+          this.withTemporaryEnv({ SHIPIT_AGENT_DEPTH: childDepth }, () => {
+            agent.run(buildSubAgentRunParams(runOpts));
+          });
+          return await handle.promise;
+        } catch (err) {
+          return await reply.code(500).send({ error: getErrorMessage(err) });
+        } finally {
+          this.spawnedAgents.delete(spawnId);
+          try { agent.kill(); } catch { /* already exited */ }
+        }
+      },
+    );
+
+    // docs/144 — explicitly cancel an in-flight sub-agent spawn by id.
+    app.post<{ Body: { spawnId?: string } }>("/agent/cancel", async (request, reply) => {
+      const spawnId = request.body?.spawnId;
+      if (!spawnId) {
+        return reply.code(400).send({ error: "spawnId is required" });
+      }
+      const handle = this.spawnedAgents.get(spawnId);
+      if (!handle) {
+        return reply.code(404).send({ error: "No such spawn" });
+      }
+      handle.cancel();
+      return { cancelled: true };
     });
 
     app.post<{ Body: { data: string } }>("/agent/stdin", async (request, reply) => {
@@ -666,7 +793,22 @@ export class SessionWorker extends EventEmitter {
         installCommands: commands,
       };
       if (await this.installMarkerMatches(markerFile, stamp)) {
-        return { skipped: true, reason: "marker" };
+        // docs/183 — a matching marker is only trustworthy if the overlay-backed
+        // dep dirs actually hold content. The marker lives in the host clone;
+        // the deps live in the overlay. A container recreated with the overlay
+        // flag newly on mounts an EMPTY overlay over previously-installed deps,
+        // and skipping here would leave the session dep-less AND let the publish
+        // hook capture the empty view as the scope's shared base. Non-overlay
+        // sessions have no overlay mount at a dep dir, so this returns [] and
+        // the gate behaves exactly as before.
+        const contradicted = overlayBackedEmptyDepDirs(this.workspaceDir);
+        if (contradicted.length === 0) {
+          return { skipped: true, reason: "marker" };
+        }
+        console.warn(
+          `[install] marker matched but overlay-backed dep dir(s) are empty: ` +
+          `${contradicted.join(", ")} — treating as a miss and reinstalling`,
+        );
       }
       // Stale / legacy / mismatched marker — whiteout it before reinstalling so
       // a partial reinstall can never leave an old stamp claiming success.
@@ -709,6 +851,11 @@ export class SessionWorker extends EventEmitter {
     // `git rev-parse HEAD` in the same merged `/workspace` the agent sees.
     app.get("/workspace/head-commit", async () => ({
       commit: await this.readSourceCommit(),
+      // docs/183 — the worker-side runtime fingerprint. The publish path records
+      // it on the base pointer so a later same-commit session can be pre-stamped
+      // with a marker the /install gate accepts (the gate compares against THIS
+      // value, not the orchestrator-side scope key).
+      runtimeKey: runtimeKey(),
     }));
 
     // docs/183 Phase 4 — stream a single dep dir's merged contents as a tar so the
@@ -833,23 +980,78 @@ export class SessionWorker extends EventEmitter {
     );
   }
 
+  /**
+   * docs/193 — the two halves of the permission round-trip.
+   *
+   * `/agent-ops/permission/request` is called by the Claude
+   * `--permission-prompt-tool` bridge: it opens a broker request and HOLDS the
+   * HTTP response open until the user answers, then replies with the decision
+   * the bridge maps to the CLI's allow/deny envelope. (Codex doesn't hit this
+   * route — its adapter calls `broker.request` directly via the injected
+   * requester.)
+   *
+   * `/agent/permission/resolve` is the orchestrator→worker push: the user's
+   * approve/deny answer, delivered via `ProxyAgentProcess.resolvePermission`.
+   * It resolves the broker entry, which unblocks BOTH the held bridge response
+   * (Claude) and the awaited `broker.request` promise (Codex) uniformly.
+   */
+  private registerPermissionEndpoints(app: FastifyInstance): void {
+    app.post<{ Body: { toolName?: string; input?: Record<string, unknown>; toolUseId?: string } }>(
+      "/agent-ops/permission/request",
+      async (request, reply) => {
+        const body = request.body ?? {};
+        if (typeof body.toolName !== "string" || !body.toolName) {
+          return reply.code(400).send({ error: "toolName is required" });
+        }
+        // Holds until resolve()/timeout settles the broker entry.
+        const decision = await this.permissionBroker.request({
+          toolName: body.toolName,
+          input: body.input,
+          agentId: this.agent?.agentId,
+        });
+        return { behavior: decision.behavior, ...(decision.message ? { message: decision.message } : {}) };
+      },
+    );
+
+    app.post<{ Body: { requestId?: string; behavior?: string; remember?: boolean; message?: string } }>(
+      "/agent/permission/resolve",
+      async (request, reply) => {
+        const body = request.body ?? {};
+        if (typeof body.requestId !== "string" || !body.requestId) {
+          return reply.code(400).send({ error: "requestId is required" });
+        }
+        if (body.behavior !== "allow" && body.behavior !== "deny") {
+          return reply.code(400).send({ error: "behavior must be 'allow' or 'deny'" });
+        }
+        const decision: PermissionDecision = {
+          behavior: body.behavior,
+          ...(body.remember ? { remember: true } : {}),
+          ...(typeof body.message === "string" ? { message: body.message } : {}),
+        };
+        const found = this.permissionBroker.resolve(body.requestId, decision);
+        // `found:false` → a stale card (e.g. the worker restarted since the
+        // prompt, so the held request is gone). The card simply stays pending —
+        // there's no live call left to unblock and ShipIt adds no terminal state.
+        return { resolved: found };
+      },
+    );
+  }
+
   // --- Present tool endpoints (docs/093) ---
 
   /**
-   * Wire the two HTTP surfaces the `present` tool needs:
+   * Wire the `present` tool's HTTP surfaces:
    *
-   *  - `POST /agent-ops/present/submit` — receives the artifact from the
-   *    `mcp-present-bridge` subprocess (which runs as a child of the agent
-   *    CLI). Stores it in the buffer, broadcasts `present_content` over SSE,
-   *    and returns the new `presentId` to the bridge.
-   *  - `POST /present/save` — the orchestrator forwards the user's "Save to
-   *    project" click here. Copies the buffered bytes to the requested
-   *    workspace path. Path is checked to live under the workspace so a
-   *    crafted body can't escape with `..`.
+   *  - `POST /agent-ops/present/submit` — receives the artifact PATH from the
+   *    `mcp-present-bridge` subprocess (a child of the agent CLI). Validates the
+   *    file is readable, records its metadata in the registry, broadcasts
+   *    `present_content` (metadata only) over SSE, and returns the `presentId` +
+   *    a worker-local screenshot URL to the bridge. It does NOT read the bytes.
+   *  - the artifact-serving routes (`registerPresentFilesRoutes`) read bytes
+   *    from disk on demand — see there.
    *
    * The submit route lives under `/agent-ops/*` to stay alongside the other
-   * shim brokers (review, gh, shipit). Save lives under `/present/*` because
-   * the orchestrator initiates it on the user's behalf, not the agent.
+   * shim brokers (review, gh, shipit).
    */
   private registerPresentEndpoints(app: FastifyInstance): void {
     app.post<{
@@ -870,33 +1072,17 @@ export class SessionWorker extends EventEmitter {
       const resolvedPath = path.isAbsolute(file)
         ? file
         : path.resolve(this.workspaceDir, file);
-      // Whether the presented file already lives inside the workspace (so it's
-      // tracked + auto-committed already). The client uses this to hide the
-      // "Save to project" button — there's nothing to save. A relative arg
-      // always resolves under the workspace; an absolute arg counts only when
-      // it's actually within the workspace root (a `path.relative` that doesn't
-      // climb out via `..` and isn't itself absolute).
-      const relToWorkspace = path.relative(this.workspaceDir, resolvedPath);
-      const inWorkspace =
-        relToWorkspace === ""
-        || (!relToWorkspace.startsWith("..") && !path.isAbsolute(relToWorkspace));
       // MIME is inferred from the extension unless the caller overrides it.
       const overrideMime =
         typeof mimeType === "string" && mimeType.length > 0 ? mimeType : undefined;
       const resolvedMime =
         overrideMime ?? (inferPresentMimeType(resolvedPath) || "text/plain");
 
-      // Read the file into the same `content` string the buffer/WS pipeline
-      // already carries: binary images become a `data:` URI, everything else is
-      // UTF-8 text (HTML/SVG markup, markdown, plain text).
-      let content: string;
+      // Validate the file is readable now (clear error to the agent), but DON'T
+      // read its bytes — the registry holds only the path. The bytes are read
+      // from disk lazily whenever the artifact is served.
       try {
-        if (isBinaryPresentMime(resolvedMime)) {
-          const bytes = await fsp.readFile(resolvedPath);
-          content = `data:${resolvedMime};base64,${bytes.toString("base64")}`;
-        } else {
-          content = await fsp.readFile(resolvedPath, "utf8");
-        }
+        await fsp.access(resolvedPath, fs.constants.R_OK);
       } catch (err) {
         return reply.code(400).send({
           error: `Could not read file "${file}": ${getErrorMessage(err)}`,
@@ -910,20 +1096,17 @@ export class SessionWorker extends EventEmitter {
       const sessionId = process.env.SESSION_ID ?? "";
 
       const presentId = `pres_${crypto.randomUUID()}`;
-      let result: ReturnType<PresentBuffer["put"]>;
-      try {
-        result = this.presentBuffer.put(presentId, {
-          content,
-          mimeType: resolvedMime,
-          ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
-          ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
-        });
-      } catch (err) {
-        if (err instanceof PresentBufferError) {
-          return reply.code(413).send({ error: err.message });
-        }
-        return reply.code(500).send({ error: getErrorMessage(err) });
-      }
+      const createdAt = new Date().toISOString();
+      const result = this.presentRegistry.put(presentId, {
+        resolvedPath,
+        // The presented path (verbatim — relative or absolute), shown in the
+        // Present tab header. `file` is validated non-empty above.
+        filePath: file,
+        mimeType: resolvedMime,
+        createdAt,
+        ...(resolvedTitle !== undefined ? { title: resolvedTitle } : {}),
+        ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
+      });
 
       this.broadcastSSE({
         type: "present_content",
@@ -931,15 +1114,10 @@ export class SessionWorker extends EventEmitter {
           sessionId,
           presentId,
           ...(resolvedReplaceId !== undefined ? { replaceId: resolvedReplaceId } : {}),
-          content: result.entry.content,
-          mimeType: result.entry.mimeType,
-          ...(result.entry.title !== undefined ? { title: result.entry.title } : {}),
-          // The presented path (verbatim — relative or absolute), shown in the
-          // Present tab header. `file` is validated non-empty above, so the
-          // field is always present downstream.
-          filePath: file,
-          inWorkspace,
-          createdAt: result.entry.createdAt,
+          mimeType: result.meta.mimeType,
+          ...(result.meta.title !== undefined ? { title: result.meta.title } : {}),
+          filePath: result.meta.filePath,
+          createdAt: result.meta.createdAt,
         },
       });
 
@@ -958,72 +1136,14 @@ export class SessionWorker extends EventEmitter {
       return { presentId, status: "presented", viewUrl };
     });
 
-    // docs/170 — serve buffered artifacts at a worker-local URL so the agent's
-    // own Playwright browser can render and screenshot them. Worker-local by
-    // design: only the in-container agent browser (which already reaches
-    // 127.0.0.1:${WORKER_PORT}) consumes this; it does NOT route through the
-    // orchestrator preview proxy, keeping ephemeral artifacts off any publicly
-    // routable URL. Registration lives in present-view.ts so it stays unit-testable.
-    registerPresentFilesRoutes(app, this.presentBuffer);
-
-    app.post<{
-      Body: { presentId?: string; destPath?: string };
-    }>("/present/save", async (request, reply) => {
-      const { presentId, destPath } = request.body ?? {};
-      if (typeof presentId !== "string" || presentId.length === 0) {
-        return reply.code(400).send({ error: "presentId is required" });
-      }
-      if (typeof destPath !== "string" || destPath.length === 0) {
-        return reply.code(400).send({ error: "destPath is required" });
-      }
-      const entry = this.presentBuffer.get(presentId);
-      if (!entry) {
-        return reply.code(404).send({ error: "Presentation not found or already evicted" });
-      }
-
-      // Resolve the destination strictly inside the workspace. Reject any
-      // attempt to escape via leading `/`, `..`, or symlink-like games. The
-      // path is mounted by the user via the Save dialog, so a redirect to
-      // /etc/passwd would be a real footgun.
-      const workspaceRoot = path.resolve(this.workspaceDir);
-      const normalized = destPath.startsWith("/")
-        ? destPath.slice(1)
-        : destPath;
-      const absolutePath = path.resolve(workspaceRoot, normalized);
-      const inside = absolutePath === workspaceRoot
-        || absolutePath.startsWith(`${workspaceRoot}${path.sep}`);
-      if (!inside) {
-        return reply.code(400).send({
-          error: "destPath must resolve inside the workspace",
-        });
-      }
-
-      try {
-        await fsp.mkdir(path.dirname(absolutePath), { recursive: true });
-        // Binary content arrives as a data URI; decode it before writing so
-        // the saved file isn't a base64-encoded text blob.
-        if (entry.content.startsWith("data:")) {
-          const match = /^data:[^;]+;base64,(.+)$/.exec(entry.content);
-          if (match) {
-            await fsp.writeFile(absolutePath, Buffer.from(match[1], "base64"));
-          } else {
-            // Non-base64 data URI (rare): write the raw string after the comma.
-            const comma = entry.content.indexOf(",");
-            await fsp.writeFile(
-              absolutePath,
-              comma >= 0 ? entry.content.slice(comma + 1) : entry.content,
-            );
-          }
-        } else {
-          await fsp.writeFile(absolutePath, entry.content, "utf8");
-        }
-      } catch (err) {
-        return reply.code(500).send({ error: getErrorMessage(err) });
-      }
-
-      const relPath = path.relative(workspaceRoot, absolutePath);
-      return { ok: true, savedPath: relPath };
-    });
+    // docs/170, docs/093 — serve artifacts (rendered for the agent's Playwright
+    // browser at 127.0.0.1:${WORKER_PORT}; raw for the user's Present tab via the
+    // orchestrator's authenticated session API). Both read the file from disk on
+    // demand via the registry — the worker retains no artifact bytes. Worker-local
+    // by design: neither route goes through the public preview proxy, keeping
+    // ephemeral artifacts off any routable URL. Lives in present-view.ts so the
+    // 404/serving behavior stays unit-testable.
+    registerPresentFilesRoutes(app, this.presentRegistry);
   }
 
   // --- MCP helpers (docs/088) ---
@@ -1418,6 +1538,11 @@ export class SessionWorker extends EventEmitter {
     // identity, so it compares this token (see container-session-runner.ts
     // `isStaleSpawnEvent`).
     agent.on("done", (exitCode: number) => {
+      // docs/193 — the backend process is gone; settle any held permission
+      // promise internally so the worker doesn't leak. This broadcasts nothing,
+      // so an unanswered card stays `pending` (no synthetic "expired" — ShipIt
+      // imposes no deadline on the user's decision).
+      this.permissionBroker.clearPending();
       this.broadcastSSE({ type: "agent_done", data: { exitCode, runToken } });
       if (this.agent === agent) {
         this.agent = null;
@@ -1425,6 +1550,7 @@ export class SessionWorker extends EventEmitter {
     });
 
     agent.on("error", (err: Error) => {
+      this.permissionBroker.clearPending();
       this.broadcastSSE({ type: "agent_error", data: { message: err.message, runToken } });
       if (this.agent === agent) {
         this.agent = null;

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { FileTreeNode } from "./types.js";
 
-import { WORKSPACE_SKIP_DIRS, WORKSPACE_HIDDEN_ALLOWLIST } from "./fs-constants.js";
+import { WORKSPACE_SKIP_DIRS, WORKSPACE_HIDDEN_FILES } from "./fs-constants.js";
 
 /**
  * Recursively scan a directory and return a tree of FileTreeNode objects.
@@ -24,8 +24,10 @@ export async function scanFileTree(dir: string, prefix = ""): Promise<FileTreeNo
 
   for (const entry of entries) {
     if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
-    // Skip hidden files/dirs except those explicitly allowed (e.g. .env, .claude)
-    if (entry.name.startsWith(".") && !WORKSPACE_HIDDEN_ALLOWLIST.has(entry.name)) continue;
+    // Dotfiles are shown by default — `.npmrc`, `.gitignore`, `.editorconfig`,
+    // etc. are editable source. Only pure junk / internal data is hidden here;
+    // directory-level noise is handled by WORKSPACE_SKIP_DIRS above.
+    if (WORKSPACE_HIDDEN_FILES.has(entry.name)) continue;
 
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
 

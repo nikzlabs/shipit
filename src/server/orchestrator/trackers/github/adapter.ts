@@ -26,6 +26,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
+  IssueLabel,
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
@@ -42,9 +43,9 @@ import {
  * fixed pair we expose as `availableStatuses`, and the normalized types we
  * accept, both map onto it (see {@link resolveGitHubState}).
  */
-const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string }[] = [
-  { name: "Open", type: "started" },
-  { name: "Closed", type: "completed" },
+const GITHUB_AVAILABLE_STATUSES: { name: string; type?: string; color?: string }[] = [
+  { name: "Open", type: "started", color: "#3fb950" },
+  { name: "Closed", type: "completed", color: "#8957e5" },
 ];
 
 export type FetchImpl = typeof fetch;
@@ -118,7 +119,7 @@ interface GitHubIssueNode {
   html_url: string;
   body?: string | null;
   state: string;
-  labels?: (string | { name?: string | null })[];
+  labels?: (string | { name?: string | null; color?: string | null })[];
   assignee?: { login?: string | null; avatar_url?: string | null } | null;
   /** Present iff this "issue" is actually a pull request — we skip those. */
   pull_request?: unknown;
@@ -146,25 +147,50 @@ function toTrackerComment(node: GitHubCommentNode): TrackerComment {
   };
 }
 
-function labelNames(node: GitHubIssueNode): string[] {
+/**
+ * Normalize GitHub's label `color` (a bare 6-digit hex, no `#`) to a CSS-ready
+ * `#rrggbb`, so the client can use it directly. Tolerant of an already-prefixed
+ * value. Empty/absent → undefined (the client then hash-derives a dot color).
+ */
+function normalizeGitHubColor(color?: string | null): string | undefined {
+  const v = (color ?? "").trim();
+  if (!v) return undefined;
+  return v.startsWith("#") ? v : `#${v}`;
+}
+
+/** The issue's labels as `{ name, color }`, dropping nameless entries. */
+function issueLabels(node: GitHubIssueNode): IssueLabel[] {
   return (node.labels ?? [])
-    .map((l) => (typeof l === "string" ? l : (l?.name ?? "")))
-    .filter((n): n is string => Boolean(n));
+    .map((l): IssueLabel | null => {
+      if (typeof l === "string") return l ? { name: l } : null;
+      const name = l?.name ?? "";
+      if (!name) return null;
+      const color = normalizeGitHubColor(l?.color);
+      return { name, ...(color ? { color } : {}) };
+    })
+    .filter((l): l is IssueLabel => l !== null);
 }
 
 function toTrackerIssue(node: GitHubIssueNode, ref: GitHubRepoRef): TrackerIssue {
   const assigneeName = node.assignee?.login ?? undefined;
   const isClosed = node.state === "closed";
-  const names = labelNames(node);
+  const labels = issueLabels(node);
   return {
     id: String(node.number),
     identifier: `${ref.owner}/${ref.repo}#${node.number}`,
     title: node.title,
     url: node.html_url,
     ...(node.body ? { description: node.body } : {}),
-    priority: mapGitHubPriority(names),
-    ...(names.length > 0 ? { labels: names } : {}),
-    status: { name: isClosed ? "Closed" : "Open", type: isClosed ? "completed" : "started" },
+    // Priority is label-derived, so map over the names of the resolved labels.
+    priority: mapGitHubPriority(labels.map((l) => l.name)),
+    ...(labels.length > 0 ? { labels } : {}),
+    // GitHub's own issue-state colors: open = green, closed = purple (its
+    // "merged/closed" hue), so the UI dot matches what GitHub shows.
+    status: {
+      name: isClosed ? "Closed" : "Open",
+      type: isClosed ? "completed" : "started",
+      color: isClosed ? "#8957e5" : "#3fb950",
+    },
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatar_url ? { avatarUrl: node.assignee.avatar_url } : {}) } }
       : {}),
@@ -275,7 +301,7 @@ export class GitHubTracker implements Tracker {
     return { ...toTrackerIssue(node, ref), availableStatuses: GITHUB_AVAILABLE_STATUSES };
   }
 
-  async listStatuses(): Promise<{ name: string; type?: string }[]> {
+  async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
     // GitHub has no workflow states — the fixed Open/Closed pair, identical to
     // what `getIssue` exposes as `availableStatuses`. No network call needed; the
     // configured guard keeps it consistent with the rest of the interface.
@@ -379,15 +405,16 @@ export class GitHubTracker implements Tracker {
    */
   private async resolveLabels(names: string[]): Promise<string[]> {
     const existing = await this.fetchRepoLabels();
+    const existingNames = existing.map((l) => l.name);
     const resolved: string[] = [];
     for (const raw of names) {
       const needle = raw.trim().toLowerCase();
-      const match = existing.find((l) => l.toLowerCase() === needle);
+      const match = existingNames.find((l) => l.toLowerCase() === needle);
       if (!match) {
         throw new TrackerResolutionError(
           `No label "${raw}" exists in this repo.`,
           "label",
-          existing.slice(0, 50),
+          existingNames.slice(0, 50),
         );
       }
       if (!resolved.includes(match)) resolved.push(match);
@@ -395,8 +422,14 @@ export class GitHubTracker implements Tracker {
     return resolved;
   }
 
-  /** Fetch the repo's label names (first 100) for {@link resolveLabels}. */
-  private async fetchRepoLabels(): Promise<string[]> {
+  async listLabels(): Promise<IssueLabel[]> {
+    // The repo's labels (name + color) — the same fetch that backs
+    // {@link resolveLabels}, surfaced for the available-labels endpoint.
+    return this.fetchRepoLabels();
+  }
+
+  /** Fetch the repo's labels (first 100, name + normalized color). */
+  private async fetchRepoLabels(): Promise<IssueLabel[]> {
     const ref = this.requireRepo();
     let res: Response;
     try {
@@ -408,8 +441,13 @@ export class GitHubTracker implements Tracker {
       throw new Error(`GitHub request failed: ${err instanceof Error ? err.message : String(err)}`, { cause: err });
     }
     this.assertOk(res);
-    const nodes = (await res.json()) as { name?: string | null }[];
-    return nodes.map((n) => n?.name ?? "").filter((n): n is string => Boolean(n));
+    const nodes = (await res.json()) as { name?: string | null; color?: string | null }[];
+    return nodes
+      .filter((n) => Boolean(n?.name))
+      .map((n) => {
+        const color = normalizeGitHubColor(n.color);
+        return { name: n.name!, ...(color ? { color } : {}) };
+      });
   }
 
   /**

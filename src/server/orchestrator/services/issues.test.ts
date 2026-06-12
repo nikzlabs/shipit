@@ -16,6 +16,7 @@ import { CredentialStore } from "../credential-store.js";
 import {
   getIssueForTracker,
   listIssuesForTracker,
+  listLabelsForTracker,
   listIssueCommentsForTracker,
   addIssueCommentForTracker,
   userSetIssueStatus,
@@ -224,9 +225,37 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
     }) as unknown as typeof fetch;
     const out = await listIssuesForTracker(tmpStore(), "github", fetchImpl, GH);
     expect(out.availableStatuses).toEqual([
-      { name: "Open", type: "started" },
-      { name: "Closed", type: "completed" },
+      { name: "Open", type: "started", color: "#3fb950" },
+      { name: "Closed", type: "completed", color: "#8957e5" },
     ]);
+  });
+
+  it("drops duplicate-status issues from the default open list, keeps them when includeDone", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const nodes = [
+      {
+        id: "a", identifier: "SHI-1", title: "Open one", url: "https://linear.app/x/SHI-1",
+        priority: 0, state: { name: "Todo", type: "unstarted" }, assignee: null, labels: { nodes: [] },
+      },
+      {
+        id: "b", identifier: "SHI-2", title: "A dup", url: "https://linear.app/x/SHI-2",
+        priority: 0, state: { name: "Duplicate", type: "unstarted" }, assignee: null, labels: { nodes: [] },
+      },
+    ];
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("TeamIssues")) return jsonResponse({ data: { team: { issues: { nodes } } } });
+      if (query.includes("TeamStates")) return jsonResponse({ data: { team: { states: { nodes: [] } } } });
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+
+    const open = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
+    expect(open.issues.map((i) => i.identifier)).toEqual(["SHI-1"]);
+
+    const all = await listIssuesForTracker(store, "linear", fetchImpl, undefined, { includeDone: true });
+    expect(all.issues.map((i) => i.identifier)).toEqual(["SHI-1", "SHI-2"]);
   });
 
   it("degrades to no availableStatuses when the states lookup fails (best-effort)", async () => {
@@ -244,6 +273,46 @@ describe("listIssuesForTracker availableStatuses (docs/191)", () => {
     const out = await listIssuesForTracker(store, "linear", fetchImpl, undefined);
     expect(out.issues).toEqual([]);
     expect(out.availableStatuses).toBeUndefined();
+  });
+});
+
+describe("listLabelsForTracker (SHI-92 foundation)", () => {
+  it("returns the GitHub repo's labels with normalized colors", async () => {
+    const fetchImpl = vi.fn(async (url: RequestInfo | URL) => {
+      expect((url as string)).toContain("/repos/octocat/hello-world/labels");
+      return ghResponse([
+        { name: "bug", color: "d73a4a" },
+        { name: "design", color: "a2eeef" },
+      ]);
+    }) as unknown as typeof fetch;
+    const out = await listLabelsForTracker(tmpStore(), "github", fetchImpl, GH);
+    expect(out.labels).toEqual([
+      { name: "bug", color: "#d73a4a" },
+      { name: "design", color: "#a2eeef" },
+    ]);
+  });
+
+  it("returns the Linear workspace labels with their colors", async () => {
+    const store = tmpStore();
+    store.setLinearToken("lin_x");
+    store.setLinearTeam(TEAM);
+    const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const query = (JSON.parse((init?.body as string) ?? "{}").query as string) ?? "";
+      if (query.includes("IssueLabels")) {
+        return jsonResponse({
+          data: { issueLabels: { nodes: [{ name: "security", color: "#d73a4a" }] } },
+        });
+      }
+      throw new Error(`no route for "${query.trim().slice(0, 20)}"`);
+    }) as unknown as typeof fetch;
+    const out = await listLabelsForTracker(store, "linear", fetchImpl, undefined);
+    expect(out.labels).toEqual([{ name: "security", color: "#d73a4a" }]);
+  });
+
+  it("returns an empty set for an unconfigured tracker (no error)", async () => {
+    // Linear with no token/team is unconfigured — a normal empty state.
+    const out = await listLabelsForTracker(tmpStore(), "linear", undefined, undefined);
+    expect(out.labels).toEqual([]);
   });
 });
 

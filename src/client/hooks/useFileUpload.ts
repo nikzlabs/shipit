@@ -12,7 +12,7 @@
 import { useCallback, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
-import { useFileStore, markUploadDeleted } from "../stores/file-store.js";
+import { useFileStore, markUploadDeleted, clearUploadTombstone } from "../stores/file-store.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
@@ -56,6 +56,11 @@ export function useFileUpload(sessionId: string | undefined) {
       for (let i = 0; i < items.length; i++) {
         const uploaded = data.files[i];
         if (uploaded) {
+          // A fresh upload supersedes any stale tombstone for its path. Without
+          // this, re-uploading a same-named file (server reuses the name via
+          // deduplicateFilename) leaves a prior delete's tombstone in place, and
+          // hydrateUploads filters the new file out on the next reconnect.
+          clearUploadTombstone(uploaded.path);
           st.updateSessionUpload(items[i].id, {
             status: "ready",
             name: uploaded.name,

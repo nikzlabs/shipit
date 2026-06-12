@@ -15,8 +15,9 @@ import type {
   ImageAttachment,
   FileContextRef,
   UploadRef,
+  AgentId,
 } from "../shared/types.js";
-import { dispatchAgentMessage, ServiceError } from "./services/index.js";
+import { dispatchAgentMessage, runSubAgent, ServiceError } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerAgentRoutes(
@@ -67,6 +68,52 @@ export async function registerAgentRoutes(
           return;
         }
         reply.code(500).send({ error: `Dispatch failed: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/agent/spawn — docs/144 sub-agent spawn. Reached via
+  // the worker's `/agent-ops/agent/spawn` broker, which injects the trusted
+  // SESSION_ID into the path (the agent cannot name a different session) and
+  // forwards the body. Blocks until the sub-agent exits, then returns its final
+  // text. Errors map to the shim's non-zero exit (disabled, unknown agent, cap
+  // exceeded, recursion, crash, …).
+  app.post<{
+    Params: { id: string };
+    Body: { agentId?: AgentId; prompt?: string; depth?: number };
+  }>(
+    "/api/sessions/:id/agent/spawn",
+    async (request, reply) => {
+      try {
+        const body = request.body ?? {};
+        if (!body.agentId) {
+          reply.code(400).send({ error: "agentId is required" });
+          return;
+        }
+        const result = await runSubAgent(
+          {
+            sessionManager: deps.sessionManager,
+            credentialStore: deps.credentialStore,
+            agentRegistry: deps.agentRegistry,
+            ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+            runnerRegistry: deps.runnerRegistry,
+            usageManager: deps.usageManager,
+            ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
+          },
+          request.params.id,
+          {
+            subAgentId: body.agentId,
+            prompt: body.prompt ?? "",
+            depth: typeof body.depth === "number" ? body.depth : 0,
+          },
+        );
+        reply.send(result);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Sub-agent spawn failed: ${getErrorMessage(err)}` });
       }
     },
   );

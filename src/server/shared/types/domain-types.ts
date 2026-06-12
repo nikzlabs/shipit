@@ -190,6 +190,72 @@ export interface SessionInfo {
    * the PR card's overflow menu (only shown when the global setting is on).
    */
   autoFixCiPaused?: boolean;
+  /**
+   * docs/196 — async "notify parent when this child's PR merges" watch. Set on
+   * the CHILD session row by `shipit session notify-on-merge`; the parent that
+   * registered it is recorded in `parentSessionId` here. The PR poller fires the
+   * watch when this session's PR reaches a terminal state (merged or
+   * closed-without-merge), enqueuing a self-describing system turn into the
+   * parent's message queue and surfacing a persisted merge card. Persisted so
+   * the firing survives an orchestrator restart; the `state` machine
+   * (`armed → merge-observed → delivered`, or terminal `closed-unmerged`) makes
+   * delivery fire-once.
+   */
+  mergeWatch?: SessionMergeWatch;
+}
+
+/**
+ * docs/196 — a single parent→child merge-watch, stored on the child session row.
+ * The lifecycle is fire-once: a re-poll (or a restart-driven re-derivation) that
+ * sees a terminal state but an already-`delivered`/`closed-unmerged` watch is a
+ * no-op.
+ */
+export interface SessionMergeWatch {
+  /** Session that registered the watch and receives the wake-turn + merge card. */
+  parentSessionId: string;
+  /**
+   * - `armed` — registered, waiting for the child's PR to reach a terminal state
+   *   (the PR need not exist yet).
+   * - `merge-observed` — the poller saw the merge and surfaced the card, but the
+   *   actionable wake-turn hasn't been enqueued into the parent yet (a transient
+   *   step; re-tried on the next poll if enqueue couldn't complete).
+   * - `delivered` — the merge wake-turn was enqueued. Terminal, fire-once.
+   * - `closed-unmerged` — the PR closed without merging; a distinct wake-turn was
+   *   enqueued so the parent doesn't proceed as if the work shipped. Terminal.
+   */
+  state: "armed" | "merge-observed" | "delivered" | "closed-unmerged";
+  /** ISO instant the watch was armed. */
+  registeredAt: string;
+  /** ISO instant the terminal PR state was first observed. */
+  observedAt?: string;
+  /** ISO instant the wake-turn was enqueued into the parent. */
+  deliveredAt?: string;
+}
+
+/**
+ * docs/196 — payload for the inline "Child PR merged / closed" transcript card
+ * surfaced into the PARENT session when a watched child's PR reaches a terminal
+ * state. Static (no mutable lifecycle): persisted on the message row and
+ * rendered directly, no client store. Carries everything needed to identify the
+ * child and its PR so the card is self-explanatory after a reload.
+ */
+export interface ChildMergedCard {
+  /** Server-generated stable id — used for live-append idempotency on reconnect. */
+  cardId: string;
+  /** The watched child session's id (the card's "Open" target). */
+  childSessionId: string;
+  /** Child session title, for display. */
+  childTitle: string;
+  /** Child's branch. */
+  branch?: string;
+  /** `"merged"` or `"closed-unmerged"` — drives the card's copy + tone. */
+  outcome: "merged" | "closed-unmerged";
+  prNumber: number;
+  prUrl: string;
+  prTitle?: string;
+  /** Merge commit SHA, when known (merged outcome only). */
+  mergeSha?: string;
+  createdAt: string;
 }
 
 // ---- Repo types ----
@@ -288,6 +354,21 @@ export interface IssuePriority {
   label: string;
 }
 
+/**
+ * An issue label, by display name plus the tracker's own color (SHI-92
+ * foundation). Both trackers expose a real per-label color — Linear's
+ * `issueLabels[].color`, GitHub's repo `labels[].color` — so the Issues-tab
+ * chips can render the tracker's hue instead of a name-hashed guess. `color` is
+ * normalized to a CSS-ready hex with a leading `#` (GitHub returns it without
+ * one); it's optional because some trackers/paths may not supply it, in which
+ * case the client falls back to a deterministic hash of the name.
+ */
+export interface IssueLabel {
+  name: string;
+  /** CSS-ready hex (`#rrggbb`) from the tracker, when it supplies one. */
+  color?: string;
+}
+
 /** A single issue row returned by a tracker's `listIssues()`. */
 export interface TrackerIssue {
   /** Tracker-internal node id (Linear GraphQL id). Used for `getIssue()`. */
@@ -301,15 +382,22 @@ export interface TrackerIssue {
   description?: string;
   priority: IssuePriority;
   /**
-   * The issue's labels, by display name (SHI-92). Both trackers support labels
-   * natively — Linear's issue labels, GitHub's REST labels. Surfaced so the
-   * agent's `--json` output and the provenance card reflect what was set, and so
-   * a label edit can snapshot the prior set for undo. Absent when the issue has
-   * no labels.
+   * The issue's labels, each carrying its display name and the tracker's own
+   * color (SHI-92 + foundation). Both trackers support labels natively —
+   * Linear's issue labels, GitHub's REST labels — and both expose a real color,
+   * so the chips render the tracker's hue (falling back to a name hash when
+   * `color` is absent). Surfaced so the agent's `--json` output and the
+   * provenance card reflect what was set, and so a label edit can snapshot the
+   * prior set for undo. Absent when the issue has no labels.
    */
-  labels?: string[];
-  /** Workflow state, e.g. { name: "In Progress", type: "started" }. */
-  status?: { name: string; type?: string };
+  labels?: IssueLabel[];
+  /**
+   * Workflow state, e.g. { name: "In Progress", type: "started" }. `color` is the
+   * tracker's own per-state color (Linear's state hex) so the UI dot matches the
+   * tracker exactly instead of a coarse type→gray guess — the default Linear
+   * states (Backlog/Todo/Duplicate) otherwise all collapse to one gray.
+   */
+  status?: { name: string; type?: string; color?: string };
   assignee?: { name: string; avatarUrl?: string };
   /**
    * Tracker-internal id of the current assignee (GitHub login, Linear
@@ -326,7 +414,7 @@ export interface TrackerIssue {
    * GitHub this is the fixed Open/Closed pair; for Linear it's the team's
    * workflow states. Absent on `listIssues` (only populated by `getIssue`).
    */
-  availableStatuses?: { name: string; type?: string }[];
+  availableStatuses?: { name: string; type?: string; color?: string }[];
 }
 
 /**
@@ -392,6 +480,8 @@ export type IssueWriteUndo =
   // SHI-92 — an edit may also change labels/priority; the prior label set and
   // prior priority level are snapshotted so undo restores them (the prior labels
   // replace the post-edit set; the prior priority level is re-applied).
+  // `previousLabels` holds label *names* (the write API resolves names → ids),
+  // not the colored `IssueLabel` read shape — undo only needs to restore names.
   | {
       kind: "edit";
       previousTitle?: string;
@@ -529,7 +619,18 @@ export interface ListIssuesResult {
    * rows don't carry `availableStatuses`; only `getIssue` populates that).
    * Best-effort: absent when the tracker is unconfigured or the lookup failed.
    */
-  availableStatuses?: { name: string; type?: string }[];
+  availableStatuses?: { name: string; type?: string; color?: string }[];
+}
+
+/**
+ * Response shape for `GET /api/issue/labels?tracker=[&sessionId=]` — the
+ * tracker's full set of available labels (name + color), the foundation for a
+ * label filter facet and an on-page label editor. The same fetch that yields the
+ * real per-label colors the chips render: Linear's team `issueLabels`, GitHub's
+ * repo labels. Best-effort/read-only, mirroring `availableStatuses`.
+ */
+export interface ListLabelsResult {
+  labels: IssueLabel[];
 }
 
 /**

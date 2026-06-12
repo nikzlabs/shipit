@@ -26,7 +26,7 @@ import { createSessionLoopDetector } from "../loop-detector.js";
 import type { SessionContainerManager, SessionContainer } from "../session-container.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface, ChatMessageGroup } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
-import type { WsServerMessage, WsLogEntry } from "../../shared/types.js";
+import type { WsServerMessage, LogSource } from "../../shared/types.js";
 
 interface FakeRunner {
   runner: SessionRunnerInterface;
@@ -126,7 +126,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
   it("writes a server log entry to the per-session ring", () => {
     const { runner } = makeFakeRunner("sess-1");
     const registry = makeFakeRegistry(new Map([["sess-1", runner]]));
-    const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
 
     handleContainerExited(
       "sess-1",
@@ -147,7 +147,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
   it("does not assume exit 137 is OOMKilled when no explicit error string is given", () => {
     const { runner } = makeFakeRunner("sess-1");
     const registry = makeFakeRegistry(new Map([["sess-1", runner]]));
-    const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
 
     handleContainerExited(
       "sess-1",
@@ -188,7 +188,7 @@ describe("handleContainerExited (container_exited breadcrumb)", () => {
 
   it("writes the log ring entry even when the runner is already gone", () => {
     const registry = makeFakeRegistry(new Map());
-    const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
 
     handleContainerExited(
       "sess-missing",
@@ -346,7 +346,7 @@ describe("createMissingContainerReconciler (orphan-runner detector)", () => {
     const registry = makeFakeRegistry(new Map([["sess-orphan", runner]]));
     // No container for sess-orphan — simulates a missed `die` event.
     const containerManager = makeFakeContainerManager(new Map(), new Set());
-    const calls: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const calls: { sid: string; source: LogSource; text: string }[] = [];
 
     const reconcile = createMissingContainerReconciler({
       containerManager,
@@ -544,7 +544,7 @@ describe("setupContainerHealthMonitoring → oomBreaker integration", () => {
     const manager = makeManagerEmitter();
     const fake = makeFakeRunner(sessionId);
     const registry = makeFakeRegistry(new Map([[sessionId, fake.runner]]));
-    const logs: { sid: string; source: WsLogEntry["source"]; text: string }[] = [];
+    const logs: { sid: string; source: LogSource; text: string }[] = [];
     const breaker = createOomCircuitBreaker({ windowMs: 60_000, threshold: 3 });
     const loopDetector = createSessionLoopDetector({ threshold: 3, windowMs: 60_000 });
     setupContainerHealthMonitoring(

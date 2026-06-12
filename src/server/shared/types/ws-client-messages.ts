@@ -1,6 +1,6 @@
 import type { ImageAttachment, FileContextRef, PermissionMode, UploadRef } from "./attachment-types.js";
 import type { AgentId } from "../../session/agents/agent-process.js";
-import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsClearLogs } from "./terminal-types.js";
+import type { WsTerminalStart, WsTerminalInput, WsTerminalResize, WsSubscribeLogs, WsLogClear } from "./terminal-types.js";
 
 export interface WsSendMessage {
   type: "send_message";
@@ -95,11 +95,6 @@ export interface WsStopService {
   name: string;
 }
 
-/** Client → Server: request buffered logs for a compose service. */
-export interface WsSubscribeServiceLogs {
-  type: "subscribe_service_logs";
-  name: string;
-}
 
 // ---- Prompt queuing messages ----
 
@@ -174,12 +169,29 @@ export interface WsUndoIssueWrite {
   cardId: string;
 }
 
+/**
+ * Client → Server: answer a sensitive-action permission request (docs/193 /
+ * SHI-112). Sent when the user clicks Approve / Deny on the inline
+ * `PermissionRequestCard`. The server forwards the decision to the worker's
+ * broker (keyed by `requestId`), which unblocks the held bridge/RPC call.
+ * `remember` (approve only) adds the file path to the session allow-set so the
+ * same file isn't re-prompted.
+ */
+export interface WsResolvePermission {
+  type: "resolve_permission";
+  requestId: string;
+  behavior: "allow" | "deny";
+  remember?: boolean;
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
   | WsUndoIssueWrite
+  | WsResolvePermission
   | WsSendReviewMessage
-  | WsClearLogs
+  | WsSubscribeLogs
+  | WsLogClear
   | WsAnswerQuestion
   | WsSetAgentMessage
   | WsSetModelMessage
@@ -191,7 +203,6 @@ export type WsClientMessage =
   | WsInitPreviewConfig
   | WsStartService
   | WsStopService
-  | WsSubscribeServiceLogs
   | WsRewindAtGap
   | WsRewindPreviewRequest
   | WsRewindRestoreRequest

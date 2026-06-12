@@ -19,9 +19,8 @@
  * so opening the menu never also opens the row's detail view.
  */
 
-import { useState, type ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, CircleNotchIcon } from "@phosphor-icons/react";
-import { Badge } from "./ui/badge.js";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -31,49 +30,102 @@ import {
 import { PRIORITY_OPTIONS } from "./issues-filter.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { cn } from "../utils/cn.js";
+import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
+import { adaptColorForSurface } from "../utils/status-color.js";
 import type { IssuePriorityLevel, TrackerIssue } from "../../server/shared/types.js";
 
 /** A tracker status option ({@link TrackerIssue.status} / `availableStatuses`). */
 export interface IssueStatusRef {
   name: string;
   type?: string;
+  /** The tracker's own state color (Linear hex), preferred for the dot. */
+  color?: string;
 }
 
 /**
- * Priority badge variant by normalized level — shared so the editor's trigger
- * and option rows match the read-only badges elsewhere in the tab.
+ * Priority palette — a FIXED, theme-independent set of hues, so a given priority
+ * reads the same in every theme. Priority must NOT borrow the semantic
+ * `--color-error/warning/info/success` tokens: the warm/Claude themes
+ * deliberately re-tint those (e.g. `--color-info` is terracotta there, not blue),
+ * which made "Medium" flip from blue to red across themes and collide with
+ * Urgent/High. These base hues are run through {@link adaptColorForSurface} at
+ * each use so they stay legible per theme while keeping one consistent hue.
  */
-export const PRIORITY_VARIANT: Record<IssuePriorityLevel, "default" | "error" | "warning" | "info"> = {
-  urgent: "error",
-  high: "warning",
-  medium: "info",
-  low: "default",
-  none: "default",
+export const PRIORITY_DOT_COLOR: Record<IssuePriorityLevel, string> = {
+  urgent: "#ef4444", // red
+  high: "#f59e0b", // amber
+  medium: "#3b82f6", // blue
+  low: "#22c55e", // green
+  none: "#9ca3af", // gray
 };
 
-/** Menu-dot color by normalized priority level. */
-const PRIORITY_DOT: Record<IssuePriorityLevel, string> = {
-  urgent: "bg-(--color-error)",
-  high: "bg-(--color-warning)",
-  medium: "bg-(--color-info)",
-  low: "bg-(--color-text-tertiary)",
-  none: "bg-(--color-text-tertiary)",
-};
+/** The contrast-adapted priority hue for a surface (dot fill, badge text, etc.). */
+export function priorityColor(level: IssuePriorityLevel, surfaceLum: number): string {
+  return adaptColorForSurface(PRIORITY_DOT_COLOR[level], surfaceLum);
+}
 
-/** Status-dot color by normalized workflow-state type (mirrors the detail pill). */
-function statusDotClass(type?: string): string {
+/** Shared pill chrome for the priority badge/trigger. */
+const PRIORITY_PILL = "inline-flex items-center rounded-full px-2 h-[18px] text-[11px] font-medium leading-none";
+
+/**
+ * A higher contrast target for the pill's TEXT than the 1.8 used for dots: a
+ * swatch only has to be *seen*, but text has to be *read*, so on a light theme a
+ * light hue like amber "High" must darken further to stay legible on its tint.
+ */
+const PRIORITY_TEXT_CONTRAST = 3.8;
+
+/**
+ * Tinted-bg + colored-text style for a priority pill. The tint keeps the true
+ * hue (a faint version of the base color); the text is adapted to the stronger
+ * text-contrast target so it reads on that tint in every theme.
+ */
+function priorityPillStyle(level: IssuePriorityLevel, surfaceLum: number): CSSProperties {
+  const base = PRIORITY_DOT_COLOR[level];
+  return {
+    backgroundColor: `color-mix(in oklab, ${base} 16%, transparent)`,
+    color: adaptColorForSurface(base, surfaceLum, PRIORITY_TEXT_CONTRAST),
+  };
+}
+
+/**
+ * Read-only priority pill (e.g. GitHub, where priority isn't editable). Renders
+ * nothing for "No priority". Shared so the list, detail, and trigger all match.
+ */
+export function PriorityBadge({
+  priority,
+  surfaceLum,
+}: {
+  priority: TrackerIssue["priority"];
+  surfaceLum: number;
+}) {
+  if (priority.level === "none") return null;
+  return (
+    <span className={PRIORITY_PILL} style={priorityPillStyle(priority.level, surfaceLum)}>
+      {priority.label}
+    </span>
+  );
+}
+
+/** Fallback dot color by workflow-state type, when the tracker gives no color. */
+function statusTypeColor(type?: string): string {
   switch (type) {
     case "completed":
-      return "bg-(--color-success)";
+      return "var(--color-success)";
     case "started":
-      return "bg-(--color-accent)";
-    case "canceled":
-    case "unstarted":
-    case "backlog":
-    case "triage":
+      return "var(--color-accent)";
     default:
-      return "bg-(--color-text-tertiary)";
+      return "var(--color-text-tertiary)";
   }
+}
+
+/**
+ * The status-dot color (a CSS color string): the tracker's own state color when
+ * present (Linear's per-state hex / GitHub's open-closed hues), falling back to
+ * a coarse type→token only when the tracker gives none. Shared so the list,
+ * detail pill, edit menu, and filter all show the exact same color a status has.
+ */
+export function statusDotColor(status?: { type?: string; color?: string }): string {
+  return status?.color ?? statusTypeColor(status?.type);
 }
 
 /**
@@ -81,14 +133,37 @@ function statusDotClass(type?: string): string {
  * badge, or a faint "No priority" placeholder when unset so an unprioritized
  * issue still has something to click. Exported for read-only-adjacent reuse.
  */
-export function PriorityTrigger({ priority }: { priority: TrackerIssue["priority"] }) {
+export function PriorityTrigger({
+  priority,
+  surfaceLum,
+}: {
+  priority: TrackerIssue["priority"];
+  surfaceLum: number;
+}) {
+  // Caret lives INSIDE the value and reveals on hover by growing from zero
+  // width — so the colored pill itself widens slightly to show a "⌄" in its own
+  // color, rather than a separate gray box appearing around it. `group/fe` is
+  // the editor button (FieldEditor); read-only uses of this trigger have no such
+  // ancestor, so the caret simply stays collapsed.
+  const caret = (
+    <CaretDownIcon
+      size={ICON_SIZE.XS}
+      className="shrink-0 max-w-0 overflow-hidden opacity-0 transition-all duration-150 group-hover/fe:ml-0.5 group-hover/fe:max-w-3.5 group-hover/fe:opacity-100 group-focus-visible/fe:ml-0.5 group-focus-visible/fe:max-w-3.5 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:ml-0.5 group-data-[state=open]/fe:max-w-3.5 group-data-[state=open]/fe:opacity-100"
+    />
+  );
   if (priority.level === "none") {
-    return <span className="text-[11px] text-(--color-text-tertiary)">No priority</span>;
+    return (
+      <span className="inline-flex items-center text-[11px] text-(--color-text-tertiary)">
+        No priority
+        {caret}
+      </span>
+    );
   }
   return (
-    <Badge variant={PRIORITY_VARIANT[priority.level]} className="h-[18px] text-[11px]">
+    <span className={PRIORITY_PILL} style={priorityPillStyle(priority.level, surfaceLum)}>
       {priority.label}
-    </Badge>
+      {caret}
+    </span>
   );
 }
 
@@ -104,6 +179,7 @@ function FieldEditor({
   saving,
   error,
   align = "start",
+  chevron = true,
   children,
 }: {
   ariaLabel: string;
@@ -111,6 +187,13 @@ function FieldEditor({
   saving: boolean;
   error: string | null;
   align?: "start" | "end";
+  /**
+   * Render the shared inline (gray) caret after the trigger. The priority
+   * editor sets this `false` because its trigger ({@link PriorityTrigger})
+   * grows the colored pill to reveal an in-pill caret instead, so the value
+   * itself is the only affordance — no separate box or sibling chevron.
+   */
+  chevron?: boolean;
   children: ReactNode;
 }) {
   return (
@@ -124,21 +207,28 @@ function FieldEditor({
           onClick={(e) => e.stopPropagation()}
           onKeyDown={(e) => e.stopPropagation()}
           className={cn(
-            "group/fe inline-flex max-w-full items-center gap-1 rounded -mx-1 px-1 py-0.5",
-            "cursor-pointer transition-colors hover:bg-(--color-bg-hover)",
-            "focus:outline-none focus-visible:bg-(--color-bg-hover)",
+            // No hover box — the affordance is the value reacting (the pill
+            // grows / a caret slides out). A surrounding highlight clashed with
+            // the pill's round corners and read as a weird nested box.
+            "group/fe inline-flex max-w-full items-center rounded-full",
+            "cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-(--color-border-focus)",
             error && "ring-1 ring-(--color-error)",
           )}
         >
           <span className="inline-flex min-w-0 items-center gap-1">{trigger}</span>
           {saving ? (
-            <CircleNotchIcon size={ICON_SIZE.XS} className="shrink-0 animate-spin text-(--color-text-tertiary)" />
-          ) : (
+            <CircleNotchIcon size={ICON_SIZE.XS} className="ml-1 shrink-0 animate-spin text-(--color-text-tertiary)" />
+          ) : chevron ? (
+            // Caret space is RESERVED (always `ml-0.5` + icon width), only its
+            // opacity fades in — so revealing it never changes the trigger's
+            // width and never pushes a sibling (e.g. the priority pill next to
+            // the status on the detail page). The priority editor opts out
+            // (`chevron={false}`) and grows its pill instead.
             <CaretDownIcon
               size={ICON_SIZE.XS}
-              className="shrink-0 text-(--color-text-tertiary) opacity-0 transition-opacity group-hover/fe:opacity-100"
+              className="ml-0.5 shrink-0 opacity-0 text-(--color-text-tertiary) transition-opacity duration-150 group-hover/fe:opacity-100 group-focus-visible/fe:opacity-100 group-data-[state=open]/fe:opacity-100"
             />
-          )}
+          ) : null}
         </button>
       </DropdownMenuTrigger>
       {/* The menu renders in a portal but is still a React descendant of the
@@ -192,6 +282,9 @@ export function IssueStatusEditor({
   align?: "start" | "end";
 }) {
   const { saving, error, run } = useFieldWrite();
+  // The menu pops in a dropdown (elevated surface), so adapt the option dots to
+  // that surface's luminance — not wherever the trigger row happens to sit.
+  const menuSurface = useSurfaceLuminance("--color-bg-elevated");
 
   if (options.length === 0) return <>{trigger}</>;
 
@@ -206,7 +299,11 @@ export function IssueStatusEditor({
               if (!selected) void run(() => onSelect(opt.name));
             }}
           >
-            <span className={cn("size-2 shrink-0 rounded-full", statusDotClass(opt.type))} aria-hidden="true" />
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: adaptColorForSurface(statusDotColor(opt), menuSurface) }}
+              aria-hidden="true"
+            />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.name}</span>
             {selected && <CheckIcon size={ICON_SIZE.XS} weight="bold" className="shrink-0 text-(--color-accent)" />}
           </DropdownMenuItem>
@@ -231,9 +328,10 @@ export function IssuePriorityEditor({
   align?: "start" | "end";
 }) {
   const { saving, error, run } = useFieldWrite();
+  const menuSurface = useSurfaceLuminance("--color-bg-elevated");
 
   return (
-    <FieldEditor ariaLabel={ariaLabel} trigger={trigger} saving={saving} error={error} align={align}>
+    <FieldEditor ariaLabel={ariaLabel} trigger={trigger} saving={saving} error={error} align={align} chevron={false}>
       {PRIORITY_OPTIONS.map((opt) => {
         const selected = opt.level === current;
         return (
@@ -243,7 +341,11 @@ export function IssuePriorityEditor({
               if (!selected) void run(() => onSelect(opt.level));
             }}
           >
-            <span className={cn("size-2 shrink-0 rounded-full", PRIORITY_DOT[opt.level])} aria-hidden="true" />
+            <span
+              className="size-2 shrink-0 rounded-full"
+              style={{ backgroundColor: priorityColor(opt.level, menuSurface) }}
+              aria-hidden="true"
+            />
             <span className={cn("flex-1 truncate", selected && "text-(--color-text-primary)")}>{opt.label}</span>
             {selected && <CheckIcon size={ICON_SIZE.XS} weight="bold" className="shrink-0 text-(--color-accent)" />}
           </DropdownMenuItem>

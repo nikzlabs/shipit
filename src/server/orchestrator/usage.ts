@@ -12,6 +12,7 @@ interface UsageRow {
   cache_create_tokens: number | null;
   model: string | null;
   context_tokens: number | null;
+  sub_agent_id: string | null;
   created_at: string;
 }
 
@@ -46,9 +47,10 @@ export class UsageManager {
       INSERT INTO usage_turns (
         session_id, cost_usd, duration_ms,
         input_tokens, output_tokens,
-        cache_read_tokens, cache_create_tokens, model, context_tokens
+        cache_read_tokens, cache_create_tokens, model, context_tokens,
+        sub_agent_id
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this.stmtSessionUsage = this.db.prepare(`
       SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
@@ -81,7 +83,7 @@ export class UsageManager {
     durationMs: number,
     inputTokens?: number,
     outputTokens?: number,
-    extra?: { cacheRead?: number; cacheCreate?: number; model?: string; contextTokens?: number },
+    extra?: { cacheRead?: number; cacheCreate?: number; model?: string; contextTokens?: number; subAgentId?: string },
   ): void {
     this.stmtInsert.run(
       sessionId,
@@ -93,6 +95,8 @@ export class UsageManager {
       extra?.cacheCreate ?? null,
       extra?.model ?? null,
       extra?.contextTokens ?? null,
+      // docs/144 — attribute to the sub-agent when the turn was a spawn.
+      extra?.subAgentId ?? null,
     );
   }
 

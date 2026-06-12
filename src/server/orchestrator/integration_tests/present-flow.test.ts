@@ -4,16 +4,17 @@
  * Drives the full server-side path with a REAL session worker (no Docker):
  *
  *   worker POST /agent-ops/present/submit
- *     → worker stores in its PresentBuffer + broadcasts a `present_content` SSE
+ *     → worker records metadata in its PresentRegistry + broadcasts a
+ *       `present_content` SSE (metadata only — no bytes)
  *     → ContainerSessionRunner's SSE client receives it (handleSSEEvent)
- *     → runner translates it into a `present_content` WS message + caches it
+ *     → runner translates it into a `present_content` WS message + caches metadata
  *
  * Listening on `runner.on("message")` captures the exact `WsServerMessage` the
  * orchestrator relays to every attached viewer — i.e. what a TestClient would
  * receive as `WsPresentContentMessage`. We assert the translated message shape,
- * the runner's `presentations` cache (the authoritative source the
- * `present_state` replay reads on viewer attach), and the `present_cleared`
- * path via the worker's LRU eviction.
+ * the runner's `presentations` metadata cache (the authoritative source the
+ * `present_state` replay reads on viewer attach), the `present_cleared` path via
+ * a revision, and the lazy byte-read via the worker's `/present/:id/raw` route.
  *
  * Mirrors the real-worker harness from container-agent-wiring.test.ts so no new
  * fake-worker infra is needed — the live SessionWorker already registers the
@@ -94,11 +95,22 @@ function extForMime(mimeType: string | undefined): string {
 }
 
 /**
+ * Fetch an artifact's raw bytes from the worker's lazy disk-read endpoint —
+ * the same `{ content, mimeType }` the orchestrator proxies to the Present tab.
+ * Metadata rides the WS messages; bytes are only ever read on demand here.
+ */
+async function fetchRaw(workerUrl: string, presentId: string): Promise<{ content: string; mimeType: string }> {
+  const res = await fetch(`${workerUrl}/present/${presentId}/raw`);
+  expect(res.ok).toBe(true);
+  return (await res.json()) as { content: string; mimeType: string };
+}
+
+/**
  * Write the artifact to a temp file and POST its absolute path to the worker's
- * file-based submit broker (docs/188). The worker reads the file back into the
- * `content` field, so downstream assertions on `content` still hold. `mimeType`
- * is forwarded only when explicitly set (it overrides extension inference);
- * omitting it exercises the inference path.
+ * file-based submit broker (docs/188). The worker records only the path; bytes
+ * are read from disk on demand (see {@link fetchRaw}). `mimeType` is forwarded
+ * only when explicitly set (it overrides extension inference); omitting it
+ * exercises the inference path.
  */
 async function submitPresent(
   workerUrl: string,
@@ -144,8 +156,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       agentFactory: () => new FakeWorkerAgent(),
       port: 0,
       host: "127.0.0.1",
-      // Treat the temp dir as the workspace so artifacts submitted from it count
-      // as in-workspace (drives the `inWorkspace` flag the UI uses to hide Save).
+      // Treat the temp dir as the workspace so submitted artifacts resolve there.
       workspaceDir: tmpDir,
     });
     const address = await worker.start();
@@ -194,34 +205,38 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(msg.type).toBe("present_content");
     expect(msg.sessionId).toBe("present-session"); // runner's id, not the worker's env
     expect(msg.presentId).toBe(presentId);
-    expect(msg.content).toBe("<h1>Chart</h1>");
     expect(msg.mimeType).toBe("text/html");
     expect(msg.title).toBe("Sales Chart");
     // The presented file path rides through verbatim so the header can show it.
     expect(msg.filePath).toBe(filePath);
-    // The artifact was written under the worker's workspaceDir (the temp dir),
-    // so it's flagged in-workspace — the UI hides Save for it.
-    expect(msg.inWorkspace).toBe(true);
     expect(typeof msg.createdAt).toBe("string");
     expect(msg.replaceId).toBeUndefined();
+    // The WS message carries NO bytes — content is fetched lazily from disk.
+    expect((msg as { content?: unknown }).content).toBeUndefined();
 
-    // The runner caches the entry — this is what `present_state` replays to a
-    // viewer that attaches after the tool fired (index.ts attachToRunner reads
+    // The runner caches metadata only — this is what `present_state` replays to
+    // a viewer that attaches after the tool fired (index.ts attachToRunner reads
     // runner.presentations).
     expect(runner.presentations).toHaveLength(1);
     expect(runner.presentations[0]).toMatchObject({
       presentId,
-      content: "<h1>Chart</h1>",
       mimeType: "text/html",
       title: "Sales Chart",
       filePath,
-      inWorkspace: true,
+    });
+    expect((runner.presentations[0] as { content?: unknown }).content).toBeUndefined();
+
+    // The bytes are served on demand from disk via the raw endpoint.
+    expect(await fetchRaw(workerUrl, presentId)).toMatchObject({
+      content: "<h1>Chart</h1>",
+      mimeType: "text/html",
     });
   });
 
-  it("flags an artifact outside the workspace as not in-workspace", async () => {
+  it("presents an artifact that lives outside the workspace", async () => {
     // Write the file to a sibling temp dir that is NOT the worker's workspaceDir,
-    // then submit its absolute path — it resolves outside the workspace.
+    // then submit its absolute path. The path rides through verbatim and the
+    // bytes are still served on demand — there is no in/out-of-workspace concept.
     const outsideDir = await mkdtemp(path.join(os.tmpdir(), "present-outside-"));
     const outsidePath = path.join(outsideDir, "throwaway.html");
     await writeFile(outsidePath, "<p>throwaway</p>", "utf8");
@@ -241,7 +256,7 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
       );
       const msg = presentContentMsgs().find((m) => m.presentId === presentId)!;
       expect(msg.filePath).toBe(outsidePath);
-      expect(msg.inWorkspace).toBe(false);
+      expect((await fetchRaw(workerUrl, presentId)).content).toBe("<p>throwaway</p>");
     } finally {
       await rm(outsideDir, { recursive: true, force: true });
     }
@@ -290,7 +305,6 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
 
     const revision = presentContentMsgs().find((m) => m.presentId === second.presentId)!;
     expect(revision.replaceId).toBe(first.presentId);
-    expect(revision.content).toBe("<p>v2</p>");
 
     // The worker also broadcasts a present_cleared for the superseded id.
     await waitFor(
@@ -303,35 +317,23 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     // (the trailing clear for the now-absent old id is a no-op).
     expect(runner.presentations).toHaveLength(1);
     expect(runner.presentations[0].presentId).toBe(second.presentId);
-    expect(runner.presentations[0].content).toBe("<p>v2</p>");
+    // The revised bytes are served on demand under the new id.
+    expect((await fetchRaw(workerUrl, second.presentId)).content).toBe("<p>v2</p>");
   });
 
-  it("emits present_cleared and drops the oldest entry on LRU eviction (cap 20)", async () => {
-    // Fill the buffer to its 20-entry cap, then one more to force eviction of
-    // the oldest. Capture the first id so we can assert it's the one cleared.
-    const first = await submitPresent(workerUrl, { content: "entry-0", mimeType: "text/plain" });
-    for (let i = 1; i < 20; i++) {
-      await submitPresent(workerUrl, { content: `entry-${i}`, mimeType: "text/plain" });
+  it("keeps every presented artifact — no size or count eviction", async () => {
+    // The registry holds only metadata, so there is nothing to cap: submit a
+    // batch and assert they ALL stay cached, none evicted, none cleared.
+    const ids: string[] = [];
+    for (let i = 0; i < 25; i++) {
+      const { presentId } = await submitPresent(workerUrl, { content: `entry-${i}`, mimeType: "text/plain" });
+      ids.push(presentId);
     }
-    await waitFor(() => presentContentMsgs().length >= 20, 5000, "20 present_content messages");
-    expect(runner.presentations).toHaveLength(20);
+    await waitFor(() => presentContentMsgs().length >= 25, 5000, "25 present_content messages");
 
-    // The 21st submission evicts the oldest (first) entry.
-    const evictor = await submitPresent(workerUrl, { content: "entry-20", mimeType: "text/plain" });
-
-    await waitFor(
-      () => presentClearedMsgs().some((m) => m.presentId === first.presentId),
-      3000,
-      "present_cleared for evicted oldest entry",
-    );
-
-    const cleared = presentClearedMsgs().find((m) => m.presentId === first.presentId)!;
-    expect(cleared.type).toBe("present_cleared");
-    expect(cleared.sessionId).toBe("present-session");
-
-    // Cache stays capped at 20: oldest dropped, newest present.
-    expect(runner.presentations).toHaveLength(20);
-    expect(runner.presentations.some((p) => p.presentId === first.presentId)).toBe(false);
-    expect(runner.presentations.some((p) => p.presentId === evictor.presentId)).toBe(true);
+    expect(runner.presentations).toHaveLength(25);
+    expect(runner.presentations.map((p) => p.presentId)).toEqual(ids);
+    // No spontaneous clears — the only present_cleared paths are revision + full clear.
+    expect(presentClearedMsgs()).toHaveLength(0);
   });
 });

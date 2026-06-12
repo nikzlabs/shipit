@@ -76,6 +76,14 @@ export interface ClaudeRunOptions {
    * creation. See docs/129-stop-hook-pr-enforcement/plan.md.
    */
   autoCreatePr?: boolean;
+  /**
+   * docs/193 — the MCP tool the CLI calls for permission prompts
+   * (`--permission-prompt-tool`, e.g. `mcp__shipit-permission__permission_prompt`).
+   * Routes the CLI's built-in sensitive-file gate to ShipIt's approve/deny card
+   * instead of a headless auto-deny (SHI-112). Omitted when the permission
+   * bridge couldn't be located.
+   */
+  permissionPromptTool?: string;
 }
 
 export class ClaudeProcess extends EventEmitter {
@@ -94,7 +102,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, permissionPromptTool } = opts;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -162,6 +170,14 @@ export class ClaudeProcess extends EventEmitter {
 
     if (mcpConfigPath) {
       args.push("--mcp-config", mcpConfigPath);
+    }
+
+    // docs/193 — route the CLI's sensitive-file permission gate to ShipIt's
+    // approve/deny card. `--permission-prompt-tool` is honored only in `--print`
+    // mode (this is the headless path), and only fires for "ask"-tier calls —
+    // allowlisted working-dir edits still auto-approve, so no prompt spam.
+    if (permissionPromptTool) {
+      args.push("--permission-prompt-tool", permissionPromptTool);
     }
 
     if (model) {
@@ -348,7 +364,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   private requestIdCounter = 0;
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why `mcp__shipit-review__*` and
     // `mcp__shipit-present__*` join `mcp__playwright__*` in both lists
@@ -377,6 +393,9 @@ export class StreamingClaudeProcess extends EventEmitter {
 
     if (sessionId) args.push("--resume", sessionId);
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
+    // docs/193 — see ClaudeProcess.run above. Honored in --print stream-json
+    // mode too; routes the sensitive-file gate to ShipIt's approve/deny card.
+    if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
     if (model) args.push("--model", model);
     if (settingsPath) args.push("--settings", settingsPath);
     if (systemPrompt) {

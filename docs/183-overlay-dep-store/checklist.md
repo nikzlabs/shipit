@@ -98,10 +98,16 @@ Split into a pure inert plumbing refactor (3a) and the flag-gated populator + in
       nested, mixed-filter, non-git→[]); `prepareOverlaySpecs` (flag-off, ineligible, valid→spec anchored
       at the mountpoint, tracked-source→[], no-state-volume→[]); **end-to-end** populator →
       `buildConfigForWorkspace` → `create` mounts the volume nested at `/workspace/node_modules`.
-- [ ] **(host-gated) Validate the recursive file-tree watcher descends into the nested submount**
-      (same-namespace inotify across a mount boundary) — the one item the nested-overlay spike
-      deliberately did not cover. Needs a running container on real overlay; see `host-overlay-spike.sh`'s
-      inotify rung. Not verifiable in-environment (no real Docker overlay), like the host spikes.
+- [x] **Watcher × nested submount — RESOLVED (2026-06-11, two halves).** (1) The production
+      watcher never descends into a dep dir at all: `FileWatcher` is chokidar with a
+      per-segment `ignored` matcher over `WORKSPACE_SKIP_DIRS` (which includes
+      `node_modules`), deliberately so ignored subtrees consume zero inotify watches —
+      so the original question is moot for the production path. (2) The kernel half was
+      verified anyway with a privileged spike on the measurement host (exact topology:
+      overlay mounted nested at `<ws>/node_modules`): same-namespace inotify fires for
+      writes into the merged submount, for copy-up modifications of lower-layer files,
+      AND for siblings across the mount boundary — so even a future watcher that opted
+      into dep dirs would receive events.
 
 ### Phase 4 — Snapshot + publish, per dep dir (split into 4a/4b)
 
@@ -207,14 +213,89 @@ makes them all correct for N volumes. See `plan.md` → "Disk cleanup under the 
       change needed (the overlay is transparent to the agent; escalation behavior is unchanged when the
       flag is off).
 
+### Phase 7.5 — Live hardening on real Docker (2026-06-10; see FINDINGS.md "Live end-to-end")
+
+The first live run of Phases 1–7 on a real daemon (local dev stack, flag on) found five
+defects — including three that made the feature inoperable or actively harmful. All fixed
+behind the flag, one PR each; FINDINGS.md has the full forensics.
+
+- [x] **Flag passthrough** — dev + VPS compose forward `OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}`
+      (PR #1230; the orchestrator reads its own process env, so without this the documented
+      opt-in silently no-oped).
+- [x] **Compose mounts only provisioned volumes** — `prepareOverlaySpecs({ requireProvisioned })`
+      + `whenWorkerReady` ordering; a pre-flag container no longer fails the whole `compose up`
+      with "external volume not found" (PR #1231).
+- [x] **Overlay dir provisioning** — specs carry orchestrator-visible `orchDirs`; container
+      create mkdirs lower/upper/work before `createOverlayVolume` (cold mounts ENOENT'd
+      before this — no overlay container had ever started on a real daemon) (PR #1232).
+- [x] **Marker/overlay coordination + empty-snapshot guard** — the worker `/install` gate
+      distrusts a matching marker when a declared dep dir is an empty overlay mount; the
+      publish declines empty snapshots (`skipped-empty`). Kills the observed
+      skip-over-empty-overlay → publish-empty-base poisoning chain (PR #1234).
+- [x] **Generational bases** — `overlay-base/<hash>/g<N>`, immutable; publish never renames
+      over a mounted lowerdir (spike-proven: that breaks merged-readdir for every live
+      same-scope mount); janitor reaps superseded generations (PR #1235).
+- [x] **Base-hit marker pre-stamp** (PR #1239) — the pointer records the publisher's worker
+      runtimeKey + install commands; container creation pre-stamps `.shipit/.install-done`
+      when every dep dir's pointer matches the clone's HEAD, pinned generation, and commands.
+      Verified live: standby pre-install dropped from ~4 s to a 25 ms marker-skip, and the
+      per-session upper from 66 MB to ~1.1 MB; the advanced scenario correctly declines the
+      stamp and delta-installs (1.2 MB upper, `advanced:d2g2`).
+- [ ] **(follow-up) Dev-service install race** — `ETXTBSY`/`TAR_ENTRY_ERROR` noise when a
+      compose service's own `npm install` runs over the same shared dep dir right after
+      `agent.install`; the service can latch to `error` after the install gate closes.
+      Consider extending the gate past the publish snapshot, or a one-shot retry.
+
 ### Phase 7 — Enable path + measure & tune
 
-- [ ] Wire the overlay-spec into the **warm-pool standby** + **on-activation** paths so warm-claimed
-      sessions get the dep-dir overlay (today they would silently run plain).
-- [ ] Measure warm-install on the **containerized** path (`main` unchanged / `main`-advanced / cold;
-      separate network from extract/link). Set the final depth cap from measurement.
-- [ ] **Flip `OVERLAY_DEP_STORE` on** (the user's call) — only after Phases 1–6 are all merged and the
-      flag invariant above is satisfied.
+- [x] **Wired the overlay-spec into the warm-pool standby path** (`warm-pool-manager.ts`): the standby is
+      now built via `prepareOverlaySpecs` → `buildConfigForWorkspace({ overlaySpecs })` → `createStandby`,
+      so a warm-claimed session — which **reuses** the standby container keyed by its `appSessionId`
+      (factory reuse branch, `app-lifecycle.ts`) — already carries the per-dep-dir overlay mounts. This was
+      the **only** container-creation path that bypassed overlay wiring; every other path (cold create,
+      standby-fallback, restart-agent, idle-recreate, on-activation `getOrCreate`) already routes through
+      `createContainerForRunner`, which threads `prepareOverlaySpecs` (Phase 3b). `prepareOverlaySpecs`
+      returns `[]` (no Docker call) when the flag is off / repo ineligible, so the standby config is
+      byte-for-byte unchanged until the store is enabled. **Tests** (`session-container.test.ts`): the warm
+      `createStandby` path mounts the overlay nested + records `overlayVolumeNames` (flag on); overlay-free
+      standby (flag off). `warm-sessions` + `standby-container` integration suites stay green.
+- [x] **(user, empirical — needs real Docker)** Measure warm-install on the **containerized** path
+      (`main` unchanged / `main`-advanced / cold; separate network from extract/link). Set the final depth
+      cap from measurement. **Instrumentation is in place** (flag-gated): the orchestrator prints a
+      greppable `[overlay-measure] session=… repo=… install_ok=… install_ms=…
+      dirs=<depDir>:<outcome>:d<depth>g<generation>,…` line per overlay session, and
+      [`prototype/measure-warm-install.md`](./prototype/measure-warm-install.md) is the runbook.
+      **Live numbers (2026-06-10, local Docker Desktop/WSL2 — full table in FINDINGS.md):**
+      cold `created:d1g1` 2.2–3.3 s / 66 MB upper; `main` unchanged with the pre-stamp = npm
+      skipped entirely (~1.1 MB upper, standby pre-install 25 ms); `main` advanced =
+      delta-only (`advanced:d2g2`, 1.2 MB upper). Still open (canary-scale): the **depth
+      sweep 1→16** and a **flag-off control on a large (~30 k-file) repo** — template-vue is
+      too small to show the extract/link saving. `DEFAULT_DEPTH_CAP = 16` — d2 showed no
+      degradation; no data contradicts 16.
+      **DONE at production scale (2026-06-11, prod VPS canary — see FINDINGS.md "Production
+      canary"):** flag-off control ~23 s serial plain install (~31k files, warm cache); cold
+      `created:d1g1` ~47 s under standby contention; `main` unchanged = pre-stamp, **npm never
+      runs**, 4 KB upper (claim floor 5.4–6.7 s, harness overhead); `main` advanced = delta-only,
+      ~22.5 s npm pass, 316 KB upper. **Depth sweep d2→d15 + flatten + post-flatten: flat
+      22.2–25 s at every depth → `DEFAULT_DEPTH_CAP = 16` stands.** The canary also found and
+      fixed two ship-blockers (PR #1256 check-ignore dir-pattern; PR #1257 install-resync race).
+- [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
+      invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
+      complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately
+      (ideally a canary) after the measurement above. Intentionally left to the user — this PR keeps the
+      flag OFF.
+      **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
+      Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
+      `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) a short
+      dedicated reclaim cutoff for superseded base generations (observed 7.9 GB/repo in 30 min of
+      churn vs a 30-day startup-only sweep) and/or hardlink-dedup between generations (each publish
+      currently materializes a full independent ~470 MB copy; dedup makes the disk win
+      unconditional — see the FINDINGS break-even analysis); (c) `SESSION_WORKER_IMAGE_ID` wired on
+      deploys (scope rotation on worker-image rebuilds); (d) auto-skip overlay for pnpm / Yarn-PnP
+      repos (hardlinks can't cross the overlayfs boundary, so pnpm silently degrades to copying —
+      see FINDINGS "Would pnpm / Yarn give better savings?"); (e) the flag-rollback marker fix (a marker written while
+      deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
+      findings for the flip decision".
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

@@ -229,6 +229,14 @@ export interface AutoMergeState {
   /** GitHub settings URL — shown in tooltip when managed. */
   settingsUrl?: string;
   error?: PrAutoMergeError;
+  /**
+   * True once the ShipIt-managed merge REST call has succeeded. The PR is
+   * merging; we keep `enabled` true until the poller observes the merged state
+   * (so the client keeps treating auto-merge as owning the next move and stays
+   * silent), and short-circuit any further merge attempts. Internal poller
+   * bookkeeping — never broadcast to the client.
+   */
+  completed?: boolean;
 }
 
 /** Author of a PR comment or review (subset of GitHub's Actor). */

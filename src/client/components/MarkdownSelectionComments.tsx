@@ -334,12 +334,12 @@ function CommentInput({
         onKeyDown={handleKeyDown}
       />
       <div className="flex justify-end gap-2 mt-2">
-        <Button variant="ghost" size="sm" onClick={onCancel}>
+        <Button variant="ghost" size="md" onClick={onCancel}>
           Cancel
         </Button>
         <Button
           variant="primary"
-          size="sm"
+          size="md"
           onClick={() => { if (text.trim()) onSubmit(text.trim()); }}
           disabled={!text.trim()}
         >

@@ -5,6 +5,16 @@ description: Serve buffered present artifacts at a worker-local URL so the agent
 
 # Present artifact screenshot loop — let the agent see its own visual work
 
+> **Update (serve-from-disk):** the screenshot loop is unchanged in behavior,
+> but the byte source moved. `present` is now file-based (docs/188) and the
+> worker retains **no bytes** — `PresentBuffer` was replaced by a metadata-only
+> `PresentRegistry` (`src/server/session/present-registry.ts`). `GET /present-files/:id`
+> now reads the artifact from disk on demand (via `readArtifactContent` in
+> `present-view.ts`) and renders it as before. A 404 means the `presentId` is
+> unknown or its file is gone from disk (not "LRU-evicted" — there is no
+> eviction). Treat the `PresentBuffer` / in-memory / LRU mentions below as
+> historical. See `docs/093-agent-present/plan.md`.
+
 ## Problem
 
 The `present` MCP tool (docs/093, Tier 1) is **inline-only**. When the agent

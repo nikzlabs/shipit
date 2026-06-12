@@ -75,6 +75,7 @@ describe("buildVisualElements", () => {
         }),
       },
       { name: "bugReport", msg: card({ bugReport: { cardId: "b1" } }) },
+      { name: "permissionPrompt", msg: card({ permissionPrompt: { requestId: "p1" } }) },
       { name: "issueWrite", msg: card({ issueWrite: { cardId: "iw1" } }) },
       { name: "issueRef", msg: card({ issueRef: { cardId: "ir1", tracker: "github", identifier: "o/r#1", title: "T", createdAt: "2026-06-01T00:00:00.000Z" } }) },
       { name: "compaction", msg: card({ compaction: { id: "c1", createdAt: "2026-06-01T00:00:00.000Z" } }) },

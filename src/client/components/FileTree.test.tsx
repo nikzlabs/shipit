@@ -194,4 +194,27 @@ describe("FileTree", () => {
     fireEvent.click(screen.getByLabelText("Add data.csv to chat"));
     expect(onAddToChat).toHaveBeenCalledWith("/uploads/data.csv");
   });
+
+  it("keeps rows compact and lets hover action buttons overflow (-my-1) instead of growing the row", () => {
+    const uploads = [
+      { id: "1", name: "data.csv", status: "ready" as const, path: "/uploads/data.csv", size: 100, progress: 100 },
+    ];
+    render(<FileTree tree={sampleTree} onRefresh={() => {}} uploads={uploads} onEdit={() => {}} onDownload={() => {}} onAddToChat={() => {}} onDeleteUpload={() => {}} />);
+
+    // Rows stay compact — no reserved min height that would make them taller at rest.
+    const fileRow = screen.getByText("index.ts").closest("div[draggable]");
+    expect(fileRow?.className).not.toContain("min-h-7");
+    const folderRow = screen.getByText("src").closest("button");
+    expect(folderRow?.className).not.toContain("min-h-7");
+    const uploadRow = screen.getByText("data.csv").closest("button")?.parentElement;
+    expect(uploadRow?.className).not.toContain("min-h-7");
+
+    // The 28px (h-7) hover action buttons carry a negative vertical margin so their
+    // margin-box doesn't stretch the flex row — the row height is unchanged on hover.
+    for (const label of ["Edit index.ts", "Download index.ts", "Add index.ts to chat", "Add data.csv to chat", "Delete data.csv"]) {
+      const btn = screen.getByLabelText(label);
+      expect(btn.className).toContain("h-7");
+      expect(btn.className).toContain("-my-1");
+    }
+  });
 });

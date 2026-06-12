@@ -17,6 +17,7 @@ import type {
   TrackerInfo,
   TrackerIssue,
   TrackerComment,
+  IssueLabel,
   IssuePriority,
   IssuePriorityLevel,
 } from "../../../shared/types.js";
@@ -87,6 +88,7 @@ interface LinearStateNode {
   id: string;
   name: string;
   type?: string | null;
+  color?: string | null;
   position?: number | null;
 }
 
@@ -107,8 +109,8 @@ interface LinearIssueNode {
   description?: string | null;
   priority: number;
   priorityLabel?: string | null;
-  labels?: { nodes: { name: string }[] } | null;
-  state?: { name: string; type?: string } | null;
+  labels?: { nodes: { name: string; color?: string | null }[] } | null;
+  state?: { name: string; type?: string; color?: string } | null;
   assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
   /** Only fetched by `getIssue` (the team's workflow states) — drives `availableStatuses`. */
   team?: { states?: { nodes: LinearStateNode[] } | null } | null;
@@ -116,11 +118,13 @@ interface LinearIssueNode {
 
 function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
   const assigneeName = node.assignee?.displayName ?? node.assignee?.name ?? undefined;
-  const labels = (node.labels?.nodes ?? []).map((l) => l.name).filter(Boolean);
+  const labels: IssueLabel[] = (node.labels?.nodes ?? [])
+    .filter((l) => Boolean(l.name))
+    .map((l) => ({ name: l.name, ...(l.color ? { color: l.color } : {}) }));
   const states = node.team?.states?.nodes
     ?.slice()
     .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-    .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}) }));
+    .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}), ...(s.color ? { color: s.color } : {}) }));
   return {
     id: node.id,
     identifier: node.identifier,
@@ -129,7 +133,15 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     ...(node.description ? { description: node.description } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
     ...(labels.length > 0 ? { labels } : {}),
-    ...(node.state ? { status: { name: node.state.name, ...(node.state.type ? { type: node.state.type } : {}) } } : {}),
+    ...(node.state
+      ? {
+          status: {
+            name: node.state.name,
+            ...(node.state.type ? { type: node.state.type } : {}),
+            ...(node.state.color ? { color: node.state.color } : {}),
+          },
+        }
+      : {}),
     ...(assigneeName
       ? { assignee: { name: assigneeName, ...(node.assignee?.avatarUrl ? { avatarUrl: node.assignee.avatarUrl } : {}) } }
       : {}),
@@ -176,15 +188,15 @@ const ISSUE_FIELDS = `
   description
   priority
   priorityLabel
-  labels { nodes { name } }
-  state { name type }
+  labels { nodes { name color } }
+  state { name type color }
   assignee { id name displayName avatarUrl }
 `;
 
 /** `getIssue` additionally pulls the team's workflow states for `availableStatuses`. */
 const ISSUE_FIELDS_WITH_STATES = `
   ${ISSUE_FIELDS}
-  team { states(first: 100) { nodes { id name type position } } }
+  team { states(first: 100) { nodes { id name type position color } } }
 `;
 
 /** Run a GraphQL query against Linear and return the typed `data` payload. */
@@ -313,7 +325,7 @@ export class LinearTracker implements Tracker {
     return data.issue ? toTrackerIssue(data.issue) : null;
   }
 
-  async listStatuses(): Promise<{ name: string; type?: string }[]> {
+  async listStatuses(): Promise<{ name: string; type?: string; color?: string }[]> {
     if (!this.token || !this.team) {
       throw new Error("Linear is not configured (missing token or team binding)");
     }
@@ -321,14 +333,29 @@ export class LinearTracker implements Tracker {
     // `getIssue` attaches per-issue, fetched once here for the list editor.
     const data = await this.gql<{ team: { states: { nodes: LinearStateNode[] } } | null }>(
       `query TeamStates($teamId: String!) {
-        team(id: $teamId) { states(first: 100) { nodes { id name type position } } }
+        team(id: $teamId) { states(first: 100) { nodes { id name type position color } } }
       }`,
       { teamId: this.team.id },
     );
     return (data.team?.states.nodes ?? [])
       .slice()
       .sort((a, b) => (a.position ?? 0) - (b.position ?? 0))
-      .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}) }));
+      .map((s) => ({ name: s.name, ...(s.type ? { type: s.type } : {}), ...(s.color ? { color: s.color } : {}) }));
+  }
+
+  async listLabels(): Promise<IssueLabel[]> {
+    if (!this.token) {
+      throw new Error("Linear is not configured (missing token)");
+    }
+    // Workspace `issueLabels` (incl. team-scoped ones), the same set
+    // `resolveLabelIds` matches against, here paired with each label's color.
+    const data = await this.gql<{ issueLabels: { nodes: { name: string; color?: string | null }[] } }>(
+      `query IssueLabels { issueLabels(first: 250) { nodes { name color } } }`,
+      {},
+    );
+    return data.issueLabels.nodes
+      .filter((l) => Boolean(l.name))
+      .map((l) => ({ name: l.name, ...(l.color ? { color: l.color } : {}) }));
   }
 
   async listComments(id: string): Promise<TrackerComment[]> {

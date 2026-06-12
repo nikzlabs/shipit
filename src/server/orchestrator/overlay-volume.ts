@@ -117,6 +117,23 @@ export function overlayBaseDir(stateDir: string, scopeHash: string): string {
   return path.join(stateDir, OVERLAY_BASE_SUBDIR, scopeHash);
 }
 
+/**
+ * On-disk path of ONE immutable base generation:
+ * `<stateDir>/overlay-base/<scope-hash>/g<generation>`.
+ *
+ * Bases are generational because a live overlay mount pins its lowerdir
+ * dentries — and (spike-proven on the docs/183 measurement host) renaming or
+ * deleting that directory out from under the mount breaks merged-readdir for
+ * every same-scope session (readdir returns empty while path lookups still
+ * resolve), silently corrupting npm/tar/ls in those containers. So a publish
+ * NEVER mutates or replaces an existing generation: it writes the next
+ * `g<N+1>` beside it and moves the pointer. `g0` is the empty cold-start
+ * lowerdir (created at container-create time, before any base exists).
+ */
+export function overlayBaseGenDir(stateDir: string, scopeHash: string, generation: number): string {
+  return path.join(stateDir, OVERLAY_BASE_SUBDIR, scopeHash, `g${generation}`);
+}
+
 // ---------------------------------------------------------------------------
 // Overlay spec
 // ---------------------------------------------------------------------------
@@ -221,6 +238,24 @@ export async function createOverlayVolume(
       Labels: { ...labels, [OVERLAY_MANAGED_LABEL]: "true" },
     });
   });
+}
+
+/**
+ * Whether a named volume currently exists on the daemon. Used by the compose
+ * path to mount only overlay volumes the agent container was actually built
+ * with — re-deriving eligibility there can disagree with what was provisioned
+ * (e.g. a container created before `OVERLAY_DEP_STORE` was enabled), and a
+ * compose override referencing a missing `external` volume fails the whole
+ * `compose up`. 404 → false; any other daemon error propagates.
+ */
+export async function volumeExists(docker: Docker, volumeName: string): Promise<boolean> {
+  try {
+    await docker.getVolume(volumeName).inspect();
+    return true;
+  } catch (err) {
+    if (errStatus(err) === 404) return false;
+    throw err;
+  }
 }
 
 /**

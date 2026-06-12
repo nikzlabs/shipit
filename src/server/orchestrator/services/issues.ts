@@ -12,6 +12,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type {
   ListIssuesResult,
   ListIssueCommentsResult,
+  ListLabelsResult,
   PostIssueCommentResult,
   MutateIssueResult,
   TrackerId,
@@ -31,6 +32,21 @@ import {
   type GitHubTrackerContext,
 } from "../trackers/index.js";
 import { ServiceError } from "./types.js";
+
+/**
+ * Whether an issue's status marks it as a duplicate. A duplicate is terminal —
+ * the work lives on the issue it duplicates — so it belongs with the done set,
+ * not the open working set, and is dropped when the caller hasn't opted into
+ * done issues (the Issues tab's "Show done" toggle off; the agent's default
+ * `open` list scope). Matched on the normalized status *name* because neither
+ * tracker exposes "duplicate" as a status *type*: Linear models it as a
+ * workflow state named "Duplicate" (whose type may be `canceled` or, in some
+ * teams, a non-terminal type that the adapter's type filter wouldn't catch),
+ * and GitHub as a close-reason the read adapter folds into a plain "Closed".
+ */
+export function isDuplicateStatus(name?: string): boolean {
+  return name?.trim().toLowerCase() === "duplicate";
+}
 
 /** All known trackers + their configured state — drives the sub-tab switcher. */
 export function listTrackers(
@@ -69,13 +85,49 @@ export async function listIssuesForTracker(
     // degrades to "no inline editor" rather than a 502.
     const [issues, availableStatuses] = await Promise.all([
       tracker.listIssues(options),
-      tracker.listStatuses().catch(() => [] as { name: string; type?: string }[]),
+      tracker.listStatuses().catch(() => [] as { name: string; type?: string; color?: string }[]),
     ]);
+    // Duplicates are terminal, so they only belong in the list once the caller
+    // opts into done issues — drop them from the default open working set
+    // (tracker-neutral; see `isDuplicateStatus`).
+    const visible = options?.includeDone
+      ? issues
+      : issues.filter((i) => !isDuplicateStatus(i.status?.name));
     return {
       tracker: tracker.info(),
-      issues,
+      issues: visible,
       ...(availableStatuses.length > 0 ? { availableStatuses } : {}),
     };
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
+ * List the full set of available labels (name + color) for one tracker — the
+ * foundation a follow-up label filter facet / on-page editor consumes, and the
+ * same fetch that yields the real per-label colors the chips render (SHI-92
+ * foundation). Like `listIssuesForTracker`, an unconfigured tracker is a normal
+ * empty state (`{ labels: [] }`), not an error — the follow-up UI degrades to
+ * "no labels to pick from" rather than surfacing a failure. A reachable-tracker
+ * failure (auth/network) surfaces as a 502.
+ */
+export async function listLabelsForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<ListLabelsResult> {
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = registry.get(trackerId as TrackerId);
+  if (!tracker) {
+    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+  }
+  if (!tracker.isConfigured()) {
+    return { labels: [] };
+  }
+  try {
+    return { labels: await tracker.listLabels() };
   } catch (err) {
     throw new ServiceError(502, err instanceof Error ? err.message : String(err));
   }
@@ -306,7 +358,9 @@ function toResolutionServiceError(err: unknown): never {
 function describeAttrs(issue: TrackerIssue): string {
   const parts: string[] = [];
   if (issue.priority.level !== "none") parts.push(`priority: ${issue.priority.label}`);
-  if (issue.labels && issue.labels.length > 0) parts.push(`labels: ${issue.labels.join(", ")}`);
+  if (issue.labels && issue.labels.length > 0) {
+    parts.push(`labels: ${issue.labels.map((l) => l.name).join(", ")}`);
+  }
   return parts.length > 0 ? ` (${parts.join("; ")})` : "";
 }
 
@@ -400,10 +454,13 @@ export async function updateIssueForTracker(
 ): Promise<IssueWriteOutcome> {
   const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
   const prior = await loadIssueOr404(tracker, id);
+  // The prior label *names* (the read shape now carries colors; the write API
+  // resolves names → ids, and undo restores by name).
+  const priorLabelNames = (prior.labels ?? []).map((l) => l.name);
   // Merge requested labels into the existing set (additive, de-duped).
   const mergedLabels =
     patch.labels !== undefined
-      ? [...(prior.labels ?? []), ...patch.labels.filter((l) => !(prior.labels ?? []).includes(l))]
+      ? [...priorLabelNames, ...patch.labels.filter((l) => !priorLabelNames.includes(l))]
       : undefined;
   let updated: TrackerIssue;
   try {
@@ -420,7 +477,7 @@ export async function updateIssueForTracker(
     kind: "edit",
     ...(patch.title !== undefined ? { previousTitle: prior.title } : {}),
     ...(patch.description !== undefined ? { previousDescription: prior.description ?? "" } : {}),
-    ...(patch.labels !== undefined ? { previousLabels: prior.labels ?? [] } : {}),
+    ...(patch.labels !== undefined ? { previousLabels: priorLabelNames } : {}),
     ...(patch.priority !== undefined ? { previousPriority: prior.priority.level } : {}),
   };
   const changed = [
@@ -436,7 +493,9 @@ export async function updateIssueForTracker(
   // for label/priority edits so a labels-only edit isn't a blank line.
   const attrParts: string[] = [];
   if (patch.priority !== undefined) attrParts.push(`priority → ${updated!.priority.label}`);
-  if (patch.labels !== undefined) attrParts.push(`labels: ${(updated!.labels ?? []).join(", ") || "none"}`);
+  if (patch.labels !== undefined) {
+    attrParts.push(`labels: ${(updated!.labels ?? []).map((l) => l.name).join(", ") || "none"}`);
+  }
   const content: IssueWriteContent = {
     ...(patch.title !== undefined ? { title: { before: prior.title, after: patch.title } } : {}),
     ...(patch.description !== undefined ? { descriptionChanged: true } : {}),

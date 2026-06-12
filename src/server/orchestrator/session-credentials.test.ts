@@ -9,6 +9,8 @@ import {
   ensureSessionCredentialsScaffold,
   provisionAgentCredentials,
   provisionProviderAccountCredentials,
+  provisionSubAgentCredentials,
+  removeSubAgentCredentials,
   removeSessionCredentials,
   syncAgentTokenIn,
   syncProviderAccountTokenIn,
@@ -833,5 +835,40 @@ describe("session-credentials", () => {
     // Source-of-truth root is untouched.
     expect(fs.existsSync(path.join(root, ".claude"))).toBe(true);
     expect(() => removeSessionCredentials(root, sid)).not.toThrow();
+  });
+
+  // docs/144 — sub-agent credential provisioning is scoped to the sub-agent's
+  // subtree and never touches the pinned agent's.
+  describe("sub-agent credentials (docs/144)", () => {
+    it("provisions only the sub-agent subtree next to the pinned agent's", () => {
+      // Pin the session to Claude first (write-once on first turn).
+      provisionAgentCredentials(root, sid, "claude");
+      const dir = perSessionCredentialsDir(root, sid);
+      expect(fs.existsSync(path.join(dir, ".claude"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+
+      // Cross-provider spawn provisions Codex alongside, without disturbing Claude.
+      provisionSubAgentCredentials(root, sid, "codex");
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
+    });
+
+    it("removes ONLY the sub-agent subtree, leaving the pinned agent's intact", () => {
+      provisionAgentCredentials(root, sid, "claude");
+      provisionSubAgentCredentials(root, sid, "codex");
+      const dir = perSessionCredentialsDir(root, sid);
+      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(true);
+
+      removeSubAgentCredentials(root, sid, "codex");
+      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+      // The pinned Claude subtree is untouched.
+      expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
+      expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(true);
+    });
+
+    it("removeSubAgentCredentials is best-effort on a missing subtree", () => {
+      provisionAgentCredentials(root, sid, "claude");
+      expect(() => removeSubAgentCredentials(root, sid, "codex")).not.toThrow();
+    });
   });
 });

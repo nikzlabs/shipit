@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -32,6 +32,30 @@ export interface PersistedBugReport {
   /** Set when a failed attempt dropped the card back to an editable draft. */
   errorMessage?: string;
   scopeError?: boolean;
+}
+
+/**
+ * docs/193 / SHI-112 — the persisted state of an inline permission-request card
+ * (agent-agnostic: Claude's sensitive-file gate, Codex's escalation approval).
+ * Recorded in-band with the turn that raised it (off the agent-event stream via
+ * the broker's `agent_permission_request` broadcast), so it lands at its true
+ * transcript position and its terminal state (approved / denied) survives a
+ * reload. Lifecycle transitions patch this record in place via
+ * `updatePermissionCard`. `requestId` is the broker's id — the SAME key the WS
+ * card, the client store, and the `resolve_permission` round-trip use, so a
+ * rehydrated card lines up with its live counterpart (don't rename it to
+ * `cardId`: the client keys on `requestId`).
+ */
+export interface PersistedPermissionRequest {
+  requestId: string;
+  phase: "pending" | "approved" | "denied";
+  toolName: string;
+  path?: string;
+  summary?: string;
+  agentId?: string;
+  createdAt: string;
+  /** True when the user approved with "remember this file for the session". */
+  remembered?: boolean;
 }
 
 export type RewindSnapshotPayload =
@@ -126,6 +150,15 @@ export interface PersistedMessage {
    */
   bugReport?: PersistedBugReport;
   /**
+   * docs/193 / SHI-112 — when set, this message renders an inline
+   * `PermissionRequestCard` (approve/deny + remember). Like the bug-report card
+   * it arrives off the agent-event stream (the broker's `agent_permission_request`
+   * broadcast) so it's recorded in-band with the proposing turn and persisted
+   * here; the approved/denied transition patches this record in place via
+   * `updatePermissionCard` so a resolved card stays resolved on reload.
+   */
+  permissionPrompt?: PersistedPermissionRequest;
+  /**
    * docs/177 — when set, this message renders an inline issue-write provenance
    * card ("agent commented on …", "set SHI-28 → In Review") with an Undo
    * affordance. Like the bug-report card it arrives off the agent-event stream
@@ -154,6 +187,14 @@ export interface PersistedMessage {
    * a history reload like any other transcript content.
    */
   compaction?: CompactionCard;
+  /**
+   * docs/196 — when set, this message renders an inline "Child PR merged /
+   * closed" card in the PARENT session's transcript. Surfaced from a PR-poller
+   * event (a watched child's PR reached a terminal state) — outside any turn, so
+   * it's appended directly to history and persisted here so it survives a reload
+   * like any other transcript content. Static payload (no client store).
+   */
+  childMerged?: ChildMergedCard;
   /**
    * docs/117 Phase 2 — when set, this message renders an inline
    * `SpawnedSessionCard` for a child the agent spawned via `shipit session
@@ -258,9 +299,11 @@ interface MessageRow {
   code_rollback_hash: string | null;
   voice_note: string | null;
   bug_report: string | null;
+  permission_prompt: string | null;
   issue_write: string | null;
   issue_ref: string | null;
   compaction: string | null;
+  child_merged: string | null;
   spawned_session: string | null;
   spawn_failed: string | null;
   agent_review: string | null;
@@ -279,8 +322,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, issue_write, issue_ref, compaction, spawned_session, spawn_failed, agent_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @issue_write, @issue_ref, @compaction, @spawned_session, @spawn_failed, @agent_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, issue_write, issue_ref, compaction, child_merged, spawned_session, spawn_failed, agent_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @issue_write, @issue_ref, @compaction, @child_merged, @spawned_session, @spawn_failed, @agent_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -289,7 +332,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, child_merged=@child_merged,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
@@ -349,9 +392,11 @@ export class ChatHistoryManager {
       code_rollback_hash: msg.codeRollbackHash ?? null,
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
       bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
+      permission_prompt: msg.permissionPrompt ? JSON.stringify(msg.permissionPrompt) : null,
       issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
       issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
+      child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
       spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
       agent_review: msg.agentReview ? JSON.stringify(msg.agentReview) : null,
@@ -383,9 +428,11 @@ export class ChatHistoryManager {
     if (row.code_rollback_hash) msg.codeRollbackHash = row.code_rollback_hash;
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
+    if (row.permission_prompt) msg.permissionPrompt = JSON.parse(row.permission_prompt) as PersistedPermissionRequest;
     if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
     if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
+    if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
     if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];
     if (row.agent_review) msg.agentReview = JSON.parse(row.agent_review) as PersistedMessage["agentReview"];
@@ -461,6 +508,35 @@ export class ChatHistoryManager {
         const merged: PersistedBugReport = { ...card, ...patch };
         const msg = this.fromRow(row);
         msg.bugReport = merged;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
+   * docs/193 — patch a persisted permission-request card's lifecycle in place,
+   * keyed by `requestId` (the broker's id). Driven by the broker's
+   * `agent_permission_resolved` broadcast (the user's decision) so the card's
+   * terminal state (approved / denied) survives a reload. The proposing-turn row
+   * is finalized by resolution time, so a direct update is safe. Returns true if
+   * a matching card was found.
+   */
+  updatePermissionCard(
+    sessionId: string,
+    requestId: string,
+    patch: Partial<PersistedPermissionRequest>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.permission_prompt) continue;
+        const card = JSON.parse(row.permission_prompt) as PersistedPermissionRequest;
+        if (card.requestId !== requestId) continue;
+        const merged: PersistedPermissionRequest = { ...card, ...patch };
+        const msg = this.fromRow(row);
+        msg.permissionPrompt = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }

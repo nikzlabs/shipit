@@ -45,6 +45,25 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("/tmp/");
   });
 
+  it("tells the agent to resolve preview URLs through the service registry", () => {
+    const out = buildAgentSystemInstructions();
+    const sessionIdToken = ["$", "{SHIPIT_SESSION_ID}"].join("");
+    expect(out).toContain("Do not assume the app is reachable on `127.0.0.1:<port>`");
+    expect(out).toContain(`/api/sessions/${sessionIdToken}/services`);
+    expect(out).toContain("containerIp");
+    expect(out).toContain("http://<containerIp>:<port>");
+  });
+
+  it("documents shipit issue as the tracker interface", () => {
+    const out = buildAgentSystemInstructions();
+    expect(out).toContain("## Issue Trackers");
+    expect(out).toContain("Use `shipit issue`");
+    expect(out).toContain("both Linear and GitHub Issues");
+    expect(out).toContain("Do not conclude you lack Linear access");
+    expect(out).toContain("shipit issue status <pointer> completed");
+    expect(out).toContain("/shipit-docs/issues.md");
+  });
+
   it("includes the gh pr create nudge unconditionally", () => {
     const out = buildAgentSystemInstructions();
     expect(out).toContain("## Pull requests");

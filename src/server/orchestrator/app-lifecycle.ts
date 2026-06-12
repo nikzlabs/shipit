@@ -10,7 +10,10 @@ import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
 import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
+import type { MergeWatchManager } from "./merge-watch.js";
+import { applyMergedPrIssueRefs, type MergedPrInfo } from "./issue-lifecycle.js";
 import { getErrorMessage } from "./validation.js";
+import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
@@ -29,9 +32,11 @@ import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages
 import type { GitHubAuthManager } from "./github-auth.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentRegistry } from "../shared/agent-registry.js";
-import type { AgentId, AgentProcess, WsLogEntry } from "../shared/types.js";
+import type { AgentId, AgentProcess, LogSource, LogRingEntry } from "../shared/types.js";
 import type { AppDeps, RuntimeMode } from "./app-di.js";
 import { SessionRunner } from "./session-runner.js";
+import { listAgents } from "./services/settings.js";
+import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
 
 // ---- Re-exports for extracted modules ----
 //
@@ -86,6 +91,12 @@ export interface ContainerSetupDeps {
   deps: AppDeps;
   isTestMode: boolean;
   credentialsDir: string;
+  /**
+   * Orchestrator-visible state dir (the same volume `WORKSPACE_VOLUME` names).
+   * Threaded into `SessionContainerManager` so the overlay dep store (docs/183)
+   * can create each overlay's lower/upper/work dirs before the daemon mounts them.
+   */
+  stateDir?: string;
   sessionManager: SessionManager;
   /**
    * Runtime mode. When `"local"`, container construction is skipped entirely
@@ -128,6 +139,7 @@ export async function setupContainerManager(
     // Production mode: Docker is required
     containerManager = new SessionContainerManager({
       workspaceVolume: process.env.WORKSPACE_VOLUME,
+      stateDir: setupDeps.stateDir,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
     });
@@ -223,7 +235,7 @@ export interface RunnerFactoryDeps {
    * also land in `recentLogs`, so a copied diagnostic preserves the
    * failure history.
    */
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * OOM circuit breaker, shared with `setupContainerHealthMonitoring`.
    * When tripped for a session, container creation is refused with a
@@ -269,7 +281,7 @@ async function createContainerForRunner(opts: {
   session?: Pick<SessionInfo, "remoteUrl" | "kind">;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** OOM circuit breaker — when tripped, creation is refused. */
   oomBreaker?: SessionOomCircuitBreaker;
 }): Promise<void> {
@@ -468,7 +480,7 @@ export interface MissingContainerReconcilerDeps {
   containerManager: SessionContainerManager | null;
   runnerRegistry: SessionRunnerRegistry;
   /** Per-session log ring writer. Required — the whole point is to leave a breadcrumb. */
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
   /**
    * Resolves a session's workspace dir + Docker limits, used to re-adopt a
    * live-but-untracked container before force-disposing its runner. Same
@@ -623,6 +635,12 @@ export interface PrPollerDeps {
    */
   containerManager?: SessionContainerManager | null;
   /**
+   * docs/196 — the notify-on-merge deliverer. When present, the poller's
+   * `onPrTerminalState` hook forwards every terminal PR transition (merged /
+   * closed) to it; the manager no-ops unless the session carries an armed watch.
+   */
+  mergeWatchManager?: MergeWatchManager;
+  /**
    * docs/146 — required to construct the `RebaseAndResolveCb` closure that
    * the auto-resolve manager invokes per attempt. The closure builds a
    * `RebaseDriverDeps` per-call from these shared managers + the per-session
@@ -661,7 +679,7 @@ export function createPrStatusPoller(
   const {
     deps, githubAuthManager, sessionManager, sseBroadcast,
     runnerRegistry, createRepoGit, getBareCacheDir, pruneSessionVolumes,
-    onRepoMainAdvanced, containerManager,
+    onRepoMainAdvanced, containerManager, mergeWatchManager,
     createGitManager, chatHistoryManager, usageManager, authManager, credentialStore,
     drainQueueForSession, agentFactory,
   } = pollerDeps;
@@ -744,6 +762,32 @@ export function createPrStatusPoller(
       });
       return { outcome: "fixed" };
     },
+    // docs/194 — drive the issue-lifecycle "→ completed" transition off the
+    // merged PR body. Wired only when the tracker plumbing is present (the
+    // credential store + chat-history manager); degraded test setups that omit
+    // either leave the feature inert. Best-effort — never throws into the poller.
+    ...(credentialStore && chatHistoryManager
+      ? {
+          onMergedPr: (info: MergedPrInfo) =>
+            applyMergedPrIssueRefs(
+              {
+                credentialStore,
+                ...(deps.trackerFetchImpl ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
+                githubAuthManager,
+                sessionManager,
+                chatHistoryManager,
+                runnerRegistry,
+              },
+              info,
+            ),
+        }
+      : {}),
+    // docs/196 — forward every terminal PR transition (merged / closed) to the
+    // notify-on-merge deliverer. It no-ops unless the session carries an armed
+    // watch, so wiring it unconditionally is cheap.
+    ...(mergeWatchManager
+      ? { onPrTerminalState: (info) => mergeWatchManager.handleChildPrTerminal(info) }
+      : {}),
     onMergeDetectedCb: async (sessionId) => {
       try {
         const result = await markMergedAndPruneExcess(
@@ -794,25 +838,28 @@ const MAX_LOG_ENTRIES = 500;
  * replayed the entire history — meaning logs from every session leaked into
  * every other session's terminal panel.
  */
-export function createLogBuffer(): {
-  getLogBuffer: (sessionId: string) => WsLogEntry[];
+export function createLogBuffer(logStore?: LogStore): {
+  getLogBuffer: (sessionId: string) => LogRingEntry[];
   clearLogBuffer: (sessionId: string) => void;
   removeLogBuffer: (sessionId: string) => void;
-  broadcastLog: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+  broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
 } {
-  const buffers = new Map<string, WsLogEntry[]>();
+  const buffers = new Map<string, LogRingEntry[]>();
 
   const broadcastLog = (
     sessionId: string,
-    source: WsLogEntry["source"],
+    source: LogSource,
     text: string,
   ) => {
-    const entry: WsLogEntry = {
-      type: "log_entry",
+    const entry: LogRingEntry = {
       source,
       text,
       timestamp: new Date().toISOString(),
     };
+    // Durable backlog (docs/192): survives orchestrator restart / idle eviction
+    // / container destruction, unlike the in-memory ring below. The ring is
+    // kept as a hot, synchronous cache for diagnostics (`getLogBuffer`).
+    logStore?.appendEntry(sessionId, "agent", { ts: entry.timestamp, source, text });
     let buf = buffers.get(sessionId);
     if (!buf) {
       buf = [];
@@ -826,7 +873,10 @@ export function createLogBuffer(): {
 
   return {
     getLogBuffer: (sessionId: string) => buffers.get(sessionId) ?? [],
-    clearLogBuffer: (sessionId: string) => { buffers.set(sessionId, []); },
+    clearLogBuffer: (sessionId: string) => {
+      buffers.set(sessionId, []);
+      logStore?.clearSync(sessionId, "agent");
+    },
     removeLogBuffer: (sessionId: string) => { buffers.delete(sessionId); },
     broadcastLog,
   };
@@ -853,6 +903,63 @@ export interface EventWiringDeps {
   credentialsDir: string;
   /** Session metadata — used to find sessions pinned to an agent on re-auth (A3). */
   sessionManager: SessionManager;
+}
+
+export function markProviderAccountUnauthenticated(opts: {
+  agentId: AgentId;
+  accountId: string;
+  providerAccountManager: ProviderAccountManager;
+  agentRegistry: AgentRegistry;
+  sseBroadcast: (event: string, data: unknown) => void;
+}): void {
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  try {
+    providerAccountManager.setAccountStatus(agentId, accountId, "auth_failed");
+  } catch (err) {
+    console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
+  }
+  agentRegistry.refreshAuth(agentId);
+  sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
+}
+
+/**
+ * Recovery counterpart to {@link markProviderAccountUnauthenticated}. When the
+ * OAuth refresher rotates a previously-revoked account's token back to a
+ * healthy state, the account is genuinely usable again — flip its persisted
+ * status back to `ready`, recompute the agent's cached `authConfigured`, and
+ * re-broadcast so the model selector clears its stale "needs auth" state.
+ *
+ * Without this, an account that was marked `auth_failed` (by the refresher's
+ * revoked classification — sometimes a transient/misclassified failure) stays
+ * stuck `auth_failed` forever: the refresher's own success path only cleared an
+ * in-memory flag and emitted an unconsumed SSE, so the agent kept working
+ * (its on-disk token is valid and re-pushed to sessions) while the picker kept
+ * showing "needs auth" and refused model changes.
+ *
+ * Idempotent: a no-op when the account is already `ready`, so the refresher can
+ * signal recovery without forcing a redundant `agent_list` broadcast on every
+ * routine healthy rotation.
+ */
+export function markProviderAccountReauthenticated(opts: {
+  agentId: AgentId;
+  accountId: string;
+  providerAccountManager: ProviderAccountManager;
+  agentRegistry: AgentRegistry;
+  sseBroadcast: (event: string, data: unknown) => void;
+}): void {
+  const { agentId, accountId, providerAccountManager, agentRegistry, sseBroadcast } = opts;
+  const current = providerAccountManager.get(agentId, accountId);
+  if (!current || current.status === "ready") return;
+  try {
+    providerAccountManager.setAccountStatus(agentId, accountId, "ready");
+  } catch (err) {
+    console.error(`[auth] failed to mark account ${accountId} ready:`, err);
+    return;
+  }
+  agentRegistry.refreshAuth(agentId);
+  sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
+  sseBroadcast("agent_list", { agents: listAgents(agentRegistry) });
 }
 
 /** Wire auth event handlers. */
@@ -896,6 +1003,17 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
     })),
   });
+
+  // docs/144 — sign-out sweep. When an agent's auth drops to not-configured,
+  // wipe any in-flight cross-agent credential subtree provisioned for a spawn
+  // from sessions where this agent is NOT the pinned agent, so a sub-agent's
+  // creds never outlive the user's authorization. Guarded so minimal test
+  // stubs (which don't extend EventEmitter) can omit the subscription.
+  if (typeof agentRegistry.on === "function") {
+    agentRegistry.on("sign-out", (agentId: AgentId) => {
+      sweepSubAgentCredentialsOnSignOut(agentId, { sessionManager, credentialsDir });
+    });
+  }
 
   // ---- Per-agent auth wiring (docs/155 Phase 2 + 2b) ----
   // One subscription set per backend, keyed off the auth-manager map. The
@@ -959,6 +1077,8 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         ...(payload?.reason ? { reason: payload.reason } : {}),
         ...(payload?.message ? { message: payload.message } : {}),
       });
+      agentRegistry.refreshAuth(agentId);
+      sseBroadcast("agent_list", agentListPayload());
     });
   }
 

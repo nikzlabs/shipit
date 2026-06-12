@@ -225,6 +225,41 @@ export interface AgentSteerRejectedEvent {
 }
 
 /**
+ * docs/140 — a live steer's **delivery acknowledgment**: the backend confirmed
+ * it accepted the steered user message into the running turn.
+ *
+ * - **Claude** emits this from its `--replay-user-messages` echo of an injected
+ *   user message (`isReplay:true`). The echo fires for every accepted user
+ *   message (including the turn's initial prompt), so the orchestrator matches
+ *   `text` against the steer it sent rather than assuming every replay is a steer.
+ * - **Codex** emits this when its `turn/steer` JSON-RPC request *resolves*
+ *   (the app-server accepted the steer). A rejected `turn/steer` instead emits
+ *   {@link AgentSteerRejectedEvent}.
+ *
+ * Either way the orchestrator marks the matching steer `delivered` so it is not
+ * re-queued at turn end. An un-acked steer (one that fell into the turn-end gap)
+ * IS re-queued.
+ *
+ * A live steer is written to the resident process's stdin while `running` is
+ * still `true`, but the CLI only applies a steered message at its next decision
+ * point (a tool return). When the model is *wrapping up* there is no next
+ * decision point, so a steer injected in that window never lands in the turn —
+ * the turn ends with a `result` and the message is silently lost (it stays in
+ * the transcript but the agent never acts on it). The CLI echoes every user
+ * message it actually accepts into a turn; the orchestrator matches this echo
+ * against the steer it sent, and any steer NOT echoed before the turn's
+ * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ *
+ * `text` is the echoed user-message text (the assembled prompt the CLI
+ * received). NOT chat content — `agent-listeners` consumes it for ack tracking
+ * and returns before the message accumulator (like `agent_steer_rejected`).
+ */
+export interface AgentUserReplayEvent {
+  type: "agent_user_replay";
+  text: string;
+}
+
+/**
  * docs/178 — a context compaction has *started*. Transient progress only: the
  * orchestrator forwards it as an emit-only "Compacting…" indicator and never
  * persists it (it has no place in the scrollback once the matching
@@ -273,6 +308,96 @@ export interface AgentCompactedEvent {
   durationMs?: number;
 }
 
+/**
+ * SHI-112 / docs/193 — an agent backend is asking the user to approve a gated
+ * action (a sensitive-file edit, an escalated command, …) that the backend
+ * cannot auto-approve in ShipIt's headless model. This is the agent-agnostic
+ * canonical shape: the worker's `PermissionBroker` broadcasts it (wrapped in an
+ * `agent_event` SSE frame) the moment a request is registered, regardless of
+ * which adapter produced it:
+ *
+ * - **Claude** routes its built-in sensitive-file gate to ShipIt's
+ *   `--permission-prompt-tool` MCP bridge (`mcp-permission-bridge.ts`), which
+ *   POSTs the request to the worker.
+ * - **Codex** routes the app-server's blocking approval requests
+ *   (`item/.../requestApproval`) through the same broker instead of
+ *   auto-accepting them.
+ *
+ * The orchestrator renders + persists a `permission_request_card` from this
+ * event; the user's approve/deny(+remember) answer flows back as a
+ * `resolve_permission` WS message → `resolvePermission` → the broker, which
+ * unblocks the held bridge/RPC call. The turn stays alive while the request is
+ * pending (the CLI/app-server is blocked inside the tool call), so — unlike
+ * AskUserQuestion — no interrupt/resume is needed.
+ */
+export interface AgentPermissionRequestEvent {
+  type: "agent_permission_request";
+  /** Stable id correlating the request, the rendered card, and the resolution. */
+  requestId: string;
+  /** The tool the agent tried to use (e.g. "Write", "Edit", "Bash", "apply_patch"). */
+  toolName: string;
+  /** The file path / resource the gate fired on, when one can be extracted from the tool input. */
+  path?: string;
+  /** One-line human description of what is being requested (shown on the card). */
+  summary?: string;
+  /** Which agent produced it (display only). */
+  agentId?: AgentId;
+}
+
+/**
+ * docs/193 — the terminal transition for a permission request, broadcast by the
+ * broker when the user answers it (the only thing that settles a request), so
+ * the orchestrator patches the persisted card to its terminal state
+ * idempotently by `requestId`. There is no timeout/expiry transition — an
+ * unanswered request simply stays pending; ShipIt imposes no deadline.
+ */
+export interface AgentPermissionResolvedEvent {
+  type: "agent_permission_resolved";
+  requestId: string;
+  behavior: "allow" | "deny";
+  /** True when the user asked to remember the decision for this path this session. */
+  remembered?: boolean;
+}
+
+/**
+ * docs/193 — the user's answer to a permission request. Travels from the client
+ * (`resolve_permission` WS message) down to the worker's broker, which maps it
+ * to each backend's native response: Claude's `--permission-prompt-tool`
+ * envelope (`{behavior:"allow",updatedInput}` / `{behavior:"deny",message}`),
+ * Codex's approval `{decision:"accept"|"reject"}`.
+ */
+export interface PermissionDecision {
+  behavior: "allow" | "deny";
+  /** Remember an `allow` for this path for the rest of the session (skip re-prompting). */
+  remember?: boolean;
+  /** Optional message surfaced to the agent on `deny`. */
+  message?: string;
+}
+
+/** The fields a backend supplies to open a permission request via the broker. */
+export interface PermissionRequestInput {
+  /** The tool the agent tried to use (e.g. "Write", "Edit", "Bash", "apply_patch"). */
+  toolName: string;
+  /** The raw tool input, used to derive a resource path + summary when not given. */
+  input?: Record<string, unknown>;
+  /** Explicit resource path. When omitted, derived from `input`. */
+  path?: string;
+  /** Explicit one-line summary. When omitted, derived from toolName + path. */
+  summary?: string;
+  /** Which agent raised it (display only). */
+  agentId?: AgentId;
+}
+
+/**
+ * docs/193 — the worker injects this into adapters that surface gated actions
+ * through a native blocking channel (Codex's app-server approval requests). The
+ * adapter calls it to open a user-answerable approve/deny card and blocks on the
+ * returned decision. Bound to the worker's `PermissionBroker.request`. Claude
+ * doesn't use it (its requests arrive via the `--permission-prompt-tool` MCP
+ * bridge, out of band of the adapter).
+ */
+export type PermissionRequester = (input: PermissionRequestInput) => Promise<PermissionDecision>;
+
 export type AgentEvent =
   | AgentInitEvent
   | AgentAssistantEvent
@@ -280,8 +405,11 @@ export type AgentEvent =
   | AgentResultEvent
   | AgentRateLimitsEvent
   | AgentSteerRejectedEvent
+  | AgentUserReplayEvent
   | AgentCompactionStartedEvent
-  | AgentCompactedEvent;
+  | AgentCompactedEvent
+  | AgentPermissionRequestEvent
+  | AgentPermissionResolvedEvent;
 
 /** Unified content blocks (text or tool use). */
 export type AgentContentBlock =
@@ -396,6 +524,20 @@ export interface AgentMcpBugBridge {
 }
 
 /**
+ * Resolved paths to the internal permission-prompt MCP bridge (docs/193). Same
+ * shape and lifecycle as the other bridges. Registered for Claude as the CLI's
+ * `--permission-prompt-tool`: instead of auto-denying a gated (sensitive-file)
+ * edit in headless mode, the CLI calls this bridge, which forwards the request
+ * to the worker's `PermissionBroker` and blocks until the user approves/denies.
+ * Codex doesn't use it (its app-server has a native blocking approval channel
+ * the adapter routes through the same broker).
+ */
+export interface AgentMcpPermissionBridge {
+  tsxBin: string;
+  bridgePath: string;
+}
+
+/**
  * Per-spawn context the worker passes into `AgentProcess.writeMcpConfig()`.
  *
  * The adapter owns the CLI-specific wire format (Claude: `--mcp-config` JSON
@@ -441,6 +583,12 @@ export interface AgentMcpWriteContext {
    * CLI can call the `report_shipit_bug` tool.
    */
   bugBridge: AgentMcpBugBridge | null;
+  /**
+   * The internal permission-prompt bridge (docs/193), or `null` when the worker
+   * can't locate the bridge files. Claude registers it as
+   * `--permission-prompt-tool`; other adapters ignore it.
+   */
+  permissionBridge: AgentMcpPermissionBridge | null;
   /**
    * Surface a server-level failure to the worker so it can broadcast an
    * `mcp_server_status` SSE event. Called when an entry has to be dropped
@@ -547,6 +695,26 @@ export interface AgentProcess extends EventEmitter<AgentProcessEvents> {
    * it ignores them.
    */
   compact?(instructions?: string): void;
+  /**
+   * docs/193 — deliver the user's approve/deny answer for a pending permission
+   * request to the backend. Optional: only meaningful for adapters whose run
+   * surfaces gated actions through the worker's `PermissionBroker` (Claude via
+   * `--permission-prompt-tool`, Codex via its app-server approval channel). The
+   * orchestrator-side `ProxyAgentProcess` forwards it to the worker's
+   * `/agent/permission/resolve` endpoint, where the broker unblocks the held
+   * bridge/RPC call. Implemented by `ProxyAgentProcess` (the orchestrator-side
+   * stand-in for the in-container agent); adapters without a permission channel
+   * may omit it.
+   */
+  resolvePermission?(requestId: string, decision: PermissionDecision): void;
+  /**
+   * docs/193 — accept the worker's `PermissionBroker.request` so the adapter can
+   * route its backend's native blocking approval requests through the shared
+   * approve/deny card instead of auto-deciding. Injected by the worker right
+   * after construction. Optional: only adapters with such a channel (Codex)
+   * implement it; Claude's gate is bridged via `--permission-prompt-tool`.
+   */
+  setPermissionRequester?(requester: PermissionRequester): void;
   /**
    * Write whatever MCP configuration this CLI expects before the worker
    * calls `run()`. Each backend owns its own wire format (Claude:

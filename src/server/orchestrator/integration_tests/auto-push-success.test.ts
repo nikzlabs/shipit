@@ -184,9 +184,9 @@ describe("auto-push: success and failure", () => {
 
     const failLog = messages.find(
       (m) =>
-        m.type === "log_entry" &&
-        "text" in m &&
-        String((m as { text?: string }).text).includes("Auto-push failed"),
+        m.type === "log_append" &&
+        m.channel === "agent" &&
+        m.records.some((r) => r.text.includes("Auto-push failed")),
     );
     expect(failLog).toBeDefined();
 

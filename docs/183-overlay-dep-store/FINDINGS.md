@@ -668,3 +668,277 @@ resolve dep dirs against the host clone so the parent dir is real (the daemon wi
 an absent parent, which we do **not** want to rely on); **(2)** still validate separately —
 the recursive file-tree watcher descending into the nested submount (same-namespace inotify
 across a mount boundary), via `host-overlay-spike.sh`'s inotify rung.
+
+## Live end-to-end on real Docker (2026-06-10, local dev stack, Docker Desktop/WSL2) — five defects found + fixed
+
+First-ever live exercise of the merged Phases 1–7 (the cloud agent that built them had no
+real Docker). Setup: local dev stack (`docker/local/dev/compose.yml`) with
+`OVERLAY_DEP_STORE=1`, test repos `template-vue` (npm, ~50 pkgs / 66 MB) and `tanks`.
+Every defect below was observed live, root-caused, and fixed behind the flag (one PR each):
+
+1. **The flag never reached the orchestrator** (PR #1230). Neither the dev compose nor the
+   VPS compose forwarded `OVERLAY_DEP_STORE` into the `shipit` service env, so
+   `isOverlayEnabled()` was always false — exporting the flag on the host (what the
+   measurement runbook instructed) silently no-oped. Both stacks now pass
+   `OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}` through (default empty = off).
+
+2. **Compose referenced overlay volumes that were never provisioned** (PR #1231). The
+   compose path re-derived eligibility instead of consulting actual provisioned state, so a
+   session whose agent container predated the flag flip had its whole `compose up` fail with
+   `external volume "shipit-<id12>_overlay-<hash8>" not found`. Compose now waits for the
+   container (`whenWorkerReady`) and mounts only volumes that exist (`requireProvisioned`).
+
+3. **Cold overlay mounts always failed with ENOENT** (PR #1232). Nothing created the
+   `lowerdir`/`upperdir`/`workdir` before the daemon's `mount -t overlay`: a cold scope has
+   no published base dir, and the per-session upper/work dirs were created nowhere. Every
+   overlay container create failed → the merged Phases 3–7 had never actually mounted on a
+   real daemon. Specs now carry orchestrator-visible `orchDirs`, mkdir'd at create.
+
+4. **Stale marker + fresh overlay = dep-less session AND a poisoned shared base**
+   (PR #1234). A warm session's clone carried `.shipit/.install-done` from a pre-overlay
+   install; the recreated container mounted an EMPTY overlay over the (hidden) deps; the
+   marker still matched → `/install` skipped → `install_ok=true` → the publish hook tarred
+   the empty merged view and published it as `created:d1g1`. The equal-commit skip then made
+   the empty base permanent. Observed twice (template-vue and tanks scopes, both bases 4 KB).
+   Fixes: the worker gate distrusts a marker when any declared dep dir is an empty overlay
+   mount (`/proc/self/mounts` detection), and the publish declines empty snapshots
+   (`skipped-empty` — verified live blocking the poisoning when an old broken container was
+   claimed again).
+
+5. **The publish swap broke every live same-scope mount** (PR #1235). The atomic
+   rename-over-the-scope-path design assumed pinned lowerdir inodes leave in-flight sessions
+   unaffected. Isolated spike (privileged alpine, tmpfs, kernel 6.6):
+
+   ```
+   before swap: readdir=2 lookup=a
+   after swap:  readdir=0 lookup=a
+   ```
+
+   Unlinking a mounted lowerdir breaks merged-**readdir** (returns empty) while path lookups
+   still resolve — observed live as three containers whose `node_modules` enumerated empty
+   with 66 MB uppers (vite resolved fine; `ls`/`npm`/`tar` saw nothing — which is also what
+   fed defect 4's empty snapshots). Bases are now **immutable generations**
+   (`overlay-base/<hash>/g<N>`): a publish materializes the next generation beside the
+   previous and moves only the pointer; the janitor reaps superseded generations after the
+   age cutoff.
+
+Also attributable from this run, no code change:
+
+- **`npm warn tar TAR_ENTRY_ERROR ENOENT` during installs** has two non-overlay-specific
+  sources: (a) the template's dev service (`command: sh -c "npm install && npm run dev"`)
+  re-running npm over the same shared `node_modules` the agent's `agent.install` populated
+  (two npm processes racing one dir — pre-overlay behavior too), and (b) post-defect-5
+  broken-readdir views confusing npm's reify. Benign `warn`-level noise in case (a);
+  case (b) is eliminated by generational bases.
+- **`ETXTBSY` on `esbuild` postinstall**: the dev service's npm install exec'd a binary the
+  agent-side install had just written through the shared overlay; the service exited 1 and
+  (because the install-running gate had already closed) latched to `error` instead of
+  retrying. A manual restart succeeded (`vite ready in 258 ms` through the overlay). Worth a
+  follow-up on the service retry window; not overlay-specific.
+- **Spawn self-claim + archive recursion** (PR #1236, not overlay-related): `shipit session
+  create` from an ungraduated session claimed the calling parent itself (self-parented
+  session), and the archive cascade had no cycle guard → "Maximum call stack size exceeded".
+
+### Measured (template-vue, npm, warm npm cache, Docker Desktop/WSL2)
+
+All three runbook scenarios were driven live after the fixes (including the base-hit
+marker pre-stamp, PR #1239):
+
+| Scenario | install_ms | outcome | per-session upper | notes |
+|---|---|---|---|---|
+| Marker-skip (no overlay work) | ~220–970 | — | — | floor is worker roundtrips, not "tens of ms" |
+| Cold (empty g0 lower, full npm install) | 2209–3296 | `created:d1g1` | 66 MB | base materialized 75 MB `g1` + pointer w/ marker stamp |
+| **`main` unchanged, BEFORE pre-stamp** | 2605 | `skipped-equal` | **66 MB** | full reinstall + full copy-up — zero benefit (the gap) |
+| **`main` unchanged, AFTER pre-stamp** | npm skipped | `skipped-equal:d1g1` | **1.1 MB** | standby pre-install: `pre-stamped … (base-hit)` → skip in **25 ms** (was ~4 s); deps served from the shared `g1` lowerdir; the residual upper is the dev service's no-op npm pass |
+| `main` advanced (+1 dep on default) | 5640 | `advanced:d2g2` | 1.2 MB | pre-stamp correctly declined (commit mismatch); npm ran a true **delta** over `g1`; `g2` published beside `g1` (generational) |
+| Broken-readdir standby re-claimed | 1211 | `skipped-empty` | — | C5 guard declining the poison — by design |
+
+Headline: the warm path went from "full install + 66 MB per session" to "no npm at all +
+~1 MB per session" (≈60× per-session disk for same-commit sessions), and the advanced path
+does delta-only work. Still open: the **depth sweep 1→16** (needs a sequence of dep-changing
+default-branch pushes; nothing measured so far stresses `DEFAULT_DEPTH_CAP=16` — d2 showed no
+degradation) and a **flag-off control on a large repo** (template-vue's install is small
+enough that cold-with-overlay ≈ plain install; the canary should measure a ~30 k-file repo).
+Note for operators: never delete a live scope's current generation by hand — that replicates
+the readdir breakage on every session pinning it (the janitor's keep-rules encode this).
+
+## Production canary on the prod VPS (2026-06-11, `shipit-16gb`) — Phase 7 measurement + depth sweep
+
+First production-scale run, on the real always-on target (Ubuntu 24.04, ext4, docker 29.5.2,
+4 cores). Flag enabled via `deployment/vps/.env` (`OVERLAY_DEP_STORE=1` — the `.env` file is
+read by every compose invocation including the systemd updater/restarter, so the flag survives
+restarts and self-updates; delete the file + `restart.sh` to disable). Deployed build:
+`main@ece80987`, which includes the two canary-blocker fixes below. Measurement repos:
+`nicolasalt/shipit` (the ~31k-file / 491 MB `node_modules` target this feature was sized
+against) and `nicolasalt/overlay-canary-183` (a throwaway private repo mirroring shipit's
+`package.json`/lockfile, used for all synthetic default-branch dep pushes — real repos got
+none). Sessions were driven via `POST /api/sessions/headless`.
+
+### Two production defects found by the canary (both fixed + merged before measuring)
+
+1. **Fresh sessions never got overlay mounts — the feature was inert for exactly its target
+   population** (PR #1256). `validDepDirsForOverlay` queried `git check-ignore` with the bare
+   dep-dir name; a *directory-only* `.gitignore` pattern (`node_modules/`, the most common
+   form — shipit uses it) does not match the bare name while the directory doesn't exist, and
+   a fresh clone never has dep dirs materialized. Every fresh clone / warm standby / claim
+   silently fell back to a plain install; `docker events` showed zero overlay-volume creates
+   across consecutive fresh sessions. Only a pre-existing workspace whose `node_modules` was
+   already on disk ever mounted an overlay — which is why the 2026-06-10 local live-test (pre-
+   populated workspaces) missed it. Fix: query both bare and trailing-slash forms.
+2. **The install gate could resolve before the install ran** (PR #1257). `runInstall` opens
+   SSE before POSTing `/install`; the first-connect resync probed `/install/status` pre-POST,
+   read `{running:false, lastResult:null}`, and synthesized completion. Observed live:
+   `install_ms=1465` for a ~22 s install, compose starting mid-install, and the publish hook
+   snapshotting a not-yet-installed dep dir (`skipped-empty` guard caught it; a later snapshot
+   would have **published a partially-installed base** which the equal-commit skip then pins).
+   Fix: resync only synthesizes after the POST returns, plus one deterministic post-POST
+   re-probe so lost-`install_done` recovery no longer depends on SSE timing.
+
+### Measured results (warm npm download cache throughout)
+
+| Scenario | install_ms | outcome | per-session upper |
+|---|---|---|---|
+| **Flag-off control** — plain full install, serial (marker timestamps) | **~23 000** | — | n/a (491 MB into the host clone) |
+| Cold (no base), overlay on, concurrent standby install | 46 969 / 46 417 | `created:d1g1` | full install → 503 MB base published |
+| **`main` unchanged — pre-stamped standby** | **npm never ran**; standby ready ~2–3 s after create | (pre-install skipped) | **4 KB** |
+| `main` unchanged — claim of a pre-built standby | 5 428–6 666 | `skipped-equal` | 4–316 KB |
+| `main` advanced — source-only commits (shipit) | 27 681 | `advanced:d2g2` | 316 KB |
+| `main` advanced — one-dep change (canary repo), depths d2…d15 | 22 200–29 532 (median ≈22.5 s) | `advanced:dNgN` | ~hundreds of KB |
+| Depth-cap flatten (16th advance) | 22 380 | `flattened:d1g16` | — |
+| Post-flatten advance | 22 832 | `advanced:d2g17` | — |
+
+Notes on reading the numbers: `install_ms` includes container create (~1.3 s) + claim/worker
+overhead — the marker-skip floor on this host is **~5.4–6.7 s** (vs the 0.2–1 s measured on the
+local stack), so harness overhead dominates skips. The two "cold" rows ran with one concurrent
+warm-pool standby install (the pool replenishes on every claim and pre-installs in parallel);
+the serial flag-off control is the clean baseline.
+
+**What the feature buys, honestly:**
+- **Disk: a conditional win — it holds iff concurrent sessions outnumber retained base
+  generations.** Per-session dep cost drops 491 MB → 4–316 KB, but the store pays ~0.5 GB per
+  *publish* (every default-branch advance followed by a fresh session — source-only commits
+  included, as the shipit `advanced:d2g2` row shows), and superseded generations are retained
+  until reclaim. Both sides of the ledger are ~0.5 GB units, so the net is
+  `(concurrent sessions) − (retained generations)` × 0.5 GB. Under today's reclaim policy
+  (30-day cutoff, startup-only sweep) an actively-merged repo retains *more* generations than
+  it has live sessions — i.e. **as currently configured the disk claim can invert on busy
+  repos**. With a 2–3-day cutoff the win holds for any repo with more than a handful of
+  concurrent sessions (the parallel-sessions workflow ShipIt is built around, and the warm
+  pool's shape — every standby used to be a full private copy). With generation hardlink-dedup
+  (finding 1 below) the win becomes unconditional.
+- **Time: the win is the pre-stamp path, and it is unconditional.** A pre-stamped standby skips npm entirely (~23 s
+  saved per fresh session at an unchanged tip — the common case). The `advanced` path is
+  time-neutral vs plain (~22.5 s either way: npm's idealTree/reify pass over a complete 31k-file
+  tree costs about the same as a full extract on a warm cache); its win is disk-only.
+
+### Depth sweep → DEFAULT_DEPTH_CAP decision
+
+15 synthetic one-dep default-branch pushes on the canary repo, one fresh session per push
+(d2→d15), then the cap flatten and one post-flatten advance. **install_ms is flat across the
+entire range** — 22.2–25 s at every depth (one 29.5 s outlier at d3), flatten itself 22.4 s,
+post-flatten normal. No depth-dependent degradation is detectable above harness noise on ext4.
+**Decision: keep `DEFAULT_DEPTH_CAP = 16`** (the cap's value is bounded-lineage hygiene +
+mount-option length, not performance).
+
+### Operational findings for the flip decision
+
+1. **Generation accumulation is the main pre-flip risk — it decides whether the disk win
+   exists at all.** The sweep left
+   `overlay-base/<canary-scope>/` holding 17 immutable generations ≈ **7.9 GB for one repo in
+   ~30 min of churn** (8.9 GB total with shipit's 3). Superseded generations are reclaimed by
+   the disk-janitor only **at orchestrator startup** and only past the `DISK_JANITOR_CACHE_DAYS`
+   cutoff (**30 days** on this host). A busy repo advancing a few times/day at ~0.5 GB/gen
+   accumulates tens of GB between deploys — run the break-even: two merges/day retains ~60
+   generations ≈ 30 GB, versus the ~5–10 × 0.5 GB the same repo would have spent on
+   per-session copies without overlay. Two fixes, in order of leverage:
+   **(a) hardlink-dedup between generations** — consecutive generations differ by deltas
+   measured in hundreds of KB, yet each publish materializes a full independent ~470 MB copy
+   (verified: g1…g17 share no inodes). Hardlinking unchanged files from the previous
+   generation at publish time makes each advance cost ≈ its delta — the same per-version
+   dedup property a content-addressed store gives — and removes the accumulation concern
+   outright. **(b) a short dedicated cutoff (2–3 days) plus a sweep that isn't startup-only**
+   — the sweep's own justification ("no session container plausibly outlives the cutoff
+   without recreate") holds at 2–3 days too. At least one — preferably both — should land
+   before any fleet flip; without either, the feature trades per-session disk for store-side
+   disk and loses on actively-merged, low-concurrency repos.
+2. **`SESSION_WORKER_IMAGE_ID` is not set on the VPS**, so `overlayRuntimeKey()` =
+   `unknown|x64` and worker-image rebuilds do NOT rotate base scopes. Correctness still holds
+   (the worker-side marker key carries glibc/node and forces a real install on ABI change),
+   but after an ABI bump every session pays `advanced`-style npm over a stale-ABI base instead
+   of a clean cold. Wire the image id into the orchestrator env at deploy time before flip.
+3. **Flag-rollback hazard (code-path analysis; live repro was not exercised).** A marker
+   written while deps lived in an overlay upper is trusted after a flag-off restart — the
+   `/install` gate only distrusts markers over *empty overlay mounts*
+   (`overlayBackedEmptyDepDirs`), and with the flag off there is no overlay mount to contradict,
+   while the host-clone dep dir is empty → dep-less session. Follow-up: distrust a matching
+   marker whenever a declared dep dir is empty/missing, regardless of mount type. Until then,
+   rolling the flag off on a host that ran overlay sessions should be paired with clearing
+   `.shipit/.install-done` from unclaimed warm clones.
+4. **Publish eligibility lags pushes by ~one session.** Eligibility compares the session HEAD
+   against the *bare cache's* default tip, and a session created seconds after a push usually
+   claims a warm clone cut pre-push — observed as `skipped-equal`/`skipped-ineligible` on the
+   first session after every sweep push (the next session advanced correctly every time). Benign
+   (ancestry CAS keeps order; hit-rate cost only), worth knowing when reading canary logs.
+5. **`skipped-empty` fired exactly once, pre-fix, by design** — the C5 guard declining the
+   early-resolve race's empty snapshot (defect 2 above). Post-fix it has not recurred; during
+   the soak it should stay at zero.
+6. **Warm standby starvation suppresses the pre-stamp win.** Standby containers are skipped
+   once `realCount ≥ maxIdleContainers`; during the sweep most claims got clone-only warm
+   sessions (no standby → no pre-install/pre-stamp), so the npm-skip benefit landed on the
+   *claim*-side marker path instead. Not a regression (flag-off behaves identically), but the
+   "standby ready with zero npm" experience depends on standby capacity.
+7. One pre-existing janitor nit observed in every startup log: `failed to delete orphan branch
+   shipit/overlay-dep-store-c27joi: remote: Write access to repository not granted` — the
+   host-side PAT is read-only; unrelated to the overlay but noisy.
+
+### Would pnpm / Yarn give better savings? (considered 2026-06-11)
+
+Worth asking, because pnpm's design solves the same two problems the overlay targets — and
+the comparison clarifies what the overlay is actually for.
+
+- **pnpm** keeps a content-addressable store and **hardlinks** files into each project's
+  `node_modules`. For a repo that uses it: per-session disk ≈ KBs (same ballpark as overlay),
+  warm installs are link-speed (typically faster than npm's ~22 s reify pass — it skips the
+  extract entirely), and — the part the overlay currently lacks — **per-version dedup is
+  free**: two dependency states share every unchanged file in the store, so there is no
+  generation-accumulation problem at all. On disk economics alone, a pnpm repo beats
+  overlay-over-npm today.
+- **Yarn v1** materializes full copies like npm — no structural saving. **Yarn Berry PnP
+  (zero-installs)** eliminates `node_modules` entirely (zipped cache + `.pnp.cjs`) — the
+  largest possible saving, but an invasive compatibility choice (native postinstalls, tools
+  that expect a real `node_modules`).
+
+**Why this doesn't replace the overlay: the package manager is the repo author's lever, not
+the platform's.** ShipIt runs whatever the repo declares in `agent.install`; it cannot migrate
+user repos from npm (the overwhelming default) to pnpm, and the overlay's design goal is
+ecosystem-agnostic dep-dir caching (any git-ignored artifact dir, not just the npm layout).
+The right reading is: **adopt pnpm's key idea platform-side** — content/hardlink dedup between
+base generations (finding 1a) gives the overlay the same per-version economics for every npm
+repo, no repo cooperation needed.
+
+**Interaction warning — overlay actively hurts pnpm repos.** A hardlink cannot cross the
+overlayfs boundary: linking from the store (plain ext4 mount) into an overlay-merged
+`node_modules` fails with `EXDEV`, and pnpm silently falls back to **copying** — restoring the
+full ~0.5 GB per-session upper *and* losing pnpm's link-speed installs. A repo already using
+pnpm gets strictly worse under overlay than on a plain bind. Today the escape hatch is the
+`agent.dep-dirs: []` opt-out in `shipit.yaml`; before any fleet flip the platform should skip
+overlay automatically when the repo's lockfile is `pnpm-lock.yaml` (likewise Yarn Berry's
+PnP mode, which has no `node_modules` to overlay). Filed as a follow-up; not exercised live on
+this canary (no pnpm repo on the host).
+
+### Recommendation
+
+**No fleet flip yet — keep the canary on and soak.** The mechanism is correct end-to-end at
+production scale (all publish outcomes incl. flatten exercised; bases verified complete; no
+broken-readdir or EBUSY events; generational model behaved exactly as designed), the pre-stamp
+time win is unconditional, and the disk win is real for the high-concurrency workflow the
+product targets but conditional on generation reclaim (finding 1's break-even). But the
+canary itself found two ship-blocking defects on day one, so the soak it interrupted has
+effectively just started. Flip preconditions:
+(a) ≥ a few quiet days of canary soak — zero `skipped-empty`, zero compose failures mentioning
+overlay volumes, disk growth under `overlay-base/` bounded; (b) generation storage work
+(finding 1): hardlink-dedup and/or the short dedicated reclaim cutoff — without at least one,
+the disk claim inverts on busy repos; (c) `SESSION_WORKER_IMAGE_ID` wired (finding 2);
+(d) auto-skip overlay for pnpm / Yarn-PnP repos (the EXDEV copy degradation above). The
+rollback-marker follow-up (finding 3) should land before the flip too, since flag-off is the
+documented incident response.

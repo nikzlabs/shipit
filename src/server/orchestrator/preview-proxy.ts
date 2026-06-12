@@ -305,10 +305,9 @@ export function createPreviewErrorReporter(
       upgrade,
     });
     runner.emitMessage({
-      type: "log_entry",
-      source: "preview",
-      text: human,
-      timestamp: new Date(t).toISOString(),
+      type: "log_append",
+      channel: "agent",
+      records: [{ ts: new Date(t).toISOString(), source: "preview", text: human }],
     });
   };
 }

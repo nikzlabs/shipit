@@ -13,6 +13,8 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage } from "./chat-history.js";
+import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
+import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 
 // `runDispatchedTurn` lives in a separate module because it depends on
 // `wireAgentListeners` at runtime, which would otherwise create an import
@@ -102,6 +104,21 @@ export interface SteeredMessage {
   images?: { data: string; mediaType: string }[];
   files?: { path: string; contentPreview: string; startLine?: number; endLine?: number }[];
   uploadPaths?: string[];
+  /**
+   * docs/140 — the exact assembled prompt sent to the streaming CLI for this
+   * steer (what `--replay-user-messages` echoes back). The delivery-ack matcher
+   * keys on it. Set only for steers routed through the live-steer path (a steer
+   * that can be lost in the turn-end gap); a `SteeredMessage` without it is not
+   * a re-queue candidate. In-memory only — `buildTurnMessages` copies just
+   * text/attachments, so this never reaches chat-history persistence.
+   */
+  assembledPrompt?: string;
+  /**
+   * docs/140 — set true once the CLI's replay echo confirmed this steer was
+   * accepted into a turn. A steer with `assembledPrompt` set but `delivered`
+   * still falsy at turn end fell into the gap and is re-queued.
+   */
+  delivered?: boolean;
 }
 
 /**
@@ -357,6 +374,8 @@ export function resetRunnerTurnState(
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
   runner.pendingCommitLink = null;
+  // docs/144 — reset the per-turn sub-agent spawn budget at primary-turn start.
+  runner.subAgentSpawnsThisTurn = 0;
   // docs/163 — clear per-turn voice-note state (authored flag + attention cap).
   resetVoiceNoteTurnState(runner);
 }
@@ -483,6 +502,25 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
    */
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null;
 
+  /**
+   * docs/144 — count of sub-agent spawns reaching `services/sub-agent.ts` this
+   * primary turn. Reset to 0 at turn start (`resetRunnerTurnState`). The
+   * forgery-resistant fan-out bound: keyed by the worker-injected SESSION_ID, so
+   * every spawn in the turn — including any a sub-agent forges past the
+   * best-effort depth guard — decrements the same budget (cap = 3).
+   */
+  subAgentSpawnsThisTurn: number;
+
+  /**
+   * docs/144 — run a one-shot SUB-AGENT to completion and return its final
+   * assistant text. The container runner brokers to the worker's `/agent/spawn`
+   * (a subprocess outside the agent slot); the in-process runner runs the
+   * adapter directly. Never touches the runner's pinned `_agent` or the SSE
+   * stream. Authorization, credentials, and the per-turn cap are enforced by the
+   * caller (`services/sub-agent.ts`) before this is invoked.
+   */
+  spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult>;
+
   getAgent(): AgentProcess | null;
   setAgent(a: AgentProcess | null): void;
 
@@ -518,12 +556,13 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   detectedPorts: number[];
 
   /**
-   * Authoritative cache of agent-emitted presentations (docs/093), mirroring
-   * the worker's PresentBuffer. Container-only — direct/in-process runners
-   * don't host the present MCP tool and omit this. Maintained from the SSE
-   * `present_content` / `present_cleared` stream so `attachToRunner` can replay
-   * a `present_state` message to a late- or re-connecting viewer whose Present
-   * tab would otherwise be empty after a session switch.
+   * Authoritative cache of agent-emitted presentation METADATA (docs/093),
+   * mirroring the worker's PresentRegistry — no artifact bytes. Container-only:
+   * direct/in-process runners don't host the present MCP tool and omit this.
+   * Maintained from the SSE `present_content` / `present_cleared` stream so
+   * `attachToRunner` can replay a `present_state` message to a late- or
+   * re-connecting viewer whose Present tab would otherwise be empty after a
+   * session switch (the client then re-fetches each artifact's bytes on demand).
    */
   readonly presentations?: PresentStateEntry[];
 
@@ -666,6 +705,9 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _detectedPorts: number[] = [];
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
+  private _subAgentSpawnsThisTurn = 0;
+  /** docs/144 — in-flight sub-agent run handles, cancelled on dispose. */
+  private _subAgentHandles = new Set<SubAgentRunHandle>();
 
   constructor(opts: {
     sessionId: string;
@@ -710,6 +752,44 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set recordedCards(m: RecordedChatCard[]) { this._recordedCards = m; }
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
+  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
+  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
+
+  /**
+   * docs/144 — local/in-process sub-agent spawn (RUNTIME_MODE=local / tests).
+   * Mirrors the worker's `/agent/spawn`: instantiate a fresh adapter via the
+   * system-turn agent factory, stamp `SHIPIT_AGENT_DEPTH`, run to completion,
+   * and return the accumulated text — without touching the runner's pinned
+   * `agent` slot. Credentials are a no-op in local mode (docs/138).
+   */
+  async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
+    const factory = this._systemTurnDeps?.agentFactory;
+    if (!factory) {
+      return { status: "error", text: "", truncated: false, durationMs: 0, costUsd: 0, error: "Sub-agent factory unavailable" };
+    }
+    const agent = factory(req.agentId);
+    const runOpts = {
+      prompt: req.prompt,
+      cwd: this.sessionDir,
+      ...(req.model !== undefined ? { model: req.model } : {}),
+      ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+      ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+    };
+    const handle = runAgentToCompletion(agent, runOpts, Date.now());
+    this._subAgentHandles.add(handle);
+    const prev = process.env.SHIPIT_AGENT_DEPTH;
+    try {
+      process.env.SHIPIT_AGENT_DEPTH = String(req.depth + 1);
+      agent.run(buildSubAgentRunParams(runOpts));
+      if (prev === undefined) Reflect.deleteProperty(process.env, "SHIPIT_AGENT_DEPTH");
+      else process.env.SHIPIT_AGENT_DEPTH = prev;
+      return await handle.promise;
+    } finally {
+      this._subAgentHandles.delete(handle);
+      try { agent.kill(); } catch { /* already exited */ }
+    }
+  }
+
   getAgent(): AgentProcess | null { return this.agent; }
   setAgent(a: AgentProcess | null): void {
     this.agent = a;
@@ -892,6 +972,11 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       return;
     }
     this._disposed = true;
+    // docs/144 — cancel any in-flight sub-agent spawns before tearing down.
+    for (const handle of this._subAgentHandles) {
+      try { handle.cancel(); } catch { /* best-effort */ }
+    }
+    this._subAgentHandles.clear();
     if (this.agent) { this.agent.kill(); this.agent = null; }
     if (this._terminal) { this._terminal.kill(); this._terminal = null; }
     this.clearPushTimer();

@@ -326,6 +326,25 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
+  // Sub-agent spawning (docs/144)
+  //
+  // Backs the `shipit agent run` shim subcommand. The worker injects the trusted
+  // SESSION_ID and relays to the orchestrator's session-scoped route, which owns
+  // the setting gate, auth/pin/recursion/per-turn-cap guards, credential
+  // provisioning, and the synchronous run. `depth` rides the body (the shim
+  // forwards its inherited SHIPIT_AGENT_DEPTH) — the orchestrator's recursion
+  // guard reads it. Unbounded timeout: a sub-agent run is long (30–120s typical,
+  // up to the worker's wall-clock cap), and the orchestrator holds the request
+  // open until the subprocess exits.
+  // ---------------------------------------------------------------------------
+
+  // POST /agent-ops/agent/spawn { agentId, prompt, depth }
+  app.post<{ Body: { agentId?: string; prompt?: string; depth?: number } }>(
+    "/agent-ops/agent/spawn",
+    async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
+  );
+
+  // ---------------------------------------------------------------------------
   // Agent-spawned sibling sessions (docs/117)
   //
   // These routes back the `shipit session create|list|view` shim subcommands.
@@ -420,6 +439,19 @@ export function registerAgentOpsRoutes(
       relay(
         "POST",
         `/children/${encodeURIComponent(request.params.childId)}/archive`,
+        {},
+        reply,
+      ),
+  );
+
+  // POST /agent-ops/session/notify-on-merge/:childId — docs/196. Arm an async
+  // watch that wakes this parent when the child's PR merges (or closes).
+  app.post<{ Params: { childId: string } }>(
+    "/agent-ops/session/notify-on-merge/:childId",
+    async (request, reply) =>
+      relay(
+        "POST",
+        `/children/${encodeURIComponent(request.params.childId)}/notify-on-merge`,
         {},
         reply,
       ),

@@ -64,6 +64,11 @@ export interface GlobalSettings {
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
   /**
+   * docs/144 — when true, a pinned session's agent may spawn another registered
+   * agent for a one-shot sub-task (`shipit agent run`). Default off.
+   */
+  enableSubAgents: boolean;
+  /**
    * docs/163 — voice-note delivery mode: "native" (inline note + TTS),
    * "external" (webhook only), or "both". Default "native".
    */

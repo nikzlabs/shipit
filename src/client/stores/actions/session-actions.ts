@@ -2,6 +2,7 @@ import { useSessionStore } from "../session-store.js";
 import { useGitStore } from "../git-store.js";
 import { useFileStore } from "../file-store.js";
 import { useTerminalStore } from "../terminal-store.js";
+import { useLogStore } from "../log-store.js";
 import { useUiStore } from "../ui-store.js";
 import { usePreviewStore } from "../preview-store.js";
 import { usePresentStore } from "../present-store.js";
@@ -18,6 +19,7 @@ export function resetSessionState() {
   useGitStore.getState().reset();
   useFileStore.getState().reset();
   useTerminalStore.getState().reset();
+  useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
@@ -44,12 +46,15 @@ export function resumeSessionInternal(sessionId: string) {
   // its spinner into the incoming one (it's never persisted, so history reload
   // won't bring it back).
   session.setCompacting(false);
+  // docs/144 — sub-agent spawn chips are transient + per-session; clear on switch.
+  useSessionStore.setState({ subAgentSpawns: {} });
   useUiStore.getState().setShowTemplates(false);
 
   // Reset session-specific UI state
   useFileStore.getState().reset();
   useGitStore.getState().reset();
   useTerminalStore.getState().reset();
+  useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
 
@@ -80,6 +85,7 @@ export function fullResetAllStores() {
   useGitStore.getState().reset();
   useFileStore.getState().reset();
   useTerminalStore.getState().reset();
+  useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();

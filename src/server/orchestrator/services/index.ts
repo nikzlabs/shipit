@@ -35,6 +35,7 @@ export * from "./shipit-source.js";
 export * from "./pr-lifecycle.js";
 export * from "./post-interrupt-commit.js";
 export * from "./agent.js";
+export * from "./sub-agent.js";
 export * from "./voice.js";
 export * from "./redaction.js";
 export * from "./bug-report.js";

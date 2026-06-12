@@ -7,7 +7,7 @@
  *   - `overlay-session.ts` — eligibility + the per-dep-dir scope (`resolveOverlayScope`,
  *     `depDirsForSession`, `validDepDirsForOverlay`).
  *   - `overlay-snapshot.ts` — the worker pull + tar extraction (`fetchDepSnapshotStream`,
- *     `extractTarStream`, `fetchWorkspaceHeadCommit`).
+ *     `extractTarStream`, `fetchWorkspaceHeadInfo`).
  *   - `overlay-base.ts` — the publish compare-and-swap (`publishBase`), reused
  *     **unchanged**: only the caller and the per-dep-dir granularity are new here.
  *
@@ -26,7 +26,7 @@
  * A candidate publishes only when its install **exited 0**, was a **pre-user**
  * install, and its **source base is the remote default-branch commit**. We resolve:
  *   - `exitCode` from the install result (`installOk`),
- *   - `commit` from the worker's merged HEAD (`fetchWorkspaceHeadCommit`),
+ *   - `commit` from the worker’s merged HEAD (`fetchWorkspaceHeadInfo`),
  *   - `currentDefaultCommit` from the bare cache (`RepoGit.resolveDefaultBranchCommit`),
  *   - `sourceIsDefaultBranch = commit === currentDefaultCommit`.
  *
@@ -53,7 +53,8 @@ import { publishBase, type PublishOutcome } from "./overlay-base.js";
 import {
   extractTarStream,
   fetchDepSnapshotStream,
-  fetchWorkspaceHeadCommit,
+  fetchWorkspaceHeadInfo,
+  type WorkspaceHeadInfo,
 } from "./overlay-snapshot.js";
 import type { RepoGit } from "./repo-git.js";
 
@@ -75,7 +76,7 @@ export interface OverlayPublishDeps {
   env?: NodeJS.ProcessEnv;
   /** HTTP/tar glue — injectable so the orchestration is unit-testable without a worker. */
   fetchSnapshot?: (workerUrl: string, depDir: string) => Promise<Readable>;
-  fetchHeadCommit?: (workerUrl: string) => Promise<string | null>;
+  fetchHeadInfo?: (workerUrl: string) => Promise<WorkspaceHeadInfo | null>;
   extract?: (stream: Readable, destDir: string) => Promise<void>;
   /** Root for per-dep-dir extraction temp dirs (defaults to the OS temp dir). */
   tmpRoot?: string;
@@ -87,13 +88,37 @@ export interface OverlayPublishArgs {
   workerUrl: string;
   /** Whether the just-finished `agent.install` exited 0. */
   installOk: boolean;
+  /**
+   * The exact `agent.install` command list the install ran. Recorded (with the
+   * worker's runtime key) on the resulting base pointer so a later same-commit
+   * session can be pre-stamped with a marker the /install gate accepts (see
+   * `preStampInstallMarker`). Optional — without it the publish proceeds and
+   * only the pre-stamp optimization is forgone.
+   */
+  installCommands?: string[];
 }
 
-/** Per-dep-dir result — the publish CAS outcome, or `"error"` if the dir's pull/extract/publish threw. */
+/**
+ * Per-dep-dir result — the publish CAS outcome, `"error"` if the dir's
+ * pull/extract/publish threw, or `"skipped-empty"` if the exported snapshot
+ * contained nothing (an empty dep dir is never a useful base — and an empty
+ * snapshot is the signature of a session whose merged view is broken or whose
+ * install was wrongly skipped; publishing it would poison the scope for every
+ * future session, observed live in docs/183 measurement).
+ */
 export interface DepDirPublishOutcome {
   depDir: string;
-  outcome: PublishOutcome | "error";
+  outcome: PublishOutcome | "error" | "skipped-empty";
   error?: string;
+  /**
+   * docs/183 — overlay depth of this dep dir's base after the publish (from the
+   * resulting pointer): 1 right after a `created`/`flattened`/`reset`, climbing on
+   * each `advanced`. The key signal for depth-cap tuning. Absent for skips/errors
+   * that didn't read a pointer.
+   */
+  depth?: number;
+  /** Base generation after the publish (bumps on advance/flatten/reset). */
+  generation?: number;
 }
 
 /**
@@ -126,15 +151,21 @@ export async function publishDepDirOverlayBases(
     return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
   }
 
-  const fetchHeadCommit = deps.fetchHeadCommit ?? fetchWorkspaceHeadCommit;
+  const fetchHeadInfo = deps.fetchHeadInfo ?? fetchWorkspaceHeadInfo;
   const fetchSnapshot = deps.fetchSnapshot ?? fetchDepSnapshotStream;
   const extract = deps.extract ?? extractTarStream;
 
   // Without the source commit we can't stamp a candidate — decline conservatively.
-  const commit = await fetchHeadCommit(args.workerUrl);
-  if (!commit) {
+  const headInfo = await fetchHeadInfo(args.workerUrl);
+  if (!headInfo) {
     return valid.map((depDir) => ({ depDir, outcome: "skipped-ineligible" as const }));
   }
+  const commit = headInfo.commit;
+  // Marker ingredients for the base-hit pre-stamp — only when both halves exist.
+  const markerStamp =
+    headInfo.runtimeKey && args.installCommands && args.installCommands.length > 0
+      ? { runtimeKey: headInfo.runtimeKey, installCommands: args.installCommands }
+      : undefined;
 
   const repoGit = deps.createRepoGit(deps.getBareCacheDir(scope.repoUrl));
   const currentDefaultCommit = (await repoGit.resolveDefaultBranchCommit()) ?? undefined;
@@ -149,6 +180,17 @@ export async function publishDepDirOverlayBases(
       tmpDir = fs.mkdtempSync(path.join(tmpRoot, "ovl-pub-"));
       const stream = await fetchSnapshot(args.workerUrl, depDir);
       await extract(stream, tmpDir);
+      // Never publish an empty snapshot. A legitimate post-install dep dir is
+      // never empty (npm/pnpm always materialize at least a lockfile shadow);
+      // an empty export means the worker's merged view was empty or broken —
+      // e.g. a wrongly-skipped install over a fresh overlay, or the readdir
+      // breakage a base swap inflicts on live same-scope mounts. Publishing it
+      // would install an empty base under the scope's pointer, which the
+      // equal-commit skip then makes permanent. Decline instead.
+      if (fs.readdirSync(tmpDir).length === 0) {
+        outcomes.push({ depDir, outcome: "skipped-empty" });
+        continue;
+      }
       const res = await publishBase({
         stateDir: deps.stateDir,
         scope: { ...scope, depDir },
@@ -158,11 +200,17 @@ export async function publishDepDirOverlayBases(
           preUserInstall: true,
           sourceIsDefaultBranch,
           snapshotDir: tmpDir,
+          ...(markerStamp ? { markerStamp } : {}),
         },
         isAncestor,
         currentDefaultCommit,
       });
-      outcomes.push({ depDir, outcome: res.outcome });
+      outcomes.push({
+        depDir,
+        outcome: res.outcome,
+        depth: res.pointer?.depth,
+        generation: res.pointer?.generation,
+      });
     } catch (err) {
       outcomes.push({
         depDir,
@@ -174,4 +222,44 @@ export async function publishDepDirOverlayBases(
     }
   }
   return outcomes;
+}
+
+// ---------------------------------------------------------------------------
+// Measurement instrumentation (docs/183 Phase 7 — warm-install tuning)
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a single greppable measurement line for an overlay session's
+ * install + publish, so the warm-vs-cold / depth-cap data can be tabulated off
+ * service logs without a metrics backend. Only emitted when overlay is active
+ * (the caller gates on a non-empty outcome list, which only happens with the
+ * flag on and the session eligible), so it is inert in production by default.
+ *
+ * Shape (stable for log parsing — `grep '\[overlay-measure\]' | ...`):
+ *
+ *   [overlay-measure] session=<id> repo=<url> install_ok=<bool> install_ms=<n> dirs=node_modules:created:d1g1,...
+ *
+ * `install_ms` is the orchestrator-observed wall-clock from install kickoff to
+ * resolve — a marker-skip (deps already materialized / "main unchanged") resolves
+ * in ~tens of ms, a real install in seconds, so duration alone classifies the
+ * scenario; the per-dir `outcome:d<depth>g<generation>` suffix gives the publish
+ * result and the overlay depth that drives the depth-cap decision.
+ */
+export function formatOverlayMeasurement(args: {
+  sessionId: string;
+  repoUrl: string;
+  installOk: boolean;
+  installDurationMs: number;
+  outcomes: DepDirPublishOutcome[];
+}): string {
+  const dirs = args.outcomes
+    .map((o) => {
+      const depth = o.depth !== undefined ? `:d${o.depth}g${o.generation ?? "?"}` : "";
+      return `${o.depDir}:${o.outcome}${depth}`;
+    })
+    .join(",");
+  return (
+    `[overlay-measure] session=${args.sessionId} repo=${args.repoUrl} ` +
+    `install_ok=${args.installOk} install_ms=${args.installDurationMs} dirs=${dirs}`
+  );
 }

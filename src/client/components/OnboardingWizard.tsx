@@ -151,7 +151,7 @@ export function OnboardingWizard({
               <div className="text-center">
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   onClick={() => setMode("manual")}
                   className="text-sm"
                   data-testid="switch-manual"
@@ -204,7 +204,7 @@ export function OnboardingWizard({
               <div className="text-center">
                 <Button
                   variant="ghost"
-                  size="sm"
+                  size="md"
                   onClick={() => setMode("github")}
                   className="text-sm"
                   data-testid="switch-github"

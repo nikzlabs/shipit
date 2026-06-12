@@ -6,10 +6,14 @@ import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SecretStore } from "./secret-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { WsLogEntry, SessionInfo } from "../shared/types.js";
+import type { LogSource, SessionInfo } from "../shared/types.js";
+import type { LogStore } from "./log-store.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { agentLogAppend } from "./log-emit.js";
 import { collectMcpAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
+import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
+import { isOverlayEligible } from "./overlay-session.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -23,16 +27,11 @@ import { getErrorMessage } from "./validation.js";
 export function handleStackError(
   runner: SessionRunnerInterface,
   err: Error,
-  broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void,
+  broadcastLog?: (sessionId: string, source: LogSource, text: string) => void,
 ): void {
   const text = `[compose] Stack error: ${err.message}`;
   if (broadcastLog) broadcastLog(runner.sessionId, "server", text);
-  runner.emitMessage({
-    type: "log_entry",
-    source: "server",
-    text,
-    timestamp: new Date().toISOString(),
-  });
+  runner.emitMessage(agentLogAppend("server", text));
   runner.emitMessage({
     type: "stack_error",
     sessionId: runner.sessionId,
@@ -66,7 +65,7 @@ export function adoptExistingServiceManager(
     /** Same map as in setupServiceManager — see RunnerRegistryDeps doc. */
     composeStopPromises: Map<string, Promise<void>>;
     containerManager: SessionContainerManager | null;
-    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
     installPromise: Promise<{ ok: boolean }> | null;
     /**
      * Fresh closure that reads the session's latest secrets (the OLD
@@ -256,7 +255,9 @@ export function setupServiceManager(
      * outside the agent's workspace mount. Passed to `ServiceManager`.
      */
     serviceEnvDir?: string;
-    broadcastLog?: (sessionId: string, source: WsLogEntry["source"], text: string) => void;
+    /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
+    logStore?: LogStore;
+    broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
     /** docs/088 — account-level MCP secrets store. */
     credentialStore?: CredentialStore;
     /**
@@ -269,7 +270,10 @@ export function setupServiceManager(
       runner: ContainerSessionRunner;
       session: SessionInfo;
       installOk: boolean;
-    }) => Promise<void>;
+      /** The exact `agent.install` commands the install ran — recorded on the
+       *  base pointer for the base-hit marker pre-stamp (docs/183). */
+      installCommands?: string[];
+    }) => Promise<DepDirPublishOutcome[]>;
   },
 ): void {
   const {
@@ -283,6 +287,7 @@ export function setupServiceManager(
     secretStore,
     dockerSecretsConfig,
     serviceEnvDir,
+    logStore,
     broadcastLog,
     credentialStore,
     publishOverlayBases,
@@ -336,6 +341,10 @@ export function setupServiceManager(
   // bind mount get retried instead of latching to `error`.
   const installCommands = shipitConfig.agent.install;
   let installPromise: Promise<{ ok: boolean }> | null = null;
+  // docs/183 — orchestrator-observed install wall-clock for the overlay
+  // measurement line below. Captured at kickoff; a marker-skip resolves in ~ms,
+  // a real install in seconds, so duration classifies the warm-vs-cold scenario.
+  const installStartedAt = Date.now();
   if (installCommands.length > 0 && runner instanceof ContainerSessionRunner) {
     installPromise = runner.runInstall(installCommands).catch((err: unknown) => {
       console.error(`[install:${runner.sessionId}] Install failed:`, getErrorMessage(err));
@@ -356,7 +365,25 @@ export function setupServiceManager(
     void (async () => {
       const res = await p;
       try {
-        await publishOverlayBases({ runner: r, session: s, installOk: res.ok });
+        const outcomes = await publishOverlayBases({
+          runner: r,
+          session: s,
+          installOk: res.ok,
+          installCommands,
+        });
+        // docs/183 — emit one greppable measurement line per overlay session so the
+        // warm-vs-cold + depth-cap data can be tabulated off service logs. A
+        // non-empty outcome list means overlay was active (flag on + eligible), so
+        // this is inert for non-overlay sessions.
+        if (outcomes.length > 0 && s.remoteUrl) {
+          console.log(formatOverlayMeasurement({
+            sessionId: r.sessionId,
+            repoUrl: s.remoteUrl,
+            installOk: res.ok,
+            installDurationMs: Date.now() - installStartedAt,
+            outcomes,
+          }));
+        }
       } catch (err) {
         console.error(`[overlay-publish:${r.sessionId}] publish failed:`, getErrorMessage(err));
       }
@@ -459,6 +486,7 @@ export function setupServiceManager(
     mcpAgentEnvLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     ...(serviceEnvDir ? { serviceEnvDir } : {}),
+    ...(logStore ? { logStore } : {}),
     networkJoinFn: containerManager
       ? async (networkName: string) => {
           // Connect agent container to compose network
@@ -553,18 +581,37 @@ export function setupServiceManager(
     // docs/183 Phase 5 — resolve the session's overlay dep-dir volumes and hand
     // them to the manager BEFORE the first start(), so compose services that
     // share the workspace also mount each dep dir's overlay volume nested at
-    // `<service-target>/<dep-dir>`. `prepareOverlaySpecs` returns [] (with no
-    // Docker call) when the flag is off / the session is ineligible, so this is
-    // inert and the override is byte-for-byte unchanged for non-overlay sessions.
-    if (containerManager && session && runner instanceof ContainerSessionRunner) {
+    // `<service-target>/<dep-dir>`. The `isOverlayEligible` pre-gate is a pure
+    // env+session check, so for flag-off / ineligible sessions this block is
+    // inert and the override (and compose start timing) is byte-for-byte
+    // unchanged.
+    //
+    // The override references each overlay volume as `external: true`, and the
+    // volumes are created at agent-container-create time — so compose may only
+    // mount what that container was actually built with. Re-deriving
+    // eligibility here can disagree with the provisioned state (observed live:
+    // a container created before OVERLAY_DEP_STORE was enabled has no overlay
+    // volumes, and the recomputed reference failed the whole `compose up` with
+    // "external volume not found"). `whenWorkerReady()` orders us after
+    // container creation (volumes are created just before the container — and
+    // dispose also resolves it, hence the `disposed` re-check), then
+    // `requireProvisioned` keeps only specs whose volume really exists.
+    if (
+      containerManager && session && runner instanceof ContainerSessionRunner &&
+      isOverlayEligible(session)
+    ) {
       try {
-        const specs = await containerManager.prepareOverlaySpecs({
-          sessionId: runner.sessionId,
-          workspaceDir,
-          session,
-        });
-        if (specs.length > 0) {
-          mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+        await runner.whenWorkerReady();
+        if (!runner.disposed) {
+          const specs = await containerManager.prepareOverlaySpecs({
+            sessionId: runner.sessionId,
+            workspaceDir,
+            session,
+            requireProvisioned: true,
+          });
+          if (specs.length > 0) {
+            mgr.setOverlayDepDirs(specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName })));
+          }
         }
       } catch (err) {
         console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));

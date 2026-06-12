@@ -296,6 +296,49 @@ function PrAutomationsSettings() {
 }
 
 /**
+ * docs/144 — global gate for sub-agent spawning. When on, a pinned session's
+ * agent can spawn another registered agent for a one-shot sub-task (e.g. a
+ * second-opinion review) via `shipit agent run`. Default off.
+ */
+function MultiAgentSettings() {
+  const enableSubAgents = useSettingsStore((s) => s.enableSubAgents);
+
+  const handleToggle = async (v: boolean) => {
+    useSettingsStore.getState().setEnableSubAgents(v);
+    try {
+      const res = await fetch("/api/settings", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enableSubAgents: v }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch (err) {
+      useSettingsStore.getState().setEnableSubAgents(!v);
+      useUiStore.getState().setToast({ message: "Failed to update multi-agent setting" });
+      console.error("[settings] toggle enableSubAgents failed:", err);
+    }
+  };
+
+  return (
+    <div className="space-y-3">
+      <h3 className="text-sm font-medium text-(--color-text-primary)">Multi-agent sessions</h3>
+      <div className="flex items-center justify-between py-1 gap-4">
+        <div>
+          <span className="text-sm text-(--color-text-primary)">Allow spawning another agent for a sub-task</span>
+          <p className="text-xs text-(--color-text-tertiary)">
+            Lets the agent in a session spawn another agent for a one-shot sub-task (e.g. a
+            second-opinion review from a different model). The spawned agent runs with full tool
+            access and its work is committed under your session&rsquo;s agent. Enabling this means
+            a session container can briefly hold credentials for both agents.
+          </p>
+        </div>
+        <ToggleSwitch enabled={enableSubAgents} onToggle={(v) => void handleToggle(v)} testId="settings-enable-sub-agents" />
+      </div>
+    </div>
+  );
+}
+
+/**
  * docs/128 — gated "Ops / Host" section. The create button is the operator
  * gate's UI surface; the route enforces the same gate server-side (v1: host
  * operator == ShipIt user). Creating an ops session POSTs the ops template to
@@ -477,7 +520,7 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
         </div>
         <Button
           variant="secondary"
-          size="sm"
+          size="md"
           onClick={() => void createAccount()}
           disabled={creating}
           className="rounded-md"
@@ -527,7 +570,7 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
                   {account.status === "authenticating" ? (
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="md"
                       onClick={() => void cancelLogin(account)}
                       disabled={busy}
                       className="rounded-md"
@@ -538,7 +581,7 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
                   ) : (
                     <Button
                       variant="ghost"
-                      size="sm"
+                      size="md"
                       onClick={() => void connect(account)}
                       disabled={busy}
                       className="rounded-md"
@@ -549,7 +592,7 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
                   )}
                   <Button
                     variant="ghost"
-                    size="sm"
+                    size="md"
                     onClick={() => void makePrimary(account)}
                     disabled={busy || account.isPrimary}
                     className="rounded-md"
@@ -558,7 +601,7 @@ function ProviderAccountSection({ provider }: { provider: AgentId }) {
                   </Button>
                   <Button
                     variant="ghost"
-                    size="sm"
+                    size="md"
                     onClick={() => void disconnect(account)}
                     disabled={busy}
                     className="rounded-md text-(--color-error) hover:text-(--color-error)"
@@ -684,13 +727,13 @@ function ProviderKeyField({
           data-testid={`voice-key-input-${provider.id}`}
           autoComplete="off"
         />
-        <Button variant="primary" size="sm" disabled={!draft.trim() || saving} onClick={() => void save()}>
+        <Button variant="primary" size="md" disabled={!draft.trim() || saving} onClick={() => void save()}>
           {saving ? "Saving…" : "Save"}
         </Button>
         {configured && (
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             disabled={saving}
             onClick={() => void clear()}
             className="text-(--color-error) hover:text-(--color-error)"
@@ -1063,7 +1106,7 @@ function VoiceSettings() {
         <div className="flex flex-wrap items-center gap-2">
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             disabled={!ttsConfigured || testState === "testing"}
             onClick={() => void runTest()}
             data-testid="voice-key-test"
@@ -1152,7 +1195,7 @@ function VoiceSettings() {
             <div className="flex items-center gap-2">
               <Button
                 variant="secondary"
-                size="sm"
+                size="md"
                 disabled={webhookBusy || !webhookUrl.trim()}
                 onClick={() => void saveWebhook()}
                 data-testid="voice-webhook-save"
@@ -1162,7 +1205,7 @@ function VoiceSettings() {
               {voiceWebhookConfigured && (
                 <Button
                   variant="secondary"
-                  size="sm"
+                  size="md"
                   disabled={webhookBusy}
                   onClick={() => void clearWebhook()}
                   data-testid="voice-webhook-clear"
@@ -1869,6 +1912,10 @@ export function Settings({
               <div className="border-t border-(--color-border-secondary)" />
 
               <PrAutomationsSettings />
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <MultiAgentSettings />
 
               <div className="border-t border-(--color-border-secondary)" />
 

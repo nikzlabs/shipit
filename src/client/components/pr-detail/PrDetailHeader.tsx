@@ -182,7 +182,7 @@ export function PrDetailHeader({
                 <button
                   onClick={startEditing}
                   aria-label="Edit title"
-                  className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
+                  className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:text-(--color-text-secondary) hover:bg-(--color-bg-hover) transition-colors"
                 >
                   <PencilSimpleIcon size={ICON_SIZE.SM} />
                 </button>

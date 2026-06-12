@@ -30,7 +30,7 @@ function makeIssue(over: Partial<TrackerIssue> = {}): TrackerIssue {
     description: "Body paragraph here.",
     priority: { level: "urgent", sortOrder: 0, label: "Urgent" },
     status: { name: "In Progress", type: "started" },
-    labels: ["security", "bug"],
+    labels: [{ name: "security" }, { name: "bug" }],
     assignee: { name: "Nik" },
     ...over,
   };

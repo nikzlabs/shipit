@@ -17,6 +17,7 @@ import {
   isWorkspaceCloneInSyncWithCache,
   stripUrlCredentials,
   canonicalRepoKey,
+  syncLocalDefaultBranchToOrigin,
 } from "./git-utils.js";
 
 function git(cwd: string, args: string): string {
@@ -223,6 +224,86 @@ describe("isWorkspaceCloneInSyncWithCache", () => {
     try { git(workspaceDir, "symbolic-ref -d refs/remotes/origin/HEAD"); } catch { /* ok */ }
 
     expect(await isWorkspaceCloneInSyncWithCache(workspaceDir, cacheDir)).toBe(true);
+  });
+});
+
+describe("syncLocalDefaultBranchToOrigin", () => {
+  let tmpDir: string;
+  let remoteDir: string;
+  let cacheDir: string;
+  let workspaceDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-sync-main-"));
+    remoteDir = path.join(tmpDir, "remote");
+    cacheDir = path.join(tmpDir, "cache");
+    workspaceDir = path.join(tmpDir, "workspace");
+
+    fs.mkdirSync(remoteDir, { recursive: true });
+    git(remoteDir, "init");
+    git(remoteDir, "checkout -b main");
+    git(remoteDir, "config user.email test@test");
+    git(remoteDir, "config user.name test");
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    } catch { /* ignore */ }
+  });
+
+  it("moves local `main` up to origin/main after the branch was cut from a stale snapshot", async () => {
+    // Mirror the real flow: remote@c1 → bare cache → `--local` workspace clone,
+    // then the remote advances to c2 and the workspace fetches the real remote.
+    const c1 = commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone --bare "${remoteDir}" "${cacheDir}"`);
+    git(tmpDir, `clone --local "${cacheDir}" "${workspaceDir}"`);
+    // `cloneFromCache` resets origin to the real remote.
+    git(workspaceDir, `remote set-url origin "${remoteDir}"`);
+    expect(git(workspaceDir, "rev-parse main")).toBe(c1);
+
+    const c2 = commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+    // Session branch is cut from the freshly-fetched origin/HEAD (= c2)…
+    git(workspaceDir, "checkout -b shipit/test origin/main");
+    expect(git(workspaceDir, "rev-parse HEAD")).toBe(c2);
+    // …but local `main` is still frozen at the stale snapshot (c1) — this is
+    // the gap that makes `main..HEAD` show already-merged commits (docs/194).
+    expect(git(workspaceDir, "rev-parse main")).toBe(c1);
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    // Local `main` now tracks origin/main, so the PR-review comparison is clean.
+    expect(git(workspaceDir, "rev-parse main")).toBe(c2);
+    expect(git(workspaceDir, "log main..HEAD --oneline")).toBe("");
+  });
+
+  it("refuses to move the checked-out default branch (no working-tree disturbance)", async () => {
+    const c1 = commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    git(tmpDir, `clone "${remoteDir}" "${workspaceDir}"`);
+    // Sitting ON main with the remote advanced — the helper must not touch the
+    // current branch (git would reject it; we skip to avoid the noise).
+    const c2 = commitFile(remoteDir, "README.md", "# c2\n", "c2");
+    git(workspaceDir, "fetch origin");
+    expect(git(workspaceDir, "rev-parse main")).toBe(c1);
+    expect(c2).not.toBe(c1);
+
+    await syncLocalDefaultBranchToOrigin(workspaceDir);
+
+    // Unchanged — the checked-out branch is left alone.
+    expect(git(workspaceDir, "rev-parse main")).toBe(c1);
+  });
+
+  it("is a no-op when there is no origin default branch to resolve", async () => {
+    commitFile(remoteDir, "README.md", "# c1\n", "c1");
+    // A standalone repo with no origin at all — must not throw.
+    git(tmpDir, `init "${workspaceDir}"`);
+    git(workspaceDir, "checkout -b shipit/test");
+    git(workspaceDir, "config user.email test@test");
+    git(workspaceDir, "config user.name test");
+    commitFile(workspaceDir, "a.txt", "a\n", "a");
+
+    await expect(syncLocalDefaultBranchToOrigin(workspaceDir)).resolves.toBeUndefined();
   });
 });
 

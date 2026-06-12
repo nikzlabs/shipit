@@ -26,9 +26,10 @@
 
 import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
-import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode } from "../shared/types.js";
+import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
+import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
 import { trySteerDispatch } from "./dispatch-steering.js";
 import type { SSEEvent } from "./sse-client.js";
@@ -183,6 +184,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   private _disposed = false;
   pendingCommitLink: { commitHash: string; parentCommitHash: string } | null = null;
+  private _subAgentSpawnsThisTurn = 0;
   private _workerResourcesStarted = false;
 
   constructor(opts: {
@@ -279,6 +281,35 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   get agentId(): AgentId { return this._agentId; }
   set agentId(id: AgentId) { this._agentId = id; }
+  get subAgentSpawnsThisTurn(): number { return this._subAgentSpawnsThisTurn; }
+  set subAgentSpawnsThisTurn(n: number) { this._subAgentSpawnsThisTurn = n; }
+
+  /**
+   * docs/144 — broker a one-shot SUB-AGENT spawn to the session worker's
+   * `/agent/spawn`, which runs a fresh adapter subprocess OUTSIDE the agent slot
+   * and returns the accumulated final text synchronously. No SSE involvement —
+   * the result flows back over this HTTP response, so the runner's `_agent`
+   * accumulators are untouched. The request is unbounded (`timeoutMs: 0`); the
+   * worker's own wall-clock cap bounds the run, and a primary-turn interrupt
+   * (which hits the worker's `/agent/interrupt`) cancels it.
+   */
+  async spawnSubAgent(req: SubAgentSpawnRequest): Promise<SubAgentRunResult> {
+    const result = await workerPost(
+      this.workerUrl,
+      "/agent/spawn",
+      {
+        agentId: req.agentId,
+        prompt: req.prompt,
+        spawnId: req.spawnId,
+        depth: req.depth,
+        ...(req.model !== undefined ? { model: req.model } : {}),
+        ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
+        ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
+      },
+      { timeoutMs: 0 },
+    );
+    return result as SubAgentRunResult;
+  }
 
   getAgent(): AgentProcess | null { return this._agent; }
 
@@ -434,11 +465,13 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     };
 
     const onLog = (name: string, text: string) => {
+      // docs/192 — unified channel-keyed transport. Live service lines ride
+      // the same `log_append` envelope as agent lines, keyed by channel, and
+      // render through the same `<LogView>`. Raw chunk, no per-line source.
       this.emitMessage({
-        type: "service_log",
-        sessionId: this.sessionId,
-        name,
-        text,
+        type: "log_append",
+        channel: `service:${name}`,
+        records: [{ ts: new Date().toISOString(), text }],
       } as WsServerMessage);
     };
 
@@ -926,6 +959,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     await workerPost(this.workerUrl, "/agent/compact", instructions ? { instructions } : undefined);
   }
 
+  /**
+   * docs/193 — deliver the user's approve/deny answer for a pending permission
+   * request to the worker's broker, which unblocks the held bridge/RPC call.
+   */
+  async resolvePermissionOnWorker(requestId: string, decision: PermissionDecision): Promise<void> {
+    await workerPost(this.workerUrl, "/agent/permission/resolve", {
+      requestId,
+      behavior: decision.behavior,
+      ...(decision.remember ? { remember: true } : {}),
+      ...(decision.message ? { message: decision.message } : {}),
+    });
+  }
+
   // --- Worker communication: terminal ---
 
   /** Start a terminal PTY inside the container. */
@@ -980,20 +1026,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
-   * Save a buffered presentation to the workspace (docs/093). The worker
-   * owns the buffered bytes — this proxy keeps the orchestrator route thin
-   * and mirrors how `proxyMcpTest` reaches into the container.
+   * Fetch a presentation's raw bytes on demand (docs/093). The worker reads the
+   * file from disk fresh and returns `{ content, mimeType }`; nothing is cached
+   * orchestrator-side. Backs the authenticated `GET …/present/:id/content`
+   * route the Present tab renders from.
    */
-  async proxyPresentSave(
+  async proxyPresentRaw(
     presentId: string,
-    destPath: string,
-  ): Promise<{ ok: boolean; savedPath?: string; error?: string }> {
+  ): Promise<{ content: string; mimeType: string }> {
     await this._workerReady;
-    return workerPost(
+    return workerGet(
       this.workerUrl,
-      "/present/save",
-      { presentId, destPath },
-    ) as Promise<{ ok: boolean; savedPath?: string; error?: string }>;
+      `/present/${encodeURIComponent(presentId)}/raw`,
+    ) as Promise<{ content: string; mimeType: string }>;
   }
 
   // --- Worker resource lifecycle ---
@@ -1034,6 +1079,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * worker's install state via `/install/status` and synthesize a completion.
    */
   private _installInFlight = false;
+  /**
+   * True once the current install cycle's POST /install has returned. Guards
+   * `resyncInstallStateAfterReconnect`: the SSE stream is opened inside
+   * `runInstall` BEFORE the POST is sent, so the first-connect resync can
+   * probe `/install/status` while the worker has not yet seen the install at
+   * all — `{ running: false, lastResult: null }` — and the "worker restarted"
+   * heuristic would synthesize a completion for an install that hasn't
+   * started. Observed live on the docs/183 canary: the install gate resolved
+   * ~100ms after worker-ready while npm ran 20s+ in the background, so the
+   * overlay publish hook snapshotted a not-yet-installed dep dir.
+   */
+  private _installPostIssued = false;
 
   /**
    * Run agent.install commands on the session worker. Returns a promise that
@@ -1069,6 +1126,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this._resolveInstallComplete = resolve;
     });
     this._installInFlight = true;
+    this._installPostIssued = false;
 
     await this._workerReady;
     if (this._disposed) {
@@ -1099,6 +1157,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       const result = await workerInstall(this.workerUrl, commands, {
         timeoutMs: INSTALL_POST_TIMEOUT_MS,
       }) as { skipped?: boolean; started?: boolean; ok?: boolean };
+      this._installPostIssued = true;
       if (result.skipped) {
         this.emitMessage({
           type: "install_status",
@@ -1110,6 +1169,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       }
       // Started — wait for SSE-delivered install_done / install_error to
       // resolve the completion promise with the success/failure outcome.
+      // Re-run the status resync once now that the POST has landed: the
+      // SSE-open resync may have fired before the POST (and correctly
+      // skipped via the post-issued guard), so the lost-install_done
+      // recovery must not depend on SSE-connect timing. If the worker is
+      // mid-install this probe is a no-op (`running: true` → wait for the
+      // real event); if the install already settled and the event was
+      // lost, it resolves the gate deterministically.
+      void this.resyncInstallStateAfterReconnect();
       return await completion;
     } catch (err) {
       this.emitMessage({
@@ -1154,6 +1221,12 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   private async resyncInstallStateAfterReconnect(): Promise<void> {
     if (!this._installInFlight || this._disposed) return;
+    // The current cycle's POST /install hasn't returned yet — the worker may
+    // not have seen the install at all, so a `{ running: false, lastResult:
+    // null }` probe result means "not started", NOT "worker restarted".
+    // `runInstall` re-runs this resync right after the POST lands, so the
+    // lost-event recovery is preserved without racing the POST.
+    if (!this._installPostIssued) return;
     let status: { running?: boolean; lastResult?: { ok: boolean; message?: string; command?: string } };
     try {
       status = await workerGet(this.workerUrl, "/install/status") as typeof status;
@@ -1452,27 +1525,21 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           const evt = data as {
             presentId?: string;
             replaceId?: string;
-            content?: string;
             mimeType?: string;
             title?: string;
             filePath?: string;
-            inWorkspace?: boolean;
             createdAt?: string;
           };
           if (
             typeof evt.presentId === "string"
-            && typeof evt.content === "string"
             && typeof evt.mimeType === "string"
             && typeof evt.filePath === "string"
-            && typeof evt.inWorkspace === "boolean"
           ) {
             const entry: PresentStateEntry = {
               presentId: evt.presentId,
-              content: evt.content,
               mimeType: evt.mimeType,
               ...(evt.title !== undefined ? { title: evt.title } : {}),
               filePath: evt.filePath,
-              inWorkspace: evt.inWorkspace,
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
@@ -1481,11 +1548,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               sessionId: this.sessionId,
               presentId: entry.presentId,
               ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
-              content: entry.content,
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
               filePath: entry.filePath,
-              inWorkspace: entry.inWorkspace,
               createdAt: entry.createdAt,
             });
           }

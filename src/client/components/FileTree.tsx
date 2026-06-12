@@ -106,7 +106,7 @@ function TreeNode({
             e.stopPropagation();
             onEdit(node.path);
           }}
-          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 -my-1 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Edit file"
           aria-label={`Edit ${node.name}`}
         >
@@ -121,7 +121,7 @@ function TreeNode({
             e.stopPropagation();
             onDownload(node.path);
           }}
-          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 -my-1 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Download file"
           aria-label={`Download ${node.name}`}
         >
@@ -136,7 +136,7 @@ function TreeNode({
             e.stopPropagation();
             onAddToChat(node.path);
           }}
-          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+          className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 -my-1 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
           title="Add to chat context"
           aria-label={`Add ${node.name} to chat`}
         >
@@ -159,7 +159,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           </p>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             className="mt-2"
           >
@@ -179,7 +179,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
           variant="ghost"
           size="sm"
           onClick={onRefresh}
-          className="shrink-0"
+          className="shrink-0 h-7 w-7 p-0"
           title="Refresh file tree"
         >
           <ArrowClockwiseIcon size={ICON_SIZE.SM} />
@@ -218,7 +218,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                     variant="ghost"
                     size="sm"
                     onClick={() => onAddToChat(u.path!)}
-                    className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
+                    className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 -my-1 ml-1 text-(--color-text-secondary) hover:text-(--color-text-link)"
                     title="Add to chat context"
                     aria-label={`Add ${u.name} to chat`}
                   >
@@ -230,7 +230,7 @@ export function FileTree({ tree, onRefresh, onFileClick, selectedFile, onAddToCh
                     variant="ghost"
                     size="sm"
                     onClick={() => onDeleteUpload(u)}
-                    className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 ml-1 text-(--color-text-secondary) hover:text-(--color-error)"
+                    className="hidden group-hover:inline-flex h-7 w-7 p-0 shrink-0 -my-1 ml-1 text-(--color-text-secondary) hover:text-(--color-error)"
                     title="Delete upload"
                     aria-label={`Delete ${u.name}`}
                   >

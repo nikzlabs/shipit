@@ -30,6 +30,7 @@ import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
+import type { LogStore } from "./log-store.js";
 import {
   parseComposeFile,
   parseUserNamedVolumes,
@@ -184,6 +185,14 @@ export interface ServiceManagerOptions {
    * Empty/absent → no overlay mounts.
    */
   overlayDepDirs?: OverlayDepDirVolume[];
+  /**
+   * docs/192 — durable per-session log store. When set, streamed service logs
+   * are persisted here (channel `service:<name>`) so the panel can replay full
+   * history after orchestrator restart / idle eviction / container destruction,
+   * none of which the in-memory `logBuffers` ring survives. Omit for tests /
+   * setups that don't need durability.
+   */
+  logStore?: LogStore;
 }
 
 // ---------------------------------------------------------------------------
@@ -225,6 +234,7 @@ export class ServiceManager extends EventEmitter {
   private services = new Map<string, ManagedService>();
   private logProcesses = new Map<string, ChildProcess>();
   private logBuffers = new Map<string, string>();
+  private readonly logStore?: LogStore;
   private _started = false;
   private readonly composeRunner: ComposeRunner;
   private readonly composeQuery: ComposeQuery;
@@ -313,6 +323,7 @@ export class ServiceManager extends EventEmitter {
     this.networkJoinFn = opts.networkJoinFn;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
+    this.logStore = opts.logStore;
 
     this.secrets = new ServiceSecretsResolver({
       sessionId: opts.sessionId,
@@ -352,11 +363,20 @@ export class ServiceManager extends EventEmitter {
       onRunning: (name) => {
         // Service recovered — clear any pending install-window retry state.
         this.retry.clearRetryState(name);
-        // First boot after the gate opened succeeded — leave the post-gate
-        // recovery window so a later, unrelated crash gets normal error
-        // handling rather than a silent restart.
-        this.postGateServices.delete(name);
-        this.retry.clearPostGateState(name);
+        // Leave the post-gate recovery window only after the service has been
+        // STABLY running, not at the first `running` poll: a
+        // `command: sh -c "npm install && npm run dev"` service is `running` a
+        // minute before the dev server exists, and a crash in that
+        // establishment phase (live: ETXTBSY in the service's own npm install,
+        // docs/183 FINDINGS) used to land outside the window and latch to
+        // `error` with zero retries. Flapping keeps the bounded attempt
+        // budget — the timer is cancelled on every exit, so a crash-loop
+        // still exhausts MAX_POST_GATE_RETRIES rather than looping forever.
+        if (this.postGateServices.has(name)) {
+          this.retry.armPostGateStableClear(name, () => {
+            this.postGateServices.delete(name);
+          });
+        }
         // If a previous OOM kicked off auto-retries, arm a stable-uptime
         // timer that clears the OOM counter once the service has been
         // healthy long enough. We don't clear the counter eagerly: a
@@ -366,6 +386,7 @@ export class ServiceManager extends EventEmitter {
       },
       onLeftRunning: (name) => {
         this.retry.cancelOomStableTimer(name);
+        this.retry.cancelPostGateStableTimer(name);
       },
       onExitedCleanly: (name) => {
         this.retry.clearRetryState(name);
@@ -577,6 +598,17 @@ export class ServiceManager extends EventEmitter {
    */
   async snapshotLogs(name: string, lines = 2000): Promise<string> {
     if (!this.services.has(name)) return "";
+
+    // docs/192 — the durable store is the source of truth: it retains history
+    // across reconcile/restart/container destruction, which a fresh
+    // `docker compose logs` (bound to the *current* container) cannot. Prefer
+    // it; fall back to Docker only before the store has been seeded (e.g. very
+    // first open, or a setup without a LogStore).
+    const channel = `service:${name}`;
+    if (this.logStore?.hasChannel(this.sessionId, channel)) {
+      return this.logStore.snapshotText(this.sessionId, channel, ServiceManager.MAX_LOG_SNAPSHOT);
+    }
+
     const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
     const args = this.composeArgs("logs", "--no-log-prefix", "--tail", tail, name);
 
@@ -837,10 +869,22 @@ export class ServiceManager extends EventEmitter {
       this.logProcesses.delete(name);
     }
 
-    // Clear buffer before (re)starting — --tail 1000 replays history into it
+    // Clear buffer before (re)starting — --tail replays history into it
     this.logBuffers.delete(name);
 
-    const args = this.composeArgs("logs", "-f", "--tail", "1000", "--no-log-prefix", name);
+    // docs/192 — durable persistence. The follower replays its `--tail` window
+    // on every (re)start, which would duplicate lines in the durable store
+    // across restarts. So we only replay history (`--tail 1000`, which also
+    // *seeds* the store via handleData) when the store has nothing yet;
+    // otherwise we follow only NEW lines (`--tail 0`). This keeps an earlier
+    // container's persisted history intact after the container is destroyed
+    // and a fresh one starts. (Lines emitted while the orchestrator itself was
+    // down are not backfilled — a `--since` follower is the planned follow-up.)
+    const channel = `service:${name}`;
+    const seeded = this.logStore?.hasChannel(this.sessionId, channel) ?? false;
+    const tail = this.logStore && seeded ? "0" : "1000";
+
+    const args = this.composeArgs("logs", "-f", "--tail", tail, "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -849,7 +893,10 @@ export class ServiceManager extends EventEmitter {
     const handleData = (chunk: Buffer) => {
       const text = chunk.toString();
 
-      // Append to per-service ring buffer
+      // Durable backlog (docs/192) — survives reconcile/restart/container rm.
+      this.logStore?.append(this.sessionId, channel, text);
+
+      // Append to per-service ring buffer (hot cache: live fan-out + diagnostics)
       let buf = (this.logBuffers.get(name) ?? "") + text;
       if (buf.length > ServiceManager.MAX_LOG_BUFFER) {
         buf = truncateTerminalBuffer(buf, ServiceManager.MAX_LOG_BUFFER);
@@ -1157,6 +1204,7 @@ export class ServiceManager extends EventEmitter {
       // next gate open re-arms a fresh one.
       this.postGateServices.delete(svc.name);
       this.retry.clearPostGateState(svc.name);
+      this.retry.cancelPostGateStableTimer(svc.name);
     }
     void this.stopGatedForReinstall([...this.gatedServices]);
   }

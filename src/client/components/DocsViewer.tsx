@@ -14,10 +14,31 @@ import { compareDocsByRecency } from "../../server/shared/doc-sort.js";
 import { hasTrackedPlanSibling, hasTrackedSibling, isTracked } from "../utils/doc-paths.js";
 import { parseIssueRef } from "../../server/shared/issue-ref.js";
 
+/**
+ * Open a doc's linked issue in ShipIt's inline issue view (docs/189). Mirrors
+ * the chat cards' `onOpenIssue` shape so the doc chip reuses the same handler;
+ * `id` is the tracker-native lookup id from `parseIssueRef` (the detail view
+ * derives it from the identifier when absent).
+ */
+export type OpenDocIssue = (ref: {
+  tracker: "linear" | "github";
+  id?: string;
+  identifier: string;
+  title?: string;
+  url?: string;
+}) => void;
+
 export interface DocsViewerProps {
   files: DocEntry[];
   onFileClick: (path: string) => void;
   onRefresh: () => void;
+  /**
+   * Open a doc's linked issue inline (docs/168 → inline). When provided, a
+   * known-tracker issue chip opens ShipIt's Issues tab detail view instead of
+   * linking out (CLAUDE.md §2). Absent → the chip falls back to an external
+   * link, which is still the only option for an unknown-shape pointer.
+   */
+  onOpenIssue?: OpenDocIssue;
 }
 
 /**
@@ -61,12 +82,47 @@ function ChecklistProgressBadge({
 
 /**
  * Jump-to-issue chip for a doc's `issue:` pointer (docs/168). Work tracking
- * now lives in the tracker, so the docs list links out to it rather than
- * rendering its own badge. The chip stops row-click propagation so clicking
- * it opens the tracker instead of the doc modal.
+ * lives in the tracker, so the chip is the doc's link to its scheduling. The
+ * chip stops row-click propagation so clicking it opens the issue rather than
+ * the doc modal.
+ *
+ * When `onOpenIssue` is wired and the pointer resolves to a known tracker
+ * (Linear / GitHub), the chip opens ShipIt's inline issue detail view rather
+ * than linking out to the upstream tracker (CLAUDE.md §2: inline beats
+ * link-out — the deep link to Linear/GitHub lives inside that view). An
+ * unknown-shape pointer has no inline view to open, so it keeps the external
+ * link (or a plain badge when not even a URL is derivable).
  */
-function IssueChip({ issue }: { issue: string }) {
+function IssueChip({ issue, onOpenIssue }: { issue: string; onOpenIssue?: OpenDocIssue }) {
   const ref = parseIssueRef(issue);
+
+  if (onOpenIssue && ref.tracker !== "unknown") {
+    const tracker = ref.tracker;
+    return (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          onOpenIssue({
+            tracker,
+            identifier: ref.identifier,
+            ...(ref.issueId ? { id: ref.issueId } : {}),
+            ...(ref.url ? { url: ref.url } : {}),
+          });
+        }}
+        title={`Open ${ref.identifier} in ShipIt`}
+        className="inline-flex cursor-pointer"
+      >
+        <Badge
+          variant="info"
+          className={`${DOC_BADGE_CLASS} hover:brightness-110`}
+        >
+          {ref.identifier}
+        </Badge>
+      </button>
+    );
+  }
+
   if (!ref.url) {
     return (
       <Badge variant="default" className={DOC_BADGE_CLASS}>
@@ -103,16 +159,18 @@ function IssueChip({ issue }: { issue: string }) {
 function DocBadges({
   doc,
   compact = false,
+  onOpenIssue,
 }: {
   doc: DocEntry;
   compact?: boolean;
+  onOpenIssue?: OpenDocIssue;
 }) {
   const checklist =
     doc.checklist && doc.checklist.total > 0 ? doc.checklist : null;
   return (
     <>
       {checklist && <ChecklistProgressBadge progress={checklist} />}
-      {!compact && doc.issue && <IssueChip issue={doc.issue} />}
+      {!compact && doc.issue && <IssueChip issue={doc.issue} onOpenIssue={onOpenIssue} />}
     </>
   );
 }
@@ -175,7 +233,7 @@ function wasModifiedInSession(doc: DocEntry): boolean {
 
 type Tab = "tracked" | "other";
 
-export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsViewerProps) {
+export function DocsViewer({ files: allFiles, onFileClick, onRefresh, onOpenIssue }: DocsViewerProps) {
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -256,11 +314,11 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
           <p className="text-lg font-medium text-(--color-text-tertiary)">No docs found</p>
           <p className="text-xs text-(--color-text-tertiary) max-w-xs">
             Add markdown files to your workspace. Files with an <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">issue:</code> frontmatter
-            pointer link out to the tracker; a sibling <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">checklist.md</code> shows progress.
+            pointer open the linked issue inline; a sibling <code className="text-xs bg-(--color-bg-secondary) px-1 rounded">checklist.md</code> shows progress.
           </p>
           <Button
             variant="secondary"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             className="mt-2"
           >
@@ -318,7 +376,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
           </button>
           <Button
             variant="ghost"
-            size="sm"
+            size="md"
             onClick={onRefresh}
             title="Refresh file list"
           >
@@ -343,7 +401,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
             variant="ghost"
             size="sm"
             onClick={closeSearch}
-            className="p-1"
+            className="h-7 w-7 p-0"
             title="Close search (Escape)"
           >
             <XIcon size={ICON_SIZE.SM} />
@@ -373,7 +431,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge variant="info" className={DOC_BADGE_CLASS}>Modified</Badge>
-                    <DocBadges doc={doc} />
+                    <DocBadges doc={doc} onOpenIssue={onOpenIssue} />
                   </div>
                 </div>
               );
@@ -422,7 +480,7 @@ export function DocsViewer({ files: allFiles, onFileClick, onRefresh }: DocsView
                 >
                   <DocRowText doc={doc} onClick={() => onFileClick(doc.path)} />
                   <div className="flex items-center gap-2 shrink-0">
-                    <DocBadges doc={doc} />
+                    <DocBadges doc={doc} onOpenIssue={onOpenIssue} />
                   </div>
                 </div>
               );

@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GitHubAuthManager, validateGitHubToken } from "./github-auth.js";
+import { GitHubAuthManager, validateGitHubToken, checkGitHubToken } from "./github-auth.js";
 import { CredentialStore } from "./credential-store.js";
 import {
   getGitIdentity,
@@ -250,6 +250,96 @@ describe("GitHubAuthManager", () => {
       expect(did).toBe(false);
       expect(events).toEqual([]);
     });
+
+    it("preserves the token when GitHub is unreachable (5xx outage), no event", async () => {
+      // The git failure and the GET /user verification are both casualties of
+      // the same outage. Clearing here would log the user out for an incident
+      // they didn't cause — only the user may clear their token implicitly.
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bad Gateway", { status: 502 }));
+
+      credentialStore.setGithubToken("ghp_validtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      const events: unknown[] = [];
+      mgr.on("token_invalid", (ev) => events.push(ev));
+
+      const did = await mgr.markTokenInvalid("auto-push failed during GitHub outage");
+      expect(did).toBe(false);
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_validtoken");
+      expect(events).toEqual([]);
+    });
+
+    it("preserves the token when the verification request itself errors (network failure)", async () => {
+      vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNREFUSED"));
+
+      credentialStore.setGithubToken("ghp_validtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      const events: unknown[] = [];
+      mgr.on("token_invalid", (ev) => events.push(ev));
+
+      const did = await mgr.markTokenInvalid("auto-push failed: network down");
+      expect(did).toBe(false);
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_validtoken");
+      expect(events).toEqual([]);
+    });
+
+    it("preserves the token on a rate-limit 403 (not a credential rejection)", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(
+        new Response("rate limited", { status: 403, headers: { "x-ratelimit-remaining": "0" } }),
+      );
+
+      credentialStore.setGithubToken("ghp_validtoken");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      const did = await mgr.markTokenInvalid("auto-push failed while rate-limited");
+      expect(did).toBe(false);
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_validtoken");
+    });
+  });
+
+  describe("loadUserInfo token preservation", () => {
+    it("clears the token only on an explicit 401", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+      credentialStore.setGithubToken("ghp_revoked");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      await mgr.loadUserInfo();
+
+      expect(mgr.authenticated).toBe(false);
+      expect(credentialStore.getGithubToken()).toBeNull();
+    });
+
+    it("keeps the token when GitHub is unreachable on boot (5xx)", async () => {
+      vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Service Unavailable", { status: 503 }));
+      credentialStore.setGithubToken("ghp_during_outage");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      await mgr.loadUserInfo();
+
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_during_outage");
+    });
+
+    it("keeps the token when the boot verification request errors (network failure)", async () => {
+      vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("getaddrinfo ENOTFOUND api.github.com"));
+      credentialStore.setGithubToken("ghp_during_outage");
+      const mgr = new GitHubAuthManager(tmpDir, credentialStore);
+      mgr.checkCredentials();
+
+      await mgr.loadUserInfo();
+
+      expect(mgr.authenticated).toBe(true);
+      expect(credentialStore.getGithubToken()).toBe("ghp_during_outage");
+    });
   });
 });
 
@@ -355,6 +445,21 @@ describe("GitHubAuthManager.configureGitCredentials (docs/172 Gap 2 / SHI-72)", 
     const out = credentialFill("github.com");
     expect(out).toContain("username=x-access-token");
     expect(out).toContain(`password=${TOKEN}`);
+  });
+
+  it("silently skips a target dir that no longer exists (no spurious ENOENT)", () => {
+    // setGitHubToken backfills creds into EVERY persisted session, including
+    // ones whose on-disk checkout was reclaimed (archive / disk-janitor) while
+    // metadata is kept. A non-existent cwd makes spawnSync fail to chdir and
+    // surface a misleading "spawnSync git ENOENT" (path: 'git'). The guard
+    // turns that into a clean no-op.
+    credentialStore.setGithubToken(TOKEN);
+    const mgr = new GitHubAuthManager(workspaceDir, credentialStore);
+    mgr.checkCredentials();
+
+    const gone = path.join(tmpDir, "reclaimed-session", "workspace");
+    expect(fs.existsSync(gone)).toBe(false);
+    expect(() => mgr.configureGitCredentials(gone)).not.toThrow();
   });
 });
 
@@ -577,6 +682,50 @@ describe("validateGitHubToken", () => {
     );
     const result = await validateGitHubToken("ghp_valid_token");
     expect(result).toEqual({ username: "octocat", avatarUrl: "https://example.com/avatar.png", id: 12345, displayName: "The Octocat" });
+  });
+});
+
+describe("checkGitHubToken", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("classifies a 200 with profile as valid", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ login: "octocat", avatar_url: "https://example.com/a.png", id: 7, name: "Octo" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    const result = await checkGitHubToken("ghp_valid");
+    expect(result).toEqual({
+      status: "valid",
+      user: { username: "octocat", avatarUrl: "https://example.com/a.png", id: 7, displayName: "Octo" },
+    });
+  });
+
+  it("classifies a 401 as invalid (the only token-rejection signal)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Unauthorized", { status: 401 }));
+    const result = await checkGitHubToken("ghp_bad");
+    expect(result.status).toBe("invalid");
+  });
+
+  it("classifies a 5xx outage as indeterminate", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("Bad Gateway", { status: 502 }));
+    const result = await checkGitHubToken("ghp_unknown");
+    expect(result.status).toBe("indeterminate");
+  });
+
+  it("classifies a 403 rate-limit as indeterminate (not a rejection)", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("rate limited", { status: 403 }));
+    const result = await checkGitHubToken("ghp_unknown");
+    expect(result.status).toBe("indeterminate");
+  });
+
+  it("classifies a thrown fetch (network error) as indeterminate", async () => {
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("ECONNRESET"));
+    const result = await checkGitHubToken("ghp_unknown");
+    expect(result.status).toBe("indeterminate");
   });
 });
 

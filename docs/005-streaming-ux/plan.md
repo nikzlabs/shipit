@@ -26,10 +26,8 @@ The activity label is derived from the last `tool_use` block in each assistant e
 
 | Location | Component | When shown |
 |----------|-----------|------------|
-| Chat | `ThinkingIndicator` (bouncing dots + label) | Loading, no assistant message yet |
-| Chat | `TypingDots` (inline bouncing dots) | On streaming assistant messages |
 | Chat | `ToolSpinner` (spinning border) | Tool is actively executing |
-| Input bar | Bouncing dots + activity label | Claude is working (input disabled) |
+| Input bar | `AgentStatusBar` (spinner + activity label) | Agent is working (input disabled) |
 
 ## Code block rendering
 
@@ -50,9 +48,10 @@ Outputs exceeding 1MB are truncated at parse time in `App.tsx`.
 
 ## Key files
 
-- `src/client/components/StreamingIndicator.tsx` — `TypingDots`, `ThinkingIndicator`, `ToolSpinner`, `activityFromTool()`
+- `src/client/components/StreamingIndicator.tsx` — `ToolSpinner`, `activityFromTool()`
+- `src/client/components/AgentStatusBar.tsx` — Bottom-anchored spinner + activity label (primary "agent is working" indicator)
 - `src/client/components/MessageList.tsx` — Message rendering, `parseMessageSegments`, search highlights
 - `src/client/components/ToolResult.tsx` — Tool-specific renderers
 - `src/client/components/DiffBlock.tsx` — Inline file change diff display
 - `src/client/App.tsx` — Activity state, tool result attachment
-- `src/client/index.css` — Keyframe animations: `typing-bounce`, `spin-slow`
+- `src/client/index.css` — Keyframe animations: `spin-slow`

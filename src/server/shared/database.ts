@@ -506,6 +506,38 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN pinned_at TEXT");
   },
+  // docs/193 / SHI-112 — persist sensitive-action permission-request cards (and
+  // their approved/denied/expired terminal state) so they survive a session
+  // switch / full reload. The card arrives off the agent-event stream (the
+  // PermissionBroker's `agent_permission_request` broadcast) and is recorded
+  // in-band via emitChatCard; without this column it renders live but vanishes
+  // on the next loadSessionHistory, which rebuilds the transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN permission_prompt TEXT");
+  },
+  // docs/144 — attribute a recorded turn's cost to a SUB-AGENT distinct from the
+  // session's pinned agent. NULL for ordinary primary turns; set to the spawned
+  // agent's id (e.g. "codex") for a sub-agent run so the per-session usage
+  // breakdown can split cost per agent.
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN sub_agent_id TEXT");
+  },
+  // docs/196 — async notify-on-merge watch. `merge_watch` holds a JSON
+  // `SessionMergeWatch` on the CHILD session row (parent id + state machine), so
+  // a watch armed by `shipit session notify-on-merge` survives an orchestrator
+  // restart and the in-process PR poller can re-derive "child PR merged + watch
+  // un-delivered → enqueue a wake-turn into the parent." NULL = no watch.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merge_watch TEXT");
+  },
+  // docs/196 — persist the "Child PR merged / closed" transcript card so it
+  // survives a session switch / full reload. The card is surfaced into the
+  // parent's chat from a PR-poller event (outside any turn), so without this
+  // column it would render live but vanish on the next loadSessionHistory, which
+  // rebuilds the transcript from the DB. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN child_merged TEXT");
+  },
 ];
 
 export class DatabaseManager {

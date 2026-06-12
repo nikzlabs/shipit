@@ -70,6 +70,8 @@ export async function registerBootstrapRoutes(
     autoResolveConflicts?: boolean;
     /** docs/169 — global gate for the auto-fix-CI loop. */
     autoFixCi?: boolean;
+    /** docs/144 — global gate for sub-agent spawning. */
+    enableSubAgents?: boolean;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
   } }>(
@@ -101,6 +103,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
           ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
+          ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
         });
       } catch (err) {

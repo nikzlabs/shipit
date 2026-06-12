@@ -25,6 +25,17 @@ export function markUploadDeleted(path: string) {
   set.add(path);
   localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...set]));
 }
+// Remove a path from the deleted-uploads tombstone set. A fresh upload (or an
+// undone delete) must supersede any stale tombstone for its path — otherwise
+// `hydrateUploads` filters the just-uploaded file out on the next reconnect.
+// Tombstones are global (not session-scoped), so a same-named file in another
+// session can also collide; clearing on upload success resolves both cases.
+export function clearUploadTombstone(path: string) {
+  const set = getDeletedUploads();
+  if (!set.delete(path)) return;
+  if (set.size > 0) localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...set]));
+  else clearDeletedUploads();
+}
 function clearDeletedUploads() {
   localStorage.removeItem(DELETED_UPLOADS_KEY);
 }

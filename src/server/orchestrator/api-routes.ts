@@ -23,9 +23,10 @@ import type { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { MergeWatchManager } from "./merge-watch.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { WsLogEntry } from "../shared/types.js";
+import type { LogRingEntry } from "../shared/types.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import type { SessionLoopDetector } from "./loop-detector.js";
 import type { RuntimeMode } from "../shared/types.js";
@@ -157,6 +158,8 @@ export interface ApiDeps {
   containerManager?: SessionContainerManager;
   /** PR status poller — needed for tracking new PRs. */
   prStatusPoller?: PrStatusPoller;
+  /** docs/196 — notify-on-merge deliverer; the register route fires its register-time terminal-state check. */
+  mergeWatchManager?: MergeWatchManager;
   /** Database manager — needed for full reset to clear all tables atomically. */
   databaseManager?: DatabaseManager;
   /** Secret store — per-repo env var secrets for preview containers. */
@@ -201,7 +204,12 @@ export interface ApiDeps {
    * payload. Optional — test setups may omit it (the endpoint then
    * returns an empty `recentLogs` array).
    */
-  getLogBuffer?: (sessionId: string) => WsLogEntry[];
+  getLogBuffer?: (sessionId: string) => LogRingEntry[];
+  /**
+   * docs/192 — remove a session's durable `logs/` dir + in-memory ring when it
+   * is archived/deleted. Optional; the disk-janitor sweep is the backstop.
+   */
+  removeSessionLogs?: (sessionId: string) => void;
   /**
    * OOM circuit breaker — passed into recovery service handlers so
    * user-initiated restarts reset the trip, and into the diagnostics
