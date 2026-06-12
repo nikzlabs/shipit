@@ -126,8 +126,9 @@ export function IssuesPanel({
   };
 
   // Master-detail (docs/189): a selected issue replaces the list with the
-  // inline detail view. The list state stays mounted in the store, so the back
-  // button returns to the same filtered scroll position the user left.
+  // inline detail view. Filter state lives in the store, so the filtered view
+  // survives the round-trip; the list's scroll offset doesn't (the viewer
+  // unmounts), so we stash/restore it via `listScrollTop` (wired below).
   if (selected) {
     const detailTracker = selected.tracker;
     return (
@@ -212,6 +213,8 @@ export function IssuesPanel({
           seed: issue,
         })
       }
+      initialScrollTop={useIssuesStore.getState().listScrollTop}
+      onPersistScroll={(top) => useIssuesStore.getState().setListScrollTop(top)}
       onStartSession={handleStartSession}
       onConnect={onConnect}
       onSetQuery={(q) => useIssuesStore.getState().setQuery(q)}

@@ -134,6 +134,14 @@ interface IssuesState {
   includeDone: boolean;
 
   /**
+   * Scroll offset of the list's scroll container, persisted so opening an issue
+   * and pressing back lands on the same row the user left (docs/189). The list
+   * component fully unmounts behind the detail view, so its DOM `scrollTop` is
+   * gone on return — we stash it here on unmount and restore it on remount.
+   */
+  listScrollTop: number;
+
+  /**
    * The issue open in the inline detail view, or null when the list is showing
    * (docs/189). `detail` is the fully-hydrated issue from `GET /api/issue`;
    * until it lands the view renders from `selected`'s seed fields.
@@ -200,6 +208,8 @@ interface IssuesState {
   ) => Promise<string | null>;
   /** Close the detail view and return to the list. */
   closeIssue: () => void;
+  /** Stash the list's scroll offset so a later remount can restore it. */
+  setListScrollTop: (top: number) => void;
   setQuery: (query: string) => void;
   togglePriority: (level: IssuePriorityLevel) => void;
   toggleStatus: (name: string) => void;
@@ -261,6 +271,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   // fetchIssues, so restoring before any fetch is safe.
   filters: getSavedIssueFilters(),
   includeDone: getSavedIncludeDone(),
+  listScrollTop: 0,
   selected: null,
   detail: null,
   detailLoading: false,
@@ -494,6 +505,8 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       commentsLoading: false,
     }),
 
+  setListScrollTop: (top) => set({ listScrollTop: top }),
+
   setQuery: (query) => set((state) => ({ filters: { ...state.filters, query } })),
 
   togglePriority: (level) =>
@@ -534,6 +547,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       loading: false,
       error: null,
       filters: emptyFilters(),
+      listScrollTop: 0,
       selected: null,
       detail: null,
       detailLoading: false,

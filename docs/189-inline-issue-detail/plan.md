@@ -20,8 +20,14 @@ view's header.
 A master-detail layout **inside the existing Issues tab** (`rightTab === "issues"`),
 not a new tab or a modal. When an issue is selected, `IssuesPanel` swaps the
 list (`IssuesViewer`) for the detail (`IssueDetail`); a back button returns to
-the list, which stays mounted in the store so the filtered scroll position is
-preserved. This was chosen over a dedicated ephemeral tab (the PR-tab pattern —
+the list. The list **filter state** lives in the store, so the filtered view is
+intact on return — but `IssuesViewer` itself fully unmounts behind the detail,
+so its DOM `scrollTop` is gone. To land the user on the same row they left, the
+viewer stashes its scroll offset into `issues-store.listScrollTop` on unmount
+(a `useLayoutEffect` cleanup) and restores it on remount before paint (the same
+effect's setup). Rows render synchronously from the cached list, so the
+scrollable content already exists when the offset is restored — no jump, no
+fetch wait. This was chosen over a dedicated ephemeral tab (the PR-tab pattern —
 but PR is a per-session singleton, issues are a collection, so a re-targeting
 tab adds churn) and over a modal (ShipIt reserves modals for settings-style
 interruptions; content lives in panels).
