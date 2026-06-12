@@ -113,6 +113,25 @@ agent:
 - The overlay store is rolling out behind a platform flag; until it is enabled
   this key is parsed and validated but has no runtime effect. See docs/183.
 
+#### pnpm projects: shared store instead of overlay
+
+pnpm is detected automatically — from `package.json`'s `packageManager: "pnpm@…"`
+field, a `pnpm` command in `agent.install`, or a `pnpm-lock.yaml` at the root (in
+that precedence order). For a pnpm repo, ShipIt **skips the `node_modules` overlay**
+and instead points pnpm at a **shared, content-addressed store** on the same
+filesystem as your workspace (via `npm_config_store_dir`). This is strictly better
+for pnpm: installs become resolve + hardlink (seconds), per-session disk is ~zero,
+and packages dedupe across versions and repos. `dep-dirs` is ignored for pnpm repos
+— the store replaces the overlay, so there's nothing to declare. Like the overlay,
+the store is behind the same platform flag and inert until enabled.
+
+> **Caveat — in-place patching of installed packages.** Because the store hardlinks
+> files into every `node_modules`, editing a dependency's files in place (the old
+> `patch-package` style) would mutate the shared store and leak the change into other
+> sessions. Use pnpm's built-in `pnpm patch` / `pnpm patch-commit` flow instead — it
+> copies-on-write rather than mutating the linked original. pnpm also integrity-checks
+> the store on link, so a corrupted store entry is detected, not silently propagated.
+
 ### `compose` (optional)
 
 Path to a Docker Compose file, relative to workspace root. Accepts a string

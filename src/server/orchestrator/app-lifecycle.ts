@@ -325,12 +325,19 @@ async function createContainerForRunner(opts: {
     const overlaySpecs = opts.session
       ? await mgr.prepareOverlaySpecs({ sessionId, workspaceDir: opts.workspaceDir, session: opts.session })
       : [];
+    // docs/197 Part 2 — pnpm repos get a shared per-runtime store INSTEAD of the
+    // overlay (mutually exclusive: `prepareOverlaySpecs` returns [] for them).
+    // undefined when the flag is off / the session is ineligible / not a pnpm repo.
+    const pnpmStoreDir = opts.session
+      ? mgr.preparePnpmStore({ workspaceDir: opts.workspaceDir, session: opts.session })
+      : undefined;
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
       workspaceDir: opts.workspaceDir,
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
+      pnpmStoreDir,
       opsSession: opts.opsSession,
       overlaySpecs,
     });

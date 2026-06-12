@@ -70,7 +70,7 @@ import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
-import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled } from "./overlay-session.js";
+import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -1022,6 +1022,11 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       // sweep inert until a deployment opts in.
       liveOverlayScopeHashes: () =>
         liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
+      // docs/197 Part 2 — the current runtime's pnpm store hash (the live store to
+      // protect), or null when the feature is off so stale stores are reaped past
+      // the cutoff. Resolved at sweep time so a worker-image rebuild rotates it.
+      pnpmStoreRuntimeHash: () =>
+        isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
     });
   }
 

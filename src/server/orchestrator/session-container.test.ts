@@ -682,6 +682,104 @@ describe("SessionContainerManager", () => {
         .toEqual([]);
       await noVolManager.dispose();
     });
+
+    // --- docs/197 Part 2 — pnpm: skip overlay, use the shared store instead ---
+
+    const PNPM_YAML = "agent:\n  install:\n    - pnpm install\n";
+
+    it("returns [] for a pnpm repo even when otherwise overlay-eligible", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+      expect(await ovlManager.prepareOverlaySpecs({ sessionId: "pnpm-1", workspaceDir: dir, session: eligible }))
+        .toEqual([]);
+    });
+
+    function managerWithState(): { mgr: SessionContainerManager; stateDir: string } {
+      const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-state-"));
+      tmpDirs.push(stateDir);
+      const mgr = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        workspaceVolume: STATE_VOL,
+        stateDir,
+      });
+      return { mgr, stateDir };
+    }
+
+    it("preparePnpmStore returns the shared store dir for a pnpm repo (flag on)", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const { mgr, stateDir } = managerWithState();
+      try {
+        const dir = await ws({ shipitYaml: PNPM_YAML });
+        const store = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
+        expect(store).toBeDefined();
+        expect(store!.startsWith(path.join(stateDir, "pnpm-store"))).toBe(true);
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
+    it("preparePnpmStore is undefined for a non-pnpm repo", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const { mgr } = managerWithState();
+      try {
+        const dir = await ws({ gitignore: "node_modules\n" }); // plain npm repo
+        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
+    it("preparePnpmStore is undefined when the flag is off / session ineligible", async () => {
+      const { mgr } = managerWithState();
+      try {
+        const dir = await ws({ shipitYaml: PNPM_YAML });
+        delete process.env.OVERLAY_DEP_STORE;
+        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+        process.env.OVERLAY_DEP_STORE = "1";
+        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: { remoteUrl: "", kind: undefined } })).toBeUndefined();
+        expect(mgr.preparePnpmStore({ workspaceDir: dir, session: { remoteUrl: "r", kind: "ops" } })).toBeUndefined();
+      } finally {
+        await mgr.dispose();
+      }
+    });
+
+    it("preparePnpmStore is undefined without a workspace state volume or state dir", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const dir = await ws({ shipitYaml: PNPM_YAML });
+      // ovlManager has a workspaceVolume but NO stateDir → undefined.
+      expect(ovlManager.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
+    });
+
+    it("end-to-end: a pnpm session mounts the store + sets npm_config_store_dir and gets NO overlay", async () => {
+      process.env.OVERLAY_DEP_STORE = "1";
+      const { mgr } = managerWithState();
+      try {
+        const dir = await ws({ gitignore: "node_modules\n", shipitYaml: PNPM_YAML });
+        const overlaySpecs = await mgr.prepareOverlaySpecs({ sessionId: "pnpm-e2e-1", workspaceDir: dir, session: eligible });
+        expect(overlaySpecs).toEqual([]);
+        const pnpmStoreDir = mgr.preparePnpmStore({ workspaceDir: dir, session: eligible });
+        const config = mgr.buildConfigForWorkspace({
+          sessionId: "pnpm-e2e-1", sessionDir: dir, workspaceDir: dir,
+          credentialsDir: "/credentials", overlaySpecs, pnpmStoreDir,
+        });
+        await mgr.create(config);
+        const call = mockDocker.createContainer.mock.calls.at(-1)![0];
+        // The store is mounted at /pnpm-store as a Subpath of the state volume…
+        const storeMount = call.HostConfig.Mounts.find((m: any) => m.Target === "/pnpm-store");
+        expect(storeMount?.Source).toBe(STATE_VOL);
+        expect(storeMount?.VolumeOptions?.Subpath).toContain("pnpm-store/");
+        // …and no nested node_modules overlay mount exists.
+        const nested = call.HostConfig.Mounts.find((m: any) => m.Target === "/workspace/node_modules");
+        expect(nested).toBeUndefined();
+        // …and pnpm is pointed at it via npm_config_store_dir.
+        expect(call.Env).toContain("npm_config_store_dir=/pnpm-store");
+      } finally {
+        await mgr.dispose();
+      }
+    });
   });
 
   // --- bootedLimits (W3) ---
