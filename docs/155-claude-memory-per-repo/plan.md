@@ -5,7 +5,8 @@ issue: https://linear.app/shipit-ai/issue/SHI-49
 
 # Per-repo Claude memory sharing
 
-Claude's auto-memory system (see `auto memory` in `CLAUDE.md`) accumulates
+The Claude Code harness's built-in memory system (the agent is given a
+persistent file-based memory directory in its system prompt) accumulates
 `user`/`feedback`/`project`/`reference` notes into
 `/root/.claude/projects/-workspace/memory/` inside the session container.
 Today every ShipIt session gets its own copy of `/root/.claude` (per-session
@@ -35,8 +36,8 @@ Two reasons:
 
 ## Constraint: warm containers and per-agent isolation
 
-A bind-mount design is tempting (mirror `dep-cache` / `repo-cache` from
-`container-lifecycle.ts:72-145`) but doesn't actually work here:
+A bind-mount design is tempting (mirror the `dep-cache` bind mount in
+`container-lifecycle.ts:160-170`) but doesn't actually work here:
 
 1. **Warm containers aren't agent-pinned.** The warm pool exists precisely
    so a container can be reassigned to whatever agent the user picks. At
@@ -119,11 +120,13 @@ session start, but it's not required to ship.
   provisioning hook (`provisionAgentCredentials`) gets a memory copy-in
   step; new `syncMemoryBack` mirrors `syncAgentTokenBack`. Skipped for
   non-Claude agents and for sessions without a remote URL.
-- `src/server/orchestrator/repo-git.ts` — source of the repo hash used to
-  key the shared directory.
-- `src/server/orchestrator/ws-handlers/post-turn.ts` (or wherever
-  `syncAgentTokenBack` is invoked) — invoke `syncMemoryBack` on the same
-  turn-end hook.
+- `src/server/orchestrator/git-utils.ts` — `repoUrlToHash(repoUrl)` is the
+  source of the repo hash used to key the shared directory. It's consumed by
+  `session-dir-factory.ts` to build `<root>/repo-cache/<hash>` and
+  `<root>/dep-cache/<hash>`; `repo-memory/<hash>` keys off the same hash.
+- `src/server/orchestrator/session-agent-env.ts` —
+  `finalizeSessionAgentEnvironment` is the turn-end hook that already calls
+  `syncAgentTokenBack` (~line 374); invoke `syncMemoryBack` alongside it.
 - `src/server/orchestrator/disk-janitor.ts` — orphan sweep for
   `repo-memory/<hash>`.
 
