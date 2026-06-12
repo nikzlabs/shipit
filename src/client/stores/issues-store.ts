@@ -68,6 +68,14 @@ export interface IssueSelection {
   identifier: string;
   title?: string;
   url?: string;
+  /**
+   * Tracker-native id of a comment to scroll to + highlight once the thread
+   * lands (SHI-103). Set when an opener has a specific comment to land on — e.g.
+   * clicking the provenance card for a comment the agent just posted. The detail
+   * view consumes it (clears it via `clearAnchorComment`) after anchoring, so a
+   * later refresh doesn't re-scroll.
+   */
+  anchorCommentId?: string;
 }
 
 /** Argument to {@link IssuesState.openIssue} — from a list row or a chat card. */
@@ -81,6 +89,8 @@ export interface OpenIssueRef {
   url?: string;
   /** Full issue to render instantly while the fresh fetch lands (list path). */
   seed?: TrackerIssue;
+  /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+  anchorCommentId?: string;
 }
 
 /**
@@ -176,6 +186,11 @@ interface IssuesState {
   fetchDetail: () => Promise<void>;
   /** Fetch the open issue's comment thread. */
   fetchComments: () => Promise<void>;
+  /**
+   * Clear the open selection's `anchorCommentId` after the detail view has
+   * scrolled to it (SHI-103), so a later refresh/refetch doesn't re-anchor.
+   */
+  clearAnchorComment: () => void;
   /**
    * Post a user-authored comment on the open issue. Appends the created comment
    * to the thread on success. Returns an error message on failure, or null on
@@ -384,6 +399,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
         identifier: ref.identifier,
         ...(ref.title !== undefined ? { title: ref.title } : {}),
         ...(ref.url !== undefined ? { url: ref.url } : {}),
+        ...(ref.anchorCommentId !== undefined ? { anchorCommentId: ref.anchorCommentId } : {}),
       },
       // Seed from the row/card so the view paints immediately; the fetch then
       // hydrates the description + availableStatuses.
@@ -452,6 +468,13 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
       set({ commentsLoading: false, commentsError: err instanceof Error ? err.message : String(err) });
     }
   },
+
+  clearAnchorComment: () =>
+    set((state) =>
+      state.selected?.anchorCommentId
+        ? { selected: { ...state.selected, anchorCommentId: undefined } }
+        : state,
+    ),
 
   postComment: async (body) => {
     const sel = get().selected;

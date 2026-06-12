@@ -142,6 +142,8 @@ export function IssuesPanel({
         comments={comments}
         commentsLoading={commentsLoading}
         commentsError={commentsError}
+        {...(selected.anchorCommentId ? { anchorCommentId: selected.anchorCommentId } : {})}
+        onAnchorConsumed={() => useIssuesStore.getState().clearAnchorComment()}
         availableStatuses={availableStatuses}
         availableLabels={availableLabels}
         canEditPriority={detailTracker === "linear"}

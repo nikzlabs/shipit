@@ -826,7 +826,14 @@ export default function App() {
   // it on mobile), then loads the issue into the master-detail view. The
   // rightTab change also fires the fetch-on-open effect below for the list.
   const handleOpenIssue = useCallback(
-    (ref: { tracker: "linear" | "github"; id?: string; identifier: string; title?: string; url?: string }) => {
+    (ref: {
+      tracker: "linear" | "github";
+      id?: string;
+      identifier: string;
+      title?: string;
+      url?: string;
+      anchorCommentId?: string;
+    }) => {
       useUiStore.getState().setRightTab("issues");
       useUiStore.getState().setMobilePanel("preview");
       void useIssuesStore.getState().openIssue(ref);

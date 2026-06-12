@@ -436,6 +436,8 @@ export function MessageList({
     identifier: string;
     title?: string;
     url?: string;
+    /** Comment to scroll to + highlight once the thread lands (SHI-103). */
+    anchorCommentId?: string;
   }) => void;
   /**
    * Opens a spawned/fork child session. Wraps the router-aware

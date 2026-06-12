@@ -16,3 +16,8 @@
   - [x] issues-store: `comments` state, `fetchComments`/`postComment`
   - [x] `IssueDetail`: comment thread + composer
   - [x] Tests: adapters, services, route, store, component
+- [x] Follow-up (SHI-103): anchor + deep-link to a specific comment
+  - [x] `anchorCommentId` through `openIssue`/`IssueSelection`; `clearAnchorComment()`
+  - [x] `IssueDetail` scrolls to + highlights the anchored comment, then consumes the anchor
+  - [x] `IssueWriteCard` threads `undo.commentId` into the `onOpen` payload for a comment write
+  - [x] Tests: store anchor carry/clear, detail scroll+highlight+stale-anchor, card payload

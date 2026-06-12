@@ -17,7 +17,8 @@
  * seed fields the opener already had (`selection`), so a click feels instant.
  */
 
-import { useState } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: scroll-to + highlight an anchored comment once the async thread lands (browser API sync + fade timer)
+import { useEffect, useRef, useState } from "react";
 import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
@@ -69,6 +70,14 @@ export interface IssueDetailProps {
   comments: TrackerComment[] | null;
   commentsLoading: boolean;
   commentsError: string | null;
+  /**
+   * Tracker-native id of a comment to scroll to + highlight once the thread
+   * lands (SHI-103) — e.g. the comment the agent just posted, opened from its
+   * provenance card. Consumed (cleared via `onAnchorConsumed`) after anchoring.
+   */
+  anchorCommentId?: string;
+  /** Called once the anchored comment has been scrolled to, to clear the anchor. */
+  onAnchorConsumed?: () => void;
   /**
    * The tracker's assignable statuses, as a fallback for the inline status
    * editor when the hydrated issue hasn't supplied its own `availableStatuses`
@@ -133,6 +142,8 @@ export function IssueDetail({
   comments,
   commentsLoading,
   commentsError,
+  anchorCommentId,
+  onAnchorConsumed,
   availableStatuses,
   canEditPriority,
   availableLabels,
@@ -324,6 +335,8 @@ export function IssueDetail({
               loading={commentsLoading}
               error={commentsError}
               onPost={onPostComment}
+              anchorCommentId={anchorCommentId}
+              onAnchorConsumed={onAnchorConsumed}
             />
           </article>
         )}
@@ -356,10 +369,26 @@ function CommentAvatar({ name, avatarUrl }: { name: string; avatarUrl?: string }
   );
 }
 
-function IssueCommentItem({ comment }: { comment: TrackerComment }) {
+function IssueCommentItem({
+  comment,
+  highlighted,
+  registerRef,
+}: {
+  comment: TrackerComment;
+  /** Briefly flash the row when it's the anchored comment (SHI-103). */
+  highlighted?: boolean;
+  /** Register the row element so the thread can scroll it into view. */
+  registerRef?: (el: HTMLLIElement | null) => void;
+}) {
   const name = comment.author?.name ?? "Unknown";
   return (
-    <li className="flex gap-2">
+    <li
+      ref={registerRef}
+      data-comment-id={comment.id}
+      className={`flex gap-2 scroll-mt-4 -mx-2 rounded-md px-2 py-1 transition-colors duration-700 ${
+        highlighted ? "bg-(--color-bg-hover)" : "bg-transparent"
+      }`}
+    >
       <CommentAvatar name={name} avatarUrl={comment.author?.avatarUrl} />
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5 text-xs">
@@ -387,15 +416,46 @@ function IssueComments({
   loading,
   error,
   onPost,
+  anchorCommentId,
+  onAnchorConsumed,
 }: {
   comments: TrackerComment[] | null;
   loading: boolean;
   error: string | null;
   onPost: (body: string) => Promise<string | null>;
+  anchorCommentId?: string;
+  onAnchorConsumed?: () => void;
 }) {
   const [draft, setDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
+  // Per-comment row elements, so an anchored comment can be scrolled into view.
+  const itemRefs = useRef(new Map<string, HTMLLIElement>());
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  // Anchor to a specific comment once the thread lands (SHI-103). Fires when
+  // the anchor and the fetched thread are both present; scrolls the row into
+  // view, flashes it, and consumes the anchor (whether or not the comment is in
+  // the list — a stale/paged id mustn't keep re-firing on every thread update).
+  // eslint-disable-next-line no-restricted-syntax -- browser API sync: scrollIntoView, keyed on the async-arriving thread
+  useEffect(() => {
+    if (!anchorCommentId || comments === null) return;
+    onAnchorConsumed?.();
+    const el = itemRefs.current.get(anchorCommentId);
+    if (!el) return;
+    el.scrollIntoView?.({ behavior: "smooth", block: "center" });
+    setHighlightedId(anchorCommentId);
+  }, [anchorCommentId, comments, onAnchorConsumed]);
+
+  // Fade the highlight after a beat. Separate from the scroll effect so
+  // consuming the anchor (which flips `anchorCommentId` to undefined) doesn't
+  // tear down the timer before it fires.
+  // eslint-disable-next-line no-restricted-syntax -- browser API: highlight-fade timer with cleanup
+  useEffect(() => {
+    if (!highlightedId) return;
+    const t = setTimeout(() => setHighlightedId(null), 2200);
+    return () => clearTimeout(t);
+  }, [highlightedId]);
 
   const handleSubmit = async () => {
     const body = draft.trim();
@@ -434,7 +494,15 @@ function IssueComments({
       ) : (
         <ul className="flex flex-col gap-3">
           {list.map((c) => (
-            <IssueCommentItem key={c.id} comment={c} />
+            <IssueCommentItem
+              key={c.id}
+              comment={c}
+              highlighted={c.id === highlightedId}
+              registerRef={(el) => {
+                if (el) itemRefs.current.set(c.id, el);
+                else itemRefs.current.delete(c.id);
+              }}
+            />
           ))}
         </ul>
       )}

@@ -229,3 +229,68 @@ describe("IssueDetail comments (docs/189 follow-up)", () => {
     expect(screen.getByRole("button", { name: /^Comment$/i })).toBeDisabled();
   });
 });
+
+describe("IssueDetail comment anchoring (SHI-103)", () => {
+  const THREAD: TrackerComment[] = [
+    { id: "c-1", body: "First reply.", author: { name: "A" } },
+    { id: "c-2", body: "Second reply, the target.", author: { name: "B" } },
+  ];
+
+  // jsdom doesn't implement scrollIntoView; stub it so the anchor effect runs.
+  function stubScroll() {
+    const scrollIntoView = vi.fn();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    return scrollIntoView;
+  }
+
+  it("scrolls to the anchored comment once the thread lands and consumes the anchor", async () => {
+    const scrollIntoView = stubScroll();
+    const onAnchorConsumed = vi.fn();
+    const { container } = render(
+      <IssueDetail
+        {...baseProps()}
+        comments={THREAD}
+        anchorCommentId="c-2"
+        onAnchorConsumed={onAnchorConsumed}
+      />,
+    );
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    expect(onAnchorConsumed).toHaveBeenCalled();
+    // The target row is flashed (background utility applied), the others aren't.
+    const target = container.querySelector('[data-comment-id="c-2"]');
+    expect(target?.className).toMatch(/bg-\(--color-bg-hover\)/);
+    const other = container.querySelector('[data-comment-id="c-1"]');
+    expect(other?.className).not.toMatch(/bg-\(--color-bg-hover\)/);
+  });
+
+  it("consumes a stale anchor that matches no comment without scrolling", async () => {
+    const scrollIntoView = stubScroll();
+    const onAnchorConsumed = vi.fn();
+    render(
+      <IssueDetail
+        {...baseProps()}
+        comments={THREAD}
+        anchorCommentId="c-missing"
+        onAnchorConsumed={onAnchorConsumed}
+      />,
+    );
+    await waitFor(() => expect(onAnchorConsumed).toHaveBeenCalled());
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+
+  it("waits for the thread before anchoring (no consume while comments are null)", () => {
+    const scrollIntoView = stubScroll();
+    const onAnchorConsumed = vi.fn();
+    render(
+      <IssueDetail
+        {...baseProps()}
+        comments={null}
+        commentsLoading
+        anchorCommentId="c-2"
+        onAnchorConsumed={onAnchorConsumed}
+      />,
+    );
+    expect(onAnchorConsumed).not.toHaveBeenCalled();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+  });
+});

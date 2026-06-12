@@ -96,6 +96,27 @@ was the first listed non-goal; it's now built, mirroring the PR detail tab's
 - **`IssueDetail`** renders the thread (avatar · author · relative-date ·
   markdown body) + a composer below the description.
 
+### Anchor to a specific comment (SHI-103)
+
+An opener can land the user on one comment, not just the issue. An optional
+`anchorCommentId` rides through `openIssue` → `IssueSelection` → `IssueDetail`;
+once the thread fetch lands, the detail view scrolls that comment's row into view
+and briefly flashes it, then calls `clearAnchorComment` so a later refresh
+doesn't re-anchor. The `IssueWriteCard` threads its undo snapshot's `commentId`
+(present only for a `comment` write) into the `onOpen` payload, so clicking the
+provenance card for a comment the agent just posted lands on that exact comment.
+A stale/paged anchor that matches no loaded comment is consumed without
+scrolling. This closes the last link-out gap: reading an issue *and its
+discussion*, and landing on a specific comment, all stays inside ShipIt.
+
+- **Store** — `IssueSelection`/`OpenIssueRef` carry optional `anchorCommentId`;
+  `clearAnchorComment()` drops it after the view consumes it.
+- **`IssueDetail`** — `IssueComments` keeps a per-row ref map; one effect scrolls
+  to + highlights the anchored row (consuming the anchor), a second fades the
+  highlight, decoupled so consuming the anchor doesn't tear down the fade timer.
+- **`IssueWriteCard` → `MessageList` → `App.handleOpenIssue`** — the `onOpen`
+  payload grew an optional `anchorCommentId`, passed straight to `openIssue`.
+
 ## Visual reference
 
 `mockup.html` — the detail view's layout (header with back + deep link, status·

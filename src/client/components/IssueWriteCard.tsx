@@ -18,8 +18,9 @@
  * The whole card is the open affordance — clicking it (or Enter/Space when
  * focused) opens the issue in ShipIt's inline detail view, so there is no
  * separate open glyph. Undo is the one nested action; it stops propagation so
- * it doesn't also open the issue. (Anchoring to the specific comment inside the
- * detail view is a follow-up — the inline view doesn't render comments yet.)
+ * it doesn't also open the issue. For a comment write the card threads the
+ * created comment's id into the open payload, so the detail view scrolls to and
+ * highlights that exact comment (SHI-103).
  *
  * The authorship line ("by the ShipIt agent (workspace token)") is gone: the
  * card is self-evidently the agent's (it lives in the agent's transcript and
@@ -50,7 +51,14 @@ export interface IssueWriteCardProps {
   cardId: string;
   onUndo?: (cardId: string) => void;
   /** Open the inline detail view for this issue (docs/189). */
-  onOpen?: (ref: { tracker: TrackerId; identifier: string; title?: string; url?: string }) => void;
+  onOpen?: (ref: {
+    tracker: TrackerId;
+    identifier: string;
+    title?: string;
+    url?: string;
+    /** Comment to land on inside the detail view (SHI-103) — a comment write. */
+    anchorCommentId?: string;
+  }) => void;
 }
 
 /** The explicit verb word that leads line 1. `Set status of`, not `Moved`. */
@@ -143,6 +151,10 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
     return null;
   })();
 
+  // For a comment write the undo snapshot carries the created comment's id —
+  // thread it through so the detail view lands on that exact comment (SHI-103).
+  const anchorCommentId = card.undo.kind === "comment" ? card.undo.commentId : undefined;
+
   // The whole card opens the issue inline. Derive the lookup id from the
   // display identifier (uniform across trackers) rather than `card.issueId`,
   // which for GitHub is the undo target, not a valid `getIssue` key.
@@ -152,6 +164,7 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
       identifier: card.identifier,
       ...(card.title ? { title: card.title } : {}),
       ...(card.url ? { url: card.url } : {}),
+      ...(anchorCommentId ? { anchorCommentId } : {}),
     });
 
   return (
