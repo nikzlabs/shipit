@@ -49,12 +49,16 @@ function baseProps() {
     commentsError: null as string | null,
     availableStatuses: [] as { name: string; type?: string }[],
     canEditPriority: true,
+    availableLabels: [{ name: "security" }, { name: "bug" }, { name: "design" }],
+    canEditLabels: true,
     onBack: vi.fn(),
     onRefresh: vi.fn(),
     onStartSession: vi.fn(),
     onPostComment: vi.fn(async () => null as string | null),
     onSetStatus: vi.fn(async () => null as string | null),
     onSetPriority: vi.fn(async () => null as string | null),
+    onFetchLabels: vi.fn(),
+    onSetLabels: vi.fn(async () => null as string | null),
   };
 }
 
@@ -133,6 +137,39 @@ describe("IssueDetail (docs/189)", () => {
   it("renders an empty-description placeholder", () => {
     render(<IssueDetail {...baseProps()} detail={makeIssue({ description: undefined })} />);
     expect(screen.getByText("No description.")).toBeInTheDocument();
+  });
+});
+
+describe("IssueDetail label editing", () => {
+  it("removes a label via its chip ✕, committing the remaining set", () => {
+    const props = baseProps();
+    render(<IssueDetail {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Remove security" }));
+    expect(props.onSetLabels).toHaveBeenCalledWith(["bug"]);
+  });
+
+  it("opens the editor (lazily fetching the set) and adds an existing label", async () => {
+    const user = userEvent.setup();
+    const props = baseProps();
+    render(<IssueDetail {...props} />);
+    await user.click(screen.getByRole("button", { name: "Edit labels" }));
+    expect(props.onFetchLabels).toHaveBeenCalled();
+    // "design" is in the pickable set but not yet on the issue → toggling adds it.
+    await user.click(screen.getByRole("menuitemcheckbox", { name: "design" }));
+    expect(props.onSetLabels).toHaveBeenCalledWith(["security", "bug", "design"]);
+  });
+
+  it("shows an Add-label affordance when the issue has no labels", () => {
+    render(<IssueDetail {...baseProps()} detail={makeIssue({ labels: [] })} />);
+    expect(screen.getByRole("button", { name: "Edit labels" })).toHaveTextContent("Add label");
+  });
+
+  it("hides label editing affordances when the tracker can't edit labels", () => {
+    render(<IssueDetail {...baseProps()} canEditLabels={false} />);
+    expect(screen.queryByRole("button", { name: "Edit labels" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Remove security" })).toBeNull();
+    // The labels themselves still render read-only.
+    expect(screen.getByText("security")).toBeInTheDocument();
   });
 });
 

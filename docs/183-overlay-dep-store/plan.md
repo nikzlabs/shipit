@@ -75,6 +75,14 @@ agent:
   fingerprint is the orchestrator-side `overlayRuntimeKey` (worker image digest + arch — pins libc +
   Node ABI). The publish compare-and-swap, depth-cap flatten, force-push lineage reset, and the
   `.shipit/.install-done` stamped marker all carry over unchanged, scoped per dep dir.
+  - **Worker-image id is resolved at runtime, not hardcoded.** `overlayRuntimeKey` reads
+    `SESSION_WORKER_IMAGE_ID`. `SessionContainerManager.resolveWorkerImageId()` inspects the
+    session-worker base image once (cached) and `setupContainerManager` publishes its `.Id` into the
+    orchestrator's `process.env.SESSION_WORKER_IMAGE_ID` at startup (gated on the flag, operator value
+    wins) — so both the orchestrator scope AND `buildEnv`'s forwarded copy (which feeds the worker's
+    `install-runtime.ts:runtimeKey()`) rotate when the worker image is rebuilt, never reusing an
+    ABI-stale base. Resolving at runtime means a self-update rotates too. No Docker → `"unknown"`
+    fallback (no rotation), unchanged from before.
 - **Mount targets at create time.** Because this design keeps the **pre-container host clone**, the
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.

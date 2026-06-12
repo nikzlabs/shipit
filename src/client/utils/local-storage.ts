@@ -398,12 +398,12 @@ export function saveDraftMessage(sessionKey: string, text: string): void {
 
 // ---- Issues-tab filters (docs/173) ----
 //
-// The Issues filter bar (search + priority/status/assignee facets) is
+// The Issues filter bar (search + priority/status/assignee/label facets) is
 // workspace-scoped reference state, not per-session, so it persists in
-// localStorage and survives a page reload. The three facets are `Set`s, so we
+// localStorage and survives a page reload. The facets are `Set`s, so we
 // serialize them to arrays and rehydrate. Priorities are validated against the
-// fixed enum on read; freeform status/assignee values are pruned to the loaded
-// list by the store after each fetch, so a stale value here is harmless.
+// fixed enum on read; freeform status/assignee/label values are pruned to the
+// loaded list by the store after each fetch, so a stale value here is harmless.
 
 const ISSUE_FILTERS_KEY = "shipit-issue-filters";
 
@@ -420,6 +420,7 @@ interface SerializedIssueFilters {
   priorities?: string[];
   statuses?: string[];
   assignees?: string[];
+  labels?: string[];
 }
 
 export function getSavedIssueFilters(): IssueFilters {
@@ -428,6 +429,7 @@ export function getSavedIssueFilters(): IssueFilters {
     priorities: new Set(),
     statuses: new Set(),
     assignees: new Set(),
+    labels: new Set(),
   };
   try {
     const raw = localStorage.getItem(ISSUE_FILTERS_KEY);
@@ -441,6 +443,7 @@ export function getSavedIssueFilters(): IssueFilters {
       ),
       statuses: new Set((parsed.statuses ?? []).filter((s) => typeof s === "string")),
       assignees: new Set((parsed.assignees ?? []).filter((a) => typeof a === "string")),
+      labels: new Set((parsed.labels ?? []).filter((l) => typeof l === "string")),
     };
   } catch {
     return empty;
@@ -454,6 +457,7 @@ export function saveIssueFilters(filters: IssueFilters): void {
       priorities: [...filters.priorities],
       statuses: [...filters.statuses],
       assignees: [...filters.assignees],
+      labels: [...filters.labels],
     };
     localStorage.setItem(ISSUE_FILTERS_KEY, JSON.stringify(payload));
   } catch {

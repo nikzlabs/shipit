@@ -128,6 +128,7 @@ describe("issues filter persistence (docs/173)", () => {
       priorities: new Set(["high", "urgent"]),
       statuses: new Set(["In Review"]),
       assignees: new Set(["Ana", UNASSIGNED]),
+      labels: new Set(["bug", "design"]),
     });
     const restored = getSavedIssueFilters();
     expect(restored.query).toBe("auth");
@@ -135,6 +136,7 @@ describe("issues filter persistence (docs/173)", () => {
     expect([...restored.statuses]).toEqual(["In Review"]);
     expect(restored.assignees.has("Ana")).toBe(true);
     expect(restored.assignees.has(UNASSIGNED)).toBe(true);
+    expect([...restored.labels].sort()).toEqual(["bug", "design"]);
   });
 
   it("drops invalid priority levels on read", () => {

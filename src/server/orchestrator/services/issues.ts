@@ -310,6 +310,35 @@ export async function userSetIssuePriority(
   return { issue: issue! };
 }
 
+/**
+ * Replace an issue's full label set from a user action in the UI (the on-page
+ * label editor). `labels` is the COMPLETE desired set of label names — a
+ * wholesale replace, not a delta — because the editor commits the issue's
+ * end-state, so removals are names left out and `[]` clears all labels. Both
+ * trackers support labels natively (Linear issue labels, GitHub REST labels),
+ * so this isn't gated like priority. An unresolvable name surfaces as a 422
+ * listing the valid options (via {@link toResolutionServiceError}); GitHub, for
+ * instance, rejects a name that isn't a defined repo label.
+ */
+export async function userSetIssueLabels(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  id: string,
+  labels: string[],
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<MutateIssueResult> {
+  if (!id.trim()) throw new ServiceError(400, "An issue id is required");
+  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  let issue: TrackerIssue;
+  try {
+    issue = await tracker.updateIssue(id, { labels });
+  } catch (err) {
+    toResolutionServiceError(err);
+  }
+  return { issue: issue! };
+}
+
 // ---- Writes (docs/177) ------------------------------------------------------
 
 /**

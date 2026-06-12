@@ -4,6 +4,7 @@ import {
   activeFilterCount,
   anyFilterActive,
   distinctAssignees,
+  distinctLabels,
   distinctStatuses,
   filterIssues,
   type IssueFilters,
@@ -20,6 +21,7 @@ function makeIssue(overrides?: Partial<TrackerIssue>): TrackerIssue {
     status: "status" in (overrides ?? {}) ? overrides!.status : { name: "In Progress" },
     assignee: "assignee" in (overrides ?? {}) ? overrides!.assignee : { name: "Nik" },
     description: overrides?.description,
+    labels: overrides?.labels,
   };
 }
 
@@ -29,6 +31,7 @@ function emptyFilters(over?: Partial<IssueFilters>): IssueFilters {
     priorities: new Set<IssuePriorityLevel>(),
     statuses: new Set<string>(),
     assignees: new Set<string>(),
+    labels: new Set<string>(),
     ...over,
   };
 }
@@ -84,6 +87,24 @@ describe("filterIssues", () => {
     const statusless = [makeIssue({ id: "x", status: undefined })];
     expect(filterIssues(statusless, emptyFilters({ statuses: new Set(["Todo"]) }))).toHaveLength(0);
   });
+
+  it("OR within the label facet — keeps issues carrying any selected label", () => {
+    const labelled = [
+      makeIssue({ id: "1", labels: [{ name: "bug" }, { name: "design" }] }),
+      makeIssue({ id: "2", labels: [{ name: "infra" }] }),
+      makeIssue({ id: "3", labels: [{ name: "design" }] }),
+      makeIssue({ id: "4", labels: undefined }),
+    ];
+    const result = filterIssues(labelled, emptyFilters({ labels: new Set(["design"]) }));
+    expect(result.map((i) => i.id)).toEqual(["1", "3"]);
+    const either = filterIssues(labelled, emptyFilters({ labels: new Set(["infra", "design"]) }));
+    expect(either.map((i) => i.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("excludes label-less issues when a label facet is active", () => {
+    const issuesNoLabels = [makeIssue({ id: "x", labels: undefined })];
+    expect(filterIssues(issuesNoLabels, emptyFilters({ labels: new Set(["bug"]) }))).toHaveLength(0);
+  });
 });
 
 describe("distinctStatuses", () => {
@@ -132,6 +153,25 @@ describe("distinctAssignees", () => {
   });
 });
 
+describe("distinctLabels", () => {
+  it("derives distinct names with counts + tracker color, sorted by count then name", () => {
+    const issues = [
+      makeIssue({ id: "1", labels: [{ name: "bug", color: "#ff0000" }, { name: "design" }] }),
+      makeIssue({ id: "2", labels: [{ name: "bug" }] }),
+      makeIssue({ id: "3", labels: [{ name: "design" }] }),
+      makeIssue({ id: "4", labels: undefined }),
+    ];
+    expect(distinctLabels(issues)).toEqual([
+      { name: "bug", count: 2, color: "#ff0000" },
+      { name: "design", count: 2 },
+    ]);
+  });
+
+  it("returns an empty list when nothing carries a label", () => {
+    expect(distinctLabels([makeIssue({ labels: undefined })])).toEqual([]);
+  });
+});
+
 describe("anyFilterActive / activeFilterCount", () => {
   it("is false for empty filters", () => {
     expect(anyFilterActive(emptyFilters())).toBe(false);
@@ -147,8 +187,15 @@ describe("anyFilterActive / activeFilterCount", () => {
       query: "bug",
       priorities: new Set(["urgent", "high"]),
       statuses: new Set(["Todo"]),
+      labels: new Set(["design"]),
     });
     expect(anyFilterActive(filters)).toBe(true);
-    expect(activeFilterCount(filters)).toBe(4); // 1 search + 2 priorities + 1 status
+    expect(activeFilterCount(filters)).toBe(5); // 1 search + 2 priorities + 1 status + 1 label
+  });
+
+  it("is active when only a label facet is set", () => {
+    const filters = emptyFilters({ labels: new Set(["bug"]) });
+    expect(anyFilterActive(filters)).toBe(true);
+    expect(activeFilterCount(filters)).toBe(1);
   });
 });

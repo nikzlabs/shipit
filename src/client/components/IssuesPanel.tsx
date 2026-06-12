@@ -3,16 +3,18 @@ import { IssuesViewer } from "./IssuesViewer.js";
 import { IssueDetail } from "./IssueDetail.js";
 import {
   distinctAssignees,
+  distinctLabels,
   distinctStatuses,
   filterIssues,
   type AssigneeOption,
+  type LabelOption,
   type StatusOption,
 } from "./issues-filter.js";
 import type { IssueStatusRef } from "./IssueFieldControls.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
-import type { IssuePriorityLevel, TrackerId, TrackerIssue } from "../../server/shared/types.js";
+import type { IssueLabel, IssuePriorityLevel, TrackerId, TrackerIssue } from "../../server/shared/types.js";
 
 /**
  * Stable empty references. Returning a fresh `[]`/`{}` literal from a Zustand
@@ -25,7 +27,9 @@ import type { IssuePriorityLevel, TrackerId, TrackerIssue } from "../../server/s
 const EMPTY_ISSUES: TrackerIssue[] = [];
 const EMPTY_STATUSES: StatusOption[] = [];
 const EMPTY_ASSIGNEES: AssigneeOption[] = [];
+const EMPTY_LABELS: LabelOption[] = [];
 const EMPTY_STATUS_REFS: IssueStatusRef[] = [];
+const EMPTY_AVAILABLE_LABELS: IssueLabel[] = [];
 
 const ZERO_PRIORITY_COUNTS: Record<IssuePriorityLevel, number> = {
   urgent: 0,
@@ -58,6 +62,9 @@ export function IssuesPanel({
   const availableStatuses = useIssuesStore(
     (s) => s.statusesByTracker[s.activeTracker] ?? EMPTY_STATUS_REFS,
   );
+  const availableLabels = useIssuesStore(
+    (s) => s.labelsByTracker[s.activeTracker] ?? EMPTY_AVAILABLE_LABELS,
+  );
   const loading = useIssuesStore((s) => s.loading);
   const error = useIssuesStore((s) => s.error);
   const filters = useIssuesStore((s) => s.filters);
@@ -84,6 +91,11 @@ export function IssuesPanel({
   const assigneeOptions = useMemo(() => {
     const result = distinctAssignees(issues);
     return result.length === 0 ? EMPTY_ASSIGNEES : result;
+  }, [issues]);
+
+  const labelOptions = useMemo(() => {
+    const result = distinctLabels(issues);
+    return result.length === 0 ? EMPTY_LABELS : result;
   }, [issues]);
 
   const priorityCounts = useMemo(() => {
@@ -130,7 +142,15 @@ export function IssuesPanel({
         commentsLoading={commentsLoading}
         commentsError={commentsError}
         availableStatuses={availableStatuses}
+        availableLabels={availableLabels}
         canEditPriority={detailTracker === "linear"}
+        canEditLabels
+        onFetchLabels={() => void useIssuesStore.getState().fetchLabels(detailTracker)}
+        onSetLabels={(names) => {
+          const open = useIssuesStore.getState().detail;
+          if (!open) return Promise.resolve("No issue is open");
+          return useIssuesStore.getState().setIssueLabels(detailTracker, open, names);
+        }}
         onBack={() => useIssuesStore.getState().closeIssue()}
         onRefresh={() => {
           // Refresh re-fetches both the issue body and its comment thread.
@@ -164,6 +184,7 @@ export function IssuesPanel({
       filters={filters}
       statusOptions={statusOptions}
       assigneeOptions={assigneeOptions}
+      labelOptions={labelOptions}
       priorityCounts={priorityCounts}
       info={info}
       loading={loading}
@@ -197,6 +218,7 @@ export function IssuesPanel({
       onTogglePriority={(level) => useIssuesStore.getState().togglePriority(level)}
       onToggleStatus={(name) => useIssuesStore.getState().toggleStatus(name)}
       onToggleAssignee={(value) => useIssuesStore.getState().toggleAssignee(value)}
+      onToggleLabel={(name) => useIssuesStore.getState().toggleLabel(name)}
       onClearFilters={() => useIssuesStore.getState().clearFilters()}
     />
   );

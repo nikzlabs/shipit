@@ -5,6 +5,7 @@ import { SessionContainerManager, resolveAgentDockerLimits } from "./session-con
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
+import { isOverlayEnabled } from "./overlay-session.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
@@ -146,6 +147,22 @@ export async function setupContainerManager(
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {
       await containerManager.ensureNetwork();
+      // docs/183 — pin the overlay dep store's runtime scope to the worker
+      // image's id so a worker-image rebuild (Node/glibc bump) rotates the base
+      // scope, and an ABI-incompatible base is never reused. Resolve at runtime
+      // (self-updates rotate too) and publish into the orchestrator's own env —
+      // the channel both `overlayRuntimeKey()` (orchestrator-side scope) and
+      // `buildEnv` (forwarded into each session container's install-runtime)
+      // read. Gated on the flag so a non-overlay deployment is byte-for-byte
+      // unchanged; an operator-set value always wins. Runs before the disk
+      // janitor's first sweep (index.ts) so the live-base scope agrees.
+      if (isOverlayEnabled() && !process.env.SESSION_WORKER_IMAGE_ID) {
+        const workerImageId = await containerManager.resolveWorkerImageId();
+        if (workerImageId) {
+          process.env.SESSION_WORKER_IMAGE_ID = workerImageId;
+          console.log(`[server] Overlay runtime scope pinned to worker image ${workerImageId}`);
+        }
+      }
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);

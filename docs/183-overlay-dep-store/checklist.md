@@ -290,13 +290,39 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       2026-06-12 by #1267** — hardlink-dedup between generations, verified live on the canary
       (100%-linked no-change advance = 13 MB real; mixed `+dayjs` advance = ~15 MB real vs 470 MB;
       +0.4–3.4 s publish cost — see FINDINGS "Generation hardlink-dedup (#1267) verified live");
-      (c) `SESSION_WORKER_IMAGE_ID` wired on deploys (scope rotation on worker-image rebuilds);
-      (d) re-evaluated 2026-06-12: pnpm works end-to-end under overlay with a 9× skip-path win, so
-      auto-skip would forfeit real value — the EXDEV cost is a ~464 MB *per-session upper* copy
-      (disposable); document it for pnpm repos instead of skipping. Yarn PnP (no `node_modules`)
-      remains a skip; (e) the flag-rollback marker fix (a marker written while
-      deps lived in overlay is trusted flag-off → dep-less session). See FINDINGS.md "Operational
-      findings for the flip decision" and the 2026-06-12 dedup/pnpm/Python section.
+      (c) **DONE — `SESSION_WORKER_IMAGE_ID` is now wired at runtime** (see "Worker-image scope
+      rotation" below); (d) re-evaluated 2026-06-12: pnpm works end-to-end under overlay with a 9×
+      skip-path win, so auto-skip would forfeit real value — the EXDEV cost is a ~464 MB
+      *per-session upper* copy (disposable); the longer-term answer is the shared pnpm store of
+      docs/197. Yarn PnP (no `node_modules`) remains a skip; (e) ✅ **RESOLVED** — the flag-rollback
+      marker fix: the `/install` gate now distrusts a matching marker over any present-but-empty
+      declared dep dir regardless of mount type (`emptyDepDirsContradictingMarker`), so a marker
+      written while deps lived in overlay no longer skips into a dep-less session after the flag is
+      rolled off. See FINDINGS.md "Operational findings for the flip decision" and the 2026-06-12
+      dedup/pnpm/Python section.
+
+### Worker-image scope rotation — `SESSION_WORKER_IMAGE_ID` wired (flip precondition (c))
+
+Closes FINDINGS "Operational findings" finding 2: in production `overlayRuntimeKey()` was
+`unknown|x64` because nothing set `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST`, so a worker-image
+rebuild that bumped Node/glibc silently reused an ABI-stale base. Now the orchestrator resolves
+the value at runtime so self-updates rotate the scope too (not hardcoded in `deploy.sh`).
+
+- [x] **`SessionContainerManager.resolveWorkerImageId()`** — one `docker.getImage(imageName).inspect()`
+      → `.Id`, cached (a failed inspect is cached as a miss), so there is no per-session Docker call.
+- [x] **Startup wiring** (`app-lifecycle.ts`, `setupContainerManager`) — after `ensureNetwork`, when
+      `isOverlayEnabled()` and no operator value is set, resolves the id and publishes it into the
+      orchestrator's own `process.env.SESSION_WORKER_IMAGE_ID`. That env is the channel both
+      `overlayRuntimeKey()` (orchestrator-side scope, incl. the disk-janitor live-set, which runs after
+      this) and `buildEnv` read. Gated on the flag → flag-off deployments are byte-for-byte unchanged.
+- [x] **`buildEnv` forwards `SESSION_WORKER_IMAGE_ID` (or `IMAGE_DIGEST`) into every session container**,
+      so the worker's `install-runtime.ts:runtimeKey()` shares the same image fingerprint — the overlay
+      base scope, the published base's marker key, and the in-clone install marker all rotate together.
+- [x] Local/test mode (no Docker) and the flag-off path keep the `"unknown"` fallback (no forwarded var,
+      no rotation) — verified by unit tests.
+- [x] Tests: `resolveWorkerImageId` (returns id, caches, caches-the-miss) in `session-container.test.ts`;
+      `buildEnv` forwarding (`SESSION_WORKER_IMAGE_ID`, `IMAGE_DIGEST` fallback, neither set) in
+      `container-lifecycle.test.ts`.
 
 ### Rejected — do NOT implement (see plan.md "Rejected approaches")
 

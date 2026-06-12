@@ -26,12 +26,14 @@ import {
   TagIcon,
   UserIcon,
   WarningCircleIcon,
+  XIcon,
 } from "@phosphor-icons/react";
 import { Banner } from "./ui/banner.js";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
 import { MarkdownContent } from "./message-markdown.js";
 import { labelDotColor } from "./issue-label-color.js";
+import { IssueLabelsEditor } from "./IssueLabelsEditor.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
@@ -46,6 +48,7 @@ import { adaptColorForSurface } from "../utils/status-color.js";
 import { formatRelativeDate } from "../utils/dates.js";
 import type { IssueSelection } from "../stores/issues-store.js";
 import type {
+  IssueLabel,
   IssuePriorityLevel,
   TrackerComment,
   TrackerInfo,
@@ -74,6 +77,10 @@ export interface IssueDetailProps {
   availableStatuses: IssueStatusRef[];
   /** Whether priority is editable for this tracker (Linear yes, GitHub no). */
   canEditPriority: boolean;
+  /** The tracker's full pickable label set, for the on-page label editor. */
+  availableLabels: IssueLabel[];
+  /** Whether labels are editable for this tracker (both Linear and GitHub). */
+  canEditLabels: boolean;
   onBack: () => void;
   onRefresh: () => void;
   onStartSession: (issue: TrackerIssue) => void;
@@ -83,6 +90,10 @@ export interface IssueDetailProps {
   onSetStatus: (status: string) => Promise<string | null>;
   /** Set the open issue's priority; resolves to an error message, or null. */
   onSetPriority: (level: IssuePriorityLevel) => Promise<string | null>;
+  /** Lazily fetch the tracker's pickable label set (on editor open). */
+  onFetchLabels: () => void;
+  /** Replace the open issue's full label set; resolves to an error, or null. */
+  onSetLabels: (names: string[]) => Promise<string | null>;
 }
 
 /** Status-NAME text color by workflow-state type (the dot uses the tracker color). */
@@ -124,12 +135,16 @@ export function IssueDetail({
   commentsError,
   availableStatuses,
   canEditPriority,
+  availableLabels,
+  canEditLabels,
   onBack,
   onRefresh,
   onStartSession,
   onPostComment,
   onSetStatus,
   onSetPriority,
+  onFetchLabels,
+  onSetLabels,
 }: IssueDetailProps) {
   // Prefer the hydrated issue; fall back to the seed fields the opener supplied
   // so the header/title paint before the fetch resolves.
@@ -230,10 +245,13 @@ export function IssueDetail({
               {title}
             </h1>
 
-            {/* Assignee + labels meta. */}
-            {(Boolean(detail?.assignee) || (detail?.labels?.length ?? 0) > 0) && (
+            {/* Assignee + labels meta. The labels row is editable (pick from the
+                tracker's existing set): chips carry a remove ✕, and an inline
+                editor adds/removes against the pickable set. The row shows even
+                with no labels when editing is allowed, so the user can add one. */}
+            {detail && (Boolean(detail.assignee) || canEditLabels || (detail.labels?.length ?? 0) > 0) && (
               <div className="flex flex-col gap-2.5 pb-4 mb-4 border-b border-(--color-border-secondary)">
-                {detail?.assignee && (
+                {detail.assignee && (
                   <div className="flex items-center gap-2 text-xs text-(--color-text-secondary)">
                     <UserIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
                     {detail.assignee.avatarUrl ? (
@@ -246,14 +264,14 @@ export function IssueDetail({
                     <span className="text-(--color-text-primary)">{detail.assignee.name}</span>
                   </div>
                 )}
-                {detail?.labels && detail.labels.length > 0 && (
+                {(canEditLabels || (detail.labels?.length ?? 0) > 0) && (
                   <div className="flex items-start gap-2">
                     <TagIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary) mt-0.5 shrink-0" />
-                    <div className="flex flex-wrap gap-1.5">
-                      {detail.labels.map((label) => (
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(detail.labels ?? []).map((label) => (
                         <span
                           key={label.name}
-                          className="inline-flex items-center gap-1.5 rounded-full bg-(--color-bg-tertiary) text-(--color-text-secondary) text-[11px] px-2 py-0.5"
+                          className="inline-flex items-center gap-1.5 rounded-full bg-(--color-bg-tertiary) text-(--color-text-secondary) text-[11px] py-0.5 pl-2 pr-1"
                         >
                           <span
                             className="size-1.5 shrink-0 rounded-full"
@@ -261,8 +279,32 @@ export function IssueDetail({
                             aria-hidden="true"
                           />
                           {label.name}
+                          {canEditLabels && (
+                            <button
+                              type="button"
+                              aria-label={`Remove ${label.name}`}
+                              onClick={() =>
+                                void onSetLabels(
+                                  (detail.labels ?? [])
+                                    .map((l) => l.name)
+                                    .filter((n) => n !== label.name),
+                                )
+                              }
+                              className="ml-0.5 inline-flex size-3.5 items-center justify-center rounded-full text-(--color-text-tertiary) hover:bg-(--color-bg-active) hover:text-(--color-text-primary) cursor-pointer"
+                            >
+                              <XIcon size={10} weight="bold" />
+                            </button>
+                          )}
                         </span>
                       ))}
+                      {canEditLabels && (
+                        <IssueLabelsEditor
+                          current={detail.labels ?? []}
+                          available={availableLabels}
+                          onOpen={onFetchLabels}
+                          onCommit={onSetLabels}
+                        />
+                      )}
                     </div>
                   </div>
                 )}

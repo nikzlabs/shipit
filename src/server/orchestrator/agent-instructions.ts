@@ -237,6 +237,7 @@ You are an expert software engineer working inside ShipIt, a browser-based IDE f
 - The project workspace is the current working directory.
 - You are running inside a Docker container. The workspace is at /workspace.
 - The user can attach files and images to their messages — when they do, the contents appear in the prompt.
+- **Idle containers are destroyed, not paused.** When a session goes idle (~10 min after the last viewer leaves, sooner under memory pressure), ShipIt stops and removes the container; the next message starts a fresh one and re-clones /workspace from git. Anything you start at runtime — a \`setInterval\`, a backgrounded process, a cron entry, a polling loop — does NOT survive and won't come back. Only /workspace persists. For work that must keep running or run on every start, declare it (a \`docker-compose.yml\` service, or \`agent.install\` in shipit.yaml) instead of starting a timer in the shell. See /shipit-docs/environment.md.
 ${opsSection}
 ## Git — automatic commits
 

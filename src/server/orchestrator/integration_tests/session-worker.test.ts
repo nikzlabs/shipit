@@ -1167,6 +1167,87 @@ describe("Integration: Session Worker install endpoint", () => {
     }, 5_000, "second install completed");
   });
 
+  // docs/183 FINDINGS finding 3 — the flag-rollback hazard. A marker written
+  // while deps lived in the overlay store must be distrusted after the flag is
+  // rolled OFF: there is then no overlay mount, but the dep dir left behind in
+  // the host clone is EMPTY. A matching marker over a present-but-empty dep dir
+  // (any mount type) reinstalls instead of skipping into a dep-less session.
+  const awaitInstallOk = () =>
+    waitFor(async () => {
+      const s = await installWorker.getApp().inject({ method: "GET", url: "/install/status" });
+      const body = s.json() as { running: boolean; lastResult: { ok: boolean } | null };
+      return !body.running && body.lastResult?.ok === true;
+    }, 5_000, "install completed");
+
+  it("distrusts a matching marker when a present-but-empty (non-overlay) dep dir contradicts it", async () => {
+    // First install stamps the marker (default dep dir = node_modules; `true`
+    // does not create it).
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+    expect(fs.existsSync(path.join(installWorkspaceDir, ".shipit", ".install-done"))).toBe(true);
+
+    // Simulate the post-rollback state: an EMPTY node_modules sits in the clone
+    // (the old overlay mountpoint), no overlay mount present.
+    fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
+
+    // The marker still matches exactly, but the empty dep dir contradicts it →
+    // reinstall, NOT skip.
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(second.json()).toEqual({ started: true });
+    await awaitInstallOk();
+  });
+
+  it("preserves the marker-skip when the dep dir is populated", async () => {
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    // A populated dep dir does not contradict the marker → skip preserved.
+    fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
+    fs.writeFileSync(path.join(installWorkspaceDir, "node_modules", "dep.js"), "//");
+
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(second.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
+  it("preserves the marker-skip when the dep dir is absent (legit dep-less repo)", async () => {
+    // No node_modules is created (e.g. a non-Node repo carrying the default
+    // dep-dir). An absent dep dir is not a contradiction — the skip stands so the
+    // repo does not reinstall on every resume.
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(second.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
+  it("preserves the marker-skip over an empty dep dir when the repo opts out with dep-dirs: []", async () => {
+    fs.writeFileSync(path.join(installWorkspaceDir, "shipit.yaml"), "agent:\n  dep-dirs: []\n");
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    // Empty node_modules, but the repo declared no install-managed dep dirs.
+    fs.mkdirSync(path.join(installWorkspaceDir, "node_modules"));
+
+    const second = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(second.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
   it("SSE replays last install_done to a late-connecting client", async () => {
     // First, run an install to completion with no SSE clients attached.
     await installWorker.getApp().inject({
