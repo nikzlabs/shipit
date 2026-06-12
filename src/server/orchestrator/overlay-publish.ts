@@ -45,6 +45,7 @@ import type { Readable } from "node:stream";
 import type { SessionInfo } from "../shared/types.js";
 import {
   isOverlayEnabled,
+  isPnpmRepo,
   resolveOverlayScope,
   depDirsForSession,
   validDepDirsForOverlay,
@@ -140,6 +141,13 @@ export async function publishDepDirOverlayBases(
 
   const { workspaceDir } = args.session;
   if (!workspaceDir) return [];
+
+  // docs/198 — pnpm repos never overlay (the mount side skips them in
+  // `prepareOverlaySpecs`), so they have no per-dep-dir base to publish. Skip them
+  // here too, at the SAME single decision point (`isPnpmRepo`) the mount side uses —
+  // otherwise this hook publishes a never-mounted base generation (a 480 MB
+  // export, observed leaking on the canary 2026-06-12). One detector, both sides.
+  if (isPnpmRepo(workspaceDir)) return [];
 
   const valid = await validDepDirsForOverlay(depDirsForSession(args.session), workspaceDir);
   if (valid.length === 0) return [];

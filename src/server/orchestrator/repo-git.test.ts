@@ -142,6 +142,21 @@ describe("RepoGit bare-cache fetch advances HEAD", () => {
       .trim();
     expect(cloneOriginHead).toBe(remoteHead);
   });
+
+  // docs/198 — clone prep excludes pnpm's relocated /workspace/.pnpm-store from git
+  // (via .git/info/exclude) so the post-turn auto-commit never stages the store.
+  it("a fresh clone has .pnpm-store/ in .git/info/exclude", async () => {
+    const cacheDir = path.join(tmpDir, "cache-exclude");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    const workspaceDir = path.join(tmpDir, "workspace-exclude");
+    await cacheGit.cloneFromCache(workspaceDir, remoteUrl);
+
+    const exclude = fs.readFileSync(path.join(workspaceDir, ".git", "info", "exclude"), "utf-8");
+    expect(exclude.split("\n").some((l) => l.trim() === ".pnpm-store/")).toBe(true);
+  });
 });
 
 describe("RepoGit overlay publish oracle (docs/183)", () => {

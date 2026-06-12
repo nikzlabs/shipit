@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import simpleGit from "simple-git";
-import { GitManager } from "./git.js";
+import { GitManager, ensurePnpmStoreGitExcluded } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 describe("GitManager: init & autoCommit", () => {
@@ -219,5 +219,59 @@ describe("GitManager: init & autoCommit", () => {
     expect(result.commitHash).toBeTruthy();
     expect(result.conflictedFiles).toEqual([]);
     expect(result.rebaseInProgress).toBe(false);
+  });
+
+  // ---- docs/198 — pnpm relocated store excluded from git ----
+
+  function readExclude(): string {
+    return fs.readFileSync(path.join(tmpDir, ".git", "info", "exclude"), "utf-8");
+  }
+
+  it("ensurePnpmStoreGitExcluded writes the .pnpm-store entry once and is idempotent", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    ensurePnpmStoreGitExcluded(tmpDir);
+    const after1 = readExclude();
+    expect(after1).toContain(".pnpm-store/");
+    const occurrences1 = after1.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
+    expect(occurrences1).toBe(1);
+
+    // Second call must not append a duplicate.
+    ensurePnpmStoreGitExcluded(tmpDir);
+    const after2 = readExclude();
+    const occurrences2 = after2.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
+    expect(occurrences2).toBe(1);
+  });
+
+  it("ensurePnpmStoreGitExcluded is best-effort on a missing .git (no throw)", () => {
+    const noRepo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-no-repo-"));
+    try {
+      // No .git dir — must not throw; creates info/exclude under the (new) .git path.
+      expect(() => ensurePnpmStoreGitExcluded(noRepo)).not.toThrow();
+    } finally {
+      fs.rmSync(noRepo, { recursive: true, force: true });
+    }
+  });
+
+  it("autoCommit does not stage pnpm's relocated .pnpm-store store", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    // Simulate pnpm 11 relocating its content-addressable store into the workspace
+    // root (the mountpoint), exactly as it does inside a session container.
+    const storeDir = path.join(tmpDir, ".pnpm-store", "v11");
+    fs.mkdirSync(storeDir, { recursive: true });
+    fs.writeFileSync(path.join(storeDir, "index.db"), "binary-ish store internals");
+    // A real, intended change alongside it.
+    fs.writeFileSync(path.join(tmpDir, "src.txt"), "real change");
+
+    const result = await git.autoCommit("turn with pnpm install");
+    expect(result.commitHash).toBeTruthy();
+
+    // The committed tree must contain src.txt but NOT anything under .pnpm-store.
+    const tracked = await simpleGit(tmpDir).raw(["ls-files"]);
+    expect(tracked).toContain("src.txt");
+    expect(tracked).not.toContain(".pnpm-store");
   });
 });

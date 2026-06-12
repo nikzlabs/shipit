@@ -91,12 +91,25 @@ interface MountSpec {
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
 /**
- * docs/197 Part 2 — container-internal mount point for the shared per-runtime
- * pnpm store. `npm_config_store_dir` points pnpm here, and the host source is a
- * Subpath of the SAME state volume as `/workspace`, so pnpm's store→node_modules
- * hardlinks stay within one superblock (no EXDEV full copy).
+ * docs/198 — container-internal mount point for the shared per-runtime pnpm
+ * store. It must be **pnpm's own relocation target**, not an arbitrary path:
+ * pnpm 11 ignores `npm_config_store_dir` (and `pnpm config set store-dir`) and,
+ * when HOME's default store sits on a different device than the project (HOME is
+ * on the container overlay fs; `/workspace` is its own volume mount), relocates
+ * the content-addressable store to `<nearest mountpoint of project>/.pnpm-store`
+ * — i.e. `/workspace/.pnpm-store` (pnpm FAQ: a project on a filesystem mounted at
+ * `/mnt` gets its store at `/mnt/.pnpm-store`). Mounting the shared store there
+ * means pnpm "relocates" straight INTO it with zero configuration. The host
+ * source is a Subpath of the SAME state volume as `/workspace`, so pnpm's
+ * store→node_modules hardlinks stay within one superblock (no EXDEV full copy).
+ * `npm_config_store_dir` is still exported at this path for older pnpm versions
+ * that honor it — they land in the same shared dir.
+ *
+ * The earlier top-level `/pnpm-store` target (docs/197) was empirically dead on
+ * pnpm 11: the env was ignored and the store relocated into the workspace,
+ * leaving this mount empty and breaking cross-session sharing (canary 2026-06-12).
  */
-export const PNPM_STORE_CONTAINER_PATH = "/pnpm-store";
+export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
 
 export function buildMounts(
   config: ContainerConfig,
@@ -179,10 +192,13 @@ export function buildMounts(
     }
   }
 
-  // docs/197 Part 2 — mount the shared per-runtime pnpm store. A Subpath of the
-  // SAME state volume as `/workspace` (so store→node_modules hardlinks share one
-  // superblock), or a plain bind in dev mode. Set only for pnpm repos under the
-  // OVERLAY_DEP_STORE flag (`preparePnpmStore`); absent otherwise → unchanged.
+  // docs/198 — mount the shared per-runtime pnpm store at pnpm 11's relocation
+  // target `/workspace/.pnpm-store` (NESTED under the workspace mount above, like
+  // the overlay dep dirs — Docker orders mounts by destination depth so the parent
+  // `/workspace` always lands first). A Subpath of the SAME state volume as
+  // `/workspace` (so store→node_modules hardlinks share one superblock), or a plain
+  // bind in dev mode. Set only for pnpm repos under the OVERLAY_DEP_STORE flag
+  // (`preparePnpmStore`); absent otherwise → byte-for-byte unchanged.
   if (config.pnpmStoreDir) {
     if (workspaceVolume) {
       const storeRelPath = config.pnpmStoreDir.replace(/^\/workspace\//, "");
@@ -283,11 +299,12 @@ export function buildEnv(
     env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }
 
-  // docs/197 Part 2 — point pnpm at the shared per-runtime store mount. pnpm reads
-  // npm config from `npm_config_*` env, so this overrides the per-repo
-  // `PNPM_STORE_DIR` above for every pnpm invocation (agent + install). Set only for
-  // pnpm repos under the OVERLAY_DEP_STORE flag (`preparePnpmStore`); absent
-  // otherwise → byte-for-byte unchanged.
+  // docs/198 — point pnpm at the shared per-runtime store mount. pnpm 11 ignores
+  // this env (it relocates into `/workspace/.pnpm-store`, which is exactly where the
+  // store is mounted — see PNPM_STORE_CONTAINER_PATH), but OLDER pnpm versions honor
+  // `npm_config_store_dir`, and pointing them at the same mounted path keeps them on
+  // the shared store too. Set only for pnpm repos under the OVERLAY_DEP_STORE flag
+  // (`preparePnpmStore`); absent otherwise → byte-for-byte unchanged.
   if (config.pnpmStoreDir) {
     env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
   }

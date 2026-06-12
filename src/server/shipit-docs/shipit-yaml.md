@@ -166,12 +166,17 @@ agent:
 pnpm is detected automatically — from `package.json`'s `packageManager: "pnpm@…"`
 field, a `pnpm` command in `agent.install`, or a `pnpm-lock.yaml` at the root (in
 that precedence order). For a pnpm repo, ShipIt **skips the `node_modules` overlay**
-and instead points pnpm at a **shared, content-addressed store** on the same
-filesystem as your workspace (via `npm_config_store_dir`). This is strictly better
-for pnpm: installs become resolve + hardlink (seconds), per-session disk is ~zero,
-and packages dedupe across versions and repos. `dep-dirs` is ignored for pnpm repos
-— the store replaces the overlay, so there's nothing to declare. Like the overlay,
-the store is behind the same platform flag and inert until enabled.
+and instead mounts a **shared, content-addressed store** on the same filesystem as
+your workspace. The store is mounted at `/workspace/.pnpm-store` — which is exactly
+where pnpm 11 relocates its store when its default location is on a different device
+(it ignores `store-dir` config in that case), so pnpm uses the shared store with no
+configuration; older pnpm versions are pointed there via `npm_config_store_dir` too.
+This is strictly better for pnpm: installs become resolve + hardlink (seconds),
+per-session disk is ~zero, and packages dedupe across versions and repos. `dep-dirs`
+is ignored for pnpm repos — the store replaces the overlay, so there's nothing to
+declare. The store directory (`.pnpm-store/`) is auto-excluded from git per session,
+so it never lands in a commit. Like the overlay, the store is behind the same
+platform flag and inert until enabled.
 
 > **Caveat — in-place patching of installed packages.** Because the store hardlinks
 > files into every `node_modules`, editing a dependency's files in place (the old

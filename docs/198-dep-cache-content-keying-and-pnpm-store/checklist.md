@@ -52,6 +52,41 @@
       flag-off unchanged, janitor sweep
 - [x] All behind the existing `OVERLAY_DEP_STORE` flag (flag-off byte-for-byte unchanged)
 
+## Live verification follow-ups (2026-06-12)
+
+Three gaps found running Part 2 (PR #1279) on the production canary (pnpm 11.6.0,
+real worker image). All three fixed in this follow-up PR; flag defaults unchanged.
+
+- [x] **Store now mounts at pnpm 11's relocation target.** pnpm 11 ignores
+      `npm_config_store_dir` **and** `pnpm config set store-dir` (the store-dir setting
+      lives only in `pnpm-workspace.yaml` now). With HOME on the container overlay fs
+      (different device from `/workspace`), pnpm relocated its store to the project's
+      nearest mountpoint — `/workspace/.pnpm-store/v11/` — so the platform's
+      `/pnpm-store` mount stayed **empty** and nothing was shared across sessions.
+      Fix: mount the shared runtime-keyed store at `/workspace/.pnpm-store`
+      (`PNPM_STORE_CONTAINER_PATH`), the exact relocation target, so pnpm relocates
+      straight into the shared store with zero config. Host source unchanged
+      (`pnpm-store/<runtimeKey-hash>` Subpath of the state volume); `npm_config_store_dir`
+      kept at the new path for older pnpm. (`container-lifecycle.ts`.)
+- [x] **`.pnpm-store/` excluded from git per clone.** The relocated store is a
+      mountpoint at the workspace root and the repo's `.gitignore` doesn't cover it,
+      so the post-turn auto-commit committed `.pnpm-store/v11/index.db` onto the
+      session branch. Fix: write `.pnpm-store/` into the session clone's
+      `.git/info/exclude` at clone prep (`RepoGit.cloneFromCache`) — non-tracked, so
+      the committed tree is unchanged — plus a defensive idempotent ensure in
+      `GitManager.autoCommit` to heal clones made before this fix. New helper
+      `ensurePnpmStoreGitExcluded` (`shared/git.ts`).
+- [x] **Publish path gated on `isPnpmRepo`.** The mount-side skip
+      (`prepareOverlaySpecs` → []) worked, but the post-install publish hook was not
+      pnpm-gated and exported + published a never-mounted ~480 MB base generation.
+      Fix: `publishDepDirOverlayBases` returns `[]` for pnpm repos at the SAME
+      `isPnpmRepo` decision point the mount side uses — one detector, both sides
+      (`overlay-publish.ts`).
+- [x] **Tests.** store mount target + runtime-keyed Subpath; exclude written once +
+      idempotent + best-effort on missing `.git`; auto-commit doesn't stage a
+      relocated store; clone prep writes the exclude; publish skipped for pnpm repos
+      while npm repos still publish. Flag-off byte-for-byte unchanged.
+
 ## Shelf (not scheduled)
 
 - [ ] Content-addressed multi-base store (`depsHash → base generation`)
