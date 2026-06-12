@@ -10,7 +10,7 @@
  * remain out of scope (SHI-43 / docs/156).
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import {
@@ -481,11 +481,50 @@ export async function registerIssueRoutes(
     reply.code(500).send({ error: `${fallback}: ${getErrorMessage(err)}` });
   }
 
+  // ---- Write idempotency (SHI-112) ----------------------------------------
+  //
+  // The `shipit issue {comment,edit,status,assign,create}` write relay is
+  // re-driven verbatim when a crashed turn (exit 137 / OOM) is retried or the
+  // agent's CLI session is resumed: the tail `shipit issue …` shim re-executes
+  // as a brand-new subprocess and POSTs a fresh, identical request here. Without
+  // a guard each replay performs a SECOND real tracker write and mints a SECOND
+  // provenance card — the production symptom was ~12 duplicate comments on one
+  // issue from a single retry loop (cards minutes apart, no model reasoning
+  // between them).
+  //
+  // The read path dedups via `runner.recordedCards`, but that is reset at every
+  // turn start (`resetRunnerTurnState`), so it cannot span the resume/retry
+  // boundary — the duplicates land in *different* turns. We can't key on a
+  // stable `toolUseId` either: the shim is a plain Bash-invoked CLI with no
+  // tool-use id, and `--resume` re-mints tool ids on replay. So we dedup on the
+  // write's *content* — `(sessionId, tracker, verb, issueId, hash(content))` —
+  // within a sliding time window. A byte-identical write seen again inside the
+  // window short-circuits: NO second tracker write, NO second card; we return
+  // the original result so the shim still sees `ok: true`. A genuinely distinct
+  // write (different content) gets its own write + card. The window slides on
+  // each hit so a continuous retry storm is fully absorbed however long it runs,
+  // while a deliberate re-post after the window quiesces correctly goes through.
+  const WRITE_DEDUP_WINDOW_MS = 10 * 60_000;
+  interface WriteDedupEntry {
+    at: number;
+    result: unknown;
+  }
+  const recentWrites = new Map<string, WriteDedupEntry>();
+
+  function pruneWrites(now: number): void {
+    for (const [key, entry] of recentWrites) {
+      if (now - entry.at > WRITE_DEDUP_WINDOW_MS) recentWrites.delete(key);
+    }
+  }
+
   /**
    * Shared write handler: run the brokered write, then emit + persist the
    * do-then-surface provenance card (with the undo snapshot) into the session's
    * transcript, and return a compact result to the shim. Requires an active
    * runner — the agent is mid-turn when it calls the shim, so one exists.
+   *
+   * `dedup` carries the operation verb plus the normalized request content so a
+   * replayed/retried identical write is short-circuited (see `recentWrites`).
    */
   async function handleWrite(
     sessionId: string,
@@ -493,12 +532,26 @@ export async function registerIssueRoutes(
     issueId: string,
     reply: FastifyReply,
     fallback: string,
+    dedup: { verb: string; content: string },
     run: (github: GitHubTrackerContext) => Promise<IssueWriteOutcome>,
   ): Promise<unknown> {
     const runner = deps.runnerRegistry.get(sessionId);
     if (!runner) {
       reply.code(409).send({ error: "Session is not active — open it to record the write." });
       return;
+    }
+    const now = Date.now();
+    pruneWrites(now);
+    const dedupKey = `${sessionId}::${trackerId}::${dedup.verb}::${issueId}::${createHash("sha256")
+      .update(dedup.content)
+      .digest("hex")}`;
+    const cached = recentWrites.get(dedupKey);
+    if (cached && now - cached.at <= WRITE_DEDUP_WINDOW_MS) {
+      // Replay/retry of an identical write — surface the original result without
+      // re-writing the tracker or minting a second card. Slide the window so a
+      // sustained retry loop stays absorbed.
+      cached.at = now;
+      return cached.result;
     }
     const github = resolveGitHubContext(sessionId);
     let outcome: IssueWriteOutcome;
@@ -535,7 +588,7 @@ export async function registerIssueRoutes(
     );
     // Surface the resolved labels + priority so `shipit issue ... --json` reflects
     // what was actually applied (SHI-92), not just the title/identifier.
-    return {
+    const result = {
       ok: true,
       cardId: card.cardId,
       summary: card.summary,
@@ -546,6 +599,8 @@ export async function registerIssueRoutes(
       labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
     };
+    recentWrites.set(dedupKey, { at: now, result });
+    return result;
   }
 
   // POST /api/sessions/:sessionId/issue/create
@@ -563,7 +618,8 @@ export async function registerIssueRoutes(
       }
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
-      return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", (github) =>
+      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null }) };
+      return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", dedup, (github) =>
         createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority }, trackerFetchImpl, github),
       );
     },
@@ -578,7 +634,7 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker, id and body are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to comment", (github) =>
+      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to comment", { verb: "comment", content: body }, (github) =>
         commentOnIssueForTracker(credentialStore, tracker, id, body, trackerFetchImpl, github),
       );
     },
@@ -604,7 +660,7 @@ export async function registerIssueRoutes(
         ...(hasLabels ? { labels } : {}),
         ...(priority !== undefined ? { priority } : {}),
       };
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", (github) =>
+      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: JSON.stringify(patch) }, (github) =>
         updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github),
       );
     },
@@ -619,7 +675,7 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker, id and status are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set status", (github) =>
+      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set status", { verb: "status", content: status }, (github) =>
         setIssueStatusForTracker(credentialStore, tracker, id, status, trackerFetchImpl, github),
       );
     },
@@ -636,7 +692,7 @@ export async function registerIssueRoutes(
         reply.code(400).send({ error: "tracker and id are required" });
         return;
       }
-      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set assignee", (github) =>
+      return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to set assignee", { verb: "assign", content: String(assignee) }, (github) =>
         setIssueAssigneeForTracker(credentialStore, tracker, id, assignee, trackerFetchImpl, github),
       );
     },
