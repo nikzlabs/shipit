@@ -122,10 +122,54 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
       depsWith(),
     );
     expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    // This workspace has no package.json/lockfile, so there is nothing to
+    // content-key: the marker records a null depsHash (docs/198, commit-only).
     expect(pointerFor("node_modules")?.marker).toEqual({
       runtimeKey: "img|x64|glibc|node24",
       installCommands: ["npm install"],
+      depsHash: null,
     });
+  });
+
+  it("propagates the dependency content key (depsHash) into the pointer marker (docs/198)", async () => {
+    // Dep input files present → the marker carries a real content hash, so a
+    // later session on a different commit with byte-identical files can content-
+    // key pre-stamp against this base.
+    fs.writeFileSync(path.join(workspaceDir, "package.json"), '{"name":"x"}');
+    fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), '{"lockfileVersion":3}');
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install"],
+      },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    const marker = pointerFor("node_modules")?.marker;
+    expect(marker?.runtimeKey).toBe("img|x64|glibc|node24");
+    expect(marker?.installCommands).toEqual(["npm install"]);
+    expect(typeof marker?.depsHash).toBe("string");
+    expect(marker?.depsHash).toHaveLength(64);
+  });
+
+  it("disables content-keying (null depsHash) when the install isn't a recognized pure dep install (docs/198)", async () => {
+    // A codegen step taints the content key — even with dep files present, the
+    // pointer records depsHash:null so no later session can content-skip.
+    fs.writeFileSync(path.join(workspaceDir, "package.json"), '{"name":"x"}');
+    fs.writeFileSync(path.join(workspaceDir, "package-lock.json"), '{"lockfileVersion":3}');
+    const out = await publishDepDirOverlayBases(
+      {
+        session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir },
+        workerUrl: "http://w",
+        installOk: true,
+        installCommands: ["npm install", "npm run codegen"],
+      },
+      depsWith(),
+    );
+    expect(out).toEqual([{ depDir: "node_modules", outcome: "created", depth: 1, generation: 1 }]);
+    expect(pointerFor("node_modules")?.marker?.depsHash).toBeNull();
   });
 
   it("omits the pointer marker when the worker reports no runtime key", async () => {

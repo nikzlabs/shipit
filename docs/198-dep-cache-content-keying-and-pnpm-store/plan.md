@@ -82,8 +82,18 @@ templates and every plain npm/pnpm/pip repo.
   (cheap: ≤4 small files) and apply the widened match. The empty-dep-dir
   contradiction check (docs/183 precondition (e) fix) applies to both paths
   unchanged.
-- Pre-stamp path (warm pool): the orchestrator-side pre-stamp must write `depsHash`
-  too, so a standby claimed by a feature branch with unchanged deps skips.
+- Pre-stamp path (warm pool / fresh clone): the orchestrator-side pre-stamp must
+  both **write** `depsHash` into the marker it stamps AND **gate on it**. The
+  initial cut only wrote it — the gate still required `session HEAD == every
+  pointer commit`, so a fresh clone (no marker until the pre-stamp fires) never
+  reached the widened worker-side `markerMatches`. The live canary (2026-06-12,
+  see `checklist.md`) caught this: a README-only `main` advance ran a full
+  install. The fix (a) propagates `depsHash` through the publish path into
+  `BasePointer.marker` (and `PublishCandidate.markerStamp`) and (b) widens
+  `preStampInstallMarker` to stamp on a commit MISMATCH when the pointer's
+  `depsHash` equals this workspace's — every other condition unchanged, worker
+  gate still the final authority. The content-path stamp records the session's
+  own HEAD as `sourceCommit`.
 - shipit-docs: `shipit-yaml.md` (the `install-inputs` field), `install.md` if present.
 
 ## Part 2 — pnpm: shared store volume instead of overlay

@@ -31,6 +31,7 @@ import {
   validDepDirsForOverlay,
 } from "./overlay-session.js";
 import { overlayScopeHash, overlayVolumeName } from "./overlay-volume.js";
+import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
@@ -357,13 +358,26 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     };
   }
 
-  function pointer(commit: string, generation: number, marker?: { runtimeKey: string; installCommands: string[] }) {
+  function pointer(
+    commit: string,
+    generation: number,
+    marker?: { runtimeKey: string; installCommands: string[]; depsHash?: string | null },
+  ) {
     return {
       scopeHash: "h1", commit, depth: 1, generation,
       baseDir: `/state/overlay-base/h1/g${generation}`,
       updatedAt: "2026-06-10T00:00:00Z",
       ...(marker ? { marker } : {}),
     };
+  }
+
+  /** Write npm dep input files into a workspace and return their content key. */
+  function writeNpmDepFiles(dir: string, lock = '{"lockfileVersion":3}'): string {
+    fs.writeFileSync(path.join(dir, "package.json"), '{"name":"x"}');
+    fs.writeFileSync(path.join(dir, "package-lock.json"), lock);
+    const hash = computeInstallDepsHash(dir, ["npm install"], null);
+    if (hash === null) throw new Error("expected a non-null deps hash");
+    return hash;
   }
 
   const WORKER_RT = "img|x64|glibc-2.36|node24";
@@ -433,6 +447,86 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
     });
     expect(ok).toBe(false);
     expect(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8")).toBe("EXISTING");
+  });
+
+  // docs/198 — the content path: a base built at a DIFFERENT commit whose dep
+  // files hash identically still pre-stamps. This is the live canary regression
+  // (overlay-canary-183: main advanced by a README-only commit, dep files
+  // byte-identical to the pointer commit, yet a fresh session ran a FULL install).
+  it("stamps on a commit MISMATCH when the pointer's depsHash matches this workspace (docs/198)", async () => {
+    const { dir, head } = await gitWorkspace();
+    const depsHash = writeNpmDepFiles(dir);
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      // Pointer built at a DIFFERENT commit, but its content key matches.
+      readPointer: () =>
+        pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash }),
+    });
+    expect(ok).toBe(true);
+    const written = JSON.parse(fs.readFileSync(path.join(dir, ".shipit", ".install-done"), "utf8"));
+    // sourceCommit is THIS session's HEAD, not the pointer's — truthful for this workspace.
+    expect(written.sourceCommit).toBe(head);
+    expect(written.depsHash).toBe(depsHash);
+  });
+
+  it("does NOT stamp on a commit mismatch when the dep files DIFFER (docs/198)", async () => {
+    const { dir } = await gitWorkspace();
+    writeNpmDepFiles(dir, '{"lockfileVersion":3}');
+    // Pointer's recorded content key is for a DIFFERENT dep set.
+    const otherHash = "a".repeat(64);
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () =>
+        pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash: otherHash }),
+    });
+    expect(ok).toBe(false);
+    expect(fs.existsSync(path.join(dir, ".shipit", ".install-done"))).toBe(false);
+  });
+
+  it("does NOT take the content path against a legacy pointer with no depsHash (docs/198)", async () => {
+    const { dir } = await gitWorkspace();
+    writeNpmDepFiles(dir);
+    // Pre-docs/198 pointer: marker present but no depsHash → exact-commit-only.
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () =>
+        pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("does NOT take the content path when this workspace has no content key (commit mismatch, null hash)", async () => {
+    // No dep files → computeInstallDepsHash is null → a null never content-matches,
+    // even if the pointer carries a hash. Degrades to exact-commit-only.
+    const { dir } = await gitWorkspace();
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () =>
+        pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"], depsHash: "b".repeat(64) }),
+    });
+    expect(ok).toBe(false);
+  });
+
+  it("content path still requires command + runtime agreement (docs/198)", async () => {
+    const { dir } = await gitWorkspace();
+    const depsHash = writeNpmDepFiles(dir);
+    // depsHash matches but the install command differs → no stamp.
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () =>
+        pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["pnpm install"], depsHash }),
+    });
+    expect(ok).toBe(false);
   });
 
   it("requires EVERY dep dir's pointer to match (one cold scope blocks the stamp)", async () => {
