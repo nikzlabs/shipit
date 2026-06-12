@@ -392,7 +392,7 @@ function extractPresentPayload(raw: string): { presentId?: unknown; title?: unkn
     }
   }
   if (value && typeof value === "object") {
-    return value as { presentId?: unknown; title?: unknown };
+    return value;
   }
   return null;
 }

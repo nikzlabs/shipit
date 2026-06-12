@@ -868,7 +868,7 @@ export function wireAgentListeners(
       });
       if (filtered.length === 0) return;
       if (filtered.length !== content.length) {
-        event = { ...event, content: filtered } as AgentEvent;
+        event = { ...event, content: filtered };
       }
     }
 

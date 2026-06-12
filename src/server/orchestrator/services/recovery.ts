@@ -153,7 +153,7 @@ export async function killAgent(
   const session = deps.sessionManager.get(sessionId);
   if (!session) throw new ServiceError(404, "Session not found");
 
-  const runner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const runner: RecoveryRunner | undefined = deps.runnerRegistry.get(sessionId);
   if (!runner) {
     return { killed: false, noop: true };
   }
@@ -239,7 +239,7 @@ export async function restartContainer(
     throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
   }
 
-  const runner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const runner: RecoveryRunner | undefined = deps.runnerRegistry.get(sessionId);
 
   // Phased progress goes via emitMessage so reconnecting viewers see it
   // through the turn-event log. Once we dispose the runner the channel is
@@ -337,7 +337,7 @@ export async function restartContainer(
   // Re-resolve the runner since the registry created a fresh one above —
   // emitMessage on the new runner reaches reconnecting viewers via the
   // turn-event buffer.
-  const newRunner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const newRunner: RecoveryRunner | undefined = deps.runnerRegistry.get(sessionId);
   const finalEmit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
     newRunner?.emitMessage({
       type: "container_restarting",
@@ -411,7 +411,7 @@ export async function restartAgent(
     throw new ServiceError(500, "Session has no workspaceDir — cannot create container");
   }
 
-  const runner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const runner: RecoveryRunner | undefined = deps.runnerRegistry.get(sessionId);
 
   // Emit single cosmetic phase via the runner's message stream. We use the
   // same `container_restarting` message type as Rescue session so the
@@ -494,7 +494,7 @@ export async function restartAgent(
   // Final phase. Re-resolve the runner — the registry created a fresh one
   // above, so we emit from the new runner so the next viewer attach picks
   // it up via the turn-event buffer.
-  const newRunner = deps.runnerRegistry.get(sessionId) as RecoveryRunner | undefined;
+  const newRunner: RecoveryRunner | undefined = deps.runnerRegistry.get(sessionId);
   const finalEmit = (phase: RescuePhase, extra: { reason?: string; message?: string } = {}) => {
     newRunner?.emitMessage({
       type: "container_restarting",

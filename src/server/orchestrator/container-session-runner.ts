@@ -451,7 +451,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         port: svc.port,
         preview: svc.preview,
         error: svc.error,
-      } as WsServerMessage);
+      });
 
       // When a preview-eligible service changes status, recalculate detected
       // ports and emit preview_status so the client reflects the real state
@@ -472,7 +472,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         type: "log_append",
         channel: `service:${name}`,
         records: [{ ts: new Date().toISOString(), text }],
-      } as WsServerMessage);
+      });
     };
 
     const onReady = () => {
@@ -488,7 +488,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           preview: s.preview,
           error: s.error,
         })),
-      } as WsServerMessage);
+      });
 
       // Emit preview_status AFTER service_list so it's the last message in the
       // stack-ready burst.  React 18 automatic batching can swallow intermediate
@@ -506,7 +506,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         declared: snapshot.declared,
         missingByService: snapshot.missingByService,
         missingRequired: snapshot.missingRequired,
-      } as WsServerMessage);
+      });
 
       // Phase 3: also push the resolved `agent: true` values into the
       // session worker's process.env so the next agent turn (and any
@@ -1514,7 +1514,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               name: status.name,
               state: status.state as "loaded" | "failed" | "crashed" | "disabled",
               reason: status.reason,
-            } as WsServerMessage);
+            });
           }
           break;
         }
@@ -1578,7 +1578,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
         case "file_changes": {
           const paths = (data.paths as string[]) ?? [];
-          this.emitMessage({ type: "files_changed", paths } as WsServerMessage);
+          this.emitMessage({ type: "files_changed", paths });
 
           // Detect config file changes and trigger compose reconciliation
           const hasConfigChange = paths.some(p =>

@@ -589,7 +589,7 @@ export class SessionWorker extends EventEmitter {
         return { started: true, existing: true };
       }
 
-      const body = (request.body ?? {}) as { cols?: number; rows?: number };
+      const body = (request.body ?? {});
       const cols = typeof body.cols === "number" ? Math.max(1, Math.min(500, body.cols)) : 80;
       const rows = typeof body.rows === "number" ? Math.max(1, Math.min(200, body.rows)) : 24;
 
@@ -972,7 +972,7 @@ export class SessionWorker extends EventEmitter {
             content: [
               { type: "tool_use", id: toolUseId, name: "AskUserQuestion", input: { questions } },
             ],
-          } as AgentEvent,
+          },
         });
 
         return { status: "asked" };

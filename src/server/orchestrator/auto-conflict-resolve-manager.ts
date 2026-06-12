@@ -20,7 +20,6 @@
 
 import type { PrStatusSummary, PrMergeableState } from "../shared/types/github-types.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
-import type { WsServerMessage } from "../shared/types/ws-server-messages.js";
 import { getErrorMessage } from "./validation.js";
 import { AutoRemediationManager, type RemediationState } from "./auto-remediation-manager.js";
 import type { RemediationArbiter } from "./auto-remediation-arbiter.js";
@@ -221,7 +220,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
       sessionId,
       baseBranch,
       attempt,
-    } as WsServerMessage);
+    });
 
     void this.runAttempt(sessionId, baseBranch, attempt, cb);
   }
@@ -344,7 +343,7 @@ export class AutoConflictResolveManager extends AutoRemediationManager<ConflictS
         attempt,
         ...(emitForcePushed !== undefined ? { forcePushed: emitForcePushed } : {}),
         ...(emitLastError !== undefined ? { lastError: emitLastError } : {}),
-      } as WsServerMessage);
+      });
     }
 
     if (result.outcome === "deferred") {

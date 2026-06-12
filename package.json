@@ -91,7 +91,7 @@
     "tailwindcss": "4.3.0",
     "tsx": "4.22.4",
     "typescript": "5.9.3",
-    "typescript-eslint": "8.56.0",
+    "typescript-eslint": "8.60.1",
     "vite": "8.0.16",
     "vitest": "4.1.8"
   },

@@ -32,7 +32,7 @@ export async function readDockerMemoryStats(
       try {
         const container = docker.getContainer(ci.Id);
         // stream: false returns a single stats snapshot instead of a stream
-        const stats: ContainerStats = await container.stats({ stream: false }) as ContainerStats;
+        const stats: ContainerStats = await container.stats({ stream: false });
         return stats.memory_stats?.usage ?? 0;
       } catch {
         return 0;

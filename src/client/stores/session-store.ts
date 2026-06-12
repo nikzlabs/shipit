@@ -277,7 +277,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   sessions: [] as SessionInfo[],
   authUrl: null,
   activeRunnerSessions: new Set<string>(),
-  rewindRecoveries: {} as Record<string, RewindRecovery>,
+  rewindRecoveries: {},
   turnUsage: initialTurnUsage,
   allSessions: [] as SessionInfo[],
   allSessionsDialogOpen: false,

@@ -111,7 +111,7 @@ function buildRoutes(): Route[] {
 
   // GET /containers/json — filter to session-labeled containers
   route("GET", /^\/v[\d.]+\/containers\/json(\?.*)?$|^\/containers\/json(\?.*)?$/, async (ctx) => {
-    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers as Record<string, string>);
+    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers);
     if (dockerResult.statusCode !== 200) {
       ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
       ctx.res.end(dockerResult.body);
@@ -241,7 +241,7 @@ function buildRoutes(): Route[] {
 
   // GET /networks — filter to session-labeled networks
   route("GET", /^(?:\/v[\d.]+)?\/networks(\?.*)?$/, async (ctx) => {
-    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers as Record<string, string>);
+    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers);
     if (dockerResult.statusCode !== 200) {
       ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
       ctx.res.end(dockerResult.body);
@@ -380,7 +380,7 @@ function buildRoutes(): Route[] {
 
   // GET /volumes — filter to session-labeled volumes
   route("GET", /^(?:\/v[\d.]+)?\/volumes(\?.*)?$/, async (ctx) => {
-    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers as Record<string, string>);
+    const dockerResult = await forwardToDocker(ctx.socketPath, "GET", ctx.req.url!, ctx.req.headers);
     if (dockerResult.statusCode !== 200) {
       ctx.res.writeHead(dockerResult.statusCode, dockerResult.headers);
       ctx.res.end(dockerResult.body);
