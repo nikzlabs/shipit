@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -1246,6 +1247,96 @@ describe("Integration: Session Worker install endpoint", () => {
       payload: { commands: ["true"] },
     });
     expect(second.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
+  // docs/197 — the content-keyed install skip. With a real git repo, the marker
+  // stamps the source commit AND a content hash of the dependency input files;
+  // a later install on a DIFFERENT commit whose dep files are byte-identical
+  // skips via the content key instead of reinstalling.
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: installWorkspaceDir, stdio: "ignore" });
+
+  const initGitRepo = () => {
+    git("init", "-q");
+    git("config", "user.email", "t@t");
+    git("config", "user.name", "t");
+    git("config", "commit.gpgsign", "false");
+  };
+
+  const commitAll = (message: string): string => {
+    git("add", "-A");
+    git("commit", "-q", "-m", message);
+    return execFileSync("git", ["rev-parse", "HEAD"], { cwd: installWorkspaceDir }).toString().trim();
+  };
+
+  it("content key: skips a DIFFERENT commit when the dep input files are identical", async () => {
+    initGitRepo();
+    // Explicit install-inputs opts into content-keying regardless of the command.
+    fs.writeFileSync(path.join(installWorkspaceDir, "shipit.yaml"), "agent:\n  install-inputs:\n    - deps.lock\n");
+    fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@1.0.0\n");
+    const first = commitAll("init");
+
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    // A new commit that touches only a non-dependency file. HEAD moves; deps.lock
+    // is byte-identical, so the content hash is unchanged.
+    fs.writeFileSync(path.join(installWorkspaceDir, "README.md"), "docs\n");
+    const second = commitAll("docs only");
+    expect(second).not.toBe(first);
+
+    const res = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(res.json()).toEqual({ skipped: true, reason: "marker" });
+  });
+
+  it("content key: a dep-file edit busts the skip (reinstall on a new commit)", async () => {
+    initGitRepo();
+    fs.writeFileSync(path.join(installWorkspaceDir, "shipit.yaml"), "agent:\n  install-inputs:\n    - deps.lock\n");
+    fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@1.0.0\n");
+    commitAll("init");
+
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    // Edit the dependency input file → both the commit AND the content hash move.
+    fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@2.0.0\n");
+    commitAll("bump dep");
+
+    const res = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(res.json()).toEqual({ started: true });
+    await awaitInstallOk();
+  });
+
+  it("content key: a non-allowlisted install command stays commit-only (reinstalls)", async () => {
+    initGitRepo();
+    // No install-inputs; the command (`true`) is not a recognized pure dep
+    // install, so depsHash is null and only the commit can match.
+    fs.writeFileSync(path.join(installWorkspaceDir, "deps.lock"), "left-pad@1.0.0\n");
+    commitAll("init");
+
+    await installWorker.getApp().inject({ method: "POST", url: "/install", payload: { commands: ["true"] } });
+    await awaitInstallOk();
+
+    // Different commit, identical deps.lock — but content-keying is off, so the
+    // commit mismatch forces a reinstall.
+    fs.writeFileSync(path.join(installWorkspaceDir, "README.md"), "docs\n");
+    commitAll("docs only");
+
+    const res = await installWorker.getApp().inject({
+      method: "POST",
+      url: "/install",
+      payload: { commands: ["true"] },
+    });
+    expect(res.json()).toEqual({ started: true });
+    await awaitInstallOk();
   });
 
   it("SSE replays last install_done to a late-connecting client", async () => {

@@ -64,6 +64,7 @@ describe("parseShipitConfig", () => {
       pids: 512,
       install: ["npm install"],
       depDirs: ["node_modules"],
+      installInputs: null,
     });
   });
 
@@ -194,6 +195,48 @@ describe("parseShipitConfig", () => {
     );
   });
 
+  // ---- agent.install-inputs (docs/197) ----
+
+  it("defaults install-inputs to null (not configured → command-derived) when absent", () => {
+    expect(parseShipitConfig({}).agent.installInputs).toBeNull();
+    expect(parseShipitConfig({ agent: { memory: 2048 } }).agent.installInputs).toBeNull();
+  });
+
+  it("parses a string install-inputs as a single-element list", () => {
+    const config = parseShipitConfig({ agent: { "install-inputs": "requirements.txt" } });
+    expect(config.agent.installInputs).toEqual(["requirements.txt"]);
+  });
+
+  it("parses + normalizes + de-duplicates an install-inputs list", () => {
+    const config = parseShipitConfig({
+      agent: { "install-inputs": ["package.json", "./prisma/schema.prisma", "package.json"] },
+    });
+    expect(config.agent.installInputs).toEqual(["package.json", "prisma/schema.prisma"]);
+  });
+
+  it("treats an explicit empty install-inputs list as an override (content-keying off)", () => {
+    const config = parseShipitConfig({ agent: { "install-inputs": [] } });
+    expect(config.agent.installInputs).toEqual([]);
+  });
+
+  it("drops absolute / glob / dot-dot / root install-inputs entries with a warning", () => {
+    const config = parseShipitConfig({
+      agent: {
+        "install-inputs": ["/abs.txt", "deps/*.txt", "../escape.txt", ".", "package.json"],
+      },
+    });
+    expect(config.agent.installInputs).toEqual(["package.json"]);
+    expect(config.warnings.filter((w) => w.includes("agent.install-inputs["))).toHaveLength(4);
+  });
+
+  it("falls back to null (not configured) for a wrong-typed install-inputs value, with a warning", () => {
+    const config = parseShipitConfig({ agent: { "install-inputs": 42 } });
+    expect(config.agent.installInputs).toBeNull();
+    expect(config.warnings).toContain(
+      "`agent.install-inputs` must be a string or a list of strings; ignoring it.",
+    );
+  });
+
   // ---- compose (string form) ----
 
   it("parses compose as string", () => {
@@ -296,6 +339,7 @@ describe("parseShipitConfig", () => {
       pids: 2048,
       install: ["npm install", "npx prisma generate"],
       depDirs: ["node_modules"],
+      installInputs: null,
     });
     expect(config.compose).toEqual({
       file: "docker/local/dev/compose.yml",

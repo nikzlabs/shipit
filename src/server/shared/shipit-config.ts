@@ -46,6 +46,17 @@ export interface AgentConfig {
    * the overlay-spec builder against the host clone (docs/183 Phase 2), not here.
    */
   depDirs: string[];
+  /**
+   * Explicit dependency-input files for the content-keyed install skip
+   * (`deps-hash.ts`, docs/197), declared as **literal relative paths** (no
+   * globs). `null` when `agent.install-inputs` is absent — the marker then
+   * derives its hashed inputs from the install commands (and stays commit-only
+   * if any command isn't a recognized pure dependency install). When set
+   * (including an explicit empty list) it **replaces** that default set, opting
+   * the repo into content-keying regardless of the install commands. Same
+   * structural validation as `depDirs`: invalid entries are dropped with a warning.
+   */
+  installInputs: string[] | null;
 }
 
 export interface ComposeConfig {
@@ -141,6 +152,7 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
   pids: 4096,
   install: [],
   depDirs: [...DEFAULT_DEP_DIRS],
+  installInputs: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -148,7 +160,7 @@ export const AGENT_DEFAULTS: Readonly<AgentConfig> = {
 // ---------------------------------------------------------------------------
 
 const KNOWN_TOP_LEVEL_KEYS = new Set(["version", "agent", "compose", "release", "x-shipit-host-mounts"]);
-const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install", "dep-dirs"]);
+const KNOWN_AGENT_KEYS = new Set(["memory", "cpu", "pids", "install", "dep-dirs", "install-inputs"]);
 
 /**
  * docs/128 — the only host paths an ops session may bind-mount (read-only) into
@@ -294,8 +306,9 @@ function parseAgentConfig(raw: unknown, warnings: string[]): AgentConfig {
   const pids = parsePositiveNumber(obj.pids, AGENT_DEFAULTS.pids, true);
   const install = parseInstallList(obj.install);
   const depDirs = parseDepDirs(obj["dep-dirs"], warnings);
+  const installInputs = parseInstallInputs(obj["install-inputs"], warnings);
 
-  return { memory, cpu, pids, install, depDirs };
+  return { memory, cpu, pids, install, depDirs, installInputs };
 }
 
 /** Glob metacharacters — `agent.dep-dirs` accepts literal paths only (docs/183). */
@@ -346,8 +359,60 @@ function parseDepDirs(val: unknown, warnings: string[]): string[] {
 
 /** Structurally validate + normalize one `dep-dirs` entry; returns null (and warns) if invalid. */
 function normalizeDepDir(entry: unknown, index: number, warnings: string[]): string | null {
+  return normalizeLiteralRelPath(entry, "agent.dep-dirs", index, warnings);
+}
+
+/**
+ * Parse `agent.install-inputs` (docs/197) — the explicit dependency-input file
+ * set for the content-keyed install skip. Shares `dep-dirs`' structural rules
+ * (literal relative paths, no globs, no `..`-escape, not the root), but its
+ * *presence* semantics differ:
+ *
+ * - absent/null → `null` ("not configured"; the marker derives inputs from the
+ *   install commands instead). This is NOT the `dep-dirs` default-list behavior.
+ * - a bare string → a one-element list.
+ * - a wrong top-level type → warn and fall back to `null` (not configured).
+ * - an explicit list (including `[]`) → that list, verbatim after per-entry
+ *   validation; it overrides the command-derived default.
+ */
+function parseInstallInputs(val: unknown, warnings: string[]): string[] | null {
+  if (val === undefined || val === null) return null;
+
+  let entries: unknown[];
+  if (typeof val === "string") {
+    entries = [val];
+  } else if (Array.isArray(val)) {
+    entries = val;
+  } else {
+    warnings.push("`agent.install-inputs` must be a string or a list of strings; ignoring it.");
+    return null;
+  }
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (let i = 0; i < entries.length; i++) {
+    const normalized = normalizeLiteralRelPath(entries[i], "agent.install-inputs", i, warnings);
+    if (normalized === null) continue;
+    if (seen.has(normalized)) continue;
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+/**
+ * Structurally validate + normalize one literal relative path entry (shared by
+ * `dep-dirs` and `install-inputs`). Returns null (and warns under `label`) for
+ * an absolute path, a glob, a `..`-escape, the workspace root, or a non-string.
+ */
+function normalizeLiteralRelPath(
+  entry: unknown,
+  label: string,
+  index: number,
+  warnings: string[],
+): string | null {
   const drop = (reason: string): null => {
-    warnings.push(`Ignoring \`agent.dep-dirs[${index}]\`: ${reason}.`);
+    warnings.push(`Ignoring \`${label}[${index}]\`: ${reason}.`);
     return null;
   };
 
