@@ -18,7 +18,10 @@ import simpleGit from "simple-git";
 import {
   buildOverlaySpecs,
   depDirsForSession,
+  isPnpmRepo,
   preStampInstallMarker,
+  pnpmStoreHash,
+  pnpmStoreDirForRuntime,
   type DepDirOverlaySpec,
   isOverlayEligible,
   isOverlayEnabled,
@@ -445,5 +448,79 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       readPointer: (_s, hash) => ptrs[hash] ?? null,
     });
     expect(ok).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs/197 Part 2 — pnpm detection + shared store helpers
+// ---------------------------------------------------------------------------
+
+describe("isPnpmRepo (docs/197 Part 2)", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  function workspace(files: Record<string, string> = {}): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-detect-"));
+    tmpDirs.push(dir);
+    for (const [rel, content] of Object.entries(files)) {
+      fs.writeFileSync(path.join(dir, rel), content);
+    }
+    return dir;
+  }
+
+  it("returns false for an empty/plain workspace (no signal)", () => {
+    expect(isPnpmRepo(workspace())).toBe(false);
+    expect(isPnpmRepo(workspace({ "package.json": "{}" }))).toBe(false);
+  });
+
+  it("signal 1: packageManager field is authoritative either way", () => {
+    expect(isPnpmRepo(workspace({ "package.json": JSON.stringify({ packageManager: "pnpm@9.1.0" }) }))).toBe(true);
+    // npm@ field wins even when a stray pnpm-lock.yaml is present.
+    expect(isPnpmRepo(workspace({
+      "package.json": JSON.stringify({ packageManager: "npm@10.0.0" }),
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    }))).toBe(false);
+    expect(isPnpmRepo(workspace({ "package.json": JSON.stringify({ packageManager: "yarn@4.0.0" }) }))).toBe(false);
+  });
+
+  it("signal 2: a pnpm invocation in agent.install (outranks lockfile)", () => {
+    expect(isPnpmRepo(workspace({ "shipit.yaml": "agent:\n  install:\n    - pnpm install --frozen-lockfile\n" }))).toBe(true);
+    // npm install command wins over a stray pnpm-lock.yaml (3 > 2).
+    expect(isPnpmRepo(workspace({
+      "shipit.yaml": "agent:\n  install:\n    - npm ci\n",
+      "pnpm-lock.yaml": "lockfileVersion: '9.0'\n",
+    }))).toBe(false);
+  });
+
+  it("signal 3: pnpm-lock.yaml at the root is the fallback", () => {
+    expect(isPnpmRepo(workspace({ "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" }))).toBe(true);
+  });
+
+  it("packageManager (1) outranks the install command (2)", () => {
+    expect(isPnpmRepo(workspace({
+      "package.json": JSON.stringify({ packageManager: "pnpm@9.1.0" }),
+      "shipit.yaml": "agent:\n  install:\n    - npm ci\n",
+    }))).toBe(true);
+  });
+
+  it("degrades each signal to absent on unreadable inputs", () => {
+    // Invalid package.json → no signal 1; falls through to lockfile.
+    expect(isPnpmRepo(workspace({ "package.json": "{not json", "pnpm-lock.yaml": "x" }))).toBe(true);
+  });
+});
+
+describe("pnpm store helpers (docs/197 Part 2)", () => {
+  it("pnpmStoreHash is a stable 16-hex digest of the runtime key", () => {
+    const h = pnpmStoreHash("img@sha256:abc|x64");
+    expect(h).toMatch(/^[a-f0-9]{16}$/);
+    expect(pnpmStoreHash("img@sha256:abc|x64")).toBe(h); // deterministic
+    expect(pnpmStoreHash("other|x64")).not.toBe(h);
+  });
+
+  it("pnpmStoreDirForRuntime nests under <stateDir>/pnpm-store/<hash>", () => {
+    const env = { SESSION_WORKER_IMAGE_ID: "img-1" } as NodeJS.ProcessEnv;
+    const dir = pnpmStoreDirForRuntime("/state", env);
+    expect(dir).toBe(path.join("/state", "pnpm-store", pnpmStoreHash(overlayRuntimeKey(env))));
   });
 });

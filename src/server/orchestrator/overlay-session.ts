@@ -23,6 +23,7 @@
  * is behavior-preserving.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import simpleGit from "simple-git";
@@ -298,6 +299,109 @@ export async function validDepDirsForOverlay(
   } catch {
     return [];
   }
+}
+
+// ---------------------------------------------------------------------------
+// pnpm detection + shared store (docs/197 Part 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Subtree (under the workspace state volume) holding the shared pnpm stores,
+ * keyed by runtime hash: `pnpm-store/<runtimeKey-hash>/`. Lives on the SAME
+ * state volume as each session's workspace clone, so pnpm's store→`node_modules`
+ * hardlinks stay within one superblock — the whole point of the store (an overlay
+ * `node_modules` forces those links across the overlayfs boundary, hits EXDEV, and
+ * silently degrades to a 464 MB full copy per session; canary FINDINGS).
+ */
+export const PNPM_STORE_SUBDIR = "pnpm-store";
+
+/**
+ * Short, stable hash of the runtime fingerprint, used to name the shared pnpm
+ * store dir. One store per runtime so a worker-image rebuild rotates it for free
+ * (same ABI argument as overlay scope rotation, docs/183 precondition (c)) and the
+ * disk-janitor can reap stores keyed on a since-superseded runtime. 16 hex chars,
+ * matching `overlayScopeHash` / `repoUrlToHash` width.
+ */
+export function pnpmStoreHash(runtimeKey: string): string {
+  return crypto.createHash("sha256").update(runtimeKey).digest("hex").slice(0, 16);
+}
+
+/**
+ * Orchestrator-visible host path of the shared pnpm store for the CURRENT runtime:
+ * `<stateDir>/pnpm-store/<runtimeKey-hash>`. Created lazily at container-create
+ * time (the daemon would auto-create the Subpath source, but we mkdir it so dev/
+ * bind mode works too). The container mounts it at `PNPM_STORE_CONTAINER_PATH` and
+ * `npm_config_store_dir` points pnpm there.
+ */
+export function pnpmStoreDirForRuntime(stateDir: string, env: NodeJS.ProcessEnv = process.env): string {
+  return path.join(stateDir, PNPM_STORE_SUBDIR, pnpmStoreHash(overlayRuntimeKey(env)));
+}
+
+/** Read the trimmed `packageManager` field from a workspace `package.json`, or null. */
+function readPackageManagerField(workspaceDir: string): string | null {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(workspaceDir, "package.json"), "utf-8")) as {
+      packageManager?: unknown;
+    };
+    if (typeof pkg.packageManager === "string" && pkg.packageManager.trim()) {
+      return pkg.packageManager.trim();
+    }
+  } catch {
+    /* missing/invalid package.json — no signal */
+  }
+  return null;
+}
+
+/**
+ * Decisive pnpm signal from the `agent.install` command list, or null if the list
+ * names no recognized package manager. A `pnpm` invocation anywhere → pnpm (it is
+ * literally what we will run); otherwise an `npm`/`yarn`/`bun` invocation is a
+ * decisive NON-pnpm signal that outranks a stray lockfile (plan §"pnpm detection",
+ * precedence 3 > 2).
+ */
+function pnpmSignalFromInstall(install: string[]): boolean | null {
+  let sawNonPnpm = false;
+  for (const cmd of install) {
+    if (/(?:^|[\s;&|(])pnpm(?:[\s;&|)]|$)/.test(cmd)) return true;
+    if (/(?:^|[\s;&|(])(?:npm|yarn|bun)(?:[\s;&|)]|$)/.test(cmd)) sawNonPnpm = true;
+  }
+  return sawNonPnpm ? false : null;
+}
+
+/**
+ * docs/197 Part 2 — is this workspace a pnpm repo? The single orchestrator-side
+ * decision both the overlay skip (`prepareOverlaySpecs` → []) and the shared-store
+ * mount (`preparePnpmStore`) derive from, so the two can never disagree. Signals,
+ * in precedence order (first DECISIVE one wins):
+ *
+ *   1. `packageManager` field in `package.json` — the corepack standard.
+ *      Authoritative either way when present: `pnpm…` → pnpm; any other manager
+ *      (`npm@`/`yarn@`/`bun@`) → NOT pnpm, even with a stray `pnpm-lock.yaml`.
+ *   2. A recognized package-manager invocation in `agent.install` — truthful by
+ *      construction. `pnpm` → pnpm; a non-pnpm manager → NOT pnpm. Outranks the
+ *      lockfile (it is what actually runs), covers repos with no lockfile yet.
+ *   3. `pnpm-lock.yaml` at the workspace root — the conventional fallback signal,
+ *      weakest because a since-changed manager can leave one behind.
+ *
+ * Any unreadable input degrades that signal to "absent" → falls through, so a
+ * broken workspace is never mis-routed to pnpm. Resolves the canonical conflict
+ * (both `package-lock.json` and `pnpm-lock.yaml` present) as 1 > 2 > 3.
+ */
+export function isPnpmRepo(workspaceDir: string): boolean {
+  // Signal 1 — packageManager field (decisive whichever manager it names).
+  const pm = readPackageManagerField(workspaceDir);
+  if (pm !== null) return pm.startsWith("pnpm");
+  // Signal 2 — install commands (decisive when they name a known manager).
+  let install: string[];
+  try {
+    install = resolveShipitConfig(workspaceDir).agent.install;
+  } catch {
+    install = [];
+  }
+  const installSignal = pnpmSignalFromInstall(install);
+  if (installSignal !== null) return installSignal;
+  // Signal 3 — lockfile fallback.
+  return fs.existsSync(path.join(workspaceDir, "pnpm-lock.yaml"));
 }
 
 // ---------------------------------------------------------------------------

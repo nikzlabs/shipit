@@ -223,12 +223,21 @@ export function createWarmPool(
               workspaceDir,
               session: { remoteUrl: repoUrl, kind: undefined },
             });
+            // docs/197 Part 2 — a pnpm standby gets the shared per-runtime store
+            // INSTEAD of overlay specs (`prepareOverlaySpecs` returns [] for pnpm).
+            // Inert (undefined) when the flag is off / repo is not pnpm, so the
+            // standby config is byte-for-byte unchanged until the store is enabled.
+            const pnpmStoreDir = containerManager.preparePnpmStore({
+              workspaceDir,
+              session: { remoteUrl: repoUrl, kind: undefined },
+            });
             const config = containerManager.buildConfigForWorkspace({
               sessionId: appSessionId,
               sessionDir,
               workspaceDir,
               credentialsDir,
               depCacheDir: getDepCacheDir(repoUrl),
+              pnpmStoreDir,
               overlaySpecs,
             });
             // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in sync warming callback

@@ -8,7 +8,7 @@ import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
 import { runDiskJanitor } from "./disk-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
-import { liveOverlayScopeHashes, overlayRuntimeKey } from "./overlay-session.js";
+import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
 
 describe("runDiskJanitor", () => {
@@ -1201,6 +1201,84 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(orphanYoung)).toBe(true);
     expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
     expect(result.overlayBasesRemoved).toBe(1);
+  });
+
+  // docs/197 Part 2 — pnpm shared-store sweep.
+  it("pnpm-store sweep is skipped when pnpmStoreRuntimeHash is not provided", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const storeDir = path.join(tmpDir, "pnpm-store", "0123456789abcdef");
+    fs.mkdirSync(storeDir, { recursive: true });
+    const old = Date.now() / 1000 - 99 * 86_400;
+    fs.utimesSync(storeDir, old, old);
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(storeDir)).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(0);
+  });
+
+  it("pnpm-store sweep keeps the live store, reaps a stale-runtime store, keeps a young one", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const root = path.join(tmpDir, "pnpm-store");
+    fs.mkdirSync(root, { recursive: true });
+    const mk = (hash: string, ageDays: number) => {
+      const d = path.join(root, hash);
+      fs.mkdirSync(d, { recursive: true });
+      const t = Date.now() / 1000 - ageDays * 86_400;
+      fs.utimesSync(d, t, t);
+      return d;
+    };
+    const liveHash = pnpmStoreHash(overlayRuntimeKey());
+    const liveStore = mk(liveHash, 99);                 // current runtime → keep despite age
+    const staleStore = mk("bbbbbbbbbbbbbbbb", 99);      // old, non-current → REMOVE
+    const youngStore = mk("cccccccccccccccc", 1);       // non-current but young → keep
+    fs.writeFileSync(path.join(root, "stray.txt"), "x"); // non-dir → ignored
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      pnpmStoreRuntimeHash: () => liveHash,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(liveStore)).toBe(true);
+    expect(fs.existsSync(staleStore)).toBe(false);
+    expect(fs.existsSync(youngStore)).toBe(true);
+    expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
+    expect(result.pnpmStoresRemoved).toBe(1);
+  });
+
+  it("pnpm-store sweep reaps ALL stale stores when the feature is off (null live hash)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const root = path.join(tmpDir, "pnpm-store");
+    fs.mkdirSync(root, { recursive: true });
+    const old = Date.now() / 1000 - 99 * 86_400;
+    for (const h of ["aaaaaaaaaaaaaaaa", "bbbbbbbbbbbbbbbb"]) {
+      const d = path.join(root, h);
+      fs.mkdirSync(d, { recursive: true });
+      fs.utimesSync(d, old, old);
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager, repoStore, stateDir: tmpDir,
+      cacheDays: 30,
+      pnpmStoreRuntimeHash: () => null, // feature off → nothing is live
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.pnpmStoresRemoved).toBe(2);
   });
 
   it("reaps stale superseded generations inside a LIVE scope, keeping g0 + the current generation", async () => {

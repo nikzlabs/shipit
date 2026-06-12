@@ -117,6 +117,7 @@ import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
+import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -184,6 +185,16 @@ export interface DiskJanitorDeps {
    */
   liveOverlayScopeHashes?: () => Set<string>;
   /**
+   * docs/197 Part 2 — pnpm shared-store GC. Returns the hash of the store dir for
+   * the CURRENT runtime (`pnpm-store/<hash>`, the live store that must never be
+   * swept), or `null` when the `OVERLAY_DEP_STORE` feature is off — in which case
+   * no store is live, so every `pnpm-store/<hash>` dir past `cacheDays` is reapable
+   * (the same "GC the disabled feature's leftovers" shape as the overlay-base sweep
+   * returning an empty live-set when off). The sweep runs only when this dep is
+   * provided; omitted in unit tests that don't exercise it.
+   */
+  pnpmStoreRuntimeHash?: () => string | null;
+  /**
    * Throttle: milliseconds to pause between each destructive operation
    * (volume/network removal, branch delete, cache/workspace/nm-store rm). The
    * startup sweep is never urgent — every item is recovering from a past
@@ -206,6 +217,8 @@ export interface DiskJanitorResult {
   nmStoresRemoved: number;
   /** docs/183 Phase 2/3 — stale, unreferenced `overlay-base/<hash>` dirs removed. */
   overlayBasesRemoved: number;
+  /** docs/197 Part 2 — stale `pnpm-store/<hash>` dirs removed (non-current runtime, past cutoff). */
+  pnpmStoresRemoved: number;
   /** Remote `shipit/*` branches whose PR is merged and no live session uses them. */
   orphanBranchesRemoved: number;
   /** Per-session credential subtrees removed (archived or untracked sessions). */
@@ -230,6 +243,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     cachesRemoved: 0,
     nmStoresRemoved: 0,
     overlayBasesRemoved: 0,
+    pnpmStoresRemoved: 0,
     orphanBranchesRemoved: 0,
     credentialDirsRemoved: 0,
     logDirsRemoved: 0,
@@ -294,6 +308,22 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
   }
 
+  // docs/197 Part 2 — sweep stale pnpm shared stores. Gated on a runtime-hash
+  // source (mirrors the overlay-base gate): without a way to know which store is
+  // live, we don't touch the subtree at all.
+  if (deps.pnpmStoreRuntimeHash) {
+    try {
+      result.pnpmStoresRemoved = await sweepStalePnpmStores(
+        deps.stateDir,
+        deps.pnpmStoreRuntimeHash(),
+        deps.cacheDays ?? DEFAULT_CACHE_DAYS,
+        paceMs,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] pnpm-store sweep failed:", getMessage(err));
+    }
+  }
+
   if (deps.credentialsDir) {
     try {
       result.credentialDirsRemoved = await sweepOrphanCredentialDirs(
@@ -341,6 +371,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `caches=${result.cachesRemoved} `
     + `nm-stores=${result.nmStoresRemoved} `
     + `overlay-bases=${result.overlayBasesRemoved} `
+    + `pnpm-stores=${result.pnpmStoresRemoved} `
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved}`,
@@ -904,6 +935,66 @@ async function sweepStaleBaseGenerations(
       await fs.rm(full, { recursive: true, force: true });
       removed += 1;
       console.log(`[disk-janitor] removed stale overlay base generation ${full}`);
+    } catch (err) {
+      console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
+    }
+  }
+  return removed;
+}
+
+/**
+ * docs/197 Part 2 — reclaim stale pnpm shared stores under
+ * `<stateDir>/pnpm-store/<runtimeKey-hash>/`.
+ *
+ * One store per runtime fingerprint; a worker-image rebuild rotates the hash, so
+ * the previous runtime's store is left behind. A dir is removed only when BOTH:
+ *
+ *   1. Its hash is NOT `liveHash` (the current runtime's store, or null when the
+ *      feature is off — then nothing is live and every store is a candidate). The
+ *      live store is never swept; a session installing into it right now must keep
+ *      its hardlink targets.
+ *   2. Its mtime is older than `days` — the same age guard the other cache sweeps
+ *      use, so a store still in active use by a resuming session of the prior
+ *      runtime (recently touched) survives until it has genuinely gone cold.
+ *
+ * Unlike the overlay base, a pnpm store is a pure content-addressed cache: dropping
+ * it costs only a re-fetch+relink on the next install, never user data. Lazily
+ * recreated on the next pnpm session for that runtime.
+ */
+async function sweepStalePnpmStores(
+  stateDir: string,
+  liveHash: string | null,
+  days: number,
+  paceMs: number,
+): Promise<number> {
+  const cutoffMs = Date.now() - days * 86_400_000;
+  const dir = path.join(stateDir, PNPM_STORE_SUBDIR);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return 0; // No pnpm-store subtree yet — nothing to sweep.
+  }
+
+  let removed = 0;
+  for (const entry of entries) {
+    if (liveHash !== null && entry === liveHash) continue; // live store — never sweep.
+    const full = path.join(dir, entry);
+    let mtimeMs: number;
+    try {
+      // lstat, not stat: a symlink named like a store hash must never be followed.
+      const st = await fs.lstat(full);
+      if (!st.isDirectory()) continue;
+      mtimeMs = st.mtimeMs;
+    } catch {
+      continue;
+    }
+    if (mtimeMs >= cutoffMs) continue; // recently touched — keep (a resume may use it).
+    try {
+      await sleep(paceMs);
+      await fs.rm(full, { recursive: true, force: true });
+      removed += 1;
+      console.log(`[disk-janitor] removed stale pnpm store ${full}`);
     } catch (err) {
       console.warn(`[disk-janitor] failed to remove ${full}:`, getMessage(err));
     }

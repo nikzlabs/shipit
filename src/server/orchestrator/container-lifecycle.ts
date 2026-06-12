@@ -90,6 +90,14 @@ interface MountSpec {
 /** Container-internal mount point for the shared dependency cache. */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
+/**
+ * docs/197 Part 2 — container-internal mount point for the shared per-runtime
+ * pnpm store. `npm_config_store_dir` points pnpm here, and the host source is a
+ * Subpath of the SAME state volume as `/workspace`, so pnpm's store→node_modules
+ * hardlinks stay within one superblock (no EXDEV full copy).
+ */
+export const PNPM_STORE_CONTAINER_PATH = "/pnpm-store";
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -168,6 +176,24 @@ export function buildMounts(
       });
     } else {
       binds.push(`${config.depCacheDir}:${DEP_CACHE_CONTAINER_PATH}:rw`);
+    }
+  }
+
+  // docs/197 Part 2 — mount the shared per-runtime pnpm store. A Subpath of the
+  // SAME state volume as `/workspace` (so store→node_modules hardlinks share one
+  // superblock), or a plain bind in dev mode. Set only for pnpm repos under the
+  // OVERLAY_DEP_STORE flag (`preparePnpmStore`); absent otherwise → unchanged.
+  if (config.pnpmStoreDir) {
+    if (workspaceVolume) {
+      const storeRelPath = config.pnpmStoreDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: PNPM_STORE_CONTAINER_PATH,
+        VolumeOptions: { Subpath: storeRelPath },
+      });
+    } else {
+      binds.push(`${config.pnpmStoreDir}:${PNPM_STORE_CONTAINER_PATH}:rw`);
     }
   }
 
@@ -256,6 +282,15 @@ export function buildEnv(
     env.push(`YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`);
     env.push(`PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`);
   }
+
+  // docs/197 Part 2 — point pnpm at the shared per-runtime store mount. pnpm reads
+  // npm config from `npm_config_*` env, so this overrides the per-repo
+  // `PNPM_STORE_DIR` above for every pnpm invocation (agent + install). Set only for
+  // pnpm repos under the OVERLAY_DEP_STORE flag (`preparePnpmStore`); absent
+  // otherwise → byte-for-byte unchanged.
+  if (config.pnpmStoreDir) {
+    env.push(`npm_config_store_dir=${PNPM_STORE_CONTAINER_PATH}`);
+  }
   // docs/128 — ops gate MUST be checked before `dockerAccess`. An ops session's
   // shipit.yaml declares `compose.docker-socket: true` (so the proxy *sibling*
   // may mount the socket), and `resolveAgentDockerLimits` derives the agent's
@@ -339,6 +374,11 @@ export async function createContainer(
   // Ensure the dep cache directory exists on the host before mounting.
   if (config.depCacheDir) {
     fs.mkdirSync(config.depCacheDir, { recursive: true });
+  }
+
+  // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it.
+  if (config.pnpmStoreDir) {
+    fs.mkdirSync(config.pnpmStoreDir, { recursive: true });
   }
 
   // docs/138 — create the session's private credentials subtree before the
@@ -748,6 +788,8 @@ export function buildContainerConfig(
     workspaceDir?: string;
     credentialsDir: string;
     depCacheDir?: string;
+    /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */
+    pnpmStoreDir?: string;
     uploadsDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
@@ -768,6 +810,7 @@ export function buildContainerConfig(
     workspaceDir: opts.workspaceDir,
     credentialsDir: opts.credentialsDir,
     depCacheDir: opts.depCacheDir,
+    pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,

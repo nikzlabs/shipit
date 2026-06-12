@@ -13,6 +13,7 @@ import {
   destroyContainer,
   type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
+  PNPM_STORE_CONTAINER_PATH,
   OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
@@ -83,6 +84,28 @@ describe("buildMounts", () => {
     expect(depMount).toBeDefined();
     expect(depMount!.Source).toBe("my-workspace-vol");
     expect(depMount!.VolumeOptions?.Subpath).toBe("dep-cache/abc123");
+  });
+
+  // docs/197 Part 2 — shared pnpm store mount.
+  it("mounts pnpmStoreDir at /pnpm-store as a volume subpath of the state volume", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const result = buildMounts(config, "my-workspace-vol", undefined);
+    const storeMount = result.mounts.find((m) => m.Target === PNPM_STORE_CONTAINER_PATH);
+    expect(storeMount).toBeDefined();
+    expect(storeMount!.Source).toBe("my-workspace-vol");
+    expect(storeMount!.VolumeOptions?.Subpath).toBe("pnpm-store/deadbeefcafe0001");
+  });
+
+  it("mounts pnpmStoreDir as a bind when no workspaceVolume (dev mode)", () => {
+    const config = baseConfig({ pnpmStoreDir: "/state/pnpm-store/deadbeefcafe0001" });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.binds).toContain("/state/pnpm-store/deadbeefcafe0001:/pnpm-store:rw");
+  });
+
+  it("adds no pnpm store mount when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
+    const result = buildMounts(baseConfig(), "my-workspace-vol", undefined);
+    expect(result.mounts.filter((m) => m.Target === PNPM_STORE_CONTAINER_PATH)).toHaveLength(0);
+    expect(result.binds.filter((b) => b.includes("/pnpm-store"))).toHaveLength(0);
   });
 });
 
@@ -265,6 +288,18 @@ describe("buildEnv", () => {
       e.startsWith("PNPM_STORE_DIR="),
     );
     expect(cacheVars).toHaveLength(0);
+  });
+
+  // docs/197 Part 2 — point pnpm at the shared store via npm_config_store_dir.
+  it("sets npm_config_store_dir when pnpmStoreDir is set", () => {
+    const config = baseConfig({ pnpmStoreDir: "/workspace/pnpm-store/deadbeefcafe0001" });
+    const env = buildEnv(config, "/workspace", 9100, undefined, undefined);
+    expect(env).toContain("npm_config_store_dir=/pnpm-store");
+  });
+
+  it("does not set npm_config_store_dir when pnpmStoreDir is undefined (flag-off / non-pnpm)", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
+    expect(env.filter((e) => e.startsWith("npm_config_store_dir="))).toHaveLength(0);
   });
 
   it("includes standard env vars alongside cache vars", () => {

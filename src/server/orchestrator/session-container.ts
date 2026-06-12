@@ -43,6 +43,8 @@ import { resolveShipitConfig, AGENT_DEFAULTS, type ShipitConfig, type HostMount 
 import {
   buildOverlaySpecs,
   depDirsForSession,
+  isPnpmRepo,
+  pnpmStoreDirForRuntime,
   resolveOverlayScope,
   validDepDirsForOverlay,
   type DepDirOverlaySpec,
@@ -96,6 +98,15 @@ export interface ContainerConfig {
   workspaceDir?: string;
   /** Host path: /workspace/dep-cache/{hash} (shared dependency cache) */
   depCacheDir?: string;
+  /**
+   * docs/197 Part 2 — host path `<stateDir>/pnpm-store/<runtimeKey-hash>`, the
+   * shared per-runtime pnpm store. When set, the container bind-mounts it (a
+   * subpath of the SAME state volume as `/workspace`, so store→node_modules
+   * hardlinks stay within one superblock) and `npm_config_store_dir` points pnpm
+   * there. Populated by `preparePnpmStore` ONLY for pnpm repos under the
+   * `OVERLAY_DEP_STORE` flag — those repos get this INSTEAD of `overlaySpecs`.
+   */
+  pnpmStoreDir?: string;
   /** Host path: /workspace/sessions/{uuid}/uploads (uploaded files) */
   uploadsDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
@@ -921,6 +932,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     workspaceDir?: string;
     credentialsDir: string;
     depCacheDir?: string;
+    /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */
+    pnpmStoreDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -957,6 +970,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     workspaceDir: string;
     credentialsDir: string;
     depCacheDir?: string;
+    /**
+     * docs/197 Part 2 — shared per-runtime pnpm store host dir from
+     * `preparePnpmStore`. Present only for pnpm repos under the `OVERLAY_DEP_STORE`
+     * flag; mutually exclusive with `overlaySpecs` (a pnpm repo gets the store, not
+     * the overlay). Absent for everything else (the byte-for-byte-unchanged path).
+     */
+    pnpmStoreDir?: string;
     env?: Record<string, string>;
     /**
      * docs/128 — set true only when the session's server-authoritative
@@ -981,6 +1001,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       workspaceDir: opts.workspaceDir,
       credentialsDir: opts.credentialsDir,
       depCacheDir: opts.depCacheDir,
+      pnpmStoreDir: opts.pnpmStoreDir,
       env: opts.env,
       memoryLimit: limits.memoryLimit,
       cpuQuota: limits.cpuQuota,
@@ -1024,6 +1045,11 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const scope = resolveOverlayScope(opts.session);
     if (!scope) return [];
     if (!this.workspaceVolume) return [];
+    // docs/197 Part 2 — pnpm repos do NOT overlay `node_modules`: pnpm's
+    // store→node_modules hardlinks cannot cross the overlayfs boundary (EXDEV) and
+    // silently degrade to a full per-session copy. They get a shared same-fs pnpm
+    // store instead (`preparePnpmStore`), so the overlay specs are skipped here.
+    if (isPnpmRepo(opts.workspaceDir)) return [];
     const declared = depDirsForSession({ workspaceDir: opts.workspaceDir });
     const valid = await validDepDirsForOverlay(declared, opts.workspaceDir);
     if (valid.length === 0) return [];
@@ -1055,6 +1081,35 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       }
     }
     return provisioned;
+  }
+
+  /**
+   * docs/197 Part 2 — resolve the shared per-runtime pnpm store host dir for a
+   * session, or `undefined` when the store doesn't apply. Returns the dir only
+   * when ALL hold:
+   *  - the session is overlay-eligible (`resolveOverlayScope` non-null — i.e. the
+   *    `OVERLAY_DEP_STORE` flag is on, the session is repo-backed and non-ops). The
+   *    store rides the same rollout gate as the overlay it replaces, so flag-off is
+   *    byte-for-byte unchanged;
+   *  - there is a workspace state volume (so the store can be a Subpath of the SAME
+   *    superblock as `/workspace` — the hardlink requirement) and a state dir to
+   *    anchor it; and
+   *  - the workspace is a pnpm repo (`isPnpmRepo`).
+   *
+   * For a pnpm repo this is populated INSTEAD of `prepareOverlaySpecs` (which
+   * returns [] for the same repos) — one mechanism per ecosystem. The dir itself is
+   * created lazily at container-create time; this is a pure path computation (no
+   * Docker, no fs), safe to call on every creation path.
+   */
+  preparePnpmStore(opts: {
+    workspaceDir: string;
+    session: Pick<SessionInfo, "remoteUrl" | "kind">;
+  }): string | undefined {
+    if (!resolveOverlayScope(opts.session)) return undefined;
+    if (!this.workspaceVolume) return undefined;
+    if (!this.stateDir) return undefined;
+    if (!isPnpmRepo(opts.workspaceDir)) return undefined;
+    return pnpmStoreDirForRuntime(this.stateDir);
   }
 
   // --- Dispose ---
