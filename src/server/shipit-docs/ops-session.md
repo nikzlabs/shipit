@@ -58,13 +58,15 @@ dropped unless the session was created as an ops session.
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:
   ```bash
-  shipit session create --shipit-source --title "<fix summary>" --prompt-file - <<'EOF'
+  shipit session create --shipit-source --prompt-file - --title "Fix container recreate loop" <<'EOF'
   <diagnosis + suspected files + constraints>
   EOF
   shipit session wait <child-id>      # follow it; view / message it like any spawned session
   ```
-  `--title` is **required** — name the child after the fix (e.g. the bug it
-  closes). The prompt is passed via `--prompt-file` (a file, or `-` for stdin) —
+  `--shipit-source` **requires `--title`** — the diagnosis lives in the incident
+  packet, so it can't name the session; pass a short, human-readable title
+  describing the fix (a spawn with no title exits non-zero before any child is
+  created). The prompt is passed via `--prompt-file` (a file, or `-` for stdin) —
   never an inline `-p`/`--prompt`, so backticks and `$(...)` in your diagnosis
   survive verbatim. Use a single-quoted heredoc as shown.
   The child owns all edits, tests, commits, push, and the PR — you only read its

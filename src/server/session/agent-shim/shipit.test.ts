@@ -1248,21 +1248,32 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     expect(out.exitCode).not.toBe(0);
   });
 
-  // Guard: the ops-session contract doc shows operators how to spawn a fix
-  // session. `--title` is required by the shim (test above), so the documented
-  // `--shipit-source` example must carry it — otherwise a copy-paste of the
-  // recipe fails before the broker is ever hit.
-  it("ops-session.md fix-session example includes the required --title", async () => {
-    const docPath = path.resolve(
+  // Guard: the agent-facing docs show operators copy-paste-able `shipit session
+  // create` recipes. `--title` is required by the shim (tests above), so every
+  // runnable invocation in the docs must carry it — otherwise a pasted recipe
+  // fails before the broker is ever hit. This pins the docs to the CLI contract.
+  it("every runnable 'shipit session create' recipe in the docs passes --title", async () => {
+    const docsDir = path.resolve(
       path.dirname(new URL(import.meta.url).pathname),
-      "../../shipit-docs/ops-session.md",
+      "../../shipit-docs",
     );
-    const doc = await fsp.readFile(docPath, "utf8");
-    const example = doc
-      .split("\n")
-      .find((line) => line.includes("shipit session create --shipit-source"));
-    expect(example).toBeDefined();
-    expect(example).toContain("--title");
+    const docs = ["sessions.md", "ops-session.md"];
+    const invocations: string[] = [];
+    for (const name of docs) {
+      const doc = await fsp.readFile(path.join(docsDir, name), "utf8");
+      for (const line of doc.split("\n")) {
+        // A runnable recipe invokes the command with a prompt source. Prose
+        // mentions (`**\`shipit session create\`** (this shim)`, "Under the
+        // hood, …") never carry `--prompt-file`, so they're excluded.
+        if (line.includes("shipit session create") && line.includes("--prompt-file")) {
+          invocations.push(line.trim());
+        }
+      }
+    }
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const line of invocations) {
+      expect(line, `missing --title: ${line}`).toContain("--title");
+    }
   });
 });
 
