@@ -24,6 +24,7 @@ import {
   selectAgentEnvForPush,
   PUSH_AGENT_SECRETS_TIMEOUT_MS,
 } from "./session-agent-env.js";
+import { repoUrlToHash } from "./git-utils.js";
 
 /**
  * Minimal ContainerSessionRunner stand-in that satisfies the instanceof check
@@ -60,6 +61,7 @@ function makeFakeSessionManager(opts: {
   agentSessionId?: string;
   providerRouteKind?: "account";
   providerRouteId?: string;
+  remoteUrl?: string;
 }): {
   sm: SessionManager;
   state: {
@@ -86,6 +88,7 @@ function makeFakeSessionManager(opts: {
       agentSessionId: state.agentSessionId,
       providerRouteKind: opts.providerRouteKind,
       providerRouteId: opts.providerRouteId,
+      remoteUrl: opts.remoteUrl ?? "",
     }),
     setAgentId: () => { state.setAgentIdCalls += 1; },
     setAgentPinned: () => {
@@ -460,6 +463,101 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(runner.pushed).toHaveLength(1);
     expect(runner.pushed[0]).toEqual({ OPENAI_API_KEY: "k1", mcp__notion: "k2" });
   });
+
+  // docs/155 — per-repo Claude memory sharing. On first turn, the shared
+  // `repo-memory/<hash>` dir is seeded into the session's memory subtree.
+
+  const repoUrl = "https://github.com/example/memrepo.git";
+  // Hash kept in lockstep with `repoUrlToHash` so the test asserts the real
+  // on-disk location rather than a hand-computed one.
+  const memDirOf = (root: string, url: string) =>
+    path.join(root, "repo-memory", repoUrlToHash(url));
+  const sessionMemoryOf = (root: string) =>
+    path.join(root, "sessions", "s1", ".claude", "projects", "-workspace", "memory");
+
+  function seedClaudeSource(root: string): void {
+    fs.mkdirSync(path.join(root, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(root, ".claude.json"), "{}");
+    fs.writeFileSync(
+      path.join(root, ".claude", ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { expiresAt: Date.now() + 60_000 } }),
+    );
+  }
+
+  it("seeds the shared per-repo memory dir into the session on first Claude turn", async () => {
+    seedClaudeSource(tmpDir);
+    // Pre-existing shared memory for this repo (written by an earlier session).
+    const shared = memDirOf(tmpDir, repoUrl);
+    fs.mkdirSync(shared, { recursive: true });
+    fs.writeFileSync(path.join(shared, "user-prefers-tabs.md"), "tabs");
+    fs.writeFileSync(path.join(shared, "MEMORY.md"), "- [Tabs](user-prefers-tabs.md)");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: false, remoteUrl: repoUrl });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    const sessionMemory = sessionMemoryOf(tmpDir);
+    expect(fs.readFileSync(path.join(sessionMemory, "user-prefers-tabs.md"), "utf8")).toBe("tabs");
+    expect(fs.existsSync(path.join(sessionMemory, "MEMORY.md"))).toBe(true);
+  });
+
+  it("creates an empty shared memory dir on first turn even when none exists yet", async () => {
+    seedClaudeSource(tmpDir);
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: false, remoteUrl: repoUrl });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(fs.existsSync(memDirOf(tmpDir, repoUrl))).toBe(true);
+    expect(fs.existsSync(sessionMemoryOf(tmpDir))).toBe(true);
+  });
+
+  it("does NOT share memory for a session without a remote URL (memory stays ephemeral)", async () => {
+    seedClaudeSource(tmpDir);
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: false, remoteUrl: "" });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(fs.existsSync(path.join(tmpDir, "repo-memory"))).toBe(false);
+    expect(fs.existsSync(sessionMemoryOf(tmpDir))).toBe(false);
+  });
+
+  it("does NOT create a Claude memory dir for a Codex session (docs/138 isolation)", async () => {
+    // Codex source so provisioning has something to copy.
+    fs.mkdirSync(path.join(tmpDir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, ".codex", "auth.json"), "{}");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: false, remoteUrl: repoUrl });
+
+    await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "codex",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    // No repo-memory dir, and no `.claude` subtree materialized in the session.
+    expect(fs.existsSync(path.join(tmpDir, "repo-memory"))).toBe(false);
+    expect(fs.existsSync(path.join(tmpDir, "sessions", "s1", ".claude"))).toBe(false);
+  });
 });
 
 describe("finalizeSessionAgentEnvironment", () => {
@@ -510,6 +608,50 @@ describe("finalizeSessionAgentEnvironment", () => {
         deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
       }),
     ).not.toThrow();
+  });
+
+  // docs/155 — memory files the CLI wrote this turn are mirrored back to the
+  // shared per-repo dir at turn end.
+  it("mirrors a Claude session's new memory file back to the shared per-repo dir", () => {
+    const repoUrl = "https://github.com/example/memrepo.git";
+    const sessionMemory = path.join(
+      tmpDir, "sessions", "s1", ".claude", "projects", "-workspace", "memory",
+    );
+    fs.mkdirSync(sessionMemory, { recursive: true });
+    fs.writeFileSync(path.join(sessionMemory, "new-note.md"), "fresh insight");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: true, remoteUrl: repoUrl });
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    const sharedFile = path.join(tmpDir, "repo-memory", repoUrlToHash(repoUrl), "new-note.md");
+    expect(fs.readFileSync(sharedFile, "utf8")).toBe("fresh insight");
+  });
+
+  it("does not sync memory back for a session without a remote URL", () => {
+    const sessionMemory = path.join(
+      tmpDir, "sessions", "s1", ".claude", "projects", "-workspace", "memory",
+    );
+    fs.mkdirSync(sessionMemory, { recursive: true });
+    fs.writeFileSync(path.join(sessionMemory, "note.md"), "x");
+
+    const runner = new FakeContainerRunner();
+    const credentialStore = makeFakeCredentialStore();
+    const { sm } = makeFakeSessionManager({ agentPinned: true, remoteUrl: "" });
+
+    finalizeSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
+      sessionId: "s1",
+      agentId: "claude",
+      deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
+    });
+
+    expect(fs.existsSync(path.join(tmpDir, "repo-memory"))).toBe(false);
   });
 });
 
