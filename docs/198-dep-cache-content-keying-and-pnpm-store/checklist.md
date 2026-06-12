@@ -1,6 +1,6 @@
 # Checklist — dep-cache evolution (content-keyed install skip + pnpm shared store)
 
-## Part 1 — content-keyed install skip (DONE)
+## Part 1 — content-keyed install skip (PR #1278)
 
 - [x] **`depsHash` on the marker stamp.** Added `depsHash: string | null` to
       `InstallMarkerStamp`; bumped `INSTALL_MARKER_VERSION` 1 → 2 (a v1 marker, no
@@ -34,11 +34,24 @@
       is in the always-on install-marker path and is inert (null hash) unless the
       install is a recognized pure dep install or `install-inputs` is declared.
 
-## Part 2 — pnpm shared store volume (NOT STARTED)
+## Part 2 — pnpm shared store (PR #1279)
 
-- [ ] Detect pnpm repos and skip the `node_modules` overlay for them (EXDEV defeats
-      pnpm hardlinks across the overlay boundary).
-- [ ] Mount a shared per-`(runtime)` content-addressed pnpm store on the workspace
-      filesystem so `pnpm install` hardlinks natively.
-- [ ] Measure: per-session upper size (pnpm overlay full-copy ~464 MB → expected
-      near-zero) and install time.
+- [x] pnpm detection (`isPnpmRepo`) — packageManager > install command > lockfile,
+      one decision point next to `validDepDirsForOverlay`
+- [x] `prepareOverlaySpecs` returns `[]` for pnpm repos (skip overlay)
+- [x] `preparePnpmStore` — shared `<stateDir>/pnpm-store/<runtimeKey-hash>` dir,
+      gated on overlay eligibility + workspace state volume
+- [x] Container mount (`PNPM_STORE_CONTAINER_PATH`, same-superblock Subpath) +
+      `npm_config_store_dir` env, wired through `buildConfig`/`buildContainerConfig`
+- [x] Lazy store-dir creation at container-create time
+- [x] Wired into both agent-container creation paths (cold/restart + warm standby)
+- [x] disk-janitor `sweepStalePnpmStores` — keeps the live store, reaps
+      stale-runtime/cold stores past `DISK_JANITOR_CACHE_DAYS`
+- [x] shipit-docs: pnpm shared-store section + `pnpm patch` in-place-mutation caveat
+- [x] Tests: detection precedence, overlay-skip + store mount/env, npm unchanged,
+      flag-off unchanged, janitor sweep
+- [x] All behind the existing `OVERLAY_DEP_STORE` flag (flag-off byte-for-byte unchanged)
+
+## Shelf (not scheduled)
+
+- [ ] Content-addressed multi-base store (`depsHash → base generation`)
