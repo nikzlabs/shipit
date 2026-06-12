@@ -10,11 +10,17 @@
   language ("Use the testplugin:hello skill") in `claude -p` mode. v1's chosen
   namespace strategy is correct for Claude. See the assistant message log for
   the spike transcript.
-- [ ] **Codex `<skills_instructions>` injection under `app-server`** — deferred;
-  v1 ships Claude-only per the user's chosen scope (v1a). v1b for Codex picks
-  this up.
-- [ ] **Codex project skill path** (`.codex/skills/` vs `.agents/skills/`) — deferred to v1b.
-- [ ] **Codex marketplace manifest format** — deferred to v1b.
+- [x] **Codex `<skills_instructions>` injection under `app-server`** — v1b
+  implemented Codex skill installs and lifted the Claude-only install guard;
+  Codex now uses the same installed-skill surface instead of the v1a empty
+  state.
+- [x] **Codex project skill path** (`.codex/skills/` vs `.agents/skills/`) —
+  resolved for this implementation: official docs/catalog use `.agents`, while
+  ShipIt's Codex scanner/composer path remains `.codex/skills`.
+- [x] **Codex marketplace manifest format** — documented from the official
+  catalog: `openai/plugins` exposes `openai-curated` at
+  `.agents/plugins/marketplace.json`, with plugin entries using
+  `source: { source: "local", path: "./plugins/<name>" }`.
 
 ## v1a — Claude-only repo-scope installs (this branch)
 
