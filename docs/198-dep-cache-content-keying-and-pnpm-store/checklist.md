@@ -54,6 +54,46 @@
 
 ## Live verification follow-ups (2026-06-12)
 
+### Part 1 — pre-stamp didn't content-key (post-deploy e0d521d8)
+
+Prod canary (`overlay-canary-183`): main advanced by a README-only commit
+(`b1904814`; dep files byte-identical to the pointer commit `31e225d`). A fresh
+session at the new tip ran a FULL install (`install_ms=28247`, outcome
+`advanced:d2g2`) instead of skipping — the headline scenario the feature targets.
+
+Root causes:
+- `preStampInstallMarker` still gated on "session HEAD equals EVERY mounted dep
+  dir's pointer commit". The worker-side `markerMatches` widening (PR #1278) is
+  unreachable for a fresh clone, which has no marker unless the pre-stamp fires —
+  and fresh sessions are the dominant case.
+- The published base pointer's marker carried only `{runtimeKey, installCommands}`
+  — no `depsHash` (verified live: `overlay-base-meta/ed347cf9979cc8ed.json` gen 2),
+  so the pre-stamp had no content key to compare against.
+
+Fix (PR — content-key the pre-stamp):
+- [x] **Propagate `depsHash` into base pointers.** `BasePointer.marker` and
+      `PublishCandidate.markerStamp` gained `depsHash?: string | null`;
+      `publishDepDirOverlayBases` computes it (`computeInstallDepsHash`, honoring
+      `install-inputs`) and records it on the stamp. Legacy pointers without it
+      simply never content-match → degrade to today's behavior.
+- [x] **Widened the pre-stamp gate.** `preStampInstallMarker` now stamps on a
+      commit MISMATCH when the pointer carries a `depsHash` that equals this
+      workspace's `computeInstallDepsHash`. Every other condition is unchanged
+      (generation pinned by the mount, command + runtime agreement across dep
+      dirs, never clobber an existing marker). The worker gate stays the final
+      authority (re-derives the hash, re-checks the empty-dir contradiction), so a
+      wrong pre-stamp degrades to a reinstall, never a wrong skip.
+- [x] **Truthful `sourceCommit`.** The content-path stamp records the SESSION's
+      HEAD, not the pointer's.
+- [x] **Tests.** Pointer marker round-trips `depsHash` (+ null when not content-
+      keyable); pre-stamp fires on commit-mismatch + depsHash-match (the live
+      scenario, as a regression test); does NOT fire when dep files differ, when
+      the pointer lacks `depsHash` (legacy), when this workspace has no content
+      key, or when commands/runtime differ.
+- [x] **No flag defaults changed.**
+
+### Part 2 — pnpm store gaps (PR #1285)
+
 Three gaps found running Part 2 (PR #1279) on the production canary (pnpm 11.6.0,
 real worker image). All three fixed in this follow-up PR; flag defaults unchanged.
 
