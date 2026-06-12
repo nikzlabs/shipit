@@ -52,8 +52,16 @@ export interface IdleEnforcementDeps {
  * blips, page reloads, session switches) — a runner whose last viewer just
  * detached is kept around for this window so a quick reconnect doesn't pay
  * the cost of a fresh container start.
+ *
+ * Set to 10 minutes: eviction is a full container *destroy*, not a freeze, so
+ * any in-container background work an agent started at runtime (timers,
+ * pollers, schedulers) dies on eviction. A generous window lets short-lived
+ * timers fire before the box is torn down. It is NOT a guarantee — work that
+ * must survive eviction belongs in a compose service or `agent.install`, not a
+ * runtime timer (see src/server/shipit-docs/environment.md). Host memory
+ * pressure still bypasses this window entirely (see below).
  */
-export const IDLE_GRACE_PERIOD_MS = 60_000;
+export const IDLE_GRACE_PERIOD_MS = 600_000;
 
 /**
  * Create the `enforceIdleContainerLimit` function. When more containers are
@@ -155,8 +163,8 @@ export function createIdleEnforcer(
         if (broadcastLog) {
           const idleLabel = idleMs !== undefined ? `${Math.round(idleMs / 1000)}s` : "idle period";
           const human = reason === "memory-pressure"
-            ? `Session container reaped (memory pressure).`
-            : `Session container paused after ${idleLabel}. Send a message to resume.`;
+            ? `Session container shut down to reclaim memory (workspace preserved). Send a message to resume.`
+            : `Session container shut down after ${idleLabel} idle (workspace preserved). Send a message to resume — a fresh container starts automatically.`;
           broadcastLog(sid, "server", human);
         }
         containerManager.destroy(sid).catch((err: unknown) => {
