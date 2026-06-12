@@ -1247,6 +1247,23 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     expect(out.stderr).toContain("--approximate only applies with --shipit-source");
     expect(out.exitCode).not.toBe(0);
   });
+
+  // Guard: the ops-session contract doc shows operators how to spawn a fix
+  // session. `--title` is required by the shim (test above), so the documented
+  // `--shipit-source` example must carry it — otherwise a copy-paste of the
+  // recipe fails before the broker is ever hit.
+  it("ops-session.md fix-session example includes the required --title", async () => {
+    const docPath = path.resolve(
+      path.dirname(new URL(import.meta.url).pathname),
+      "../../shipit-docs/ops-session.md",
+    );
+    const doc = await fsp.readFile(docPath, "utf8");
+    const example = doc
+      .split("\n")
+      .find((line) => line.includes("shipit session create --shipit-source"));
+    expect(example).toBeDefined();
+    expect(example).toContain("--title");
+  });
 });
 
 // ---------------------------------------------------------------------------
