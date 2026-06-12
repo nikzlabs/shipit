@@ -422,8 +422,13 @@ export function isPnpmRepo(workspaceDir: string): boolean {
  * provably satisfied by the mounted base:
  *  - no marker exists yet (never clobber a real one — a mismatched existing
  *    marker must keep forcing a reinstall);
- *  - the session's HEAD equals EVERY mounted dep dir's pointer commit (the base
- *    holds exactly this commit's install);
+ *  - EVERY mounted dep dir's pointer matches this session's deps — either by
+ *    exact commit (the base holds exactly this commit's install) OR, when the
+ *    pointer carries a `depsHash` (docs/198), by content: the pointer's recorded
+ *    dependency content key equals this workspace's, so a base built at a
+ *    DIFFERENT commit with byte-identical dep files still skips. A pointer
+ *    without a `depsHash` (legacy) or a workspace whose install isn't content-
+ *    keyable falls back to exact-commit-only;
  *  - each pointer still names the generation the mount actually pinned (a
  *    publish racing container creation advances the pointer; stamping from the
  *    newer pointer would claim deps the pinned older lowerdir doesn't hold);
@@ -477,10 +482,30 @@ export async function preStampInstallMarker(args: {
   }
   if (installCommands.length === 0) return false;
 
+  // docs/198 — the content key for THIS workspace's dep files. Computed up front
+  // so the per-spec gate can take the content path: a pointer whose recorded
+  // `depsHash` equals this widens the stamp to a base built at a DIFFERENT commit
+  // (the "main advanced by a non-dep commit" scenario the exact-commit gate
+  // missed entirely). Also stamped into the marker we write, so a still-later
+  // session can content-match this one (the worker gate re-derives + re-checks).
+  const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
+
   let runtimeKey: string | null = null;
   for (const spec of specs) {
     const ptr = readPointer(stateDir, spec.scopeHash);
-    if (ptr?.commit !== head || !ptr.marker) return false;
+    if (!ptr?.marker) return false;
+    // Either the base was built at THIS exact commit (the original path), or it
+    // holds byte-identical dep inputs (docs/198 content path). Both sides must
+    // carry a real hash for the content path — a `null`/absent hash never
+    // content-matches, so a legacy pointer (no `depsHash`) or a non-recognized
+    // install degrades cleanly to exact-commit-only, i.e. today's behavior.
+    const commitMatches = ptr.commit === head;
+    const contentMatches =
+      depsHash !== null && typeof ptr.marker.depsHash === "string" && ptr.marker.depsHash === depsHash;
+    if (!commitMatches && !contentMatches) return false;
+    // Generation is pinned by the mount regardless of which match fired — a
+    // publish that advanced the pointer past the lowerdir we mounted must still
+    // block (we'd otherwise claim deps the older pinned generation doesn't hold).
     if (ptr.generation !== spec.generation) return false;
     const cmds = ptr.marker.installCommands;
     if (cmds.length !== installCommands.length || !cmds.every((c, i) => c === installCommands[i])) {
@@ -491,10 +516,9 @@ export async function preStampInstallMarker(args: {
   }
   if (!runtimeKey) return false;
 
-  // docs/197 — stamp the content key too, so a LATER session on a different
-  // commit with byte-identical dep files can still content-key-skip against this
-  // pre-stamped marker (the worker gate re-derives + re-checks it).
-  const depsHash = computeInstallDepsHash(workspaceDir, installCommands, installInputs);
+  // sourceCommit is THIS session's HEAD (not the pointer's) — truthful for the
+  // marker we're writing into this workspace, even when the content path matched
+  // a base built at a different commit.
   const marker = makeMarker(
     { sourceCommit: head, runtimeKey, installCommands, depsHash },
     new Date().toISOString(),

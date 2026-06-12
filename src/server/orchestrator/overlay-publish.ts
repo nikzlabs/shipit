@@ -43,6 +43,8 @@ import path from "node:path";
 import type { Readable } from "node:stream";
 
 import type { SessionInfo } from "../shared/types.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import {
   isOverlayEnabled,
   resolveOverlayScope,
@@ -162,10 +164,27 @@ export async function publishDepDirOverlayBases(
   }
   const commit = headInfo.commit;
   // Marker ingredients for the base-hit pre-stamp — only when both halves exist.
-  const markerStamp =
-    headInfo.runtimeKey && args.installCommands && args.installCommands.length > 0
-      ? { runtimeKey: headInfo.runtimeKey, installCommands: args.installCommands }
-      : undefined;
+  // docs/198 — also record the dependency content key (`depsHash`) so a LATER
+  // session on a DIFFERENT commit whose dep files are byte-identical can be
+  // content-key pre-stamped against this base (the "main advanced by a non-dep
+  // commit" scenario). `installInputs` honors an `agent.install-inputs` override,
+  // mirroring the worker's own gate; an unreadable config falls back to the
+  // command-derived inputs. A null hash (content-keying off / no input files)
+  // simply never content-matches — degrading to the exact-commit path.
+  let markerStamp: { runtimeKey: string; installCommands: string[]; depsHash: string | null } | undefined;
+  if (headInfo.runtimeKey && args.installCommands && args.installCommands.length > 0) {
+    let installInputs: string[] | null = null;
+    try {
+      installInputs = resolveShipitConfig(workspaceDir).agent.installInputs;
+    } catch {
+      /* unreadable/invalid config — fall back to command-derived inputs */
+    }
+    markerStamp = {
+      runtimeKey: headInfo.runtimeKey,
+      installCommands: args.installCommands,
+      depsHash: computeInstallDepsHash(workspaceDir, args.installCommands, installInputs),
+    };
+  }
 
   const repoGit = deps.createRepoGit(deps.getBareCacheDir(scope.repoUrl));
   const currentDefaultCommit = (await repoGit.resolveDefaultBranchCommit()) ?? undefined;

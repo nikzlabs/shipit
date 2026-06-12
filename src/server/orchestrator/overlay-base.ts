@@ -109,8 +109,16 @@ export interface BasePointer {
    * what the gate compares against), NOT the orchestrator-side scope key.
    * Absent on pointers written before this field existed or when the publish
    * couldn't resolve the worker's runtime key — pre-stamp then declines.
+   *
+   * `depsHash` (docs/198) is the content key of the publish's dependency input
+   * files (`deps-hash.ts`). It lets a LATER session on a *different* commit whose
+   * dep files hash identically be pre-stamped against this base — the content
+   * path that closes the "main advanced by a non-dep commit" scenario. Absent on
+   * pre-docs/198 pointers and whenever content-keying is off (a non-recognized
+   * install); a `null`/absent hash never content-matches, so an old pointer
+   * simply degrades to the exact-commit pre-stamp.
    */
-  marker?: { runtimeKey: string; installCommands: string[] };
+  marker?: { runtimeKey: string; installCommands: string[]; depsHash?: string | null };
 }
 
 /**
@@ -134,9 +142,11 @@ export interface PublishCandidate {
   /**
    * Install-marker ingredients recorded on the resulting pointer (see
    * `BasePointer.marker`). Optional — a publish without it still advances the
-   * base; only the pre-stamp optimization is forgone.
+   * base; only the pre-stamp optimization is forgone. `depsHash` (docs/198) is
+   * the content key carried into the pointer so a later content-keyed pre-stamp
+   * can match across commits.
    */
-  markerStamp?: { runtimeKey: string; installCommands: string[] };
+  markerStamp?: { runtimeKey: string; installCommands: string[]; depsHash?: string | null };
 }
 
 export type PublishOutcome =
