@@ -7,6 +7,17 @@ on:
       - 'docs/**'
       - '**.md'
 
+# Cancel superseded runs. When a PR branch is pushed again before its CI
+# finishes, the in-flight run is now wasted work — every new push used to start
+# a fresh full run while the old one kept burning minutes to completion. Keying
+# the group on the PR ref (head_ref on a pull_request) and cancelling in
+# progress means only the latest commit's run survives. This is the largest
+# Actions-minutes saving for an active repo. The release/tag workflow has no
+# such group — a published tag's run must never be cancelled.
+concurrency:
+  group: ci-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
+
 # Belt-and-suspenders: force any JavaScript actions still on Node.js 20 to
 # run on Node.js 24. Our actions are pinned at v5 (which already use Node 24),
 # but this guards against transitive uses by composite actions.
@@ -27,7 +38,17 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      # Cache node_modules itself, keyed on the lockfile. On a hit we skip the
+      # extract/link work `npm ci` does even with a warm ~/.npm download cache
+      # (setup-node's `cache: npm` only caches the tarballs, not the installed
+      # tree). The key includes the Node major so a runtime bump busts it.
+      - uses: actions/cache@v4
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-node24-${{ hashFiles('package-lock.json') }}
+      - if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci
       - run: npm run lint
       - run: npm run typecheck
       - run: npm run check-deps
@@ -43,5 +64,11 @@ jobs:
         with:
           node-version: 24
           cache: npm
-      - run: npm ci
+      - uses: actions/cache@v4
+        id: node-modules-cache
+        with:
+          path: node_modules
+          key: node-modules-node24-${{ hashFiles('package-lock.json') }}
+      - if: steps.node-modules-cache.outputs.cache-hit != 'true'
+        run: npm ci
       - run: npm test
