@@ -285,6 +285,9 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       (ideally a canary) after the measurement above. Intentionally left to the user — this PR keeps the
       flag OFF.
       **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
+      The remaining rollout (soak exit → default-on → delete the flag → canary cleanup) is tracked in
+      [SHI-127](https://linear.app/shipit-ai/issue/SHI-127) — the flag is a temporary rollout gate, not a
+      permanent configuration dimension.
       Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
       `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) **SATISFIED
       2026-06-12 by #1267** — hardlink-dedup between generations, verified live on the canary
