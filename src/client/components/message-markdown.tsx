@@ -9,6 +9,7 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/t
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
 import { parseRepoFileLink } from "../utils/repo-file-link.js";
+import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 
@@ -159,7 +160,10 @@ export const markdownComponents: Components = {
   },
 };
 
-const remarkPlugins = [remarkGfm, remarkBreaks];
+// `remarkLinkifyPaths` runs last so it sees GFM's autolinked URLs as `link`
+// nodes (which it skips) and only touches remaining plain text. It turns bare
+// `dir/file.ext` references in prose into in-app file-preview links.
+const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths];
 
 /**
  * Render markdown text for assistant messages, PR bodies, plan approval, and
