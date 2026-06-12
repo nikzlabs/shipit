@@ -167,7 +167,7 @@ didn't spawn.
 
 ```sh
 # Spawn a long-running task on its own branch (branch name is auto-generated).
-shipit session create --prompt-file - <<'EOF'
+shipit session create --prompt-file - --title "Migrate API to Drizzle" <<'EOF'
 Migrate the API to Drizzle
 EOF
 # session-id: ses_abc

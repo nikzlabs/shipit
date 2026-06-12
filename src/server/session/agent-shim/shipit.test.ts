@@ -1247,6 +1247,34 @@ describe("shipit session create --shipit-source (docs/162)", () => {
     expect(out.stderr).toContain("--approximate only applies with --shipit-source");
     expect(out.exitCode).not.toBe(0);
   });
+
+  // Guard: the agent-facing docs show operators copy-paste-able `shipit session
+  // create` recipes. `--title` is required by the shim (tests above), so every
+  // runnable invocation in the docs must carry it — otherwise a pasted recipe
+  // fails before the broker is ever hit. This pins the docs to the CLI contract.
+  it("every runnable 'shipit session create' recipe in the docs passes --title", async () => {
+    const docsDir = path.resolve(
+      path.dirname(new URL(import.meta.url).pathname),
+      "../../shipit-docs",
+    );
+    const docs = ["sessions.md", "ops-session.md"];
+    const invocations: string[] = [];
+    for (const name of docs) {
+      const doc = await fsp.readFile(path.join(docsDir, name), "utf8");
+      for (const line of doc.split("\n")) {
+        // A runnable recipe invokes the command with a prompt source. Prose
+        // mentions (`**\`shipit session create\`** (this shim)`, "Under the
+        // hood, …") never carry `--prompt-file`, so they're excluded.
+        if (line.includes("shipit session create") && line.includes("--prompt-file")) {
+          invocations.push(line.trim());
+        }
+      }
+    }
+    expect(invocations.length).toBeGreaterThan(0);
+    for (const line of invocations) {
+      expect(line, `missing --title: ${line}`).toContain("--title");
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
