@@ -43,6 +43,10 @@ function createMockDocker() {
   let containerCounter = 0;
   let networkExists = false;
   let pingResult = true;
+  // docs/183 — control the worker image inspect for resolveWorkerImageId.
+  // `undefined` Id models an inspect that throws (image absent).
+  let imageId: string | undefined = "sha256:workerimageabc";
+  let imageInspectCalls = 0;
 
   // docs/183 Phase 2 — track overlay volume create/remove for the mock.
   const liveVolumes = new Set<string>();
@@ -58,6 +62,8 @@ function createMockDocker() {
     // Control
     _setPingResult: (v: boolean) => { pingResult = v; },
     _setNetworkExists: (v: boolean) => { networkExists = v; },
+    _setImageId: (v: string | undefined) => { imageId = v; },
+    _imageInspectCalls: () => imageInspectCalls,
     _containers: containers,
     _eventEmitter: eventEmitter,
     _liveVolumes: liveVolumes,
@@ -161,6 +167,14 @@ function createMockDocker() {
     }),
 
     getEvents: vi.fn(async () => eventEmitter),
+
+    getImage: vi.fn((_name: string) => ({
+      inspect: vi.fn(async () => {
+        imageInspectCalls++;
+        if (imageId === undefined) throw new Error("no such image");
+        return { Id: imageId };
+      }),
+    })),
   };
 
   return mockDocker;
@@ -217,6 +231,31 @@ describe("SessionContainerManager", () => {
     it("returns false when Docker daemon is unreachable", async () => {
       mockDocker._setPingResult(false);
       expect(await manager.isAvailable()).toBe(false);
+    });
+  });
+
+  // --- resolveWorkerImageId (docs/183 — overlay runtime scope) ---
+
+  describe("resolveWorkerImageId", () => {
+    it("inspects the worker image and returns its id", async () => {
+      mockDocker._setImageId("sha256:deadbeef");
+      expect(await manager.resolveWorkerImageId()).toBe("sha256:deadbeef");
+      expect(mockDocker.getImage).toHaveBeenCalledWith("shipit-session-worker:test");
+    });
+
+    it("caches the result — a second call adds no Docker inspect", async () => {
+      await manager.resolveWorkerImageId();
+      await manager.resolveWorkerImageId();
+      expect(mockDocker._imageInspectCalls()).toBe(1);
+    });
+
+    it("returns undefined and caches the miss when the image can't be inspected", async () => {
+      mockDocker._setImageId(undefined); // inspect throws
+      expect(await manager.resolveWorkerImageId()).toBeUndefined();
+      // Re-flip to a real id: the cached miss must NOT trigger a re-inspect.
+      mockDocker._setImageId("sha256:later");
+      expect(await manager.resolveWorkerImageId()).toBeUndefined();
+      expect(mockDocker._imageInspectCalls()).toBe(1);
     });
   });
 

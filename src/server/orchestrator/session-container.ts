@@ -522,6 +522,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerImageName?: string;
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
+  /**
+   * docs/183 — cached Docker image ID of the session-worker base image, the
+   * ABI fingerprint the overlay dep store keys its rolling base scope on
+   * (`overlayRuntimeKey`). Resolved once via `resolveWorkerImageId`; a failed
+   * inspect is cached as `""` (a miss) so there is no per-session Docker call.
+   */
+  private workerImageId?: string;
   private standbySessionIds = new Set<string>();
   private healthMonitorState: HealthMonitorState = createHealthMonitorState();
   private _disposed = false;
@@ -713,6 +720,36 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   async reapOrphans(sessionId: string): Promise<void> {
     await cleanupSessionDockerResources(this.docker, sessionId);
+  }
+
+  /**
+   * docs/183 — resolve and cache the Docker image ID of the session-worker base
+   * image. This is the ABI fingerprint the overlay dep store keys its rolling
+   * base scope on (`overlayRuntimeKey`): a worker-image rebuild that bumps Node
+   * or glibc changes this id, rotating the scope so an ABI-incompatible base
+   * (e.g. one holding a `better-sqlite3` compiled against the old ABI) is never
+   * reused. Resolved at runtime — not hardcoded in deploy.sh — so a self-update
+   * rotates the scope for free.
+   *
+   * Cached after the first inspect (incl. a failed inspect, cached as a miss),
+   * so it adds no per-session Docker call. Returns `undefined` when the image
+   * can't be inspected (Docker unavailable / image absent) — the caller then
+   * leaves the scope on the `"unknown"` fallback, which simply means no
+   * rotation (the prior behavior), never a wrong reuse.
+   */
+  async resolveWorkerImageId(): Promise<string | undefined> {
+    if (this.workerImageId !== undefined) return this.workerImageId || undefined;
+    try {
+      const info = await this.docker.getImage(this.imageName).inspect();
+      this.workerImageId = info.Id ?? "";
+    } catch (err) {
+      this.workerImageId = ""; // cache the miss so we don't re-inspect per session
+      console.warn(
+        `[overlay] could not inspect worker image ${this.imageName} for the runtime scope:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+    return this.workerImageId || undefined;
   }
 
   /** Get the container info for a session. */
