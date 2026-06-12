@@ -22,6 +22,7 @@ import {
   addIssueCommentForTracker,
   userSetIssueStatus,
   userSetIssuePriority,
+  userSetIssueLabels,
   createIssueForTracker,
   commentOnIssueForTracker,
   updateIssueForTracker,
@@ -303,6 +304,33 @@ export async function registerIssueRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to set priority: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/issue/labels { tracker, id, labels, sessionId? } — a user replacing
+  // an issue's full label set from the on-page editor. `labels` is the COMPLETE
+  // desired set (a wholesale replace, not a delta); `[]` clears all labels. Both
+  // trackers support it; an undefined name surfaces as a 422. Same no-card,
+  // returns-the-issue contract as status/priority. (Distinct from the GET on the
+  // same path, which lists the tracker's pickable label set.)
+  app.post<{ Body: { tracker?: string; id?: string; labels?: string[]; sessionId?: string } }>(
+    "/api/issue/labels",
+    async (request, reply) => {
+      const { tracker, id, labels, sessionId } = request.body ?? {};
+      if (!tracker || !id || !Array.isArray(labels)) {
+        reply.code(400).send({ error: "tracker, id and a labels array are required" });
+        return;
+      }
+      const github = resolveGitHubContext(sessionId);
+      try {
+        return await userSetIssueLabels(credentialStore, tracker, id, labels, trackerFetchImpl, github);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to set labels: ${getErrorMessage(err)}` });
       }
     },
   );

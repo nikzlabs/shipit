@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, MagnifyingGlassIcon, XIcon } from "@phosphor-icons/react";
 import { Popover, PopoverContent, PopoverTrigger } from "./ui/popover.js";
 import { priorityColor, statusDotColor } from "./IssueFieldControls.js";
+import { labelDotColor } from "./issue-label-color.js";
 import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
 import { ICON_SIZE } from "../design-tokens.js";
@@ -11,6 +12,7 @@ import {
   UNASSIGNED,
   type AssigneeOption,
   type IssueFilters,
+  type LabelOption,
   type StatusOption,
 } from "./issues-filter.js";
 import type { IssuePriorityLevel } from "../../server/shared/types.js";
@@ -19,12 +21,14 @@ export interface IssuesFilterBarProps {
   filters: IssueFilters;
   statusOptions: StatusOption[];
   assigneeOptions: AssigneeOption[];
+  labelOptions: LabelOption[];
   /** Per-priority-level counts in the loaded list, for the priority popover. */
   priorityCounts: Record<IssuePriorityLevel, number>;
   onSetQuery: (query: string) => void;
   onTogglePriority: (level: IssuePriorityLevel) => void;
   onToggleStatus: (name: string) => void;
   onToggleAssignee: (value: string) => void;
+  onToggleLabel: (name: string) => void;
 }
 
 /** Debounced (~150ms) search box, kept in sync when `query` changes externally. */
@@ -200,11 +204,13 @@ export function IssuesFilterBar({
   filters,
   statusOptions,
   assigneeOptions,
+  labelOptions,
   priorityCounts,
   onSetQuery,
   onTogglePriority,
   onToggleStatus,
   onToggleAssignee,
+  onToggleLabel,
 }: IssuesFilterBarProps) {
   // The facet popovers sit on the elevated surface; adapt status colors to it so
   // the colored checkboxes stay legible on light themes (priority colors are
@@ -288,6 +294,33 @@ export function IssuesFilterBar({
     </Popover>
   );
 
+  const labelFacet = (variant: "button" | "chip") => (
+    <Popover>
+      <PopoverTrigger asChild>
+        <span>
+          <FacetTrigger label="Labels" count={filters.labels.size} variant={variant} />
+        </span>
+      </PopoverTrigger>
+      <PopoverContent align="start" className="w-56 p-1.5">
+        {labelOptions.length === 0 ? (
+          <div className="px-2 py-1.5 text-xs text-(--color-text-tertiary)">No labels</div>
+        ) : (
+          labelOptions.map((opt) => (
+            <OptionRow
+              key={opt.name}
+              checked={filters.labels.has(opt.name)}
+              onToggle={() => onToggleLabel(opt.name)}
+              count={opt.count}
+              color={opt.color ?? labelDotColor(opt.name)}
+            >
+              <span className="truncate">{opt.name}</span>
+            </OptionRow>
+          ))
+        )}
+      </PopoverContent>
+    </Popover>
+  );
+
   return (
     <div className="border-b border-(--color-border-secondary) bg-(--color-bg-primary)">
       {/* Desktop: single row. */}
@@ -296,6 +329,7 @@ export function IssuesFilterBar({
         {priorityFacet("button")}
         {statusFacet("button")}
         {assigneeFacet("button")}
+        {labelFacet("button")}
       </div>
 
       {/* Mobile: search row + scrollable chip row. */}
@@ -305,6 +339,7 @@ export function IssuesFilterBar({
           {priorityFacet("chip")}
           {statusFacet("chip")}
           {assigneeFacet("chip")}
+          {labelFacet("chip")}
         </div>
       </div>
     </div>

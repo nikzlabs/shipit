@@ -16,7 +16,7 @@ import {
   statusDotColor,
   type IssueStatusRef,
 } from "./IssueFieldControls.js";
-import { anyFilterActive, type AssigneeOption, type IssueFilters, type StatusOption } from "./issues-filter.js";
+import { anyFilterActive, type AssigneeOption, type IssueFilters, type LabelOption, type StatusOption } from "./issues-filter.js";
 import { labelDotColor } from "./issue-label-color.js";
 import { useSurfaceLuminance } from "../hooks/useSurfaceLuminance.js";
 import { adaptColorForSurface } from "../utils/status-color.js";
@@ -39,6 +39,7 @@ export interface IssuesViewerProps {
   filters: IssueFilters;
   statusOptions: StatusOption[];
   assigneeOptions: AssigneeOption[];
+  labelOptions: LabelOption[];
   priorityCounts: Record<IssuePriorityLevel, number>;
   /** Active tracker's info (configured + binding); falls back to `trackers`. */
   info?: TrackerInfo;
@@ -68,6 +69,7 @@ export interface IssuesViewerProps {
   onTogglePriority: (level: IssuePriorityLevel) => void;
   onToggleStatus: (name: string) => void;
   onToggleAssignee: (value: string) => void;
+  onToggleLabel: (name: string) => void;
   onClearFilters: () => void;
 }
 
@@ -345,6 +347,7 @@ export function IssuesViewer({
   filters,
   statusOptions,
   assigneeOptions,
+  labelOptions,
   priorityCounts,
   info,
   loading,
@@ -365,6 +368,7 @@ export function IssuesViewer({
   onTogglePriority,
   onToggleStatus,
   onToggleAssignee,
+  onToggleLabel,
   onClearFilters,
 }: IssuesViewerProps) {
   const activeInfo = info ?? trackers.find((t) => t.id === activeTracker);
@@ -457,11 +461,13 @@ export function IssuesViewer({
           filters={filters}
           statusOptions={statusOptions}
           assigneeOptions={assigneeOptions}
+          labelOptions={labelOptions}
           priorityCounts={priorityCounts}
           onSetQuery={onSetQuery}
           onTogglePriority={onTogglePriority}
           onToggleStatus={onToggleStatus}
           onToggleAssignee={onToggleAssignee}
+          onToggleLabel={onToggleLabel}
         />
       )}
 

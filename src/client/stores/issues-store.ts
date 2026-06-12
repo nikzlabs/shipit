@@ -19,6 +19,7 @@ type IssueStatusRef = NonNullable<TrackerIssue["status"]>;
 import {
   UNASSIGNED,
   distinctAssignees,
+  distinctLabels,
   distinctStatuses,
   type IssueFilters,
 } from "../components/issues-filter.js";
@@ -185,19 +186,38 @@ interface IssuesState {
     issue: TrackerIssue,
     level: IssuePriorityLevel,
   ) => Promise<string | null>;
+  /**
+   * Replace an issue's full label set (the on-page label editor). `labels` is
+   * the COMPLETE desired set of names — a wholesale replace, not a delta — so a
+   * removal is just a name left out and `[]` clears all labels. Patches the row
+   * + open detail in place on success. Both trackers support labels, so (unlike
+   * priority) this isn't gated. Returns an error message, or null on success.
+   */
+  setIssueLabels: (
+    tracker: TrackerId,
+    issue: TrackerIssue,
+    labels: string[],
+  ) => Promise<string | null>;
   /** Close the detail view and return to the list. */
   closeIssue: () => void;
   setQuery: (query: string) => void;
   togglePriority: (level: IssuePriorityLevel) => void;
   toggleStatus: (name: string) => void;
   toggleAssignee: (value: string) => void;
+  toggleLabel: (name: string) => void;
   toggleIncludeDone: () => void;
   clearFilters: () => void;
   reset: () => void;
 }
 
 function emptyFilters(): IssueFilters {
-  return { query: "", priorities: new Set(), statuses: new Set(), assignees: new Set() };
+  return {
+    query: "",
+    priorities: new Set(),
+    statuses: new Set(),
+    assignees: new Set(),
+    labels: new Set(),
+  };
 }
 
 function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
@@ -215,6 +235,7 @@ function toggleInSet<T>(set: Set<T>, value: T): Set<T> {
 function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilters {
   const validStatuses = new Set(distinctStatuses(issues).map((s) => s.name));
   const validAssignees = new Set(distinctAssignees(issues).map((a) => a.value));
+  const validLabels = new Set(distinctLabels(issues).map((l) => l.name));
   return {
     query: filters.query,
     priorities: filters.priorities,
@@ -222,6 +243,7 @@ function pruneFilters(filters: IssueFilters, issues: TrackerIssue[]): IssueFilte
     assignees: new Set(
       [...filters.assignees].filter((a) => a === UNASSIGNED || validAssignees.has(a)),
     ),
+    labels: new Set([...filters.labels].filter((l) => validLabels.has(l))),
   };
 }
 
@@ -458,6 +480,9 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   setIssuePriority: (tracker, issue, level) =>
     applyIssueMutation("/api/issue/priority", tracker, issue, { priority: level }),
 
+  setIssueLabels: (tracker, issue, labels) =>
+    applyIssueMutation("/api/issue/labels", tracker, issue, { labels }),
+
   closeIssue: () =>
     set({
       selected: null,
@@ -484,6 +509,11 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   toggleAssignee: (value) =>
     set((state) => ({
       filters: { ...state.filters, assignees: toggleInSet(state.filters.assignees, value) },
+    })),
+
+  toggleLabel: (name) =>
+    set((state) => ({
+      filters: { ...state.filters, labels: toggleInSet(state.filters.labels, name) },
     })),
 
   toggleIncludeDone: () => {
@@ -526,7 +556,8 @@ async function applyIssueMutation(
   endpoint: string,
   tracker: TrackerId,
   issue: TrackerIssue,
-  payload: Record<string, string>,
+  // `string` for status/priority; `string[]` for the wholesale label-set replace.
+  payload: Record<string, string | string[]>,
 ): Promise<string | null> {
   try {
     const sessionId = useSessionStore.getState().sessionId;
