@@ -52,13 +52,30 @@ describe("depInputsForCommand — allowlist", () => {
     expect(depInputsForCommand("pip install -r a.txt -r b.txt")).toEqual(["a.txt", "b.txt"]);
   });
 
+  it("recognizes uv venv / python3 -m venv as input-free (→ [], does not disable content path)", () => {
+    expect(depInputsForCommand("uv venv")).toEqual([]);
+    expect(depInputsForCommand("uv venv .venv")).toEqual([]);
+    expect(depInputsForCommand("python3 -m venv .venv")).toEqual([]);
+    expect(depInputsForCommand("python -m venv")).toEqual([]);
+  });
+
+  it("recognizes uv pip install -r and uv pip sync <file>", () => {
+    expect(depInputsForCommand("uv pip install -r requirements.txt")).toEqual(["requirements.txt"]);
+    expect(depInputsForCommand("uv pip install -r requirements.txt --no-cache-dir")).toEqual([
+      "requirements.txt",
+    ]);
+    expect(depInputsForCommand("uv pip sync requirements.txt")).toEqual(["requirements.txt"]);
+  });
+
   it("rejects non-pure / unrecognized commands (→ null, commit-only)", () => {
     expect(depInputsForCommand("npm install lodash")).toBeNull(); // names a package
     expect(depInputsForCommand("npm run build")).toBeNull();
     expect(depInputsForCommand("yarn add react")).toBeNull();
     expect(depInputsForCommand("pip install flask")).toBeNull(); // no -r
     expect(depInputsForCommand("pip install")).toBeNull(); // no requirements file
-    expect(depInputsForCommand("uv pip install foo")).toBeNull();
+    expect(depInputsForCommand("uv pip install foo")).toBeNull(); // ad-hoc package, no -r
+    expect(depInputsForCommand("uv pip install")).toBeNull(); // no requirements file
+    expect(depInputsForCommand("python3 app.py")).toBeNull(); // not venv creation
     expect(depInputsForCommand("npx prisma generate")).toBeNull();
     expect(depInputsForCommand("./build.sh")).toBeNull();
     expect(depInputsForCommand("")).toBeNull();
@@ -72,6 +89,14 @@ describe("resolveDepsHashInputs — override vs default vs fallback", () => {
 
   it("returns null when ANY command is not a recognized pure install", () => {
     expect(resolveDepsHashInputs(["npm ci", "npx prisma generate"], null)).toBeNull();
+  });
+
+  it("keeps content-keying when a venv-creation step precedes a recognized install (live canary)", () => {
+    // The prod canary's install: `uv venv .venv` then `uv pip install -r requirements.txt`.
+    // The input-free venv step must NOT disable the content path.
+    expect(
+      resolveDepsHashInputs(["uv venv .venv", "uv pip install -r requirements.txt"], null),
+    ).toEqual(["requirements.txt"]);
   });
 
   it("returns null when the command list is empty", () => {
