@@ -213,6 +213,33 @@ visible, attributable, and reversible. It composes with docs/176 (so a write the
 agent was *steered* into by malicious issue content is still surfaced and
 undoable) and docs/172 (egress/token isolation).
 
+### Write idempotency across crash/retry (SHI-112)
+
+The write relay (`handleWrite` in `api-routes-issues.ts`) must be **idempotent**
+against turn resume/retry. When a turn crashes (exit 137 / OOM) and is retried —
+or the agent CLI session is resumed — the tail `shipit issue …` shim re-executes
+as a fresh subprocess and POSTs an identical write again. The original code minted
+a fresh `randomUUID()` card and performed the real tracker write on *every*
+invocation, so one retry loop posted ~12 duplicate comments to the same issue
+(distinct cardIds + timestamps, no model reasoning between them) — the same
+non-idempotent bug class PR #1287 fixed for the *permission* relay
+(`permission-broker.ts` `openRequest()` keys on `toolUseId`).
+
+The read card dedups via `runner.recordedCards`, but that is **turn-scoped**
+(reset by `resetRunnerTurnState`) so it can't span the resume boundary — the
+duplicates land in different turns. A stable `toolUseId` isn't available end to
+end either: the shim is a plain Bash-invoked CLI with no tool-use id, and
+`--resume` re-mints tool ids on replay. So `handleWrite` dedups on the write's
+**content** — a `(sessionId, tracker, verb, issueId, sha256(content))` key — in a
+**sliding 10-minute window** (`recentWrites`, app-lifetime closure in
+`registerIssueRoutes`). A byte-identical write seen again within the window
+short-circuits: no second tracker write, no second card; the original result
+(including its `cardId`) is returned so the shim still sees `ok: true`. The window
+slides on each hit so a sustained retry storm is fully absorbed, while a
+genuinely distinct write (different content, or the same content after the window
+quiesces) still gets its own write + card. Regression coverage:
+`integration_tests/agent-issue-write-idempotency.test.ts`.
+
 ### Brokering path (same shape as docs/175 reads)
 
 `shipit issue comment` → worker `/agent-ops/issue/comment` (allowlisted, injects

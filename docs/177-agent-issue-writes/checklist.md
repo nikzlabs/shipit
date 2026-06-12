@@ -47,6 +47,7 @@ Settled: gating = do-then-surface + undo card; v1 scope = comment + edit + statu
 - [x] Status mapping: normalized-type + native-name + ambiguous-error per tracker
 - [x] Assignee resolution: me / name / not-found-candidates / unassign
 - [x] Card persistence, undo, no-duplicate-on-replay (chat-history + service + client store + shim)
+- [x] Write idempotency across crash/retry (SHI-112): replayed identical write performs the tracker write + card exactly once; distinct write still gets its own (`agent-issue-write-idempotency.test.ts`)
 
 ## Labels + priority on create/edit (SHI-92)
 - [x] `Tracker.createIssue`/`updateIssue` accept `labels?`/`priority?`; `TrackerResolutionError.kind` adds `label`/`priority`; `TrackerIssue.labels?`
