@@ -1,5 +1,6 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-122
+title: Dep-cache evolution — content-keyed install skip + pnpm shared store
 description: Content-keyed install skip (GH-Actions-style lockfile hashing) and a shared pnpm store volume, replacing overlay for pnpm repos.
 ---
 
