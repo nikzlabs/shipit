@@ -1,0 +1,136 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-130
+title: Integrations settings tab
+description: Consolidate GitHub, issue trackers (Linear), and MCP servers into one tiered "Integrations" settings tab.
+---
+
+# Integrations settings tab
+
+**Visual reference:** [mockup.html](./mockup.html) — the proposed tiered layout (Connected services on top, MCP servers below).
+
+## Problem
+
+ShipIt's "connect an external service" surface is split across three settings tabs that
+don't acknowledge each other:
+
+- **GitHub** — auto-connected via account auth (`Settings.tsx` lines ~1541–1587 + `GitHubTokenForm.tsx`).
+- **Trackers** — Linear, connected with a personal API token and a team picker (`SettingsTrackers.tsx`, docs/170).
+- **MCP Servers** — user-supplied tool extensions, plus one-click OAuth providers (`McpServerSettings.tsx`, docs/088).
+
+The MCP tab is where users instinctively look for "connect a service." Linear support is
+real and first-class, but it lives in a separate **Trackers** tab that a user scanning the
+MCP list never sees. The failure mode is concrete and we have already hit it once: users go
+hunting for a Linear MCP server to wire up manually. That path actively fights the
+architecture — Linear is deliberately brokered through `shipit issue` so the tracker token
+**never enters the session container**. Connecting Linear as a raw MCP server bypasses that
+brokering and puts a credential in the box.
+
+docs/190 already removed Linear as a built-in one-click MCP OAuth provider for exactly this
+reason (see the comment in `mcp-oauth-providers.ts`). That fixed the *duplicate connect
+button*, but not the *discoverability gap*: there is still nothing in or near the MCP tab
+that tells a user "Linear connects over here, and it connects differently." This doc closes
+that gap at the information-architecture level.
+
+## Proposal
+
+Replace the three tabs (`github`, `trackers`, `mcp`) with a single **Integrations** tab that
+is internally **tiered** into two clearly-distinct sections. The tiering is the whole point —
+a flat list would trade one confusion for another (users would think they can add any service
+as a curated integration, or that they can remove GitHub like an MCP entry).
+
+### Section 1 — Connected services (curated / first-party)
+
+ShipIt-owned capabilities: brokered credentials, deep inline rendering (PR cards, issue
+cards), curated set. Each row shows a connection state and a small **"Managed by ShipIt"**
+affordance signalling that credentials are brokered out of the container — the visible cue
+for the security-model difference.
+
+- **GitHub** — auto-"Connected" with username/avatar when account auth is present; token form
+  (`GitHubTokenForm`) otherwise. The GitHub-specific PR-automation toggle (`PullRequestSettings`,
+  "Auto-create PR after every meaningful turn") stays nested under this row — it is a
+  GitHub-scoped behavior, not a generic setting, so it reads naturally here.
+- **Linear** — the existing `SettingsTrackers` flow verbatim: paste token → pick team →
+  Connected (team name + key) → Change team / Disconnect.
+- **Future** — placeholder slot for additional first-party integrations (Jira, Sentry, …). New
+  entries are added to this curated list, not exposed as "add your own."
+
+### Section 2 — MCP servers (custom / advanced)
+
+The existing `McpServerSettings` content unchanged in behavior, reframed with a one-line intro:
+"Extend the agent with your own tools via the Model Context Protocol." Contains the OAuth
+provider cards (Notion, …), manual stdio/HTTP server config, and per-server runtime status.
+
+This is where the mechanism is generic and user-supplied. It sits **below** the curated
+section so the visual hierarchy reads "here are the things ShipIt manages for you; below,
+bring your own."
+
+## Design decisions
+
+1. **Tier, don't flatten.** Two sections in one tab, not one merged list. The mechanisms differ
+   (curated capability vs. generic protocol) and — load-bearing — the **security models differ**:
+   curated integrations broker credentials out of the session container; MCP servers may carry
+   credentials into it. The UI must *signal* that difference (the "Managed by ShipIt" badge),
+   not hide it.
+2. **GitHub connection lives in Integrations; GitHub PR-automation behavior stays adjacent to it.**
+   We do not scatter GitHub across two tabs. Connection + disconnect + the PR-automation toggle
+   all sit under the GitHub row.
+3. **Do not offer Linear as an addable MCP.** Already true post-docs/190; the Integrations tab
+   reinforces it structurally. (We are deliberately *not* adding an empty-state "looking for
+   Linear? connect above" redirect in the MCP section — the tiered single tab makes the right
+   path the obvious one without a signpost.)
+4. **Name it "Integrations."** Reads more first-class than "Connections" and scales to future
+   first-party services without tab sprawl.
+
+## Trade-offs / risks
+
+- **Conflation risk** if the tiering is weak — mitigated by distinct section headers, the
+  "Managed by ShipIt" badge on curated rows, and visual separation.
+- **A longer single tab.** Three tabs' content stacks vertically. Acceptable: the curated
+  section is short (2 rows today), and the tab scrolls. If it grows, the curated section can
+  collapse connected rows to a compact "Connected" summary.
+- **Tab width.** The MCP form is the widest content of the three; the merged tab keeps the
+  existing `max-w-2xl` dialog width (the Skills tab is the only `max-w-5xl` exception and is
+  unaffected).
+
+## Implementation sketch
+
+A new container component composes the three existing pieces; the underlying connection logic
+and stores are reused as-is.
+
+- **New:** `src/client/components/SettingsIntegrations.tsx` — renders the two sections. Pulls in
+  the GitHub connection block (extracted from `Settings.tsx`), `SettingsTrackers`, and
+  `McpServerSettings`.
+- **`src/client/components/Settings.tsx`** — `Tab` union and `generalTabs` array: drop
+  `"github" | "trackers" | "mcp"`, add `"integrations"`; update `tabLabel` (→ "Integrations")
+  and the `TabsContent`. New test id `settings-tab-integrations`. Keep the old per-tab test ids
+  alive only if any test depends on them (grep first).
+- **No store changes.** `useSettingsStore` (GitHub status, `autoCreatePr`), `useIssuesStore`
+  (tracker binding), and `useMcpStore` (servers, OAuth providers) are reused unchanged. This is
+  an information-architecture change, not a data-model one.
+- **Tests:** update settings tab tests that reference `settings-tab-github` /
+  `settings-tab-trackers` / `settings-tab-mcp`; add a render test for `SettingsIntegrations`
+  asserting both sections and the "Managed by ShipIt" badge appear.
+
+## Alignment with product principles
+
+This change is squarely on-principle (CLAUDE.md §1/§2): GitHub and Linear are
+inline-rendered, ShipIt-owned capabilities, and presenting them as first-class **Integrations**
+— rather than as "go configure an MCP" — reinforces that ShipIt owns the surface instead of
+nudging the user toward a generic, less-safe, out-of-container path.
+
+## Key files
+
+- `src/client/components/Settings.tsx` — tab list, labels, content host.
+- `src/client/components/SettingsTrackers.tsx` — Linear connection flow (docs/170).
+- `src/client/components/McpServerSettings.tsx` — MCP CRUD + OAuth cards (docs/088).
+- `src/client/components/GitHubTokenForm.tsx` — GitHub token entry.
+- `src/server/orchestrator/mcp-oauth-providers.ts` — OAuth provider registry; documents the
+  docs/190 Linear removal that this tab builds on.
+- `src/client/stores/{settings,issues,mcp}-store.ts` — reused unchanged.
+
+## Related docs
+
+- docs/088-mcp-integration — MCP servers + OAuth providers.
+- docs/170-inline-tracker-issues — native Linear integration (`shipit issue`, inline cards).
+- docs/190-remove-linear-mcp-preset — removed the duplicate Linear MCP OAuth button; this doc
+  closes the remaining discoverability gap.

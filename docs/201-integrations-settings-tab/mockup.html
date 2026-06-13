@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Integrations settings tab — mockup</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b;
+    --bg-modal: #111113;
+    --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23;
+    --bg-hover: #26262b;
+    --border: #2a2a30;
+    --border-soft: #1f1f24;
+    --text-primary: #ececee;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b74;
+    --accent: #6366f1;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --shield: #818cf8;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%),
+      var(--bg-page);
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 32px 16px;
+  }
+  .caption {
+    position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--text-tertiary);
+  }
+
+  /* ---- modal shell ---- */
+  .modal {
+    width: 720px; max-width: 100%;
+    background: var(--bg-modal);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    box-shadow: 0 24px 70px rgba(0,0,0,.55);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+    height: 600px;
+  }
+  .modal-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-title { font-size: 17px; font-weight: 600; }
+  .x { color: var(--text-tertiary); cursor: default; font-size: 18px; line-height: 1; }
+  .modal-body { display: flex; flex: 1; min-height: 0; }
+
+  /* ---- sidebar ---- */
+  .sidebar {
+    width: 168px; flex-shrink: 0;
+    border-right: 1px solid var(--border);
+    padding: 8px;
+    display: flex; flex-direction: column; gap: 1px;
+    overflow-y: auto;
+  }
+  .side-group {
+    font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--text-tertiary);
+    padding: 12px 10px 5px;
+  }
+  .side-item {
+    font-size: 13px; color: var(--text-secondary);
+    padding: 7px 10px; border-radius: 7px; cursor: default;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .side-item:hover { background: var(--bg-secondary); }
+  .side-item.active { background: var(--bg-elevated); color: var(--text-primary); font-weight: 500; }
+  .side-item .ic { width: 15px; height: 15px; opacity: .85; }
+
+  /* ---- content ---- */
+  .content { flex: 1; overflow-y: auto; padding: 20px 22px; }
+  .section-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .section-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
+  .section-head .count { font-size: 11px; color: var(--text-tertiary); }
+  .section-sub { font-size: 12px; color: var(--text-secondary); margin: 0 0 12px; line-height: 1.5; }
+  .divider { height: 1px; background: var(--border-soft); margin: 22px 0; }
+
+  /* ---- curated rows ---- */
+  .row {
+    display: flex; align-items: center; gap: 12px;
+    padding: 12px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    margin-bottom: 8px;
+  }
+  .logo {
+    width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--bg-elevated); border: 1px solid var(--border-soft);
+  }
+  .logo svg { width: 19px; height: 19px; display: block; }
+  .row-main { flex: 1; min-width: 0; }
+  .row-title { font-size: 13.5px; font-weight: 500; display: flex; align-items: center; gap: 8px; }
+  .row-sub { font-size: 11.5px; color: var(--text-secondary); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+  .key { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 10.5px; color: var(--text-tertiary); }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+  .dot.ok { background: var(--success); }
+  .row-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10px; font-weight: 500;
+    padding: 2px 7px; border-radius: 999px;
+    background: rgba(129,140,248,.12);
+    color: var(--shield);
+    border: 1px solid rgba(129,140,248,.22);
+  }
+  .badge svg { width: 11px; height: 11px; }
+
+  /* ---- buttons ---- */
+  .btn {
+    font-size: 12px; font-weight: 500; padding: 6px 12px;
+    border-radius: 7px; border: 1px solid var(--border);
+    background: var(--bg-elevated); color: var(--text-primary);
+    cursor: default;
+  }
+  .btn:hover { background: var(--bg-hover); }
+  .btn.ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  /* ---- nested github setting ---- */
+  .nested {
+    margin: -2px 0 8px 46px;
+    padding: 9px 12px;
+    background: var(--bg-page);
+    border: 1px solid var(--border-soft);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .nested-label { font-size: 12px; color: var(--text-secondary); }
+  .toggle {
+    width: 32px; height: 18px; border-radius: 999px; background: var(--accent);
+    position: relative; flex-shrink: 0;
+  }
+  .toggle::after {
+    content: ""; position: absolute; top: 2px; right: 2px;
+    width: 14px; height: 14px; border-radius: 50%; background: #fff;
+  }
+
+  /* ---- mcp cards ---- */
+  .mcp-card {
+    display: flex; align-items: center; gap: 12px;
+    padding: 11px 14px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-soft);
+    border-radius: 10px;
+    margin-bottom: 8px;
+  }
+  .status { font-size: 11px; display: flex; align-items: center; gap: 5px; }
+  .status.loaded { color: var(--success); }
+  .add-server {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    padding: 11px; margin-top: 4px;
+    border: 1px dashed var(--border); border-radius: 10px;
+    color: var(--text-secondary); font-size: 12.5px; cursor: default;
+  }
+  .add-server:hover { background: var(--bg-secondary); }
+  .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 10px; line-height: 1.5; }
+  .hint code { font-family: ui-monospace, Menlo, monospace; background: var(--bg-elevated); padding: 1px 5px; border-radius: 4px; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+  <div class="caption">Mockup · Settings → Integrations (proposed) · docs/201</div>
+
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Settings</div>
+      <div class="x">✕</div>
+    </div>
+
+    <div class="modal-body">
+      <!-- sidebar -->
+      <nav class="sidebar">
+        <div class="side-group">Agent</div>
+        <div class="side-item"><span class="ic">◆</span>Claude</div>
+        <div class="side-group">General</div>
+        <div class="side-item active">
+          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
+          Integrations
+        </div>
+        <div class="side-item"><span class="ic">⎇</span>Git</div>
+        <div class="side-item"><span class="ic">≣</span>Instructions</div>
+        <div class="side-item"><span class="ic">✦</span>Skills</div>
+        <div class="side-item"><span class="ic">⌨</span>Keyboard</div>
+        <div class="side-item"><span class="ic">♪</span>Voice</div>
+        <div class="side-item"><span class="ic">⚙</span>Advanced</div>
+      </nav>
+
+      <!-- content -->
+      <div class="content">
+
+        <!-- ===== Section 1: Connected services ===== -->
+        <div class="section-head">
+          <h3>Connected services</h3>
+          <span class="count">· managed by ShipIt</span>
+        </div>
+        <p class="section-sub">First-party integrations. Credentials are brokered by ShipIt and never enter the session container; their data renders inline in chat.</p>
+
+        <!-- GitHub -->
+        <div class="row">
+          <div class="logo">
+            <svg viewBox="0 0 24 24" fill="#ececee"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.6v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17 4.6 18 4.9 18 4.9c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
+          </div>
+          <div class="row-main">
+            <div class="row-title">
+              GitHub
+              <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+            </div>
+            <div class="row-sub"><span class="dot ok"></span>Connected as <strong style="color:var(--text-primary);font-weight:500">nikz</strong></div>
+          </div>
+          <div class="row-actions">
+            <button class="btn ghost">Disconnect</button>
+          </div>
+        </div>
+        <div class="nested">
+          <span class="nested-label">Auto-create a pull request after every meaningful turn</span>
+          <div class="toggle"></div>
+        </div>
+
+        <!-- Linear -->
+        <div class="row">
+          <div class="logo">
+            <svg viewBox="0 0 100 100" fill="#5e6ad2"><path d="M2 60c0-1 1-2 2-1l36 36c1 1 0 2-1 2A50 50 0 0 1 2 60Zm-1-14c0-.6.2-1 .6-1.4L43 86.4c.4.4.8.6 1.4.6a50 50 0 0 1-9-2.3L3 52.6A50 50 0 0 1 1 46Zm3-15.6c.2-.5.8-.7 1.2-.3l60.7 60.7c.4.4.2 1-.3 1.2a50 50 0 0 1-5.5 1.9L2.5 35.9A50 50 0 0 1 4 30.4ZM10 19.4 80.6 90c12.4-9 20.4-23.7 20.4-40.2C101 22.6 78.4 0 50.2 0 33.7 0 19 8 10 20.4Z"/></svg>
+          </div>
+          <div class="row-main">
+            <div class="row-title">
+              Linear
+              <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+            </div>
+            <div class="row-sub"><span class="dot ok"></span>Core <span class="key">SHI</span> · issues render inline</div>
+          </div>
+          <div class="row-actions">
+            <button class="btn">Change team</button>
+            <button class="btn ghost">Disconnect</button>
+          </div>
+        </div>
+
+        <p class="hint">More first-party integrations (Jira, Sentry, …) land here — not as "add your own."</p>
+
+        <div class="divider"></div>
+
+        <!-- ===== Section 2: MCP servers ===== -->
+        <div class="section-head">
+          <h3>MCP servers</h3>
+          <span class="count">· bring your own tools</span>
+        </div>
+        <p class="section-sub">Extend the agent with your own tools via the Model Context Protocol. These run with the credentials you provide.</p>
+
+        <!-- Notion OAuth -->
+        <div class="mcp-card">
+          <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="18" height="18" rx="3" fill="#ececee"/><path d="M8 8.5 8.4 8l7.6.5v8l-.8.6-6.8-.4V9l1.2.2 4.6.3v6" stroke="#111" stroke-width="1.1" fill="none"/></svg>
+          </div>
+          <div class="row-main">
+            <div class="row-title">Notion</div>
+            <div class="row-sub"><span class="status loaded">● loaded</span> · connected via OAuth</div>
+          </div>
+          <div class="row-actions">
+            <button class="btn ghost">Disconnect</button>
+          </div>
+        </div>
+
+        <!-- custom server -->
+        <div class="mcp-card">
+          <div class="logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="var(--text-secondary)" stroke-width="2"><path d="M8 6 4 12l4 6"/><path d="m16 6 4 6-4 6"/></svg>
+          </div>
+          <div class="row-main">
+            <div class="row-title">postgres <span class="key" style="font-size:10px">stdio</span></div>
+            <div class="row-sub"><span class="status loaded">● loaded</span> · npx @modelcontextprotocol/server-postgres</div>
+          </div>
+          <div class="row-actions">
+            <button class="btn ghost">Edit</button>
+          </div>
+        </div>
+
+        <div class="add-server">＋ Add MCP server &nbsp;·&nbsp; Connect with Notion</div>
+
+        <p class="hint">The tiering does the work: curated services up top are brokered out of the container; MCP servers down here run with the credentials you supply. No "looking for Linear?" signpost needed — the right path is the obvious one.</p>
+
+      </div>
+    </div>
+  </div>
+</body>
+</html>
