@@ -384,9 +384,23 @@ the pinned agent's already-present credentials and provisions nothing).
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
   per-turn cap above is what bounds an adversarial sub-agent's fan-out).
-- **Usage attribution.** `UsageManager` records the sub-agent's cost against
-  `subAgentId`, not the runner's pinned `agentId`. The per-session usage UI
-  surfaces the breakdown as a separate row per agent.
+- **Usage attribution.** `UsageManager` records the sub-agent's cost **and full
+  token breakdown** (input/output/cache/context) against `subAgentId`, not the
+  runner's pinned `agentId`. The token breakdown is carried back from the spawn
+  via the new token fields on `SubAgentRunResult` (`sub-agent-run.ts`) — without
+  them only the (often $0, for a subscription backend like Codex) cost landed
+  and every token was dropped. Recording is gated on *any* telemetry (cost,
+  duration, or tokens), not cost alone, so a $0 Codex consult still records its
+  tokens. After recording, `runSubAgent` emits a `usage_update` so the live bill
+  (cost pill + cumulative tokens) refreshes the instant the consult finishes —
+  the normal turn path emits this from `agent-listeners`, but a consult runs
+  outside that path. That `usage_update` is flagged `subAgent: true` so the
+  client rolls it into the bill/cumulative totals **without moving the context
+  dial** — the dial tracks the *pinned* agent's window, and a one-shot consult
+  has its own, smaller one. For the same reason no `turn_usage_update` is emitted
+  for a consult, and `getPerTurnUsage` (the dial's per-turn series) excludes
+  rows with a `sub_agent_id`. The per-session usage UI surfaces the breakdown as
+  a separate row per agent.
 - **Visible attribution in chat.** The primary's resulting chat message is
   naturally attributed to the primary (it's the primary speaking). The
   orchestrator additionally emits a small inline card — "Consulted Codex" /
@@ -475,8 +489,10 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   prompt })`. Checks the setting + auth + pin + recursion depth + per-turn
   cap; resolves the sub-agent's provider-account route; provisions creds (§4)
   for a cross-provider spawn; calls worker `/agent/spawn`; on completion runs
-  token-sync-back and wipes creds in `finally`; returns `{ status, text,
-  truncated, durationMs, costUsd }`. Tracks each in-flight spawn so it can
+  token-sync-back and wipes creds in `finally`; records usage + emits the live
+  bill refresh; returns `{ status, text, truncated, durationMs, costUsd,
+  inputTokens?, outputTokens?, cacheReadTokens?, cacheCreateTokens?,
+  contextTokens? }`. Tracks each in-flight spawn so it can
   SIGTERM the subprocess on cancel/timeout.
 - **`session-worker.ts`** — new `POST /agent/spawn` and `POST /agent/cancel`
   endpoints. The handler instantiates the appropriate per-agent adapter

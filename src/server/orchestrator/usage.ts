@@ -142,6 +142,12 @@ export class UsageManager {
     const rows = this.stmtSessionTurns.all(sessionId) as UsageRow[];
     const out: TurnUsage[] = [];
     for (const r of rows) {
+      // The dial tracks the PINNED agent's per-turn context occupancy; a
+      // sub-agent consult (docs/144) has its own, smaller window and must not
+      // appear in the series the dial reads its "current context" from. (Before
+      // these turns carried tokens they were already excluded by the token gate
+      // below; this keeps that behavior now that they do.)
+      if (r.sub_agent_id !== null) continue;
       // The dial needs at least one of input/output tokens to be useful.
       if (r.input_tokens === null && r.output_tokens === null) continue;
       const turn: TurnUsage = {

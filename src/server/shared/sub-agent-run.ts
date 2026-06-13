@@ -49,6 +49,19 @@ export interface SubAgentRunResult {
   truncated: boolean;
   durationMs: number;
   costUsd: number;
+  /**
+   * Turn-wide token totals from the sub-agent's `agent_result` (docs/144 usage
+   * attribution). Carried so the consult's usage is recorded with the same
+   * fidelity as a primary turn — without these the spawn's tokens were dropped
+   * and only its (often $0, for a subscription backend like Codex) cost landed.
+   * Undefined when the backend reported no token telemetry.
+   */
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreateTokens?: number;
+  /** Real context-window occupancy at the sub-agent's turn end (last API call). */
+  contextTokens?: number;
   /** Backend-reported error message, when status is "error". */
   error?: string;
 }
@@ -107,6 +120,11 @@ export function runAgentToCompletion(
   let lastFullText = "";
   let costUsd = 0;
   let reportedDurationMs: number | undefined;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let cacheReadTokens: number | undefined;
+  let cacheCreateTokens: number | undefined;
+  let contextTokens: number | undefined;
   let resultStatus: "success" | "error" | undefined;
   let resultError: string | undefined;
 
@@ -141,6 +159,11 @@ export function runAgentToCompletion(
           truncated,
           durationMs: reportedDurationMs ?? Math.max(0, Date.now() - startedAtMs),
           costUsd,
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+          ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+          ...(cacheCreateTokens !== undefined ? { cacheCreateTokens } : {}),
+          ...(contextTokens !== undefined ? { contextTokens } : {}),
           ...(resultError !== undefined ? { error: resultError } : {}),
         });
       };
@@ -167,6 +190,13 @@ export function runAgentToCompletion(
         } else if (event.type === "agent_result") {
           if (event.cost?.totalUsd) costUsd = event.cost.totalUsd;
           if (typeof event.durationMs === "number") reportedDurationMs = event.durationMs;
+          if (event.tokens) {
+            inputTokens = event.tokens.input;
+            outputTokens = event.tokens.output;
+            if (event.tokens.cacheRead !== undefined) cacheReadTokens = event.tokens.cacheRead;
+            if (event.tokens.cacheWrite !== undefined) cacheCreateTokens = event.tokens.cacheWrite;
+          }
+          if (typeof event.contextTokens === "number") contextTokens = event.contextTokens;
           resultStatus = event.status;
           if (event.error) resultError = event.error;
         }

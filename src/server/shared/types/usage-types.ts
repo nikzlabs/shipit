@@ -102,6 +102,16 @@ export interface WsUsageUpdate {
   lastTurnOutputTokens?: number;
   cumulativeInputTokens?: number;
   cumulativeOutputTokens?: number;
+  /**
+   * True when this update is attributed to a sub-agent consult (docs/144), not
+   * the pinned agent's own turn. The consult's cost and tokens roll into the
+   * session bill and cumulative-token totals, but it must NOT move the context
+   * dial — the dial tracks the PINNED agent's window occupancy, and a one-shot
+   * consult has its own, smaller context. The client skips `setContextTokens`
+   * for these. No accompanying `turn_usage_update` is emitted for the same
+   * reason (a consult is kept out of the per-turn dial series).
+   */
+  subAgent?: boolean;
 }
 
 /**

@@ -47,6 +47,40 @@ describe("runAgentToCompletion", () => {
     expect(res.truncated).toBe(false);
   });
 
+  it("captures the token breakdown from agent_result (docs/144 usage attribution)", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", assistant("done"));
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "s",
+      cost: { totalUsd: 0.05 },
+      durationMs: 3000,
+      tokens: { input: 1200, output: 340, cacheRead: 5000, cacheWrite: 80 },
+      contextTokens: 6200,
+    });
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.inputTokens).toBe(1200);
+    expect(res.outputTokens).toBe(340);
+    expect(res.cacheReadTokens).toBe(5000);
+    expect(res.cacheCreateTokens).toBe(80);
+    expect(res.contextTokens).toBe(6200);
+  });
+
+  it("leaves token fields undefined when the backend reports no token telemetry", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", assistant("done"));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.inputTokens).toBeUndefined();
+    expect(res.outputTokens).toBeUndefined();
+    expect(res.contextTokens).toBeUndefined();
+  });
+
   it("prefers the stream-completion text over deltas (Codex shape)", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
