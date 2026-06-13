@@ -45,7 +45,7 @@ Supported subcommands:
   shipit session help
 
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
-  shipit issue view      <pointer> [--tracker github|linear] [--json]
+  shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
   shipit issue list      [--tracker github|linear] [--state open|closed|all] [--json]
   shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
@@ -1441,7 +1441,7 @@ function validatePriority(
 async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker" },
-    booleans: { "--json": "json" },
+    booleans: { "--json": "json", "--comments": "comments" },
   });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for shipit issue view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
@@ -1496,12 +1496,29 @@ async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   if (!issue) {
     fail(deps.io, `Issue not found: ${ref.identifier}`, 1);
   }
+
+  // `--comments` pulls the thread over a second brokered read (SHI-137). The
+  // `view` leg already emitted the jump-to-issue card; this read adds none.
+  let comments: Record<string, unknown>[] | undefined;
+  if (parsed.booleans.has("comments")) {
+    const cres = await deps.call("GET", `/agent-ops/issue/comments${qs}`, undefined, deps.env);
+    if (cres.status < 200 || cres.status >= 300) {
+      fail(deps.io, formatError(cres, "Failed to read issue comments"), 1);
+    }
+    comments = (cres.body.comments as Record<string, unknown>[] | undefined) ?? [];
+  }
+
   if (parsed.booleans.has("json")) {
-    deps.io.stdout(`${JSON.stringify(issue)}\n`);
+    // Embed comments on the issue object when requested so the shape stays a
+    // superset of plain `--json` (existing fields untouched, `comments` added).
+    const payload = comments ? { ...issue, comments } : issue;
+    deps.io.stdout(`${JSON.stringify(payload)}\n`);
     deps.io.exit(0);
     return;
   }
-  success(deps.io, renderIssue(issue));
+  let text = renderIssue(issue);
+  if (comments) text += `\n\n${renderComments(comments)}`;
+  success(deps.io, text);
 }
 
 async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
@@ -1567,6 +1584,24 @@ function renderIssue(issue: Record<string, unknown>): string {
   const description = asString(issue.description);
   if (description.trim()) lines.push("", description);
   return lines.join("\n");
+}
+
+/**
+ * Render an issue's comment thread for `shipit issue view --comments` (SHI-137).
+ * Oldest-first (the order the orchestrator returns), one block per comment with
+ * an author · timestamp header. Comment bodies are attacker-controllable data,
+ * same as the issue body — they are printed verbatim, never interpreted.
+ */
+function renderComments(comments: Record<string, unknown>[]): string {
+  if (comments.length === 0) return "comments:  (none)";
+  const blocks = comments.map((c) => {
+    const author = c.author as Record<string, unknown> | undefined;
+    const who = (author && asString(author.name)) || "(unknown)";
+    const when = asString(c.createdAt);
+    const head = when ? `${who} · ${when}` : who;
+    return `— ${head}\n${asString(c.body)}`;
+  });
+  return [`comments (${comments.length}):`, ...blocks].join("\n\n");
 }
 
 /** Pull the display label off an issue's priority object, defaulting gracefully. */

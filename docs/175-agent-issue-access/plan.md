@@ -222,16 +222,39 @@ Two things this doc *does* guarantee, which that doc builds on:
 - **Injection hardening** — designed separately in docs/176.
 - **Cross-repo GitHub reads** (`--repo`) — kept rejected for parity with the PR
   shim.
-- **Issue comments / timeline** — `view` returns the issue body; threaded
-  comments are a later enrichment (and interact with docs/176, since comments are
-  the lowest-trust content).
+- ~~**Issue comments / timeline**~~ — **implemented** in the SHI-137 follow-up
+  below. (Originally deferred: `view` returned only the issue body.)
+
+## Reading comments — `view --comments` (SHI-137)
+
+The agent could read an issue *body* and *post* comments, but the comment thread
+itself was unreadable from a container — an asymmetry (write-but-not-read) that
+left the agent flying blind when asked to "address the review comment" or read
+its own prior notes. The browser-facing `GET /api/issue/comments` is correctly
+blocked for containers by the SHI-129 trust boundary, so the fix is a narrow,
+brokered, read-only callback that mirrors the existing `view`/`list` reads:
+
+- **CLI:** `shipit issue view <pointer> --comments`. The flag triggers a second
+  brokered read after the issue fetch. Text mode prints the thread (author ·
+  timestamp + body, oldest-first) after the issue; `--json` embeds a `comments`
+  array on the issue object (a superset of plain `--json`).
+- **Worker relay:** `GET /agent-ops/issue/comments?tracker=&id=` →
+  `/issue/comments` (the worker injects the trusted SESSION_ID).
+- **Orchestrator:** `GET /api/sessions/:id/issue/comments` —
+  `containerAccessible: true`, own-session scoped, backed by the already-present
+  `listIssueCommentsForTracker`. It emits **no** transcript card: the `view` leg
+  already surfaced the jump-to-issue card, so a second would just duplicate it.
+- **Boundary:** read-only and brokered — the tracker token never enters the
+  container, and the SHI-129 *mutation* boundary is untouched. Comment content is
+  attacker-controllable (docs/176), same caveat as issue bodies — printed
+  verbatim, never interpreted.
 
 ## Key files
 
 - `src/server/session/agent-shim/shipit.ts` — the `shipit` shim; add `issue`.
 - `src/server/session/agent-ops-routes.ts` — worker relay (`/agent-ops/*`).
 - `src/server/orchestrator/api-routes-issues.ts` — issue routes + `resolveGitHubContext`.
-- `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, new `getIssueForTracker`.
+- `src/server/orchestrator/services/issues.ts` — `listIssuesForTracker`, `getIssueForTracker`, `listIssueCommentsForTracker` (reused for `--comments`, SHI-137).
 - `src/server/orchestrator/trackers/` — `Tracker` interface, registry, GitHub + Linear adapters (**reused unchanged**).
 - `src/server/shared/issue-ref.ts` — shared pointer→tracker parser (moved from `client/utils/`).
 
