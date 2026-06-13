@@ -39,22 +39,47 @@ on the child because PR-terminal detection is keyed by the child's session id, s
 the poller has the child in scope at fire time.
 
 ```
-armed ──merge observed──▶ merge-observed ──wake-turn enqueued──▶ delivered   (terminal)
-  │
-  └──PR closed unmerged──▶ closed-unmerged                                    (terminal)
+armed ──merge observed──▶ merge-observed ──wake-turn RAN──▶ delivered   (terminal)
+  │                              ▲                                │
+  │                              └──────────restart re-fires──────┘
+  └──PR closed unmerged──▶ closed-unmerged                                (terminal)
 ```
 
 - **`armed`** — registered, waiting. The child's PR need not exist yet.
-- **`merge-observed`** — the poller saw the merge and surfaced the card, but the
-  actionable wake-turn hasn't been enqueued yet. A transient step: if enqueue
-  can't complete (parent container boot failure), the watch stays here and a
-  later poll / the startup reconcile retries it.
-- **`delivered`** — the merge wake-turn was enqueued. Terminal, **fire-once**.
+- **`merge-observed`** — the poller saw the merge and surfaced the card, and the
+  actionable wake-turn has been delivered **but has not yet run to completion**.
+  This is the recoverable in-flight state: the watch stays here while the turn is
+  merely enqueued (parent mid-turn) or still executing, and while a parent
+  container is being (re)booted. A poll / the startup reconcile re-fires from here
+  (the card-surface guard makes the re-entry skip the duplicate card and just
+  retry the wake-turn).
+- **`delivered`** — the merge wake-turn has **actually run to completion** (not
+  merely been enqueued). Terminal, **fire-once**.
 - **`closed-unmerged`** — the PR closed without merging; a *distinct* wake-turn
   was enqueued so the parent doesn't proceed as if the work shipped. Terminal.
 
 The `delivered` / `closed-unmerged` terminal states are the fire-once guard: a
 re-poll or a restart re-observation is a no-op.
+
+**Why `delivered` means "ran", not "enqueued" (the docs/196 restart fix).** The
+dispatched turn lives only in the parent runner's **in-memory** queue until it
+executes. If the watch were stamped `delivered` the instant the turn was
+*enqueued* — as the original code did — an orchestrator restart (or a parent
+idle-reap) between enqueue and execution would lose the queued turn while the
+persisted watch already read `delivered`. `reconcilePending` only re-fires
+`armed` / `merge-observed` watches, so a prematurely-`delivered` watch is skipped
+forever: the card persists and rehydrates on reload, but the parent agent never
+runs ("notification visually there, agent didn't start"). The fix advances to
+`delivered` **only from the wake-turn's `onTurnComplete`** (the same
+turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`):
+- **idle parent** → `dispatch` starts the turn now → it completes → `delivered`.
+- **mid-turn parent** → `dispatch` enqueues (never preempting) → no completion
+  signal (`onTurnComplete` is dispatch-only, not carried through the queue) → the
+  watch stays `merge-observed` → `reconcilePending` re-delivers after the next
+  restart.
+
+A restart at any point before the turn completes therefore leaves the watch
+recoverable, and re-delivery never surfaces a second card.
 
 ## Correctness requirements (and how they're met)
 
@@ -131,10 +156,15 @@ PR poller detects terminal PR state (verifyMissingPr)
 ## Tests
 
 - `merge-watch.test.ts` — state machine: fire-once, idle/busy parent (never
-  preempt), closed-unmerged, parent-archived drop, reconcile, checkAndFireNow.
+  preempt), closed-unmerged, parent-archived drop, reconcile, checkAndFireNow,
+  and the restart fix — `delivered` is reached only once the wake-turn runs to
+  completion (not when enqueued), and a busy/enqueued watch stays
+  `merge-observed` so reconcile re-delivers without a second card.
 - `pr-status-poller.test.ts` — `onPrTerminalState` fires on merged AND closed.
 - `integration_tests/session-notify-on-merge.test.ts` — register (happy /
-  cross-tenancy 404) → merge → persisted parent card + queued wake-turn →
-  fire-once → closed-unmerged, through a fully-wired `buildApp`.
+  cross-tenancy 404) → merge → persisted parent card + dispatched wake-turn →
+  `delivered` only after the real turn completes → fire-once → closed-unmerged,
+  plus a restart-before-the-turn-runs case recovered by `reconcilePending`
+  (no second card), through a fully-wired `buildApp`.
 - `chat-history.test.ts` + `visual-elements.test.ts` — the at-rest-card guard
   contract (round-trip + empty-text carrier).

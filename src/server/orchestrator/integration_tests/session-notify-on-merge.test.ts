@@ -61,12 +61,14 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
   let repoStore: RepoStore;
   let dbManager: DatabaseManager;
   let origGitTerminalPrompt: string | undefined;
+  let spawnedAgents: FakeClaudeProcess[];
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-notify-merge-"));
     origGitTerminalPrompt = process.env.GIT_TERMINAL_PROMPT;
     process.env.GIT_TERMINAL_PROMPT = "0";
+    spawnedAgents = [];
 
     sessionManager = new SessionManager(dbManager);
     repoStore = new RepoStore(dbManager);
@@ -82,7 +84,11 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       repoStore,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
-      agentFactory: () => new FakeClaudeProcess() as never,
+      agentFactory: () => {
+        const a = new FakeClaudeProcess();
+        spawnedAgents.push(a);
+        return a as never;
+      },
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -152,7 +158,7 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
     expect(sessionManager.getMergeWatch(strangerChild)).toBeUndefined();
   });
 
-  it("merged: surfaces the parent card + enqueues the wake-turn, marks delivered", { timeout: 15_000 }, async () => {
+  it("merged: surfaces the parent card + dispatches the wake-turn, marks delivered only once it runs", { timeout: 15_000 }, async () => {
     const parentId = await createParent();
     const childId = await spawnChild(parentId);
     await armWatch(parentId, childId);
@@ -167,10 +173,9 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       mergeSha: "deadbeefcafe1234",
     });
 
-    expect(sessionManager.getMergeWatch(childId)?.state).toBe("delivered");
+    // The card lands on the parent immediately; the wake-turn is dispatched into
+    // the parent's real runner.
     expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
-
-    // The wake-turn was dispatched into the parent's real runner (started or queued).
     await waitFor(
       () => {
         const r = app.runnerRegistry.get(parentId);
@@ -179,6 +184,96 @@ describe("Integration: notify-on-merge watch (docs/196)", () => {
       10_000,
       "parent wake-turn dispatched",
     );
+
+    // Crucially, the watch is NOT yet `delivered` — the turn has only been
+    // dispatched, not run. This is the window the docs/196 fix protects: a
+    // restart here must leave the watch recoverable, so it stays `merge-observed`.
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
+
+    // Drive the dispatched wake-turn to completion through the real
+    // turn-executor; only its `onTurnComplete` advances the watch to `delivered`.
+    await waitFor(
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      10_000,
+      "wake-turn agent started",
+    );
+    spawnedAgents.find((a) => a.lastPrompt?.includes("MERGED"))!.finish();
+    await waitFor(
+      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
+      10_000,
+      "watch delivered after wake-turn completion",
+    );
+
+    // Delivery is fire-once: the card was surfaced exactly once.
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
+  });
+
+  it("merged: a restart before the wake-turn runs is recovered by reconcile (no second card)", { timeout: 15_000 }, async () => {
+    const parentId = await createParent();
+    const childId = await spawnChild(parentId);
+    await armWatch(parentId, childId);
+
+    const info = {
+      sessionId: childId,
+      outcome: "merged" as const,
+      prNumber: 7,
+      prUrl: "https://github.com/owner/notify-on-merge-test/pull/7",
+      prTitle: "Foundation",
+      branch: sessionManager.get(childId)!.branch!,
+      mergeSha: "deadbeefcafe1234",
+    };
+
+    // Observe the merge: card surfaced + wake-turn dispatched, but we never let
+    // it complete — this models the orchestrator dying before the turn runs.
+    await app.mergeWatchManager!.handleChildPrTerminal(info);
+    await waitFor(
+      () => spawnedAgents.some((a) => a.runCalled && a.lastPrompt?.includes("MERGED")),
+      10_000,
+      "first wake-turn agent started",
+    );
+    expect(sessionManager.getMergeWatch(childId)?.state).toBe("merge-observed");
+    const firstWakeAgents = spawnedAgents.filter((a) => a.lastPrompt?.includes("MERGED")).length;
+    expect(firstWakeAgents).toBe(1);
+
+    // Simulate the restart: tear the parent runner down (the in-memory turn is
+    // gone), then re-derive from the persisted PR snapshot as startup does.
+    app.runnerRegistry.dispose(parentId, { force: true });
+    app.mergeWatchManager!.setPrStatusLookup((id) =>
+      id === childId
+        ? ({
+            sessionId: childId,
+            prNumber: 7,
+            prUrl: info.prUrl,
+            prTitle: "Foundation",
+            prBody: "",
+            prState: "merged",
+            baseBranch: "main",
+            headBranch: info.branch,
+            insertions: 1,
+            deletions: 0,
+            checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+            mergeable: "unknown",
+            reviewDecision: "none",
+            autoMergeEnabled: false,
+          } as never)
+        : undefined,
+    );
+    await app.mergeWatchManager!.reconcilePending();
+
+    // Re-delivered (a second wake-turn agent), driven to completion → delivered,
+    // and still exactly ONE card on the parent.
+    await waitFor(
+      () => spawnedAgents.filter((a) => a.runCalled && a.lastPrompt?.includes("MERGED")).length >= 2,
+      10_000,
+      "wake-turn re-dispatched after restart",
+    );
+    [...spawnedAgents].reverse().find((a) => a.runCalled && a.lastPrompt?.includes("MERGED"))!.finish();
+    await waitFor(
+      () => sessionManager.getMergeWatch(childId)?.state === "delivered",
+      10_000,
+      "watch delivered after reconcile re-delivery",
+    );
+    expect(await parentCardOutcomes(parentId)).toEqual(["merged"]);
   });
 
   it("is fire-once: a second terminal observation adds no second card", { timeout: 15_000 }, async () => {
