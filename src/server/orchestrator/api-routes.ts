@@ -35,6 +35,7 @@ import type { ModelRunner } from "./services/redaction.js";
 
 import { ServiceError } from "./services/index.js";
 
+import { registerContainerOriginGuard } from "./api-container-guard.js";
 import { registerBootstrapRoutes } from "./api-routes-bootstrap.js";
 import { registerContainerRoutes } from "./api-routes-container.js";
 import { registerHostRoutes } from "./api-routes-host.js";
@@ -279,6 +280,11 @@ export async function registerApiRoutes(
     }
     done();
   });
+
+  // ---- Container ↔ browser trust boundary (docs/201 / SHI-129) ----
+  // Registered before the domain route modules so its `onRoute` hook observes
+  // their `containerAccessible` opt-ins and its `onRequest` hook gates them.
+  registerContainerOriginGuard(app, { containerManager: deps.containerManager });
 
   // Single shared claim-session service for every surface that mints a
   // repo-backed session (home-screen claim, agent spawn, skill-install-as-

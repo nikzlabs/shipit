@@ -593,6 +593,7 @@ export async function registerSessionRoutes(
     };
   }>(
     "/api/sessions/:parentId/spawn",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const body = request.body ?? {};
       // Effective agent id — same precedence the spawn service uses
@@ -833,6 +834,7 @@ export async function registerSessionRoutes(
     Querystring: { turn?: string };
   }>(
     "/api/sessions/:parentId/children",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const parent = sessionManager.get(request.params.parentId);
       if (!parent) {
@@ -868,6 +870,7 @@ export async function registerSessionRoutes(
     Querystring: { wait?: string; timeout?: string; segment?: string };
   }>(
     "/api/sessions/:parentId/children/:childId",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         if (request.query.wait === "true") {
@@ -922,6 +925,7 @@ export async function registerSessionRoutes(
     Body: { text?: string };
   }>(
     "/api/sessions/:parentId/children/:childId/message",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const result = await sendChildMessage(
@@ -955,6 +959,7 @@ export async function registerSessionRoutes(
     Params: { parentId: string; childId: string };
   }>(
     "/api/sessions/:parentId/children/:childId/archive",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         assertArchivableChild(
@@ -993,6 +998,7 @@ export async function registerSessionRoutes(
     Params: { parentId: string; childId: string };
   }>(
     "/api/sessions/:parentId/children/:childId/notify-on-merge",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const result = registerMergeWatch(

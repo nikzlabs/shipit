@@ -197,6 +197,7 @@ export async function registerVoiceRoutes(app: FastifyInstance, deps: ApiDeps): 
     Body: { summary?: string; needsAttention?: boolean; context?: unknown };
   }>(
     "/api/sessions/:sessionId/voice-note",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { sessionId } = request.params;
       const summary = typeof request.body?.summary === "string" ? request.body.summary.trim() : "";

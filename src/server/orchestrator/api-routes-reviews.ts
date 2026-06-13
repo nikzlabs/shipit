@@ -271,6 +271,7 @@ export async function registerReviewRoutes(
     Body: { filePath?: string; comments?: unknown[] };
   }>(
     "/api/sessions/:sessionId/review-submit",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { sessionId } = request.params;
       const filePath = request.body?.filePath;

@@ -349,6 +349,7 @@ export async function registerIssueRoutes(
   // GET /api/sessions/:id/issue/view?tracker=&id= — fetch a single issue.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string; id?: string } }>(
     "/api/sessions/:id/issue/view",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!sessionManager.get(request.params.id)) {
         reply.code(404).send({ error: "Session not found" });
@@ -387,6 +388,7 @@ export async function registerIssueRoutes(
   //     "open PLUS done" and would over-return open issues for a `closed` query.
   app.get<{ Params: { id: string }; Querystring: { tracker?: string; state?: string } }>(
     "/api/sessions/:id/issue/list",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!sessionManager.get(request.params.id)) {
         reply.code(404).send({ error: "Session not found" });
@@ -610,6 +612,7 @@ export async function registerIssueRoutes(
     Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string };
   }>(
     "/api/sessions/:sessionId/issue/create",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { tracker, title, body, labels, priority } = request.body ?? {};
       if (!tracker || !title?.trim()) {
@@ -628,6 +631,7 @@ export async function registerIssueRoutes(
   // POST /api/sessions/:sessionId/issue/comment { tracker, id, body }
   app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; body?: string } }>(
     "/api/sessions/:sessionId/issue/comment",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { tracker, id, body } = request.body ?? {};
       if (!tracker || !id || !body?.trim()) {
@@ -647,6 +651,7 @@ export async function registerIssueRoutes(
     Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string };
   }>(
     "/api/sessions/:sessionId/issue/edit",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { tracker, id, title, body, labels, priority } = request.body ?? {};
       const hasLabels = labels !== undefined && labels.length > 0;
@@ -669,6 +674,7 @@ export async function registerIssueRoutes(
   // POST /api/sessions/:sessionId/issue/status { tracker, id, status }
   app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; status?: string } }>(
     "/api/sessions/:sessionId/issue/status",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { tracker, id, status } = request.body ?? {};
       if (!tracker || !id || !status?.trim()) {
@@ -684,6 +690,7 @@ export async function registerIssueRoutes(
   // POST /api/sessions/:sessionId/issue/assign { tracker, id, assignee | null }
   app.post<{ Params: { sessionId: string }; Body: { tracker?: string; id?: string; assignee?: string | null } }>(
     "/api/sessions/:sessionId/issue/assign",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const { tracker, id } = request.body ?? {};
       // `assignee: null` is meaningful (--none → unassign); only undefined is missing.

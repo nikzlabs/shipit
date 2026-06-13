@@ -29,6 +29,7 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
     Body: { title?: string; body?: string };
   }>(
     "/api/sessions/:sessionId/bug-report",
+    { config: { containerAccessible: true } },
     async (request, reply: FastifyReply) => {
       const { sessionId } = request.params;
       const title = typeof request.body?.title === "string" ? request.body.title.trim() : "";
