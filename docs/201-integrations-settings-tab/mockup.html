@@ -43,14 +43,14 @@
 
   /* ---- modal shell ---- */
   .modal {
-    width: 720px; max-width: 100%;
+    width: 480px; max-width: 100%;
     background: var(--bg-modal);
     border: 1px solid var(--border);
     border-radius: 12px;
     box-shadow: 0 24px 70px rgba(0,0,0,.55);
     display: flex; flex-direction: column;
     overflow: hidden;
-    height: 600px;
+    height: 640px;
   }
   .modal-header {
     display: flex; align-items: center; justify-content: space-between;
@@ -60,28 +60,6 @@
   .modal-title { font-size: 17px; font-weight: 600; }
   .x { color: var(--text-tertiary); cursor: default; font-size: 18px; line-height: 1; }
   .modal-body { display: flex; flex: 1; min-height: 0; }
-
-  /* ---- sidebar ---- */
-  .sidebar {
-    width: 168px; flex-shrink: 0;
-    border-right: 1px solid var(--border);
-    padding: 8px;
-    display: flex; flex-direction: column; gap: 1px;
-    overflow-y: auto;
-  }
-  .side-group {
-    font-size: 10px; letter-spacing: .07em; text-transform: uppercase;
-    color: var(--text-tertiary);
-    padding: 12px 10px 5px;
-  }
-  .side-item {
-    font-size: 13px; color: var(--text-secondary);
-    padding: 7px 10px; border-radius: 7px; cursor: default;
-    display: flex; align-items: center; gap: 8px;
-  }
-  .side-item:hover { background: var(--bg-secondary); }
-  .side-item.active { background: var(--bg-elevated); color: var(--text-primary); font-weight: 500; }
-  .side-item .ic { width: 15px; height: 15px; opacity: .85; }
 
   /* ---- content ---- */
   .content { flex: 1; overflow-y: auto; padding: 20px 22px; }
@@ -177,7 +155,7 @@
 </style>
 </head>
 <body>
-  <div class="caption">Mockup · Settings → Integrations (proposed) · docs/201</div>
+  <div class="caption">Mockup · Integrations tab — content only (mobile-safe) · docs/201</div>
 
   <div class="modal">
     <div class="modal-header">
@@ -186,23 +164,6 @@
     </div>
 
     <div class="modal-body">
-      <!-- sidebar -->
-      <nav class="sidebar">
-        <div class="side-group">Agent</div>
-        <div class="side-item"><span class="ic">◆</span>Claude</div>
-        <div class="side-group">General</div>
-        <div class="side-item active">
-          <svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.5 1.5"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.5-1.5"/></svg>
-          Integrations
-        </div>
-        <div class="side-item"><span class="ic">⎇</span>Git</div>
-        <div class="side-item"><span class="ic">≣</span>Instructions</div>
-        <div class="side-item"><span class="ic">✦</span>Skills</div>
-        <div class="side-item"><span class="ic">⌨</span>Keyboard</div>
-        <div class="side-item"><span class="ic">♪</span>Voice</div>
-        <div class="side-item"><span class="ic">⚙</span>Advanced</div>
-      </nav>
-
       <!-- content -->
       <div class="content">
 
