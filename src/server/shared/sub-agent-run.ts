@@ -62,6 +62,19 @@ export interface SubAgentRunResult {
   cacheCreateTokens?: number;
   /** Real context-window occupancy at the sub-agent's turn end (last API call). */
   contextTokens?: number;
+  /**
+   * Latest subscription rate-limit snapshot the backend pushed during the run
+   * (docs/144). A consult consumes the sub-agent's subscription quota, but its
+   * `agent_rate_limits` events are confined to the one-shot adapter and never
+   * reach the orchestrator's `LimitsRegistry` on their own — so the last one is
+   * carried back here for `runSubAgent` to forward into the right provider,
+   * keeping the limit pill from going stale until the next primary turn.
+   * Undefined when the backend pushed no snapshot during the run.
+   */
+  rateLimits?: {
+    session: { usedPct: number | null; resetAt: string } | null;
+    weekly: { usedPct: number | null; resetAt: string } | null;
+  };
   /** Backend-reported error message, when status is "error". */
   error?: string;
 }
@@ -125,6 +138,7 @@ export function runAgentToCompletion(
   let cacheReadTokens: number | undefined;
   let cacheCreateTokens: number | undefined;
   let contextTokens: number | undefined;
+  let rateLimits: SubAgentRunResult["rateLimits"] | undefined;
   let resultStatus: "success" | "error" | undefined;
   let resultError: string | undefined;
 
@@ -164,6 +178,7 @@ export function runAgentToCompletion(
           ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
           ...(cacheCreateTokens !== undefined ? { cacheCreateTokens } : {}),
           ...(contextTokens !== undefined ? { contextTokens } : {}),
+          ...(rateLimits !== undefined ? { rateLimits } : {}),
           ...(resultError !== undefined ? { error: resultError } : {}),
         });
       };
@@ -199,6 +214,9 @@ export function runAgentToCompletion(
           if (typeof event.contextTokens === "number") contextTokens = event.contextTokens;
           resultStatus = event.status;
           if (event.error) resultError = event.error;
+        } else if (event.type === "agent_rate_limits") {
+          // Last-one-wins: the latest snapshot is the freshest quota reading.
+          rateLimits = { session: event.session, weekly: event.weekly };
         }
       });
 

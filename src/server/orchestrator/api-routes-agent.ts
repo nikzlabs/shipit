@@ -100,6 +100,7 @@ export async function registerAgentRoutes(
             runnerRegistry: deps.runnerRegistry,
             usageManager: deps.usageManager,
             chatHistoryManager: deps.chatHistoryManager,
+            ...(deps.recordAgentRateLimits ? { recordAgentRateLimits: deps.recordAgentRateLimits } : {}),
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
           },
           request.params.id,

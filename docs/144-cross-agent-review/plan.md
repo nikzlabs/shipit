@@ -401,6 +401,17 @@ the pinned agent's already-present credentials and provisions nothing).
   for a consult, and `getPerTurnUsage` (the dial's per-turn series) excludes
   rows with a `sub_agent_id`. The per-session usage UI surfaces the breakdown as
   a separate row per agent.
+- **Subscription-limit attribution.** A consult also draws down the sub-agent's
+  *subscription* quota (a separate signal from the dollar/token bill — the limit
+  pills, fed by `LimitsRegistry`). Both providers are push-only/event-fed, and a
+  spawned agent's `agent_rate_limits` events are confined to the one-shot adapter
+  (`runAgentToCompletion` is layer-agnostic — no registry), so they'd otherwise
+  be dropped and the pill would stay stale until the next *primary* turn. Fixed
+  symmetrically to the token work: `runAgentToCompletion` captures the latest
+  `agent_rate_limits` snapshot (last-one-wins) into `SubAgentRunResult.rateLimits`,
+  which rides the same worker→orchestrator JSON; `runSubAgent` forwards it via a
+  threaded `recordAgentRateLimits(subAgentId, …)` (the same closure the WS turn
+  path uses, added to `ApiDeps`), so the consuming agent's pill refreshes.
 - **Visible attribution in chat.** The primary's resulting chat message is
   naturally attributed to the primary (it's the primary speaking). The
   orchestrator additionally emits a small inline card — "Consulted Codex" /

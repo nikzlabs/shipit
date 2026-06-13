@@ -54,6 +54,17 @@ export interface RunSubAgentDeps {
    * takes a persist context by construction (CLAUDE.md side-channel-card contract).
    */
   chatHistoryManager: InProgressPersister;
+  /**
+   * Forward the sub-agent's latest subscription rate-limit snapshot into the
+   * right `LimitsProvider` so the limit pill reflects quota the consult
+   * consumed (docs/144). Mirrors the WS turn path's `recordAgentRateLimits`.
+   * Optional — test contexts and runtimes without a `LimitsRegistry` omit it.
+   */
+  recordAgentRateLimits?: (
+    agentId: AgentId,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
+  ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
 }
@@ -203,6 +214,14 @@ export async function runSubAgent(
       // context dial — the pinned agent's window — untouched. Transport-only;
       // the DB row is the persistence (rehydrated via GET /history).
       emitSubAgentUsageUpdate(deps.usageManager, runner, sessionId);
+    }
+
+    // §5 — the consult drew down the sub-agent's subscription quota. Its
+    // `agent_rate_limits` events are confined to the one-shot adapter, so
+    // forward the carried-back snapshot into that agent's limits provider —
+    // otherwise the pill stays stale until the next primary turn for that agent.
+    if (result.rateLimits) {
+      deps.recordAgentRateLimits?.(subAgentId, result.rateLimits.session, result.rateLimits.weekly);
     }
 
     emitConsultCard({

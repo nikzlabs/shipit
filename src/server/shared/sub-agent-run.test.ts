@@ -69,6 +69,39 @@ describe("runAgentToCompletion", () => {
     expect(res.contextTokens).toBe(6200);
   });
 
+  it("carries back the latest rate-limit snapshot (last-one-wins) for the limits pill", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", {
+      type: "agent_rate_limits",
+      session: { usedPct: 40, resetAt: "2026-06-13T00:00:00Z" },
+      weekly: null,
+    });
+    agent.emit("event", {
+      type: "agent_rate_limits",
+      session: { usedPct: 55, resetAt: "2026-06-13T05:00:00Z" },
+      weekly: { usedPct: 12, resetAt: "2026-06-20T00:00:00Z" },
+    });
+    agent.emit("event", assistant("done"));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.rateLimits).toEqual({
+      session: { usedPct: 55, resetAt: "2026-06-13T05:00:00Z" },
+      weekly: { usedPct: 12, resetAt: "2026-06-20T00:00:00Z" },
+    });
+  });
+
+  it("leaves rateLimits undefined when the backend pushed no snapshot", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", assistant("done"));
+    agent.emit("event", result(0.01, 1000));
+    agent.emit("done", 0);
+    const res = await handle.promise;
+    expect(res.rateLimits).toBeUndefined();
+  });
+
   it("leaves token fields undefined when the backend reports no token telemetry", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
