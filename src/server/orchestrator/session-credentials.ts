@@ -1215,6 +1215,12 @@ export function provisionRepoMemory(
     fs.mkdirSync(shared, { recursive: true });
     fs.mkdirSync(sessionMemory, { recursive: true });
     mirrorNewerMemoryFiles(shared, sessionMemory);
+    // docs/150 §7 — this runs on the first turn, AFTER the container booted, so
+    // the entrypoint's boot-time chown can't see these files. Without the
+    // handoff the memory dir lands `root:root 0755`: the agent (`shipit`) could
+    // read seeded memory but could not WRITE new memory into a root-owned dir,
+    // silently breaking the auto-memory feature. Hand the subtree to the worker.
+    chownSessionCredentialsTree(credentialsRoot, sessionId);
   } catch (err) {
     console.warn(`[session-credentials] provisionRepoMemory failed for ${sessionId}:`, err);
   }

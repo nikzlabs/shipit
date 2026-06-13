@@ -374,6 +374,12 @@ output to UID/GID 1000 right after writing.
       `root:root` and break later `shipit`-side `git` operations.
     - `repo-git.ts:cloneFromCache` — fine on first clone (entrypoint
       handles it), but any post-boot reclone/refetch needs the chown.
+    - `session-credentials.ts:provisionRepoMemory` (docs/155) — seeds the
+      Claude auto-memory dir under `<sessionDir>/.claude/projects/-workspace/
+      memory/` on the **first turn**, after boot. The agent must *write* new
+      memory there, not just read it, so this writer chowns the subtree too —
+      otherwise a root-owned `0755` memory dir silently drops the agent's
+      memory writes.
 
   Audit pass: grep `services/` and `orchestrator/` for `writeFile*`,
   `mkdir*`, `cpSync`, `renameSync`, and `simpleGit(...)` callers that

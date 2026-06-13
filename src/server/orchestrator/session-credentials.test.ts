@@ -85,6 +85,28 @@ describe("session-credentials", () => {
       ensureSessionCredentialsScaffold(root, sid);
       expect(() => chownSessionCredentialsTree(root, sid)).not.toThrow();
     });
+
+    // docs/150 + docs/155 — the auto-memory dir is written into the per-session
+    // subtree on the first turn (after boot). The agent must be able to WRITE
+    // new memory there, not just read it, so provisionRepoMemory hands the
+    // freshly-created memory dir to the worker UID too.
+    it("provisionRepoMemory chowns the seeded memory dir to the worker UID", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // Seed a shared per-repo memory file so something gets mirrored in.
+      const repoHash = "deadbeef";
+      const shared = repoMemoryDir(root, repoHash);
+      fs.mkdirSync(shared, { recursive: true });
+      fs.writeFileSync(path.join(shared, "MEMORY.md"), "- [x] note");
+      provisionRepoMemory(root, sid, repoHash);
+      const sessionMemory = path.join(
+        perSessionCredentialsDir(root, sid),
+        ".claude", "projects", "-workspace", "memory",
+      );
+      expect(fs.lstatSync(sessionMemory).uid).toBe(myUid);
+      expect(fs.lstatSync(path.join(sessionMemory, "MEMORY.md")).uid).toBe(myUid);
+    });
   });
 
   it("scaffold seeds only the shared .gitconfig — no agent creds", () => {
