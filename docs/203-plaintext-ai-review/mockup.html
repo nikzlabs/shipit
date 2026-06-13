@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Review card — docs/203</title>
+<style>
+  :root {
+    --bg: #030712;        /* gray-950 */
+    --panel: #0b1220;
+    --border: #1f2937;    /* gray-800 */
+    --border-soft: #111827;
+    --text: #e5e7eb;      /* gray-200 */
+    --muted: #9ca3af;     /* gray-400 */
+    --faint: #6b7280;     /* gray-500 */
+    --accent: #818cf8;    /* indigo-400 */
+    --accent-bg: #1e1b4b; /* indigo-950 */
+    --warn: #fbbf24;      /* amber-400 */
+    --code: #0f172a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 40px;
+    background: var(--bg); color: var(--text);
+    font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  h1 { font-size: 15px; color: var(--muted); font-weight: 600; margin: 0 0 6px; }
+  .sub { color: var(--faint); font-size: 12px; margin: 0 0 28px; }
+  .stack { max-width: 640px; display: flex; flex-direction: column; gap: 22px; }
+  .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint); margin-bottom: 8px; }
+
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    overflow: hidden;
+  }
+  .head {
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px;
+    cursor: pointer;
+    user-select: none;
+  }
+  .glyph {
+    width: 26px; height: 26px; flex: none;
+    display: grid; place-items: center;
+    border-radius: 7px;
+    background: var(--accent-bg); color: var(--accent);
+    font-size: 14px;
+  }
+  .titles { flex: 1; min-width: 0; }
+  .title { font-weight: 600; font-size: 13px; }
+  .meta { color: var(--faint); font-size: 12px; margin-top: 1px; }
+  .meta .file { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .by {
+    flex: none;
+    font-size: 11px; color: var(--accent);
+    background: var(--accent-bg);
+    border: 1px solid #312e81;
+    padding: 2px 8px; border-radius: 999px;
+  }
+  .chev { flex: none; color: var(--faint); transition: transform .15s; }
+  .card.collapsed .chev { transform: rotate(-90deg); }
+  .card.collapsed .body { display: none; }
+
+  .body {
+    border-top: 1px solid var(--border-soft);
+    padding: 14px 16px 16px;
+    font-size: 13px;
+  }
+  .body ol { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .body li::marker { color: var(--faint); }
+  .loc {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 12px; color: var(--accent);
+    background: var(--code);
+    padding: 1px 6px; border-radius: 5px;
+    border: 1px solid var(--border-soft);
+  }
+  .body p { margin: 4px 0 0; color: var(--text); }
+  .fix { color: var(--muted); }
+  .clean { color: var(--muted); display: flex; align-items: center; gap: 8px; }
+  .clean .glyph { background: #052e1a; color: #34d399; }
+</style>
+</head>
+<body>
+  <h1>docs/203 — plain-text AI review card</h1>
+  <p class="sub">Read-only, persisted in the transcript. No line anchoring, no snapshot viewer. Header is the collapse toggle.</p>
+
+  <div class="stack">
+
+    <!-- Cross-agent, expanded -->
+    <div>
+      <div class="label">Cross-agent reviewer · expanded</div>
+      <div class="card">
+        <div class="head">
+          <div class="glyph">★</div>
+          <div class="titles">
+            <div class="title">Review</div>
+            <div class="meta"><span class="file">docs/203-plaintext-ai-review/plan.md</span> · 3 findings · 14:02</div>
+          </div>
+          <div class="by">Reviewed by Codex</div>
+          <div class="chev">▾</div>
+        </div>
+        <div class="body">
+          <ol>
+            <li>
+              <span class="loc">plan.md:42</span>
+              <p>The migration path for old <code>agent_review</code> rows is unspecified — a reload of an old session will hit a column that no longer maps to a card.</p>
+              <p class="fix">Fix: keep the column readable and render legacy rows as a minimal "review ran" card, or backfill on read.</p>
+            </li>
+            <li>
+              <span class="loc">plan.md:71</span>
+              <p>"Parent always calls <code>submit_review</code>" assumes the cross-agent reviewer never calls it itself; a reviewer that does would double-emit.</p>
+              <p class="fix">Fix: brief the reviewer to return text only and not touch MCP tools.</p>
+            </li>
+            <li>
+              <span class="loc">plan.md:88</span>
+              <p>Reviewer-label copy ("Reviewed by a subagent") leaks an implementation word users don't recognize.</p>
+              <p class="fix">Fix: use "Reviewed by Claude" / the model name in both modes.</p>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Same-model, collapsed -->
+    <div>
+      <div class="label">Same-model subagent · collapsed</div>
+      <div class="card collapsed">
+        <div class="head">
+          <div class="glyph">★</div>
+          <div class="titles">
+            <div class="title">Review</div>
+            <div class="meta"><span class="file">src/server/orchestrator/services/reviews.ts</span> · 1 finding · 14:06</div>
+          </div>
+          <div class="by">Reviewed by Claude</div>
+          <div class="chev">▾</div>
+        </div>
+        <div class="body">
+          <ol>
+            <li>
+              <span class="loc">reviews.ts:140</span>
+              <p>Markdown submit relay does not bound the payload size; a runaway review could persist a multi-MB card.</p>
+              <p class="fix">Fix: cap the markdown length server-side, consistent with the old 500-char per-comment cap.</p>
+            </li>
+          </ol>
+        </div>
+      </div>
+    </div>
+
+    <!-- Clean -->
+    <div>
+      <div class="label">No findings</div>
+      <div class="card">
+        <div class="head">
+          <div class="glyph">★</div>
+          <div class="titles">
+            <div class="title">Review</div>
+            <div class="meta"><span class="file">docs/203-plaintext-ai-review/checklist.md</span> · 14:09</div>
+          </div>
+          <div class="by">Reviewed by Codex</div>
+          <div class="chev">▾</div>
+        </div>
+        <div class="body">
+          <div class="clean"><span class="glyph">✓</span> No material issues found.</div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+</body>
+</html>
