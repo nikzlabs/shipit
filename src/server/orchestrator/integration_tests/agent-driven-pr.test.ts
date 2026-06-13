@@ -296,6 +296,46 @@ describe("agent-driven PR creation (Phase 2)", () => {
   );
 
   it(
+    "does NOT create a duplicate PR when the branch's prior PR has already merged",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+
+      // No OPEN PR for the branch, but a prior PR for it already MERGED.
+      // findBranchPr falls back to the any-state lookup and recognizes it.
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        url: "https://github.com/test-user/test-repo/pull/9",
+        number: 9,
+        base: "main",
+        title: "Earlier (merged) PR",
+        body: "",
+        state: "closed",
+        merged_at: "2026-01-01T00:00:00Z",
+        additions: 0,
+        deletions: 0,
+      });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: {
+          title: "Follow-up tweak",
+          body: "## Summary\nIncidental follow-up after merge.",
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      // Returns the already-merged PR's metadata — no new PR.
+      expect(result.alreadyExisted).toBe(true);
+      expect(result.number).toBe(9);
+      expect(githubAuth.createPullRequestCalls).toHaveLength(0);
+    },
+  );
+
+  it(
     "applies agent-supplied labels to the new PR",
     { timeout: 15_000 },
     async () => {

@@ -398,6 +398,18 @@ export class StubGitHubAuthManager extends EventEmitter {
     return this._prData;
   }
 
+  private _viewPrResult: {
+    url: string; number: number; base: string; head: string; title: string; body: string;
+    state: "open" | "closed"; isDraft: boolean; merged: boolean; additions: number; deletions: number;
+  } | null = null;
+  /** Set what `viewPullRequest(owner, repo, number)` returns for tests. */
+  setViewPrResult(result: typeof this._viewPrResult) {
+    this._viewPrResult = result;
+  }
+  async viewPullRequest(_owner: string, _repo: string, _pullNumber: number) {
+    return this._viewPrResult;
+  }
+
   /** Calls to `addLabelsToPullRequest`, in order. Inspect from tests. */
   public addLabelsCalls: { owner: string; repo: string; pullNumber: number; labels: string[] }[] = [];
   private _addLabelsResult: { success: boolean; message?: string } | null = null;

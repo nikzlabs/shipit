@@ -49,6 +49,45 @@ async function resolveGitHubRemote(
   return parsed;
 }
 
+/**
+ * Resolve the PR associated with the current branch, rebase-stably and
+ * state-aware.
+ *
+ * Resolution is by **branch name** (the GitHub `head=owner:ref` filter matches
+ * the ref, not a commit SHA), so a rebase that rewrites the branch's head SHA
+ * never loses the association. We prefer an OPEN PR; when none is open we fall
+ * back to the most-recent PR in ANY state so a branch whose PR already
+ * **merged or closed** is recognized as having had a PR — rather than looking
+ * PR-less, which is what made ShipIt spawn a fresh PR on every post-merge turn
+ * (the duplicate-PR bug: #1302 → #1312 → #1314 → …).
+ *
+ * Returns `null` only when the branch has never had a PR in any state.
+ */
+async function findBranchPr(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  head: string,
+): Promise<{
+  number: number; url: string; base: string; title: string; body: string;
+  state: "open" | "closed"; merged: boolean;
+} | null> {
+  const open = await githubAuthManager.findPullRequest(owner, repo, head);
+  if (open) return { ...open, state: "open", merged: false };
+
+  const any = await githubAuthManager.findPullRequestAnyState(owner, repo, head);
+  if (!any) return null;
+  return {
+    number: any.number,
+    url: any.url,
+    base: any.base,
+    title: any.title,
+    body: any.body,
+    state: any.state,
+    merged: any.merged_at !== null,
+  };
+}
+
 // Re-export CI-fix logic for backwards compatibility
 export {
   fetchCIFailureLogs,
@@ -95,7 +134,10 @@ export async function getPrStatus(
   if ("error" in resolved) return null;
 
   const head = await git.getCurrentBranch();
-  const pr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
+  // State-aware, rebase-stable lookup: surfaces a merged/closed PR for the
+  // branch so `gh pr status` reports it instead of "No PR for the current
+  // branch" once the branch's PR has merged.
+  const pr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
   if (!pr) return null;
 
   const stats = await git.diffStatVsBranch(pr.base);
@@ -107,6 +149,8 @@ export async function getPrStatus(
     title: pr.title,
     baseBranch: pr.base,
     headBranch: head,
+    state: pr.state,
+    merged: pr.merged,
     insertions: stats.insertions,
     deletions: stats.deletions,
     checks,
@@ -523,20 +567,26 @@ export async function agentCreatePr(
 
   const head = await git.getCurrentBranch();
 
-  // Short-circuit if a PR already exists for this branch — but still push
-  // first so the existing PR picks up any new commits we just flushed.
-  const existingPr = await githubAuthManager.findPullRequest(resolved.owner, resolved.repo, head);
+  // Short-circuit if a PR already exists for this branch — in ANY state. A
+  // merged/closed PR must NOT spawn a fresh duplicate (the #1302 → #1312 → …
+  // bug): we return the existing PR's metadata instead of creating a new one.
+  const existingPr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
   if (existingPr) {
-    try {
-      await git.push("origin", head);
-    } catch (err) {
-      const msg = getErrorMessage(err);
-      if (msg.includes("workflow")) {
-        throw new ServiceError(403,
-          "Your GitHub token is missing the `workflow` scope, which is required because this branch modifies GitHub Actions workflow files.\n" +
-          "Please update your token at https://github.com/settings/tokens to include the `workflow` scope, then reconnect.");
+    // Only push to a still-OPEN PR so it picks up the commits we just flushed.
+    // A merged/closed PR's branch may be deleted on the remote, and pushing
+    // would either fail or needlessly resurrect it — just return its metadata.
+    if (existingPr.state === "open") {
+      try {
+        await git.push("origin", head);
+      } catch (err) {
+        const msg = getErrorMessage(err);
+        if (msg.includes("workflow")) {
+          throw new ServiceError(403,
+            "Your GitHub token is missing the `workflow` scope, which is required because this branch modifies GitHub Actions workflow files.\n" +
+            "Please update your token at https://github.com/settings/tokens to include the `workflow` scope, then reconnect.");
+        }
+        throw new ServiceError(500, `Push failed: ${msg}`);
       }
-      throw new ServiceError(500, `Push failed: ${msg}`);
     }
     const stats = await git.diffStatVsBranch(existingPr.base);
     // Apply any requested labels additively to the existing PR — best-effort.
@@ -804,7 +854,10 @@ export async function viewPullRequest(
   let prNumber = options.number;
   if (typeof prNumber !== "number") {
     const head = await git.getCurrentBranch();
-    const pr = await githubAuthManager.findPullRequest(remote.owner, remote.repo, head);
+    // State-aware, rebase-stable lookup so `gh pr view` resolves the branch's
+    // PR even after it has merged/closed (the Stop hook relies on this to stop
+    // re-prompting `gh pr create` once a PR already exists).
+    const pr = await findBranchPr(githubAuthManager, remote.owner, remote.repo, head);
     if (!pr) return null;
     prNumber = pr.number;
   }

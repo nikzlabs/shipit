@@ -8,14 +8,15 @@
  * exit codes, stderr content — without depending on a real GitHub backend.
  *
  * Decision table (matches the script's flow):
- *   stop_hook_active true            → exit 0 (avoid loops)
- *   not a git repo                   → exit 0
- *   no base branch resolvable        → exit 0
- *   on the default branch            → exit 0
- *   no commits ahead of base         → exit 0
- *   PR already exists (gh exit 0)    → exit 0
- *   gh fails with auth/config error  → exit 0 (fail open)
- *   commits + "No pull request found"→ exit 2 with stderr telling agent to act
+ *   stop_hook_active true             → exit 0 (avoid loops)
+ *   not a git repo                    → exit 0
+ *   no base branch resolvable         → exit 0
+ *   on the default branch             → exit 0
+ *   no commits ahead of base          → exit 0
+ *   empty net diff vs base            → exit 0 (revert / merged-then-rebased)
+ *   PR exists in any state (gh exit 0)→ exit 0 (open OR merged/closed)
+ *   gh fails with auth/config error   → exit 0 (fail open)
+ *   commits + diff + "No PR found"    → exit 2 with stderr telling agent to act
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -214,6 +215,37 @@ describe("stop-pr-check.sh", () => {
       ghScript: 'echo "GitHub is not connected for this ShipIt session." 1>&2; exit 1',
     });
     expect(r.status).toBe(0);
+  });
+
+  it("exits 0 (fail-open) when the net diff vs base is empty despite commits ahead", () => {
+    // A revert: add a file, then remove it. `git rev-list` shows 2 commits
+    // ahead, but `git diff base...HEAD` is empty — no PR should be forced.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 0 }));
+    writeFileSync(path.join(cwd, "temp.txt"), "temp\n");
+    execFileSync("git", ["add", "."], { cwd });
+    execFileSync("git", ["commit", "-m", "add temp"], { cwd });
+    execFileSync("git", ["rm", "temp.txt"], { cwd });
+    execFileSync("git", ["commit", "-m", "revert temp"], { cwd });
+    const r = runHook({
+      cwd,
+      // gh must never be reached — the net-diff gate exits first.
+      ghScript: 'echo "gh should not be invoked" 1>&2; exit 42',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
+  });
+
+  it("exits 0 when a merged PR already exists for the branch (no duplicate prompt)", () => {
+    // `gh pr view` now resolves the branch's PR in any state, so a merged PR
+    // succeeds (exit 0). The hook must treat that as "PR exists" and not
+    // re-prompt — this is the duplicate-PR regression guard.
+    const cwd = trackRepo(makeRepo({ commitsAheadOfBase: 2 }));
+    const r = runHook({
+      cwd,
+      ghScript: 'echo \'{"url":"https://example/pr/7","state":"MERGED"}\'; exit 0',
+    });
+    expect(r.status).toBe(0);
+    expect(r.stderr).toBe("");
   });
 
   it("blocks (exit 2) with guidance when commits exist and no PR exists", () => {

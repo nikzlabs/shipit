@@ -174,6 +174,77 @@ covered by the existing `agent-driven-pr.test.ts` integration test plus
 the new unit tests; a dedicated e2e for the hook would require running the
 actual Claude CLI against a managed-settings.json, which is out of scope.
 
+## Update — merged/closed-aware, net-diff-gated enforcement (duplicate-PR fix)
+
+A long-running session whose PR was **merged mid-session** (with rebases
+between turns) created a *new* PR on every subsequent turn (#1302 → #1312 →
+#1314 → #1316). The Stop hook printed "no PR exists yet" each turn, and
+`gh pr status` reported "No PR for the current branch" even right after a
+merge. One offending turn was a net-zero revert.
+
+### Root cause
+
+Every PR-detection surface resolved the branch's PR via
+`GitHubAuthManager.findPullRequest(owner, repo, head)`, which queries
+`?head=owner:branch&state=open`. The lookup is **by branch name** (rebase-stable
+already — the `head` filter matches the ref, not a commit SHA), but it is
+**open-only**:
+
+- The Stop hook's `gh pr view --json url` → `viewPullRequest` (no-number) →
+  `findPullRequest` (open) → a merged PR returns `null` → "No pull request
+  found" → the hook blocked and re-prompted `gh pr create`.
+- `gh pr status` → `getPrStatus` → same open-only lookup → "No PR".
+- `gh pr create` → `agentCreatePr` short-circuited only on an **open** PR, so
+  once the prior PR merged it cheerfully created a duplicate.
+
+Separately, the hook gated on `git rev-list --count base..HEAD` (commits-ahead)
+and **never** on a net diff, so a revert that nets to zero still re-prompted.
+
+### Fix
+
+1. **State-aware, rebase-stable PR resolution** (`services/github.ts`). New
+   `findBranchPr()` prefers an open PR, then falls back to
+   `findPullRequestAnyState()` (the `state=all` query that already backed the
+   poller's restart probe). `getPrStatus`, `viewPullRequest` (no-number), and
+   `agentCreatePr`'s short-circuit all route through it. `getPrStatus` now
+   returns `state` + `merged`; `gh pr status` / `gh pr view` surface a
+   merged/closed PR instead of looking PR-less.
+2. **`agentCreatePr` never duplicates** (defense-in-depth for H4). When a PR
+   exists in any state it returns that PR's metadata with
+   `alreadyExisted: true`. It pushes only to a still-**open** PR (a merged PR's
+   branch may be deleted on the remote); a merged/closed PR is returned without
+   a push or a second `createPullRequest`.
+3. **Net-diff gate in the hook** (`stop-pr-check.sh`). After the commits-ahead
+   check, `git diff --quiet "$BASE...HEAD"` fails open (exit 0) on an empty net
+   diff — a revert, or a branch merged-then-rebased onto the updated base so its
+   content already lives there. The `if` suspends `set -e` so a non-empty diff
+   doesn't abort the script. The existing `gh pr view` check now recognizes
+   any-state PRs (via fix #1), so an already-PR'd branch is never re-prompted.
+
+The decision becomes: **block only when commits are ahead AND the net diff vs
+base is non-empty AND the branch has never had a PR in any state.** First-PR
+enforcement (a real change with no PR) is unchanged; the PreToolUse branch-block
+hook (docs/130) and the `SHIPIT_AUTO_CREATE_PR` opt-in are untouched.
+
+### Deliberate tradeoff
+
+Once a branch's PR has merged/closed, neither the hook nor `agentCreatePr` will
+open a *second* PR for genuinely new post-merge work — it returns the
+prior (merged) PR instead. This is intentional: the ShipIt model is one branch =
+one PR lifecycle, and silently spawning duplicate PRs every turn was the actual
+bug. A user who wants a fresh PR for post-merge work can branch a new session or
+create it explicitly.
+
+### Tests
+
+| Test | What it covers |
+|---|---|
+| `stop-pr-check.test.ts` "empty net diff vs base despite commits ahead" | Net-diff gate (revert) → exit 0 without reaching `gh`. |
+| `stop-pr-check.test.ts` "merged PR already exists" | `gh pr view` succeeds for a merged PR → no re-prompt. |
+| `stop-pr-check.test.ts` "commits + diff + no PR" (existing) | Genuine first change still blocks (exit 2). |
+| `pr-status.test.ts` "surfaces a merged/closed PR" / "pr/view resolves a merged PR" | `getPrStatus` / `viewPullRequest` fall back to any-state. |
+| `agent-driven-pr.test.ts` "does NOT create a duplicate PR when the prior PR merged" | `agentCreatePr` returns the merged PR, no second `createPullRequest`. |
+
 ## Future extensions
 
 - **Per-session opt-out** — currently auto-PR is global. If we add a
