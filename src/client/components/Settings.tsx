@@ -9,9 +9,7 @@ import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
-import { GitHubTokenForm } from "./GitHubTokenForm.js";
-import { SettingsTrackers } from "./SettingsTrackers.js";
-import { McpServerSettings } from "./McpServerSettings.js";
+import { SettingsIntegrations } from "./SettingsIntegrations.js";
 import { SkillsTab } from "./SkillsTab.js";
 import { KeybindingSettings } from "./KeybindingSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -35,7 +33,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "github" | "trackers" | "git" | "instructions" | "skills" | "mcp" | "keyboard" | "voice" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "advanced";
 
 /** Shape of the /api/updates/check and /api/updates/channel responses. */
 interface UpdateStatusResult {
@@ -144,53 +142,6 @@ function NotificationSettings() {
             <p className="text-xs text-(--color-text-tertiary)">Play a chime when a session needs attention</p>
           </div>
           <ToggleSwitch enabled={soundOnFinish} onToggle={setSoundOnFinish} testId="settings-sound-on-finish" />
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Pull-request automation settings (currently just auto-create PR).
- * Rendered inside the GitHub tab when the user is authenticated — without a
- * GitHub token the server-side gate (`githubAuthManager.authenticated` in
- * `agent-execution.ts`) means toggling this on is a no-op.
- *
- * Mirrors the optimistic-set-then-PUT-with-revert pattern that previously
- * lived in `PrLifecycleCard.tsx`'s `AutoCreatePrToggle`. Surfaces a toast on
- * failure (the inline toggle's silent console-only failure made sense next to
- * a busy PR card; in a quiet Settings dialog a visible error is better).
- */
-function PullRequestSettings() {
-  const autoCreatePr = useSettingsStore((s) => s.autoCreatePr);
-
-  const handleToggle = async (v: boolean) => {
-    useSettingsStore.getState().setAutoCreatePr(v);
-    try {
-      const res = await fetch("/api/settings", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ autoCreatePr: v }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } catch (err) {
-      // Revert the optimistic update and surface the failure.
-      useSettingsStore.getState().setAutoCreatePr(!v);
-      useUiStore.getState().setToast({ message: "Failed to update auto-create PR setting" });
-      console.error("[settings] toggle autoCreatePr failed:", err);
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Pull Requests</h3>
-      <div className="space-y-2">
-        <div className="flex items-center justify-between py-1 gap-4">
-          <div>
-            <span className="text-sm text-(--color-text-primary)">Auto-create PR after every meaningful turn</span>
-            <p className="text-xs text-(--color-text-tertiary)">When the agent finishes a turn that changes files, ShipIt opens a pull request automatically.</p>
-          </div>
-          <ToggleSwitch enabled={autoCreatePr} onToggle={(v) => void handleToggle(v)} testId="settings-auto-create-pr" />
         </div>
       </div>
     </div>
@@ -1254,8 +1205,6 @@ export function Settings({
   const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
   const [content, setContent] = useState(initialContent);
-  const [confirmingLogout, setConfirmingLogout] = useState(false);
-  const [disconnecting, setDisconnecting] = useState(false);
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
   const [gitName, setGitName] = useState(gitIdentity.name);
@@ -1316,17 +1265,15 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["github", "trackers", "git", "instructions", "skills", "mcp", "keyboard", "voice", "advanced"] as const;
+  const generalTabs = ["integrations", "git", "instructions", "skills", "keyboard", "voice", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
       case "agent-codex": return "Codex";
-      case "github": return "GitHub";
-      case "trackers": return "Trackers";
+      case "integrations": return "Integrations";
       case "git": return "Git";
       case "instructions": return "Instructions";
       case "skills": return "Skills";
-      case "mcp": return "MCP Servers";
       case "keyboard": return "Keyboard";
       case "voice": return "Voice";
       case "advanced": return "Advanced";
@@ -1526,10 +1473,6 @@ export function Settings({
             <SkillsTab />
           </TabsContent>
 
-          <TabsContent value="mcp">
-            <McpServerSettings hasActiveSession={hasActiveSession} />
-          </TabsContent>
-
           <TabsContent value="keyboard">
             <KeybindingSettings />
           </TabsContent>
@@ -1538,56 +1481,13 @@ export function Settings({
             <VoiceSettings />
           </TabsContent>
 
-          <TabsContent value="github">
-            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
-              {githubStatus.authenticated ? (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
-                    <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
-                    <div className="min-w-0 flex-1">
-                      <p className="text-sm font-medium text-(--color-text-primary)">
-                        {githubStatus.username ?? "GitHub"}
-                      </p>
-                      <p className="text-xs text-(--color-text-secondary)">Connected</p>
-                    </div>
-                  </div>
-
-                  <button
-                    onClick={() => {
-                      if (confirmingLogout) {
-                        setDisconnecting(true);
-                        onGitHubLogout();
-                        setConfirmingLogout(false);
-                      } else {
-                        setConfirmingLogout(true);
-                      }
-                    }}
-                    onBlur={() => { if (!disconnecting) setConfirmingLogout(false); }}
-                    disabled={disconnecting}
-                    className={`w-full px-3 py-2 text-sm rounded-md border transition-colors ${
-                      disconnecting
-                        ? "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-tertiary) opacity-50 cursor-not-allowed"
-                        : confirmingLogout
-                          ? "bg-(--color-error-subtle) border-(--color-error)/50 text-(--color-error)"
-                          : "bg-(--color-bg-secondary) border-(--color-border-secondary) text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-                    }`}
-                    data-testid="settings-disconnect"
-                  >
-                    {disconnecting ? "Disconnecting..." : confirmingLogout ? "Click again to disconnect" : "Disconnect"}
-                  </button>
-
-                  <div className="border-t border-(--color-border-secondary)" />
-
-                  <PullRequestSettings />
-                </div>
-              ) : (
-                <GitHubTokenForm onSubmit={async (t) => { await onGitHubTokenSubmit(t); return undefined; }} />
-              )}
-            </div>
-          </TabsContent>
-
-          <TabsContent value="trackers">
-            <SettingsTrackers />
+          <TabsContent value="integrations">
+            <SettingsIntegrations
+              githubStatus={githubStatus}
+              onGitHubLogout={onGitHubLogout}
+              onGitHubTokenSubmit={onGitHubTokenSubmit}
+              hasActiveSession={hasActiveSession}
+            />
           </TabsContent>
 
           <TabsContent value="git">

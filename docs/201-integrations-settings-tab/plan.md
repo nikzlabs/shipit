@@ -92,24 +92,34 @@ bring your own."
   existing `max-w-2xl` dialog width (the Skills tab is the only `max-w-5xl` exception and is
   unaffected).
 
-## Implementation sketch
+## Implementation (shipped)
 
 A new container component composes the three existing pieces; the underlying connection logic
-and stores are reused as-is.
+and stores are reused as-is. It is an information-architecture change, not a data-model one — no
+store shape changed.
 
-- **New:** `src/client/components/SettingsIntegrations.tsx` — renders the two sections. Pulls in
-  the GitHub connection block (extracted from `Settings.tsx`), `SettingsTrackers`, and
-  `McpServerSettings`.
-- **`src/client/components/Settings.tsx`** — `Tab` union and `generalTabs` array: drop
-  `"github" | "trackers" | "mcp"`, add `"integrations"`; update `tabLabel` (→ "Integrations")
-  and the `TabsContent`. New test id `settings-tab-integrations`. Keep the old per-tab test ids
-  alive only if any test depends on them (grep first).
-- **No store changes.** `useSettingsStore` (GitHub status, `autoCreatePr`), `useIssuesStore`
-  (tracker binding), and `useMcpStore` (servers, OAuth providers) are reused unchanged. This is
-  an information-architecture change, not a data-model one.
-- **Tests:** update settings tab tests that reference `settings-tab-github` /
-  `settings-tab-trackers` / `settings-tab-mcp`; add a render test for `SettingsIntegrations`
-  asserting both sections and the "Managed by ShipIt" badge appear.
+- **New `src/client/components/SettingsIntegrations.tsx`** — owns the single scroll container and
+  the two `SectionHeader`s. Renders `GitHubConnectionCard` (the GitHub block extracted from
+  `Settings.tsx`, with its double-click-confirm Disconnect and the `PullRequestSettings` toggle
+  moved in), `SettingsTrackers`, and `McpServerSettings`. Holds a local `LinearLogo` brand glyph
+  (the sanctioned exception to "no hardcoded SVG" — Phosphor has no Linear mark).
+- **New `src/client/components/ManagedByShipItBadge.tsx`** — the shared shield badge
+  (`ShieldCheckIcon` + "Managed by ShipIt") used on each curated row to signal credential
+  brokering. Imported by both `SettingsIntegrations` and `SettingsTrackers`.
+- **`SettingsTrackers` / `McpServerSettings`** — gained an `embedded?: boolean` prop. When
+  embedded, they drop their own `px-5 py-4 … overflow h-full` scroll wrapper (the parent owns it)
+  and their redundant top heading; `SettingsTrackers` additionally renders a `logo` slot + the
+  badge next to "Linear".
+- **`Settings.tsx`** — `Tab` union + `generalTabs` drop `github | trackers | mcp`, add
+  `integrations`; `tabLabel` → "Integrations"; the three `TabsContent` blocks collapse to one.
+  `PullRequestSettings` and the GitHub `confirmingLogout`/`disconnecting` state moved out.
+- **Deep-link updates** — `ui-store`'s `SettingsTab` union, plus `useServerEvents` (invalid-token
+  toast), `PrLifecycleCard` (PR auth CTA), and `App.handleSettingsOpen` (Issues "Connect" CTA) now
+  target `integrations` instead of `github`/`trackers`.
+- **Tests** — `Settings.test.tsx` tab navigation updated to the "Integrations" tab name (test ids
+  like `settings-disconnect` / `github-token-form` preserved, so the GitHub assertions are
+  unchanged). New `SettingsIntegrations.test.tsx` asserts both tiers render, the badge appears on
+  curated rows, and the GitHub connected/disconnected states + PR toggle work.
 
 ## Alignment with product principles
 
@@ -120,10 +130,16 @@ nudging the user toward a generic, less-safe, out-of-container path.
 
 ## Key files
 
-- `src/client/components/Settings.tsx` — tab list, labels, content host.
-- `src/client/components/SettingsTrackers.tsx` — Linear connection flow (docs/170).
-- `src/client/components/McpServerSettings.tsx` — MCP CRUD + OAuth cards (docs/088).
-- `src/client/components/GitHubTokenForm.tsx` — GitHub token entry.
+- `src/client/components/SettingsIntegrations.tsx` — **new**; the tiered tab container + GitHub
+  card + PR toggle + Linear logo.
+- `src/client/components/ManagedByShipItBadge.tsx` — **new**; shared "Managed by ShipIt" shield.
+- `src/client/components/Settings.tsx` — tab list, labels, content host (three tabs → one).
+- `src/client/components/SettingsTrackers.tsx` — Linear connection flow (docs/170); gained
+  `embedded` + `logo`.
+- `src/client/components/McpServerSettings.tsx` — MCP CRUD + OAuth cards (docs/088); gained
+  `embedded`.
+- `src/client/components/GitHubTokenForm.tsx` — GitHub token entry (reused).
+- `src/client/stores/ui-store.ts` — `SettingsTab` union.
 - `src/server/orchestrator/mcp-oauth-providers.ts` — OAuth provider registry; documents the
   docs/190 Linear removal that this tab builds on.
 - `src/client/stores/{settings,issues,mcp}-store.ts` — reused unchanged.

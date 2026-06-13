@@ -1,6 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect needed to load tracker status on mount (external state sync)
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Button } from "./ui/button.js";
+import { ManagedByShipItBadge } from "./ManagedByShipItBadge.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import type { TrackerInfo } from "../../server/shared/types.js";
 
@@ -17,7 +18,7 @@ interface LinearTeam {
  * app registration / webhooks (that's the docs/156 push trigger, not this read
  * surface). The token is write-only — the server never echoes it back.
  */
-export function SettingsTrackers() {
+export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolean; logo?: ReactNode } = {}) {
   const [info, setInfo] = useState<TrackerInfo | null>(null);
   const [token, setToken] = useState("");
   const [teams, setTeams] = useState<LinearTeam[]>([]);
@@ -121,13 +122,22 @@ export function SettingsTrackers() {
   };
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="settings-trackers">
-      <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary)">Linear</h3>
-        <p className="text-xs text-(--color-text-secondary) mt-1">
-          Connect Linear to see your prioritized issues in the Issues tab and start a session from
-          any of them. Read-only: ShipIt never changes your issues.
-        </p>
+    <div
+      className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
+      data-testid="settings-trackers"
+    >
+      <div className={embedded ? "flex items-start gap-3" : undefined}>
+        {embedded && logo}
+        <div className="min-w-0">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h3 className="text-sm font-medium text-(--color-text-primary)">Linear</h3>
+            {embedded && <ManagedByShipItBadge />}
+          </div>
+          <p className="text-xs text-(--color-text-secondary) mt-1">
+            Connect Linear to see your prioritized issues in the Issues tab and start a session from
+            any of them. Read-only: ShipIt never changes your issues.
+          </p>
+        </div>
       </div>
 
       {error && (
