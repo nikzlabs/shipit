@@ -9,8 +9,18 @@ You are running inside a Docker container managed by ShipIt.
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/uploads` | User-uploaded files (outside git, never committed). |
 | `/tmp` | Scratch space — use for temporary files, unpacking archives. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Write-protected (see below). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
+
+### Write-protected paths
+
+The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few sensitive trees:
+
+- `/credentials/**` — ShipIt's auth bind mount.
+- `/root/.claude/**` — the agent CLI's own config and OAuth credentials.
+- `/etc/shipit/**` — ShipIt's managed settings and hooks.
+
+These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding.
 
 ## Installed tools
 

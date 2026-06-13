@@ -1,7 +1,37 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "_comment": "ShipIt-managed Claude Code settings. Baked into /etc/shipit/managed-settings.json in the session-worker image. The orchestrator always passes --settings to the Claude CLI for the `claude` agent (see src/server/session/claude.ts) so the PreToolUse branch-block hook is always active. The Stop hook self-gates on the SHIPIT_AUTO_CREATE_PR env var, which the orchestrator sets only when autoCreatePr is on — see docs/129-stop-hook-pr-enforcement/plan.md and docs/130-block-branch-ops/plan.md. includeCoAuthoredBy is false so the Claude CLI omits the `Co-Authored-By: Claude` commit trailer and the `🤖 Generated with Claude Code` PR footer — ShipIt owns the commit/PR surface, so the upstream attribution is noise here.",
+  "_permissions_comment": "SHI-36 / docs/097: make the agent's permission posture EXPLICIT instead of relying on the CLI's headless defaults. `allow` codifies today's effective behavior (the same tools the orchestrator grants via --allowedTools — see AUTO_TOOLS in src/server/session/agents/claude/process.ts) so a future restrictive CLI default change can't silently break editing. `deny` is the load-bearing part: deny always overrides allow, so these sensitive trees can never be written even though `Write(**)`/`Edit(**)` are allowed. /etc/shipit/** is the agent's own settings + hooks (it must not rewrite its own permission policy); /root/.claude/** is the CLI's config + OAuth credentials; /credentials/** is ShipIt's auth bind mount. Note: these rules govern the file-edit tools (Edit/Write/MultiEdit/NotebookEdit), not arbitrary Bash — full containment is tracked separately under docs/172-agent-containment (egress + credential isolation).",
   "includeCoAuthoredBy": false,
+  "permissions": {
+    "allow": [
+      "Read(**)",
+      "Edit(**)",
+      "Write(**)",
+      "MultiEdit(**)",
+      "NotebookEdit(**)",
+      "Bash",
+      "Glob(**)",
+      "Grep(**)",
+      "WebFetch",
+      "WebSearch",
+      "AskUserQuestion"
+    ],
+    "deny": [
+      "Edit(/etc/shipit/**)",
+      "Write(/etc/shipit/**)",
+      "MultiEdit(/etc/shipit/**)",
+      "NotebookEdit(/etc/shipit/**)",
+      "Edit(/root/.claude/**)",
+      "Write(/root/.claude/**)",
+      "MultiEdit(/root/.claude/**)",
+      "NotebookEdit(/root/.claude/**)",
+      "Edit(/credentials/**)",
+      "Write(/credentials/**)",
+      "MultiEdit(/credentials/**)",
+      "NotebookEdit(/credentials/**)"
+    ]
+  },
   "hooks": {
     "PreToolUse": [
       {
