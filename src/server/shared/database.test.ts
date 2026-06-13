@@ -99,3 +99,101 @@ describe("Migration 21 — agent review tables + AI-draft sweep", () => {
     expect(comments.map((c) => c.id)).toEqual(["c1"]);
   });
 });
+
+/**
+ * docs/201 — the root_session_id migration backfills existing spawned rows by
+ * walking each `parent_session_id` chain to its top. The migration's walk is
+ * inline JS (not a single SQL string), so — mirroring the MIGRATION_21_SWEEP
+ * pattern above — we replicate that exact walk here and assert it against
+ * seeded pre-migration shapes (rows with a parent link but a NULL root).
+ */
+function runRootBackfill(db: DatabaseManager["db"]): void {
+  const spawned = db
+    .prepare("SELECT id, parent_session_id FROM sessions WHERE parent_session_id IS NOT NULL")
+    .all() as { id: string; parent_session_id: string }[];
+  const parentOf = new Map<string, string>();
+  for (const r of spawned) parentOf.set(r.id, r.parent_session_id);
+  const update = db.prepare("UPDATE sessions SET root_session_id = ? WHERE id = ?");
+  for (const r of spawned) {
+    const seen = new Set<string>([r.id]);
+    let cursor = r.parent_session_id;
+    let root = cursor;
+    while (parentOf.has(cursor) && !seen.has(cursor)) {
+      seen.add(cursor);
+      cursor = parentOf.get(cursor)!;
+      root = cursor;
+    }
+    update.run(root, r.id);
+  }
+}
+
+describe("docs/201 — root_session_id backfill walk", () => {
+  let dbManager: DatabaseManager;
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+  });
+
+  afterEach(() => {
+    dbManager.close();
+  });
+
+  const seed = (id: string, parent: string | null) =>
+    dbManager.db
+      .prepare(
+        "INSERT INTO sessions (id, title, created_at, last_used_at, parent_session_id) VALUES (?, ?, '2026-01-01', '2026-01-01', ?)",
+      )
+      .run(id, id, parent);
+
+  const rootOf = (id: string) =>
+    (dbManager.db.prepare("SELECT root_session_id FROM sessions WHERE id = ?").get(id) as { root_session_id: string | null })
+      .root_session_id;
+
+  it("stamps every descendant in a chain with the top-level ancestor", () => {
+    // root → child → grand → great, plus a second direct child (sibling) and an
+    // unrelated top-level session.
+    seed("root", null);
+    seed("child", "root");
+    seed("grand", "child");
+    seed("great", "grand");
+    seed("sibling", "root");
+    seed("other", null);
+
+    runRootBackfill(dbManager.db);
+
+    // Every spawned descendant resolves to the SAME top-level root, regardless
+    // of depth — this is what lets the sidebar group the whole brood.
+    expect(rootOf("child")).toBe("root");
+    expect(rootOf("grand")).toBe("root");
+    expect(rootOf("great")).toBe("root");
+    expect(rootOf("sibling")).toBe("root");
+    // Top-level sessions keep a NULL root (they ARE their own root).
+    expect(rootOf("root")).toBeNull();
+    expect(rootOf("other")).toBeNull();
+  });
+
+  it("is idempotent — re-running produces the same roots", () => {
+    seed("root", null);
+    seed("child", "root");
+    seed("grand", "child");
+
+    runRootBackfill(dbManager.db);
+    runRootBackfill(dbManager.db);
+
+    expect(rootOf("child")).toBe("root");
+    expect(rootOf("grand")).toBe("root");
+  });
+
+  it("terminates on a legacy parent-link cycle instead of looping forever", () => {
+    // a → b → a. Such a cycle shouldn't exist (the spawn-self-parent bug is
+    // fixed), but the visited-set guard must keep the walk bounded if one does.
+    seed("a", "b");
+    seed("b", "a");
+
+    expect(() => runRootBackfill(dbManager.db)).not.toThrow();
+    // Both rows get a (bounded) root within the cycle — the point is the walk
+    // returns at all rather than spinning.
+    expect(rootOf("a")).not.toBeNull();
+    expect(rootOf("b")).not.toBeNull();
+  });
+});

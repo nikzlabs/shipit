@@ -174,6 +174,19 @@ export interface SessionInfo {
    */
   spawnedByTurn?: string;
   /**
+   * docs/201 — the top-level ancestor of this session's spawn tree. A child can
+   * itself spawn grandchildren; `parentSessionId` is single-step, so the sidebar
+   * keys its grouping and merged-view-cap exemption off this ROOT instead — a
+   * whole brood (children + grandchildren + deeper) groups under one top-level
+   * session, and a descendant stays visible while its root is live regardless of
+   * how deep it sits. Computed once at spawn (`parent.rootSessionId ?? parent.id`)
+   * — no chain walking at read time. **Undefined on a top-level (user-created)
+   * session**: it IS its own root, so `!!parentSessionId` stays the "am I
+   * spawned?" test and only spawned descendants carry a root. `parentSessionId`
+   * is retained alongside for true immediate lineage / provenance.
+   */
+  rootSessionId?: string;
+  /**
    * docs/182 — true when the session's last completed turn ended in an error
    * (agent process error, or an `agent_result` carrying an error that wasn't a
    * deliberate interrupt). Persisted so it survives an orchestrator restart and

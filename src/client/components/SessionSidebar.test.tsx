@@ -432,6 +432,7 @@ describe("SessionSidebar", () => {
       title: "Live child",
       remoteUrl: repoA.url,
       parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
       createdAt: "2024-01-01T00:00:00.000Z",
     });
     const archivedChild = baseSession({
@@ -439,6 +440,7 @@ describe("SessionSidebar", () => {
       title: "Archived child",
       remoteUrl: repoA.url,
       parentSessionId: "parent-1",
+      rootSessionId: "parent-1",
       // Newer than the live child — would sort first without the archived key.
       createdAt: "2024-01-02T00:00:00.000Z",
       userArchived: true,
@@ -578,6 +580,7 @@ describe("SessionSidebar", () => {
           createdAt: "2024-01-04T00:00:00.000Z",
           lastUsedAt: "2024-01-04T00:00:00.000Z",
           parentSessionId: "s-parent",
+          rootSessionId: "s-parent",
         }),
         baseSession({
           id: "s-resolved",
@@ -857,8 +860,8 @@ describe("SessionSidebar", () => {
 
   describe("spawned-children collapse", () => {
     const parent = baseSession({ id: "parent-1", title: "Parent", remoteUrl: repoA.url });
-    const childA = baseSession({ id: "child-a", title: "Child A", remoteUrl: repoA.url, parentSessionId: "parent-1" });
-    const childB = baseSession({ id: "child-b", title: "Child B", remoteUrl: repoA.url, parentSessionId: "parent-1" });
+    const childA = baseSession({ id: "child-a", title: "Child A", remoteUrl: repoA.url, parentSessionId: "parent-1", rootSessionId: "parent-1" });
+    const childB = baseSession({ id: "child-b", title: "Child B", remoteUrl: repoA.url, parentSessionId: "parent-1", rootSessionId: "parent-1" });
 
     it("shows a caret on a parent that has spawned children", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA, childB]} />);
@@ -891,6 +894,54 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={[parent, childA]} currentSessionId="other" onResume={onResume} />);
       await user.click(screen.getByLabelText("Hide 1 spawned session"));
       expect(onResume).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("docs/201 nested brood (grandchildren)", () => {
+    // A grandchild's rootSessionId is the TOP ancestor (root-1), not its
+    // immediate parent (child-1) — the spawn path stamps it that way.
+    const root = baseSession({ id: "root-1", title: "Root", remoteUrl: repoA.url });
+    const child = baseSession({
+      id: "child-1",
+      title: "Child",
+      remoteUrl: repoA.url,
+      parentSessionId: "root-1",
+      rootSessionId: "root-1",
+    });
+    const grandchild = baseSession({
+      id: "grand-1",
+      title: "Grandchild",
+      remoteUrl: repoA.url,
+      parentSessionId: "child-1",
+      rootSessionId: "root-1",
+    });
+
+    it("renders a grandchild under its root (the pre-docs/201 bug hid it)", () => {
+      render(<SessionSidebar {...defaultProps} sessions={[root, child, grandchild]} />);
+      // All three visible — the grandchild used to vanish because the sidebar
+      // only nested direct children.
+      expect(screen.getByText("Root")).toBeTruthy();
+      expect(screen.getByText("Child")).toBeTruthy();
+      expect(screen.getByText("Grandchild")).toBeTruthy();
+      // The whole brood (child + grandchild) counts toward the root's caret.
+      expect(screen.getByLabelText("Hide 2 spawned sessions")).toBeTruthy();
+    });
+
+    it("collapsing the root hides the entire brood, grandchild included", async () => {
+      const user = userEvent.setup();
+      render(<SessionSidebar {...defaultProps} sessions={[root, child, grandchild]} />);
+      await user.click(screen.getByLabelText("Hide 2 spawned sessions"));
+      expect(screen.queryByText("Child")).toBeNull();
+      expect(screen.queryByText("Grandchild")).toBeNull();
+      expect(screen.getByText("Root")).toBeTruthy();
+    });
+
+    it("still shows a grandchild at top level when its root is absent from the group", () => {
+      // Root not in the list (e.g. archived/merged out): the orphan fallback
+      // renders the brood members at top level so they never disappear.
+      render(<SessionSidebar {...defaultProps} sessions={[child, grandchild]} />);
+      expect(screen.getByText("Child")).toBeTruthy();
+      expect(screen.getByText("Grandchild")).toBeTruthy();
     });
   });
 

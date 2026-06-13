@@ -208,7 +208,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       sessionId: string;
       branch: string;
       status: string;
-      session: { id: string; title: string; parentSessionId?: string; spawnedByTurn?: string };
+      session: { id: string; title: string; parentSessionId?: string; spawnedByTurn?: string; rootSessionId?: string };
     };
     // The agent cannot pick the branch name; it's always auto-generated
     // under the `shipit/` namespace.
@@ -217,13 +217,52 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(body.session.title).toBe("Port API");
     expect(body.session.parentSessionId).toBe(parentId);
     expect(body.session.spawnedByTurn).toBe("turn-1");
+    // docs/201 — a direct child's root ancestor IS its parent (the parent is
+    // top-level, so `parent.rootSessionId ?? parent.id` resolves to the parent).
+    expect(body.session.rootSessionId).toBe(parentId);
 
     // Persisted in SQLite — reload through SessionManager and the linkage
     // should still be there.
     const reloaded = sessionManager.get(body.sessionId);
     expect(reloaded?.parentSessionId).toBe(parentId);
     expect(reloaded?.spawnedByTurn).toBe("turn-1");
+    expect(reloaded?.rootSessionId).toBe(parentId);
     expect(reloaded?.branch).toBe(body.branch);
+  });
+
+  it("docs/201 — a grandchild inherits the root ancestor, not its immediate parent", { timeout: 20_000 }, async () => {
+    const rootId = await createParentSession();
+
+    // Spawn a child off the (top-level) root.
+    const childRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${rootId}/spawn`,
+      payload: { prompt: "Intermediate child work", title: "Child" },
+    });
+    expect(childRes.statusCode).toBe(200);
+    const childId = (childRes.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.rootSessionId).toBe(rootId);
+
+    // Now spawn a grandchild off the child. Its root must be the top-level
+    // session, NOT its immediate parent — this is what keeps a whole spawn tree
+    // grouped under one sidebar root and visible at any depth.
+    const grandRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${childId}/spawn`,
+      payload: { prompt: "Grandchild work", title: "Grandchild" },
+    });
+    expect(grandRes.statusCode).toBe(200);
+    const grand = (grandRes.json() as {
+      sessionId: string;
+      session: { parentSessionId?: string; rootSessionId?: string };
+    });
+    expect(grand.session.parentSessionId).toBe(childId);
+    expect(grand.session.rootSessionId).toBe(rootId);
+
+    // Persisted, not just echoed in the response.
+    const reloaded = sessionManager.get(grand.sessionId);
+    expect(reloaded?.parentSessionId).toBe(childId);
+    expect(reloaded?.rootSessionId).toBe(rootId);
   });
 
   it("POST /spawn rejects an empty prompt with 400", { timeout: 15_000 }, async () => {

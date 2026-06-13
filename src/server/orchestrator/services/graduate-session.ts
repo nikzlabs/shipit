@@ -98,6 +98,13 @@ export interface GraduateSessionOpts {
   parentSessionId?: string;
   /** Optional spawn-turn id paired with `parentSessionId`. */
   spawnedByTurn?: string;
+  /**
+   * docs/201 — top-level ancestor of the spawn tree, paired with
+   * `parentSessionId`. The spawn caller computes it as
+   * `parent.rootSessionId ?? parent.id`; forwarded verbatim to
+   * `setParentSession` so the sidebar can group a whole brood under one root.
+   */
+  rootSessionId?: string;
 }
 
 /**
@@ -117,7 +124,7 @@ export interface GraduateSessionOpts {
  */
 export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSessionOpts): void {
   const { sessionManager, runnerRegistry, repoStore, createGitManager, prStatusPoller, sseBroadcast, ensureAgentTokenFresh } = deps;
-  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn } = opts;
+  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, parentSessionId, spawnedByTurn, rootSessionId } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
@@ -131,7 +138,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
 
   // 4. Optional model + parent linkage (child + quick concerns).
   if (model) sessionManager.setModel(sessionId, model);
-  if (parentSessionId) sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn);
+  if (parentSessionId) sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
 
   // 5. Naming policy: AI rename only when caller pinned nothing AND the
   //    workspace exists. Either explicit field opts out — the caller's

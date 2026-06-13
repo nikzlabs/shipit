@@ -296,6 +296,11 @@ export async function spawnChildSession(
   // and does NOT fire AI naming (`generateSessionName`) — no extra model
   // round-trip per spawn. The branch row keeps the claim-time
   // `shipit/<random>` value.
+  // docs/201 — the child's root ancestor. If the parent is itself spawned it
+  // inherits the parent's root; otherwise the parent IS the root. Computed once
+  // here (one field read) so the chain is never walked at read time, and so a
+  // grandchild groups under the same top-level session as its parent.
+  const rootSessionId = parent.rootSessionId ?? parentSessionId;
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
@@ -304,6 +309,7 @@ export async function spawnChildSession(
     ...(explicitTitle ? { explicitTitle } : {}),
     ...((opts.model ?? parent.model) ? { model: (opts.model ?? parent.model)! } : {}),
     parentSessionId,
+    rootSessionId,
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
 

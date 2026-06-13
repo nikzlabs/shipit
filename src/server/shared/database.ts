@@ -538,6 +538,39 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN child_merged TEXT");
   },
+  // docs/201 — root-ancestor id for nested spawned sessions. A spawned child can
+  // itself spawn grandchildren; `parent_session_id` is single-step, so the
+  // sidebar groups a whole brood (children + grandchildren + deeper) under one
+  // top-level session by `root_session_id` and keeps the merged-view-cap
+  // exemption depth-independent (a descendant stays visible while its ROOT is
+  // live — the one-level parent check used to hide grandchildren once an
+  // intermediate child merged). NULL on a top-level session (it IS its own root;
+  // only spawned descendants carry a root). Backfill stamps existing spawned
+  // rows by walking each `parent_session_id` chain to its top exactly once, with
+  // a visited-set guard so a (legacy) parent-link cycle can't loop forever.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN root_session_id TEXT");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_sessions_root ON sessions(root_session_id)");
+    const spawned = db
+      .prepare("SELECT id, parent_session_id FROM sessions WHERE parent_session_id IS NOT NULL")
+      .all() as { id: string; parent_session_id: string }[];
+    const parentOf = new Map<string, string>();
+    for (const r of spawned) parentOf.set(r.id, r.parent_session_id);
+    const update = db.prepare("UPDATE sessions SET root_session_id = ? WHERE id = ?");
+    for (const r of spawned) {
+      // Walk to the topmost ancestor: stop when the current id has no parent in
+      // the spawned set (i.e. it's a top-level / user-created session).
+      const seen = new Set<string>([r.id]);
+      let cursor = r.parent_session_id;
+      let root = cursor;
+      while (parentOf.has(cursor) && !seen.has(cursor)) {
+        seen.add(cursor);
+        cursor = parentOf.get(cursor)!;
+        root = cursor;
+      }
+      update.run(root, r.id);
+    }
+  },
 ];
 
 export class DatabaseManager {
