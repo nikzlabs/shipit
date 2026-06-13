@@ -17,6 +17,11 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
+      # docs/150 (SHI-31) — non-root session worker runtime. See deployment/vps
+      # for the rationale; orchestrator HOME stays /root (auth.ts), only the
+      # session containers run as shipit(1000).
+      - SHIPIT_SESSION_WORKER_UID=1000
+      - AGENT_HOME=/home/shipit
       - WORKSPACE_VOLUME=shipit-prod_workspace
       - CREDENTIALS_VOLUME=shipit-prod_credentials
       - DOCKER_NETWORK=shipit-prod
