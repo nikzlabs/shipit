@@ -1278,9 +1278,25 @@ export class PrStatusPoller {
 
     // Capture whether this session was already promoted to a terminal state
     // before this verify, so the merge-driven side effects (archive,
-    // issue-lifecycle close) fire exactly once even if a forced verify races a
-    // poll that already promoted it.
-    const alreadyTerminal = this.mergedSessions.has(sessionId);
+    // issue-lifecycle close, notify-on-merge) fire exactly once per real merge.
+    //
+    // `mergedSessions` is the in-memory fire-once edge, but `trackSession()`
+    // wipes it — and the orchestrator re-tracks a session on every viewer
+    // reconnect / session activation (see index.ts), then forces a refresh.
+    // Relying on `mergedSessions` alone therefore re-promotes an already-merged
+    // PR on each re-track and re-fires the terminal callbacks (re-archive,
+    // `session_list` SSE fan-out, a bare-cache git refetch) without bound — the
+    // production repeat observed at the slow-poll cadence ("Post-merge: marked
+    // <id> as merged" logged dozens of times for one session). The persisted
+    // last-known PR state survives both a re-track and a restart (loadPersisted
+    // seeds it), so we also treat a PR already recorded terminal as terminal.
+    // A merge first observed only after a mid-merge restart still fires once:
+    // its persisted state was "open" at the last pre-restart poll.
+    const prevState = this.lastKnown.get(sessionId)?.prState;
+    const alreadyTerminal =
+      this.mergedSessions.has(sessionId)
+      || prevState === "merged"
+      || prevState === "closed";
 
     // Terminal state — merged or closed-without-merge. Build a summary
     // mirroring the previous catchUpProbe shape (placeholder checks /
