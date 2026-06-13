@@ -109,16 +109,115 @@ progressed:
    indicator, and reverts it to the normal (slower) disk-eviction ladder. No
    separate pin needed. The breadcrumb is display-only — it must not feed
    `resolvedAt()`, grouping, status color, or the eviction tier.
-2. `setPrStatus(id, null)` — clears the persisted merged summary so the client's
-   snapshot reconciliation prunes the stale "merged" card.
-3. Poller `reArm(sessionId)` — drop from `mergedSessions` and `trackSession`
-   again so GitHub polling resumes for the new PR.
+2. Poller `reArm(sessionId, supersededPrNumber)` — **silently** clear server
+   state: delete `lastKnown`, drop from `mergedSessions`, `setPrStatus(id, null)`,
+   and **record the superseded PR number** so the poller's own REST verify can't
+   immediately re-promote it (see "Suppressing re-detection of the superseded
+   PR"). Then `trackSession(sessionId)` to resume polling. Note: this
+   deliberately does **not** reuse `clearPersisted`, because `clearPersisted`
+   broadcasts a destructive `pr_status { removals: [sessionId] }` — see
+   "Transport: why no removal broadcast" below.
+3. `clearMerged(id)` + an **SSE** `session_list` rebroadcast (the merge callback
+   already broadcasts `session_list` on the way *in*, from `onMergeDetectedCb` in
+   `app-lifecycle.ts`). `clearMerged` only writes `merged_at = NULL`; the sidebar
+   regroups from the session list, consumed on the client **only over SSE**
+   (`useServerEvents`), so without a fresh `session_list` SSE broadcast the row
+   stays in "Recently resolved" with the merge icon until a reload.
 4. Fall through to the existing create/ready flow. Because the old PR is merged,
    `findPullRequest` (open-only) returns null, so `quickCreatePr` cleanly opens a
    **new** PR. The merge had deleted the remote branch, so the create path
-   re-pushes it first — already its behavior, no change needed.
+   re-pushes it first — already its behavior, no change needed. (Note: this
+   open-only null only covers `quickCreatePr`'s *create* call. The poller's
+   verify path uses an all-states query and would otherwise re-find the old
+   merged PR — that's what the suppression below handles.)
 
 If **not** progressed: return as today (stay merged, no GitHub call).
+
+### Suppressing re-detection of the superseded PR
+
+**This is the step that makes re-arm actually stick.** `trackSession` fires an
+immediate `pollRepo({ force: true })`. The re-armed branch is absent from the
+OPEN bulk view (its only PR is merged), so the poller runs `verifyMissingPr` →
+`findPullRequestAnyState`, which queries
+`?head=…&state=all&sort=updated&direction=desc&per_page=1` and returns the **old
+merged PR** (the most-recent, and possibly only, PR on the branch). With
+`merged_at` non-null the poller would re-promote: re-add to `mergedSessions`,
+`setPrStatus(merged)`, broadcast a `merged` `pr_status` over SSE, and re-fire
+`onMergeDetectedCb` (re-stamping `merged_at`). `applyPrStatusUpdates` has **no**
+terminal-regress guard for a `merged` SSE update, so it clobbers the freshly
+re-armed card back to merged and the row sinks to "Recently resolved" again —
+the re-arm would survive at most one poll tick.
+
+Fix: `reArm` records the superseded PR **number**, and `verifyMissingPr` ignores
+a terminal (merged/closed) result whose `number` equals the recorded superseded
+number — treating it as "no current PR" (session stays active, `ready` card
+stands) instead of re-promoting. The suppression clears as soon as a PR with a
+**different** number appears: once `quickCreatePr` opens the new PR, the
+all-states query returns *it* (more recently updated, open) → number differs →
+normal tracking resumes and the open card flows over SSE. The superseded number
+is the same value as the `previousMergedPr` breadcrumb, so it is recorded once
+and used for both the client note and this server-side suppression.
+
+### Transport: why no removal broadcast, and where re-arm must live
+
+The re-arm transition crosses **two independent client channels**, and the
+design must be correct regardless of their relative arrival order:
+
+- The new card from the post-turn flow (`emitPrLifecycleAfterCommit`) is emitted
+  over the **per-session WebSocket** as `pr_lifecycle_update` → `updateCard`.
+- Poller status (and any `pr_status` removal) travels over the **global SSE**
+  channel → `applyPrStatusUpdates`.
+
+Two consequences:
+
+1. **No destructive removal broadcast.** A `pr_status` removal and the new WS
+   card are on different transports with no cross-channel ordering. If the
+   removal arrives *after* the new card, it deletes the freshly-shown card and
+   the user is left with nothing. So re-arm clears the poller's server state
+   *silently* (step 2) and relies on two non-racing convergence paths instead:
+   reconnecting viewers get a clean snapshot (snapshot reconciliation already
+   prunes poller-phase cards absent from `updates` — `applyPrStatusUpdates`
+   `isSnapshot` branch), and the new card replaces the stale one (next point).
+2. **The re-armed card must override the terminal guard.** `updateCard` refuses
+   to regress a card from a terminal phase (`pr-store.ts` lines 311-314, asserted
+   by `pr-store.test.ts`): existing `merged`/`closed` + incoming non-terminal →
+   state unchanged. So the WS `ready`/`creating` card would be dropped while the
+   merged card is still present. Fix: the re-armed card carries the
+   `previousMergedPr` breadcrumb, and `updateCard`'s guard is amended to let a
+   card carrying that breadcrumb replace a terminal card. This is order-
+   independent: whether or not anything else has arrived, the breadcrumb card
+   wins, and there is no later destructive message to undo it. (The auto-create
+   **open** card needs no special-casing — it arrives over SSE via the poller,
+   and `applyPrStatusUpdates` has no terminal-regress guard, so it overwrites the
+   merged card for all viewers.)
+
+**Where re-arm is orchestrated.** Steps 2–3 need `sseBroadcast` (for
+`session_list`) and the poller — neither is available inside
+`emitPrLifecycleAfterCommit` (its `PrLifecycleDeps` only carries the
+per-connection WS `emit`). The detect → `clearMerged` → `reArm` →
+`sseBroadcast("session_list")` step must run *before* delegating to
+`emitPrLifecycleAfterCommit` for the card.
+
+There are **two** post-turn entry points that call `emitPrLifecycleAfterCommit`,
+and re-arm must cover both or a rebase in one of them silently fails to re-arm:
+
+- the interactive WS-handler path (`ws-handlers/agent-execution.ts` —
+  `postTurnPrFlow`), and
+- the dispatch / system-turn path wired in `runner-registry-factory.ts` (used by
+  spawned children, CI auto-fix, and programmatic `shipit session message`
+  turns via `runSystemTurn`).
+
+`sseBroadcast` and the poller are in scope at **both** (the dispatch site has
+`RunnerRegistryDeps.sseBroadcast` and resolves the poller via
+`getPrStatusPoller?.()`). Factor the detect → `clearMerged` → `reArm` →
+`session_list` step into a **shared helper** that both `postTurnPrFlow` closures
+call before `emitPrLifecycleAfterCommit`, rather than inlining it into only one.
+
+**Secondary-viewer note (auto-create OFF only).** The `ready` card is
+per-connection WS, so other open tabs don't receive it (this is pre-existing
+`ready`-card behavior). With no destructive removal, their stale merged card
+persists until they reconnect (snapshot prunes it) or the user opens the new PR
+(SSE open card overwrites it). Acceptable; called out so it isn't a surprise.
 
 ## Auto-archive / visual-archive
 
@@ -160,7 +259,10 @@ purple. The two parts come from different places:
   the prior PR number + url (+ title). This is display-only: it must **not**
   feed `resolvedAt()`, grouping, the status color, or the eviction tier. It is
   surfaced on the re-armed **"ready"** card (`phase: "ready"`) as a subtle note,
-  e.g. "Previously merged #N · ready for a new PR".
+  e.g. "Previously merged #N · ready for a new PR". The breadcrumb does
+  double duty as the **override signal**: a card carrying `previousMergedPr` is
+  what lets `updateCard` bypass its terminal-regress guard (see "Transport"
+  below), so the re-armed card is accepted regardless of channel arrival order.
 
 Net: a fresh-looking (gray, Active) session that quietly remembers it shipped
 once.
@@ -205,11 +307,12 @@ once.
 |---|---|---|
 | Detection | `src/server/shared/git.ts` | Add two-dot diff + `advancedBeyondMergedBase(base)` (uses existing `mergeBase()`); do **not** reuse three-dot `diffStatVsBranch` |
 | Un-merge | `src/server/orchestrator/sessions.ts` | Add `clearMerged(id)` (sets `merged_at = NULL`, stashes prior-PR breadcrumb); add breadcrumb column + `toRow`/`fromRow` + migration |
-| Re-arm | `src/server/orchestrator/pr-status-poller.ts` | `reArm(sessionId)` — drop from `mergedSessions`, `trackSession` |
-| Post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Replace `if (session.mergedAt) return` with detect → re-arm → fall through; pass the breadcrumb onto the `ready` card |
-| Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready` card |
-| Sidebar | `src/client/components/SessionSidebar.tsx` | No change — gray/Active is the natural result of cleared `merged_at`; confirm the row leaves "Recently resolved" |
-| Client | `src/client/stores/pr-store.ts` | Verify snapshot reconciliation prunes the merged card; SSE session-update carries cleared `merged_at` so the session regroups to Active |
+| Re-arm + suppression | `src/server/orchestrator/pr-status-poller.ts` | `reArm(sessionId, supersededPrNumber)` — **silently** clear `lastKnown` + `mergedSessions` + `setPrStatus(null)`, record superseded PR number, then `trackSession`. `verifyMissingPr` ignores a terminal result whose `number` == the recorded superseded number until a different-numbered PR appears |
+| Detection check + post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Detection helper + pass the `previousMergedPr` breadcrumb onto the `ready`/`open` card; relax the `if (session.mergedAt) return` guard for the progressed case |
+| Re-arm orchestration | **shared helper** called by both `postTurnPrFlow` sites — `ws-handlers/agent-execution.ts` AND `runner-registry-factory.ts` (dispatch/system-turn) | Both have `sseBroadcast` + poller in scope: detect → `clearMerged` → `reArm` → `sseBroadcast("session_list")` → then card emit. Wiring only one drops re-arm for spawned/CI/programmatic turns |
+| Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready`/`open` card |
+| Sidebar | `src/client/components/SessionSidebar.tsx` | No styling change — gray/Active is the natural result of cleared `merged_at`; requires the `session_list` SSE rebroadcast to regroup live, not just on reload |
+| Client store | `src/client/stores/pr-store.ts` | Amend `updateCard`'s terminal-regress guard (lines 311-314) to let a card carrying `previousMergedPr` replace a `merged`/`closed` card (order-independent override; no removal broadcast to race it) |
 
 ## Testing
 
