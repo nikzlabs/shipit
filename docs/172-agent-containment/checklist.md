@@ -28,12 +28,23 @@ tracker as separate issues. None implemented yet.
       repo-scoped tokens (GitHub App installation tokens, minutes-long TTL, minted
       per-turn) and/or out-of-process git (push/pull from the orchestrator host so the
       token never enters the container), with Gap 1 egress as the backstop.
-- [ ] **Gap 1 — outbound egress allowlist.** Default-deny egress for session containers
-      via an orchestrator-controlled proxy or `internal` network + NAT gateway; inject
-      and enforce `HTTP_PROXY`/`HTTPS_PROXY`; allow only known hosts (agent APIs, git
-      host, package registries).
-- [ ] **Gap 1 — identity-validating proxy** for allowlisted multi-tenant hosts so an
-      approved API can't be used to upload into an attacker's account.
+- [x] **Gap 1 — outbound egress allowlist (Phase 1, SHI-90).** Default-deny egress via an
+      orchestrator-controlled forward proxy (`egress-proxy.ts`) gating a configurable host
+      allowlist (`egress-allowlist.ts`): the agent APIs, the git host (`.github.com`),
+      package registries (npm/yarn/pypi), `SESSION_EGRESS_ALLOWLIST` extras, and live MCP
+      hosts from the credential store. Containers are pointed at it via
+      `HTTP_PROXY`/`HTTPS_PROXY` (`buildEnv`), with `NO_PROXY` bypassing the orchestrator's
+      own traffic; the proxy answers 403 for any non-allowlisted host. Wired in
+      `app-lifecycle.ts` behind `SESSION_EGRESS_PROXY=1`. Tests: `egress-allowlist.test.ts`
+      (matcher incl. look-alike rejection + dynamic MCP hosts), `egress-proxy.test.ts`
+      (CONNECT + HTTP deny-403 / allow-forward over real sockets — the exfil-fails
+      acceptance), `container-lifecycle.test.ts` (env injection).
+- [ ] **Gap 1 — network-layer default-deny (follow-up).** Pair the proxy with an `internal`
+      Docker network + NAT gateway so the proxy is the *only* egress route and a raw socket
+      can't bypass the `HTTP_PROXY` env var. Deployment-topology change; ships as a
+      documented operator requirement alongside `SESSION_EGRESS_PROXY` until done.
+- [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
+      an approved API can't be used to upload into an attacker's account.
 
 ## P1
 

@@ -368,6 +368,37 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("COMPOSE_PROJECT_NAME="))).toBe(false);
   });
 
+  // docs/172 Gap 1 (SHI-90) — egress proxy env injection.
+  it("docs/172: injects HTTP(S)_PROXY + NO_PROXY when an egress proxy is configured", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, process.env, {
+      host: "10.0.0.2",
+      port: 8888,
+      noProxyHosts: ["orch-host", "10.0.0.2"],
+    });
+    expect(env).toContain("HTTP_PROXY=http://10.0.0.2:8888");
+    expect(env).toContain("HTTPS_PROXY=http://10.0.0.2:8888");
+    expect(env).toContain("http_proxy=http://10.0.0.2:8888");
+    expect(env).toContain("https_proxy=http://10.0.0.2:8888");
+    // NO_PROXY always carries the loopback entries plus the provided hosts,
+    // de-duplicated (10.0.0.2 appears once).
+    const noProxy = env.find((e) => e.startsWith("NO_PROXY="));
+    expect(noProxy).toBeDefined();
+    const hosts = noProxy!.slice("NO_PROXY=".length).split(",");
+    expect(hosts).toContain("localhost");
+    expect(hosts).toContain("127.0.0.1");
+    expect(hosts).toContain("::1");
+    expect(hosts).toContain("orch-host");
+    expect(hosts.filter((h) => h === "10.0.0.2")).toHaveLength(1);
+    expect(env).toContain(`no_proxy=${noProxy!.slice("NO_PROXY=".length)}`);
+  });
+
+  it("docs/172: injects NO proxy env when no egress proxy is configured (default off)", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined);
+    expect(env.some((e) => e.startsWith("HTTP_PROXY="))).toBe(false);
+    expect(env.some((e) => e.startsWith("HTTPS_PROXY="))).toBe(false);
+    expect(env.some((e) => e.startsWith("NO_PROXY="))).toBe(false);
+  });
+
   it("passes through a stable orchestrator host override for worker callbacks", async () => {
     const oldHost = process.env.SHIPIT_ORCHESTRATOR_HOST;
     const oldFallbacks = process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;

@@ -1,0 +1,184 @@
+/**
+ * Tests for the egress allowlist (docs/172 Gap 1, SHI-90).
+ */
+
+import { describe, it, expect } from "vitest";
+import {
+  EGRESS_DEFAULT_ALLOWLIST,
+  normalizeHost,
+  hostMatchesEntry,
+  makeAllowlist,
+  parseAllowlistEnv,
+  hostFromUrl,
+  mcpHostsFromCredentialStore,
+  buildEgressAllowlist,
+} from "./egress-allowlist.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
+
+// ---------------------------------------------------------------------------
+// normalizeHost / hostMatchesEntry
+// ---------------------------------------------------------------------------
+
+describe("normalizeHost", () => {
+  it("lowercases and strips a single trailing dot", () => {
+    expect(normalizeHost("API.GitHub.COM")).toBe("api.github.com");
+    expect(normalizeHost("github.com.")).toBe("github.com");
+    expect(normalizeHost("  github.com  ")).toBe("github.com");
+  });
+});
+
+describe("hostMatchesEntry", () => {
+  it("exact entry matches only the exact host", () => {
+    expect(hostMatchesEntry("github.com", "github.com")).toBe(true);
+    expect(hostMatchesEntry("api.github.com", "github.com")).toBe(false);
+    expect(hostMatchesEntry("notgithub.com", "github.com")).toBe(false);
+  });
+
+  it("suffix entry (.x) matches the bare domain and subdomains", () => {
+    expect(hostMatchesEntry("github.com", ".github.com")).toBe(true);
+    expect(hostMatchesEntry("api.github.com", ".github.com")).toBe(true);
+    expect(hostMatchesEntry("codeload.github.com", ".github.com")).toBe(true);
+  });
+
+  it("suffix entry does NOT match a look-alike that merely ends in the string", () => {
+    // The classic allowlist bypass: "evil-github.com" should not match ".github.com".
+    expect(hostMatchesEntry("evilgithub.com", ".github.com")).toBe(false);
+    expect(hostMatchesEntry("github.com.attacker.com", ".github.com")).toBe(false);
+  });
+
+  it("is case-insensitive and FQDN-tolerant", () => {
+    expect(hostMatchesEntry("API.GITHUB.COM.", ".github.com")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// makeAllowlist
+// ---------------------------------------------------------------------------
+
+describe("makeAllowlist", () => {
+  it("de-duplicates normalized entries", () => {
+    const al = makeAllowlist(["github.com", "GitHub.com", "github.com."]);
+    expect(al.entries).toEqual(["github.com"]);
+  });
+
+  it("isAllowed returns false for the empty host", () => {
+    const al = makeAllowlist(["github.com"]);
+    expect(al.isAllowed("")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseAllowlistEnv / hostFromUrl
+// ---------------------------------------------------------------------------
+
+describe("parseAllowlistEnv", () => {
+  it("splits on commas and whitespace, trims, drops blanks", () => {
+    expect(parseAllowlistEnv("a.com, b.com   c.com,,")).toEqual(["a.com", "b.com", "c.com"]);
+  });
+  it("returns [] for undefined/empty", () => {
+    expect(parseAllowlistEnv(undefined)).toEqual([]);
+    expect(parseAllowlistEnv("")).toEqual([]);
+  });
+});
+
+describe("hostFromUrl", () => {
+  it("extracts the normalized host", () => {
+    expect(hostFromUrl("https://mcp.example.com/mcp")).toBe("mcp.example.com");
+    expect(hostFromUrl("https://MCP.Example.com:8443/x")).toBe("mcp.example.com");
+  });
+  it("returns null for unparseable URLs", () => {
+    expect(hostFromUrl("not a url")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mcpHostsFromCredentialStore — minimal stub of the store surface used
+// ---------------------------------------------------------------------------
+
+function stubStore(opts: {
+  servers?: Record<string, McpServerConfig>;
+  oauth?: Record<string, OAuthTokens>;
+}): CredentialStore {
+  return {
+    getAllMcpServers: () => opts.servers ?? {},
+    getAllMcpOAuthTokens: () => opts.oauth ?? {},
+  } as unknown as CredentialStore;
+}
+
+describe("mcpHostsFromCredentialStore", () => {
+  it("collects hosts from configured HTTP MCP servers", () => {
+    const store = stubStore({
+      servers: {
+        custom: { name: "custom", type: "http", url: "https://mcp.acme.dev/sse", enabled: true },
+        local: { name: "local", type: "stdio", command: "npx", enabled: true },
+      },
+    });
+    expect(mcpHostsFromCredentialStore(store)).toEqual(["mcp.acme.dev"]);
+  });
+
+  it("collects hosts from OAuth-connected providers (e.g. Notion)", () => {
+    const store = stubStore({ oauth: { notion_oauth: { accessToken: "t" } } });
+    expect(mcpHostsFromCredentialStore(store)).toContain("mcp.notion.com");
+  });
+
+  it("ignores unknown OAuth sources", () => {
+    const store = stubStore({ oauth: { made_up_source: { accessToken: "t" } } });
+    expect(mcpHostsFromCredentialStore(store)).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildEgressAllowlist — composition + acceptance-style checks
+// ---------------------------------------------------------------------------
+
+describe("buildEgressAllowlist", () => {
+  it("allows the core agent / git / registry hosts by default", () => {
+    const al = buildEgressAllowlist();
+    expect(al.isAllowed("api.anthropic.com")).toBe(true);
+    expect(al.isAllowed("github.com")).toBe(true);
+    expect(al.isAllowed("api.github.com")).toBe(true);
+    expect(al.isAllowed("codeload.github.com")).toBe(true);
+    expect(al.isAllowed("registry.npmjs.org")).toBe(true);
+    expect(al.isAllowed("api.openai.com")).toBe(true);
+  });
+
+  it("DENIES an arbitrary attacker host (the core acceptance criterion)", () => {
+    const al = buildEgressAllowlist();
+    expect(al.isAllowed("attacker.com")).toBe(false);
+    expect(al.isAllowed("evil.example.com")).toBe(false);
+    // look-alike that ends with an allowlisted suffix but isn't a subdomain
+    expect(al.isAllowed("api.anthropic.com.attacker.com")).toBe(false);
+  });
+
+  it("honors operator-supplied extra hosts", () => {
+    const al = buildEgressAllowlist({ extraHosts: ["internal-registry.corp"] });
+    expect(al.isAllowed("internal-registry.corp")).toBe(true);
+    expect(al.isAllowed("attacker.com")).toBe(false);
+  });
+
+  it("allows configured MCP hosts dynamically from the credential store", () => {
+    const store = stubStore({
+      servers: { acme: { name: "acme", type: "http", url: "https://mcp.acme.dev/sse", enabled: true } },
+    });
+    const al = buildEgressAllowlist({ credentialStore: store });
+    expect(al.isAllowed("mcp.acme.dev")).toBe(true);
+    expect(al.isAllowed("attacker.com")).toBe(false);
+  });
+
+  it("re-reads MCP hosts on each call (a server connected mid-session takes effect)", () => {
+    const servers: Record<string, McpServerConfig> = {};
+    const store = stubStore({ servers });
+    const al = buildEgressAllowlist({ credentialStore: store });
+    expect(al.isAllowed("mcp.late.dev")).toBe(false);
+    servers.late = { name: "late", type: "http", url: "https://mcp.late.dev/sse", enabled: true };
+    expect(al.isAllowed("mcp.late.dev")).toBe(true);
+  });
+
+  it("base default list is non-empty and all suffix/exact entries normalize", () => {
+    expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
+    for (const e of EGRESS_DEFAULT_ALLOWLIST) {
+      expect(normalizeHost(e)).toBe(e); // already normalized in source
+    }
+  });
+});

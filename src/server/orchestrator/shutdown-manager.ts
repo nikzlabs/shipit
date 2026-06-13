@@ -19,6 +19,8 @@ export interface ShutdownDeps {
   authManagers: Map<AgentId, AgentAuthManager>;
   runnerRegistry: SessionRunnerRegistry;
   dockerProxyServer: HttpServer | null;
+  /** docs/172 Gap 1 (SHI-90) — egress forward proxy, when enabled. */
+  egressProxyServer: HttpServer | null;
   containerManager: SessionContainerManager | null;
   databaseManager: DatabaseManager;
 }
@@ -38,6 +40,9 @@ export function registerShutdownHook(
     shutdownDeps.runnerRegistry.disposeAll();
     if (shutdownDeps.dockerProxyServer) {
       await new Promise<void>((resolve) => shutdownDeps.dockerProxyServer!.close(() => resolve()));
+    }
+    if (shutdownDeps.egressProxyServer) {
+      await new Promise<void>((resolve) => shutdownDeps.egressProxyServer!.close(() => resolve()));
     }
     if (shutdownDeps.containerManager) {
       await shutdownDeps.containerManager.dispose();

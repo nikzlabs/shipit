@@ -182,17 +182,25 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 Honesty is part of the security model. These are the gaps ShipIt is aware of, the reasoning
 for accepting them today, and where they're headed.
 
-- **Unrestricted agent network egress (the big one).** Agent containers have full outbound
-  internet access. That means any credential reachable inside the container — the agent
-  CLI's own OAuth/subscription token, MCP server tokens, any secret you explicitly marked
-  as reachable by the agent, and the GitHub PAT the credential helper will hand out on
-  request — can be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it to an
-  attacker). Brokering keeps the PAT off disk so it's no longer a trivial read, but it
-  doesn't stop a determined agent from requesting it through the helper; egress control, not
-  brokering, is what ultimately contains that. The planned mitigation is an
-  **orchestrator-side forward proxy with a host allow-list** (GitHub, your configured
-  Anthropic/MCP endpoints), so egress is restricted to the hosts the agent legitimately
-  needs. Until then: treat anything reachable inside the container as reachable by a
+- **Agent network egress (the big one — now mitigable).** Any credential reachable inside the
+  container — the agent CLI's own OAuth/subscription token, MCP server tokens, any secret you
+  explicitly marked as reachable by the agent, and the GitHub PAT the credential helper will
+  hand out on request — can be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it
+  to an attacker) if the container can reach an arbitrary host. Brokering keeps the PAT off
+  disk so it's no longer a trivial read, but it doesn't stop a determined agent from requesting
+  it through the helper; egress control, not brokering, is what ultimately contains that.
+  The mitigation (SHI-90, docs/172 Gap 1) is an **orchestrator-controlled forward proxy with a
+  default-deny host allowlist** (the agent API, the git host, package registries, your
+  configured MCP servers) — `egress-proxy.ts` + `egress-allowlist.ts`. Containers are pointed
+  at it via `HTTP_PROXY`/`HTTPS_PROXY`, and a request to any non-allowlisted host gets a 403.
+  Enable it with `SESSION_EGRESS_PROXY=1`; extend the allowlist with `SESSION_EGRESS_ALLOWLIST`.
+  **Caveat (Phase 1):** the env-var proxy is honored by well-behaved clients (git, npm, curl,
+  the agent CLIs) but is bypassable by an agent that opens a raw socket — full enforcement
+  requires pairing it with a **network-layer default-deny** so the proxy is the *only* egress
+  route (an `internal` Docker network + NAT gateway, a deployment-topology change tracked as
+  the Gap 1 follow-up). An **identity-validating proxy** for multi-tenant allowlisted hosts
+  (so an approved API can't upload into an attacker's account) is Phase 2. Until the network
+  layer is paired in: treat anything reachable inside the container as reachable by a
   compromised agent.
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /

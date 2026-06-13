@@ -9,6 +9,8 @@ import { isOverlayEnabled } from "./overlay-session.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { createDockerProxy, resolveOwnContainerIp } from "./docker-proxy.js";
 import type { SessionInfo as DockerProxySessionInfo } from "./docker-proxy.js";
+import { createEgressProxy } from "./egress-proxy.js";
+import { buildEgressAllowlist, parseAllowlistEnv } from "./egress-allowlist.js";
 import type { SessionInfo } from "../shared/types.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
 import type { MergeWatchManager } from "./merge-watch.js";
@@ -100,6 +102,13 @@ export interface ContainerSetupDeps {
   stateDir?: string;
   sessionManager: SessionManager;
   /**
+   * docs/172 Gap 1 (SHI-90) — live credential store, used to derive the
+   * configured MCP server hosts for the egress allowlist. Optional: without it
+   * the allowlist still covers the base hosts + `SESSION_EGRESS_ALLOWLIST`,
+   * just not user-configured MCP servers.
+   */
+  credentialStore?: CredentialStore;
+  /**
    * Runtime mode. When `"local"`, container construction is skipped entirely
    * (no Docker, no proxy, no health monitor). See feature 118 for the cut
    * between containerized and local modes — and the "isTestMode ≠ runtimeMode
@@ -112,6 +121,8 @@ export interface ContainerSetupDeps {
 export interface ContainerSetupResult {
   containerManager: SessionContainerManager | null;
   dockerProxyServer: HttpServer | null;
+  /** docs/172 Gap 1 (SHI-90) — egress forward proxy, when enabled. */
+  egressProxyServer: HttpServer | null;
 }
 
 /**
@@ -130,7 +141,7 @@ export async function setupContainerManager(
   // Distinct from `isTestMode` — see hardening note in the plan.
   if (runtimeMode === "local") {
     console.log("[server] Runtime mode: local — skipping Docker container setup");
-    return { containerManager: null, dockerProxyServer: null };
+    return { containerManager: null, dockerProxyServer: null, egressProxyServer: null };
   }
 
   let containerManager: SessionContainerManager | null = null;
@@ -231,7 +242,59 @@ export async function setupContainerManager(
     }
   }
 
-  return { containerManager, dockerProxyServer };
+  // ---- Egress forward proxy (docs/172 Gap 1, SHI-90) ----
+  // Default-deny outbound egress for session containers: their HTTP(S) clients
+  // are pointed at this proxy, which only forwards to allowlisted hosts (agent
+  // APIs, the git host, package registries, configured MCP servers). Gated on
+  // SESSION_EGRESS_PROXY so a deployment that hasn't yet paired it with the
+  // network-layer default-deny (see shipit-docs/security.md) is byte-for-byte
+  // unchanged. The dockerProxy pattern is mirrored exactly.
+  let egressProxyServer: HttpServer | null = null;
+  if (containerManager && !isTestMode && process.env.SESSION_EGRESS_PROXY === "1") {
+    try {
+      const advertiseIp = await resolveOwnContainerIp(process.env.DOCKER_NETWORK);
+      const allowlist = buildEgressAllowlist({
+        extraHosts: parseAllowlistEnv(process.env.SESSION_EGRESS_ALLOWLIST),
+        credentialStore: setupDeps.credentialStore,
+      });
+      // Hosts the container must reach directly (NOT through the egress proxy):
+      // the orchestrator API + docker proxy share this container's address, and
+      // the agent resolves the orchestrator by hostname (buildOrchestratorCallbackEnv).
+      const noProxyHosts = [
+        advertiseIp,
+        process.env.SHIPIT_ORCHESTRATOR_HOST,
+        (await import("node:os")).hostname(),
+        ...parseAllowlistEnv(process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS),
+      ].filter((h): h is string => Boolean(h));
+      const proxy = createEgressProxy({
+        allowlist,
+        onDenied: (host) =>
+          console.warn(`[egress] DENY ${host} — not on allowlist (${allowlist.entries.length} base entries)`),
+      });
+      await new Promise<void>((resolve) => {
+        proxy.listen(0, "0.0.0.0", () => {
+          const addr = proxy.address();
+          if (addr && typeof addr === "object") {
+            containerManager.setEgressProxy(advertiseIp, addr.port, noProxyHosts);
+            console.log(
+              `[server] Egress proxy listening on 0.0.0.0:${addr.port} (advertised as ${advertiseIp}); ` +
+                `default-deny with ${allowlist.entries.length} base allowlist entries`,
+            );
+          }
+          resolve();
+        });
+        proxy.on("error", (err) => {
+          console.warn(`[server] Egress proxy failed to start: ${err.message}`);
+          resolve();
+        });
+      });
+      egressProxyServer = proxy;
+    } catch (err) {
+      console.warn(`[server] Egress proxy setup skipped: ${(err as Error).message}`);
+    }
+  }
+
+  return { containerManager, dockerProxyServer, egressProxyServer };
 }
 
 // ---- Runner factory ----

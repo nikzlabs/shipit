@@ -96,3 +96,26 @@ Agent containers have default limits (1536 MB memory, 0.5 CPU, 256 PIDs) that
 can be increased via the `agent` section in `shipit.yaml`. See
 [shipit-yaml.md](shipit-yaml.md) for details. Service containers have their
 own resource limits set in `docker-compose.yml`.
+
+## Outbound network egress
+
+On deployments with egress control enabled, the session container's outbound
+network access is **default-deny**: HTTP(S) traffic is funneled through an
+orchestrator-controlled forward proxy that only permits an allowlist of known
+hosts — the agent's own API, the git host (`github.com`), package registries
+(npm, yarn, PyPI), and the user's configured MCP servers. Everything else is
+refused with a `403`.
+
+This is a security backstop (it stops a prompt-injected agent from exfiltrating
+credentials to an arbitrary host), not a bug. If a command that reaches the
+network fails with a proxy `403` or a connection error to an unexpected host,
+the host is simply not on the allowlist — don't try to work around it by
+disabling the proxy or opening a raw socket. If a build genuinely needs another
+host (a private registry, a vendor CDN), that host belongs on the operator's
+`SESSION_EGRESS_ALLOWLIST`; surface the blocked host to the user so they can add
+it rather than routing around the control.
+
+The proxy is exposed to the container via the standard `HTTP_PROXY` /
+`HTTPS_PROXY` environment variables (with `NO_PROXY` covering ShipIt's own
+orchestrator endpoints), so well-behaved tools (git, npm, curl, the agent CLI)
+pick it up automatically.
