@@ -95,10 +95,24 @@ tracker as separate issues. None implemented yet.
             `EGRESS_RESOLVER_LABEL` (`shipit-egress-resolver=<sid>`) on the resolver and
             exclude it from the sweep (keeping the parent-session label for destroy-time
             cleanup). See `egress-dns-install.ts`, `container-lifecycle.ts`, `service-manager.ts`.
-    - [ ] **Re-verify on a live host after the fix** (rebuild `shipit-egress-sidecar`): the
-          extended SHI-90 Tier B checks must now PASS NON-VACUOUSLY — allowlisted names
-          resolve AND `npm`/`git` reach their hosts, while `dig data.attacker.com` → empty,
-          `dig @8.8.8.8` → blocked, and the worker→orchestrator control channel still works.
+    - [x] **Re-verified on a live host after the fix — PASS, non-vacuously.** Rebuilt
+          `shipit-egress-sidecar`, both flags on, fresh session: allowlisted names resolve
+          (anthropic/npm/github) AND `npm`/`git` reach their hosts AND a real agent turn
+          round-trips, while `data.attacker.com` → fast refuse, `@8.8.8.8` → blocked, the
+          literal-IP Tier A floor holds, and the resolver survives the compose stale-sweep.
+          Both nat-REDIRECT (Bug 1) and the resolver label exclusion (Bug 2) confirmed in
+          the live agent netns. Sidecar build context is `docker/` (the `COPY` paths are
+          `egress-sidecar/*`): `docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:dev docker/`.
+    - [x] **Coupled the resolver's internal-name allowlist to `SHIPIT_HOST` (host-verify
+          follow-up).** The re-verify surfaced a third, latent issue: the worker→orchestrator
+          callback host (`SHIPIT_HOST`) is derived from `SHIPIT_ORCHESTRATOR_HOST || os.hostname()`,
+          but the Tier B resolver allowlist (`orchestratorInternalNames`) read ONLY
+          `SHIPIT_ORCHESTRATOR_HOST`. When unset (the dev compose), `SHIPIT_HOST` was still
+          set to `os.hostname()` but dnsmasq allowlisted nothing → the callback channel broke
+          under Tier B. Fixed by deriving both from one shared `orchestratorCallbackHost()`
+          (`egress-dns-install.ts`), so they can't diverge, AND adding
+          `SHIPIT_ORCHESTRATOR_HOST=shipit`/`SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit` to the
+          dev compose for prod parity (prod already sets them).
   - [ ] **Tier C** — transparent SNI/CONNECT proxy (reuse the matcher) for hostname-level
         HTTPS policy, the allow-once / add-to-allowlist inline card (deny-fast + retry,
         persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env

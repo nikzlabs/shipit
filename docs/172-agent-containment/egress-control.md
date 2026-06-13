@@ -138,6 +138,14 @@ Key properties:
   >    of `killStaleContainers`, which SIGKILLed it the moment the compose stack started. It
   >    now also carries a distinct `shipit-egress-resolver=<sid>` label that the sweep
   >    excludes (parent-session is kept only for destroy-time teardown).
+  > 3. **The resolver's internal-name allowlist must track `SHIPIT_HOST`, not a parallel env.**
+  >    The worker dials the orchestrator at `SHIPIT_HOST` (`SHIPIT_ORCHESTRATOR_HOST ||
+  >    os.hostname()`), but the resolver allowlist read only `SHIPIT_ORCHESTRATOR_HOST` — so
+  >    an env that left it unset allowlisted nothing while still pointing the worker at
+  >    `os.hostname()`, breaking the callback under Tier B (dnsmasq refuses every name it
+  >    isn't told about). Both now derive from one `orchestratorCallbackHost()` so they can't
+  >    diverge; prod and the dev compose set `SHIPIT_ORCHESTRATOR_HOST=shipit` for an explicit,
+  >    stable alias.
 - **Tier C** adds the transparent proxy for L7: hostname-level HTTPS policy that survives
   shared CDN IPs, the **allow-once / add-to-allowlist** interactive flow, per-host
   observability, and the hook for the Phase-2 identity-validating proxy (verify a request
