@@ -1247,7 +1247,10 @@ export default function App() {
       {!showHomeScreen && !showNewSessionView && wsSessionId && (
         <PrLifecycleCard
           sessionId={wsSessionId}
-          onOpenDetails={() => handleTabChange("pr")}
+          onOpenDetails={() => {
+            handleTabChange("pr");
+            useUiStore.getState().setMobilePanel("preview");
+          }}
           onCreatePr={handleCreatePr}
           canAutoMerge={!!currentSession?.remoteUrl}
           onSearch={() => setSearchOpen(true)}
