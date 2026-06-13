@@ -225,10 +225,10 @@ describe("overlay-publish: publishDepDirOverlayBases", () => {
     expect(second).toEqual([{ depDir: "node_modules", outcome: "advanced", depth: 2, generation: 2 }]);
   });
 
-  it("no-ops when the feature flag is off", async () => {
+  it("no-ops when the kill switch is set (OVERLAY_DEP_STORE=0)", async () => {
     const out = await publishDepDirOverlayBases(
       { session: { remoteUrl: REPO_URL, kind: undefined, workspaceDir }, workerUrl: "http://w", installOk: true },
-      depsWith({ env: {} as NodeJS.ProcessEnv }),
+      depsWith({ env: { OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv }),
     );
     expect(out).toEqual([]);
     expect(pointerFor("node_modules")).toBeNull();

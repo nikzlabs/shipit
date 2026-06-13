@@ -736,8 +736,9 @@ on top of the simplified install path.
 > **Implementation status (updated 2026-06-10 — design pivot).** The phase list below was written
 > for the **superseded whole-workspace** design; it is retained because Phases 0–2 (the daemon-overlay
 > mechanism) and the Phase-3 *decision logic* (the publish CAS) are **reused unchanged** by the
-> current dep-dir design. What's on the branch today, behind the **`OVERLAY_DEP_STORE` flag (default
-> OFF)**: `overlay-volume.ts`, `overlay-base.ts` (publish CAS), `install-marker.ts`, the `RepoGit`
+> current dep-dir design. What's on the branch today, gated by the **`OVERLAY_DEP_STORE` flag (now
+> default ON; `=0`/`false` is the kill switch — SHI-127)**: `overlay-volume.ts`, `overlay-base.ts`
+> (publish CAS), `install-marker.ts`, the `RepoGit`
 > ancestry oracle (`isAncestor` via an explicit git exit-code — simple-git's `raw` does NOT reject on
 > `--is-ancestor` exit-1, which would have silently broken the CAS), the worker
 > `GET /workspace/head-commit`, container-spec population, compose volume rooting, the publish hook,
@@ -764,11 +765,11 @@ on top of the simplified install path.
 > "Disk cleanup" docs sync. **Phase 7 (enable-path wiring)** closed the last code gap: the warm-pool
 > standby is now built with `prepareOverlaySpecs` (`warm-pool-manager.ts`), so a warm-claimed session —
 > which reuses the standby container — carries the overlay mounts (it was the only creation path
-> bypassing `createContainerForRunner`'s overlay wiring). **The overlay dep store is now functionally
-> complete behind `OVERLAY_DEP_STORE` (still default OFF).** The only remaining items are the user's:
-> (1) measure warm-install on the real containerized path and set the final depth cap, and (2) flip the
-> flag on (deliberately, ideally a canary) — both deferred to the user, as the flip enables real overlay
-> mounts in production.
+> bypassing `createContainerForRunner`'s overlay wiring). **The overlay dep store is complete and now
+> default ON (SHI-127, 2026-06-13);** `OVERLAY_DEP_STORE=0`/`false` is retained for one release as an
+> explicit kill switch. The measurement + canary-soak that justified the flip are recorded in
+> FINDINGS.md; the remaining SHI-127 follow-ups are deleting the env var/flag-off paths and canary-host
+> cleanup.
 >
 > **The two pieces previously listed as "remaining" — (A) source-sync re-sequencing and
 > (B) the workspace-view resolver — are now [REJECTED, not pending](#rejected-approaches)**, because
