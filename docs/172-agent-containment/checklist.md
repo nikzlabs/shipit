@@ -31,9 +31,21 @@ tracker as separate issues. None implemented yet.
 - **Gap 1 — outbound egress control (SHI-90).** Full design in
   [egress-control.md](./egress-control.md). Enforcement is a network-layer gateway
   middlebox (the `HTTP_PROXY` env-var proxy is not a real control — a raw socket bypasses
-  it). Delivered as **one PR, sequential commits A→B→C, each independently green**:
-  - [x] Allowlist matcher (`egress-allowlist.ts`) — base + `SESSION_EGRESS_ALLOWLIST` +
-        live MCP hosts; suffix matching rejects look-alikes. Reused by Tier C. (done)
+  it). Delivered as **one PR, sequential commits A→B→C, each independently green**.
+
+  **Currently on the branch:**
+  - [x] Allowlist matcher (`egress-allowlist.ts` + test) — base + `SESSION_EGRESS_ALLOWLIST`
+        + live MCP hosts; suffix matching rejects look-alikes. **Keep** — reused by Tier C.
+  - [ ] **Revert the interim explicit-proxy slice** (superseded by the gateway; it presents
+        a non-enforcing `SESSION_EGRESS_PROXY` flag that looks like protection): `egress-proxy.ts`
+        + test, the `buildEnv` `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` injection in
+        `container-lifecycle.ts` + its test, `setEgressProxy` in `session-container.ts`, the
+        `app-lifecycle.ts` startup, and the `index.ts`/`shutdown-manager.ts` wiring. The
+        `CONNECT`-gating logic is salvaged into Tier C's transparent proxy. Trim the
+        `SECURITY-MODEL.md` + `shipit-docs/environment.md` egress copy that describes the
+        env-var mechanism as shipped.
+
+  **To build (the actual control):**
   - [ ] **Tier A** — `internal` per-session network + gateway; iptables default-deny +
         `ipset` floor (Anthropic `init-firewall.sh` patterns: `gh api meta` CIDR,
         resolve-and-pin, `example.com`-must-fail self-test). NET_ADMIN lives in the
