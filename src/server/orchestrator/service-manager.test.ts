@@ -1691,6 +1691,49 @@ services:
     expect(mgr.getService("dev")?.status).toBe("running");
   });
 
+  it("killStaleContainers removes stale compose containers but spares the Tier B egress resolver", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
+
+    const rmCalls: string[][] = [];
+    const composeRunner: ComposeRunner = () => Promise.resolve();
+    const composeQuery: ComposeQuery = (args) => {
+      if (args[0] === "rm") {
+        rmCalls.push(args.slice());
+        return Promise.resolve("");
+      }
+      if (args[0] === "ps") {
+        // The resolver-scoped query carries the extra egress-resolver label filter.
+        const isResolverQuery = args.some((a) => a.includes("shipit-egress-resolver=test-session"));
+        if (isResolverQuery) return Promise.resolve("resolver-id\n");
+        // The broad parent-session query returns both the resolver and a real stale.
+        if (args.includes("--format")) return Promise.resolve(""); // poll: no containers
+        return Promise.resolve("resolver-id\nstale-compose-id\n");
+      }
+      if (args.includes("inspect")) {
+        return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
+      }
+      return Promise.resolve("");
+    };
+
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner,
+      composeQuery,
+      pollIntervalMs: 0,
+    });
+
+    await mgr.start();
+
+    // Exactly one rm, targeting the stale compose container — the resolver
+    // (resolver-id) is excluded so it survives the pre-start sweep.
+    const sweepRm = rmCalls.find((c) => c.includes("stale-compose-id"));
+    expect(sweepRm).toEqual(["rm", "-f", "stale-compose-id"]);
+    expect(rmCalls.flat()).not.toContain("resolver-id");
+  });
+
   it("startService surfaces the original error if the squatter can't be removed", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");

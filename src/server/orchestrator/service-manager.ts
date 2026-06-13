@@ -48,6 +48,7 @@ import {
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
+import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -1358,7 +1359,24 @@ export class ServiceManager extends EventEmitter {
       ["ps", "-aq", "--filter", `label=shipit-parent-session=${this.sessionId}`],
       this.workspaceDir,
     );
-    const ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
+    let ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
+    if (ids.length === 0) return;
+    // The Tier B egress resolver (docs/172, SHI-90) shares the agent's netns and
+    // is a LONG-LIVED sidecar, not a stale compose container — it carries
+    // shipit-parent-session only so destroy-time cleanup reaps it. Exclude it from
+    // this pre-start sweep, or we'd SIGKILL it ~1s after the agent launches and
+    // leave the session with no resolver. Docker `--filter` has no label negation,
+    // so subtract a second (AND-filtered) query of the resolver-labeled ids.
+    const resolverStdout = await this.composeQuery(
+      [
+        "ps", "-aq",
+        "--filter", `label=shipit-parent-session=${this.sessionId}`,
+        "--filter", `label=${EGRESS_RESOLVER_LABEL}=${this.sessionId}`,
+      ],
+      this.workspaceDir,
+    );
+    const resolverIds = new Set(resolverStdout.split("\n").map(s => s.trim()).filter(Boolean));
+    ids = ids.filter(id => !resolverIds.has(id));
     if (ids.length === 0) return;
     console.log(`[compose:${this.sessionId}] Removing ${ids.length} stale container(s)`);
     await this.composeQuery(["rm", "-f", ...ids], this.workspaceDir);

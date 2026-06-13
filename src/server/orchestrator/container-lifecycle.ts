@@ -32,6 +32,7 @@ import {
   buildResolverConfigB64,
   launchEgressResolver,
   orchestratorInternalNames,
+  EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 
@@ -613,10 +614,13 @@ export async function createContainer(
         CpuPeriod: DEFAULT_CPU_PERIOD,
         PidsLimit: config.pidsLimit,
         NetworkMode: deps.networkName,
-        // docs/172 Tier B — point the agent at the in-netns controlled resolver
-        // (127.0.0.1:53, served by the resolver sidecar launched below). Only set
-        // when Tier B is on, so the Tier A / off paths are byte-for-byte unchanged.
-        Dns: deps.egressDns ? ["127.0.0.1"] : undefined,
+        // docs/172 Tier B — DNS is NOT redirected via the container `--dns`
+        // option: on a user-defined network Docker keeps 127.0.0.11 as the
+        // nameserver and demotes `--dns` to a mere upstream, so the agent never
+        // actually queries 127.0.0.1. The installer sidecar instead REDIRECTs the
+        // agent's DNS (dst 127.0.0.11:53) into the in-netns resolver at the
+        // iptables layer (see docker/egress-sidecar/init-firewall.sh). So we leave
+        // Dns at Docker's default — the Tier A / off paths are unchanged.
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,
         CapDrop: ["ALL"],
@@ -666,15 +670,18 @@ export async function createContainer(
         labels: egressLabels,
       });
       // Tier B: launch the controlled resolver into the agent's netns (after the
-      // installer, so the ipset it pins into already exists). Labeled with the
-      // parent session so cleanupSessionDockerResources tears it down on destroy.
+      // installer, so the ipset it pins into already exists). It keeps the parent
+      // session label so cleanupSessionDockerResources tears it down on destroy,
+      // PLUS a distinct EGRESS_RESOLVER_LABEL so the compose pre-start stale-sweep
+      // (killStaleContainers) doesn't mistake this long-lived sidecar for a stale
+      // compose container and SIGKILL it (docs/172 Bug-2 fix, SHI-90).
       if (deps.egressDns) {
         const configB64 = buildResolverConfigB64({ internalDomains: orchestratorInternalNames() });
         await launchEgressResolver(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
           configB64,
-          labels: egressLabels,
+          labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId },
         });
       }
       const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";

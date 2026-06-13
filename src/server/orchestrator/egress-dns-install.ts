@@ -24,6 +24,15 @@ import { buildDnsmasqConfig, EGRESS_RESOLVER_UID } from "./egress-dns.js";
 /** Default public upstream resolvers for allowlisted domains (overridable). */
 export const EGRESS_DNS_DEFAULT_UPSTREAMS = ["1.1.1.1", "1.0.0.1"];
 
+/**
+ * Distinct label stamped on the long-lived resolver sidecar (in ADDITION to
+ * `shipit-parent-session`, which it keeps so destroy-time cleanup reaps it). The
+ * compose pre-start stale-container sweep (`killStaleContainers`) filters by
+ * `shipit-parent-session` and would otherwise SIGKILL the resolver ~1s after
+ * launch; it excludes anything carrying this label. Value is the session id.
+ */
+export const EGRESS_RESOLVER_LABEL = "shipit-egress-resolver";
+
 /** Is Tier B (controlled DNS) enabled? Requires Tier A enforcement too. */
 export function egressDnsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.SESSION_EGRESS_DNS === "1" && env.SESSION_EGRESS_ENFORCE === "1";
