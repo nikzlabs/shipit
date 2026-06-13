@@ -105,41 +105,95 @@ A single Fastify `onRequest` hook on the orchestrator app:
 2. `const caller = containerManager?.getSessionByContainerIp(ip)`.
    - **No match** → browser / host / proxy origin → **return** (unchanged; the deployment
      access layer remains the gate for browser callers, per `SECURITY-MODEL.md`).
-   - **Match** → container-originated for `caller.sessionId` → require the request to be
-     `/api/sessions/<caller.sessionId>/<allowlisted-suffix>` (method-aware). Otherwise
-     `reply.code(403)` and short-circuit.
+   - **Match** → container-originated for `caller.sessionId`. Then, in order:
+     - **Hard-deny backstop (§3 below):** if the path matches the high-value-global
+       prefix list, `reply.code(403)` immediately — regardless of any allow flag.
+     - **Per-route opt-in (§2 below):** require `request.routeOptions.config?.containerAccessible === true`.
+       Absence (the default for every route) → `403`.
+     - **Own-session scope:** require the request to be
+       `/api/sessions/<caller.sessionId>/...` — an allowed route reached for a *different*
+       session id is still `403`.
 
-Why this and not a token: zero container-side changes (no env, no shim, no rotation), and
-it reuses a signal already proven in the Docker proxy. In local/dogfood mode there is no
-bridge network and no real container, so `getSessionByContainerIp` returns `undefined` and
-the guard is inert — which is correct, since there is no untrusted container origin there.
+Why bridge-IP and not a token: zero container-side changes (no env, no shim, no rotation),
+and it reuses a signal already proven in the Docker proxy. In local/dogfood mode there is
+no bridge network and no real container, so `getSessionByContainerIp` returns `undefined`
+and the guard is inert — which is correct, since there is no untrusted container origin
+there.
+
+## Keeping the boundary from eroding (durability)
+
+The guard is **fail-closed**: because container requests are default-denied, a newly-added
+handler is automatically unreachable by containers — nobody has to remember to protect it.
+The *only* regression vector is widening the container-reachable set. Three mechanisms make
+widening a deliberate, reviewed, test-enforced act:
+
+1. **Executable golden-route-table test (the must-have).** Same "executable contract"
+   pattern as `CARD_MESSAGE_FIELDS` (`CLAUDE.md`). A test boots the app in test mode,
+   introspects the **live** Fastify route table (collected via an `onRoute` hook or
+   `app.printRoutes()`), computes the exact set of `(method, path)` a container request
+   would pass the guard for, and asserts it **deep-equals a committed golden snapshot**.
+   Any change to that set — a new opt-in, or a route that newly matches — turns the build
+   red and forces a conscious update that surfaces in PR review. This is what makes the
+   boundary self-enforcing rather than convention.
+
+2. **Per-route opt-in (replaces the central regex table).** Each container-facing route
+   declares access inline at its definition:
+
+   ```ts
+   app.get("/api/sessions/:id/services", { config: { containerAccessible: true } }, handler)
+   ```
+
+   The guard reads `request.routeOptions.config?.containerAccessible`; **absence = deny**.
+   This co-locates the security decision with the handler (visible in the diff that adds
+   the route) and structurally eliminates the over-broad-regex class — a flag can only ever
+   match its own route, never a future sibling. The routes that receive the flag are
+   exactly the **Allow** table in the audit above.
+
+3. **Independent hard-deny backstop.** A separate, unconditional `403` for the known
+   high-value globals — `/api/secrets`, `/api/mcp-servers*`, `/api/provider-accounts`,
+   `/api/trackers/*`, `/api/updates/*` — evaluated for container origins *before* the
+   allow check and regardless of its result. Cheap belt-and-suspenders: even a mistaken
+   `containerAccessible: true` on one of these can never expose the crown jewels.
 
 ### Files
 
-- **New `src/server/orchestrator/api-container-guard.ts`** — exports a pure
-  `isAllowedContainerRoute(method, pathname, ownSessionId): boolean` (the allowlist table
-  as `{method, suffixRegex}` entries matched against the suffix after
-  `/api/sessions/<ownId>/`, query string stripped) and
-  `registerContainerOriginGuard(app, { containerManager })` that wires the `onRequest`
-  hook. Keeping the matcher a pure function makes the allowlist unit-testable in isolation.
+- **New `src/server/orchestrator/api-container-guard.ts`** — exports
+  `registerContainerOriginGuard(app, { containerManager })` (wires the `onRequest` hook:
+  source-IP normalization → `getSessionByContainerIp` → hard-deny backstop → per-route
+  `containerAccessible` check → own-session scope) plus a pure
+  `isHardDeniedGlobal(pathname): boolean` for the §3 backstop list, kept a pure function so
+  it's unit-testable in isolation.
+- **The container-facing route modules** (`api-routes-github.ts`, `api-routes-issues.ts`,
+  `api-routes-source.ts`, `api-routes-preview.ts`, `api-routes-agent.ts`,
+  `api-routes-session.ts`, `api-routes-voice.ts`, `api-routes-bug-report.ts`,
+  `api-routes-reviews.ts`) — add `config: { containerAccessible: true }` to **exactly** the
+  routes in the **Allow** table. Every other route is left untouched (default-deny).
 - **`src/server/orchestrator/api-routes.ts`** — call `registerContainerOriginGuard` at the
   **top** of `registerApiRoutes` (before the domain route modules) so the hook runs ahead
   of every handler. `deps.containerManager` is already an (optional) `ApiDeps` field; the
   guard is a no-op when it's absent.
-- **New `src/server/orchestrator/api-container-guard.test.ts`** — unit-test the matcher;
-  integration-test the hook via `app.inject({ remoteAddress })` with a stubbed
-  `containerManager.getSessionByContainerIp`.
+- **`src/server/shared/types`** (or a local `declare module "fastify"` augmentation) — add
+  the optional `containerAccessible?: boolean` field to Fastify's route `config` type so
+  the flag is type-checked at each route definition.
+- **New `src/server/orchestrator/api-container-guard.test.ts`** — (a) the **golden-route-table
+  test**: boot the app in test mode, enumerate the live route table, compute the
+  container-reachable set, assert it deep-equals the committed snapshot; (b) hook behavior
+  via `app.inject({ remoteAddress })` with a stubbed
+  `containerManager.getSessionByContainerIp` — own-session allow route passes, global +
+  non-allowlisted + cross-session 403, hard-denied global 403 even if mis-flagged,
+  non-container origin reaches everything; (c) unit-test `isHardDeniedGlobal`.
 - **`SECURITY-MODEL.md`** — document the new container-vs-browser boundary under "Agent
   and container containment" and update the "No orchestrator-level user auth" note to
-  reflect that container callers are now default-denied to a narrow allowlist.
+  reflect that container callers are now default-denied to a narrow per-route allowlist.
 - **`docs/172-agent-containment/`** — cross-reference: this closes the open-API gap.
 
 ## Verification
 
-- `npx vitest run src/server/orchestrator/api-container-guard.test.ts` — matcher truth
-  table + hook behavior.
+- `npx vitest run src/server/orchestrator/api-container-guard.test.ts` — golden
+  container-reachable route table + `isHardDeniedGlobal` unit table + hook behavior.
 - Integration assertions: from a stubbed container IP, `PUT /api/secrets` and
-  `POST /api/mcp-servers` → 403; `GET /api/sessions/<ownId>/services` and
+  `POST /api/mcp-servers` → 403 (and stay 403 even if someone adds `containerAccessible`,
+  via the hard-deny backstop); `GET /api/sessions/<ownId>/services` and
   `POST /api/sessions/<ownId>/pr/agent-create` → pass through;
   `GET /api/sessions/<otherId>/services` → 403; and a non-container `remoteAddress` reaches
   everything (regression guard for the browser path).
