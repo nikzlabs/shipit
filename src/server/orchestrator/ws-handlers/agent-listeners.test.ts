@@ -155,7 +155,7 @@ describe("wireAgentListeners", () => {
       runner.dispose({ force: true });
     });
 
-    it("falls back to the visible re-auth flow when the heal fails", async () => {
+    it("surfaces a re-auth error pointing to Settings (no OAuth popup) when the heal fails", async () => {
       const recoverAuth = vi.fn().mockResolvedValue(false);
       const { agent, killSpy, emitted, d } = wireAuth({
         willRecoverAuth: () => true,
@@ -167,21 +167,26 @@ describe("wireAgentListeners", () => {
 
       expect(killSpy).toHaveBeenCalled();
       expect(recoverAuth).toHaveBeenCalledTimes(1);
-      // Heal failed → surface the sign-in card + start OAuth.
-      expect(emitted.find((m) => m.type === "auth_required")).toBeDefined();
-      expect(d.authManager.startOAuthFlow).toHaveBeenCalled();
+      // Heal failed → surface an actionable error directing the user to
+      // Settings, NOT the auto-launched OAuth flow / global sign-in overlay.
+      const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("Settings");
+      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // restore mocked timers/spies via dispose handled by GC; runner local.
     });
 
-    it("uses the legacy visible flow when no recovery hooks are wired", async () => {
+    it("surfaces a re-auth error when no recovery hooks are wired", async () => {
       const { agent, killSpy, runner, emitted, d } = wireAuth({});
 
       agent.emit("auth_required");
       await tick();
 
       expect(killSpy).toHaveBeenCalled();
-      expect(emitted.find((m) => m.type === "auth_required")).toBeDefined();
-      expect(d.authManager.startOAuthFlow).toHaveBeenCalled();
+      const err = emitted.find((m) => m.type === "error") as { message?: string } | undefined;
+      expect(err).toBeDefined();
+      expect(err?.message).toContain("Settings");
+      expect(d.authManager.startOAuthFlow).not.toHaveBeenCalled();
       // No recovery → running cleared as before.
       expect(runner.running).toBe(false);
       runner.dispose({ force: true });

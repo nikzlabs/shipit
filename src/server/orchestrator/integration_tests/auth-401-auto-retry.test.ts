@@ -151,7 +151,7 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     runner.dispose({ force: true });
   });
 
-  it("surfaces the sign-in card (no re-dispatch) when the heal fails — token revoked / rate-limited", async () => {
+  it("surfaces a re-auth error pointing to Settings (no re-dispatch, no OAuth popup) when the heal fails — token revoked / rate-limited", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const messages: { type: string; [k: string]: unknown }[] = [];
@@ -167,10 +167,11 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     agents[0]!.emit("auth_required");
     agents[0]!.emit("done", 0);
 
-    // The heal is attempted, fails, and the sign-in card surfaces.
-    await waitFor(() => messages.some((m) => m.type === "auth_required"), "sign-in card surfaced");
+    // The heal is attempted, fails, and a re-auth error surfaces — pointing
+    // the user to Settings rather than auto-launching the OAuth flow.
+    await waitFor(() => messages.some((m) => m.type === "error"), "re-auth error surfaced");
     expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
-    expect(startOAuthFlow).toHaveBeenCalled();
+    expect(startOAuthFlow).not.toHaveBeenCalled();
     // No re-dispatch — exactly one agent — and the turn is finished.
     expect(agents).toHaveLength(1);
     expect(sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
@@ -200,11 +201,11 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     // executor must NOT heal+retry again — it surfaces the card.
     agents[1]!.emit("auth_required");
     agents[1]!.emit("done", 0);
-    await waitFor(() => messages.some((m) => m.type === "auth_required"), "sign-in card on the retry");
+    await waitFor(() => messages.some((m) => m.type === "error"), "re-auth error on the retry");
 
     // The heal ran exactly once (first attempt only); no third agent spawned.
     expect(ensureAgentTokenFresh).toHaveBeenCalledTimes(1);
-    expect(startOAuthFlow).toHaveBeenCalled();
+    expect(startOAuthFlow).not.toHaveBeenCalled();
     expect(agents).toHaveLength(2);
     expect(runner.running).toBe(false);
 

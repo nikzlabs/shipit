@@ -53,7 +53,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     }
   });
 
-  it("send_message when unauthenticated sends auth_required", async () => {
+  it("send_message when unauthenticated returns an error pointing to Settings (no OAuth popup)", async () => {
     // Override the auth manager to be unauthenticated
     const unauthStub = new StubAuthManager() as unknown as AuthManager;
     (unauthStub as any).authenticated = false;
@@ -82,9 +82,12 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
       client.send({ type: "send_message", text: "hello" });
       const msg = await client.receive();
 
-      expect(msg).toMatchObject({ type: "auth_required" });
-      // No URL provided yet (OAuth flow starts in background)
-      expect((msg as any).url).toBeUndefined();
+      // We no longer auto-launch the OAuth flow / pop the global sign-in
+      // overlay. The turn is blocked with an actionable error that directs the
+      // user to authenticate in Settings → Agents.
+      expect(msg).toMatchObject({ type: "error" });
+      expect((msg as any).message).toContain("Settings");
+      expect((msg as any).message).toContain("not authenticated");
 
       client.close();
     } finally {

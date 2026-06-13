@@ -145,9 +145,10 @@ describe("Integration: prompt queuing", () => {
     // The CLI hit an auth failure mid-turn.
     claude.emit("auth_required");
 
-    // Client is told to re-auth, the agent is killed, and running is cleared.
-    const authMsg = await drainUntil(client, (m) => m.type === "auth_required");
-    expect(authMsg?.type).toBe("auth_required");
+    // Client is told to re-auth (via an error pointing to Settings — no OAuth
+    // popup), the agent is killed, and running is cleared.
+    const authMsg = await drainUntil(client, (m) => m.type === "error");
+    expect((authMsg as { message?: string })?.message).toContain("Settings");
     expect(claude.killed).toBe(true);
     const status = await drainUntil(client, (m) => m.type === "session_status");
     expect(status).toMatchObject({ type: "session_status", running: false });

@@ -52,8 +52,18 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
       ctx.authManager.checkCredentials();
     }
     if (!ctx.authManager.authenticated) {
-      ctx.send({ type: "auth_required" });
-      ctx.authManager.startOAuthFlow();
+      // We no longer auto-launch the OAuth flow here. That spawned `claude
+      // /login` and broadcast the verification URL over a global SSE event,
+      // which surfaced a blocking sign-in overlay in *every* open browser
+      // window — including tabs unrelated to the session that triggered it.
+      // Authentication lives in Settings → Agents (the selector already
+      // disables unauthenticated agents); mirror the Codex branch below and
+      // just block the turn with an actionable error.
+      ctx.send({
+        type: "error",
+        message:
+          "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
+      });
       return false;
     }
     return true;

@@ -1544,24 +1544,28 @@ export function wireAgentListeners(
     // recovers without the user seeing anything or re-sending.
     const willRecover = opts.willRecoverAuth?.() ?? false;
 
-    // The visible re-auth flow: flip the sign-in card, start the failing
-    // backend's OAuth flow, nudge the per-agent hook, and mark the turn ended.
+    // The visible re-auth flow: tell the user (in the affected session only)
+    // to re-authenticate via Settings, nudge the per-agent silent refresher,
+    // and mark the turn ended.
     const surfaceReauth = (): void => {
-      console.log("[server] Agent CLI requires authentication, starting OAuth flow");
-      emitToViewers({ type: "auth_required" });
-      // docs/155 Phase 2c — start the auth manager for the failing turn's
-      // backend (not always Claude OAuth). Fallback to `authManager` keeps
-      // legacy test contexts (which don't construct `authManagers`) working.
-      const mgr = failingAgentId ? deps.authManagers?.get(failingAgentId) : undefined;
-      if (mgr) {
-        mgr.start();
-      } else {
-        deps.authManager.startOAuthFlow();
-      }
+      console.log("[server] Agent CLI requires authentication; prompting re-auth via Settings");
+      // We no longer auto-launch the interactive OAuth flow on a mid-turn 401.
+      // It broadcast the verification URL over a global SSE event, popping a
+      // blocking sign-in overlay in every open browser window. Instead, surface
+      // an actionable error in this session and let the per-agent refresher
+      // attempt a silent heal (which, on a genuine revocation, broadcasts
+      // `agent_auth_failed reason:revoked` → the "Sign in" toast that opens
+      // Settings → Agents).
+      emitToViewers({
+        type: "error",
+        message:
+          "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.",
+      });
       // docs/153, docs/155 — let the per-agent module decide its side effect on
-      // auth failure (Claude nudges the OAuth refresher; others register their
-      // own hook or none). The listener doesn't know the agent — that's the
-      // point of the table.
+      // auth failure (Claude nudges the silent OAuth refresher; others register
+      // their own hook or none). The listener doesn't know the agent — that's
+      // the point of the table. This is the silent token refresh, NOT the
+      // interactive login overlay we removed above.
       if (failingAgentId) {
         deps.onAgentAuthRequired?.(failingAgentId);
       }
