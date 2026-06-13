@@ -97,6 +97,18 @@ into `composeReviewMessage`.
 - **No draft-comment embedding** — that logic moves out (it belongs to the
   user-comment system only).
 
+**Cross-agent failure is a first-class path, not a happy-path assumption.** The
+client resolves `cross-agent` from a settings/registry snapshot, but
+`runSubAgent` re-checks `enableSubAgents`, the agent's auth, and a pinned active
+session **at execution time** (`services/sub-agent.ts`) — any of which can drift
+between click and run, making `shipit agent run` exit non-zero. The prompt
+therefore tells the parent: **if `shipit agent run` fails for any reason
+(subagents disabled, reviewer not signed in, session not pinned/active,
+spawn-cap), fall back to a fresh same-model `Task` review rather than aborting
+the turn** — and note the fallback in the card's reviewer label
+("Reviewed by Claude (Codex unavailable)"). The review always produces a card;
+it never dead-ends on a stale client decision.
+
 The **review brief** (identical in both modes) asks the reviewer to return
 **markdown only**:
 - material issues only (correctness, safety, completeness, the stated goal) —
@@ -123,6 +135,32 @@ freeform markdown string**, not a structured comment array — none of the
 "anchor each comment / echo verbatim" fragility. The parent is always the
 caller, so the card path is identical in both reviewer modes.
 
+**Authorization — keep the `reviewFilePath` allow-list.** Today the review turn
+is authorized: `send_review_message` carries `reviewFilePath`, the turn sets
+`runner.activeReviewFilePath`, and `submit_review_comments` **rejects any submit
+whose `file_path` doesn't match** (`ws-client-messages.ts`,
+`container-session-runner.ts`, `services/agent.ts`). `submit_review` inherits
+this unchanged — the `/review` and **Ask agent to review** paths keep passing
+`reviewFilePath`, and the tool stays callable **only** inside a review turn, for
+**only** the file under review. This is what stops an ordinary turn from
+emitting review cards.
+
+**Card semantics — one card per review run, updated in place.** A review run is
+*review → fix → re-review*, so `submit_review` must not stack two cards. The
+submit carries a stable `reviewId` (minted at turn start, like the current
+review turn). The **first** `submit_review` emits the card; the parent's
+**re-review** submit **patches the same record by `reviewId`** (the established
+in-place card-update pattern, e.g. `updateBugReportCard`), so the card always
+shows the *final* state with a small "re-reviewed" marker rather than a
+duplicate. Idempotency by `reviewId` also covers reconnect-buffer replay.
+
+**Runner lifetime.** `emitChatCard` needs an active runner turn — which the
+review turn *is*, since the parent calls `submit_review` mid-turn. The submit
+route must still **fail clearly (not silently drop) when no active runner
+resolves** (post-disposal / cross-session race), consistent with the WS-lifecycle
+rules in `CLAUDE.md`; it never falls back to a bare `append` that floats the card
+out of turn order.
+
 `submit_review` emits the card through the established **side-channel card**
 pattern (see `CLAUDE.md` → "Chat transcript content MUST be persisted"):
 `emitChatCard` → new `PersistedMessage.aiReview` field → column + `toRow`/`fromRow`
@@ -148,7 +186,8 @@ No line anchoring, no snapshot content, no **Open** into the modal.
 - `AgentReviewCard.tsx` + the FilePreviewModal `agent-review` snapshot mode →
   replaced by a new text **ReviewCard**.
 - `agent-review-store.ts` (immutable snapshots) — removed.
-- `chat-history.ts`: `agentReview` field → `aiReview` (markdown). `userReview`
+- `chat-history.ts`: **add** `aiReview` (markdown) field/column; keep
+  `agentReview` as read-only legacy (degraded render, see migration). `userReview`
   stays.
 - WS messages `WsAgentReviewAdded` / `WsReviewUpdated` (AI side) → one
   `ai_review_added`; client handlers swapped to match.
@@ -193,9 +232,16 @@ labels).
 
 ## Open questions / risks
 
-- **`chat_history` migration**: old rows carry `agent_review` JSON. Either keep
-  the column readable for backfill display or drop it (acceptable — old anchored
-  cards degrade to "review ran"). Decide during implementation.
+- **`chat_history` migration (decided, not open)**: old rows carry
+  `agent_review` JSON. A bare rename would make existing transcript cards vanish
+  and could break the history round-trip contract. Instead: **add the new
+  `ai_review` column and keep `agent_review` as a read-only legacy column.**
+  `fromRow` maps a legacy `agent_review` row to a **degraded `aiReview`** — file
+  path + finding count + "Reviewed earlier" + a one-line "anchored details no
+  longer shown" note — so old cards still render and the contract test passes.
+  No write path produces `agent_review` after this change; the column ages out
+  naturally and can be dropped in a later migration once no live session
+  references it.
 - **Reviewer return path**: a `Task` subagent returns via the tool result; a
   `shipit agent run` reviewer returns via stdout. Both already deliver text to
   the parent — no new transport.

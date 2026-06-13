@@ -22,6 +22,11 @@
 - [ ] Rewrite `review-chat-native.test.ts`, `services/reviews.test.ts`, `compose-review-body.test.ts`
 - [ ] Card + handler tests for `ReviewCard` / `ai-review-added`
 - [ ] `aiReview` added to `EVERY_OPTIONAL_FIELD_MESSAGE` in `chat-history.test.ts` (round-trip + no-dup)
+- [ ] Client reviewer-resolution test: cross-agent vs subagent from (enableSubAgents × other-agent-authed) matrix
+- [ ] Integration: `/review` requests cross-agent → `runSubAgent` succeeds → one card; reviewer label names the agent
+- [ ] Integration: cross-agent **fails** (disabled / not signed in / not pinned / spawn-cap) → falls back to `Task`, still one card, label notes fallback
+- [ ] `submit_review` rejected outside a review turn / for a non-`reviewFilePath` file; fails clearly with no active runner
+- [ ] Re-review submit patches the same `reviewId` card (no duplicate); legacy `agent_review` row renders degraded
 
 ## Docs
 - [ ] Point `docs/125` + `docs/151` AI-review sections at `docs/203`
