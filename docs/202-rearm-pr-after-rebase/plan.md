@@ -124,14 +124,44 @@ progressed:
    (`useServerEvents`), so without a fresh `session_list` SSE broadcast the row
    stays in "Recently resolved" with the merge icon until a reload.
 4. Fall through to the existing create/ready flow. Because the old PR is merged,
-   `findPullRequest` (open-only) returns null, so `quickCreatePr` cleanly opens a
-   **new** PR. The merge had deleted the remote branch, so the create path
-   re-pushes it first — already its behavior, no change needed. (Note: this
-   open-only null only covers `quickCreatePr`'s *create* call. The poller's
-   verify path uses an all-states query and would otherwise re-find the old
-   merged PR — that's what the suppression below handles.)
+   `findPullRequest` (open-only) returns null, so `quickCreatePr` opens a **new**
+   PR — but two of its assumptions break for a re-armed branch; see "Creating
+   the new PR correctly". (Note: the open-only null only covers `quickCreatePr`'s
+   *create* call. The poller's verify path uses an all-states query and would
+   otherwise re-find the old merged PR — that's what the suppression below
+   handles.)
 
 If **not** progressed: return as today (stay merged, no GitHub call).
+
+### Creating the new PR correctly
+
+The shared create/ready path was written for a cold session, and two of its
+assumptions are wrong for a re-armed (post-merge, rebased) branch:
+
+- **Base branch must be the prior PR's base, not auto-detected `main`.**
+  `quickCreatePr` picks the base by probing for `main`/`master`
+  (`github.ts` ~308-312), and the "ready" diff is hardcoded to
+  `git.diffStatVsBranch("main")` (`pr-lifecycle.ts` ~161). A session whose merged
+  PR targeted `release/foo` would then show wrong diff stats and open the next PR
+  against `main`. Re-arm is the one case where we *know* the correct base — it is
+  the superseded PR's `baseBranch`. So the breadcrumb retained by `clearMerged`
+  carries **`baseBranch`** too (number + url + title + base), and the re-arm path
+  threads it into the ready diff and `quickCreatePr`'s `base`. (The generic
+  `main`/`master` auto-detection for *cold* sessions is a pre-existing limitation
+  and stays out of scope; re-arm just must not inherit it when it has better
+  information.)
+
+- **The push must tolerate a surviving, diverged remote branch.** Merge-time
+  branch deletion (`markMergedAndPruneExcess`) is **best-effort** and many repos
+  disable auto-delete, so the old remote branch often still exists pointing at
+  the pre-merge commits. After a rebase the local branch's history no longer
+  contains that ref, so `quickCreatePr`'s plain `git.push("origin", head)`
+  (`github.ts` ~297) is rejected non-fast-forward and PR creation fails (error
+  card, no PR). Fix: when creating the PR for a **re-armed superseded branch**
+  (i.e. the suppression breadcrumb is set and there is no open PR), push with
+  `--force-with-lease` (or delete-then-recreate the remote ref). This must be
+  **gated on the re-arm state** so normal PR-update pushes are never
+  force-pushed.
 
 ### Suppressing re-detection of the superseded PR
 
@@ -256,8 +286,11 @@ purple. The two parts come from different places:
 - **The breadcrumb needs a retained reference.** Because re-arm clears both
   `merged_at` and `pr_status`, the prior PR identity is gone. To still render
   "previously merged #N", retain a **lightweight breadcrumb** on the session —
-  the prior PR number + url (+ title). This is display-only: it must **not**
-  feed `resolvedAt()`, grouping, the status color, or the eviction tier. It is
+  the prior PR number + url + title + **`baseBranch`**. The number drives both
+  the client note and the server-side supersession suppression; `baseBranch` is
+  used to target the new PR (see "Creating the new PR correctly"). The
+  display-only parts must **not** feed `resolvedAt()`, grouping, the status
+  color, or the eviction tier. It is
   surfaced on the re-armed **"ready"** card (`phase: "ready"`) as a subtle note,
   e.g. "Previously merged #N · ready for a new PR". The breadcrumb does
   double duty as the **override signal**: a card carrying `previousMergedPr` is
@@ -308,7 +341,8 @@ once.
 | Detection | `src/server/shared/git.ts` | Add two-dot diff + `advancedBeyondMergedBase(base)` (uses existing `mergeBase()`); do **not** reuse three-dot `diffStatVsBranch` |
 | Un-merge | `src/server/orchestrator/sessions.ts` | Add `clearMerged(id)` (sets `merged_at = NULL`, stashes prior-PR breadcrumb); add breadcrumb column + `toRow`/`fromRow` + migration |
 | Re-arm + suppression | `src/server/orchestrator/pr-status-poller.ts` | `reArm(sessionId, supersededPrNumber)` — **silently** clear `lastKnown` + `mergedSessions` + `setPrStatus(null)`, record superseded PR number, then `trackSession`. `verifyMissingPr` ignores a terminal result whose `number` == the recorded superseded number until a different-numbered PR appears |
-| Detection check + post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Detection helper + pass the `previousMergedPr` breadcrumb onto the `ready`/`open` card; relax the `if (session.mergedAt) return` guard for the progressed case |
+| Detection check + post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Detection helper + pass the `previousMergedPr` breadcrumb onto the `ready`/`open` card; relax the `if (session.mergedAt) return` guard for the progressed case; use the breadcrumb's `baseBranch` for the ready diff (not hardcoded `"main"` at ~161) |
+| New-PR create | `src/server/orchestrator/services/github.ts` | For a re-armed branch: target the breadcrumb `baseBranch` (not auto-detected `main`/`master` at ~308-312); push with `--force-with-lease` (gated on re-arm state) so a surviving diverged remote branch doesn't reject the push at ~297 |
 | Re-arm orchestration | **shared helper** called by both `postTurnPrFlow` sites — `ws-handlers/agent-execution.ts` AND `runner-registry-factory.ts` (dispatch/system-turn) | Both have `sseBroadcast` + poller in scope: detect → `clearMerged` → `reArm` → `sseBroadcast("session_list")` → then card emit. Wiring only one drops re-arm for spawned/CI/programmatic turns |
 | Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready`/`open` card |
 | Sidebar | `src/client/components/SessionSidebar.tsx` | No styling change — gray/Active is the natural result of cleared `merged_at`; requires the `session_list` SSE rebroadcast to regroup live, not just on reload |

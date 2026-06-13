@@ -7,10 +7,14 @@
 - [ ] Re-arm orchestration in a **shared helper** called by BOTH `postTurnPrFlow` sites (`ws-handlers/agent-execution.ts` AND `runner-registry-factory.ts` dispatch/system-turn): detect → `clearMerged` → `reArm` → `sseBroadcast("session_list")` → then card emit. (Don't put it in `emitPrLifecycleAfterCommit` — `PrLifecycleDeps` has only the per-connection WS `emit`, no `sseBroadcast`.)
 - [ ] `services/pr-lifecycle.ts`: detection helper + thread `previousMergedPr` breadcrumb onto the `ready`/`open` card; relax the `if (session.mergedAt) return` guard for the progressed case
 - [ ] `pr-store.ts`: amend `updateCard` terminal-regress guard (311-314) so a card carrying `previousMergedPr` replaces a `merged`/`closed` card (order-independent override)
+- [ ] Breadcrumb carries `baseBranch`; re-arm targets the prior PR's base for the new PR (ready diff + `quickCreatePr` base), not auto-detected `main` (`pr-lifecycle.ts` ~161, `github.ts` ~308-312)
+- [ ] Re-armed PR push uses `--force-with-lease` (gated on re-arm state) so a surviving, diverged remote branch (auto-delete off / best-effort delete failed) doesn't reject the push (`github.ts` ~297)
 - [ ] `session_list` SSE rebroadcast after `clearMerged` so the sidebar regroups to Active/gray live, not only on reload (consumed client-side over SSE only)
 - [ ] Test: re-armed `ready` card carrying `previousMergedPr` is accepted over a stale merged card (regression test against the `updateCard` guard); re-arm does not emit a destructive `pr_status` removal
 - [ ] Test: after re-arm, a poll where `findPullRequestAnyState` returns the superseded merged PR does NOT re-promote (suppression holds); a new different-numbered PR clears the suppression and tracks normally
 - [ ] Test: rebase detected in a dispatch/system turn (not just interactive) re-arms (covers both `postTurnPrFlow` sites)
+- [ ] Test: re-armed session whose merged PR targeted a non-`main` base opens the new PR against that same base
+- [ ] Test: re-armed PR creation succeeds when the old remote branch still exists and has diverged (force-with-lease path)
 - [ ] Note in design: secondary-viewer (auto-create OFF) keeps stale merged card until reconnect/new-PR — accepted edge
 - [ ] Requirement: merged-but-progressed session is never visually archived and never fast-evicted
 - [ ] Tests: git detection matrix (squash/regular × rebased/not × work/clean)
