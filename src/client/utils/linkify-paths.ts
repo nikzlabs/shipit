@@ -17,16 +17,20 @@
  * - **Runs after `remark-gfm`.** GFM's autolink-literal turns bare URLs into
  *   `link` nodes first; we never descend into existing `link` nodes, so a URL
  *   tail like `example.com/x/y.md` is left alone.
- * - **Text nodes only.** Inline code and fenced code are `inlineCode` / `code`
- *   nodes (no `children`, not `text`), so paths inside backticks are never
- *   linkified — matching the convention that code spans are verbatim.
+ * - **Text *and inline code*.** A path is linkified whether it sits in prose
+ *   (`text`) or in a backtick span (`inlineCode`). Inline code is the *common*
+ *   way paths appear ("see `docs/foo/plan.md`"), so excluding it made the
+ *   feature look broken; a linkified inline-code path is wrapped back in an
+ *   `inlineCode` child so it stays monospace, just clickable. **Fenced** code
+ *   (the `code` block node) stays verbatim — a fenced block is literal
+ *   code/output, not a reference, so we never touch it.
  * - **Requires a slash + extension.** Demanding at least one `dir/` segment and a
  *   letter-led extension keeps everyday prose ("and/or", "TCP/IP", "1.2.3", a
  *   bare `README`) from being mistaken for a path. A root-level file with no
  *   directory (`package.json`) is intentionally not linked.
  */
 
-import type { Link, Root, RootContent, Text } from "mdast";
+import type { InlineCode, Link, Root, RootContent, Text } from "mdast";
 
 /**
  * Matches a relative repo path: an optional `./`, one or more `segment/` parts,
@@ -38,13 +42,24 @@ const PATH_RE =
   /(?<![\w@./-])(?:\.\/)?(?:[\w.-]+\/)+[\w.-]+\.[A-Za-z][A-Za-z0-9]{0,9}(?::\d+(?::\d+)?)?(?:#L?\d+)?/g;
 
 /**
- * Split one text node's value into alternating `text` / `link` nodes on each
- * path match. Returns `null` when nothing matched, so callers can leave the
- * original node untouched (and avoid needless array churn).
+ * A linkified path keeps the leaf type of the node it came from: a match in a
+ * `text` node yields `text` gaps and a `link`-over-`text`; a match in an
+ * `inlineCode` node yields `inlineCode` gaps and a `link`-over-`inlineCode`, so
+ * the rendered link stays monospace.
  */
-function linkifyValue(value: string): (Text | Link)[] | null {
+function leaf(value: string, code: boolean): Text | InlineCode {
+  return code ? { type: "inlineCode", value } : { type: "text", value };
+}
+
+/**
+ * Split one node's string value into alternating leaf / `link` nodes on each
+ * path match. `code` selects whether the leaves (and the link's child) are
+ * `inlineCode` or `text`. Returns `null` when nothing matched, so callers can
+ * leave the original node untouched (and avoid needless array churn).
+ */
+function linkifyValue(value: string, code: boolean): (Text | InlineCode | Link)[] | null {
   PATH_RE.lastIndex = 0;
-  const out: (Text | Link)[] = [];
+  const out: (Text | InlineCode | Link)[] = [];
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -52,33 +67,37 @@ function linkifyValue(value: string): (Text | Link)[] | null {
     const raw = match[0];
     const start = match.index;
     if (start > lastIndex) {
-      out.push({ type: "text", value: value.slice(lastIndex, start) });
+      out.push(leaf(value.slice(lastIndex, start), code));
     }
     out.push({
       type: "link",
       url: raw,
       title: null,
-      children: [{ type: "text", value: raw }],
+      children: [leaf(raw, code)],
     });
     lastIndex = start + raw.length;
   }
 
   if (out.length === 0) return null;
   if (lastIndex < value.length) {
-    out.push({ type: "text", value: value.slice(lastIndex) });
+    out.push(leaf(value.slice(lastIndex), code));
   }
   return out;
 }
 
-/** In-place walk: replace path-bearing text nodes, never descend into links. */
+/**
+ * In-place walk: replace path-bearing `text` and `inlineCode` nodes, never
+ * descend into existing links. Fenced `code` blocks are leaf nodes we don't
+ * match here, so they stay verbatim.
+ */
 function transform(node: { children: RootContent[] }): void {
   const { children } = node;
   for (let i = 0; i < children.length; i++) {
     const child = children[i];
     // Leave existing links (incl. GFM-autolinked URLs) entirely alone.
     if (child.type === "link") continue;
-    if (child.type === "text") {
-      const replaced = linkifyValue(child.value);
+    if (child.type === "text" || child.type === "inlineCode") {
+      const replaced = linkifyValue(child.value, child.type === "inlineCode");
       if (replaced) {
         children.splice(i, 1, ...replaced);
         i += replaced.length - 1;

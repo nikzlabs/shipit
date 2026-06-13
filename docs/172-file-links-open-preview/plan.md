@@ -39,10 +39,18 @@ attachments already use — not navigate the browser away.
   This applies on every markdown surface (chat, docs, PR bodies, issue
   descriptions + comments).
 
+- **Paths inside inline-code spans are linked too.** A backtick-wrapped path —
+  `` `docs/172-foo/plan.md` ``, the *most common* way paths appear in prose — is
+  linkified just like a bare one. The link's child is wrapped back in an
+  `inlineCode` node, so it stays monospace, just clickable. Excluding inline code
+  (the original behaviour) made the feature look broken on the dominant case, so
+  it was reversed. **Fenced** code blocks stay verbatim — a fenced block is
+  literal code/output, not a reference.
+
 A bare path is only linked when it has at least one `dir/` segment and a
 letter-led file extension, so everyday prose (`and/or`, `TCP/IP`, `1.2.3`, a
-root-level `package.json` with no directory) is left alone, and paths inside
-code spans / fenced blocks and existing links are never touched.
+root-level `package.json` with no directory) is left alone, and fenced code
+blocks and existing links are never touched.
 
 ## How it works
 
@@ -65,8 +73,10 @@ code spans / fenced blocks and existing links are never touched.
    `remark-gfm`. It walks the mdast, and for each plain `text` node splits out
    substrings matching the repo-path regex into `link` nodes whose `url` is the
    raw path. It never descends into existing `link` nodes (so GFM-autolinked URLs
-   and explicit markdown links are untouched) and only sees `text` nodes (so
-   inline/fenced code is verbatim). Those synthesized links then flow through the
+   and explicit markdown links are untouched). It processes both `text` and
+   `inlineCode` nodes (a matched `inlineCode` keeps its monospace by wrapping the
+   link child in `inlineCode`); fenced `code` blocks are a different leaf node it
+   never matches, so they stay verbatim. Those synthesized links then flow through the
    exact same `MarkdownLink` → `parseRepoFileLink` → `openPreview` path as
    step 2, so no click-handling code changed. No new dependency — the walk is a
    ~30-line manual recursion rather than `unist-util-visit`.

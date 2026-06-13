@@ -18,7 +18,7 @@ function links(tree: Nodes): { url: string; text: string }[] {
     if (node.type === "link") {
       const link = node as Link;
       const text = link.children
-        .map((c) => (c.type === "text" ? c.value : ""))
+        .map((c) => (c.type === "text" || c.type === "inlineCode" ? c.value : ""))
         .join("");
       out.push({ url: link.url, text });
     }
@@ -62,12 +62,27 @@ describe("remarkLinkifyPaths", () => {
     ]);
   });
 
-  it("does NOT linkify paths inside inline code", () => {
-    expect(links(run("run `docs/foo/plan.md` verbatim"))).toEqual([]);
+  it("linkifies a path inside an inline-code span (the common backtick case)", () => {
+    // The path stays monospace (its link child is an inlineCode node), just
+    // clickable. This is how paths most often appear, so it must work.
+    expect(links(run("run `docs/foo/plan.md` then stop"))).toEqual([
+      { url: "docs/foo/plan.md", text: "docs/foo/plan.md" },
+    ]);
+  });
+
+  it("linkifies only the path within a larger inline-code span", () => {
+    const found = links(run("`see src/server/git.ts:42 here`"));
+    expect(found).toEqual([
+      { url: "src/server/git.ts:42", text: "src/server/git.ts:42" },
+    ]);
   });
 
   it("does NOT linkify paths inside fenced code blocks", () => {
     expect(links(run("```\nsrc/server/git.ts\n```"))).toEqual([]);
+  });
+
+  it("ignores an inline-code span that holds no path", () => {
+    expect(links(run("set `compose.docker-socket: true` now"))).toEqual([]);
   });
 
   it("leaves an existing markdown link untouched (no double-wrap)", () => {
