@@ -609,6 +609,33 @@ export interface CompactionCard {
 }
 
 /**
+ * docs/144 — the persisted "Consulted Codex · 47s · $0.03" transcript card for a
+ * completed sub-agent spawn. Unlike the transient in-flight spinner (the
+ * `sub_agent_spawn` WS message + `subAgentSpawns` store), this terminal record
+ * IS transcript content — the user expects it to stay where the consultation
+ * happened, surviving a session switch and a full reload — so it follows the
+ * side-channel-card persistence contract (emitted via `emitChatCard`, anchored
+ * inline at the spawn position, persisted in chat history). Renders for every
+ * terminal status, not just success (a cancelled/timed-out/failed consult is
+ * still a fact the transcript should keep).
+ */
+export interface SubAgentConsultCard {
+  /** Stable id — keeps the live append + history rehydration idempotent. */
+  cardId: string;
+  /** The in-flight spawn this card finalizes; clears the matching running chip. */
+  spawnId: string;
+  /** The agent that was consulted (display: "Consulted Codex"). */
+  subAgentId: AgentId;
+  /** Terminal status — drives the verb ("Consulted" / "Cancelled" / …). */
+  status: "success" | "error" | "timeout" | "cancelled";
+  durationMs?: number;
+  costUsd?: number;
+  /** True when the sub-agent's output hit the wall-clock or character cap. */
+  truncated?: boolean;
+  createdAt: string;
+}
+
+/**
  * Per-tracker metadata + configuration state. Drives the sub-tab switcher and
  * the "Connect Linear" empty state. `configured` is false until the user has
  * supplied both an API token and a team binding.

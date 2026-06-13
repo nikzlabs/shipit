@@ -389,9 +389,10 @@ the pinned agent's already-present credentials and provisions nothing).
   surfaces the breakdown as a separate row per agent.
 - **Visible attribution in chat.** The primary's resulting chat message is
   naturally attributed to the primary (it's the primary speaking). The
-  orchestrator additionally emits a small inline chip on that message —
-  "Consulted Codex" / "Delegated to Claude" with timing/cost — so the user
-  sees the spawn happened. Status, not a control surface (CLAUDE.md §5).
+  orchestrator additionally emits a small inline card — "Consulted Codex" /
+  "Delegated to Claude" with timing/cost — anchored where the consult happened,
+  so the user sees the spawn happened. Status, not a control surface
+  (CLAUDE.md §5). Persisted, not emit-only (§7).
 
 ### 6. Output is text; review is an optional renderer
 
@@ -414,16 +415,32 @@ layer on top*, not part of the primitive:
 
 ### 7. Chat surfacing
 
-- **The spawn chip.** A single inline chip on the primary's message: "Asking
-  Codex… (typically 30–120s)" while the `shipit agent` call is in flight,
-  replaced by "Consulted Codex · 47s · $0.03" on return. Status only.
-- **No new message-group kind.** The sub-agent's output reaches the user
-  through the *primary's voice* (the primary read the text and responded), so
-  the transcript needs no new persisted card. The chip is transient status
-  (it correctly disappears on reload — it's not transcript content). If a
-  future consumer renders a persisted sub-agent card, it must follow
-  CLAUDE.md's side-channel-card contract (`emitChatCard` + a typed
-  `PersistedMessage` field + `CARD_MESSAGE_FIELDS` + round-trip tests).
+Two distinct surfaces — split along the transient/transcript line CLAUDE.md
+draws:
+
+- **The in-flight spinner (transient).** A single "Asking Codex… (typically
+  30–120s)" spinner shows at the bottom of the transcript as live activity
+  while the `shipit agent` call is in flight. Emit-only (`sub_agent_spawn` WS +
+  the `subAgentSpawns` store), correctly disappears on reload — it is live
+  activity, not transcript content. Cleared when the terminal card lands.
+- **The "Consulted Codex · 47s" card (persisted transcript content).** The
+  terminal record of a completed spawn IS transcript content — the user expects
+  it to stay *where the consultation happened* and survive a session switch and
+  a full reload (the previous emit-only chip floated to the bottom and vanished
+  on switch — the recurring ephemeral-card bug class). So it follows CLAUDE.md's
+  side-channel-card contract: emitted via `emitChatCard` (live WS
+  `sub_agent_consult_card` + in-band record anchored at the spawn's group index +
+  immediate persist), a typed `SubAgentConsultCard` on `PersistedMessage`
+  (`subAgentConsult`) with its DB column + `toRow`/`fromRow` + migration, listed
+  in `CARD_MESSAGE_FIELDS`, and covered by the round-trip + render guard tests.
+  Static payload (no client store) — rendered straight from the message field
+  and idempotent by `cardId`. Rendered for **every** terminal status
+  (success / error / timeout / cancel), since a cancelled or failed consult is
+  still a fact the transcript should keep. **Why anchored-inline works live:**
+  during the spawn the primary is blocked on the `shipit agent` Bash call, so no
+  assistant content streams in those 30–120s — appending the card at the current
+  end of the transcript lands it right after the triggering tool call, and the
+  persisted `afterGroupIndex` keeps it there on reload.
 
 ### 8. Local / dogfood mode
 
@@ -493,8 +510,10 @@ a no-op (docs/138). Sub-agent spawning in local mode:
   or SSE machinery.
 - **`UsageManager`** — accept a `subAgentId` parameter distinct from the
   runner's `agentId` when recording sub-agent costs.
-- **Chat surfacing** — the transient spawn chip on the primary's message
-  (§7). No persisted card in v0.
+- **Chat surfacing** — the transient in-flight spinner (`sub_agent_spawn` +
+  `subAgentSpawns` store) PLUS the persisted terminal "Consulted Codex" card
+  (`sub_agent_consult_card` via `emitChatCard`, `SubAgentConsultCard` on
+  `PersistedMessage`, DB column + migration, `CARD_MESSAGE_FIELDS`) (§7).
 - **`src/server/shipit-docs/`** — add an agent-facing `agent.md` describing
   `shipit agent run` **when the feature ships** (not before).
 - **Integration tests** — `integration_tests/sub-agent.test.ts` covering:
@@ -647,9 +666,17 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   `app-lifecycle.ts`.
 - **Usage attribution** — `usage.ts` + a `sub_agent_id` column migration in
   `shared/database.ts`.
-- **Chip** — `ws-server-messages.ts` (`WsSubAgentSpawn`), client
-  `session-store.ts` (`subAgentSpawns`), `message-handlers/sub-agent-spawn.ts`,
-  `MessageList.tsx` (`SubAgentSpawnChipRow`).
+- **Chat surfacing** — transient spinner: `ws-server-messages.ts`
+  (`WsSubAgentSpawn`, narrowed to the in-flight announcement), client
+  `session-store.ts` (`subAgentSpawns` + `removeSubAgentSpawn`),
+  `message-handlers/sub-agent-spawn.ts`, `MessageList.tsx`
+  (`SubAgentSpawnChipRow`). Persisted terminal card:
+  `domain-types.ts` (`SubAgentConsultCard`), `ws-server-messages.ts`
+  (`WsSubAgentConsultCard`), `services/sub-agent.ts` (emits via `emitChatCard`,
+  all terminal statuses + a throw-path error card), `chat-history.ts` +
+  `database.ts` migration (`sub_agent_consult` column), `visual-elements.ts`
+  (`CARD_MESSAGE_FIELDS`), client `message-handlers/sub-agent-consult-card.ts`,
+  `MessageList.tsx` (`SubAgentConsultCardRow`).
 - **Agent-facing doc** — `src/server/shipit-docs/agent.md`.
 
 Tests: `shared/sub-agent-run.test.ts`, `services/sub-agent.test.ts`,

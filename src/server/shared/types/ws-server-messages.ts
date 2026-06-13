@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -26,25 +26,19 @@ export interface WsError {
 }
 
 /**
- * docs/144 — transient status chip for an in-flight or just-completed sub-agent
- * spawn. Status only (CLAUDE.md §5): emit-only, never persisted (it correctly
- * disappears on reload — it is not transcript content; the sub-agent's output
- * reaches the user through the primary's own voice). `phase: "running"` fires
- * when the `shipit agent` call begins; `phase: "done"` replaces it with timing
- * and cost on return.
+ * docs/144 — transient "Asking Codex…" spinner for an IN-FLIGHT sub-agent spawn.
+ * Status only (CLAUDE.md §5): emit-only, correctly disappears on reload — it is
+ * live activity, not transcript content. The TERMINAL state ("Consulted Codex ·
+ * 47s") is NOT this message: it is the persisted {@link WsSubAgentConsultCard},
+ * which lands inline where the consult happened and survives a switch/reload.
+ * When that card arrives the client clears this spinner by `spawnId`.
  */
 export interface WsSubAgentSpawn {
   type: "sub_agent_spawn";
-  /** Correlates the running → done transition for one spawn. */
+  /** Correlates the spinner with the terminal consult card that clears it. */
   spawnId: string;
-  /** The agent that was spawned (display: "Asking Codex…" / "Consulted Codex"). */
+  /** The agent being consulted (display: "Asking Codex…"). */
   subAgentId: AgentId;
-  phase: "running" | "done";
-  /** Terminal status, present on `phase: "done"`. */
-  status?: "success" | "error" | "timeout" | "cancelled";
-  durationMs?: number;
-  costUsd?: number;
-  truncated?: boolean;
 }
 
 export interface WsPreviewStatus {
@@ -1299,11 +1293,26 @@ export interface WsCompactionCard {
   card: CompactionCard;
 }
 
+/**
+ * docs/144 — the persisted "Consulted Codex · 47s · $0.03" transcript card for a
+ * completed sub-agent spawn. Emitted via `emitChatCard` so it both broadcasts
+ * live AND records in-band with the turn, anchored at the spawn position, so it
+ * lands where the consultation happened and survives a reconnect, a session
+ * switch, and a full reload (the ephemeral-card bug class — see CLAUDE.md). The
+ * client also uses `card.spawnId` to clear the matching in-flight spinner.
+ */
+export interface WsSubAgentConsultCard {
+  type: "sub_agent_consult_card";
+  sessionId: string;
+  card: SubAgentConsultCard;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsVoiceNote
   | WsCompactionStatus
   | WsCompactionCard
+  | WsSubAgentConsultCard
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed

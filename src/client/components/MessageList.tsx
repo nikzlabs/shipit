@@ -30,7 +30,7 @@ import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
 import { IssueRefCard } from "./IssueRefCard.js";
-import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData } from "../../server/shared/types.js";
+import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData, SubAgentConsultCard as SubAgentConsultCardData } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -327,6 +327,15 @@ export interface ChatMessage {
    * Codex supplies none, so the card degrades to a bare summary row.
    */
   compaction?: CompactionCardData;
+  /**
+   * docs/144 — when set, this message renders the inline "Consulted Codex · 47s"
+   * card for a completed sub-agent spawn. Populated from `sub_agent_consult_card`
+   * WS events and rehydrated from persisted history (the card lives on the message
+   * itself, like `compaction`, so no separate store seeding is needed). This is
+   * the terminal record; the in-flight spinner is the transient `subAgentSpawns`
+   * store, cleared when this card arrives.
+   */
+  subAgentConsult?: SubAgentConsultCardData;
 }
 
 export interface TextSegment {
@@ -896,6 +905,17 @@ export function MessageList({
           );
         }
 
+        // docs/144 — "Consulted Codex · 47s" card. Carries no chat text of its
+        // own; render the inline terminal record and skip the bubble path. Lands
+        // where the consultation happened and persists across switch/reload.
+        if (msg.subAgentConsult) {
+          return (
+            <div key={i} className="flex justify-start">
+              <SubAgentConsultCardRow card={msg.subAgentConsult} />
+            </div>
+          );
+        }
+
         // docs/164 — bug-report consent card. Carries no chat text of its own;
         // render the inline `BugReportCard` (which reads its live payload +
         // lifecycle from the bug-report store) and skip the bubble path.
@@ -1158,42 +1178,49 @@ export function MessageList({
   );
 }
 
-/** Display names for the spawn chip. */
+/** Display names for the spawn chip / consult card. */
 const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
 
 /**
- * docs/144 — transient sub-agent spawn chip. "Asking Codex…" with a spinner
- * while the `shipit agent` call is in flight; "Consulted Codex · 47s · $0.03"
- * once it returns. Status only — emit-only, not persisted (CLAUDE.md §5).
+ * docs/144 — transient in-flight "Asking Codex…" spinner, rendered at the bottom
+ * of the transcript as live activity while the `shipit agent` call is in flight.
+ * Emit-only, not persisted (CLAUDE.md §5) — it disappears once the terminal
+ * `SubAgentConsultCardRow` lands inline where the consultation happened.
  */
 function SubAgentSpawnChipRow({ chip }: { chip: SubAgentSpawnChip }) {
   const name = SUB_AGENT_DISPLAY_NAMES[chip.subAgentId] ?? chip.subAgentId;
-  if (chip.phase === "running") {
-    return (
-      <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
-        <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
-          <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
-          Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
-        </div>
+  return (
+    <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
+      <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
+        <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+        Asking {name}… <span className="text-(--color-text-tertiary)">(typically 30–120s)</span>
       </div>
-    );
-  }
-  const secs = chip.durationMs ? Math.round(chip.durationMs / 1000) : null;
-  const cost = chip.costUsd && chip.costUsd > 0 ? `$${chip.costUsd.toFixed(2)}` : null;
+    </div>
+  );
+}
+
+/**
+ * docs/144 — the persisted terminal "Consulted Codex · 47s · $0.03" record for a
+ * completed sub-agent spawn. Renders inline at the spawn position (anchored in
+ * chat history) and survives a session switch / full reload, unlike the transient
+ * spinner above. Covers every terminal status, not just success.
+ */
+function SubAgentConsultCardRow({ card }: { card: SubAgentConsultCardData }) {
+  const name = SUB_AGENT_DISPLAY_NAMES[card.subAgentId] ?? card.subAgentId;
+  const secs = card.durationMs ? Math.round(card.durationMs / 1000) : null;
+  const cost = card.costUsd && card.costUsd > 0 ? `$${card.costUsd.toFixed(2)}` : null;
   const verb =
-    chip.status === "success" ? "Consulted"
-    : chip.status === "cancelled" ? "Cancelled"
-    : chip.status === "timeout" ? "Timed out asking"
+    card.status === "success" ? "Consulted"
+    : card.status === "cancelled" ? "Cancelled"
+    : card.status === "timeout" ? "Timed out asking"
     : "Asked";
   const parts = [`${verb} ${name}`];
   if (secs !== null) parts.push(`${secs}s`);
   if (cost) parts.push(cost);
-  if (chip.truncated) parts.push("truncated");
+  if (card.truncated) parts.push("truncated");
   return (
-    <div className="flex justify-start" data-testid="sub-agent-spawn-chip">
-      <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)">
-        {parts.join(" · ")}
-      </div>
+    <div data-testid="sub-agent-consult-card" className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-1.5 text-xs text-(--color-text-tertiary)">
+      {parts.join(" · ")}
     </div>
   );
 }

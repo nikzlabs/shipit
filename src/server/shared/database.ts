@@ -582,6 +582,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN merge_issue_effects TEXT");
   },
+  // docs/144 — persist the "Consulted Codex · 47s" sub-agent consult card so the
+  // terminal record survives a session switch / full reload. The card is recorded
+  // in-band via emitChatCard when `shipit agent run` completes mid-turn; without
+  // this column it would render live but vanish on the next loadSessionHistory,
+  // which rebuilds the transcript from the DB. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN sub_agent_consult TEXT");
+  },
 ];
 
 export class DatabaseManager {
