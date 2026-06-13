@@ -30,6 +30,13 @@ services:
       # set in the host shell never reaches the container. Empty (= off) unless
       # the operator exports OVERLAY_DEP_STORE=1 before `docker compose up`.
       - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
+      # Prod parity (deployment/vps/docker-compose.yml): the orchestrator is reachable
+      # on the bridge as the `shipit` service alias. The worker's SHIPIT_HOST is set
+      # from this, and the Tier B egress resolver allowlists it — without it, an agent
+      # under SESSION_EGRESS_DNS=1 can't resolve the orchestrator callback host
+      # (SHI-90 Tier B host verification). Harmless when egress is off.
+      - SHIPIT_ORCHESTRATOR_HOST=shipit
+      - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
     networks:
       - shipit-dev
 

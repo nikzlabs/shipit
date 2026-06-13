@@ -17,6 +17,7 @@
  * iptables interaction is verified on a live host (the SHI-90 Tier B checklist).
  */
 
+import os from "node:os";
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 import { buildDnsmasqConfig, EGRESS_RESOLVER_UID } from "./egress-dns.js";
@@ -39,13 +40,32 @@ export function egressDnsEnabled(env: NodeJS.ProcessEnv = process.env): boolean 
 }
 
 /**
+ * The orchestrator host written into the agent's `SHIPIT_HOST` (the worker's
+ * callback target). MUST stay in lockstep with `buildOrchestratorCallbackEnv` in
+ * `container-lifecycle.ts`: `SHIPIT_ORCHESTRATOR_HOST` if set, else the
+ * orchestrator's own hostname (Docker resolves it as a name on the bridge). The
+ * Tier B resolver allowlist is derived from this so it always permits exactly the
+ * name the worker dials — see {@link orchestratorInternalNames}.
+ */
+export function orchestratorCallbackHost(env: NodeJS.ProcessEnv = process.env): string {
+  return env.SHIPIT_ORCHESTRATOR_HOST || os.hostname();
+}
+
+/**
  * Internal names the agent must still resolve under Tier B (forwarded to Docker's
  * embedded DNS, not pinned). Primarily the orchestrator host — the worker reaches
- * it by `SHIPIT_HOST`, which may be a Docker service name rather than an IP. Empty
- * entries (when it's already an IP / unset) are harmless.
+ * it by `SHIPIT_HOST`, which may be a Docker service name rather than an IP.
+ *
+ * It derives the orchestrator host from {@link orchestratorCallbackHost} — the SAME
+ * source `SHIPIT_HOST` is set from — NOT just `SHIPIT_ORCHESTRATOR_HOST`. Without
+ * this, an environment that leaves `SHIPIT_ORCHESTRATOR_HOST` unset (e.g. the dev
+ * compose) sets `SHIPIT_HOST=<os.hostname()>` but allowlists nothing, so dnsmasq
+ * refuses the orchestrator name and the worker→orchestrator callback channel breaks
+ * under Tier B (found in SHI-90 Tier B host verification). IP literals are skipped
+ * (no DNS needed); the bridge subnet they live on is already allowed by Tier A.
  */
 export function orchestratorInternalNames(env: NodeJS.ProcessEnv = process.env): string[] {
-  const names = [env.SHIPIT_ORCHESTRATOR_HOST, ...(env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS?.split(/[\s,]+/) ?? [])];
+  const names = [orchestratorCallbackHost(env), ...(env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS?.split(/[\s,]+/) ?? [])];
   return names
     .map((n) => (n ?? "").trim())
     .filter((n) => n && !/^\d+\.\d+\.\d+\.\d+$/.test(n)); // skip IP literals (no DNS needed)

@@ -32,6 +32,7 @@ import {
   buildResolverConfigB64,
   launchEgressResolver,
   orchestratorInternalNames,
+  orchestratorCallbackHost,
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
@@ -392,8 +393,9 @@ export function buildEnv(
 
 export async function buildOrchestratorCallbackEnv(sessionId: string): Promise<string[]> {
   const orchestratorPort = process.env.PORT || "3000";
-  const orchestratorHost =
-    process.env.SHIPIT_ORCHESTRATOR_HOST || (await import("node:os")).hostname();
+  // Same source the Tier B resolver allowlist derives from — see
+  // orchestratorCallbackHost — so SHIPIT_HOST and the dnsmasq server= line can't diverge.
+  const orchestratorHost = orchestratorCallbackHost();
   const env = [
     `SHIPIT_SESSION_ID=${sessionId}`,
     `SHIPIT_PORT=${orchestratorPort}`,

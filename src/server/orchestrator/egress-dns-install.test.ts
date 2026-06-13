@@ -2,11 +2,13 @@
  * Tests for the Tier B resolver launch wiring (docs/172 Gap 1, SHI-90).
  */
 
+import os from "node:os";
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
 import {
   egressDnsEnabled,
   orchestratorInternalNames,
+  orchestratorCallbackHost,
   buildResolverConfigB64,
   launchEgressResolver,
   EGRESS_DNS_DEFAULT_UPSTREAMS,
@@ -22,6 +24,13 @@ describe("egressDnsEnabled", () => {
   });
 });
 
+describe("orchestratorCallbackHost", () => {
+  it("prefers SHIPIT_ORCHESTRATOR_HOST, else falls back to os.hostname()", () => {
+    expect(orchestratorCallbackHost({ SHIPIT_ORCHESTRATOR_HOST: "shipit" } as NodeJS.ProcessEnv)).toBe("shipit");
+    expect(orchestratorCallbackHost({} as NodeJS.ProcessEnv)).toBe(os.hostname());
+  });
+});
+
 describe("orchestratorInternalNames", () => {
   it("returns DNS-resolvable names, skipping IP literals", () => {
     const names = orchestratorInternalNames({
@@ -32,8 +41,11 @@ describe("orchestratorInternalNames", () => {
     expect(names).toContain("orch2");
     expect(names).not.toContain("10.0.0.5"); // IP literal — no DNS needed
   });
-  it("is empty when nothing is configured", () => {
-    expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([]);
+  it("falls back to os.hostname() when *_ORCHESTRATOR_* is unset, matching SHIPIT_HOST", () => {
+    // The bug from SHI-90 Tier B host verification: an unset SHIPIT_ORCHESTRATOR_HOST
+    // used to yield [] here while SHIPIT_HOST was still set to os.hostname(), so the
+    // resolver allowlisted nothing and the callback channel broke. Now they agree.
+    expect(orchestratorInternalNames({} as NodeJS.ProcessEnv)).toEqual([os.hostname()]);
   });
 });
 
