@@ -156,7 +156,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
-    secretStore, reviewStore, agentReviewStore, generateText,
+    secretStore, reviewStore, generateText,
     isTestMode, runtimeMode,
   } = mgrs;
 
@@ -1200,7 +1200,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     databaseManager,
     secretStore,
     reviewStore,
-    agentReviewStore,
     serviceManagers,
     composeStopPromises,
     // Skip the volume-prune fallback in test mode so unit / integration

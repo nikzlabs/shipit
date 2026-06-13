@@ -373,6 +373,9 @@ export function resetRunnerTurnState(
   runner.recordedCards = [];
   runner.wasInterrupted = false;
   runner.activeReviewFilePath = opts?.reviewFilePath ?? null;
+  // docs/203 — reviewId is minted lazily by the submit_review route on first
+  // submit; clear it so a fresh turn never reuses the prior turn's card id.
+  runner.activeReviewId = null;
   runner.pendingCommitLink = null;
   // docs/144 — reset the per-turn sub-agent spawn budget at primary-turn start.
   runner.subAgentSpawnsThisTurn = 0;
@@ -465,13 +468,22 @@ export interface SessionRunnerInterface extends EventEmitter<SessionRunnerEvents
   /**
    * docs/125 — per-turn allow-list for the chat-native review tool. Set to the
    * authorized file path when a `send_review_message` turn starts; the
-   * `submit_review_comments` tool handler rejects any call whose `file_path`
+   * `submit_review` tool handler rejects any call whose `file_path`
    * doesn't match. Cleared when the turn ends (and overwritten by the next
    * turn — a normal `send_message` sets it back to null). Lives on the runner
    * (not the WS connection) and is mutated via the registry-resolved runner so
    * a reconnect mid-review doesn't clear it.
    */
   activeReviewFilePath: string | null;
+  /**
+   * docs/203 — stable id for the review card produced this turn. Lazily minted by
+   * the `submit_review` route on the FIRST submit and reused on the re-review
+   * submit, so the parent's review → fix → re-review patches one card in place
+   * instead of stacking two. Reset to null at every turn start (a non-review turn
+   * never mints one). Lives on the runner (not the WS connection) for the same
+   * reconnect-survival reason as `activeReviewFilePath`.
+   */
+  activeReviewId: string | null;
   /**
    * docs/182 — true when the runner's most recent completed turn ended in an
    * error (agent process error, or an errored `agent_result` that wasn't a
@@ -696,6 +708,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   private _isStreamingActive = false;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;
+  private _activeReviewId: string | null = null;
   private _accumulatedText = "";
   private _accumulatedToolUse: ClaudeContentBlockToolUse[] = [];
   private _turnSummary = "";
@@ -747,6 +760,8 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
   set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
+  get activeReviewId(): string | null { return this._activeReviewId; }
+  set activeReviewId(v: string | null) { this._activeReviewId = v; }
   get accumulatedText(): string { return this._accumulatedText; }
   set accumulatedText(s: string) { this._accumulatedText = s; }
   get accumulatedToolUse(): ClaudeContentBlockToolUse[] { return this._accumulatedToolUse; }

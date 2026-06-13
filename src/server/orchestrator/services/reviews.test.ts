@@ -1,18 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import fs from "node:fs";
-import os from "node:os";
-import path from "node:path";
+import { describe, it, expect } from "vitest";
 import type { ReviewComment, SelectionReviewComment } from "../../shared/types.js";
-import { DatabaseManager } from "../../shared/database.js";
-import { AgentReviewStore } from "../agent-review-store.js";
 import {
   reanchorComments,
   locateSelection,
   buildReviewPrompt,
   detectFileReviewType,
-  submitAiReviewComments,
-  MAX_REVIEW_COMMENTS,
-  MAX_REVIEW_COMMENT_CHARS,
+  validateAiReviewSubmission,
+  MAX_REVIEW_MARKDOWN_CHARS,
+  DEFAULT_REVIEWER_LABEL,
 } from "./reviews.js";
 import { ServiceError } from "./types.js";
 
@@ -267,137 +262,42 @@ describe("buildReviewPrompt (code)", () => {
 });
 
 // ============================================================
-// submitAiReviewComments (docs/151 — agent review cards)
+// validateAiReviewSubmission (docs/203 — plain-text review)
 // ============================================================
 
-describe("submitAiReviewComments", () => {
-  let dbManager: DatabaseManager;
-  let store: AgentReviewStore;
-  let workspaceDir: string;
-  const FILE = "docs/001-foo/plan.md";
-  const MARKDOWN = ["## Overview", "Intro paragraph.", "", "## Architecture", "Body content."].join("\n");
-
-  beforeEach(() => {
-    dbManager = new DatabaseManager(":memory:");
-    store = new AgentReviewStore(dbManager);
-    workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "review-submit-"));
-    fs.mkdirSync(path.join(workspaceDir, "docs/001-foo"), { recursive: true });
-    fs.writeFileSync(path.join(workspaceDir, FILE), MARKDOWN);
-  });
-
-  afterEach(() => {
-    dbManager.close();
-    fs.rmSync(workspaceDir, { recursive: true, force: true });
-  });
-
-  it("creates an immutable agent review with a snapshot of the file at call time", async () => {
-    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-      { kind: "selection", quoted_text: "Body content", text: "tighten this" },
-    ]);
-
-    expect(result.added).toBe(1);
-    expect(result.review.snapshotContent).toBe(MARKDOWN);
-    expect(result.review.snapshotHash).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.review.comments).toHaveLength(1);
-    expect(result.review.comments[0]!.kind).toBe("selection");
-  });
-
-  it("returns the structured rendered tool response", async () => {
-    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-      { kind: "selection", quoted_text: "Body content", text: "tighten this" },
-    ]);
-    expect(result.rendered).toContain("Review of docs/001-foo/plan.md");
-    expect(result.rendered).toContain("1 finding");
-    expect(result.rendered).toContain("«Body content»");
-    expect(result.rendered).toContain("tighten this");
-    expect(result.rendered).toContain("End of review.");
-  });
-
-  it("renders the empty-array signal as 'no findings' but still creates a row", async () => {
-    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, []);
-    expect(result.added).toBe(0);
-    expect(result.rendered).toContain("Review of docs/001-foo/plan.md");
-    expect(result.rendered).toContain("no findings");
-    expect(store.getReview(result.review.id)).not.toBeNull();
-  });
-
-  it("rejects a selection comment whose quoted text is not in the snapshot", async () => {
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-        { kind: "selection", quoted_text: "phrase that does not exist", text: "stale" },
-      ]),
-    ).rejects.toMatchObject({ statusCode: 400 });
-  });
-
-  it("rejects a bare string item with a shape error that names the index", async () => {
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, ["just a string" as unknown]),
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: expect.stringContaining("Comment at index 0 is not an object"),
+describe("validateAiReviewSubmission", () => {
+  it("accepts a well-formed submission and trims the markdown", () => {
+    const r = validateAiReviewSubmission("docs/plan.md", "  No material issues found.  ", "Reviewed by Codex");
+    expect(r).toEqual({
+      filePath: "docs/plan.md",
+      markdown: "No material issues found.",
+      reviewerLabel: "Reviewed by Codex",
     });
   });
 
-  it("rejects a comment with missing or invalid kind with an index-tagged error", async () => {
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-        { text: "no kind here" } as unknown,
-      ]),
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: expect.stringContaining("Comment at index 0 has invalid kind"),
-    });
+  it("defaults the reviewer label when absent or blank", () => {
+    expect(validateAiReviewSubmission("a.ts", "x", undefined).reviewerLabel).toBe(DEFAULT_REVIEWER_LABEL);
+    expect(validateAiReviewSubmission("a.ts", "x", "   ").reviewerLabel).toBe(DEFAULT_REVIEWER_LABEL);
   });
 
-  it("rejects a comment with empty text with an index-tagged error", async () => {
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-        { kind: "selection", quoted_text: "Body content", text: "   " },
-      ]),
-    ).rejects.toMatchObject({
-      statusCode: 400,
-      message: expect.stringContaining("Comment at index 0 has empty or missing"),
-    });
+  it("caps the reviewer label length", () => {
+    const r = validateAiReviewSubmission("a.ts", "x", "y".repeat(200));
+    expect(r.reviewerLabel.length).toBe(80);
   });
 
-  it("rejects an oversize payload (too many comments)", async () => {
-    const tooMany = Array.from({ length: MAX_REVIEW_COMMENTS + 1 }, () => ({
-      kind: "selection" as const,
-      quoted_text: "Body content",
-      text: "x",
-    }));
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, tooMany),
-    ).rejects.toBeInstanceOf(ServiceError);
+  it("rejects a missing file path", () => {
+    expect(() => validateAiReviewSubmission(undefined, "x", "l")).toThrow(ServiceError);
   });
 
-  it("rejects a comment whose text exceeds the per-comment limit", async () => {
-    const big = [
-      {
-        kind: "selection" as const,
-        quoted_text: "Body content",
-        text: "x".repeat(MAX_REVIEW_COMMENT_CHARS + 1),
-      },
-    ];
-    await expect(
-      submitAiReviewComments(store, "s1", FILE, workspaceDir, big),
-    ).rejects.toBeInstanceOf(ServiceError);
+  it("rejects missing or empty markdown", () => {
+    expect(() => validateAiReviewSubmission("a.ts", "", "l")).toThrow(ServiceError);
+    expect(() => validateAiReviewSubmission("a.ts", "   ", "l")).toThrow(ServiceError);
+    expect(() => validateAiReviewSubmission("a.ts", 123 as unknown, "l")).toThrow(ServiceError);
   });
 
-  it("accepts a line comment on a markdown snapshot", async () => {
-    const result = await submitAiReviewComments(store, "s1", FILE, workspaceDir, [
-      { kind: "line", line: 5, text: "call out the source-line issue" },
-    ]);
-
-    expect(result.review.fileType).toBe("markdown");
-    expect(result.review.comments).toEqual([
-      expect.objectContaining({
-        kind: "line",
-        line: 5,
-        text: "call out the source-line issue",
-      }),
-    ]);
-    expect(result.rendered).toContain("line 5");
-    expect(result.rendered).toContain("call out the source-line issue");
+  it("rejects markdown over the size cap", () => {
+    expect(() =>
+      validateAiReviewSubmission("a.ts", "x".repeat(MAX_REVIEW_MARKDOWN_CHARS + 1), "l"),
+    ).toThrow(ServiceError);
   });
 });

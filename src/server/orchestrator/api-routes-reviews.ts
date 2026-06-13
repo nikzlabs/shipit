@@ -7,10 +7,12 @@
  * client dispatches it via the existing `send_message` flow.
  */
 
+import { randomUUID } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
-import { emitChatCard } from "./chat-card-persistence.js";
+import { emitOrReplaceChatCard } from "./chat-card-persistence.js";
+import type { AiReviewCard } from "../shared/types.js";
 
 import {
   listFileReviews,
@@ -22,7 +24,7 @@ import {
   deleteReviewComment,
   deleteDraftReview,
   sendReview,
-  submitAiReviewComments,
+  validateAiReviewSubmission,
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
@@ -252,120 +254,100 @@ export async function registerReviewRoutes(
   );
 
   // ----------------------------------------------------------------
-  // Agent review write-back (docs/151)
+  // Plain-text AI review write-back (docs/203)
   //
-  // The session worker relays the agent's `submit_review_comments` tool call
-  // here (worker injects the trusted SESSION_ID). The submission creates an
-  // immutable `agent_reviews` row (with a snapshot of the file at review
-  // time) and broadcasts `agent_review_added` so an inline card lands in the
-  // chat transcript. Explicit chat-native review turns still narrow writes to
-  // `runner.activeReviewFilePath`; normal agent/subagent turns may also post
-  // review comments against their declared `filePath`.
+  // The session worker relays the parent agent's `submit_review` tool call here
+  // (worker injects the trusted SESSION_ID). The submission is ONE freeform
+  // markdown string; it persists a single review card in the chat transcript via
+  // the side-channel card pattern (`emitOrReplaceChatCard` → `aiReview` field +
+  // column). There is no snapshot, no anchoring, and no separate store.
   //
-  // The response body carries the rendered structured findings the subagent
-  // is instructed to echo verbatim — the parent receives them via the Task
-  // tool result without needing a separate fetch tool.
+  // Authorization (non-negotiable, docs/203 §4): the tool is callable ONLY inside
+  // a review turn (`runner.activeReviewFilePath` set by `send_review_message`)
+  // and ONLY for the file under review. This is what stops an ordinary turn from
+  // emitting review cards. A missing runner fails clearly rather than dropping
+  // the card out of turn order.
+  //
+  // One card per review run: the reviewId is minted once per turn and reused, so
+  // the parent's review → fix → re-review patches the same card in place.
   // ----------------------------------------------------------------
   app.post<{
     Params: { sessionId: string };
-    Body: { filePath?: string; comments?: unknown[] };
+    Body: { filePath?: string; markdown?: string; reviewerLabel?: string };
   }>(
     "/api/sessions/:sessionId/review-submit",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const { sessionId } = request.params;
       const filePath = request.body?.filePath;
-      const comments = request.body?.comments;
-      if (!filePath || !Array.isArray(comments)) {
-        reply.code(400).send({ error: "filePath and comments[] are required" });
+
+      // Runner lifetime: emitOrReplaceChatCard needs an active runner turn. Fail
+      // clearly when none resolves (post-disposal / cross-session race) rather
+      // than floating the card out of turn order with a bare append.
+      const runner = deps.runnerRegistry.get(sessionId);
+      if (!runner) {
+        reply.code(409).send({ error: "No active session runner — submit_review must run inside a review turn." });
         return;
       }
-
-      // If a chat-native review turn is active, keep its single-file
-      // allow-list. Otherwise accept the submitted file path so regular agent
-      // and subagent reviews can still land anchored comments.
-      const runner = deps.runnerRegistry.get(sessionId);
-      if (runner?.activeReviewFilePath && runner.activeReviewFilePath !== filePath) {
+      // Only callable inside an ACTIVE review turn, for only the file under
+      // review. `activeReviewFilePath`/`activeReviewId` are reset at the next
+      // turn START, not on completion, so they linger after a review turn ends;
+      // gating on `runner.running` closes that window so a late/stale tool call
+      // (after finalizeInProgress) can't patch recordedCards and re-run
+      // replaceInProgress against an already-finalized turn.
+      if (!runner.running || !runner.activeReviewFilePath) {
         reply.code(403).send({
-          error: `submit_review_comments is authorized for "${runner.activeReviewFilePath}", not "${filePath}".`,
+          error: "submit_review is only callable inside an active review turn (started by /review or “Ask agent to review”).",
+        });
+        return;
+      }
+      if (runner.activeReviewFilePath !== filePath) {
+        reply.code(403).send({
+          error: `submit_review is authorized for "${runner.activeReviewFilePath}", not "${String(filePath)}".`,
         });
         return;
       }
 
-      if (!deps.agentReviewStore) {
-        reply.code(500).send({ error: "Agent review store not configured" });
-        return;
-      }
-
-      const dir = resolveSessionDir(deps.sessionManager, sessionId, reply);
-      if (!dir) return;
       try {
-        const result = await submitAiReviewComments(
-          deps.agentReviewStore,
-          sessionId,
+        const submission = validateAiReviewSubmission(
           filePath,
-          dir,
-          comments,
+          request.body?.markdown,
+          request.body?.reviewerLabel,
         );
-        // Record a card-shaped event in-band with the turn so the chat
-        // transcript shows the review happened and it survives a session
-        // switch / full reload (not just a WS reconnect). The review snapshot
-        // and comments already persist in the agent_reviews tables; this
-        // persists the inline breadcrumb, keyed by reviewId for idempotency.
-        if (runner) {
-          const agentReview = {
-            reviewId: result.review.id,
-            filePath,
-            fileType: result.review.fileType,
-            snapshotHash: result.review.snapshotHash,
-            findingCount: result.review.comments.length,
-            ...(result.review.summary ? { summary: result.review.summary } : {}),
-            createdAt: result.review.createdAt,
-          };
-          emitChatCard(
-            runner,
-            { type: "agent_review_added", sessionId, ...agentReview },
-            { role: "assistant", text: "", agentReview },
-            { chatHistoryManager: deps.chatHistoryManager, sessionId },
-          );
-        }
-        return {
-          ok: true,
-          reviewId: result.review.id,
-          snapshotHash: result.review.snapshotHash,
-          findingCount: result.review.comments.length,
-          added: result.added,
-          rendered: result.rendered,
+
+        // Mint the card id once per turn; reuse it on the re-review so the
+        // patch lands on the same card instead of stacking a second one.
+        runner.activeReviewId ??= randomUUID();
+        const reviewId = runner.activeReviewId;
+
+        const existing = runner.recordedCards.find(
+          (c) => c.message.aiReview?.reviewId === reviewId,
+        )?.message.aiReview;
+        const card: AiReviewCard = {
+          reviewId,
+          filePath: submission.filePath,
+          markdown: submission.markdown,
+          reviewerLabel: submission.reviewerLabel,
+          createdAt: existing?.createdAt ?? new Date().toISOString(),
+          ...(existing ? { reReviewed: true } : {}),
         };
+
+        const { replaced } = emitOrReplaceChatCard(
+          runner,
+          { type: "ai_review_added", sessionId, card },
+          { role: "assistant", text: "", aiReview: card },
+          { chatHistoryManager: deps.chatHistoryManager, sessionId },
+          (m) => m.aiReview?.reviewId === reviewId,
+        );
+
+        return { ok: true, reviewId, reReviewed: replaced };
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;
         }
-        reply.code(500).send({ error: `Failed to submit review comments: ${getErrorMessage(err)}` });
+        reply.code(500).send({ error: `Failed to submit review: ${getErrorMessage(err)}` });
       }
-    },
-  );
-
-  // ----------------------------------------------------------------
-  // Fetch one agent review (snapshot + comments) for the chat-card modal.
-  // ----------------------------------------------------------------
-  app.get<{
-    Params: { sessionId: string; reviewId: string };
-  }>(
-    "/api/sessions/:sessionId/agent-reviews/:reviewId",
-    async (request, reply) => {
-      const { sessionId, reviewId } = request.params;
-      if (!deps.agentReviewStore) {
-        reply.code(404).send({ error: "Agent review store not configured" });
-        return;
-      }
-      const review = deps.agentReviewStore.getReview(reviewId);
-      if (review?.sessionId !== sessionId) {
-        reply.code(404).send({ error: "Agent review not found" });
-        return;
-      }
-      return review;
     },
   );
 

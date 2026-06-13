@@ -599,6 +599,14 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN previous_merged_pr TEXT");
   },
+  // docs/203 — plain-text AI review card. Replaces the structured agent-review
+  // breadcrumb: `ai_review` holds an `AiReviewCard` JSON (file + reviewer label +
+  // markdown). The legacy `agent_review` column is kept read-only and mapped to a
+  // degraded `aiReview` in `fromRow`, so old transcript cards still render and the
+  // history round-trip contract still holds. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN ai_review TEXT");
+  },
 ];
 
 export class DatabaseManager {

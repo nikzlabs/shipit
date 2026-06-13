@@ -4,7 +4,20 @@ description: Replace the out-of-band AI review endpoint with a chat-native flow 
 
 # 125 — Chat-native AI Review
 
-> **Status note (docs/151 supersedes the AI-comment storage path).** The
+> **Status note (docs/203 supersedes the AI-review flow).** The AI side of this
+> doc — `submit_review_comments`, anchored AI comments, the `review_updated`
+> broadcast, the immutable snapshot viewer — is **replaced** by the plain-text
+> review in `docs/203-plaintext-ai-review`. The reviewer now returns a markdown
+> review (no anchoring, no snapshot) that the parent submits via `submit_review`,
+> rendered as one persisted **review card**; when Multi-agent sessions is on and
+> another agent is signed in, the review is delegated cross-model via
+> `shipit agent run`. The **user-comment** half described here (a human leaving
+> inline notes and **Send comments** to the implementation agent) is **kept and
+> decoupled** — only the AI-review prompt stopped embedding draft comments. See
+> docs/203 for the current design.
+>
+> **Status note (docs/151 superseded the AI-comment storage path, now itself
+> superseded by docs/203).** The
 > chat-native review *flow* described here is still live — the same
 > `submit_review_comments` MCP tool, the same `send_review_message` handler,
 > the same allow-list lifecycle. What changed in docs/151 is what the tool

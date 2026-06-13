@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, FileReview, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1026,21 +1026,6 @@ export interface WsChildMergedCard {
 }
 
 /**
- * Server → Client: a file review's comment set changed out-of-band (docs/125).
- * Emitted when the chat-native review subagent writes anchored comments via the
- * `submit_review_comments` tool. Carries the full updated draft so the file
- * preview modal can render the new AI comments live without re-fetching.
- * Broadcast via `runner.emitMessage()` so every attached viewer sees it and it
- * lands in the turn-event buffer for reconnecting viewers.
- */
-export interface WsReviewUpdated {
-  type: "review_updated";
-  sessionId: string;
-  filePath: string;
-  review: FileReview;
-}
-
-/**
  * Server → Client: the agent emitted a piece of self-contained content via the
  * `present` MCP tool (docs/093). The content lives only in the message stream —
  * no files were created in the workspace, so the user can save it explicitly
@@ -1111,27 +1096,18 @@ export interface WsPresentStateMessage {
 }
 
 /**
- * Server → Client: an agent review card was added to chat history (docs/151).
- *
- * Emitted when the chat-native review subagent finishes a review and writes
- * its anchored findings via `submit_review_comments`. The card carries enough
- * metadata to render a summary tile (file path, finding count) inline in the
- * chat transcript; the snapshot + full comment list are fetched lazily on
- * `[open]` click via `GET /api/sessions/:sessionId/agent-reviews/:reviewId`.
- *
- * Broadcast via `runner.emitMessage()` so every attached viewer sees it and
- * it lands in the turn-event buffer for reconnecting viewers.
+ * Server → Client: a plain-text AI review card was added to (or patched in) the
+ * chat transcript (docs/203). Emitted via `emitChatCard` on the first
+ * `submit_review`, and re-emitted (as an upsert keyed by `reviewId`) when the
+ * parent's re-review patches the same card. Carries the full `AiReviewCard`
+ * payload — the reviewer's markdown renders verbatim in the card; there is no
+ * snapshot, no anchoring, and no lazy fetch. Idempotent by `reviewId` so the
+ * turn-event buffer replay on reconnect doesn't double-render.
  */
-export interface WsAgentReviewAdded {
-  type: "agent_review_added";
+export interface WsAiReviewAdded {
+  type: "ai_review_added";
   sessionId: string;
-  filePath: string;
-  reviewId: string;
-  fileType: "markdown" | "code";
-  snapshotHash: string;
-  findingCount: number;
-  summary?: string;
-  createdAt: string;
+  card: AiReviewCard;
 }
 
 /**
@@ -1403,8 +1379,7 @@ export type WsServerMessage =
   | WsRebaseAborted
   | WsAutoResolveStarted
   | WsAutoResolveResult
-  | WsReviewUpdated
-  | WsAgentReviewAdded
+  | WsAiReviewAdded
   | WsPresentContentMessage
   | WsPresentClearedMessage
   | WsPresentStateMessage

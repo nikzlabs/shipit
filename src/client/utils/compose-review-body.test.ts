@@ -1,128 +1,152 @@
 import { describe, it, expect } from "vitest";
-import { composeReviewMessage } from "./compose-review-body.js";
-import type { FileReview, ReviewComment } from "../../server/shared/types.js";
+import {
+  composeReviewMessage,
+  resolveReviewer,
+  displayAgentName,
+  type ReviewComposition,
+} from "./compose-review-body.js";
 
-function review(overrides: Partial<FileReview>): FileReview {
-  return {
-    id: overrides.id ?? "r1",
-    sessionId: overrides.sessionId ?? "s1",
-    filePath: overrides.filePath ?? "plan.md",
-    fileType: overrides.fileType ?? "markdown",
-    status: overrides.status ?? "draft",
-    comments: overrides.comments ?? [],
-    docSnapshotHash: "h",
-    createdAt: "2026-01-01T00:00:00Z",
-    updatedAt: "2026-01-01T00:00:00Z",
-    sentAt: overrides.sentAt,
-  };
-}
-
-function selection(id: string, text: string, source: "human" | "ai" = "human"): ReviewComment {
+function agent(id: string, over: Partial<{ installed: boolean; authConfigured: boolean }> = {}) {
   return {
     id,
-    kind: "selection",
-    quotedText: "anchored phrase",
-    contextBefore: "",
-    contextAfter: "",
-    text,
-    source,
+    name: `${id} CLI`,
+    installed: over.installed ?? true,
+    authConfigured: over.authConfigured ?? true,
   };
 }
 
-describe("composeReviewMessage", () => {
-  it("always instructs delegation to a subagent and one atomic tool call", () => {
-    const body = composeReviewMessage("docs/plan.md", null);
-    expect(body).toContain("Review docs/plan.md.");
-    expect(body).toContain("subagent");
-    expect(body).toContain("Do not review it yourself.");
-    expect(body).toContain("submit_review_comments");
-    expect(body).toContain("empty array");
-    expect(body).toContain("Submit every material finding");
-    expect(body).not.toContain("at most 5 findings");
-    expect(body).toContain("Prefer no comment over a weak comment");
-    // No comments block when there's nothing to embed.
-    expect(body).not.toContain("Existing comments");
-  });
-
-  it("bounds re-review instead of asking for an open-ended review loop", () => {
-    const body = composeReviewMessage("docs/plan.md", null);
-    expect(body).toContain("one fresh subagent to re-review");
-    expect(body).toContain("Do not keep looping");
-    expect(body).not.toContain("Repeat the review-fix-review loop until");
-  });
-
-  it("embeds draft comments verbatim, newest first", () => {
-    const draft = review({ comments: [selection("c1", "first note"), selection("c2", "second note")] });
-    const body = composeReviewMessage("plan.md", draft);
-    expect(body).toContain("Existing comments on this file");
-    expect(body).toContain("first note");
-    expect(body).toContain("second note");
-    // Newest first: c2 appears before c1.
-    expect(body.indexOf("second note")).toBeLessThan(body.indexOf("first note"));
-  });
-
-  it("anchors each selection comment with its quoted text", () => {
-    const draft = review({ comments: [selection("c1", "tighten this")] });
-    const body = composeReviewMessage("plan.md", draft);
-    expect(body).toContain("«anchored phrase»");
-    expect(body).toContain("(selection, draft)");
-  });
-
-  it("embeds only un-sent draft comments, not already-sent ones", () => {
-    // A sent comment is a turn the agent already received; re-embedding it just
-    // repeats text the model has seen. The draft comment still rides along.
-    const draft = review({ comments: [selection("d1", "still a draft")] });
-    const body = composeReviewMessage("plan.md", draft);
-    expect(body).toContain("still a draft");
-    expect(body).toContain("(selection, draft)");
-    // Sent reviews are no longer an input to the composer at all.
-    expect(body).not.toContain("sent ");
-  });
-
-  // docs/151 — AI submissions no longer land in the human draft bucket, so the
-  // embed defensively filters out any AI-source draft rows that pre-date the
-  // sweep. Without this filter a stuck pre-migration draft would still
-  // re-embed agent text into the next review.
-  it("drops AI-source draft comments from the embed (docs/151)", () => {
-    const draft = review({
-      comments: [selection("h1", "human note"), selection("a1", "ai prior", "ai")],
+describe("resolveReviewer", () => {
+  it("picks cross-agent when Multi-agent is on AND a different agent is signed in", () => {
+    const r = resolveReviewer({
+      enableSubAgents: true,
+      agentList: [agent("claude"), agent("codex")],
+      activeAgentId: "claude",
     });
-    const body = composeReviewMessage("plan.md", draft);
-    expect(body).toContain("human note");
-    expect(body).not.toContain("ai prior");
+    expect(r).toEqual({
+      mode: "cross-agent",
+      reviewerAgentId: "codex",
+      reviewerName: "Codex",
+      selfName: "Claude",
+    });
   });
 
-  it("instructs the subagent to echo the tool response verbatim (docs/151)", () => {
-    const body = composeReviewMessage("plan.md", null);
-    expect(body).toContain("return the tool result verbatim");
+  it("falls back to subagent when Multi-agent is off (even if another agent is authed)", () => {
+    const r = resolveReviewer({
+      enableSubAgents: false,
+      agentList: [agent("claude"), agent("codex")],
+      activeAgentId: "claude",
+    });
+    expect(r).toEqual({ mode: "subagent", selfName: "Claude" });
   });
 
-  it("explains which submit_review_comments anchor shapes to use", () => {
-    const body = composeReviewMessage("docs/plan.md", null);
-    expect(body).toContain('use `{kind: "line", line, text}`');
-    expect(body).toContain("valid for both code and markdown files");
-    expect(body).toContain('`{kind: "selection", quoted_text, text}`');
+  it("falls back to subagent when the other agent is not auth-configured", () => {
+    const r = resolveReviewer({
+      enableSubAgents: true,
+      agentList: [agent("claude"), agent("codex", { authConfigured: false })],
+      activeAgentId: "claude",
+    });
+    expect(r).toEqual({ mode: "subagent", selfName: "Claude" });
   });
 
-  it("tells the parent not to stop after the review feedback", () => {
-    const body = composeReviewMessage("plan.md", null);
-    expect(body).toContain("The subagent's verbatim tool result is input for your next step");
-    expect(body).toContain("Do not stop after printing or summarizing the review feedback");
-    expect(body).toContain("Your final response to the user should describe the fixes you applied");
+  it("falls back to subagent when the other agent is not installed", () => {
+    const r = resolveReviewer({
+      enableSubAgents: true,
+      agentList: [agent("claude"), agent("codex", { installed: false })],
+      activeAgentId: "claude",
+    });
+    expect(r).toEqual({ mode: "subagent", selfName: "Claude" });
   });
 
-  it("truncates long comments and notes when the cap drops some", () => {
-    const many = Array.from({ length: 25 }, (_, i) => selection(`c${i}`, `note ${i}`));
-    const draft = review({ comments: many });
-    const body = composeReviewMessage("plan.md", draft);
-    // 25 drafts, cap 20 → 5 omitted.
-    expect(body).toContain("5 older comments omitted");
+  it("falls back to subagent when the only signed-in agent IS the active one", () => {
+    const r = resolveReviewer({
+      enableSubAgents: true,
+      agentList: [agent("claude")],
+      activeAgentId: "claude",
+    });
+    expect(r).toEqual({ mode: "subagent", selfName: "Claude" });
   });
 
-  it("truncates an over-long comment to 500 chars with an ellipsis", () => {
-    const draft = review({ comments: [selection("c1", "x".repeat(600))] });
-    const body = composeReviewMessage("plan.md", draft);
-    expect(body).toContain("…");
-    expect(body).not.toContain("x".repeat(501));
+  it("resolves cross-agent symmetrically when Codex is the active agent", () => {
+    const r = resolveReviewer({
+      enableSubAgents: true,
+      agentList: [agent("claude"), agent("codex")],
+      activeAgentId: "codex",
+    });
+    expect(r).toEqual({
+      mode: "cross-agent",
+      reviewerAgentId: "claude",
+      reviewerName: "Claude",
+      selfName: "Codex",
+    });
+  });
+});
+
+describe("displayAgentName", () => {
+  it("capitalizes the agent id", () => {
+    expect(displayAgentName("claude")).toBe("Claude");
+    expect(displayAgentName("codex")).toBe("Codex");
+  });
+});
+
+const crossAgent: ReviewComposition = {
+  mode: "cross-agent",
+  reviewerAgentId: "codex",
+  reviewerName: "Codex",
+  selfName: "Claude",
+};
+const subagent: ReviewComposition = { mode: "subagent", selfName: "Claude" };
+
+describe("composeReviewMessage — shared shape", () => {
+  it("names the target file and asks for material findings only", () => {
+    const msg = composeReviewMessage("docs/plan.md", subagent);
+    expect(msg).toContain("Review docs/plan.md.");
+    expect(msg).toContain("MATERIAL issues");
+    expect(msg).toContain("Skip nits");
+    expect(msg).toContain('"No material issues found."');
+  });
+
+  it("tells the reviewer to return markdown only with no tool calls", () => {
+    const msg = composeReviewMessage("a.ts", subagent);
+    expect(msg).toContain("MARKDOWN ONLY");
+    expect(msg).toContain("Do NOT call any MCP tool");
+  });
+
+  it("instructs the parent to apply fixes and re-review (patching the same card)", () => {
+    const msg = composeReviewMessage("a.ts", subagent);
+    expect(msg).toContain("Apply fixes for the material findings");
+    expect(msg).toContain("patches the SAME card");
+    expect(msg).toContain("describe the fixes you applied");
+  });
+
+  it("embeds NO draft comments (decoupled from the user-comment system)", () => {
+    const msg = composeReviewMessage("a.ts", subagent);
+    expect(msg).not.toContain("Existing comments");
+    expect(msg).not.toContain("[user]");
+  });
+});
+
+describe("composeReviewMessage — subagent mode", () => {
+  it("delegates to a fresh Task subagent and submits under the self label", () => {
+    const msg = composeReviewMessage("a.ts", subagent);
+    expect(msg).toContain("fresh Task subagent");
+    expect(msg).toContain("do not review it");
+    expect(msg).toContain('reviewer_label: "Reviewed by Claude"');
+    expect(msg).not.toContain("shipit agent run");
+  });
+});
+
+describe("composeReviewMessage — cross-agent mode", () => {
+  it("delegates to the other agent via shipit agent run and labels the card by reviewer", () => {
+    const msg = composeReviewMessage("a.ts", crossAgent);
+    expect(msg).toContain("shipit agent run --agent codex --prompt-file -");
+    expect(msg).toContain('reviewer_label: "Reviewed by Codex"');
+  });
+
+  it("makes cross-agent failure a first-class fallback to a same-model Task review", () => {
+    const msg = composeReviewMessage("a.ts", crossAgent);
+    expect(msg).toContain("exits non-zero");
+    expect(msg).toContain("do NOT abort");
+    expect(msg).toContain("fresh same-model");
+    expect(msg).toContain('reviewer_label: "Reviewed by Claude (Codex unavailable)"');
   });
 });

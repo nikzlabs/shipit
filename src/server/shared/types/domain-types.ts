@@ -972,49 +972,27 @@ export interface SelectionReviewComment {
 
 export type ReviewComment = LineReviewComment | SelectionReviewComment;
 
-// ---- Agent review types (docs/151 — agent review cards) ----
-
-/** A source-line-anchored finding inside an immutable agent review snapshot. */
-export interface AgentReviewLineComment {
-  id: string;
-  kind: "line";
-  line: number;
-  text: string;
-}
-
-/** A selection-anchored finding inside an immutable agent review snapshot. */
-export interface AgentReviewSelectionComment {
-  id: string;
-  kind: "selection";
-  quotedText: string;
-  contextBefore: string;
-  contextAfter: string;
-  text: string;
-}
-
-export type AgentReviewComment =
-  | AgentReviewLineComment
-  | AgentReviewSelectionComment;
-
 /**
- * An immutable record of one subagent review of one file. Owns a snapshot of
- * the file contents at review time so anchors stay aligned with what the
- * reviewer saw, regardless of how the live file evolves afterward. There is
- * no draft phase, no status, and no send affordance — the row is created
- * complete and never mutated.
+ * docs/203 — the persisted payload of a plain-text AI review card. One card per
+ * review run, keyed by `reviewId`; the parent's re-review patches the same
+ * record in place (it never stacks a second card). The reviewer returns
+ * `markdown` only — no line/selection anchoring, no immutable snapshot — and the
+ * card renders it verbatim. `legacy` rows are degraded mappings of the
+ * pre-docs/203 `agent_review` column (file + finding count, no markdown).
  */
-export interface AgentReview {
-  id: string;
-  sessionId: string;
+export interface AiReviewCard {
+  reviewId: string;
   filePath: string;
-  fileType: FileReviewType;
-  /** The file contents the reviewer saw. Anchors index into this string. */
-  snapshotContent: string;
-  /** SHA-256 of `snapshotContent`. */
-  snapshotHash: string;
-  /** Optional one-line takeaway from the subagent. */
-  summary?: string;
-  comments: AgentReviewComment[];
+  /** The reviewer's full review as markdown (rendered verbatim in the card). */
+  markdown: string;
+  /** Short attribution, e.g. "Reviewed by Codex" / "Reviewed by Claude". */
+  reviewerLabel: string;
+  /** True once the parent's re-review patched this card. */
+  reReviewed?: boolean;
+  /** True for a degraded legacy `agent_review` row (no markdown available). */
+  legacy?: boolean;
+  /** Finding count — only meaningful for a degraded legacy row. */
+  findingCount?: number;
   createdAt: string;
 }
 

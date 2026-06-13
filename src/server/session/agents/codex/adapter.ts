@@ -394,7 +394,7 @@ export class CodexAdapter
     // explicit instruction — exactly what the composed review prompt asks for)
     // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
     // writes the consolidated `shipit` bridge into the Codex config before spawn
-    // (see CodexAdapter.writeMcpConfig), so `submit_review_comments`
+    // (see CodexAdapter.writeMcpConfig), so `submit_review`
     // is available to the parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
@@ -1282,7 +1282,7 @@ export class CodexAdapter
         // `wait`, `close_agent`, …). Surface it as a tool call so the review
         // subagent's lifecycle is visible in chat, mirroring how Claude's
         // `Task` tool renders. The actual review write-back still arrives via
-        // the `submit_review_comments` MCP tool, mapped above.
+        // the `submit_review` MCP tool, mapped above.
         if (phase === "started") {
           if (item.tool === "spawn_agent") {
             this.emitToolUseOnce(id, "Agent", {

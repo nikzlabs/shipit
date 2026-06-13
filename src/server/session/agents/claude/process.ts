@@ -110,7 +110,7 @@ export class ClaudeProcess extends EventEmitter {
     // that plan mode is no longer guaranteed read-only when a user
     // deliberately invokes a side-effecting skill. See docs/138.
     //
-    // The internal `shipit` tools (`mcp__shipit__submit_review_comments`,
+    // The internal `shipit` tools (`mcp__shipit__submit_review`,
     // `mcp__shipit__present`, `mcp__shipit__voice_note`,
     // `mcp__shipit__report_shipit_bug`) are allowlisted by exact name alongside
     // playwright because they're served by the built-in consolidated `shipit`
@@ -134,8 +134,8 @@ export class ClaudeProcess extends EventEmitter {
     // so the session is stranded in plan mode (no working PlanApproval card, no
     // file edits). Allowlisting it lets the CLI surface the tool_use, which lets
     // the docs/140 §6.8 live-steering guard render an interactive card.
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
 
     // docs/088: enabled user MCP servers contribute a `mcp__<name>__*` glob to
     // the `auto` allowlist. `plan` mode deliberately omits them
@@ -376,8 +376,8 @@ export class StreamingClaudeProcess extends EventEmitter {
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
-    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
-    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review_comments,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const AUTO_TOOLS = "Write,Read,Edit,NotebookEdit,Bash,PowerShell,Monitor,Glob,Grep,LSP,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,ShareOnboardingGuide,Workflow,mcp__playwright__*,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
+    const PLAN_TOOLS = "Read,Glob,Grep,WebFetch,WebSearch,AskUserQuestion,ExitPlanMode,Skill,mcp__playwright__browser_navigate,mcp__playwright__browser_snapshot,mcp__playwright__browser_take_screenshot,mcp__shipit__submit_review,mcp__shipit__present,mcp__shipit__voice_note,mcp__shipit__report_shipit_bug";
 
     const userMcpGlobs = (mcpServerNames ?? []).map((name) => `mcp__${name}__*`).join(",");
     const withUserMcp = (base: string): string => userMcpGlobs ? `${base},${userMcpGlobs}` : base;

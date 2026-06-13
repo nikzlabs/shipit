@@ -13,12 +13,9 @@ import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
 import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
 import type {
-  AgentReview,
-  AgentReviewComment,
   ReviewComment,
   FileReview,
 } from "../../server/shared/types.js";
-import { composeReviewMessage } from "../utils/compose-review-body.js";
 import { WithTooltip } from "./ui/tooltip.js";
 import type * as MonacoEditor from "monaco-editor";
 
@@ -80,30 +77,11 @@ export interface FilePreviewModalProps {
    */
   onSendComments?: (payload: SendCommentsPayload) => void;
   /**
-   * docs/125 — called when the user clicks "Ask agent to review". Receives the
-   * composed review prompt and the file path to authorize the review tool for.
-   * Caller dispatches a `send_review_message` and closes the modal.
+   * docs/203 — called when the user clicks "Ask agent to review". Receives the
+   * file path; the caller (App.tsx) resolves the reviewer, composes the prompt,
+   * and dispatches a `send_review_message`, then closes the modal.
    */
-  onAskAgentReview?: (prompt: string, filePath: string) => void;
-  /**
-   * docs/151 — modal display mode. `live` (default) is the normal draft/send
-   * surface. `agent-review` opens an immutable snapshot of one agent-authored
-   * review: snapshot content, that review's comments only, no draft footer,
-   * no Send button.
-   */
-  mode?: "live" | "agent-review";
-  /**
-   * docs/151 — the agent review to render when `mode === "agent-review"`.
-   * Provides the snapshot content and comments; anchors index into the
-   * snapshot, not the live file.
-   */
-  agentReview?: AgentReview | null;
-  /**
-   * docs/151 — called when the user clicks "View live file" in agent-review
-   * mode. Caller swaps the modal back into the normal `live` surface on the
-   * same file (draft state, history, human authoring available there).
-   */
-  onSwitchToLive?: () => void;
+  onAskAgentReview?: (filePath: string) => void;
 }
 
 /** Map file extensions to Monaco language IDs. */
@@ -419,12 +397,8 @@ export function FilePreviewModal({
   onClose,
   onSendComments,
   onAskAgentReview,
-  mode = "live",
-  agentReview,
-  onSwitchToLive,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
-  const isAgentReviewMode = mode === "agent-review";
   // Agent-busy state: a review is a chat turn, so we can't start one while the
   // agent is mid-turn. The button stays visible but disabled (the composed
   // prompt depends on current draft state, so we don't auto-queue).
@@ -454,15 +428,12 @@ export function FilePreviewModal({
 
   const reviewable = fileType === "markdown" || fileType === "code";
 
-  // Load draft + history when the modal opens for a reviewable file. Skip in
-  // agent-review mode — that surface is scoped to one immutable review and
-  // doesn't show drafts or history.
+  // Load draft + history when the modal opens for a reviewable file.
   // eslint-disable-next-line no-restricted-syntax -- one-shot fetch tied to (session, file) identity
   useEffect(() => {
-    if (isAgentReviewMode) return;
     if (!sessionId || !reviewable || content === null) return;
     void load(sessionId, filePath);
-  }, [sessionId, filePath, reviewable, content, load, isAgentReviewMode]);
+  }, [sessionId, filePath, reviewable, content, load]);
 
   const commentCount = draft?.comments.length ?? 0;
   // The subagent can usefully review markdown of any size, or code under a cap
@@ -470,23 +441,20 @@ export function FilePreviewModal({
   const reviewableForAgent =
     fileType === "markdown" || (fileType === "code" && (content?.length ?? 0) <= 10 * 1024);
   const showAskReview =
-    !isAgentReviewMode
-    && reviewable
+    reviewable
     && reviewableForAgent
     && !!sessionId
     && content !== null
     && activeAgentSupportsReview
     && !!onAskAgentReview;
-  const canSend = !isAgentReviewMode && !!onSendComments && commentCount > 0;
+  const canSend = !!onSendComments && commentCount > 0;
 
   const handleClose = useCallback(() => {
-    // Skip the empty-draft cleanup in agent-review mode — that surface never
-    // touches drafts.
-    if (!isAgentReviewMode && sessionId && reviewable && draft?.comments.length === 0) {
+    if (sessionId && reviewable && draft?.comments.length === 0) {
       void discardEmptyDraft(sessionId, filePath);
     }
     onClose();
-  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose, isAgentReviewMode]);
+  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose]);
 
   const handleSwitchSibling = useCallback(
     (nextPath: string) => {
@@ -503,9 +471,8 @@ export function FilePreviewModal({
 
   const handleAskReview = useCallback(() => {
     if (!sessionId || !onAskAgentReview || agentRunning) return;
-    const prompt = composeReviewMessage(filePath, draft);
-    onAskAgentReview(prompt, filePath);
-  }, [sessionId, filePath, onAskAgentReview, agentRunning, draft]);
+    onAskAgentReview(filePath);
+  }, [sessionId, filePath, onAskAgentReview, agentRunning]);
 
   const handleSend = useCallback(async () => {
     if (!sessionId || !onSendComments) return;
@@ -519,23 +486,9 @@ export function FilePreviewModal({
     }
   }, [sessionId, filePath, sendDraft, onSendComments]);
 
-  // In agent-review mode, the comments come from the immutable agent_reviews
-  // row (snapshot-anchored, no source field). In live mode they come from the
-  // current draft.
+  // Review comments come from the current human draft (the AI-review system no
+  // longer writes into this bucket — docs/203).
   const markdownComments: SelectionCommentData[] = useMemo(() => {
-    if (isAgentReviewMode) {
-      if (!agentReview) return [];
-      return agentReview.comments
-        .filter((c): c is Extract<AgentReviewComment, { kind: "selection" }> => c.kind === "selection")
-        .map((c) => ({
-          id: c.id,
-          quotedText: c.quotedText,
-          contextBefore: c.contextBefore,
-          contextAfter: c.contextAfter,
-          text: c.text,
-          source: "ai" as const,
-        }));
-    }
     return (draft?.comments ?? [])
       .filter((c): c is Extract<ReviewComment, { kind: "selection" }> => c.kind === "selection")
       .map((c) => ({
@@ -546,32 +499,19 @@ export function FilePreviewModal({
         text: c.text,
         source: c.source,
       }));
-  }, [isAgentReviewMode, agentReview, draft]);
+  }, [draft]);
 
   const codeComments = useMemo(() => {
-    if (isAgentReviewMode) {
-      if (!agentReview) return [];
-      return agentReview.comments
-        .filter((c): c is Extract<AgentReviewComment, { kind: "line" }> => c.kind === "line")
-        .map((c) => ({ id: c.id, kind: "line" as const, line: c.line, text: c.text }));
-    }
     return (draft?.comments ?? [])
       .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
       .map((c) => ({ id: c.id, kind: "line" as const, line: c.line, text: c.text }));
-  }, [isAgentReviewMode, agentReview, draft]);
+  }, [draft]);
 
-  const showSiblingTabs = !isAgentReviewMode && !!siblings && siblings.length > 1;
+  const showSiblingTabs = !!siblings && siblings.length > 1;
   const showFooter =
-    !isAgentReviewMode
-    && reviewable
+    reviewable
     && content !== null
     && (commentCount > 0 || history.length > 0);
-
-  // Header subtitle for agent-review mode: tell the user the content shown is
-  // a snapshot from review time, not the live file.
-  const snapshotLabel = isAgentReviewMode && agentReview
-    ? `Snapshot from ${new Date(agentReview.createdAt).toLocaleString()} — file may have changed since.`
-    : null;
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
@@ -583,26 +523,6 @@ export function FilePreviewModal({
               <DialogTitle className="text-sm font-medium text-(--color-text-primary) truncate" title={filePath}>
                 {filePath}
               </DialogTitle>
-              {snapshotLabel && (
-                <div
-                  className="mt-0.5 text-[11px] text-(--color-text-tertiary) truncate"
-                  data-testid="agent-review-snapshot-label"
-                >
-                  {snapshotLabel}
-                  {onSwitchToLive && (
-                    <>
-                      {" "}
-                      <button
-                        type="button"
-                        onClick={onSwitchToLive}
-                        className="text-(--color-accent) hover:underline cursor-pointer"
-                      >
-                        View live file
-                      </button>
-                    </>
-                  )}
-                </div>
-              )}
             </div>
             <div className="flex items-center gap-2 shrink-0 ml-4">
               {showAskReview && (
@@ -672,8 +592,6 @@ export function FilePreviewModal({
               content={content}
               sessionId={sessionId}
               comments={markdownComments}
-              lineComments={isAgentReviewMode ? codeComments : []}
-              readOnly={isAgentReviewMode}
             />
           ) : fileType === "image" ? (
             <div className="flex items-center justify-center h-full">
@@ -693,7 +611,6 @@ export function FilePreviewModal({
               content={content}
               sessionId={sessionId}
               comments={codeComments}
-              readOnly={isAgentReviewMode}
               revealLine={line ?? undefined}
             />
           )}

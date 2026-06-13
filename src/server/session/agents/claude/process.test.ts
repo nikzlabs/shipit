@@ -493,7 +493,7 @@ describe("ClaudeProcess", () => {
       ["auto" as const, undefined],
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
-    ])("allowlists mcp__shipit__submit_review_comments in %s mode", (_label, permissionMode) => {
+    ])("allowlists mcp__shipit__submit_review in %s mode", (_label, permissionMode) => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);
 
@@ -502,7 +502,7 @@ describe("ClaudeProcess", () => {
 
       const args = mockPtySpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
-      expect(tools.split(",")).toContain("mcp__shipit__submit_review_comments");
+      expect(tools.split(",")).toContain("mcp__shipit__submit_review");
     });
 
     // Same rationale: `present` must be allowlisted explicitly or headless `-p`

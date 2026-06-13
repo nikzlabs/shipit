@@ -12,7 +12,6 @@ import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { SecretStore } from "./secret-store.js";
 import { FileReviewStore } from "./review-store.js";
-import { AgentReviewStore } from "./agent-review-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig } from "./git-config.js";
@@ -191,7 +190,6 @@ export interface ManagerSet {
   runtimeMode: RuntimeMode;
   secretStore: SecretStore;
   reviewStore: FileReviewStore;
-  agentReviewStore: AgentReviewStore;
 }
 
 /**
@@ -331,9 +329,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- File review store ----
   const reviewStore = new FileReviewStore(databaseManager);
 
-  // ---- Agent review store (docs/151 — immutable chat-card review history) ----
-  const agentReviewStore = new AgentReviewStore(databaseManager);
-
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
@@ -391,7 +386,6 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     githubAuthManager,
     secretStore,
     reviewStore,
-    agentReviewStore,
     generateText,
     isTestMode,
     runtimeMode,

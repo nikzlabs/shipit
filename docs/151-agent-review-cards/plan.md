@@ -4,6 +4,16 @@ description: Move AI review submissions out of the human draft bucket into immut
 
 # 151 — Agent review cards
 
+> **Status note (superseded by docs/203).** This doc's mechanism — the
+> structured `submit_review_comments` tool, the immutable `agent_reviews`
+> snapshot store, the `agent_review_added` card opening a snapshot-mode modal,
+> anchored line/selection findings — is **replaced** by the plain-text review in
+> `docs/203-plaintext-ai-review`. The reviewer now returns markdown that the
+> parent submits via `submit_review`, rendered as one persisted plain-text
+> **review card** (no snapshot, no anchoring). The legacy `agent_review` column
+> is kept read-only and degraded on read so old transcript cards still render.
+> See docs/203 for the current design.
+
 ## Summary
 
 Today `submit_review_comments` (docs/125) writes AI-authored review findings

@@ -49,7 +49,7 @@ describe("OrchestratorClient", () => {
     const client = new OrchestratorClient();
     const res = await client.request("POST", "/review-submit", {
       filePath: "docs/plan.md",
-      comments: [],
+      markdown: "No material issues found.",
     });
 
     expect(res).toEqual({ ok: true, status: 200, body: { ok: true } });

@@ -16,9 +16,8 @@ import { SubagentCall } from "./SubagentCall.js";
 import { SpawnedSessionCard } from "./SpawnedSessionCard.js";
 import { ChildMergedCard } from "./ChildMergedCard.js";
 import { SpawnFailedCard } from "./SpawnFailedCard.js";
-import { AgentReviewCard } from "./AgentReviewCard.js";
+import { ReviewCard } from "./ReviewCard.js";
 import { UserReviewCard } from "./UserReviewCard.js";
-import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { SubAgentSpawnChip } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -30,7 +29,7 @@ import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
 import { IssueRefCard } from "./IssueRefCard.js";
-import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData, SubAgentConsultCard as SubAgentConsultCardData } from "../../server/shared/types.js";
+import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData, SubAgentConsultCard as SubAgentConsultCardData, AiReviewCard } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -216,20 +215,13 @@ export interface ChatMessage {
     failedAt: string;
   };
   /**
-   * docs/151 — when set, this message renders an `AgentReviewCard` inline in
-   * the chat. Populated from `agent_review_added` WS events. The card opens
-   * the file in snapshot-mode FilePreviewModal so pins line up with what the
-   * reviewer saw. The full snapshot + comment list is fetched lazily on click.
+   * docs/203 — when set, this message renders a plain-text `ReviewCard` inline
+   * in the chat. Populated from `ai_review_added` WS events (and rehydrated from
+   * the persisted `aiReview` column). The reviewer's markdown renders verbatim;
+   * there is no snapshot, no anchoring, and no modal. Legacy pre-docs/203 rows
+   * arrive degraded (`legacy: true`).
    */
-  agentReview?: {
-    reviewId: string;
-    filePath: string;
-    fileType: "markdown" | "code";
-    findingCount: number;
-    snapshotHash: string;
-    summary?: string;
-    createdAt: string;
-  };
+  aiReview?: AiReviewCard;
   /**
    * docs/163 — when set, this message renders a `VoiceNoteCard` inline in the
    * chat. Populated from `voice_note` WS events. Carries only the ear-shaped
@@ -244,7 +236,7 @@ export interface ChatMessage {
     createdAt: string;
   };
   /**
-   * User-side counterpart to `agentReview`: when the user submits comments on
+   * User-side counterpart to `aiReview`: when the user submits comments on
    * a doc or diff, the optimistic user bubble carries this payload so the
    * chat renders a dedicated `UserReviewCard` (header + comment count +
    * collapsed prompt disclosure) instead of dumping the raw prompt as a
@@ -850,27 +842,14 @@ export function MessageList({
           );
         }
 
-        // docs/151 — agent review marker carries no chat text of its own;
-        // render the inline `AgentReviewCard` and skip the bubble path. The
-        // card's open action triggers a lazy fetch of the snapshot + comments
-        // via the file-store, opening the modal in agent-review mode.
-        if (msg.agentReview) {
-          const sid = useSessionStore.getState().sessionId;
+        // docs/203 — plain-text AI review card carries no chat text of its own;
+        // render the inline `ReviewCard` (markdown findings) and skip the bubble
+        // path. Self-contained — no lazy fetch, no modal.
+        if (msg.aiReview) {
           return (
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
-                <AgentReviewCard
-                  reviewId={msg.agentReview.reviewId}
-                  filePath={msg.agentReview.filePath}
-                  findingCount={msg.agentReview.findingCount}
-                  snapshotHash={msg.agentReview.snapshotHash}
-                  {...(msg.agentReview.summary ? { summary: msg.agentReview.summary } : {})}
-                  createdAt={msg.agentReview.createdAt}
-                  onOpen={(reviewId) => {
-                    if (!sid) return;
-                    void useFileStore.getState().openAgentReview(sid, reviewId);
-                  }}
-                />
+                <ReviewCard card={msg.aiReview} />
               </div>
             </div>
           );
