@@ -10,6 +10,7 @@ import {
   buildResolverConfigB64,
   launchEgressResolver,
   EGRESS_DNS_DEFAULT_UPSTREAMS,
+  EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 
 describe("egressDnsEnabled", () => {
@@ -63,6 +64,13 @@ function fakeDocker() {
   return { docker, container, calls };
 }
 
+describe("EGRESS_RESOLVER_LABEL", () => {
+  it("is a distinct label from shipit-parent-session (so the compose stale-sweep can spare it)", () => {
+    expect(EGRESS_RESOLVER_LABEL).toBe("shipit-egress-resolver");
+    expect(EGRESS_RESOLVER_LABEL).not.toBe("shipit-parent-session");
+  });
+});
+
 describe("launchEgressResolver", () => {
   it("starts a long-lived resolver in the agent netns with the config + NET_ADMIN", async () => {
     const { docker, container, calls } = fakeDocker();
@@ -70,7 +78,7 @@ describe("launchEgressResolver", () => {
       agentContainerId: "agent123",
       sidecarImage: "egress:1",
       configB64: "Y29uZmln",
-      labels: { "shipit-parent-session": "s1" },
+      labels: { "shipit-parent-session": "s1", [EGRESS_RESOLVER_LABEL]: "s1" },
     });
     expect(id).toBe("resolver-xyz");
     const cfg = calls.create as {
@@ -84,6 +92,8 @@ describe("launchEgressResolver", () => {
     expect(cfg.HostConfig.CapAdd).toEqual(["NET_ADMIN"]);
     expect(cfg.Env).toContain("EGRESS_DNSMASQ_CONFIG_B64=Y29uZmln");
     expect(cfg.Labels["shipit-parent-session"]).toBe("s1");
+    // Carries the distinct resolver label so killStaleContainers spares it.
+    expect(cfg.Labels[EGRESS_RESOLVER_LABEL]).toBe("s1");
     expect(container.start).toHaveBeenCalled();
   });
 });

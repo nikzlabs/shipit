@@ -81,11 +81,16 @@ fi
 #     resolver's uid may send DNS UPSTREAM; the agent is blocked from Docker's
 #     embedded DNS (127.0.0.11) directly (else it could resolve arbitrary names).
 #
-# NOTE(host-verify): Docker DNATs the embedded resolver (127.0.0.11) in nat/OUTPUT
-# before filter/OUTPUT runs. We match it by destination IP only (no --dport) to
-# stay robust to the port rewrite, but this rule is the #1 thing to confirm on a
-# real host when verifying Tier B.
+# NOTE(Tier B / Bug-1 fix): on a user-defined Docker network the agent's
+# /etc/resolv.conf is `nameserver 127.0.0.11` (Docker's embedded resolver)
+# REGARDLESS of the container `--dns` setting — Docker demotes `--dns` to a mere
+# *upstream* of 127.0.0.11, it does not replace the nameserver. Since the filter
+# rule below drops the agent → 127.0.0.11, the agent would have NO working
+# resolver. So we transparently REDIRECT the agent's DNS to the in-netns dnsmasq
+# (see install_dns_redirect). We still keep matching 127.0.0.11 by destination IP
+# (no --dport) in the filter table as a backstop for non-DNS traffic.
 DNS_UID="${EGRESS_DNS_RESOLVER_UID:-}"
+DOCKER_DNS=127.0.0.11
 install_v4() {
   iptables -F OUTPUT || true
   if [[ -n "$DNS_UID" ]]; then
@@ -121,6 +126,28 @@ install_v6() {
 install_v4
 install_v6
 log "default-deny OUTPUT policy installed"
+
+# --- 4b. Tier B: force agent DNS through the in-netns controlled resolver ----
+# Bug-1 fix (see the NOTE above): the agent always sends DNS to Docker's embedded
+# resolver at $DOCKER_DNS, which the filter table drops. Rather than fight
+# resolv.conf, intercept those packets in nat/OUTPUT and REDIRECT them to the
+# local dnsmasq on 127.0.0.1:53 (REDIRECT in OUTPUT maps the destination to
+# localhost). This is robust to whatever resolv.conf says, and conntrack un-NATs
+# the reply so the agent sees an answer from 127.0.0.11 as usual.
+#
+# Scoped to $DOCKER_DNS (the only DNS dest the agent actually uses): any other DNS
+# destination is already dropped by the filter OUTPUT policy, so there's nothing
+# to redirect. The resolver's OWN upstream queries run as uid $DNS_UID and are
+# excluded here (they egress via the uid-:53 filter allow). Inserted at the TOP of
+# nat/OUTPUT so it precedes Docker's own 127.0.0.11 DNAT rules.
+install_dns_redirect() {
+  iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
+  iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
+}
+if [[ -n "$DNS_UID" ]]; then
+  install_dns_redirect
+  log "Tier B DNS redirect installed ($DOCKER_DNS:53 → in-netns resolver 127.0.0.1:53)"
+fi
 
 # --- 5. Self-test (fail-closed, DNS-independent) ---------------------------
 # A non-allowlisted destination MUST be blocked. We hit a literal TEST-NET-1 IP

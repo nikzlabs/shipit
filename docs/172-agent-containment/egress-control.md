@@ -122,6 +122,22 @@ Key properties:
   it refuses/logs non-allowlisted names (killing DNS tunneling) and, on each allowed
   resolution, inserts the returned IPs into the ipset (killing staleness — the ipset always
   matches the live answer). This is the DNS correction over Anthropic's reference.
+
+  > **Tier B host-verification findings (the wiring the design glossed over).** Two netns
+  > details only surfaced on a live host (both now fixed; see `checklist.md`):
+  > 1. **Getting the agent onto the resolver is an iptables job, not a `--dns` job.** On a
+  >    user-defined Docker network the container `--dns` option does *not* rewrite the
+  >    agent's resolv.conf nameserver — Docker keeps its embedded resolver (`127.0.0.11`)
+  >    as the nameserver and demotes `--dns` to an upstream. Since Tier A drops the
+  >    agent→`127.0.0.11`, the only robust hook is to **REDIRECT** the agent's DNS
+  >    (`dst 127.0.0.11:53`) to the in-netns dnsmasq at `nat/OUTPUT` (excluding the
+  >    resolver's own uid). This is transparent to resolv.conf and tighter than relying on
+  >    it. The resolver's listen address (`127.0.0.1:53`) is unchanged.
+  > 2. **A long-lived netns sidecar needs a label the compose stale-sweep won't reap.**
+  >    Sharing the agent's `shipit-parent-session` label put the resolver in the blast radius
+  >    of `killStaleContainers`, which SIGKILLed it the moment the compose stack started. It
+  >    now also carries a distinct `shipit-egress-resolver=<sid>` label that the sweep
+  >    excludes (parent-session is kept only for destroy-time teardown).
 - **Tier C** adds the transparent proxy for L7: hostname-level HTTPS policy that survives
   shared CDN IPs, the **allow-once / add-to-allowlist** interactive flow, per-host
   observability, and the hook for the Phase-2 identity-validating proxy (verify a request

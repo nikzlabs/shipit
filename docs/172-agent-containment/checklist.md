@@ -79,12 +79,26 @@ tracker as separate issues. None implemented yet.
           `launchEgressResolver` (long-lived sidecar in agent netns, labeled
           `shipit-parent-session` so existing cleanup tears it down), agent `--dns 127.0.0.1`,
           resolver-uid threaded to the installer; sequenced after the Tier A install.
-    - [ ] **Verify on a live host (expect a fix-cycle — riskier than Tier A):** the
-          #1 unknown is the `127.0.0.11` / Docker-embedded-DNS iptables interaction (DNAT
-          port rewrite) and internal-name resolution for the orchestrator host. Run the
-          extended SHI-90 Tier B checks: `dig data.attacker.com` → refused/empty,
-          `dig @8.8.8.8` → blocked, allowlisted names still resolve, and the session's own
-          control channel (worker→orchestrator) still works.
+    - [x] **Verified on a live host — found + fixed two fatal bugs (the predicted
+          fix-cycle).** First host run came back ❌ (DNS dead for the agent); the diagnosis
+          surfaced two independent root causes, both now fixed:
+          - **Bug 1 — agent never reached the resolver.** On a user-defined Docker network,
+            the container `--dns 127.0.0.1` option does NOT set the agent's resolv.conf
+            nameserver — Docker keeps `127.0.0.11` (its embedded resolver) as the nameserver
+            and demotes `--dns` to a mere upstream. Tier A drops the agent→127.0.0.11, so the
+            agent had no working resolver. Fix: drop the `Dns` override and instead REDIRECT
+            the agent's DNS (`dst 127.0.0.11:53`) into the in-netns dnsmasq at the iptables
+            layer (`install_dns_redirect` in `init-firewall.sh`, gated on the resolver uid).
+          - **Bug 2 — resolver was SIGKILLed ~1s after launch.** The resolver carried only
+            `shipit-parent-session=<sid>`, which the compose pre-start sweep
+            (`killStaleContainers`) matches and `rm -f`s. Fix: stamp a distinct
+            `EGRESS_RESOLVER_LABEL` (`shipit-egress-resolver=<sid>`) on the resolver and
+            exclude it from the sweep (keeping the parent-session label for destroy-time
+            cleanup). See `egress-dns-install.ts`, `container-lifecycle.ts`, `service-manager.ts`.
+    - [ ] **Re-verify on a live host after the fix** (rebuild `shipit-egress-sidecar`): the
+          extended SHI-90 Tier B checks must now PASS NON-VACUOUSLY — allowlisted names
+          resolve AND `npm`/`git` reach their hosts, while `dig data.attacker.com` → empty,
+          `dig @8.8.8.8` → blocked, and the worker→orchestrator control channel still works.
   - [ ] **Tier C** — transparent SNI/CONNECT proxy (reuse the matcher) for hostname-level
         HTTPS policy, the allow-once / add-to-allowlist inline card (deny-fast + retry,
         persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env
