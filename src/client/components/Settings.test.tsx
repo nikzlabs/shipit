@@ -185,10 +185,10 @@ describe("Settings - Agent → Claude tab", () => {
   });
 });
 
-describe("Settings - GitHub tab", () => {
+describe("Settings - Integrations tab (GitHub)", () => {
   async function renderOnGitHubTab(props: Partial<SettingsProps> = {}) {
     const result = render(<Settings {...defaultProps} {...props} />);
-    await userEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
     return result;
   }
 
@@ -737,9 +737,10 @@ describe("Settings - Tab switching", () => {
     expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
   });
 
-  it("clicking GitHub tab switches to GitHub section", async () => {
+  it("clicking Integrations tab switches to integrations section", async () => {
     render(<Settings {...defaultProps} />);
-    await userEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
+    expect(screen.getByTestId("settings-integrations")).toBeInTheDocument();
     expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
     expect(screen.queryByTestId("claude-auth-card")).not.toBeInTheDocument();
   });
@@ -767,7 +768,7 @@ describe("Settings - Tab switching", () => {
 
   it("clicking Claude tab switches back", async () => {
     render(<Settings {...defaultProps} />);
-    await userEvent.click(screen.getByRole("tab", { name: "GitHub" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Integrations" }));
     await userEvent.click(screen.getByRole("tab", { name: "Claude" }));
     expect(screen.getByTestId("claude-auth-card")).toBeInTheDocument();
     expect(screen.queryByTestId("github-token-form")).not.toBeInTheDocument();

@@ -874,7 +874,7 @@ export default function App() {
     };
   }, [rightTab, hasPr, wsSessionId, status, send]);
 
-  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "github" | "git" | "instructions" | "advanced" | "trackers" | "keyboard") => {
+  const handleSettingsOpen = useCallback(async (tab?: "agent-claude" | "agent-codex" | "integrations" | "git" | "instructions" | "advanced" | "keyboard") => {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
@@ -1212,7 +1212,7 @@ export default function App() {
         {rightTab === "docs" ? (
           <DocsViewer files={docFiles} onFileClick={(f) => { const doc = docFiles.find((d) => d.path === f); handleOpenDoc(f, doc); }} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) useFileStore.getState().fetchDocs(sid).catch(() => {}); }} onOpenIssue={handleOpenIssue} />
         ) : rightTab === "issues" ? (
-          <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("trackers"); }} />
+          <IssuesPanel onStartSession={handleIssueStartSession} onConnect={() => { void handleSettingsOpen("integrations"); }} />
         ) : rightTab === "terminal" ? (
           <TerminalPanel onClear={() => { useLogStore.getState().clearChannel("agent"); send({ type: "log_clear", channel: "agent" }); }} terminalMode={terminalMode} onTerminalModeChange={(m) => useTerminalStore.getState().setMode(m)} send={send} sessionId={wsSessionId} onReconnectWs={reconnect} shellContent={
             (shellStarted || terminalMode === "shell") ? (

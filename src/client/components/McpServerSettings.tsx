@@ -171,7 +171,16 @@ function isAuthRequired(status: McpServerStatusEntry | undefined): boolean {
   return reason.includes("auth");
 }
 
-export function McpServerSettings({ hasActiveSession }: { hasActiveSession: boolean }) {
+export function McpServerSettings({
+  hasActiveSession,
+  embedded = false,
+}: {
+  hasActiveSession: boolean;
+  /** When rendered inside the Integrations tab (docs/201), the parent owns the
+   * scroll container and section heading, so drop our own to avoid double
+   * padding and a redundant title. */
+  embedded?: boolean;
+}) {
   const servers = useMcpStore((s) => s.servers);
   const loading = useMcpStore((s) => s.loading);
   const error = useMcpStore((s) => s.error);
@@ -360,14 +369,19 @@ export function McpServerSettings({ hasActiveSession }: { hasActiveSession: bool
   }
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="mcp-settings">
-      <div>
-        <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
-        <p className="text-xs text-(--color-text-tertiary) mt-0.5">
-          Connect your own Model Context Protocol servers (Sentry, Notion, …) so the
-          agent can use their tools. Configured once per account — available in every session.
-        </p>
-      </div>
+    <div
+      className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
+      data-testid="mcp-settings"
+    >
+      {!embedded && (
+        <div>
+          <h3 className="text-sm font-medium text-(--color-text-primary)">MCP Servers</h3>
+          <p className="text-xs text-(--color-text-tertiary) mt-0.5">
+            Connect your own Model Context Protocol servers (Sentry, Notion, …) so the
+            agent can use their tools. Configured once per account — available in every session.
+          </p>
+        </div>
+      )}
 
       {error && (
         <div className="rounded-md border border-(--color-error) bg-(--color-bg-secondary) px-3 py-2 text-xs text-(--color-error)">

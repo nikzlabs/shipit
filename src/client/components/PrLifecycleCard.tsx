@@ -688,7 +688,7 @@ function ErrorPhase({
   const isAuthError = card.errorKind === "auth";
 
   const handleSignIn = () => {
-    setSettingsTab("github");
+    setSettingsTab("integrations");
     setSettingsOpen(true);
   };
 

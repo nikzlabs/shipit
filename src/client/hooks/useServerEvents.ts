@@ -240,7 +240,7 @@ export function useServerEvents(): void {
           action: {
             label: "Sign in",
             onClick: () => {
-              useUiStore.getState().setSettingsTab("github");
+              useUiStore.getState().setSettingsTab("integrations");
               useUiStore.getState().setSettingsOpen(true);
             },
           },
