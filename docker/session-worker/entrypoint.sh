@@ -1,22 +1,31 @@
 #!/bin/sh
 # Session-worker entrypoint (docs/150 — non-root runtime).
 #
-# Runs as root ONLY long enough to prepare the writable runtime mounts, then
-# drops to the unprivileged session-worker user (UID/GID 1000 = `shipit`) via
-# gosu before exec'ing the worker. After this point neither the worker nor any
-# child it spawns (agent CLI, terminal, agent.install, MCP servers) runs as
-# UID 0.
+# Gated on SHIPIT_SESSION_WORKER_UID so the whole non-root migration is
+# flag-off-by-default and the orchestrator + image flip together:
+#
+#   - UNSET (default) — preserve the legacy root runtime: no chown, no privilege
+#     drop, exec the worker as root. The image still ships the `shipit` user and
+#     the /home/shipit symlink layout, but root reads everything, so credential
+#     writes the orchestrator lands as `root:root` (its chown helpers are also
+#     no-ops when the var is unset) stay readable. This makes the image safe to
+#     ship BEFORE the coordinated flip — no auth break.
+#   - SET (e.g. 1000) — prep the writable mounts (chown to the worker UID) and
+#     drop to that unprivileged user via gosu before exec'ing the worker. The
+#     orchestrator gates its own §7 chowns on the SAME var, so neither side can
+#     disagree about who owns the mounts. One env flips both.
 #
 # gosu (not setuid) relies on PID 1's CAP_SETUID/CAP_SETGID, which composes
 # cleanly with `no-new-privileges`. Do NOT flip gosu to setuid or drop
 # SETUID/SETGID from the container's CapAdd — that breaks this boot path.
 set -eu
 
-# The UID/GID the worker runs as. The orchestrator forwards the SAME
-# SHIPIT_SESSION_WORKER_UID it gates its own chown helpers on, so the two sides
-# can never disagree about who owns the mounts. Defaults to 1000 (the `shipit`
-# user baked into the image).
-UID_GID="${SHIPIT_SESSION_WORKER_UID:-1000}"
+UID_GID="${SHIPIT_SESSION_WORKER_UID:-}"
+
+if [ -z "$UID_GID" ]; then
+  # Flag off — legacy root runtime, byte-for-byte today's behavior.
+  exec "$@"
+fi
 
 # Only the writable runtime mounts + the runtime home. NEVER chown /app,
 # /opt/agent-cli, /usr/local/bin, or system dirs — those stay root-owned and

@@ -671,11 +671,18 @@ image in a *single* `deploy.sh` run (they are never staged independently):
   is unset; **local/dogfood mode is the exception and pins `AGENT_HOME=/root`
   explicitly** (image ENV + `dev` compose service). So `HOME`/`AGENT_HOME` are
   *defaulted to the new value*, not gated.
-- **The only runtime flag is `SHIPIT_SESSION_WORKER_UID`.** It gates the
-  orchestrator-side §7 chown handoff (unset = no-op). It must be set in the
-  deploy that activates the non-root image, or post-boot credential writes land
-  `root:root` and the `shipit` worker can't read them. The image entrypoint
-  reads the same var (default 1000) so one env keeps both sides in lockstep.
+- **The only runtime flag is `SHIPIT_SESSION_WORKER_UID`, and it gates BOTH
+  sides.** Orchestrator: the §7 chown helpers are no-ops when unset. Image: the
+  entrypoint deviates from §2's "always drop via gosu" — it gates the privilege
+  drop on the same var. **Unset (default) → exec the worker as root, no chown**
+  (legacy behavior, byte-for-byte); the image still ships the `shipit` user +
+  the `/home/shipit` symlink layout, but root reads everything so nothing
+  breaks. **Set (e.g. 1000) → chown the mounts + `gosu` to that UID.** Because
+  one var gates the image privilege-drop AND the orchestrator chowns, they can
+  never disagree, and the image is safe to ship *before* the coordinated flip
+  (no "new image is non-root but orchestrator still writes root:root" window).
+  `HOME`/`AGENT_HOME` are NOT gated — they default to `/home/shipit` to match
+  the image's symlink layout whether the worker is root or `shipit`.
 
 Consequence for **"make the new values the permanent default"** (the natural
 follow-up once the rollout is validated):
