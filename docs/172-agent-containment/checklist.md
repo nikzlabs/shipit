@@ -282,6 +282,9 @@ tracker as separate issues. None implemented yet.
 
 ## Cross-cutting
 
-- [ ] **Gap 4 — untrusted-input lens.** Treat uploaded files, cloned-repo content, web
+- [x] **Gap 4 — untrusted-input lens.** Treat uploaded files, cloned-repo content, web
       fetches, and MCP tool returns as untrusted; fold into the egress/trust work and
-      apply to future input surfaces.
+      apply to future input surfaces. General mechanism shipped in SHI-98 — a reusable
+      provenance envelope (`untrusted-input.ts`) applied to brokered file/upload content
+      plus a system-prompt rule covering all four surfaces; SHI-85 enrolls issue text.
+      Full design: `docs/201-untrusted-input-lens`.

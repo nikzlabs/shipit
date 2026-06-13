@@ -86,6 +86,10 @@ describe("Integration: File context attachments", () => {
     expect(claude.lastPrompt).toContain('<file path="hello.ts">');
     expect(claude.lastPrompt).toContain("const x = 42;");
     expect(claude.lastPrompt).toContain("</file>");
+    // SHI-98 — attached file content is wrapped in the untrusted-input envelope
+    // so the agent treats it as data, not instructions.
+    expect(claude.lastPrompt).toContain("<<UNTRUSTED FILE CONTENT>>");
+    expect(claude.lastPrompt).toContain("<<END UNTRUSTED FILE CONTENT>>");
     // Original text should follow
     expect(claude.lastPrompt).toContain("Explain this file");
 
