@@ -724,9 +724,11 @@ describe("SessionManager", () => {
       expect(filterVisibleInSidebar(sessions, 2).map((s) => s.id)).toEqual(["m3"]);
     });
 
-    // docs/117 — the merged view cap is automatic archiving, and spawned
-    // parent/child clusters are exempt from it (they leave only via a manual
-    // archive that cascades parent → children).
+    // docs/117 + docs/201 — the merged view cap is automatic archiving, and
+    // spawned clusters are exempt from it (they leave only via a manual archive
+    // that cascades a root through its whole brood). The exemption keys off the
+    // ROOT ancestor (`rootSessionId`), so a real direct child carries
+    // `rootSessionId = <parentId>` (the spawn path + migration guarantee this).
     describe("parent/child exemption from the merged cap", () => {
       it("never demotes a merged parent that still has a live child", () => {
         // parent would be the oldest merge → past a cap of 1, but its live child
@@ -734,7 +736,7 @@ describe("SessionManager", () => {
         const sessions = [
           merged("parent", "2024-01-01 09:00:00"),
           merged("other", "2024-01-02 09:00:00"),
-          { ...active("child"), parentSessionId: "parent" },
+          { ...active("child"), parentSessionId: "parent", rootSessionId: "parent" },
         ];
         const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
         expect(visible).toEqual(["child", "other", "parent"]);
@@ -745,7 +747,7 @@ describe("SessionManager", () => {
         const sessions = [
           active("parent"),
           merged("other", "2024-01-02 09:00:00"),
-          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent" },
+          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent", rootSessionId: "parent" },
         ];
         const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
         expect(visible).toEqual(["child", "other", "parent"]);
@@ -757,7 +759,7 @@ describe("SessionManager", () => {
         const sessions = [
           merged("parent", "2024-01-01 09:00:00"),
           merged("other", "2024-01-02 09:00:00"),
-          { ...active("child"), parentSessionId: "parent", userArchived: true },
+          { ...active("child"), parentSessionId: "parent", rootSessionId: "parent", userArchived: true },
         ];
         const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
         expect(visible).toEqual(["other"]);
@@ -769,11 +771,49 @@ describe("SessionManager", () => {
         const sessions = [
           { ...merged("parent", "2024-01-03 09:00:00"), userArchived: true },
           merged("other", "2024-01-02 09:00:00"),
-          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent" },
+          { ...merged("child", "2024-01-01 09:00:00"), parentSessionId: "parent", rootSessionId: "parent" },
         ];
         // Cap of 2: ranking incl. archived is parent, other, child → top-2 holds
         // parent (hidden, archived) + other. child falls past the cap and is no
-        // longer pinned because its parent isn't live.
+        // longer pinned because its root isn't live.
+        const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
+        expect(visible).toEqual(["other"]);
+      });
+
+      // docs/201 — the regression that motivated the root-ancestor field: a
+      // grandchild must stay visible while its ROOT is live, even after the
+      // intermediate child it was spawned from has merged. The pre-docs/201
+      // one-level (`parentSessionId`) exemption dropped the grandchild here
+      // because its immediate parent was no longer "live + active".
+      it("keeps a merged grandchild visible while its root is live", () => {
+        const sessions = [
+          active("root"),
+          merged("filler1", "2024-01-05 09:00:00"),
+          // intermediate child: spawned by root, now merged.
+          { ...merged("child", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root" },
+          // grandchild: spawned by `child`, root is still `root`.
+          { ...merged("grandchild", "2024-01-01 09:00:00"), parentSessionId: "child", rootSessionId: "root" },
+        ];
+        // Cap of 1: only `filler1` would survive the resolved ranking on its own,
+        // but the whole `root` brood is exempt because `root` is live.
+        const visible = filterVisibleInSidebar(sessions, 1).map((s) => s.id).sort();
+        expect(visible).toEqual(["child", "filler1", "grandchild", "root"]);
+      });
+
+      it("reclaims a grandchild once its root is user-archived", () => {
+        // Mirror of "does not pin a child open once its parent is gone" at depth
+        // 2: with the root user-archived, the cascade would normally take the
+        // brood too; if a grandchild outlives it the cap reclaims it normally.
+        // Cap of 2: resolved ranking (incl. archived) is root, other, child,
+        // grandchild → top-2 holds root (hidden, archived) + other. The
+        // grandchild falls past the cap and is no longer pinned because its root
+        // isn't live.
+        const sessions = [
+          { ...merged("root", "2024-01-05 09:00:00"), userArchived: true },
+          merged("other", "2024-01-04 09:00:00"),
+          { ...merged("child", "2024-01-02 09:00:00"), parentSessionId: "root", rootSessionId: "root", userArchived: true },
+          { ...merged("grandchild", "2024-01-01 09:00:00"), parentSessionId: "child", rootSessionId: "root" },
+        ];
         const visible = filterVisibleInSidebar(sessions, 2).map((s) => s.id).sort();
         expect(visible).toEqual(["other"]);
       });

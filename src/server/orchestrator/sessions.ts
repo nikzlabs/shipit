@@ -39,6 +39,8 @@ interface SessionRow {
   parent_session_id: string | null;
   /** docs/117 — message-group id of the parent turn that spawned this session. */
   spawned_by_turn: string | null;
+  /** docs/201 — top-level ancestor of the spawn tree; NULL on a top-level session. */
+  root_session_id: string | null;
   /** docs/182 — 1 when the session's last completed turn ended in an error. */
   last_turn_errored: number;
   /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
@@ -127,16 +129,21 @@ export function reopenedAfterResolve(s: SessionInfo): boolean {
  * session into the freed slot. The slot self-heals as newer PRs merge and push
  * the archived session past rank N.
  *
- * Parent/child exemption (docs/117): the merged view cap is a form of *automatic*
- * archiving, and spawned parent/child clusters are exempt from it — they only
- * leave the sidebar via an explicit user archive (which `archiveSession`
- * cascades from parent to children). Concretely, the cap never demotes:
- *   - a session that still has a live (non-user-archived) child — a parent with
- *     children is only ever archived manually, and
- *   - a child whose parent is still live — a child is only archived together
- *     with its parent, never on its own.
- * Both exemptions only rescue a session that the cap would otherwise drop;
- * user-archived sessions are still excluded, so the manual cascade is unaffected.
+ * Parent/child exemption (docs/117, generalized to whole spawn trees in
+ * docs/201): the merged view cap is a form of *automatic* archiving, and spawned
+ * clusters are exempt from it — they only leave the sidebar via an explicit user
+ * archive (which `archiveSession` cascades from a session through its whole
+ * brood). The exemption keys off the ROOT ancestor (`rootSessionId`) rather than
+ * the immediate parent so it is depth-independent. Concretely, the cap never
+ * demotes:
+ *   - a root that still has a live (non-user-archived) descendant — a root with
+ *     a brood is only ever archived manually, and
+ *   - any descendant whose root is still live — a child or grandchild is only
+ *     archived together with its root, never on its own.
+ * Keying off the root (not the parent) is what keeps a grandchild visible after
+ * its intermediate parent merges. Both exemptions only rescue a session the cap
+ * would otherwise drop; user-archived sessions are still excluded, so the manual
+ * cascade is unaffected.
  */
 export function filterVisibleInSidebar(
   sessions: SessionInfo[],
@@ -162,21 +169,26 @@ export function filterVisibleInSidebar(
     group.sort((a, b) => (Date.parse(resolvedAt(b) ?? "") || 0) - (Date.parse(resolvedAt(a) ?? "") || 0));
     for (const s of group.slice(0, maxMerged)) topResolvedIds.add(s.id);
   }
-  // Parent/child relationships are derived from the (non-archived) sessions in
-  // this same list: a live child both proves its parent has children and marks
-  // its parent as live. User-archived sessions don't count — an archived child
-  // shouldn't pin its parent open, and an archived parent shouldn't pin its
-  // children open (the cascade has its own path).
+  // docs/201 — parent/child exemption keyed off the ROOT ancestor, not the
+  // immediate parent, so it is depth-independent: a grandchild stays exempt
+  // while its top-level root is live, even after the intermediate child merges
+  // (the old `parentSessionId`-only check dropped grandchildren from the sidebar
+  // in exactly that case). `rootSessionId` is NULL on a top-level session, so
+  // only spawned descendants contribute a root — a lone top-level session never
+  // self-exempts (the reason we keep the field undefined on roots rather than
+  // self-referencing; a self-ref would put every live session in `liveRoots` and
+  // silently void the merged-view cap). User-archived sessions don't count — an
+  // archived root shouldn't pin its brood open (archiving cascades root→brood).
   const liveIds = new Set<string>();
-  const parentsWithLiveChildren = new Set<string>();
+  const liveRoots = new Set<string>();
   for (const s of sessions) {
     if (s.userArchived) continue;
     liveIds.add(s.id);
-    if (s.parentSessionId) parentsWithLiveChildren.add(s.parentSessionId);
+    if (s.rootSessionId) liveRoots.add(s.rootSessionId);
   }
   const exemptFromCap = (s: SessionInfo): boolean =>
-    parentsWithLiveChildren.has(s.id) ||
-    (s.parentSessionId !== undefined && liveIds.has(s.parentSessionId));
+    liveRoots.has(s.id) || // a root with a live descendant
+    (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId)); // a descendant of a live root
   return sessions.filter(
     (s) =>
       !s.userArchived &&
@@ -227,6 +239,7 @@ export class SessionManager {
     }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
+    if (row.root_session_id) info.rootSessionId = row.root_session_id;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
     if (row.pinned_at) info.pinnedAt = row.pinned_at;
@@ -622,11 +635,17 @@ export class SessionManager {
    * `spawnedByTurn` is optional context for "list children spawned in the
    * current turn" sorting; pass `undefined` if the caller doesn't have a
    * turn id handy.
+   *
+   * docs/201 — `rootSessionId` is the top-level ancestor of the spawn tree,
+   * computed by the caller as `parent.rootSessionId ?? parent.id` so it never
+   * walks the chain at read time. Pass `undefined` for a direct-from-top spawn
+   * only if the caller has no root to record; the sidebar grouping degrades to
+   * one level for that row until it is re-stamped.
    */
-  setParentSession(id: string, parentSessionId: string, spawnedByTurn?: string): void {
+  setParentSession(id: string, parentSessionId: string, spawnedByTurn?: string, rootSessionId?: string): void {
     this.db.prepare(
-      "UPDATE sessions SET parent_session_id = ?, spawned_by_turn = ? WHERE id = ?",
-    ).run(parentSessionId, spawnedByTurn ?? null, id);
+      "UPDATE sessions SET parent_session_id = ?, spawned_by_turn = ?, root_session_id = ? WHERE id = ?",
+    ).run(parentSessionId, spawnedByTurn ?? null, rootSessionId ?? null, id);
   }
 
   /**

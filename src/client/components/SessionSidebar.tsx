@@ -894,28 +894,36 @@ function RepoGroup({
             // out of the list, cross-repo, etc.) is rendered at top level as
             // a fallback so it never silently disappears from the sidebar.
             return (() => {
-              const childrenByParent = new Map<string, SessionInfo[]>();
+              // docs/201 — bucket the whole spawn brood (children + grandchildren
+              // + deeper) by its ROOT ancestor, so descendants at any depth render
+              // under one top-level session at a single indent level. Keying off
+              // `rootSessionId` (not the immediate `parentSessionId`) is what makes
+              // a grandchild visible: the old one-level map only nested direct
+              // children, so a child-of-a-child was never rendered. A session whose
+              // root isn't present in this repo group (cross-repo, archived/merged
+              // out) falls back to top level so it never silently disappears.
+              const idsInGroup = new Set(sessions.map((s) => s.id));
+              const broodByRoot = new Map<string, SessionInfo[]>();
               const orphanedChildren = new Set<string>();
               for (const s of sessions) {
-                if (!s.parentSessionId) continue;
-                const parentInGroup = sessions.some((p) => p.id === s.parentSessionId);
-                if (!parentInGroup) {
+                if (!s.rootSessionId) continue; // top-level session, not part of a brood
+                if (!idsInGroup.has(s.rootSessionId)) {
                   orphanedChildren.add(s.id);
                   continue;
                 }
-                const list = childrenByParent.get(s.parentSessionId) ?? [];
+                const list = broodByRoot.get(s.rootSessionId) ?? [];
                 list.push(s);
-                childrenByParent.set(s.parentSessionId, list);
+                broodByRoot.set(s.rootSessionId, list);
               }
               const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
-                isRecentlyResolved(s) && !childrenByParent.has(s.id);
-              // Render a top-level session followed by its (non-collapsed) children
-              // into `target`. The brood stays together; a parent with visible
-              // children stays Active even after its PR resolves so spawned work
-              // is never automatically moved under "Recently resolved".
+                isRecentlyResolved(s) && !broodByRoot.has(s.id);
+              // Render a top-level (root) session followed by its (non-collapsed)
+              // brood into `target`. The brood stays together; a root with a
+              // visible brood stays Active even after its PR resolves so spawned
+              // work is never automatically moved under "Recently resolved".
               const pushTree = (s: SessionInfo, target: React.ReactElement[]) => {
-                const children = childrenByParent.get(s.id);
-                const childCount = children?.length ?? 0;
+                const brood = broodByRoot.get(s.id);
+                const childCount = brood?.length ?? 0;
                 const childrenCollapsed = collapsedParents.has(s.id);
                 target.push(
                   <SessionItem
@@ -931,13 +939,13 @@ function RepoGroup({
                     onToggleChildren={childCount > 0 ? () => onToggleParentCollapsed(s.id) : undefined}
                   />,
                 );
-                if (!children || childrenCollapsed) return;
-                for (const child of children) {
+                if (!brood || childrenCollapsed) return;
+                for (const member of brood) {
                   target.push(
                     <SessionItem
-                      key={child.id}
-                      session={child}
-                      isCurrent={child.id === currentSessionId}
+                      key={member.id}
+                      session={member}
+                      isCurrent={member.id === currentSessionId}
                       onResume={onResume}
                       onSelectCurrent={onSelectCurrent}
                       onArchive={onArchive}
@@ -983,8 +991,10 @@ function RepoGroup({
               const active: React.ReactElement[] = [];
               const resolved: React.ReactElement[] = [];
               for (const s of sessions) {
-                // Skip children that we render beneath their parent.
-                if (s.parentSessionId && !orphanedChildren.has(s.id)) continue;
+                // docs/201 — skip brood members; they render beneath their root
+                // (keyed by rootSessionId). Orphans (root not in this group) fall
+                // through to render at top level.
+                if (s.rootSessionId && !orphanedChildren.has(s.id)) continue;
                 if (pinnedIdSet.has(s.id)) continue; // rendered in the pinned sub-section
                 pushTree(s, isRecentlyResolvedForGroup(s) ? resolved : active);
               }

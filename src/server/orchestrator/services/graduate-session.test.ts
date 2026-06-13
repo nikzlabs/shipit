@@ -27,6 +27,7 @@ interface FakeSessionState {
   model?: string;
   parentSessionId?: string;
   spawnedByTurn?: string;
+  rootSessionId?: string;
 }
 
 function buildDeps(initial: FakeSessionState) {
@@ -37,8 +38,8 @@ function buildDeps(initial: FakeSessionState) {
   const trackSpy = vi.fn();
   const setWarmSpy = vi.fn((id: string, w: boolean) => { if (id === state.id) state.warm = w; });
   const setModelSpy = vi.fn((id: string, m: string) => { if (id === state.id) state.model = m; });
-  const setParentSpy = vi.fn((id: string, p: string, t?: string) => {
-    if (id === state.id) { state.parentSessionId = p; state.spawnedByTurn = t; }
+  const setParentSpy = vi.fn((id: string, p: string, t?: string, root?: string) => {
+    if (id === state.id) { state.parentSessionId = p; state.spawnedByTurn = t; state.rootSessionId = root; }
   });
 
   const sessionManager = {
@@ -256,12 +257,15 @@ describe("graduateSession", () => {
       model: "claude-opus-4-7",
       parentSessionId: "parent-1",
       spawnedByTurn: "turn-42",
+      rootSessionId: "root-1",
     });
 
     expect(spies.setModelSpy).toHaveBeenCalledWith("s1", "claude-opus-4-7");
-    expect(spies.setParentSpy).toHaveBeenCalledWith("s1", "parent-1", "turn-42");
+    // docs/201 — root ancestor is threaded through to setParentSession as the 4th arg.
+    expect(spies.setParentSpy).toHaveBeenCalledWith("s1", "parent-1", "turn-42", "root-1");
     expect(state.model).toBe("claude-opus-4-7");
     expect(state.parentSessionId).toBe("parent-1");
+    expect(state.rootSessionId).toBe("root-1");
   });
 
   it("falls through to finalize when AI naming throws", async () => {
