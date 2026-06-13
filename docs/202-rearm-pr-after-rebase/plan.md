@@ -363,3 +363,51 @@ once.
 ## Open questions
 
 _None — see "Re-armed card presentation"._
+
+## Implementation notes (as built)
+
+- **Detection** lives in `GitManager`: `diffStatTwoDot(ref)` (a TWO-dot
+  `<ref>..HEAD` stat, deliberately distinct from the three-dot
+  `diffStatVsBranch`) and `advancedBeyondMergedBase(baseBranch)` (merge-base ==
+  `origin/<base>` tip AND non-empty two-dot diff). Pre-rebase or missing
+  `origin/<base>` → false (fail-safe). Matrix coverage in
+  `git-rearm-detect.test.ts` (squash/regular × rebased/not × work/clean).
+- **Breadcrumb** is `SessionInfo.previousMergedPr` (`{ number, url, title,
+  baseBranch }`), persisted in the new `sessions.previous_merged_pr` column
+  (migration appended to `database.ts`). `SessionManager.clearMerged(id,
+  breadcrumb)` sets `merged_at = NULL` and stashes it. Display-only + the
+  poller's suppression key + the new-PR base; it does NOT feed `resolvedAt()`,
+  grouping, status color, or eviction.
+- **Shared helper** `services/pr-rearm.ts#detectAndReArmMergedSession` is the
+  single re-arm entry point, called by BOTH `postTurnPrFlow` sites
+  (`ws-handlers/agent-execution.ts` and `runner-registry-factory.ts`) before
+  `emitPrLifecycleAfterCommit`. It reads the prior PR's base/number from
+  `prStatusPoller.getStatus` (the merged snapshot, seeded from persisted on
+  restart), runs the local git detection, then `clearMerged` → `reArm` →
+  `sseBroadcast("session_list", { sessions })`.
+- **Poller** gained `reArm(sessionId, supersededPrNumber)` (silent: clears
+  `lastKnown`/`lastPrNodes`/`mergedSessions`/`verifiedAbsent` + `setPrStatus(null)`,
+  records the superseded number, then `trackSession`) and a
+  `supersededPrNumbers` map. `verifyMissingPr` ignores a TERMINAL result whose
+  number equals the recorded superseded number; the suppression clears the
+  moment a different-numbered PR appears (open bulk-view match OR a differently-
+  numbered verify result). `loadPersisted` re-seeds the map from
+  `previousMergedPr` breadcrumbs over `list()` (a re-armed session is always in
+  the visible Active list, so no archived-row scan is needed) so the suppression
+  survives a restart before the new PR exists.
+- **New-PR creation**: `quickCreatePr` takes a `reArm?: { baseBranch?;
+  forceWithLease? }` arg — re-arm targets the prior PR's base (not auto-detected
+  main/master) and pushes with `--force-with-lease` (the old remote branch often
+  survives and the rebased branch diverges). `emitPrLifecycleAfterCommit` threads
+  `previousMergedPr` onto the `creating`/`ready`/`open`/`error` cards and uses its
+  base for the ready diff.
+- **Client**: `WsPrLifecycleUpdate` / `PrCardState` carry `previousMergedPr`;
+  `pr-store.updateCard`'s terminal-regress guard lets a card carrying it replace
+  a stale `merged`/`closed` card (order-independent — re-arm broadcasts no
+  destructive removal to race it). `PrLifecycleCard` renders a subtle
+  "Previously merged #N" breadcrumb (linked to the prior PR) on the re-armed
+  ready/open card; the gray/Active sidebar treatment is the natural result of the
+  cleared `merged_at` (no sidebar styling change).
+- **Not a chat-history card**: the breadcrumb lives on the *session* row (like
+  `pr_status`), not the `messages` table, so the `CARD_MESSAGE_FIELDS` /
+  chat-history round-trip machinery does not apply.

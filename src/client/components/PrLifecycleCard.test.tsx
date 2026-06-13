@@ -151,6 +151,45 @@ describe("PrLifecycleCard", () => {
     expect(screen.getByText("Create PR")).toBeInTheDocument();
   });
 
+  it("renders the 'Previously merged #N' breadcrumb on a re-armed ready card (docs/202)", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "ready",
+      totalInsertions: 5,
+      totalDeletions: 1,
+      previousMergedPr: { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+
+    expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
+    // It links to the prior PR.
+    expect(screen.getByRole("link", { name: /Previously merged #42/ })).toHaveAttribute(
+      "href",
+      "https://github.com/o/r/pull/42",
+    );
+  });
+
+  it("renders the breadcrumb on a re-armed open card too (docs/202)", () => {
+    setCard("s1", {
+      cardId: "c1",
+      phase: "open",
+      pr: {
+        number: 7,
+        title: "New PR",
+        url: "https://github.com/o/r/pull/7",
+        baseBranch: "main",
+        headBranch: "feature",
+        insertions: 3,
+        deletions: 0,
+      },
+      previousMergedPr: { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" },
+    });
+
+    render(<PrLifecycleCard sessionId="s1" onCreatePr={vi.fn()} />);
+    expect(screen.getByText(/Previously merged #42/)).toBeInTheDocument();
+  });
+
   it("ready phase no longer hosts the Auto-merge toggle (moved to top-bar overflow)", async () => {
     const user = userEvent.setup();
     setCard("s1", {

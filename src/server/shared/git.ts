@@ -290,6 +290,64 @@ export class GitManager {
   }
 
   /**
+   * docs/202 — TWO-DOT diff stat `<ref>..HEAD`: changes on HEAD's side only.
+   *
+   * Distinct from {@link diffStatVsBranch}, which uses a THREE-DOT
+   * `<ref>...HEAD` (symmetric difference vs the merge base). Three-dot is the
+   * squash-breaking comparison: after a squash merge the branch's commits never
+   * enter the base's history, so a three-dot diff against the moved base picks
+   * up *other people's* commits and reports spurious changes. Two-dot asks the
+   * narrower question "what does HEAD's tree change relative to the ref's tree?"
+   * — which, once the branch is rebased onto the current base, is empty for a
+   * squash-merged branch with no new work and non-empty the moment real work
+   * lands. Returns zeros if the ref can't be resolved.
+   */
+  async diffStatTwoDot(ref: string): Promise<{ insertions: number; deletions: number; files: number }> {
+    try {
+      const result = await this.git.diffSummary([`${ref}..HEAD`]);
+      return { insertions: result.insertions, deletions: result.deletions, files: result.files.length };
+    } catch {
+      return { insertions: 0, deletions: 0, files: 0 };
+    }
+  }
+
+  /**
+   * docs/202 — squash-safe "has this merged branch progressed beyond its base?"
+   * detection, local git only (no network).
+   *
+   * Returns true iff BOTH hold for `origin/<baseBranch>`:
+   *   1. `merge-base(origin/<base>, HEAD) === rev-parse(origin/<base>)` — the
+   *      branch has been rebased onto the *current* base tip (so the
+   *      already-merged content is gone from the two-dot diff: a squash merge's
+   *      commits replay as empty against the squash commit now in the base; a
+   *      regular merge's commits are already there).
+   *   2. The two-dot `git diff origin/<base>..HEAD` is non-empty — genuinely new
+   *      work sits on top.
+   *
+   * Pre-rebase (merge-base ≠ base tip) we stay conservative and return false:
+   * there is no reliable content diff against a moved base (three-dot breaks on
+   * squash, two-dot picks up other commits), so a merged session keeps showing
+   * "merged" until the user rebases. A missing `origin/<base>` also returns
+   * false (fail-safe — stay merged).
+   */
+  async advancedBeyondMergedBase(baseBranch: string): Promise<boolean> {
+    const baseRef = `origin/${baseBranch}`;
+    let baseTip: string;
+    try {
+      baseTip = (await this.git.revparse(["--verify", baseRef])).trim();
+    } catch {
+      return false; // origin/<base> missing — fail safe, stay merged
+    }
+    if (!baseTip) return false;
+
+    const mb = await this.mergeBase(baseRef, "HEAD");
+    if (!mb || mb !== baseTip) return false; // not rebased onto the current base yet
+
+    const { files } = await this.diffStatTwoDot(baseRef);
+    return files > 0;
+  }
+
+  /**
    * Get per-file diff summary (files changed with insertions/deletions).
    * `binary` is true when git reports `-\t-` in --numstat (the canonical
    * binary signal). It's NOT inferred from `insertions === 0 && deletions === 0`

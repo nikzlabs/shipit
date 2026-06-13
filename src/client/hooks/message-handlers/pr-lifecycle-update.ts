@@ -14,5 +14,6 @@ export const handlePrLifecycleUpdate: Handler<WsPrLifecycleUpdate> = (_ctx, data
     checks: data.checks,
     autoMerge: data.autoMerge,
     errorMessage: data.errorMessage,
+    previousMergedPr: data.previousMergedPr,
   });
 };

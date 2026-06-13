@@ -192,6 +192,48 @@ function SessionTitleLabel({ sessionId }: { sessionId: string }) {
   );
 }
 
+/**
+ * docs/202 — subtle "previously merged #N" breadcrumb for a re-armed session
+ * (it shipped a PR, then the branch was rebased + progressed and ShipIt dropped
+ * the merged state). The session's status indicator is gray like a fresh
+ * session; this note is the only sign it shipped once. `withReady` appends the
+ * "· ready for a new PR" hint used on the ready card.
+ */
+function PreviouslyMergedNote({
+  previousMergedPr,
+  withReady,
+}: {
+  previousMergedPr: NonNullable<PrCardState["previousMergedPr"]>;
+  withReady?: boolean;
+}) {
+  const label = (
+    <>
+      <GitMergeIcon size={12} className="shrink-0" />
+      Previously merged #{previousMergedPr.number}
+      {withReady && " · ready for a new PR"}
+    </>
+  );
+  const className = "h-6 text-xs flex items-center gap-1 shrink-0 text-(--color-text-tertiary)";
+  if (previousMergedPr.url) {
+    return (
+      <a
+        href={previousMergedPr.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className={`${className} hover:text-(--color-text-secondary) transition-colors`}
+        title={`Previously merged: ${previousMergedPr.title}`}
+      >
+        {label}
+      </a>
+    );
+  }
+  return (
+    <span className={className} title={`Previously merged: ${previousMergedPr.title}`}>
+      {label}
+    </span>
+  );
+}
+
 function CiIndicator({ checks }: { checks: PrCardState["checks"] }) {
   if (!checks || checks.state === "none") return null;
 
@@ -410,6 +452,9 @@ function ReadyPhase({
     <div className="flex items-center gap-3 flex-nowrap min-w-0 flex-1">
       <PrStateBadge sessionId={sessionId} />
       <SessionTitleLabel sessionId={sessionId} />
+      {card.previousMergedPr && (
+        <PreviouslyMergedNote previousMergedPr={card.previousMergedPr} withReady />
+      )}
       <span className="ml-auto shrink-0 flex items-center gap-3">
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
         {hasDiffStats && (
@@ -518,6 +563,9 @@ function OpenPhase({
             )}
             <CiIndicator checks={card.checks} />
             <ReviewIndicator reviewDecision={reviewDecision} />
+            {card.previousMergedPr && (
+              <PreviouslyMergedNote previousMergedPr={card.previousMergedPr} />
+            )}
             {canAutoMerge && (
               <span className="shrink-0">
                 <AutoMergeToggle sessionId={sessionId} autoMerge={autoMerge} />

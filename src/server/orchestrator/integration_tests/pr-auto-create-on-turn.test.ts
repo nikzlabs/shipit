@@ -40,11 +40,15 @@ let sessionManager: SessionManager;
 let credentialStore: CredentialStore;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
+// docs/202 — controls the stubbed `advancedBeyondMergedBase` so a test can
+// simulate "branch rebased + progressed" without building a real rebase.
+let reArmProgressed = false;
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
   tmpDir = fs.mkdtempSync("/tmp/shipit-auto-pr-on-turn-test-");
   latestClaude = null;
+  reArmProgressed = false;
 
   githubAuth = new StubGitHubAuthManager();
   githubAuth.setPrData(null); // No pre-existing PR
@@ -63,7 +67,11 @@ beforeEach(async () => {
       return new Proxy(real, {
         get(target, prop) {
           if (prop === "push") return async () => {};
+          if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
+          // docs/202 — stub the re-arm detection so a test can flip
+          // "progressed" without constructing a real rebase against a remote.
+          if (prop === "advancedBeyondMergedBase") return async () => reArmProgressed;
           return (target as never)[prop as never];
         },
       });
@@ -185,6 +193,68 @@ describe("auto-create PR after meaningful turn", () => {
       expect(phases).toContain("creating");
       expect(phases).toContain("open");
       expect(resolvedOpen.pr?.number).toBe(1);
+    },
+  );
+
+  it(
+    "re-arms a merged session whose branch was rebased + progressed (docs/202, WS post-turn)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      credentialStore.setAutoCreatePr(true);
+      const { sessionId, sessionDir } = await setupPrimedSession();
+
+      // Simulate the prior merge: stamp merged_at + seed the poller's merged
+      // snapshot so the re-arm helper can read the prior base/number.
+      const mergedSummary = {
+        sessionId,
+        prNumber: 999,
+        prUrl: "https://github.com/test-user/test-repo/pull/999",
+        prTitle: "Old shipped PR",
+        prBody: "",
+        prState: "merged" as const,
+        baseBranch: "main",
+        headBranch: "shipit/test-feature",
+        insertions: 1,
+        deletions: 0,
+        checks: { state: "none" as const, total: 0, passed: 0, failed: 0, pending: 0 },
+        mergeable: "unknown" as const,
+        reviewDecision: "none" as const,
+        autoMergeEnabled: false,
+      };
+      sessionManager.markMerged(sessionId);
+      sessionManager.setPrStatus(sessionId, mergedSummary);
+      app.prStatusPoller!.loadPersisted(); // seed lastKnown → getStatus returns it
+      reArmProgressed = true; // advancedBeyondMergedBase → true
+
+      // New work + a turn — the post-turn flow should re-arm, then auto-create.
+      fs.writeFileSync(path.join(sessionDir, "next.ts"), "export const y = 2;\n");
+      client.send({ type: "send_message", text: "more work", sessionId });
+      const prev = latestClaude;
+      const claude2 = await waitForClaude(() => latestClaude, prev);
+      claude2.emit("event", {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "did more" }] },
+      });
+      claude2.finish("agent-session-1");
+
+      let evt = (await client.receiveType("pr_lifecycle_update", 5000)) as WsServerMessage & {
+        phase: string;
+        previousMergedPr?: { number: number };
+      };
+      const phases = [evt.phase];
+      while (evt.phase !== "open" && phases.length < 6) {
+        evt = (await client.receiveType("pr_lifecycle_update", 5000)) as typeof evt;
+        phases.push(evt.phase);
+      }
+      // The re-armed card opened a NEW PR and carries the breadcrumb.
+      expect(phases).toContain("open");
+      expect(evt.previousMergedPr?.number).toBe(999);
+
+      // The session was un-merged (back to Active) and remembers it shipped.
+      const after = sessionManager.get(sessionId);
+      expect(after?.mergedAt).toBeFalsy();
+      expect(after?.previousMergedPr?.number).toBe(999);
     },
   );
 

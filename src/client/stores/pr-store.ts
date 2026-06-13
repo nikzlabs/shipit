@@ -88,6 +88,18 @@ export interface PrCardState {
   issueComments?: PrIssueComment[];
   /** Review threads (line comments) — docs/133 Phase 4, read-only. */
   reviewThreads?: PrReviewThread[];
+  /**
+   * docs/202 — set on a re-armed session's card (previously shipped a PR, then
+   * the branch was rebased + progressed). Drives the "Previously merged #N" note
+   * on the ready/open card, and is the signal that lets this card override a
+   * stale terminal (merged/closed) card in `updateCard`'s regress guard.
+   */
+  previousMergedPr?: {
+    number: number;
+    url: string;
+    title: string;
+    baseBranch: string;
+  };
   /** Error message (error phase). */
   errorMessage?: string;
   /**
@@ -307,9 +319,16 @@ export const usePrStore = create<PrState>((set, get) => ({
   updateCard: (sessionId, card) => {
     set((state) => {
       const existing = state.cardBySession[sessionId];
-      // Don't regress from terminal phases (merged/closed) — SSE poller is authoritative
+      // Don't regress from terminal phases (merged/closed) — SSE poller is
+      // authoritative. EXCEPTION (docs/202): a card carrying `previousMergedPr`
+      // is a re-armed session (merged → rebased + progressed → ready for a new
+      // PR). It MUST be allowed to replace the stale terminal card, and order-
+      // independently: re-arm broadcasts no destructive `pr_status` removal (it
+      // would race this card across transports), so this override is the sole
+      // path that clears the old merged card on the active viewer.
       if (existing && (existing.phase === "merged" || existing.phase === "closed") &&
-          card.phase !== "merged" && card.phase !== "closed") {
+          card.phase !== "merged" && card.phase !== "closed" &&
+          !card.previousMergedPr) {
         return state;
       }
       return {

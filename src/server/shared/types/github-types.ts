@@ -427,4 +427,18 @@ export interface WsPrLifecycleUpdate {
   };
   /** Present in "error" phase — error message. */
   errorMessage?: string;
+  /**
+   * docs/202 — set on a re-armed session's card (it shipped a PR before, then
+   * the branch was rebased + progressed). Renders a "Previously merged #N" note
+   * on the ready/open card. It also doubles as the override signal: a card
+   * carrying this is allowed to replace a stale terminal (merged/closed) card in
+   * the client store's `updateCard` guard, so it lands regardless of cross-
+   * channel arrival order.
+   */
+  previousMergedPr?: {
+    number: number;
+    url: string;
+    title: string;
+    baseBranch: string;
+  };
 }
