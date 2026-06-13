@@ -295,30 +295,88 @@ provenance keys off the parent.
   re-run) and chases each `parent_session_id` chain to its top exactly once,
   guarding against a cyclic link (same guard the archive cascade already uses).
 
-## Open questions
+## Resolved decisions
 
-1. **Self-reference vs. undefined for top-level roots.** This doc keeps
-   `rootSessionId` undefined on top-level sessions (so `!!parentSessionId`
-   stays the "am I spawned?" test and no existing row is rewritten). The
-   alternative — every session's `rootSessionId` points at itself — makes the
-   brood query uniform (`WHERE root_session_id = ?`) but forces a backfill of
-   *all* rows. Recommendation: undefined, as written.
-2. **Backfill or not.** Recommendation: do the bounded one-time backfill so
-   in-flight nested sessions become visible on deploy (see Migration).
-3. **Provenance hint in the sidebar.** Show "via <middle child>" on a grandchild
-   row? Deferred — not needed for visibility, and the row is already nested
-   under the correct root. Revisit if users spawn many-deep and lose track of
-   which intermediate session owns what.
-4. **Depth cap / root-wide quota.** The per-parent quota
-   (`MAX_SPAWNED_SESSIONS_PER_PARENT`, default 16) is enforced via
-   `findChildren(parentId)` (`child-sessions.ts:176-184`), which counts **only
-   immediate children**. Making grouping depth-independent doesn't change that —
-   but it removes the visual ceiling that previously made deep fan-out
-   self-evident. A brood can now grow as 16 × 16 × … across levels while every
-   individual parent stays under quota. Options: (a) add a **root-wide active
-   cap** counted over the whole brood (`findBrood(rootId).length`), and/or (b) a
-   **spawn-depth cap** (refuse to spawn when `parent.rootSessionId` is already
-   set *and* the chain is N deep). Recommendation: ship the visibility fix
-   without changing quotas, then add a root-wide cap if telemetry shows broods
-   growing past ~one screen. Tracking the count is cheap once `rootSessionId`
-   exists. Doc 117 left a depth cap as a future item; this sharpens it.
+### D1 — Top-level roots store `rootSessionId` undefined (not self-referencing)
+
+**Decision: undefined.** A top-level session leaves `root_session_id` NULL; only
+spawned descendants carry a root. The decider is not "avoid a backfill" — it's
+that the two queries the field feeds pull in opposite directions, and the
+load-bearing one favors undefined.
+
+**Query 1 — fetch the brood for a root.** Self-ref is tidier here:
+
+```sql
+-- undefined: root itself is NULL-tagged, so OR-in its own id (bind ?1 twice)
+SELECT * FROM sessions
+WHERE (id = ?1 OR root_session_id = ?1) AND user_archived = 0
+ORDER BY last_used_at DESC, rowid DESC;
+
+-- self-ref: uniform single-param index range scan on idx_sessions_root
+SELECT * FROM sessions
+WHERE root_session_id = ?1 AND user_archived = 0
+ORDER BY last_used_at DESC, rowid DESC;
+```
+
+Self-ref wins Query 1 — one param, one index lookup vs. an index-union with the
+PK. At session-table scale the difference is cosmetic.
+
+**Query 2 — the in-memory `filterVisibleInSidebar` exemption.** This is the
+load-bearing one, and self-ref *breaks* it. Under self-ref every live session's
+root is itself, so `liveIds.has(s.rootSessionId)` is true for every live
+session — silently exempting every non-archived resolved session from the
+merged-session cap, i.e. the cap stops working. Rescuing it needs a `root === id`
+discriminator smeared across every brood check:
+
+```ts
+// self-ref — needs the discriminator everywhere "is this a brood?" is asked
+const exemptFromCap = (s) =>
+  s.rootSessionId === s.id
+    ? parentsWithLiveChildren.has(s.id)   // a root: exempt only if it has live brood
+    : liveIds.has(s.rootSessionId);       // a descendant: exempt if root is live
+
+// undefined — `rootSessionId == null` is already a crisp "not a descendant"
+// signal, so only descendants tag a root and a lone session never self-exempts
+const exemptFromCap = (s) =>
+  liveRoots.has(s.id) ||                                  // a root WITH live brood
+  (s.rootSessionId !== undefined && liveIds.has(s.rootSessionId));
+```
+
+Undefined wins Query 2 decisively: `rootSessionId == null` keeps "spawned
+descendant" crisp, so the filter's brood detection never sweeps in standalone
+sessions. Query 2 is load-bearing and Query 1's edge is cosmetic, so **undefined
+is chosen.** It also keeps `!!parentSessionId` as the "am I spawned?" test and
+avoids rewriting every existing row.
+
+### D2 — Do the one-time backfill in migration 24
+
+**Decision: yes, backfill.** The migration walks each existing
+`parent_session_id` chain to its top once and stamps `root_session_id`, so
+in-flight nested sessions become visible on deploy rather than staying
+one-level until re-spawned. The walk is offline, bounded by the per-parent
+quota, idempotent (re-running sets the same value), and guarded against a cyclic
+link by the same visited-set the archive cascade already uses (see Migration).
+
+### D3 — No provenance hint ("via &lt;middle child&gt;") in v1
+
+**Decision: don't render it.** A grandchild row already nests under the correct
+root, which is all the visibility fix owes the user. `parentSessionId` is still
+persisted, so the hint is a pure presentation add we can ship later without a
+data change. Revisit only if telemetry shows users spawning many-deep and losing
+track of which intermediate session owns a grandchild.
+
+### D4 — Ship the visibility fix without changing quotas; add a root-wide cap later
+
+**Decision: no quota change in this work.** The per-parent quota
+(`MAX_SPAWNED_SESSIONS_PER_PARENT`, default 16) is enforced via
+`findChildren(parentId)` (`child-sessions.ts:176-184`), which counts only
+immediate children — unchanged by this fix. Depth-independent grouping does
+remove the visual ceiling that made deep fan-out self-evident (a brood can grow
+16 × 16 × … while every individual parent stays under quota), but coupling a
+quota change to a visibility fix conflates two concerns and risks regressing
+existing spawn flows. The follow-up, tracked on SHI-132, is a **root-wide active
+cap** counted over the whole brood (`findBrood(rootId).length`) — cheap once
+`rootSessionId` exists — gated on telemetry showing broods growing past ~one
+screen. A spawn-*depth* cap is the weaker alternative (it bounds chain length,
+not total fan-out) and is not planned. Doc 117 left a depth cap as a future
+item; this supersedes it with the root-wide-cap direction.
