@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-96
 title: Repo trust gate — defer repo-controlled code until first-clone consent
 description: A per-remote trust-on-first-use boundary so that cloning a repository never auto-runs its agent.install or compose command:/build: until the user explicitly trusts it once.
 ---
