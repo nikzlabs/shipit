@@ -590,6 +590,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN sub_agent_consult TEXT");
   },
+  // docs/202 — re-arm a merged session after a rebase. `previous_merged_pr`
+  // holds a JSON `PreviousMergedPr` breadcrumb (number + url + title +
+  // baseBranch) of the prior MERGED PR, retained when `clearMerged` un-merges a
+  // rebased-and-progressed session. Display-only on the client ("previously
+  // merged #N"); server-side the `number` is the PR poller's superseded-PR
+  // suppression key and `baseBranch` targets the new PR. NULL = never re-armed.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN previous_merged_pr TEXT");
+  },
 ];
 
 export class DatabaseManager {

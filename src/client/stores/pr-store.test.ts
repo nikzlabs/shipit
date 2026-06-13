@@ -77,6 +77,40 @@ describe("pr-store", () => {
       usePrStore.getState().updateCard("s1", makeCard("open"));
       expect(usePrStore.getState().cardBySession.s1?.phase).toBe("merged");
     });
+
+    // docs/202 — a re-armed card carries `previousMergedPr` and MUST override
+    // the terminal-regress guard so it replaces a stale merged card (order-
+    // independently — re-arm broadcasts no destructive removal to race it).
+    it("lets a re-armed card carrying previousMergedPr replace a merged card", () => {
+      usePrStore.getState().updateCard("s1", makeCard("merged"));
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("ready", {
+          previousMergedPr: { number: 1, url: "u", title: "Old PR", baseBranch: "main" },
+        }),
+      );
+      const card = usePrStore.getState().cardBySession.s1;
+      expect(card?.phase).toBe("ready");
+      expect(card?.previousMergedPr?.number).toBe(1);
+    });
+
+    it("lets a re-armed card replace a closed card too", () => {
+      usePrStore.getState().updateCard("s1", makeCard("closed"));
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("creating", {
+          previousMergedPr: { number: 9, url: "u", title: "Old PR", baseBranch: "release/x" },
+        }),
+      );
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("creating");
+    });
+
+    it("still blocks a non-re-armed regression from merged", () => {
+      usePrStore.getState().updateCard("s1", makeCard("merged"));
+      // No previousMergedPr → the guard holds.
+      usePrStore.getState().updateCard("s1", makeCard("ready"));
+      expect(usePrStore.getState().cardBySession.s1?.phase).toBe("merged");
+    });
   });
 
   describe("applyPrStatusUpdates", () => {

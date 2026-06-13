@@ -408,6 +408,57 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/202: clearMerged (re-arm after rebase)", () => {
+    const breadcrumb = { number: 42, url: "https://github.com/o/r/pull/42", title: "Old PR", baseBranch: "main" };
+
+    it("clears merged_at and stashes the previousMergedPr breadcrumb", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setRemoteUrl("sess-1", "https://github.com/o/r.git");
+      mgr.markMerged("sess-1");
+      expect(mgr.get("sess-1")?.mergedAt).toBeTruthy();
+
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(true);
+      const s = mgr.get("sess-1");
+      expect(s?.mergedAt).toBeFalsy();
+      expect(s?.previousMergedPr).toEqual(breadcrumb);
+    });
+
+    it("returns a session to the Active sidebar group after clearMerged", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.setRemoteUrl("sess-1", "https://github.com/o/r.git");
+      mgr.markMerged("sess-1");
+      // Merged sessions still list (within the cap), but resolvedAt() is set.
+      expect(mgr.get("sess-1")?.mergedAt).toBeTruthy();
+
+      mgr.clearMerged("sess-1", breadcrumb);
+      const s = mgr.get("sess-1")!;
+      // resolvedAt() keys off merged_at ?? closed_at — both now null → Active.
+      expect(s.mergedAt).toBeUndefined();
+      expect(s.closedAt).toBeUndefined();
+      // The display-only breadcrumb must NOT resurrect a resolved state.
+      expect(filterVisibleInSidebar([s]).map((x) => x.id)).toEqual(["sess-1"]);
+    });
+
+    it("is a no-op (returns false) for a session that was not merged", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.clearMerged("sess-1", breadcrumb)).toBe(false);
+      expect(mgr.get("sess-1")?.previousMergedPr).toBeUndefined();
+    });
+
+    it("accepts a null breadcrumb (clears merged without one)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      expect(mgr.clearMerged("sess-1", null)).toBe(true);
+      const s = mgr.get("sess-1");
+      expect(s?.mergedAt).toBeFalsy();
+      expect(s?.previousMergedPr).toBeUndefined();
+    });
+  });
+
   describe("docs/110: setPinned / archive clears pin", () => {
     it("sets and clears pinnedAt", () => {
       const mgr = new SessionManager(dbManager);

@@ -57,6 +57,15 @@ export async function emitPrLifecycleAfterCommit(args: {
   if (session.branchRenamed === false) return;
   if (session.mergedAt) return;
 
+  // docs/202 — when this session was re-armed (un-merged after a rebase), its
+  // row carries a `previousMergedPr` breadcrumb. We thread it onto every card we
+  // emit here (so the client renders the "previously merged #N" note AND so
+  // `updateCard` lets the card override a stale terminal merged card), use its
+  // base for the ready diff + new-PR base, and force-push past the surviving
+  // diverged remote branch. `clearMerged` runs in the shared re-arm helper
+  // *before* this function, so by now `session.mergedAt` is already null.
+  const previousMergedPr = session.previousMergedPr;
+
   try {
     const prStatus = deps.prStatusPoller.getStatus(sessionId);
     if (prStatus) return; // poller already drives updates via SSE
@@ -95,6 +104,7 @@ export async function emitPrLifecycleAfterCommit(args: {
         sessionId,
         cardId: `pr-card-${sessionId}`,
         phase: "creating",
+        ...(previousMergedPr ? { previousMergedPr } : {}),
       });
       try {
         const result = await quickCreatePr(
@@ -106,6 +116,9 @@ export async function emitPrLifecycleAfterCommit(args: {
           session.title ?? "",
           sessionDir,
           session.remoteUrl,
+          previousMergedPr
+            ? { baseBranch: previousMergedPr.baseBranch, forceWithLease: true }
+            : undefined,
         );
         if (session.remoteUrl) {
           deps.prStatusPoller.trackSession(sessionId, session.remoteUrl);
@@ -142,6 +155,7 @@ export async function emitPrLifecycleAfterCommit(args: {
                 error: autoMerge.error,
               }
             : undefined,
+          ...(previousMergedPr ? { previousMergedPr } : {}),
         });
       } catch (err) {
         console.error("[pr-lifecycle] Auto-create PR failed:", getErrorMessage(err));
@@ -151,14 +165,18 @@ export async function emitPrLifecycleAfterCommit(args: {
           cardId: `pr-card-${sessionId}`,
           phase: "error",
           errorMessage: getErrorMessage(err),
+          ...(previousMergedPr ? { previousMergedPr } : {}),
         });
       }
       return;
     }
 
-    // Ready card: diff stats vs. main so the user can click "open PR".
+    // Ready card: diff stats vs. the base branch so the user can click "open
+    // PR". For a re-armed session use the prior PR's base (re-arm knows it);
+    // otherwise default to "main" (the generic cold-session limitation).
     const headBranch = session.branch || await git.getCurrentBranch();
-    const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch("main");
+    const readyBase = previousMergedPr?.baseBranch ?? "main";
+    const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
     const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({
       type: "pr_lifecycle_update",
@@ -177,6 +195,7 @@ export async function emitPrLifecycleAfterCommit(args: {
             error: autoMerge.error,
           }
         : undefined,
+      ...(previousMergedPr ? { previousMergedPr } : {}),
     });
   } catch (err) {
     console.error("[pr-lifecycle] Failed to compute diff stats:", getErrorMessage(err));

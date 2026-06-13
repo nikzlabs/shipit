@@ -149,6 +149,19 @@ export class PrStatusPoller {
   /** Sessions whose PRs have been merged or closed — excluded from future queries. */
   private mergedSessions = new Set<string>();
   /**
+   * docs/202 — sessionId → the PR **number** of a superseded (merged) PR that a
+   * re-armed session has moved past. While set, `verifyMissingPr` treats a
+   * terminal (merged/closed) REST result carrying THIS number as "no current
+   * PR" instead of re-promoting the session to merged — without it, the
+   * immediate forced poll `reArm`→`trackSession` fires would re-find the old
+   * merged PR via `findPullRequestAnyState` and clobber the freshly re-armed
+   * card back to merged within one tick. Cleared the moment a PR with a
+   * *different* number appears (the new PR opened), so normal tracking resumes.
+   * Seeded from the persisted `previousMergedPr` breadcrumb on startup so the
+   * suppression survives an orchestrator restart before the new PR exists.
+   */
+  private supersededPrNumbers = new Map<string, number>();
+  /**
    * Sessions whose REST verify is currently running. Prevents two overlapping
    * polls (or a verify + the next poll) from both firing the same REST call.
    */
@@ -581,6 +594,7 @@ export class PrStatusPoller {
     this.lastPrNodes.delete(sessionId);
     this.inFlightVerify.delete(sessionId);
     this.verifiedAbsent.delete(sessionId);
+    this.supersededPrNumbers.delete(sessionId);
     this.prTabActiveSessions.delete(sessionId);
     this.lastAutoPushAt.delete(sessionId);
     this.graceTracker.untrack(sessionId);
@@ -728,6 +742,18 @@ export class PrStatusPoller {
       delete clean.autoMerge;
       this.lastKnown.set(snapshot.sessionId, clean);
     }
+    // docs/202 — re-seed superseded-PR suppression from persisted breadcrumbs so
+    // a session re-armed before this restart (and not yet carrying a new PR)
+    // can't have its OLD merged PR re-promote it to merged on the first poll.
+    // The breadcrumb's `number` is exactly the value `reArm` recorded; it stays
+    // suppressed only until a different-numbered PR appears, which is correct. A
+    // re-armed session has `merged_at` cleared, so it is always in the visible
+    // `list()` (Active, never resolved/capped) — no need to scan archived rows.
+    for (const session of this.sessionManager.list()) {
+      if (session.previousMergedPr) {
+        this.supersededPrNumbers.set(session.id, session.previousMergedPr.number);
+      }
+    }
   }
 
   /**
@@ -740,6 +766,39 @@ export class PrStatusPoller {
     this.mergedSessions.delete(sessionId);
     this.sessionManager.setPrStatus(sessionId, null);
     this.sseBroadcast("pr_status", { updates: [], removals: [sessionId] });
+  }
+
+  /**
+   * docs/202 — re-arm a merged session whose branch has been rebased and gained
+   * new work, so the poller treats it as a normal active session ready for a
+   * fresh PR. **Silently** clears the poller's server-side terminal state and
+   * resumes tracking.
+   *
+   * Deliberately does NOT reuse {@link clearPersisted}: that broadcasts a
+   * destructive `pr_status { removals: [sessionId] }` over SSE, which races the
+   * new WS `pr_lifecycle_update` card across two independent client channels —
+   * if the removal lands *after* the card, it wipes the freshly-shown card and
+   * the user is left with nothing (docs/202 "Transport"). Instead we clear state
+   * quietly and rely on two non-racing convergence paths: the re-armed card
+   * carries `previousMergedPr` so `updateCard` lets it override the terminal
+   * guard, and reconnecting viewers converge via snapshot reconciliation.
+   *
+   * `supersededPrNumber` (the prior merged PR's number) is recorded so the
+   * immediate forced poll that `trackSession` fires can't re-promote the OLD
+   * merged PR via `verifyMissingPr` → `findPullRequestAnyState`. Set BEFORE
+   * `trackSession` so the suppression is in place when that poll runs.
+   */
+  reArm(sessionId: string, supersededPrNumber?: number): void {
+    this.lastKnown.delete(sessionId);
+    this.lastPrNodes.delete(sessionId);
+    this.mergedSessions.delete(sessionId);
+    this.verifiedAbsent.delete(sessionId);
+    this.sessionManager.setPrStatus(sessionId, null);
+    if (typeof supersededPrNumber === "number") {
+      this.supersededPrNumbers.set(sessionId, supersededPrNumber);
+    }
+    const repoUrl = this.sessionManager.get(sessionId)?.remoteUrl;
+    if (repoUrl) this.trackSession(sessionId, repoUrl);
   }
 
   /** Get the current PR status for a session. */
@@ -1056,6 +1115,10 @@ export class PrStatusPoller {
         // PR is back in the bulk view — clear the "verified absent" marker so
         // a future disappearance triggers a fresh verify.
         this.verifiedAbsent.delete(session.id);
+        // docs/202 — a PR in the OPEN bulk view is necessarily the NEW PR for a
+        // re-armed session (the superseded one is merged, never OPEN), so clear
+        // any superseded-PR suppression and let normal tracking take over.
+        this.supersededPrNumbers.delete(session.id);
         // If this session had a focused alias on this poll, the focused node
         // carries the same fields as the bulk node plus conversation. Prefer
         // it so the summary picks up issue comments + review threads.
@@ -1222,6 +1285,22 @@ export class PrStatusPoller {
 
     const isMerged = pr.merged_at !== null;
     const prState = isMerged ? "merged" as const : pr.state === "closed" ? "closed" as const : "open" as const;
+
+    // docs/202 — superseded-PR suppression for a re-armed session. While a
+    // superseded (old merged) PR number is recorded, ignore a TERMINAL result
+    // carrying that exact number — it is the PR the rebased branch already moved
+    // past, and promoting it would clobber the re-armed card straight back to
+    // merged. A result with a *different* number (the new PR opened, or a
+    // genuinely different terminal PR) clears the suppression and is handled
+    // normally below.
+    const superseded = this.supersededPrNumbers.get(sessionId);
+    if (superseded !== undefined && pr.number !== superseded) {
+      this.supersededPrNumbers.delete(sessionId);
+    } else if (superseded !== undefined && prState !== "open") {
+      // Same-numbered terminal PR — the one we're suppressing. Treat as "no
+      // current PR": leave the session active with its `ready` card standing.
+      return;
+    }
 
     if (prState === "open") {
       const prev = this.lastKnown.get(sessionId);

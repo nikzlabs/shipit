@@ -303,6 +303,16 @@ export async function quickCreatePr(
   sessionTitle: string,
   sessionDir: string,
   remoteUrl?: string,
+  /**
+   * docs/202 — re-arm overrides for a merged-then-rebased session. `baseBranch`
+   * targets the prior PR's base instead of auto-detecting main/master (re-arm is
+   * the one case where ShipIt knows the correct base). `forceWithLease` pushes
+   * with `--force-with-lease` because the old remote branch often survives
+   * (auto-delete off / best-effort delete failed) and the rebased branch
+   * diverges from it, so a plain push is rejected non-fast-forward. Gated on the
+   * re-arm state by the caller so normal create pushes are never force-pushed.
+   */
+  reArm?: { baseBranch?: string; forceWithLease?: boolean },
 ): Promise<{
   number: number;
   url: string;
@@ -336,9 +346,14 @@ export async function quickCreatePr(
     };
   }
 
-  // Push the branch
+  // Push the branch. For a re-armed (rebased, superseded) branch, force-with-
+  // lease so a surviving diverged remote branch doesn't reject the push.
   try {
-    await git.push("origin", head);
+    if (reArm?.forceWithLease) {
+      await git.forcePush("origin", head);
+    } else {
+      await git.push("origin", head);
+    }
   } catch (err) {
     const msg = getErrorMessage(err);
     if (msg.includes("workflow")) {
@@ -349,11 +364,15 @@ export async function quickCreatePr(
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
 
-  // Detect base branch (main or master)
-  const remoteBranches = await git.listRemoteBranches();
-  const baseBranch = remoteBranches.includes("main") ? "main" :
-    remoteBranches.includes("master") ? "master" :
-    remoteBranches[0] ?? "main";
+  // Base branch: for a re-armed branch use the prior PR's base (re-arm knows
+  // it); otherwise auto-detect main/master from the remote.
+  let baseBranch = reArm?.baseBranch?.trim();
+  if (!baseBranch) {
+    const remoteBranches = await git.listRemoteBranches();
+    baseBranch = remoteBranches.includes("main") ? "main" :
+      remoteBranches.includes("master") ? "master" :
+      remoteBranches[0] ?? "main";
+  }
 
   // Generate title from session title
   const title = sessionTitle || head;

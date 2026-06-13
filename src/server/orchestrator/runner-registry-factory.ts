@@ -28,6 +28,7 @@ import { setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
+import { detectAndReArmMergedSession } from "./services/pr-rearm.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
@@ -441,6 +442,13 @@ export function createRunnerRegistry(
           postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
             const prStatusPoller = getPrStatusPoller?.();
             if (!prStatusPoller || !credentialStore) return;
+            // docs/202 — re-arm a merged+rebased session before the card emit,
+            // so spawned/CI/programmatic turns re-arm too (not just the WS path).
+            await detectAndReArmMergedSession({
+              deps: { sessionManager, prStatusPoller, createGitManager, sseBroadcast },
+              sessionId,
+              sessionDir,
+            });
             await emitPrLifecycleAfterCommit({
               deps: {
                 sessionManager,

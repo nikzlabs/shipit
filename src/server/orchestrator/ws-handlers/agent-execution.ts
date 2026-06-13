@@ -16,6 +16,7 @@ import {
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
+import { detectAndReArmMergedSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 
@@ -436,6 +437,20 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         runner: r,
       }),
     postTurnPrFlow: async (sessionId, sessionDir, commitHash, emit) => {
+      // docs/202 — detect a rebase-then-progress on a merged session and re-arm
+      // it (clear merged + record superseded PR + SSE session_list) BEFORE the
+      // card emit, so `emitPrLifecycleAfterCommit` sees an un-merged session and
+      // threads the breadcrumb through.
+      await detectAndReArmMergedSession({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          createGitManager: ctx.createGitManager,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        sessionId,
+        sessionDir,
+      });
       await emitPrLifecycleAfterCommit({
         deps: {
           sessionManager: ctx.sessionManager,

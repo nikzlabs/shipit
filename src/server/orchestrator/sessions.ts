@@ -1,4 +1,4 @@
-import type { ProviderRouteKind, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionInfo, SessionMergeWatch } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -51,6 +51,8 @@ interface SessionRow {
   merge_watch: string | null;
   /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
   merge_issue_effects: string | null;
+  /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
+  previous_merged_pr: string | null;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -252,6 +254,13 @@ export class SessionManager {
         // Corrupt/legacy JSON — treat as no watch rather than crashing reads.
       }
     }
+    if (row.previous_merged_pr) {
+      try {
+        info.previousMergedPr = JSON.parse(row.previous_merged_pr) as SessionInfo["previousMergedPr"];
+      } catch {
+        // Corrupt/legacy JSON — drop the breadcrumb rather than crashing reads.
+      }
+    }
     return info;
   }
 
@@ -416,6 +425,29 @@ export class SessionManager {
     const result = this.db.prepare(
       "UPDATE sessions SET merged_at = datetime('now') WHERE id = ? AND merged_at IS NULL",
     ).run(id);
+    return result.changes > 0;
+  }
+
+  /**
+   * docs/202 — un-merge a session that was re-armed after a rebase. Clears
+   * `merged_at` (mirroring how {@link setPrStatus} clears `closed_at` on reopen)
+   * and stashes a display-only `PreviousMergedPr` breadcrumb of the prior PR.
+   *
+   * Clearing `merged_at` is the whole mechanism: it pulls the session back into
+   * Active (`resolvedAt()` → null), removes it from the sidebar's "Recently
+   * resolved" Done group, gives it the gray fresh-session indicator, and reverts
+   * it from the fast merged disk-eviction ladder to the normal one — no separate
+   * pin or flag needed. The breadcrumb is deliberately display-only (plus the
+   * poller's superseded-PR suppression key + new-PR base target); it must NOT
+   * feed `resolvedAt()`, grouping, status color, or the eviction tier.
+   *
+   * Returns true when a row was un-merged (was merged before this call).
+   */
+  clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {
+    const json = previousMergedPr === null ? null : JSON.stringify(previousMergedPr);
+    const result = this.db.prepare(
+      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ? WHERE id = ? AND merged_at IS NOT NULL",
+    ).run(json, id);
     return result.changes > 0;
   }
 

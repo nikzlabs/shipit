@@ -215,6 +215,36 @@ export interface SessionInfo {
    * delivery fire-once.
    */
   mergeWatch?: SessionMergeWatch;
+  /**
+   * docs/202 — display-only breadcrumb of the session's prior MERGED PR,
+   * retained after a re-arm clears `merged_at`. Set by `clearMerged` when a
+   * merged branch is rebased onto its base and gains genuinely new work, so the
+   * session returns to Active/gray while still remembering it shipped once.
+   *
+   * Two non-display consumers piggyback on it, both deliberate:
+   *   - `number` doubles as the PR poller's superseded-PR suppression key (so an
+   *     immediate REST verify can't re-promote the OLD merged PR back to merged
+   *     before the new PR opens), and
+   *   - `baseBranch` targets the new PR's base + the "ready" diff, since re-arm
+   *     is the one case where ShipIt knows the correct base (the prior PR's).
+   *
+   * It MUST NOT feed `resolvedAt()`, sidebar grouping, status color, or the
+   * disk-eviction tier — clearing `merged_at` is what drives all of those, and
+   * this breadcrumb is purely additive.
+   */
+  previousMergedPr?: PreviousMergedPr;
+}
+
+/**
+ * docs/202 — lightweight reference to a session's prior merged PR, retained on
+ * the session after re-arm. See `SessionInfo.previousMergedPr`.
+ */
+export interface PreviousMergedPr {
+  number: number;
+  url: string;
+  title: string;
+  /** The prior PR's base branch — the new PR targets the same base. */
+  baseBranch: string;
 }
 
 /**

@@ -955,6 +955,100 @@ describe("PrStatusPoller", () => {
     expect(poller.getStatus("s1")?.prState).toBe("merged");
   });
 
+  // docs/202 — superseded-PR suppression makes re-arm stick.
+  describe("re-arm superseded-PR suppression", () => {
+    const SUPERSEDED_MERGED = {
+      number: 42,
+      url: "https://github.com/owner/repo/pull/42",
+      title: "Add feature",
+      body: "Original description",
+      state: "closed",
+      merged_at: "2026-05-21T10:00:00Z",
+      base: "main",
+      additions: 100,
+      deletions: 20,
+    };
+
+    it("does NOT re-promote the superseded merged PR after reArm (suppression holds)", async () => {
+      // The branch's only PR is the OLD merged one; the OPEN bulk view is empty
+      // and the REST verify returns the merged PR — exactly the re-promotion trap.
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        SUPERSEDED_MERGED,
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      // Re-arm records #42 as superseded and resumes tracking (fires a poll).
+      poller.reArm("s1", 42);
+      await vi.advanceTimersByTimeAsync(0);
+      // Force the REST verify path explicitly to await it.
+      await poller.forceVerifySessionPrState("s1");
+
+      // The session must NOT have been re-promoted to merged.
+      expect(poller.getStatus("s1")).toBeUndefined();
+      const promotedMerged = sseBroadcast.mock.calls.some(
+        ([event, payload]) =>
+          event === "pr_status" &&
+          (payload as { updates?: { prState?: string }[] }).updates?.some((u) => u.prState === "merged"),
+      );
+      expect(promotedMerged).toBe(false);
+    });
+
+    it("clears the suppression and tracks normally once a different-numbered PR appears", async () => {
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        SUPERSEDED_MERGED,
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      poller.reArm("s1", 42);
+      await vi.advanceTimersByTimeAsync(0);
+      await poller.forceVerifySessionPrState("s1");
+      expect(poller.getStatus("s1")).toBeUndefined();
+
+      // The NEW PR (#99, open) shows up in the bulk view — different number.
+      (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+        data: {
+          repository: {
+            pullRequests: { nodes: [makeGraphQLPrNode({ number: 99, state: "OPEN" })] },
+          },
+        },
+      });
+      await poller.forceRefreshSession("s1");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(poller.getStatus("s1")?.prState).toBe("open");
+      expect(poller.getStatus("s1")?.prNumber).toBe(99);
+    });
+
+    it("reArm broadcasts no destructive pr_status removal", async () => {
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        SUPERSEDED_MERGED,
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+
+      poller.reArm("s1", 42);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const sentRemoval = sseBroadcast.mock.calls.some(
+        ([event, payload]) =>
+          event === "pr_status" && Array.isArray((payload as { removals?: string[] }).removals) &&
+          ((payload as { removals?: string[] }).removals?.length ?? 0) > 0,
+      );
+      expect(sentRemoval).toBe(false);
+    });
+  });
+
   it("preserves cached conversation when the PR tab loses focus mid-cycle (docs/155 Phase 1b)", async () => {
     // While the PR tab is open we get conversation via the focused alias.
     // After the tab closes, subsequent polls drop the alias — the cached
