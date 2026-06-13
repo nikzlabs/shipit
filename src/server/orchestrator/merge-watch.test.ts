@@ -10,6 +10,13 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 /**
  * Fake runner that records dispatches + emitted WS messages. Deliberately NOT a
  * `ContainerSessionRunner`, so the deliverer skips the worker-ready wait.
+ *
+ * Models the real runner's turn-completion contract: a dispatch that carries an
+ * `onTurnComplete` callback represents a turn that STARTS NOW (the idle path),
+ * so by default the fake fires that callback immediately to simulate the turn
+ * running to completion. Set `autoCompleteTurn = false` to hold the callback
+ * (`completeTurn()` fires it later) — that models the gap between a turn being
+ * dispatched and actually finishing, where a restart would strand it.
  */
 class FakeRunner {
   running = false;
@@ -17,8 +24,22 @@ class FakeRunner {
   agentId = "claude" as const;
   dispatched: AgentDispatchOptions[] = [];
   emitted: unknown[] = [];
+  autoCompleteTurn = true;
+  private pendingComplete: (() => void) | undefined;
   constructor(public sessionDir: string) {}
-  dispatch(opts: AgentDispatchOptions): void { this.dispatched.push(opts); }
+  dispatch(opts: AgentDispatchOptions): void {
+    this.dispatched.push(opts);
+    if (!opts.onTurnComplete) return;
+    const fire = () => opts.onTurnComplete!({ errored: false });
+    if (this.autoCompleteTurn) fire();
+    else this.pendingComplete = fire;
+  }
+  /** Simulate the held wake-turn finishing (manual-completion mode). */
+  completeTurn(): void {
+    const fire = this.pendingComplete;
+    this.pendingComplete = undefined;
+    fire?.();
+  }
   emitMessage(msg: unknown): void { this.emitted.push(msg); }
 }
 
@@ -166,6 +187,69 @@ describe("MergeWatchManager (docs/196)", () => {
 
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
     expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+  });
+
+  it("merged: marks delivered only once the wake-turn has actually run, not when enqueued", async () => {
+    arm(ctx.sessionManager);
+    // Idle parent, but hold the turn so it's dispatched-but-not-yet-complete.
+    const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+    parentRunner.autoCompleteTurn = false;
+
+    await ctx.manager.handleChildPrTerminal(MERGED);
+
+    // Card surfaced and wake-turn dispatched, but NOT yet delivered — a restart
+    // here must be recoverable, so the watch stays at `merge-observed`.
+    expect(parentRunner.dispatched).toHaveLength(1);
+    expect(parentRunner.dispatched[0].systemTurn).toBe(true);
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+
+    // The turn finishes → only NOW does the watch reach `delivered`.
+    parentRunner.completeTurn();
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+  });
+
+  it("busy parent: wake-turn enqueued stays merge-observed; reconcile re-delivers without a second card", async () => {
+    arm(ctx.sessionManager);
+    // Mid-turn parent → dispatch enqueues; there is no completion signal.
+    const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+    parentRunner.running = true;
+
+    await ctx.manager.handleChildPrTerminal(MERGED);
+
+    // Enqueued + card surfaced, but the queued turn lives only in memory, so the
+    // watch must remain recoverable: NOT delivered.
+    expect(parentRunner.dispatched).toHaveLength(1);
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+
+    // Simulate the restart: the in-memory queued turn was lost; the parent is
+    // idle again. `reconcilePending` re-derives the terminal PR and re-delivers.
+    parentRunner.running = false;
+    const status: PrStatusSummary = {
+      sessionId: "child",
+      prNumber: 7,
+      prUrl: "https://github.com/o/r/pull/7",
+      prTitle: "Foundation",
+      prBody: "",
+      prState: "merged",
+      baseBranch: "main",
+      headBranch: "shipit/child",
+      insertions: 1,
+      deletions: 0,
+      checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 },
+      mergeable: "unknown",
+      reviewDecision: "none",
+      autoMergeEnabled: false,
+    };
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? status : undefined));
+    await ctx.manager.reconcilePending();
+
+    // Re-delivered to completion now — and NO second card surfaced (the
+    // `armed → merge-observed` card guard holds across the re-entry).
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+    expect(parentRunner.dispatched).toHaveLength(2);
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
   });
 
   it("checkAndFireNow fires when the PR already resolved at registration time", async () => {

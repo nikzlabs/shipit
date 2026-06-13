@@ -133,16 +133,26 @@ export class MergeWatchManager {
         });
         this.surfaceCard(parent.id, child, info, cardOutcome);
       }
-      // Enqueue the wake-turn. Throws on a parent container boot failure — leave
-      // the watch at `merge-observed` so the next poll / reconcile retries it.
-      await this.deliverWakeTurn(parent, child, info, cardOutcome);
-      const observedAt = this.deps.sessionManager.get(info.sessionId)?.mergeWatch?.observedAt ?? now;
-      this.deps.sessionManager.setMergeWatch(info.sessionId, {
-        parentSessionId: watch.parentSessionId,
-        state: "delivered",
-        registeredAt: watch.registeredAt,
-        observedAt,
-        deliveredAt: now,
+      // Deliver the wake-turn, advancing to `delivered` ONLY once the turn has
+      // actually RUN to completion — surfaced via the `onTurnComplete`-backed
+      // `markDelivered` callback, NOT the instant the turn is enqueued:
+      //   • idle parent → the turn starts now → it completes → `delivered`.
+      //   • busy parent → the turn is enqueued (drained post-turn, never
+      //     preempting) → no completion signal → the watch stays
+      //     `merge-observed`.
+      // The watch therefore remains at `merge-observed` for the whole window
+      // between enqueue and execution. A restart anywhere in that window leaves
+      // it at `merge-observed`, which `reconcilePending` re-fires on the next
+      // startup. This closes the bug where the watch was stamped `delivered` the
+      // instant the turn was queued: the queued turn lives only in memory, so an
+      // orchestrator restart lost it while the persisted watch already read
+      // `delivered` and was skipped by reconcile — stranding the parent. A live
+      // re-poll can't recover it (the PR is `alreadyTerminal`), so
+      // reconcile-on-restart is the sole recovery path. `deliverWakeTurn` still
+      // throws on a parent container boot failure — that too leaves the watch at
+      // `merge-observed` for the next poll / reconcile to retry.
+      await this.deliverWakeTurn(parent, child, info, cardOutcome, () => {
+        this.markDelivered(info.sessionId, now);
       });
       return;
     }
@@ -196,6 +206,27 @@ export class MergeWatchManager {
   }
 
   /**
+   * Advance a merge-watch from `merge-observed` to the terminal `delivered`
+   * state. Fired from the wake-turn's `onTurnComplete`, so it runs only after
+   * the turn has genuinely executed — that is the whole point of the fix
+   * (`delivered` must mean "ran", not "queued"). Idempotent and fire-once: a
+   * watch that is already terminal (`delivered` / `closed-unmerged`) or has
+   * since been cleared (parent archived) is left untouched, so a re-delivery or
+   * a late callback can never double-stamp or resurrect a dropped watch.
+   */
+  private markDelivered(childSessionId: string, fallbackObservedAt: string): void {
+    const watch = this.deps.sessionManager.getMergeWatch(childSessionId);
+    if (!watch || watch.state === "delivered" || watch.state === "closed-unmerged") return;
+    this.deps.sessionManager.setMergeWatch(childSessionId, {
+      parentSessionId: watch.parentSessionId,
+      state: "delivered",
+      registeredAt: watch.registeredAt,
+      observedAt: watch.observedAt ?? fallbackObservedAt,
+      deliveredAt: new Date().toISOString(),
+    });
+  }
+
+  /**
    * Append the persisted merge card to the parent's chat history and broadcast
    * it live to any attached viewer. Fires outside any turn, so it's an `append`
    * (durable, sorts at the current end of history) rather than `emitChatCard`.
@@ -236,12 +267,21 @@ export class MergeWatchManager {
    * enqueues (drained post-turn); when idle it starts the turn. It NEVER
    * preempts a running turn — exactly the "poller events must not kill running
    * agents" invariant.
+   *
+   * `onExecuted` (when supplied) fires only once the turn has actually RUN to
+   * completion — wired through `onTurnComplete`, which `dispatch` honors only on
+   * the idle path where it starts the turn now. When the parent is mid-turn the
+   * turn is enqueued and `onExecuted` is intentionally NOT wired (a queued turn
+   * carries no completion signal, and `onTurnComplete` is dispatch-only — it
+   * does not survive the queue), so the caller leaves the watch recoverable for
+   * the post-restart reconcile rather than prematurely marking it delivered.
    */
   private async deliverWakeTurn(
     parent: SessionInfo,
     child: SessionInfo,
     info: PrTerminalStateInfo,
     outcome: "merged" | "closed-unmerged",
+    onExecuted?: () => void,
   ): Promise<void> {
     if (!parent.workspaceDir) {
       throw new Error(`parent ${parent.id} has no workspace`);
@@ -289,10 +329,25 @@ export class MergeWatchManager {
       throw new Error(`parent ${parent.id} container could not be resumed; wake-turn not delivered`);
     }
 
+    const text = buildWakeTurnPrompt(child, info, outcome);
+    const activity =
+      outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
+
+    // Mid-turn parent: `dispatch` enqueues the wake-turn (drained post-turn,
+    // never preempting) and there is no completion signal to await — leave
+    // `onExecuted` unwired so the watch stays `merge-observed`, recoverable by
+    // `reconcilePending` after a restart. Idle parent: `dispatch` starts the
+    // turn now, so wiring `onTurnComplete` lets us mark `delivered` only once it
+    // has genuinely run.
+    if (runner.running) {
+      runner.dispatch({ text, activity, systemTurn: true });
+      return;
+    }
     runner.dispatch({
-      text: buildWakeTurnPrompt(child, info, outcome),
-      activity: outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…",
+      text,
+      activity,
       systemTurn: true,
+      onTurnComplete: () => onExecuted?.(),
     });
   }
 }
