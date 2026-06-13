@@ -22,16 +22,32 @@ A `permissions` block was added to that file:
   `--allowedTools` (union), so this is documentation-as-code: a future restrictive
   CLI default can't silently revoke editing.
 - **`deny`** is the load-bearing part. Deny overrides allow, so even with
-  `Write(**)`/`Edit(**)` allowed, the file-edit tools (Edit/Write/MultiEdit/
-  NotebookEdit) are refused on three sensitive trees:
+  `Write(**)`/`Edit(**)` allowed, the file-edit tools (Edit/Write/MultiEdit) are
+  refused on:
   - `/etc/shipit/**` — the agent's own settings + hooks (it must not rewrite its
-    own permission policy).
-  - `/root/.claude/**` — the CLI's config + OAuth credentials.
-  - `/credentials/**` — ShipIt's auth bind mount.
+    own permission policy; no memory lives here, so a tree-wide deny is safe).
+  - The OAuth / CLI-config credential **files** specifically:
+    `~/.claude/.credentials.json`, `~/.claude/credentials.json`,
+    `~/.claude/auth.json`, `~/.claude/settings.json`,
+    `~/.claude/settings.local.json`, `~/.claude.json` — listed under both the
+    `/root/.claude/...` and `/credentials/.claude/...` spellings.
 
-The design doc's original `/root/.claude/**` deny is kept; `/etc/shipit/**` was
-added because that's where *our* policy actually lives, and `/credentials/**`
-maps to the real mount point (`container-lifecycle.ts`).
+**Why files, not trees — the memory carve-out (SHI-36 follow-up).** The first
+cut denied the whole `/root/.claude/**` and `/credentials/**` trees, mirroring
+the design doc's original list. But `/root/.claude` is a symlink to
+`/credentials/.claude` (see `docker/Dockerfile.session-worker.*`), and the CLI's
+file-based **memory** lives at `/root/.claude/projects/<cwd>/memory/` *inside*
+that tree. Memory updates go through the `Write` tool, so a blanket tree deny
+would silently block the agent from updating its own memory — exactly the
+"over-broad deny breaks legitimate operations" risk this doc's Risks section
+warns about. The fix: deny the **specific** credential/config files (which never
+match `projects/**/memory/**`), leaving memory writable under any path-matcher
+behavior. The design doc's `/root/.claude/**` line predates the memory feature;
+`/etc/shipit/**` was added because that's where *our* active policy actually
+lives. Broad confidentiality of `/credentials` (reads/exfil, and the rest of the
+mount) is owned by the `docs/172-agent-containment` egress + credential-isolation
+work, not these file-edit rules — `Read` isn't denied here and `Bash` bypasses
+tool-path rules entirely.
 
 **Scope boundary:** these rules govern the file-edit tools, not arbitrary `Bash`
 (`cat`/`rm` of those paths is unaffected). Full containment — egress control and

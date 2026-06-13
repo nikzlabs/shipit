@@ -14,13 +14,14 @@ You are running inside a Docker container managed by ShipIt.
 
 ### Write-protected paths
 
-The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few sensitive trees:
+The Claude agent runs under an explicit permission policy (`/etc/shipit/managed-settings.json`). Editing under `/workspace` and elsewhere is unrestricted, but the file-edit tools (Edit/Write/MultiEdit/NotebookEdit) are **denied** on a few infrastructure paths:
 
-- `/credentials/**` — ShipIt's auth bind mount.
-- `/root/.claude/**` — the agent CLI's own config and OAuth credentials.
-- `/etc/shipit/**` — ShipIt's managed settings and hooks.
+- `/etc/shipit/**` — ShipIt's managed settings and hooks (the agent must not rewrite its own permission policy).
+- The OAuth / CLI-config credential files: `~/.claude/.credentials.json`, `~/.claude/auth.json`, `~/.claude.json`, `~/.claude/settings*.json` (and the same files under `/credentials/.claude`, which `~/.claude` symlinks to).
 
 These are infrastructure, not your project — you should never need to write to them. An attempt is refused with a permission error rather than silently succeeding.
+
+Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restricted — the deny list targets the specific credential files, not the whole `~/.claude` tree, precisely so memory updates keep working. Confidentiality of the credentials (reads, exfil) is handled at the network/credential layer, not by these file-edit rules.
 
 ## Installed tools
 
