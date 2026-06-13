@@ -22,6 +22,7 @@ import {
   provisionRepoMemory,
   syncMemoryBack,
   REPO_MEMORY_SUBDIR,
+  chownSessionCredentialsTree,
 } from "./session-credentials.js";
 
 /**
@@ -55,6 +56,35 @@ describe("session-credentials", () => {
     expect(perSessionCredentialsDir(root, sid)).toBe(path.join(root, "sessions", sid));
     expect(perSessionCredentialsSubpath(sid)).toBe(`sessions/${sid}`);
     expect(sessionCredentialsRoot(root)).toBe(path.join(root, "sessions"));
+  });
+
+  // docs/150 §7 — the orchestrator writes per-session creds AFTER the container
+  // boots (its boot-time chown can't see them), so every writer hands the
+  // subtree to the worker UID. No-op unless SHIPIT_SESSION_WORKER_UID is set.
+  describe("docs/150 §7 — worker-UID ownership handoff", () => {
+    const prev = process.env.SHIPIT_SESSION_WORKER_UID;
+    afterEach(() => {
+      if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prev;
+    });
+
+    it("scaffold + provision chown the subtree to the worker UID when set", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // Should not throw and should leave the whole subtree owned by myUid.
+      ensureSessionCredentialsScaffold(root, sid);
+      provisionAgentCredentials(root, sid, "claude");
+      const dir = perSessionCredentialsDir(root, sid);
+      expect(fs.lstatSync(path.join(dir, ".gitconfig")).uid).toBe(myUid);
+      expect(fs.lstatSync(path.join(dir, ".claude.json")).uid).toBe(myUid);
+    });
+
+    it("chownSessionCredentialsTree is a no-op (no throw) when unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      ensureSessionCredentialsScaffold(root, sid);
+      expect(() => chownSessionCredentialsTree(root, sid)).not.toThrow();
+    });
   });
 
   it("scaffold seeds only the shared .gitconfig — no agent creds", () => {

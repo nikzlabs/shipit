@@ -28,6 +28,7 @@ import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { writeContainerGitConfig } from "./git-config.js";
 import { providerAccountCredentialRoot } from "./provider-account-manager.js";
+import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
@@ -35,10 +36,11 @@ export const SESSION_CREDENTIALS_SUBDIR = "sessions";
 /**
  * Files/dirs (relative to the credentials root) that make up each agent's
  * credential subtree — exactly the paths the session-worker image symlinks
- * into `/root` (see `docker/Dockerfile.session-worker.*`):
- *   /root/.claude      -> /credentials/.claude
- *   /root/.claude.json -> /credentials/.claude.json
- *   /root/.codex       -> /credentials/.codex
+ * into the runtime home (docs/150 — `/home/shipit`, was `/root`; see
+ * `docker/Dockerfile.session-worker.*`):
+ *   ~/.claude      -> /credentials/.claude
+ *   ~/.claude.json -> /credentials/.claude.json
+ *   ~/.codex       -> /credentials/.codex
  */
 const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
@@ -72,6 +74,20 @@ function writeSessionGitConfig(credentialsRoot: string, sessionId: string): void
 /** Absolute host path of a session's private credentials subtree. */
 export function perSessionCredentialsDir(credentialsRoot: string, sessionId: string): string {
   return path.join(credentialsRoot, SESSION_CREDENTIALS_SUBDIR, sessionId);
+}
+
+/**
+ * Hand the per-session credentials subtree to the unprivileged session-worker
+ * user (docs/150 §7). No-op unless `SHIPIT_SESSION_WORKER_UID` is set. Every
+ * orchestrator-side writer into the subtree (scaffold, provision, per-turn token
+ * sync, repush) calls this after writing so the freshly-written `0600 root:root`
+ * credential files stay readable by `shipit` after the container's boot-time
+ * chown has already run. Any future writer touching the subtree — including an
+ * archive-restore path that recreates it after a disk-janitor sweep — must call
+ * this too; the entrypoint chown only runs at container start.
+ */
+export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: string): void {
+  chownTreeToSessionWorker(perSessionCredentialsDir(credentialsRoot, sessionId));
 }
 
 /**
@@ -122,6 +138,8 @@ export function ensureSessionCredentialsScaffold(credentialsRoot: string, sessio
   }
   // Generate a token-free gitconfig (identity + brokering credential helper).
   writeSessionGitConfig(credentialsRoot, sessionId);
+  // Hand the freshly-written subtree to the unprivileged worker user (docs/150).
+  chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
 /**
@@ -181,6 +199,8 @@ function provisionAgentCredentialsFromRoot(
     }
     copyCredentialPath(sourceRoot, dir, rel);
   }
+  // Hand the freshly-written subtree to the unprivileged worker user (docs/150).
+  chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
 /**
@@ -193,7 +213,7 @@ function provisionAgentCredentialsFromRoot(
  * multi-account user), and reversible ({@link removeSubAgentCredentials}).
  *
  * The copy is placed in the **same** per-session dir that already holds the
- * pinned agent's subtree — the container's `/root/.codex` (or `/root/.claude`)
+ * pinned agent's subtree — the container's `~/.codex` (or `~/.claude`)
  * symlink resolves into it immediately, so the sub-agent CLI finds its creds
  * with no remount. `replaceExistingProviderSubtree` is always true so a stale
  * leftover (e.g. from a crashed prior spawn whose wipe didn't complete) is
@@ -473,6 +493,8 @@ function syncAgentTokenInFromRoot(
     }
     atomicCopyFile(src, dst);
   }
+  // The per-turn token copy lands `root:root`; re-own it for the worker (docs/150).
+  chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
 /**
@@ -564,6 +586,8 @@ function repushAgentTokenFromRoot(
     atomicCopyFile(src, dst);
     wrote = true;
   }
+  // The repushed token lands `root:root`; re-own it for the worker (docs/150).
+  if (wrote) chownSessionCredentialsTree(credentialsRoot, sessionId);
   return wrote;
 }
 
@@ -1064,14 +1088,18 @@ function syncAgentTokenBackToRoot(
     if (sourceExp !== null && sessionExp <= sourceExp) continue; // source already as fresh or fresher
     atomicCopyFile(sessionFile, sourceFile);
   }
+  // Back-sync writes the orchestrator's own copy, but keep the session subtree's
+  // ownership consistent for the worker after any in-place edits (docs/150).
+  chownSessionCredentialsTree(credentialsRoot, sessionId);
 }
 
 // ---------------------------------------------------------------------------
 // Per-repo Claude memory sharing (docs/155)
 //
 // The Claude CLI accumulates its file-based "memory" (user/feedback/project/
-// reference notes) under `/root/.claude/projects/<encoded-cwd>/memory/` inside
-// the session container. cwd is always `/workspace`, so the encoded project
+// reference notes) under `~/.claude/projects/<encoded-cwd>/memory/` inside
+// the session container (docs/150 — `~` is `/home/shipit`, was `/root`). cwd is
+// always `/workspace`, so the encoded project
 // slug is `-workspace`. Per-session credential isolation (docs/138) gives each
 // session its OWN `.claude`, so memory written in one session is invisible to
 // the next — defeating memory's whole point as a long-lived store.
@@ -1093,7 +1121,7 @@ export const REPO_MEMORY_SUBDIR = "repo-memory";
 
 /**
  * Claude's auto-memory directory relative to a per-session credentials dir. The
- * container symlinks `/root/.claude -> /credentials/.claude` and runs with cwd
+ * container symlinks `~/.claude -> /credentials/.claude` and runs with cwd
  * `/workspace`, so the CLI's project slug is `-workspace`. Claude-CLI-specific
  * on-disk shape (docs/155) — callers gate on the Claude agent before using it.
  */

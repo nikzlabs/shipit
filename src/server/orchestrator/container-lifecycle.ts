@@ -18,6 +18,7 @@ import {
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { agentHome } from "../shared/agent-home.js";
 import type { HostMount } from "../shared/shipit-config.js";
 import {
   ensureSessionCredentialsScaffold,
@@ -89,6 +90,14 @@ interface MountSpec {
 
 /** Container-internal mount point for the shared dependency cache. */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
+
+/**
+ * docs/150 §8 — stable, shared Playwright browser cache path. The session-worker
+ * image installs the chrome-for-testing build here at build time (readable by
+ * the unprivileged `shipit` runtime user) instead of under `$HOME/.cache`, which
+ * would land in the build user's root home and be unreachable post-`gosu`.
+ */
+export const PLAYWRIGHT_BROWSERS_PATH = "/opt/playwright-browsers";
 
 /**
  * docs/198 — container-internal mount point for the shared per-runtime pnpm
@@ -264,12 +273,25 @@ export function buildEnv(
   dockerProxyPort: number | undefined,
   procEnv: NodeJS.ProcessEnv = process.env,
 ): string[] {
+  const home = agentHome();
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
     `WORKSPACE_DIR=${workspaceDir}`,
     `WORKER_PORT=${workerPort}`,
     "WORKER_MODE=session",
-    "HOME=/root",
+    // docs/150 — the worker drops to the unprivileged `shipit` user whose home
+    // is /home/shipit. AGENT_HOME is the single source of truth that the
+    // worker, agent CLIs, and terminal resolve their HOME from (agentHome()).
+    // In prod the orchestrator resolves this to /home/shipit; local mode keeps
+    // AGENT_HOME=/root in the orchestrator container's own env, but buildEnv is
+    // never reached there (no container).
+    `HOME=${home}`,
+    `AGENT_HOME=${home}`,
+    // docs/150 §8 — the build-time Playwright browser install is pinned to a
+    // shared path readable by both root (build) and `shipit` (runtime). The
+    // image sets this ENV too; mirror it here so it's explicit at the launch
+    // boundary and survives an image whose ENV drifts.
+    `PLAYWRIGHT_BROWSERS_PATH=${PLAYWRIGHT_BROWSERS_PATH}`,
     // Point git inside the container at the same global config the orchestrator
     // uses. The credentials directory is mounted at /credentials, and the
     // orchestrator writes user.name/user.email there via initGlobalGitConfig().
@@ -277,6 +299,15 @@ export function buildEnv(
     // etc.) inherits the user's configured identity automatically.
     "GIT_CONFIG_GLOBAL=/credentials/.gitconfig",
   ];
+
+  // docs/150 Rollout — forward the worker UID so the image's entrypoint chowns
+  // the writable mounts to the SAME uid the orchestrator's chown helpers use. A
+  // single env on the orchestrator flips both sides; unset = the entrypoint's
+  // own default (1000) still applies in-image, and orchestrator-side chowns are
+  // no-ops, preserving today's behavior.
+  if (procEnv.SHIPIT_SESSION_WORKER_UID) {
+    env.push(`SHIPIT_SESSION_WORKER_UID=${procEnv.SHIPIT_SESSION_WORKER_UID}`);
+  }
 
   // docs/183 — forward the session-worker image id so the worker's
   // install-runtime `runtimeKey()` shares the orchestrator's ABI fingerprint.
@@ -434,6 +465,15 @@ export async function createContainer(
     deps.dockerProxyHost,
     deps.dockerProxyPort,
   );
+
+  // docs/150 §2/§9 — when `/workspace` (and the other mounts) fall through to
+  // the bind-mount branch (dev / dogfood, no workspaceVolume), the entrypoint
+  // must NOT `chown -R` them: that would rewrite ownership of the developer's
+  // bind-mounted host source tree. Signal the entrypoint to skip the workspace
+  // chown. This deliberately bypasses the non-root hardening in dev mode.
+  if (!deps.workspaceVolume) {
+    env.push("SHIPIT_SKIP_WORKSPACE_CHOWN=1");
+  }
 
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));

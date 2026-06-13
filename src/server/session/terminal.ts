@@ -1,6 +1,7 @@
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
+import { agentHome } from "../shared/agent-home.js";
 
 /**
  * Manages an interactive shell process via node-pty.
@@ -22,7 +23,9 @@ export class TerminalProcess extends EventEmitter {
       cols,
       rows,
       cwd,
-      env: { ...process.env, HOME: "/root", TERM: "xterm-256color", NODE_ENV: "development" },
+      // docs/150 — terminal shell runs as the unprivileged `shipit` user
+      // (HOME=/home/shipit); agentHome() resolves to /root in local mode.
+      env: { ...process.env, HOME: agentHome(), TERM: "xterm-256color", NODE_ENV: "development" },
     });
 
     this.proc.onData((data: string) => {

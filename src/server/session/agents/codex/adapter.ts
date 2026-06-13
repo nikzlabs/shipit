@@ -36,6 +36,7 @@ import {
   PLAYWRIGHT_MCP_COMMAND,
 } from "../playwright-mcp.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
+import { codexHome } from "../../../shared/agent-home.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -88,18 +89,24 @@ type JsonRpcInbound = JsonRpcResponse | JsonRpcServerNotification | JsonRpcServe
 /**
  * Path where the Codex CLI persists ChatGPT subscription credentials after
  * `codex login --device-auth`. In ShipIt this resolves through a symlink to
- * the shared `/credentials` volume (see Dockerfile.* — feature 119).
+ * the shared `/credentials` volume (see Dockerfile.* — feature 119). The home
+ * is `${agentHome()}/.codex` — `/home/shipit/.codex` in a session container,
+ * `/root/.codex` in local mode (docs/150). Resolved at call time so the same
+ * code serves both runtimes.
  */
-const CODEX_AUTH_FILE = "/root/.codex/auth.json";
+function codexAuthFile(): string {
+  return path.join(codexHome(), "auth.json");
+}
 
 /**
- * True iff /root/.codex/auth.json exists and is a non-empty regular file.
- * Exported for unit tests and for reuse by AgentRegistry.checkCodexAuth.
+ * True iff `${agentHome()}/.codex/auth.json` exists and is a non-empty regular
+ * file. Exported for unit tests and for reuse by AgentRegistry.checkCodexAuth.
  */
 export function hasCodexFileAuth(): boolean {
   try {
-    if (!existsSync(CODEX_AUTH_FILE)) return false;
-    const st = statSync(CODEX_AUTH_FILE);
+    const file = codexAuthFile();
+    if (!existsSync(file)) return false;
+    const st = statSync(file);
     return st.isFile() && st.size > 0;
   } catch {
     return false;
@@ -510,7 +517,7 @@ export class CodexAdapter
     //
     // Two modes:
     //   1. ChatGPT subscription login — the `codex login --device-auth` flow
-    //      writes credentials to /root/.codex/auth.json (a symlink into the
+    //      writes credentials to ~/.codex/auth.json (a symlink into the
     //      shared credentials volume). When present, the CLI uses the user's
     //      ChatGPT plan / Codex credits.
     //   2. OPENAI_API_KEY env var — bills against the user's OpenAI Platform
@@ -741,8 +748,8 @@ export class CodexAdapter
    * because Codex has no argv env indirection.
    */
   writeMcpConfig(ctx: AgentMcpWriteContext): AgentMcpWriteResult {
-    const codexHome = process.env.CODEX_HOME || "/root/.codex";
-    const configPath = path.join(codexHome, "config.toml");
+    const codexConfigDir = codexHome();
+    const configPath = path.join(codexConfigDir, "config.toml");
     const runtimeEnv: Record<string, string> = {};
     const lines: string[] = [
       CODEX_MCP_BEGIN,
@@ -850,7 +857,7 @@ export class CodexAdapter
       try {
         existing = readFileSync(configPath, "utf-8");
       } catch { /* no config yet */ }
-      mkdirSync(codexHome, { recursive: true });
+      mkdirSync(codexConfigDir, { recursive: true });
       writeFileSync(configPath, replaceManagedCodexMcpBlock(existing, lines.join("\n")));
     } catch (err) {
       console.warn(`[mcp] failed to register codex MCP config: ${getErrorMessage(err)}`);

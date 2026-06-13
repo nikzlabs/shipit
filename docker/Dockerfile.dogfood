@@ -46,3 +46,13 @@ ENV PATH="/opt/agent-cli/node_modules/.bin:${PATH}"
 RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
  && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
+
+# docs/150 §9 — local mode (RUNTIME_MODE=local) keeps the orchestrator on root.
+# It hosts the agent processes in-process (claude-adapter / codex-adapter), which
+# resolve their HOME via agentHome(). Since DEFAULT_AGENT_HOME is /home/shipit,
+# we MUST pin AGENT_HOME=/root here (no `shipit` user exists in this image) or
+# the agent CLIs would read credentials from a non-existent home and auth would
+# break. The non-root hardening intentionally does not apply to dogfood/local
+# mode — see docs/118-shipit-ui-local/plan.md.
+ENV HOME=/root
+ENV AGENT_HOME=/root

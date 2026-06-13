@@ -9,6 +9,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 
 export interface GitIdentity {
   name: string;
@@ -96,6 +97,13 @@ export function writeContainerGitConfig(destPath: string): void {
   }
   set("commit.gpgsign", "false");
   set("credential.helper", CONTAINER_CREDENTIAL_HELPER);
+
+  // docs/150 §7 — hand the file to the unprivileged worker user *after* all
+  // `git config --file` writes finish (no-op unless SHIPIT_SESSION_WORKER_UID
+  // is set). Chowning earlier would leave the root orchestrator writing into a
+  // 1000-owned file: it works today but is a trap if the steps are reordered.
+  // The 0o600 mode is preserved — the only reader is `shipit`.
+  chownToSessionWorker(destPath);
 }
 
 /**

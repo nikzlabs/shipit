@@ -36,6 +36,7 @@ import { TerminalProcess } from "./terminal.js";
 import { FileWatcher } from "./file-watcher.js";
 import os from "node:os";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
+import { agentHome } from "../shared/agent-home.js";
 import { scanFileTree } from "../shared/file-tree.js";
 import { scanSkillsDir } from "../shared/skill-scan.js";
 import { getErrorMessage } from "../shared/utils.js";
@@ -567,8 +568,10 @@ export class SessionWorker extends EventEmitter {
     });
 
     // GET /codex/skills — Codex's built-in system skills, scanned from
-    // `~/.codex/skills/<name>/SKILL.md` *inside the container*. CODEX_HOME is
-    // unset in ShipIt containers, so this defaults to ~/.codex (= /root/.codex),
+    // `~/.codex/skills/<name>/SKILL.md` *inside the container*. os.homedir()
+    // resolves against the worker's HOME — `/home/shipit` post-migration
+    // (docs/150), `/root` in local mode — and the §4 symlink
+    // `~/.codex -> /credentials/.codex` makes this reach the right place. It's
     // a container-only path the orchestrator cannot read over the HTTP link.
     // The orchestrator merges these into GET /api/sessions/:id/skills as
     // `source: "bundled"`. See docs/138-skill-invocation (change #5b).
@@ -1148,6 +1151,13 @@ export class SessionWorker extends EventEmitter {
     const run = new Promise<void>((resolve, reject) => {
       const proc = spawn("npm", ["install", "-g", pkg], {
         stdio: ["ignore", "pipe", "pipe"],
+        // docs/150 §6 — `npm install -g` targets NPM_CONFIG_PREFIX
+        // (/home/shipit/.npm-global, set in the image ENV and writable by the
+        // unprivileged `shipit` user). Spawn from agentHome() rather than the
+        // root-owned /app cwd so the install is hermetic — /app's package.json
+        // can otherwise subtly affect resolution, and /app is not writable to
+        // `shipit` post-migration.
+        cwd: agentHome(),
         env: { ...process.env, NODE_ENV: "development" },
       });
       let stderr = "";

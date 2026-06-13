@@ -517,6 +517,32 @@ After validation, audit `CapAdd` and remove `DAC_OVERRIDE` and
 `NET_BIND_SERVICE` if no regressions surface in the worker, terminal, or
 MCP tool exercises.
 
+## Writable paths (groundwork for SHI-97 — ReadonlyRootfs/seccomp)
+
+SHI-97 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
+with explicit writable mounts. That work needs an exact inventory of every path
+the non-root worker writes to. Enumerated here as part of SHI-31 so SHI-97 can
+flip the rootfs without a write-permission scavenger hunt:
+
+| Path | Writer | Notes |
+|------|--------|-------|
+| `/workspace` | agent, git, installs | Bind mount / volume Subpath. Always writable. |
+| `/uploads` | orchestrator (chowned), agent | Mount. |
+| `/credentials` | orchestrator (chowned §7), agent CLIs | Mount; per-session subtree. |
+| `/dep-cache` | package managers | Mount; shared per-repo. |
+| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for SHI-97. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
+| `/home/shipit` | agent CLIs, npm | Includes `~/.claude`, `~/.codex` (symlinks into `/credentials`), `~/.claude.json`, `~/.npm-global` (global installs), `~/.npm` (npm cache), `~/.cache` (tool caches). Needs its own writable mount/tmpfs under ReadonlyRootfs. |
+
+Read-only and **must stay** so under SHI-97 (never written at runtime):
+`/app`, `/app/node_modules`, `/opt/agent-cli`, `/opt/playwright-browsers`
+(installed `a+rX` at build time), `/usr/local/bin` shims, `/etc/shipit`
+(agent hooks + managed settings). The worker process is exec'd from `/app` and
+the shims must remain traversable — but none of these need write access.
+
+`PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` is read-only at runtime;
+Playwright MCP writes only its scratch under `/tmp/.playwright-mcp`, so the
+read-only browser store composes with a writable `/tmp`.
+
 ## Touchpoints
 
 - `docker/Dockerfile.session-worker.dev`
