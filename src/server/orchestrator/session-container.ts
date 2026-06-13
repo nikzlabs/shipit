@@ -52,6 +52,7 @@ import {
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
 import { egressEnforceEnabled } from "./egress-firewall-install.js";
+import { egressDnsEnabled } from "./egress-dns-install.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -622,6 +623,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       // SESSION_EGRESS_ENFORCE; the installer sidecar image via env.
       egressEnforce: egressEnforceEnabled(),
       egressSidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
+      egressDns: egressDnsEnabled(),
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),

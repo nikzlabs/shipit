@@ -11,10 +11,19 @@
 FROM alpine:3.20
 
 # iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
-# self-test; bash for the script.
-RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash
+# self-test; bash for the scripts; dnsmasq for the Tier B controlled resolver.
+RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash dnsmasq
+
+# Dedicated low-privilege user the Tier B resolver (dnsmasq) drops to. The Tier A
+# firewall's owner-match allows port-53 egress ONLY for this uid (the resolver's
+# upstream queries); the agent (uid 1000) cannot reach any other resolver. Keep
+# this uid in sync with EGRESS_RESOLVER_UID in src/server/orchestrator/egress-dns.ts.
+RUN addgroup -g 911 egressdns && adduser -D -H -u 911 -G egressdns egressdns
 
 COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh
+COPY egress-sidecar/run-resolver.sh /usr/local/bin/run-resolver.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh
 
+# Default entrypoint is the Tier A installer; the Tier B resolver overrides it
+# with `--entrypoint /usr/local/bin/run-resolver.sh`.
 ENTRYPOINT ["/usr/local/bin/init-firewall.sh"]

