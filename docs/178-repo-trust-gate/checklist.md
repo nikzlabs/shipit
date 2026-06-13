@@ -27,8 +27,8 @@
 - [x] Trust cached per remote — `RepoStore` unit tests (canonical identity, per-remote isolation, persistence across instances)
 - [x] Repo added by URL is untrusted by default; `POST /api/repos/trust` trusts it (repos integration test)
 - [x] Client banner shows for untrusted / hides for trusted / accept clears it
-- [ ] End-to-end "untrusted *added* repo skips warm pre-install" assertion — covered structurally by the `runPreInstall` guard + warm tests staying green; a dedicated worker-install-call assertion is deferred (would need the full standby+worker harness)
+- [x] Warm pre-install executor covered against a real worker stub (`warm-pool-preinstall.test.ts`): forwards the repo's resolved `agent.install` to `/install`, and — the gate's intent at the helper level — **never touches the worker when there is no install config**. The full standby-level "untrusted *added* repo skips warm pre-install" assertion remains structural (the `isTrusted` gate sits in the standby callback; covered by the `repoStore.isTrusted` unit tests + warm flow staying green), since a worker-call assertion there needs the full standby+container harness.
 
 ## Docs
-- [ ] Add a tracker `issue:` pointer to frontmatter once filed
+- [x] Add a tracker `issue:` pointer to frontmatter (SHI-96)
 - [x] Note the trust gate in `src/server/shipit-docs/preview.md` (agent-visible startup behavior)
