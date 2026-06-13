@@ -20,7 +20,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { AgentId } from "../../shared/types.js";
+import type { AgentId, SubAgentConsultCard } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -28,6 +28,7 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { UsageManager } from "../usage.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import { emitChatCard, type InProgressPersister } from "../chat-card-persistence.js";
 import {
   provisionSubAgentCredentials,
   removeSubAgentCredentials,
@@ -47,6 +48,12 @@ export interface RunSubAgentDeps {
   providerAccountManager?: ProviderAccountManager;
   runnerRegistry: SessionRunnerRegistry;
   usageManager: UsageManager;
+  /**
+   * Where the terminal "Consulted Codex" card is persisted (docs/144 §7). Required
+   * so the card can't ship emit-only and vanish on a switch/reload — `emitChatCard`
+   * takes a persist context by construction (CLAUDE.md side-channel-card contract).
+   */
+  chatHistoryManager: InProgressPersister;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
 }
@@ -144,8 +151,25 @@ export async function runSubAgent(
   }
 
   const spawnId = randomUUID();
-  // §7 — transient spawn chip (status only): "Asking Codex…" while in flight.
-  runner.emitMessage({ type: "sub_agent_spawn", spawnId, subAgentId, phase: "running" });
+  const startedAtMs = Date.now();
+  // §7 — transient "Asking Codex…" spinner (live activity only) while in flight.
+  // The terminal record is the persisted consult card emitted below, not this.
+  runner.emitMessage({ type: "sub_agent_spawn", spawnId, subAgentId });
+
+  // §7 — the persisted terminal card. Built for EVERY outcome (success, error,
+  // timeout, cancel, or a thrown transport failure) so the spinner is always
+  // replaced by a durable inline record anchored where the consult happened —
+  // never left spinning and never lost on a switch/reload. Emitted via
+  // `emitChatCard` (CLAUDE.md side-channel-card contract): live WS + in-band
+  // record + immediate persist, in one call.
+  const emitConsultCard = (card: SubAgentConsultCard) => {
+    emitChatCard(
+      runner,
+      { type: "sub_agent_consult_card", sessionId, card },
+      { role: "assistant", text: "", subAgentConsult: card },
+      { chatHistoryManager: deps.chatHistoryManager, sessionId },
+    );
+  };
 
   try {
     const result = await runner.spawnSubAgent({ agentId: subAgentId, prompt, spawnId, depth });
@@ -155,19 +179,32 @@ export async function runSubAgent(
       deps.usageManager.record(sessionId, result.costUsd, result.durationMs, undefined, undefined, { subAgentId });
     }
 
-    // §7 — replace the chip with the terminal "Consulted Codex · 47s · $0.03".
-    runner.emitMessage({
-      type: "sub_agent_spawn",
+    emitConsultCard({
+      cardId: randomUUID(),
       spawnId,
       subAgentId,
-      phase: "done",
       status: result.status,
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
+      createdAt: new Date().toISOString(),
     });
 
     return { ...result, subAgentId };
+  } catch (err) {
+    // A transport-level failure (e.g. worker unreachable) never produced a
+    // result, so synthesize an error card — otherwise the spinner spins forever.
+    emitConsultCard({
+      cardId: randomUUID(),
+      spawnId,
+      subAgentId,
+      status: "error",
+      durationMs: Math.max(0, Date.now() - startedAtMs),
+      costUsd: 0,
+      truncated: false,
+      createdAt: new Date().toISOString(),
+    });
+    throw err;
   } finally {
     // §4 — token-sync-back THEN wipe, both targeting the same resolved account
     // root. Runs on success, failure, crash, or cancel. Skipped for a

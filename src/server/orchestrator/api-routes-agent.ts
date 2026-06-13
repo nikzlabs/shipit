@@ -99,6 +99,7 @@ export async function registerAgentRoutes(
             ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
             runnerRegistry: deps.runnerRegistry,
             usageManager: deps.usageManager,
+            chatHistoryManager: deps.chatHistoryManager,
             ...(deps.credentialsDir ? { credentialsDir: deps.credentialsDir } : {}),
           },
           request.params.id,

@@ -3,21 +3,16 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
 
 /**
- * docs/144 — transient sub-agent spawn chip. Emit-only status (CLAUDE.md §5): it
- * has no place in the scrollback (the sub-agent's output reaches the user
- * through the primary's own voice), so it just upserts a session-store entry the
- * chat surface renders as a live "Asking Codex…" / "Consulted Codex" chip. Keyed
- * by spawnId so the running → done transition replaces the same chip. Resets on
- * reload/switch.
+ * docs/144 — the transient in-flight "Asking Codex…" spinner. Emit-only live
+ * activity (CLAUDE.md §5): it upserts a session-store entry the chat surface
+ * renders as a spinner while the `shipit agent` call is in flight, and correctly
+ * resets on reload/switch. The TERMINAL "Consulted Codex · 47s" record is a
+ * separate PERSISTED chat card (`sub_agent_consult_card`), whose handler removes
+ * this spinner by spawnId. Keyed by spawnId.
  */
 export const handleSubAgentSpawn: Handler<WsSubAgentSpawn> = (_ctx, data) => {
   useSessionStore.getState().upsertSubAgentSpawn({
     spawnId: data.spawnId,
     subAgentId: data.subAgentId,
-    phase: data.phase,
-    ...(data.status !== undefined ? { status: data.status } : {}),
-    ...(data.durationMs !== undefined ? { durationMs: data.durationMs } : {}),
-    ...(data.costUsd !== undefined ? { costUsd: data.costUsd } : {}),
-    ...(data.truncated !== undefined ? { truncated: data.truncated } : {}),
   });
 };

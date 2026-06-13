@@ -1,8 +1,9 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
+import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import type { HandlerContext } from "./types.js";
-import type { WsSubAgentSpawn } from "../../../server/shared/types.js";
+import type { WsSubAgentSpawn, WsSubAgentConsultCard } from "../../../server/shared/types.js";
 
 const ctx: HandlerContext = {
   terminalRef: { current: null },
@@ -10,30 +11,45 @@ const ctx: HandlerContext = {
 };
 
 beforeEach(() => {
-  useSessionStore.setState({ subAgentSpawns: {} });
+  useSessionStore.setState({ subAgentSpawns: {}, messages: [] });
 });
 
 describe("handleSubAgentSpawn (docs/144)", () => {
-  it("adds a running chip keyed by spawnId", () => {
-    const msg: WsSubAgentSpawn = { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex", phase: "running" };
+  it("adds an in-flight spinner keyed by spawnId", () => {
+    const msg: WsSubAgentSpawn = { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex" };
     handleSubAgentSpawn(ctx, msg);
-    const chip = useSessionStore.getState().subAgentSpawns.x1;
-    expect(chip).toMatchObject({ subAgentId: "codex", phase: "running" });
+    expect(useSessionStore.getState().subAgentSpawns.x1).toMatchObject({ subAgentId: "codex" });
+  });
+});
+
+describe("handleSubAgentConsultCard (docs/144)", () => {
+  const card: WsSubAgentConsultCard["card"] = {
+    cardId: "c1",
+    spawnId: "x1",
+    subAgentId: "codex",
+    status: "success",
+    durationMs: 4700,
+    costUsd: 0.03,
+    truncated: false,
+    createdAt: "2026-06-13T00:00:00.000Z",
+  };
+
+  it("clears the in-flight spinner and appends a persisted consult card", () => {
+    handleSubAgentSpawn(ctx, { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex" });
+    handleSubAgentConsultCard(ctx, { type: "sub_agent_consult_card", sessionId: "s1", card });
+
+    const state = useSessionStore.getState();
+    // spinner gone (the card is the terminal record)
+    expect(state.subAgentSpawns.x1).toBeUndefined();
+    // card appended to the transcript as an empty-text carrier message
+    expect(state.messages).toHaveLength(1);
+    expect(state.messages[0]).toMatchObject({ role: "assistant", text: "", subAgentConsult: { cardId: "c1" } });
   });
 
-  it("replaces the running chip with the done chip on the same spawnId", () => {
-    handleSubAgentSpawn(ctx, { type: "sub_agent_spawn", spawnId: "x1", subAgentId: "codex", phase: "running" });
-    handleSubAgentSpawn(ctx, {
-      type: "sub_agent_spawn",
-      spawnId: "x1",
-      subAgentId: "codex",
-      phase: "done",
-      status: "success",
-      durationMs: 4700,
-      costUsd: 0.03,
-    });
-    const spawns = useSessionStore.getState().subAgentSpawns;
-    expect(Object.keys(spawns)).toEqual(["x1"]);
-    expect(spawns.x1).toMatchObject({ phase: "done", status: "success", durationMs: 4700, costUsd: 0.03 });
+  it("is idempotent by cardId (reconnect buffer replay + history replay)", () => {
+    const msg: WsSubAgentConsultCard = { type: "sub_agent_consult_card", sessionId: "s1", card };
+    handleSubAgentConsultCard(ctx, msg);
+    handleSubAgentConsultCard(ctx, msg);
+    expect(useSessionStore.getState().messages).toHaveLength(1);
   });
 });

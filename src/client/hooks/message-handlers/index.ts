@@ -64,6 +64,7 @@ import { handleSessionSpawned } from "./session-spawned.js";
 import { handleChildMergedCard } from "./child-merged.js";
 import { handleSessionStarted } from "./session-started.js";
 import { handleSessionStatus } from "./session-status.js";
+import { handleSubAgentConsultCard } from "./sub-agent-consult-card.js";
 import { handleSubAgentSpawn } from "./sub-agent-spawn.js";
 import { handleSystemNotice } from "./system-notice.js";
 import { handleSystemUserMessage } from "./system-user-message.js";
@@ -166,6 +167,7 @@ export const messageHandlers: MessageHandlerMap = {
   child_merged_card: handleChildMergedCard,
   session_started: handleSessionStarted,
   session_status: handleSessionStatus,
+  sub_agent_consult_card: handleSubAgentConsultCard,
   sub_agent_spawn: handleSubAgentSpawn,
   system_notice: handleSystemNotice,
   system_user_message: handleSystemUserMessage,

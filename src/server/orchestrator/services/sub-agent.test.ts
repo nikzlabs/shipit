@@ -37,9 +37,15 @@ function makeDeps(opts: {
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
   const emitMessage = vi.fn();
   const record = vi.fn();
+  const replaceInProgress = vi.fn();
+  // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
+  // then persists via chatHistoryManager.replaceInProgress — stub all four.
   const runner = {
     subAgentSpawnsThisTurn: opts.subAgentSpawnsThisTurn ?? 0,
     emitMessage,
+    chatMessageGroups: [] as never[],
+    steeredMessages: [] as never[],
+    recordedCards: [] as never[],
     spawnSubAgent: vi.fn(async () =>
       opts.spawnResult ?? { status: "success", text: "2 bugs found", truncated: false, durationMs: 4200, costUsd: 0.03 },
     ),
@@ -56,8 +62,9 @@ function makeDeps(opts: {
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
     usageManager: { record } as never,
+    chatHistoryManager: { replaceInProgress } as never,
   };
-  return { deps, runner, emitMessage, record };
+  return { deps, runner, emitMessage, record, replaceInProgress };
 }
 
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
@@ -112,8 +119,8 @@ describe("runSubAgent — authorization gates", () => {
 });
 
 describe("runSubAgent — happy path", () => {
-  it("spawns, returns text, increments the per-turn counter, records usage, emits chips", async () => {
-    const { deps, runner, emitMessage, record } = makeDeps({});
+  it("spawns, returns text, increments the per-turn counter, records usage, emits spinner + persisted consult card", async () => {
+    const { deps, runner, emitMessage, record, replaceInProgress } = makeDeps({});
     const res = await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review this", depth: 0 });
 
     expect(res.text).toBe("2 bugs found");
@@ -124,10 +131,35 @@ describe("runSubAgent — happy path", () => {
     );
     // usage attributed to the sub-agent, not the pinned agent
     expect(record).toHaveBeenCalledWith("s1", 0.03, 4200, undefined, undefined, { subAgentId: "codex" });
-    // running chip then done chip
-    const phases = emitMessage.mock.calls.map((c) => (c[0] as { type: string; phase: string }));
-    expect(phases[0]).toMatchObject({ type: "sub_agent_spawn", phase: "running", subAgentId: "codex" });
-    expect(phases[1]).toMatchObject({ type: "sub_agent_spawn", phase: "done", status: "success" });
+    // transient running spinner, then the terminal persisted consult card
+    const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
+    expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", subAgentId: "codex" });
+    expect(msgs[1]).toMatchObject({
+      type: "sub_agent_consult_card",
+      card: expect.objectContaining({ subAgentId: "codex", status: "success", durationMs: 4200, costUsd: 0.03 }),
+    });
+    // the spinner and the card share a spawnId (the card clears the spinner)
+    expect((msgs[1] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
+      (msgs[0] as unknown as { spawnId: string }).spawnId,
+    );
+    // the card was persisted in-band (not emit-only) — survives switch/reload
+    expect(replaceInProgress).toHaveBeenCalled();
+  });
+
+  it("emits an error consult card when the spawn throws (spinner never left spinning)", async () => {
+    const { deps, runner, emitMessage } = makeDeps({});
+    runner.spawnSubAgent = vi.fn(async () => {
+      throw new Error("worker unreachable");
+    });
+    await expect(runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 })).rejects.toThrow(
+      "worker unreachable",
+    );
+    const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
+    expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn" });
+    expect(msgs[1]).toMatchObject({
+      type: "sub_agent_consult_card",
+      card: expect.objectContaining({ status: "error" }),
+    });
   });
 
   it("allows a same-provider spawn (no extra credentials needed)", async () => {

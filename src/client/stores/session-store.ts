@@ -5,18 +5,15 @@ import type { StreamingActivity } from "../components/StreamingIndicator.js";
 import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
 
 /**
- * docs/144 — a transient sub-agent spawn chip. Mirrors the `sub_agent_spawn` WS
- * message: `running` while the `shipit agent` call is in flight, `done` with
- * timing/cost on return. Status only; never persisted.
+ * docs/144 — a transient sub-agent spawn spinner ("Asking Codex…"), live only
+ * while the `shipit agent` call is in flight. Status only; never persisted. The
+ * TERMINAL "Consulted Codex · 47s" record is NOT here — it's a persisted
+ * `subAgentConsult` chat message that survives a switch/reload. When that card
+ * arrives the spinner is removed by `spawnId`.
  */
 export interface SubAgentSpawnChip {
   spawnId: string;
   subAgentId: AgentId;
-  phase: "running" | "done";
-  status?: "success" | "error" | "timeout" | "cancelled";
-  durationMs?: number;
-  costUsd?: number;
-  truncated?: boolean;
 }
 
 /**
@@ -146,8 +143,10 @@ interface SessionState {
   setIsLoading: (loading: boolean) => void;
   setActivity: (activity: StreamingActivity | undefined) => void;
   setCompacting: (compacting: boolean) => void;
-  /** docs/144 — upsert a sub-agent spawn chip keyed by spawnId. */
+  /** docs/144 — upsert the in-flight "Asking Codex…" spinner keyed by spawnId. */
   upsertSubAgentSpawn: (chip: SubAgentSpawnChip) => void;
+  /** docs/144 — remove the in-flight spinner once its terminal consult card lands. */
+  removeSubAgentSpawn: (spawnId: string) => void;
   setHistoryLoaded: (loaded: boolean) => void;
   setRescueState: (state: RescueState | null) => void;
   setRecoveryActionError: (error: string | null) => void;
@@ -314,6 +313,14 @@ export const useSessionStore = create<SessionState>((set, get) => ({
   setCompacting: (compacting) => set({ compacting }),
   upsertSubAgentSpawn: (chip) =>
     set((s) => ({ subAgentSpawns: { ...s.subAgentSpawns, [chip.spawnId]: chip } })),
+  removeSubAgentSpawn: (spawnId) =>
+    set((s) => {
+      if (!(spawnId in s.subAgentSpawns)) return s;
+      const next = Object.fromEntries(
+        Object.entries(s.subAgentSpawns).filter(([id]) => id !== spawnId),
+      );
+      return { subAgentSpawns: next };
+    }),
 
   setHistoryLoaded: (historyLoaded) => set({ historyLoaded }),
 
