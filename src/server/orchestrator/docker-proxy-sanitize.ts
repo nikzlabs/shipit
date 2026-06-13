@@ -9,7 +9,29 @@
 import type { SessionInfo } from "./docker-proxy-helpers.js";
 import { PARENT_SESSION_LABEL } from "./docker-proxy-helpers.js";
 import { isPathUnderWorkspace } from "./docker-proxy-auth.js";
-import { volumeBelongsToSession } from "./docker-proxy-auth.js";
+import { volumeBelongsToSession, networkBelongsToSession } from "./docker-proxy-auth.js";
+
+// ---------------------------------------------------------------------------
+// Network mode classification
+// ---------------------------------------------------------------------------
+
+/**
+ * Docker built-in network modes that are not user-defined, attachable networks.
+ * `host` / `container:*` are rejected outright elsewhere; `bridge` / `default` /
+ * empty are rewritten to the session network; `none` means no networking.
+ */
+const BUILTIN_NETWORK_MODES = new Set(["", "default", "bridge", "host", "none"]);
+
+/**
+ * True when a NetworkMode (or EndpointsConfig key) names a user-defined network
+ * rather than a Docker built-in mode. Such networks must be ownership-checked.
+ */
+function isNamedNetwork(mode: string | undefined): boolean {
+  if (!mode) return false;
+  if (BUILTIN_NETWORK_MODES.has(mode)) return false;
+  if (mode.startsWith("container:")) return false;
+  return true;
+}
 
 // ---------------------------------------------------------------------------
 // Container create sanitization
@@ -44,6 +66,36 @@ export async function sanitizeContainerCreate(
   const networkMode = hostConfig.NetworkMode as string | undefined;
   if (networkMode === "host" || (networkMode?.startsWith("container:"))) {
     return { error: "NetworkMode host/container is not allowed" };
+  }
+
+  // A named NetworkMode (a user-defined network, not a Docker built-in mode) must
+  // belong to this session. Without this, a child container could be created
+  // directly on the orchestrator's own network: its IP is not a known
+  // session-container IP, so the orchestrator API guard treats it as a trusted
+  // browser origin and skips containment (SHI-135). This mirrors the ownership
+  // check the POST /networks/{id}/connect route already enforces — the create
+  // path must not be the weaker sibling. Built-in modes (default/bridge/none) are
+  // handled below or are inherently safe.
+  if (networkMode && isNamedNetwork(networkMode)) {
+    if (!(await networkBelongsToSession(socketPath, networkMode, session.sessionId))) {
+      return { error: `Network "${networkMode}" does not belong to this session` };
+    }
+  }
+
+  // Same ownership rule for networks attached at create time via NetworkingConfig
+  // (an alternate path to NetworkMode). Only the session's own named networks are
+  // permitted here; built-in names and foreign networks are rejected.
+  const networkingConfig = body.NetworkingConfig as Record<string, unknown> | undefined;
+  const endpointsConfig = networkingConfig?.EndpointsConfig as Record<string, unknown> | undefined;
+  if (endpointsConfig) {
+    for (const netName of Object.keys(endpointsConfig)) {
+      if (!isNamedNetwork(netName)) {
+        return { error: `Network "${netName}" is not allowed via NetworkingConfig` };
+      }
+      if (!(await networkBelongsToSession(socketPath, netName, session.sessionId))) {
+        return { error: `Network "${netName}" does not belong to this session` };
+      }
+    }
   }
 
   // Reject host/container PidMode

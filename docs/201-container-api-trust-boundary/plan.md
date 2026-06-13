@@ -204,6 +204,14 @@ widening a deliberate, reviewed, test-enforced act:
 
 ## Out of scope / follow-ups
 
+- **Docker-proxy create-time network ownership (SHI-135) — fixed.** The bridge-IP guard
+  here identifies container origins via `getSessionByContainerIp`, which only knows
+  session-worker containers. A Docker-enabled agent could create a **child** container on a
+  foreign named network (e.g. the orchestrator's) whose IP isn't in that map, so the guard
+  treated it as a trusted browser origin. Root cause was an asymmetry in the Docker proxy:
+  `POST /networks/{id}/connect` enforced `networkBelongsToSession` but `POST /containers/create`
+  did not. `sanitizeContainerCreate` now ownership-checks any named `NetworkMode` and every
+  `NetworkingConfig.EndpointsConfig` entry, mirroring the connect route. See SHI-135.
 - Scoping the **global** blast radius of the genuinely-browser-driven mutations
   (`refreshAgentEnvForAllSessions`) is a separate hardening item; this doc removes the
   container's ability to *trigger* them, which is the SHI-129 acceptance bar.
