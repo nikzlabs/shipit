@@ -28,7 +28,7 @@ jobs:
       # skip-delete: true so labels not listed in labels.yml (e.g. GitHub's
       # default "good first issue", "help wanted") are left untouched rather
       # than deleted out from under the repo.
-      - uses: crazy-max/ghaction-github-labeler@v5.3.0
+      - uses: crazy-max/ghaction-github-labeler@v6.0.0
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           yaml-file: .github/labels.yml
