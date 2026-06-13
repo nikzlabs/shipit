@@ -74,11 +74,21 @@ function makeHarness(initialState: "open" | "closed" = "open") {
 
   const appended: PersistedMessage[] = [];
   const emitted: WsServerMessage[] = [];
+  // In-memory stand-in for the persisted docs/194 fire-once guard set.
+  const appliedEffects = new Map<string, Set<string>>();
   const deps: IssueLifecycleDeps = {
     credentialStore: new CredentialStore(fs.mkdtempSync(path.join(os.tmpdir(), "lc-"))),
     trackerFetchImpl: fetchImpl,
     githubAuthManager: { getToken: () => "ghp_test" } as unknown as GitHubAuthManager,
-    sessionManager: { get: () => ({ remoteUrl: REMOTE }) } as unknown as SessionManager,
+    sessionManager: {
+      get: () => ({ remoteUrl: REMOTE }),
+      hasAppliedMergeIssueEffect: (id: string, key: string) => appliedEffects.get(id)?.has(key) ?? false,
+      markAppliedMergeIssueEffect: (id: string, key: string) => {
+        const set = appliedEffects.get(id) ?? new Set<string>();
+        set.add(key);
+        appliedEffects.set(id, set);
+      },
+    } as unknown as SessionManager,
     chatHistoryManager: {
       append: (_sid: string, msg: PersistedMessage) => {
         appended.push(msg);
@@ -147,6 +157,71 @@ describe("applyMergedPrIssueRefs — completed on merge", () => {
     const patched = calls.filter((c) => c.method === "PATCH").map((c) => c.url);
     expect(patched.some((u) => u.includes("/issues/1"))).toBe(true);
     expect(patched.some((u) => u.includes("/issues/2"))).toBe(true);
+  });
+
+  // docs/194 Layer 1 — the merge effect re-fires whenever the poller's in-memory
+  // mergedSessions guard is wiped (every viewer reconnect). The persisted guard
+  // must make a second call a complete no-op: no tracker write, no extra card.
+  it("does NOT re-fire the status flip or resolved-by comment on a second call", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    const pr = mergedPr("Closes octocat/hello-world#42");
+
+    await applyMergedPrIssueRefs(deps, pr);
+    const callsAfterFirst = calls.length;
+    const cardsAfterFirst = appended.filter((m) => m.issueWrite).length;
+    expect(cardsAfterFirst).toBe(1);
+
+    // Simulate the reconnect-driven re-fire.
+    await applyMergedPrIssueRefs(deps, pr);
+    expect(calls.length).toBe(callsAfterFirst); // no new PATCH / POST
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(1); // no duplicate card
+  });
+
+  it("does NOT re-fire the progress comment for a Refs pointer on a second call", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    const pr = mergedPr("Refs octocat/hello-world#42");
+
+    await applyMergedPrIssueRefs(deps, pr);
+    const callsAfterFirst = calls.length;
+
+    await applyMergedPrIssueRefs(deps, pr);
+    expect(calls.length).toBe(callsAfterFirst);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
+  });
+
+  // docs/194 Layer 2 — even if the guard regressed, the card id is deterministic
+  // (keyed by session + PR + issue + verb) so the client's idempotent-by-cardId
+  // store collapses a re-fire instead of rendering a duplicate.
+  it("mints a deterministic card id for the merge-completed card", async () => {
+    const { deps, appended } = makeHarness("open");
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes octocat/hello-world#42"));
+    const card = appended.find((m) => m.issueWrite)?.issueWrite;
+    expect(card?.cardId).toBe("issue-write-s1-7-42-completed");
+  });
+
+  // A transient tracker failure must NOT mark the effect applied — a later
+  // re-fire retries it (best-effort), and the poller never sees the throw.
+  it("retries the status flip after a transient tracker failure", async () => {
+    const { deps, calls, appended } = makeHarness("open");
+    const pr = mergedPr("Closes octocat/hello-world#42");
+
+    // First attempt: force the PATCH to fail.
+    let failPatch = true;
+    const original = deps.trackerFetchImpl!;
+    deps.trackerFetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
+      if (failPatch && (init?.method ?? "GET") === "PATCH") throw new Error("tracker down");
+      return original(url, init as RequestInit);
+    }) as unknown as typeof fetch;
+
+    await expect(applyMergedPrIssueRefs(deps, pr)).resolves.toBeUndefined();
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(0); // no card on failure
+    const patchesAfterFail = calls.filter((c) => c.method === "PATCH").length;
+
+    // Second attempt succeeds — the unset guard lets it retry.
+    failPatch = false;
+    await applyMergedPrIssueRefs(deps, pr);
+    expect(calls.filter((c) => c.method === "PATCH").length).toBeGreaterThan(patchesAfterFail);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
   });
 });
 

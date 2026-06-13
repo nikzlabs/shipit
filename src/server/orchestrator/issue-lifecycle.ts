@@ -43,7 +43,7 @@ import {
 } from "./services/issues.js";
 import { resolveGitHubTrackerContext } from "./api-routes-issues.js";
 import type { GitHubTrackerContext } from "./trackers/index.js";
-import { parseIssueRef, type ParsedIssueRef } from "../shared/issue-ref.js";
+import { parseIssueRef } from "../shared/issue-ref.js";
 import { parsePrBodyIssueRefs } from "../shared/pr-issue-refs.js";
 
 /** Shared collaborators the lifecycle writes need (all orchestrator-side). */
@@ -70,6 +70,12 @@ export interface MergedPrInfo {
  * it to the session's chat history (durable — rehydrates on reload with its undo
  * state) and broadcast the live `issue_write_card` to any attached viewer. Mirrors
  * the card the route's `handleWrite` builds, minus the live-runner requirement.
+ *
+ * `cardId` is optional. The seed path mints a random id (it fires exactly once at
+ * session creation). The merge path passes a DETERMINISTIC id (docs/194 Layer 2)
+ * keyed by `(sessionId, prNumber, issueId, verb)`, so that even if the effect-
+ * level guard ever regresses, the client store's idempotent-by-cardId upsert
+ * collapses a re-fired card instead of rendering a duplicate.
  */
 function surfaceWriteCard(
   deps: IssueLifecycleDeps,
@@ -77,9 +83,10 @@ function surfaceWriteCard(
   trackerId: TrackerId,
   issueId: string,
   outcome: IssueWriteOutcome,
+  cardId?: string,
 ): void {
   const card: IssueWriteCard = {
-    cardId: `issue-write-${randomUUID()}`,
+    cardId: cardId ?? `issue-write-${randomUUID()}`,
     tracker: trackerId,
     issueId: issueId || outcome.issue.id,
     identifier: outcome.issue.identifier,
@@ -144,27 +151,34 @@ export async function markIssueStartedFromSeed(
   }
 }
 
-/** Post a best-effort comment, surfacing a provenance card. Swallows failures. */
-async function comment(
+/**
+ * Run one merge→issue-lifecycle side effect under a persisted, effect-level
+ * fire-once guard (docs/194 Layer 1). `key` is the effect's NATURAL identity
+ * (`${prNumber}:${issueId}:${verb}`), NOT the poller's in-memory `mergedSessions`
+ * edge — that edge is wiped on every viewer reconnect (`trackSession`), which is
+ * exactly what let each reconnect re-fire these writes and spam duplicate cards /
+ * resolved-by comments. The key is recorded ONLY after `effect()` succeeds, so a
+ * transient tracker failure leaves it unset and a later re-fire (reconnect or
+ * restart reconcile) retries it. Best-effort: never throws into the poller.
+ */
+async function runMergeEffect(
   deps: IssueLifecycleDeps,
   sessionId: string,
-  ref: ParsedIssueRef,
-  body: string,
+  key: string,
+  effect: () => Promise<void>,
 ): Promise<void> {
-  if (!ref.issueId) return;
+  if (deps.sessionManager.hasAppliedMergeIssueEffect(sessionId, key)) return;
   try {
-    const outcome = await commentOnIssueForTracker(
-      deps.credentialStore,
-      ref.tracker,
-      ref.issueId,
-      body,
-      deps.trackerFetchImpl,
-      githubContext(deps, sessionId),
-    );
-    surfaceWriteCard(deps, sessionId, ref.tracker as TrackerId, ref.issueId, outcome);
+    await effect();
+    deps.sessionManager.markAppliedMergeIssueEffect(sessionId, key);
   } catch (err) {
-    console.warn(`[issue-lifecycle] comment on ${ref.identifier} failed:`, err);
+    console.warn(`[issue-lifecycle] merge effect ${key} failed:`, err);
   }
+}
+
+/** Deterministic card id for a merge-driven write (docs/194 Layer 2). */
+function mergeCardId(sessionId: string, prNumber: number, issueId: string, verb: string): string {
+  return `issue-write-${sessionId}-${prNumber}-${issueId}-${verb}`;
 }
 
 /**
@@ -191,53 +205,65 @@ export async function applyMergedPrIssueRefs(
   const referencedBy = `Referenced by merged PR #${info.prNumber}: ${info.prTitle}\n\n${info.prUrl}`;
 
   for (const ref of closes) {
-    if (!ref.issueId) continue;
-    let completed = false;
-    try {
+    const issueId = ref.issueId;
+    if (!issueId) continue;
+    // Status flip + provenance card — guarded so a reconnect-driven re-fire
+    // can't re-promote an already-completed issue or re-card it.
+    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:completed`, async () => {
       const outcome = await setIssueStatusForTracker(
         deps.credentialStore,
         ref.tracker,
-        ref.issueId,
+        issueId,
         "completed",
         deps.trackerFetchImpl,
         githubContext(deps, info.sessionId),
       );
-      surfaceWriteCard(deps, info.sessionId, ref.tracker as TrackerId, ref.issueId, outcome);
-      completed = true;
-    } catch (err) {
-      console.warn(`[issue-lifecycle] close ${ref.identifier} on merge failed:`, err);
-    }
-    // Post the resolved-by comment even if the status flip itself failed — the
-    // record of "this PR finished it" is still useful. Supplementary, so it
-    // rides without its own card.
-    if (completed || ref.issueId) {
-      await commentSilently(deps, info.sessionId, ref, resolvedBy);
-    }
+      surfaceWriteCard(
+        deps,
+        info.sessionId,
+        ref.tracker as TrackerId,
+        issueId,
+        outcome,
+        mergeCardId(info.sessionId, info.prNumber, issueId, "completed"),
+      );
+    });
+    // Resolved-by comment — supplementary (no card), so it rides under its OWN
+    // guard key. This keeps the original "post the comment even if the status
+    // flip failed" semantics (independent effects) while making it fire once.
+    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:resolved-comment`, async () => {
+      await commentOnIssueForTracker(
+        deps.credentialStore,
+        ref.tracker,
+        issueId,
+        resolvedBy,
+        deps.trackerFetchImpl,
+        githubContext(deps, info.sessionId),
+      );
+    });
   }
 
   for (const ref of refs) {
-    await comment(deps, info.sessionId, ref, referencedBy);
-  }
-}
-
-/** A comment with no provenance card — used for the supplementary resolved-by note. */
-async function commentSilently(
-  deps: IssueLifecycleDeps,
-  sessionId: string,
-  ref: ParsedIssueRef,
-  body: string,
-): Promise<void> {
-  if (!ref.issueId) return;
-  try {
-    await commentOnIssueForTracker(
-      deps.credentialStore,
-      ref.tracker,
-      ref.issueId,
-      body,
-      deps.trackerFetchImpl,
-      githubContext(deps, sessionId),
-    );
-  } catch (err) {
-    console.warn(`[issue-lifecycle] resolved-by comment on ${ref.identifier} failed:`, err);
+    const issueId = ref.issueId;
+    if (!issueId) continue;
+    // Progress comment + card — same root cause re-fires this on reconnect, so
+    // it gets its own guard key and a deterministic card id too.
+    await runMergeEffect(deps, info.sessionId, `${info.prNumber}:${issueId}:referenced-comment`, async () => {
+      const outcome = await commentOnIssueForTracker(
+        deps.credentialStore,
+        ref.tracker,
+        issueId,
+        referencedBy,
+        deps.trackerFetchImpl,
+        githubContext(deps, info.sessionId),
+      );
+      surfaceWriteCard(
+        deps,
+        info.sessionId,
+        ref.tracker as TrackerId,
+        issueId,
+        outcome,
+        mergeCardId(info.sessionId, info.prNumber, issueId, "refs"),
+      );
+    });
   }
 }
