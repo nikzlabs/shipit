@@ -10,7 +10,7 @@ import { resolveSessionDir } from "./api-routes.js";
 
 import {
   getPrStatus,
-  getGitCredential,
+  getRepoScopedGitCredential,
   searchGitHubRepos,
   createPullRequest,
   quickCreatePr,
@@ -38,6 +38,7 @@ import {
   ServiceError,
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
+import { parseGitHubRemote } from "./git-utils.js";
 
 export async function registerGitHubRoutes(
   app: FastifyInstance,
@@ -224,7 +225,17 @@ export async function registerGitHubRoutes(
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      const cred = getGitCredential(deps.githubAuthManager, request.body?.host);
+      // Resolve the session's repo so the broker can prefer a short-lived,
+      // single-repo-scoped GitHub App installation token (docs/172 Gap 2-R /
+      // SHI-79) over the long-lived PAT, shrinking the blast radius of an
+      // extracted credential. Falls back to the PAT when no App is configured
+      // or the repo can't be identified.
+      const repo = session.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
+      const cred = await getRepoScopedGitCredential(deps.githubAuthManager, {
+        host: request.body?.host,
+        owner: repo?.owner,
+        repo: repo?.repo,
+      });
       if (!cred) {
         // No credential available for this host — tell the helper so git falls
         // back to anonymous / its other helpers rather than blocking.
