@@ -449,8 +449,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // docs/183 Phase 4b — runner-adapting publish-after-install hook. Closes over
   // the orchestrator-visible `stateDir` (same dir the disk-janitor sweeps) plus
   // the bare-cache git oracle, so `publishDepDirOverlayBases` stays runner- and
-  // HTTP-agnostic. Cheap flag gate first so a flag-off session never awaits worker
-  // readiness. Inert unless `OVERLAY_DEP_STORE` is on.
+  // HTTP-agnostic. Cheap flag gate first so a kill-switched session never awaits
+  // worker readiness. Default ON; inert when `OVERLAY_DEP_STORE=0`/`false`.
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -1042,13 +1042,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       sweepOrphanBranches: process.env.DISK_JANITOR_ORPHAN_BRANCHES !== "false",
       // docs/183 Phase 3/4 — authoritative live-base source for the overlay-base
       // sweep. Resolved at sweep time (not boot) so it reflects the current
-      // session set; returns an empty set when the feature is off, keeping the
-      // sweep inert until a deployment opts in.
+      // session set; returns an empty set when the `OVERLAY_DEP_STORE=0`/`false`
+      // kill switch is set, keeping the sweep inert under the kill switch.
       liveOverlayScopeHashes: () =>
         liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
       // docs/197 Part 2 — the current runtime's pnpm store hash (the live store to
-      // protect), or null when the feature is off so stale stores are reaped past
-      // the cutoff. Resolved at sweep time so a worker-image rebuild rotates it.
+      // protect), or null when the kill switch disables the feature so stale stores
+      // are reaped past the cutoff. Resolved at sweep time so a worker-image rebuild
+      // rotates it.
       pnpmStoreRuntimeHash: () =>
         isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
     });

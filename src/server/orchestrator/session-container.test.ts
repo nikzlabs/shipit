@@ -506,8 +506,8 @@ describe("SessionContainerManager", () => {
     }
     const eligible = { remoteUrl: "https://github.com/acme/repo.git", kind: undefined } as const;
 
-    it("returns [] when the feature flag is off", async () => {
-      delete process.env.OVERLAY_DEP_STORE;
+    it("returns [] when the kill switch is set (OVERLAY_DEP_STORE=0)", async () => {
+      process.env.OVERLAY_DEP_STORE = "0";
       const dir = await ws({ gitignore: "node_modules\n" });
       expect(await ovlManager.prepareOverlaySpecs({ sessionId: "s1", workspaceDir: dir, session: eligible }))
         .toEqual([]);
@@ -644,8 +644,8 @@ describe("SessionContainerManager", () => {
       expect(ovlManager.standbyCount).toBeGreaterThan(0);
     });
 
-    it("warm standby is overlay-free when the flag is off (byte-for-byte unchanged)", async () => {
-      delete process.env.OVERLAY_DEP_STORE;
+    it("warm standby is overlay-free when the kill switch is set (byte-for-byte unchanged)", async () => {
+      process.env.OVERLAY_DEP_STORE = "0";
       const dir = await ws({ gitignore: "node_modules\n" });
       const overlaySpecs = await ovlManager.prepareOverlaySpecs({
         sessionId: "warm-off-1", workspaceDir: dir, session: eligible,
@@ -732,11 +732,11 @@ describe("SessionContainerManager", () => {
       }
     });
 
-    it("preparePnpmStore is undefined when the flag is off / session ineligible", async () => {
+    it("preparePnpmStore is undefined when the kill switch is set / session ineligible", async () => {
       const { mgr } = managerWithState();
       try {
         const dir = await ws({ shipitYaml: PNPM_YAML });
-        delete process.env.OVERLAY_DEP_STORE;
+        process.env.OVERLAY_DEP_STORE = "0";
         expect(mgr.preparePnpmStore({ workspaceDir: dir, session: eligible })).toBeUndefined();
         process.env.OVERLAY_DEP_STORE = "1";
         expect(mgr.preparePnpmStore({ workspaceDir: dir, session: { remoteUrl: "", kind: undefined } })).toBeUndefined();

@@ -35,7 +35,9 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import type { SessionInfo } from "../shared/types.js";
 
 const ON = { OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv;
-const OFF = {} as NodeJS.ProcessEnv;
+// Default-on (SHI-127): an unset env var is ON; the kill switch is the explicit
+// `OVERLAY_DEP_STORE=0`/`false`.
+const OFF = { OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv;
 
 function session(over: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -49,11 +51,17 @@ function session(over: Partial<SessionInfo> = {}): SessionInfo {
 }
 
 describe("overlay feature gate + eligibility", () => {
-  it("is off by default and on for 1/true", () => {
-    expect(isOverlayEnabled(OFF)).toBe(false);
+  it("is on by default; only OVERLAY_DEP_STORE=0/false kills it (SHI-127)", () => {
+    // Default-on: an unset flag enables the store.
+    expect(isOverlayEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "1" } as NodeJS.ProcessEnv)).toBe(true);
     expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "true" } as NodeJS.ProcessEnv)).toBe(true);
-    expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "yes" } as NodeJS.ProcessEnv)).toBe(false);
+    // Any non-kill value keeps the default on.
+    expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "yes" } as NodeJS.ProcessEnv)).toBe(true);
+    expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "" } as NodeJS.ProcessEnv)).toBe(true);
+    // The explicit kill switch — and only these two values — forces it off.
+    expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "0" } as NodeJS.ProcessEnv)).toBe(false);
+    expect(isOverlayEnabled({ OVERLAY_DEP_STORE: "false" } as NodeJS.ProcessEnv)).toBe(false);
   });
 
   it("requires the flag, a remote, and a non-ops kind", () => {

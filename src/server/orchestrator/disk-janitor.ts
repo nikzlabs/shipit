@@ -191,10 +191,11 @@ export interface DiskJanitorDeps {
   /**
    * docs/197 Part 2 — pnpm shared-store GC. Returns the hash of the store dir for
    * the CURRENT runtime (`pnpm-store/<hash>`, the live store that must never be
-   * swept), or `null` when the `OVERLAY_DEP_STORE` feature is off — in which case
-   * no store is live, so every `pnpm-store/<hash>` dir past `cacheDays` is reapable
-   * (the same "GC the disabled feature's leftovers" shape as the overlay-base sweep
-   * returning an empty live-set when off). The sweep runs only when this dep is
+   * swept), or `null` when the `OVERLAY_DEP_STORE=0`/`false` kill switch disables
+   * the feature — in which case no store is live, so every `pnpm-store/<hash>` dir
+   * past `cacheDays` is reapable (the same "GC the disabled feature's leftovers"
+   * shape as the overlay-base sweep returning an empty live-set when killed off).
+   * The sweep runs only when this dep is
    * provided; omitted in unit tests that don't exercise it.
    */
   pnpmStoreRuntimeHash?: () => string | null;

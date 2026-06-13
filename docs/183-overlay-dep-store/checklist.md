@@ -279,16 +279,19 @@ behind the flag, one PR each; FINDINGS.md has the full forensics.
       ~22.5 s npm pass, 316 KB upper. **Depth sweep d2→d15 + flatten + post-flatten: flat
       22.2–25 s at every depth → `DEFAULT_DEPTH_CAP = 16` stands.** The canary also found and
       fixed two ship-blockers (PR #1256 check-ignore dir-pattern; PR #1257 install-resync race).
-- [ ] **(user, decision) Flip `OVERLAY_DEP_STORE` on** — all of Phases 1–6 are merged and the flag
-      invariant is satisfied, and Phase 7's enable wiring is in place, so the store is functionally
-      complete behind the flag. Flipping enables real overlay mounts in production; do it deliberately
-      (ideally a canary) after the measurement above. Intentionally left to the user — this PR keeps the
-      flag OFF.
-      **Canary status (2026-06-11): enabled on the prod VPS only (`deployment/vps/.env`), soaking.
-      The remaining rollout (soak exit → default-on → delete the flag → canary cleanup) is tracked in
+- [x] **Flip `OVERLAY_DEP_STORE` default ON (SHI-127 step 2, done this PR)** — after the prod canary
+      soaked green (zero `skipped-empty`, bases advancing cleanly, disk flat — see FINDINGS.md), the
+      default in `isOverlayEnabled()` was inverted: the store is **ON unless `OVERLAY_DEP_STORE=0`/`false`**
+      is set as an explicit **kill switch** (retained one release for emergency rollback). All of Phases
+      1–6 are merged and the flag invariant was satisfied. **Remaining SHI-127 follow-ups (still
+      unchecked):** delete the env var + flag-off code paths (step 3), and canary-host cleanup (step 4).
+      **Rollout status: default flipped ON 2026-06-13 (this PR).** The prod-VPS canary
+      (`deployment/vps/.env`, flag on since 2026-06-11) soaked green, so the default in
+      `isOverlayEnabled()` is now ON with `OVERLAY_DEP_STORE=0`/`false` retained as a one-release kill
+      switch. The remaining rollout (delete the flag → canary cleanup) is tracked in
       [SHI-127](https://linear.app/shipit-ai/issue/SHI-127) — the flag is a temporary rollout gate, not a
       permanent configuration dimension.
-      Recommendation: NO fleet flip yet** — preconditions: (a) a few quiet soak days (zero
+      **Flip preconditions (all satisfied before the flip):** (a) a few quiet soak days (zero
       `skipped-empty`, zero overlay compose failures, bounded `overlay-base/` growth); (b) **SATISFIED
       2026-06-12 by #1267** — hardlink-dedup between generations, verified live on the canary
       (100%-linked no-change advance = 13 MB real; mixed `+dayjs` advance = ~15 MB real vs 470 MB;

@@ -223,8 +223,9 @@ export interface RunnerRegistryDeps {
    * docs/183 Phase 4b — publish-after-install hook, forwarded into
    * `setupServiceManager`. After a session's `agent.install` resolves, it pulls
    * each declared dep dir's merged snapshot from the worker and publishes it as
-   * the next rolling overlay base. Optional and inert unless `OVERLAY_DEP_STORE`
-   * is on and the session is overlay-eligible; absent in test setups. Constructed
+   * the next rolling overlay base. Optional; the store is ON by default, so this
+   * is inert only when the `OVERLAY_DEP_STORE=0`/`false` kill switch is set or the
+   * session is overlay-ineligible; absent in test setups. Constructed
    * in `index.ts` (where `stateDir`/`createRepoGit`/`getBareCacheDir` are in
    * scope) as a runner-adapting wrapper over `publishDepDirOverlayBases`.
    */

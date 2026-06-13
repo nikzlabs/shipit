@@ -157,9 +157,12 @@ agent:
 - Invalid entries (absolute, glob, `..`-escaping, the root) are **ignored with a
   warning** — they never break the session; that directory just falls back to a
   plain install.
-- An explicit empty list (`dep-dirs: []`) opts out entirely.
-- The overlay store is rolling out behind a platform flag; until it is enabled
-  this key is parsed and validated but has no runtime effect. See docs/183.
+- An explicit empty list (`dep-dirs: []`) opts out entirely — that directory
+  falls back to a plain install.
+- The overlay store is **enabled by default**, so this key takes effect
+  automatically. (A platform operator can disable the store for a release via
+  the `OVERLAY_DEP_STORE=0` kill switch, in which case dep dirs fall back to a
+  plain install.) See docs/183.
 
 #### pnpm projects: shared store instead of overlay
 
@@ -175,8 +178,8 @@ This is strictly better for pnpm: installs become resolve + hardlink (seconds),
 per-session disk is ~zero, and packages dedupe across versions and repos. `dep-dirs`
 is ignored for pnpm repos — the store replaces the overlay, so there's nothing to
 declare. The store directory (`.pnpm-store/`) is auto-excluded from git per session,
-so it never lands in a commit. Like the overlay, the store is behind the same
-platform flag and inert until enabled.
+so it never lands in a commit. Like the overlay, the pnpm store is enabled by
+default and shares the same `OVERLAY_DEP_STORE` operator kill switch.
 
 > **Caveat — in-place patching of installed packages.** Because the store hardlinks
 > files into every `node_modules`, editing a dependency's files in place (the old

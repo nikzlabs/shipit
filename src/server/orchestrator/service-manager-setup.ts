@@ -263,8 +263,9 @@ export function setupServiceManager(
     /**
      * docs/183 Phase 4b — publish-after-install hook. Called once after this
      * session's `agent.install` resolves to publish each declared dep dir's
-     * merged snapshot as the next rolling overlay base. Optional + inert unless
-     * `OVERLAY_DEP_STORE` is on and the session is overlay-eligible.
+     * merged snapshot as the next rolling overlay base. Optional; the store is ON
+     * by default, so the hook is inert only when the `OVERLAY_DEP_STORE=0`/`false`
+     * kill switch is set or the session is overlay-ineligible.
      */
     publishOverlayBases?: (args: {
       runner: ContainerSessionRunner;
@@ -356,8 +357,9 @@ export function setupServiceManager(
   // merged snapshot as the next rolling overlay base. Placed here (before the
   // compose/adoption branches) so it runs for every session, including projects
   // with no compose stack that still install deps. Best-effort and fully gated:
-  // the hook no-ops unless `OVERLAY_DEP_STORE` is on and the session is
-  // overlay-eligible, and a publish failure never affects the install or session.
+  // the store is ON by default, so the hook no-ops only when the
+  // `OVERLAY_DEP_STORE=0`/`false` kill switch is set or the session is
+  // overlay-ineligible, and a publish failure never affects the install or session.
   if (installPromise && publishOverlayBases && session && runner instanceof ContainerSessionRunner) {
     const p = installPromise;
     const r = runner;

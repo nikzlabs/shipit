@@ -4,8 +4,8 @@
  * Reusable foundation shared by the (in-progress) dependency-directory overlay
  * design. It answers the design-agnostic lifecycle questions:
  *   - **Is this session overlay-backed?** (`isOverlayEligible`) — gated behind the
- *     `OVERLAY_DEP_STORE` feature flag (default OFF), so production is byte-for-byte
- *     unchanged until a deployment opts in. Repo-backed, non-ops sessions only.
+ *     `OVERLAY_DEP_STORE` kill switch (default ON; `OVERLAY_DEP_STORE=0`/`false`
+ *     forces it off for one release). Repo-backed, non-ops sessions only.
  *   - **What `(repo, runtime)` scope does it belong to?** (`resolveOverlayScope`,
  *     `overlayRuntimeKey`) — the orchestrator-side runtime fingerprint.
  *   - **Which bases are live, for GC?** (`liveOverlayScopeHashes`).
@@ -19,8 +19,8 @@
  * reused mechanism in `overlay-volume.ts` (volume primitives). `liveOverlayScopeHashes`
  * here is the GC plumbing; its scope key gains the dep-dir relpath in that work.
  *
- * Everything here no-ops unless `isOverlayEnabled()` returns true, so importing it
- * is behavior-preserving.
+ * Everything here no-ops when `isOverlayEnabled()` returns false (the explicit
+ * kill switch), so a deployment can force the plain `agent.install` path back.
  */
 
 import crypto from "node:crypto";
@@ -39,16 +39,17 @@ import { computeInstallDepsHash } from "../shared/deps-hash.js";
 // ---------------------------------------------------------------------------
 
 /**
- * The overlay dep store is OFF by default. A deployment opts in by setting
- * `OVERLAY_DEP_STORE=1` (or `true`). Until then every branch in this module is
- * inert and sessions use the plain `agent.install` path unchanged. The flag
- * exists because the container-runtime paths (the daemon overlay mount, the
- * compose wiring) are only verifiable on real Docker overlay across the host
- * matrix — see docs/183 §0 / FINDINGS.md.
+ * The overlay dep store is ON by default (SHI-127, canary-complete on the prod
+ * VPS — see docs/183 FINDINGS.md). `OVERLAY_DEP_STORE` is retained for one
+ * release as an explicit **kill switch**: setting it to `0` (or `false`) forces
+ * the plain `agent.install` path back, so a self-hoster or prod can disable the
+ * overlay without a redeploy if a regression surfaces. Any other value (unset,
+ * `1`, `true`, anything else) keeps the default-on behavior. The knob is slated
+ * for removal once default-on has soaked (SHI-127 step 3).
  */
 export function isOverlayEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
   const v = env.OVERLAY_DEP_STORE;
-  return v === "1" || v === "true";
+  return v !== "0" && v !== "false";
 }
 
 /**
@@ -216,15 +217,16 @@ export function buildOverlaySpecs(args: {
  * mount). A session is resumable unless it has been disk-evicted/archived; we
  * include every non-evicted repo-backed session (its bases would be re-mounted on
  * resume) for the current runtime fingerprint. Returns an empty set when the
- * feature is off, so the janitor sweep stays inert until a deployment opts in.
+ * feature is killed (`OVERLAY_DEP_STORE=0`/`false`), so the janitor sweep stays
+ * inert under the kill switch.
  *
  * Under the dep-dir design there are **N bases per session** — one per declared dep
  * dir — so the live-set enumerates `(session × dep dir)`: for each resumable session
  * we resolve its declared dep dirs (`resolveDepDirs`, normally each session's
  * `agent.dep-dirs`) and add `overlayScopeHash(repo, runtime, depDir)` for each. The
  * resolver is injected so this stays pure and unit-testable; it is only consulted
- * when the feature is on (the flag gate short-circuits first, so no config reads
- * happen while the store is off).
+ * when the feature is on (the kill-switch gate short-circuits first, so no config
+ * reads happen when the store is killed off).
  */
 export function liveOverlayScopeHashes(
   sessions: SessionInfo[],

@@ -13,9 +13,10 @@
  *
  * Wiring lives at the install-completion seam (`service-manager-setup.ts`): after a
  * session's `agent.install` resolves, the runner-adapting hook constructed in
- * `index.ts` calls `publishDepDirOverlayBases` once. The whole module is inert
- * unless `OVERLAY_DEP_STORE` is on AND the session is overlay-eligible — flag-off
- * returns `[]` before any I/O, so non-overlay sessions are byte-for-byte unchanged.
+ * `index.ts` calls `publishDepDirOverlayBases` once. The overlay store is ON by
+ * default; the module is inert when the `OVERLAY_DEP_STORE=0`/`false` kill switch
+ * is set OR the session is overlay-ineligible — either returns `[]` before any
+ * I/O, so non-overlay sessions are byte-for-byte unchanged.
  *
  * Best-effort by construction: a publish never affects the install or the session.
  * The caller swallows a thrown hook; within a dep-dir loop a per-dir failure is
@@ -34,7 +35,7 @@
  * seam, before any agent turn has run for the runner, and the `sourceIsDefaultBranch`
  * gate further restricts publishing to an untouched default-branch checkout. The one
  * residual gap (uncommitted dep edits while HEAD still equals the default tip) is
- * acceptable while the flag is off and is hardened in Phase 7.
+ * acceptable given that gate.
  */
 
 import fs from "node:fs";

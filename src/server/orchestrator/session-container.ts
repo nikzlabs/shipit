@@ -1022,14 +1022,14 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
 
   /**
    * docs/183 dep-dir design — resolve the per-dep-dir overlay specs for a session,
-   * or `[]` when the feature is off / the session is ineligible / nothing is
+   * or `[]` when the feature is killed off / the session is ineligible / nothing is
    * overlay-worthy. Async because it inspects the workspace state volume for its
    * daemon-host mountpoint. The caller passes the result into
    * `buildConfigForWorkspace({ overlaySpecs })`.
    *
    * Returns `[]` (the byte-for-byte-unchanged path) when:
-   *  - the `OVERLAY_DEP_STORE` flag is off, the session has no remote, or it is an
-   *    ops session (`resolveOverlayScope` → null);
+   *  - the `OVERLAY_DEP_STORE=0`/`false` kill switch is set, the session has no
+   *    remote, or it is an ops session (`resolveOverlayScope` → null);
    *  - there is no workspace state volume to anchor the overlay subtrees against
    *    (dev/bind mode); or
    *  - no declared dep dir survives contextual validation (`validDepDirsForOverlay`:
@@ -1095,9 +1095,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * session, or `undefined` when the store doesn't apply. Returns the dir only
    * when ALL hold:
    *  - the session is overlay-eligible (`resolveOverlayScope` non-null — i.e. the
-   *    `OVERLAY_DEP_STORE` flag is on, the session is repo-backed and non-ops). The
-   *    store rides the same rollout gate as the overlay it replaces, so flag-off is
-   *    byte-for-byte unchanged;
+   *    `OVERLAY_DEP_STORE` kill switch is NOT set, the session is repo-backed and
+   *    non-ops). The store rides the same rollout gate as the overlay it replaces,
+   *    so the kill-switched path is byte-for-byte unchanged;
    *  - there is a workspace state volume (so the store can be a Subpath of the SAME
    *    superblock as `/workspace` — the hardlink requirement) and a state dir to
    *    anchor it; and
