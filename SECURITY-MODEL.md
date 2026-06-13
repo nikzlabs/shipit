@@ -182,18 +182,20 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 Honesty is part of the security model. These are the gaps ShipIt is aware of, the reasoning
 for accepting them today, and where they're headed.
 
-- **Unrestricted agent network egress (the big one).** Agent containers have full outbound
-  internet access. That means any credential reachable inside the container — the agent
-  CLI's own OAuth/subscription token, MCP server tokens, any secret you explicitly marked
-  as reachable by the agent, and the GitHub PAT the credential helper will hand out on
-  request — can be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it to an
-  attacker). Brokering keeps the PAT off disk so it's no longer a trivial read, but it
-  doesn't stop a determined agent from requesting it through the helper; egress control, not
-  brokering, is what ultimately contains that. The planned mitigation is an
-  **orchestrator-side forward proxy with a host allow-list** (GitHub, your configured
-  Anthropic/MCP endpoints), so egress is restricted to the hosts the agent legitimately
-  needs. Until then: treat anything reachable inside the container as reachable by a
-  compromised agent.
+- **Unrestricted agent network egress (the big one).** Agent containers still have full
+  outbound internet access. Any credential reachable inside the container — the agent CLI's own
+  OAuth/subscription token, MCP server tokens, any secret you explicitly marked as reachable by
+  the agent, and the GitHub PAT the credential helper will hand out on request — can therefore
+  be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it to an attacker). Brokering
+  keeps the PAT off disk so it's no longer a trivial read, but it doesn't stop a determined
+  agent from requesting it through the helper; egress control, not brokering, is what ultimately
+  contains that. The mitigation is **in design** (SHI-90, `docs/172-agent-containment/egress-control.md`):
+  a default-deny **gateway middlebox** — the container on an `internal` network whose only route
+  out is an orchestrator-controlled gateway running iptables + a controlled DNS resolver + a
+  transparent allowlisting proxy, so even a raw socket cannot bypass it (an `HTTP_PROXY` env var
+  alone can, which is why that approach was rejected). An **identity-validating proxy** for
+  multi-tenant allowlisted hosts is a Phase-2 follow-up. Until the gateway ships: treat anything
+  reachable inside the container as reachable by a compromised agent.
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /
   time-of-use race exists in principle. Exploiting it requires an already-in-sandbox
