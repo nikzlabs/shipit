@@ -666,6 +666,75 @@ describe("Docker API proxy", () => {
       expect(container?.hostConfig?.NetworkMode).toBe("shipit-session-abc123");
     });
 
+    // --- SHI-135: create-time network-ownership enforcement ---
+    // A named NetworkMode (or NetworkingConfig entry) must belong to the session,
+    // mirroring the POST /networks/{id}/connect ownership check. Otherwise a child
+    // container could be created directly on the orchestrator's network, where its
+    // IP is not a known session-container IP and the API guard treats it as a
+    // trusted browser origin.
+
+    it("rejects NetworkMode naming a network owned by another session", async () => {
+      daemon.networks.set("orchestrator-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { NetworkMode: "orchestrator-net" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("does not belong to this session");
+    });
+
+    it("rejects NetworkMode naming a network the proxy cannot see (e.g. orchestrator network)", async () => {
+      // Network not present in the daemon's session-visible set → inspect is 404 → not owned.
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { NetworkMode: "shipit_default" },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("does not belong to this session");
+    });
+
+    it("allows NetworkMode naming the session's own named network", async () => {
+      daemon.networks.set("shipit-session-abc123", { labels: { [PARENT_SESSION_LABEL]: "session-1" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: { NetworkMode: "shipit-session-abc123" },
+      });
+      expect(res.status).toBe(201);
+      const container = daemon.containers.get((res.body as any).Id);
+      expect(container?.hostConfig?.NetworkMode).toBe("shipit-session-abc123");
+    });
+
+    it("rejects NetworkingConfig.EndpointsConfig naming a foreign network", async () => {
+      daemon.networks.set("orchestrator-net", { labels: { [PARENT_SESSION_LABEL]: "other-session" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+        NetworkingConfig: { EndpointsConfig: { "orchestrator-net": {} } },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("does not belong to this session");
+    });
+
+    it("rejects NetworkingConfig.EndpointsConfig naming a built-in network", async () => {
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+        NetworkingConfig: { EndpointsConfig: { bridge: {} } },
+      });
+      expect(res.status).toBe(403);
+      expect((res.body as any).message).toContain("not allowed via NetworkingConfig");
+    });
+
+    it("allows NetworkingConfig.EndpointsConfig naming the session's own network", async () => {
+      daemon.networks.set("shipit-session-abc123", { labels: { [PARENT_SESSION_LABEL]: "session-1" } });
+      const res = await makeRequest(proxyUrl, "POST", "/v1.41/containers/create", {
+        Image: "alpine",
+        HostConfig: {},
+        NetworkingConfig: { EndpointsConfig: { "shipit-session-abc123": {} } },
+      });
+      expect(res.status).toBe(201);
+    });
+
     it("rejects request body exceeding 10 MB", async () => {
       const largeBody = { Image: "alpine", HostConfig: {}, data: "x".repeat(11 * 1024 * 1024) };
       try {
