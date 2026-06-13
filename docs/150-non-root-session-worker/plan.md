@@ -658,15 +658,46 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
   `/root`).
 - `src/server/shipit-docs/environment.md` documents the non-root runtime home.
 
+## Implementation note — what is actually flag-gated (SHI-31)
+
+The implementation deviates from the original Rollout step 1 below in one
+deliberate way, because ShipIt ships the orchestrator **and** the session-worker
+image in a *single* `deploy.sh` run (they are never staged independently):
+
+- **`DEFAULT_AGENT_HOME` is `/home/shipit`, not `/root`.** The resolver default
+  is the *new* home. A real orchestrator (prod or dev) builds and activates the
+  non-root image in the same deploy that ships its own new code, so the home
+  must move with it. `agentHome()` resolves `/home/shipit` whenever `AGENT_HOME`
+  is unset; **local/dogfood mode is the exception and pins `AGENT_HOME=/root`
+  explicitly** (image ENV + `dev` compose service). So `HOME`/`AGENT_HOME` are
+  *defaulted to the new value*, not gated.
+- **The only runtime flag is `SHIPIT_SESSION_WORKER_UID`.** It gates the
+  orchestrator-side §7 chown handoff (unset = no-op). It must be set in the
+  deploy that activates the non-root image, or post-boot credential writes land
+  `root:root` and the `shipit` worker can't read them. The image entrypoint
+  reads the same var (default 1000) so one env keeps both sides in lockstep.
+
+Consequence for **"make the new values the permanent default"** (the natural
+follow-up once the rollout is validated):
+
+1. **Config:** bake `SHIPIT_SESSION_WORKER_UID=1000` into the *standing* deploy
+   config (not a one-off env on a single deploy), so every future deploy carries
+   it. Add the startup fail-fast guard (below) so a config-rollback that drops
+   the var can't silently regress one session at a time.
+2. **Code cleanup (optional, later):** once a rollback to the root image is off
+   the table, a follow-up PR can delete the `SHIPIT_SESSION_WORKER_UID` gate and
+   make the chowns unconditional, removing the dual code path. The
+   `AGENT_HOME=/root` pin for **local mode stays forever** — local mode is
+   permanent, not a rollout artifact.
+
 ## Rollout
 
-1. Land the `agentHome()` abstraction and tests while still resolving to
-   `/root` (the resolver's default stays `/root` until step 3; `AGENT_HOME`
-   is read at call time so the swap takes effect without re-importing modules
-   — see §3, §9). Land the orchestrator-side `chown` helpers from §7,
-   gated on a new `SHIPIT_SESSION_WORKER_UID` env var on the orchestrator
-   process (default unset = no chown, preserving today's
-   root-writes-everything behavior).
+1. Land the `agentHome()` abstraction and tests. (As implemented the resolver
+   default is `/home/shipit` — see the Implementation note above — not `/root`;
+   `AGENT_HOME` is read at call time so local mode's `/root` pin still wins.)
+   Land the orchestrator-side `chown` helpers from §7, gated on a new
+   `SHIPIT_SESSION_WORKER_UID` env var on the orchestrator process (default
+   unset = no chown, preserving today's root-writes-everything behavior).
 2. Build the new session-worker image with the `shipit` user, entrypoint,
    `gosu`, `NPM_CONFIG_PREFIX` (§6), pinned `PLAYWRIGHT_BROWSERS_PATH`
    (§8), and per-mount sentinel-gated chown (§2). The image's entrypoint
