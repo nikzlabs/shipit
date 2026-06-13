@@ -1332,6 +1332,80 @@ describe("shipit issue", () => {
     expect(out.calls[0].path).toContain("id=42");
   });
 
+  it("view --comments fetches the thread and renders it after the issue", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--comments"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+      "GET /agent-ops/issue/comments": {
+        status: 200,
+        body: {
+          comments: [
+            { id: "1", body: "first note", author: { name: "octocat" }, createdAt: "2026-01-01T00:00:00Z" },
+            { id: "2", body: "second note", author: { name: "monalisa" } },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    // Both reads go out, each carrying the resolved tracker + id.
+    const commentsCall = out.calls.find((c) => c.path.startsWith("/agent-ops/issue/comments"));
+    expect(commentsCall?.path).toContain("tracker=github");
+    expect(commentsCall?.path).toContain("id=42");
+    // Issue body still renders, then the thread.
+    expect(out.stdout).toContain("A bug");
+    expect(out.stdout).toContain("comments (2):");
+    expect(out.stdout).toContain("octocat · 2026-01-01T00:00:00Z");
+    expect(out.stdout).toContain("first note");
+    expect(out.stdout).toContain("monalisa");
+    expect(out.stdout).toContain("second note");
+  });
+
+  it("view --comments renders (none) for an empty thread", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--comments"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+      "GET /agent-ops/issue/comments": { status: 200, body: { comments: [] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("comments:  (none)");
+  });
+
+  it("view --comments --json embeds comments on the issue object", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--comments", "--json"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+      "GET /agent-ops/issue/comments": {
+        status: 200,
+        body: { comments: [{ id: "1", body: "note", author: { name: "octocat" } }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    const parsed = JSON.parse(out.stdout) as { identifier: string; comments: { body: string }[] };
+    expect(parsed.identifier).toBe("octocat/hello#42");
+    expect(parsed.comments).toHaveLength(1);
+    expect(parsed.comments[0].body).toBe("note");
+  });
+
+  it("view without --comments does not fetch the thread", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls.some((c) => c.path.startsWith("/agent-ops/issue/comments"))).toBe(false);
+  });
+
+  it("view --comments exits 1 when the comment read fails", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "octocat/hello#42", "--comments"], {
+      "GET /agent-ops/issue/view": { status: 200, body: issuePayload },
+      "GET /agent-ops/issue/comments": { status: 502, body: { error: "tracker hiccup" } },
+    });
+    expect(out.exitCode).toBe(1);
+    // The upstream error is surfaced verbatim (formatError prefers res.body.error).
+    expect(out.stderr).toContain("tracker hiccup");
+  });
+
   it("comment posts tracker/id/body and reports the write result", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "comment", "SHI-1", "-b", "noted"], {

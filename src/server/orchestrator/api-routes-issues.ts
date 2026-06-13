@@ -416,6 +416,41 @@ export async function registerIssueRoutes(
     },
   );
 
+  // GET /api/sessions/:id/issue/comments?tracker=&id= — read an issue's comment
+  // thread (SHI-137). The read-only sibling of the comment WRITE route below:
+  // brokered through the orchestrator so the tracker token never enters the
+  // container, container-accessible + own-session scoped by the SHI-129 guard.
+  // It emits NO transcript card — the agent reaches comments via
+  // `shipit issue view --comments`, whose `view` leg already surfaced the
+  // jump-to-issue card, so a second card here would just duplicate it.
+  app.get<{ Params: { id: string }; Querystring: { tracker?: string; id?: string } }>(
+    "/api/sessions/:id/issue/comments",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!sessionManager.get(request.params.id)) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const trackerId = request.query.tracker ?? "github";
+      const github = resolveGitHubContext(request.params.id);
+      try {
+        return await listIssueCommentsForTracker(
+          credentialStore,
+          trackerId,
+          request.query.id ?? "",
+          trackerFetchImpl,
+          github,
+        );
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to read comments: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
   // ---- Linear connect / binding (settings) ----
 
   // POST /api/trackers/linear/token — validate + store a Linear API token.

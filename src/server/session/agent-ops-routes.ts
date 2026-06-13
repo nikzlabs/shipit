@@ -214,6 +214,18 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, SHI-137)
+  app.get<{ Querystring: { tracker?: string; id?: string } }>(
+    "/agent-ops/issue/comments",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      if (request.query.tracker) params.set("tracker", request.query.tracker);
+      if (request.query.id) params.set("id", request.query.id);
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/issue/comments${qs}`, undefined, reply);
+    },
+  );
+
   // POST /agent-ops/issue/create { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
   app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string } }>(
     "/agent-ops/issue/create",

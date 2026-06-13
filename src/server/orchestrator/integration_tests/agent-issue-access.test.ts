@@ -79,6 +79,22 @@ describe("Integration: agent issue access (docs/175)", () => {
             },
           });
         }
+        // Must precede the single-issue `Issue` branch — `IssueComments`
+        // also contains "Issue".
+        if (query.includes("IssueComments")) {
+          return jsonResponse({
+            data: {
+              issue: {
+                comments: {
+                  nodes: [
+                    { id: "c1", body: "first Linear comment", url: "lc1", createdAt: "2026-01-01T00:00:00Z", user: { displayName: "Nik" } },
+                    { id: "c2", body: "second Linear comment", url: "lc2", createdAt: "2026-01-02T00:00:00Z", user: { displayName: "Pat" } },
+                  ],
+                },
+              },
+            },
+          });
+        }
         if (query.includes("Issue")) {
           return jsonResponse({
             data: {
@@ -99,9 +115,29 @@ describe("Integration: agent issue access (docs/175)", () => {
         return jsonResponse({ data: {} });
       }
       // GitHub REST. A single-issue read hits `/issues/<n>`; a list hits
-      // `/issues?state=<state>`. The fake honors `state` exactly as GitHub does
-      // (open → open only, all → open + closed) so the adapter's state mapping
-      // is exercised end-to-end.
+      // `/issues?state=<state>`; a comment read hits `/issues/<n>/comments`.
+      // The fake honors `state` exactly as GitHub does (open → open only,
+      // all → open + closed) so the adapter's state mapping is exercised
+      // end-to-end. The comments branch must precede the single-issue regex —
+      // `/issues/42/comments` also matches `/issues/\d+`.
+      if (/\/issues\/\d+\/comments/.test(url)) {
+        return jsonResponse([
+          {
+            id: 11,
+            body: "first GH comment",
+            html_url: "https://github.com/octocat/hello-world/issues/42#issuecomment-11",
+            created_at: "2026-01-01T00:00:00Z",
+            user: { login: "octocat" },
+          },
+          {
+            id: 12,
+            body: "second GH comment",
+            html_url: "https://github.com/octocat/hello-world/issues/42#issuecomment-12",
+            created_at: "2026-01-02T00:00:00Z",
+            user: { login: "monalisa" },
+          },
+        ]);
+      }
       if (/\/issues\/\d+/.test(url)) {
         return jsonResponse({
           id: 1,
@@ -224,6 +260,50 @@ describe("Integration: agent issue access (docs/175)", () => {
     expect(stdout).toContain("Decouple priorities");
     expect(stdout).toContain("priority:  Urgent");
     expect(stdout).toContain("The Linear body.");
+  });
+
+  it("view --comments reads the GitHub thread after the issue body (SHI-137)", async () => {
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "view", "octocat/hello-world#42", "--comments",
+    ]);
+    expect(exitCode).toBe(0);
+    // Issue body still renders, then the comment thread, oldest-first.
+    expect(stdout).toContain("The GitHub body.");
+    expect(stdout).toContain("comments (2):");
+    expect(stdout).toContain("octocat · 2026-01-01T00:00:00Z");
+    expect(stdout).toContain("first GH comment");
+    expect(stdout).toContain("monalisa");
+    expect(stdout).toContain("second GH comment");
+  });
+
+  it("view --comments --json embeds a comments array on the issue (SHI-137)", async () => {
+    const { stdout, exitCode } = await runIssueShim([
+      "issue", "view", "octocat/hello-world#42", "--comments", "--json",
+    ]);
+    expect(exitCode).toBe(0);
+    const issue = JSON.parse(stdout) as { identifier: string; comments: { body: string; author?: { name: string } }[] };
+    expect(issue.identifier).toBe("octocat/hello-world#42");
+    expect(issue.comments.map((c) => c.body)).toEqual(["first GH comment", "second GH comment"]);
+    expect(issue.comments[0].author?.name).toBe("octocat");
+  });
+
+  it("view --comments reads the Linear thread with the same shape (SHI-137)", async () => {
+    credentialStore.setLinearToken("lin_api_x");
+    credentialStore.setLinearTeam(TEAM);
+    const { stdout, exitCode } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
+    expect(exitCode).toBe(0);
+    // Tracker-neutral: identical rendered shape to the GitHub thread above.
+    expect(stdout).toContain("The Linear body.");
+    expect(stdout).toContain("comments (2):");
+    expect(stdout).toContain("Nik · 2026-01-01T00:00:00Z");
+    expect(stdout).toContain("first Linear comment");
+    expect(stdout).toContain("second Linear comment");
+  });
+
+  it("view --comments errors (exit 1) when Linear is unconfigured", async () => {
+    const { exitCode, stderr } = await runIssueShim(["issue", "view", "TRACKER-28", "--comments"]);
+    expect(exitCode).toBe(1);
+    expect(stderr).toMatch(/not configured/i);
   });
 
   it("view errors (exit 1) when Linear is unconfigured", async () => {
