@@ -130,7 +130,7 @@ if (parentSessionId)
   sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
 ```
 
-`setParentSession` (`sessions.ts:631`) — today
+`setParentSession` (`sessions.ts:626`) — today
 `(id, parentSessionId, spawnedByTurn?)` — gains a fourth optional
 `rootSessionId?` param and writes the new `root_session_id` column.
 
@@ -202,11 +202,22 @@ semantics for `parentSessionId` (provenance/cards), and gains a sibling
 ### 4. Migration
 
 Add a `root_session_id TEXT` column (nullable) with an `idx_sessions_root` index
-for the brood query — **migration 24** in `src/server/shared/database.ts` (latest
-is migration 23), mirroring migration 11 which added `parent_session_id` /
-`spawned_by_turn`. Forward-only: SQLite can't cheaply drop a column, so a
-rollback past 24 leaves the column in place harmlessly (the older code ignores
-it).
+for the brood query, the same way `parent_session_id` / `spawned_by_turn` were
+added (docs/117).
+
+**Migrations are positional, not numbered by the comment labels.** In
+`src/server/shared/database.ts`, `MIGRATIONS` is an array of `(db) => {...}`
+functions and `user_version` tracks `MIGRATIONS.length` (run loop:
+`for (i = currentVersion; i < MIGRATIONS.length; i++)`). The `// Migration N`
+comments stopped being numbered at 23, but the array has kept growing with
+un-numbered entries and currently holds **39 functions (indices 0–38)** — index
+24 is already the docs/163 `voice_note` column, not a free slot. The new
+migration is therefore **appended as index 39** (bumping `user_version` to 40);
+do not insert it mid-array and do not label it "migration 24" — inserting
+earlier would shift every later entry's index and break `user_version`
+reconciliation on existing databases. Forward-only: SQLite can't cheaply drop a
+column, so rolling back past this entry leaves the column in place harmlessly
+(older code ignores it).
 
 **Backfill:** existing rows keep `root_session_id = NULL`. For already-spawned
 sessions (those with a non-null `parent_session_id`), a one-time backfill can set
@@ -264,8 +275,8 @@ provenance keys off the parent.
 | File | Change |
 |---|---|
 | `src/server/shared/types/domain-types.ts` | Add `rootSessionId?: string` to `SessionInfo`. |
-| `src/server/shared/database.ts` | New migration: `root_session_id TEXT` column + `idx_sessions_root` index; one-time backfill walking existing `parent_session_id` chains. |
-| `src/server/orchestrator/sessions.ts` | `setParentSession` gains a `rootSessionId` param and writes the column; `fromRow`/`toRow` map it; `filterVisibleInSidebar` keys exemption off the root (`liveRoots` / `liveIds.has(rootSessionId)`); add a `findBrood(rootId)` query. |
+| `src/server/shared/database.ts` | New migration **appended to the end of `MIGRATIONS`** (index 39, `user_version` → 40 — see Migration): `root_session_id TEXT` column + `idx_sessions_root` index; one-time backfill walking existing `parent_session_id` chains. |
+| `src/server/orchestrator/sessions.ts` | `setParentSession` gains a `rootSessionId` param and writes the column via its own UPDATE (there is no shared `toRow` serializer); `fromRow` (line 197) reads it back onto `SessionInfo`; `filterVisibleInSidebar` keys exemption off the root (`liveRoots` / `liveIds.has(rootSessionId)`); add a `findBrood(rootId)` query. |
 | `src/server/orchestrator/services/child-sessions.ts` | `spawnChildSession` computes `rootSessionId = parent.rootSessionId ?? parent.id` (parent already resolved at line 169) and adds it to the `graduateSession({...})` opts. |
 | `src/server/orchestrator/services/graduate-session.ts` | Add `rootSessionId?` to `GraduateSessionOpts` (line 64); destructure it (line 120); forward to `setParentSession` (line 134). |
 | `src/client/components/SessionSidebar.tsx` | Bucket the brood by `rootSessionId` (whole subtree under the root, one indent level); collapse state keys off root id; orphan fallback keys off root. |
@@ -291,8 +302,8 @@ provenance keys off the parent.
 - **Archived-root cascade:** archiving a root archives the whole brood (existing
   cascade); assert no live descendant is orphaned visible under an archived root
   after the cascade settles.
-- **Migration backfill:** the migration-24 backfill is idempotent (safe to
-  re-run) and chases each `parent_session_id` chain to its top exactly once,
+- **Migration backfill:** the backfill in the new migration is idempotent (safe
+  to re-run) and chases each `parent_session_id` chain to its top exactly once,
   guarding against a cyclic link (same guard the archive cascade already uses).
 
 ## Resolved decisions
@@ -348,7 +359,7 @@ sessions. Query 2 is load-bearing and Query 1's edge is cosmetic, so **undefined
 is chosen.** It also keeps `!!parentSessionId` as the "am I spawned?" test and
 avoids rewriting every existing row.
 
-### D2 — Do the one-time backfill in migration 24
+### D2 — Do the one-time backfill in the new migration
 
 **Decision: yes, backfill.** The migration walks each existing
 `parent_session_id` chain to its top once and stamps `root_session_id`, so
