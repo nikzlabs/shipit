@@ -195,11 +195,27 @@ export interface WsResolvePermission {
   remember?: boolean;
 }
 
+/**
+ * Client → Server: resolve an egress allow-once card (docs/172 / SHI-90). Sent
+ * when the user clicks Allow once / Add to allowlist / Deny on the inline
+ * `EgressPromptCard`. The server updates the per-session egress policy (keyed by
+ * `host`) so the agent's retried connection is allowed, and patches the card to
+ * its terminal phase. `allow-once` is single-session-ephemeral; `add` persists
+ * for the session.
+ */
+export interface WsEgressDecision {
+  type: "egress_decision";
+  cardId: string;
+  host: string;
+  action: "allow-once" | "add" | "deny";
+}
+
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
   | WsUndoIssueWrite
   | WsResolvePermission
+  | WsEgressDecision
   | WsSendReviewMessage
   | WsSubscribeLogs
   | WsLogClear

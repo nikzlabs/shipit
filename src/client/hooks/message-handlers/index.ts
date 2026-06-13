@@ -8,6 +8,7 @@ import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
+import { handleEgressPromptCard, handleEgressPromptResolved } from "./egress-card.js";
 import { handlePermissionRequestCard } from "./permission-request-card.js";
 import { handlePermissionResolved } from "./permission-resolved.js";
 import { handleCommitLinked } from "./commit-linked.js";
@@ -110,6 +111,8 @@ export const messageHandlers: MessageHandlerMap = {
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
   bug_report_filed: handleBugReportFiled,
+  egress_prompt_card: handleEgressPromptCard,
+  egress_prompt_resolved: handleEgressPromptResolved,
   permission_request_card: handlePermissionRequestCard,
   permission_resolved: handlePermissionResolved,
   commit_linked: handleCommitLinked,

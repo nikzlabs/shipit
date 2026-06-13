@@ -30,6 +30,7 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   voiceNote: { id: "v1", headline: "h", needsAttention: true, kind: "authored", createdAt: "t" },
   bugReport: { cardId: "b1", phase: "filed", title: "T", body: "B", stage2Ran: true, producer: "ops", issueNumber: 5, issueUrl: "u" },
   permissionPrompt: { requestId: "p1", phase: "approved", toolName: "Write", path: ".npmrc", summary: "Write .npmrc", agentId: "claude", createdAt: "2026-06-05T00:00:00.000Z", remembered: true },
+  egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, createdAt: "2026-06-05T00:00:00.000Z" },
   issueWrite: {
@@ -340,6 +341,29 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", pendingCard("perm-1"));
       expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
+    });
+  });
+
+  describe("egress allow-once card lifecycle (docs/172, SHI-90)", () => {
+    const pendingEgress = (cardId: string): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      egressPrompt: { cardId, host: "cdn.example.com", phase: "pending", createdAt: "2026-06-13T00:00:00.000Z" },
+    });
+
+    it("updateEgressPromptCard flips a card to a resolved phase, preserving host", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingEgress("eg-1"));
+      expect(mgr.updateEgressPromptCard("sess-1", "eg-1", { phase: "added" })).toBe(true);
+      const card = mgr.load("sess-1")[0].egressPrompt;
+      expect(card?.phase).toBe("added");
+      expect(card?.host).toBe("cdn.example.com");
+    });
+
+    it("returns false when no egress card matches the given id", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", pendingEgress("eg-1"));
+      expect(mgr.updateEgressPromptCard("sess-1", "missing", { phase: "denied" })).toBe(false);
     });
   });
 

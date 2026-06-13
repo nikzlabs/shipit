@@ -25,6 +25,7 @@ import { PlayTurnButton } from "./PlayTurnButton.js";
 import { ChatQuoteReply } from "./ChatQuoteReply.js";
 import { VoiceNoteCard } from "./VoiceNoteCard.js";
 import { BugReportCard } from "./BugReportCard.js";
+import { EgressPromptCard } from "./EgressPromptCard.js";
 import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
@@ -294,6 +295,20 @@ export interface ChatMessage {
     remembered?: boolean;
   };
   /**
+   * docs/172 / SHI-90 — when set, this message renders an `EgressPromptCard`
+   * inline (allow once / add to allowlist / deny) for a host the Tier C SNI
+   * proxy blocked. The live `egress_prompt_card` WS handler appends a
+   * `{ cardId }`-only marker; a message rehydrated from persisted history also
+   * carries host + phase so `loadSessionHistory` can seed the egress-prompt
+   * store. `EgressPromptCard` reads only `cardId` and pulls the rest from the store.
+   */
+  egressPrompt?: {
+    cardId: string;
+    host?: string;
+    phase?: "pending" | "allowed-once" | "added" | "denied";
+    createdAt?: string;
+  };
+  /**
    * docs/177 — when set, this message renders an `IssueWriteCard` inline. The
    * live `issue_write_card` WS handler appends a `{ cardId }`-only marker; a
    * message rehydrated from persisted history additionally carries the full
@@ -408,6 +423,7 @@ export function MessageList({
   onRewindAtGap,
   onSubmitBugReport,
   onResolvePermission,
+  onEgressDecision,
   onUndoIssueWrite,
   onOpenIssue,
   onResumeSession,
@@ -425,6 +441,8 @@ export function MessageList({
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
   /** docs/193 — answer a permission request (approve/deny + remember). */
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
+  /** docs/172 — resolve an egress allow-once card (allow-once / add / deny). */
+  onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   /** docs/177 — undo a recorded issue write (fires a reverse brokered write). */
   onUndoIssueWrite?: (cardId: string) => void;
   /**
@@ -903,6 +921,19 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <BugReportCard cardId={msg.bugReport.cardId} onSubmit={onSubmitBugReport} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/172 / SHI-90 — egress allow-once card. Carries no chat text of its
+        // own; render the inline `EgressPromptCard` (which reads its payload +
+        // phase from the egress-prompt store) and skip the bubble path.
+        if (msg.egressPrompt) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <EgressPromptCard cardId={msg.egressPrompt.cardId} onDecide={onEgressDecision} />
               </div>
             </div>
           );

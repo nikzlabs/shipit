@@ -13,6 +13,7 @@ import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useBugReportStore, type BugReportCardState } from "../stores/bug-report-store.js";
+import { useEgressPromptStore, type EgressPromptCardState } from "../stores/egress-prompt-store.js";
 import { usePermissionStore, type PermissionCardState } from "../stores/permission-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
@@ -123,6 +124,17 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     .filter((p): p is PermissionCardState => !!p && typeof p.requestId === "string" && !!p.phase);
   if (persistedPermissions.length > 0) {
     usePermissionStore.getState().seedCards(persistedPermissions);
+  }
+
+  // docs/172 / SHI-90 — rehydrate the egress-prompt store from persisted cards so
+  // each `EgressPromptCard` renders with its correct phase (a resolved card comes
+  // back resolved, not re-offering the buttons). Authoritative seed wins over a
+  // buffer replay.
+  const persistedEgress = data.messages
+    .map((m) => (m as { egressPrompt?: EgressPromptCardState }).egressPrompt)
+    .filter((e): e is EgressPromptCardState => !!e && typeof e.cardId === "string" && !!e.phase);
+  if (persistedEgress.length > 0) {
+    useEgressPromptStore.getState().seedCards(persistedEgress);
   }
 
   // docs/177 — rehydrate the issue-write store from persisted provenance cards

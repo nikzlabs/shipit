@@ -130,14 +130,20 @@ tracker as separate issues. None implemented yet.
           `EGRESS_PROXY_LABEL`. Proxy runs as a dedicated uid (912) with NO `NET_ADMIN`
           (least privilege; only the installer needs it). Phase-2 identity-validation seam
           (`validateIdentity`) in place. Unit-tested in `egress-proxy-install.test.ts`.
-    - [ ] **C2 — allow-once / add-to-allowlist inline card.** Deny-fast at the proxy →
-          persisted chat card (the `emitChatCard` + `CARD_MESSAGE_FIELDS` + migration
-          pattern) → user approves → orchestrator decision endpoint (the proxy's
-          `EGRESS_PROXY_DECISION_URL` seam) flips allow → agent retry succeeds. "Add to
-          allowlist" must also reload the resolver (so DNS opens) + ipset (so the IP is
-          permitted) for a brand-new host. NOTE: under Tier B, a genuinely-new host is
-          blocked at DNS first (dnsmasq refuses), so the proxy's card primarily covers the
-          CDN/IP-reuse case; the DNS-layer trigger for brand-new hosts is a follow-up.
+    - [x] **C2 — allow-once / add-to-allowlist inline card.** Deny-fast at the proxy → the
+          proxy queries the orchestrator decision endpoint (`GET /api/egress/decision`,
+          `EGRESS_PROXY_DECISION_URL`) → orchestrator emits a persisted `EgressPromptCard`
+          (full side-channel card pattern: `emitChatCard`, `PersistedEgressPrompt` +
+          `egress_prompt` column + migration, `updateEgressPromptCard`, `CARD_MESSAGE_FIELDS`,
+          history round-trip + guard tests) → user clicks Allow once / Add / Deny
+          (`egress_decision` WS) → per-session policy (`egress-policy.ts`) flips allow → the
+          proxy's next query (short negative cache) returns allow → the agent's retry
+          succeeds. Card dedup per (session, host); resolutions persist + rehydrate.
+          Phase-2 `validateIdentity` seam already in the proxy. **Scope note:** the allow
+          decision is per-session in-memory (durable cross-restart persistence + an editor
+          is the Settings-UI item below); the card record itself persists. Under Tier B a
+          brand-new host is blocked at DNS first, so the card primarily covers the CDN/IP-
+          reuse case — a proactive DNS-layer trigger for brand-new hosts is a follow-up.
     - [ ] **Verify on a live host** (rebuild the sidecar with the Go binary, all three
           flags on): an allowlisted SNI splices through; a non-allowlisted SNI to an
           allowlisted IP is rejected (CDN co-tenancy); legit npm/git/anthropic unaffected;

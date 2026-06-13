@@ -30,6 +30,7 @@ export const CARD_MESSAGE_FIELDS = [
   "voiceNote",
   "bugReport",
   "permissionPrompt",
+  "egressPrompt",
   "issueWrite",
   "issueRef",
   "compaction",

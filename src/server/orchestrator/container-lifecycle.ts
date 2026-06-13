@@ -708,11 +708,18 @@ export async function createContainer(
       // labeling rationale as the resolver — parent-session for destroy cleanup,
       // EGRESS_PROXY_LABEL so the compose stale-sweep spares it.
       if (deps.egressProxy) {
+        // C2 allow-once: point the proxy at the orchestrator decision endpoint
+        // (same host the worker calls back on — resolvable via the controlled
+        // resolver, which allowlists it). On an unknown SNI the proxy queries it;
+        // the orchestrator surfaces the allow-once card and answers allow/deny.
+        const orchPort = process.env.PORT || "3000";
+        const decisionUrl = `http://${orchestratorCallbackHost()}:${orchPort}/api/egress/decision`;
         await launchEgressProxy(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
           allowed: buildProxyAllowed(),
           sessionId: config.sessionId,
+          decisionUrl,
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },
         });
       }
