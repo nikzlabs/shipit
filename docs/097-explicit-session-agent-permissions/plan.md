@@ -4,6 +4,63 @@ issue: https://linear.app/shipit-ai/issue/SHI-36
 ---
 # 097 — Explicit Session-Agent Permissions
 
+## Status — implemented (SHI-36)
+
+Shipped via **Option A**, reusing the *existing* baked-in settings file rather
+than introducing a new one. ShipIt already passes `--settings
+/etc/shipit/managed-settings.json` to the Claude CLI on every spawn (for the
+PreToolUse branch-block + Stop-hook PR enforcement — docs/130, docs/129). That
+file is baked into the session-worker image (`docker/agent-hooks/managed-settings.json`,
+`COPY`'d in `docker/Dockerfile.session-worker.{prod,dev}`), so it was the natural
+home for the permission policy — no new file, no new mount, no CLI-flag plumbing.
+
+A `permissions` block was added to that file:
+
+- **`allow`** codifies today's effective behavior — the same core tools the
+  orchestrator grants via `--allowedTools` (`AUTO_TOOLS` in
+  `src/server/session/agents/claude/process.ts`). Settings-`allow` is additive to
+  `--allowedTools` (union), so this is documentation-as-code: a future restrictive
+  CLI default can't silently revoke editing.
+- **`deny`** is the load-bearing part. Deny overrides allow, so even with
+  `Write(**)`/`Edit(**)` allowed, the file-edit tools (Edit/Write/MultiEdit) are
+  refused on:
+  - `/etc/shipit/**` — the agent's own settings + hooks (it must not rewrite its
+    own permission policy; no memory lives here, so a tree-wide deny is safe).
+  - The OAuth / CLI-config credential **files** specifically:
+    `~/.claude/.credentials.json`, `~/.claude/credentials.json`,
+    `~/.claude/auth.json`, `~/.claude/settings.json`,
+    `~/.claude/settings.local.json`, `~/.claude.json` — listed under both the
+    `/root/.claude/...` and `/credentials/.claude/...` spellings.
+
+**Why files, not trees — the memory carve-out (SHI-36 follow-up).** The first
+cut denied the whole `/root/.claude/**` and `/credentials/**` trees, mirroring
+the design doc's original list. But `/root/.claude` is a symlink to
+`/credentials/.claude` (see `docker/Dockerfile.session-worker.*`), and the CLI's
+file-based **memory** lives at `/root/.claude/projects/<cwd>/memory/` *inside*
+that tree. Memory updates go through the `Write` tool, so a blanket tree deny
+would silently block the agent from updating its own memory — exactly the
+"over-broad deny breaks legitimate operations" risk this doc's Risks section
+warns about. The fix: deny the **specific** credential/config files (which never
+match `projects/**/memory/**`), leaving memory writable under any path-matcher
+behavior. The design doc's `/root/.claude/**` line predates the memory feature;
+`/etc/shipit/**` was added because that's where *our* active policy actually
+lives. Broad confidentiality of `/credentials` (reads/exfil, and the rest of the
+mount) is owned by the `docs/172-agent-containment` egress + credential-isolation
+work, not these file-edit rules — `Read` isn't denied here and `Bash` bypasses
+tool-path rules entirely.
+
+**Scope boundary:** these rules govern the file-edit tools, not arbitrary `Bash`
+(`cat`/`rm` of those paths is unaffected). Full containment — egress control and
+credential isolation so an extracted secret can't leave or be `cat`'d out — is the
+broader `docs/172-agent-containment` epic; this issue is the explicit-policy slice.
+
+**Tested by** `src/server/session/agent-shim/managed-settings.test.ts` (loads the
+real baked file, asserts the allow/deny rules and deny-overrides-allow). The real
+CLI's enforcement isn't exercisable in the integration harness (it uses a
+`FakeClaudeProcess`), so this file-contract test is the regression guard that
+catches the policy silently disappearing — the mitigation the doc's "schema drift"
+risk calls for.
+
 ## Summary
 
 Make the Claude CLI's permission posture inside ShipIt session containers **explicit** instead of relying on the CLI's default headless behavior. Bake a `~/.claude/settings.json` into agent containers (or pass an equivalent `--settings` flag) declaring exactly which tools and file patterns are permitted.
@@ -126,11 +183,12 @@ No data migration. No client changes. The only runtime effect is some operations
 
 | File | Role |
 |---|---|
-| `src/server/session/agent-settings.json` (new) | The baked-in policy, copied into the agent container image |
-| `src/server/session/claude.ts` | (Possibly) `--settings` flag added to CLI invocation, depending on which option lands |
-| `src/server/orchestrator/container-lifecycle.ts` | If Option B/C: `buildMounts()` adds the settings file mount |
-| Dockerfile / image build script | If Option A: copy step |
-| `src/server/orchestrator/integration_tests/agent-permissions.test.ts` (new) | Smoke test for denied operations |
+| `docker/agent-hooks/managed-settings.json` | The baked-in policy — `permissions.allow`/`permissions.deny` added here (alongside the existing hooks) |
+| `docker/Dockerfile.session-worker.{prod,dev}` | Already `COPY` the file into `/etc/shipit/managed-settings.json` — no change needed |
+| `src/server/orchestrator/agents/claude/run-params-prep.ts` | Sets `settingsPath: /etc/shipit/managed-settings.json` — already wired |
+| `src/server/session/agents/claude/process.ts` | Passes `--settings <settingsPath>` to the CLI — already wired |
+| `src/server/session/agent-shim/managed-settings.test.ts` (new) | File-contract test: asserts the allow/deny policy and deny-overrides-allow |
+| `src/server/shipit-docs/environment.md` | Documents the write-protected paths for the agent |
 
 ## Relationship to other features
 
