@@ -9,7 +9,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { chownToSessionWorker } from "./session-worker-uid.js";
+import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 
 export interface GitIdentity {
   name: string;
@@ -36,6 +36,32 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     execFileSync("git", ["config", "--global", "commit.gpgsign", "false"]);
   } catch {
     // git may not be installed yet (unlikely but safe)
+  }
+
+  // docs/150 §7 addendum (SHI-31 activation blocker). When the session worker
+  // runs as an unprivileged uid (SHIPIT_SESSION_WORKER_UID set), each session's
+  // workspace under /workspace is owned by that uid (e.g. 1000), but THIS
+  // orchestrator process keeps running git as root. Git's CVE-2022-24765
+  // ownership check then refuses every orchestrator-side git op on those trees
+  // with "detected dubious ownership" — breaking auto-commit, auto-push, branch
+  // graduation, the bare-cache fetch, and the `gh pr` branch lookup (all of
+  // which run git via GIT_CONFIG_GLOBAL).
+  //
+  // `safe.directory` is honored ONLY from system/global config — never from a
+  // repo-local config or a `-c safe.directory=` command-line override (git's
+  // own anti-spoofing rule). So it must live here, in GIT_CONFIG_GLOBAL. This
+  // file is written by the root orchestrator into its own credentials dir, so
+  // it is root-owned and git-as-root trusts it. A single `*` entry covers the
+  // bare cache, every per-session worktree, and any future path without an
+  // enumerate-on-create dance. Gated: with the flag unset (today's default,
+  // root worker) nothing is written and behavior is byte-for-byte unchanged.
+  // `--replace-all` keeps it idempotent across repeated init calls (tests).
+  if (sessionWorkerUid() !== null) {
+    try {
+      execFileSync("git", ["config", "--global", "--replace-all", "safe.directory", "*"]);
+    } catch {
+      // git may not be installed yet (unlikely but safe)
+    }
   }
 
   // Force git to never open an editor. The orchestrator runs git non-interactively

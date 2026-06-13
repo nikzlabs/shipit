@@ -4,6 +4,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 /** Minimal handler context — postTurnCommit only needs git + chat history + auto-push. */
 type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager"> & {
@@ -52,6 +53,20 @@ export async function postTurnCommit(
   },
 ): Promise<string | null> {
   return withWorkspaceLock(opts.sessionDir, async () => {
+    try {
+      return await commitInLock();
+    } finally {
+      // docs/150 §7 addendum: the git ops above run as the root orchestrator and
+      // write into the worker-owned (uid 1000) workspace — `git status` refreshes
+      // `.git/index`, and a commit writes objects/refs/reflogs. Left root:root,
+      // they block the agent's next in-container `git` (which appends to the
+      // root-owned reflog). Hand `.git` back here, on every path (commit, no-op,
+      // throw). No-op unless SHIPIT_SESSION_WORKER_UID is set.
+      chownWorkspaceGitToSessionWorker(opts.sessionDir);
+    }
+  });
+
+  async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
@@ -115,5 +130,5 @@ export async function postTurnCommit(
       }
     }
     return commitHash;
-  });
+  }
 }

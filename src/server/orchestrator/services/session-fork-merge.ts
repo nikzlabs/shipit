@@ -14,6 +14,7 @@ import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
+import { chownTreeToSessionWorker, chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
@@ -76,6 +77,12 @@ export async function forkSession(
   const branchArgs = ["checkout", "-b", trimmed];
   if (startPoint) branchArgs.push(startPoint);
   await newGit.raw(branchArgs);
+
+  // docs/150 §7 addendum: the whole fork tree was written by the root
+  // orchestrator (`git clone --local` + config + fetch + `checkout -b`) into a
+  // brand-new session dir. No entrypoint has run for it yet, so chown the whole
+  // tree (worktree + `.git`) to the worker uid. No-op unless the flag is set.
+  chownTreeToSessionWorker(newWorkspaceDir);
 
   // Fork-specific workspace identity: insert the row, pin branch + remote.
   // graduateSession is called after — it needs `remoteUrl` already set so
@@ -179,6 +186,10 @@ export async function mergeSession(
         }
       }
     } catch { /* ignore cleanup errors */ }
+    // docs/150 §7 addendum: the push/fetch/merge git ops above ran as the root
+    // orchestrator against the active session's (booted) clone, re-rooting its
+    // `.git`. Hand it back to the worker uid. No-op unless the flag is set.
+    chownWorkspaceGitToSessionWorker(activeSessionDir);
   }
 
   if (result.success) {
