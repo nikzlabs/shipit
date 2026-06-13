@@ -51,6 +51,7 @@ import {
 } from "./overlay-session.js";
 import { resolveVolumeMountpoint, volumeExists } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
+import { egressEnforceEnabled } from "./egress-firewall-install.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -617,6 +618,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
+      // docs/172 Gap 1 (SHI-90) Tier A — egress enforcement, default-off via
+      // SESSION_EGRESS_ENFORCE; the installer sidecar image via env.
+      egressEnforce: egressEnforceEnabled(),
+      egressSidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),

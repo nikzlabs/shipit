@@ -1,0 +1,20 @@
+# Egress firewall installer sidecar — docs/172-agent-containment Gap 1 (SHI-90), Tier A.
+#
+# A tiny privileged, short-lived image that the orchestrator runs in the agent
+# container's network namespace (`--network container:<agent> --cap-add NET_ADMIN`)
+# to install the default-deny egress firewall, then exits. See
+# `egress-sidecar/init-firewall.sh` and `docs/172-agent-containment/egress-control.md`.
+#
+# Build/publish this and point `SESSION_EGRESS_SIDECAR_IMAGE` at it; enforcement
+# is gated on `SESSION_EGRESS_ENFORCE=1` (default off), so a deployment without
+# this image/flag is unaffected.
+FROM alpine:3.20
+
+# iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
+# self-test; bash for the script.
+RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash
+
+COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
+RUN chmod +x /usr/local/bin/init-firewall.sh
+
+ENTRYPOINT ["/usr/local/bin/init-firewall.sh"]
