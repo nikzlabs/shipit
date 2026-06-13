@@ -180,6 +180,19 @@ describe("buildAgentSystemInstructions", () => {
     expect(out).toContain("/shipit-docs/sessions.md");
   });
 
+  it("Claude branch tells the agent to delegate to Task by pointer, not by pasting the diff", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude" });
+    // "with a different agent" must resolve to a Task subagent, not a session.
+    expect(out).toContain("different agent");
+    // The core rule: pass pointers, never paste file contents/diffs.
+    expect(out).toContain("pass pointers");
+    expect(out).toContain("never paste");
+    // The subagent shares the workspace and can fetch the diff itself.
+    expect(out).toContain("git diff main...HEAD");
+    // Concrete worked example anchors the behaviour.
+    expect(out).toContain("review the current PR with a different agent");
+  });
+
   it("Codex branch tells the agent shipit session create is its ONLY fan-out primitive", () => {
     const out = buildAgentSystemInstructions({ agentId: "codex" });
     expect(out).toContain("## Parallel sessions");
