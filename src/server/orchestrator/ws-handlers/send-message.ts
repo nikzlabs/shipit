@@ -94,7 +94,7 @@ function ensureActiveAgentAuthenticated(ctx: FullCtx): boolean {
  * docs/125 — start a chat-native review turn. Thin wrapper over
  * `handleSendMessage`: it routes the composed prompt through the exact same
  * agent code path, but passes `reviewFilePath` so the turn authorizes the
- * `submit_review_comments` tool for that file (and only that file). The client
+ * `submit_review` tool for that file (and only that file). The client
  * has already ensured a draft exists for the file before sending this.
  */
 export async function handleSendReviewMessage(ctx: FullCtx, msg: WsSendReviewMessage): Promise<void> {

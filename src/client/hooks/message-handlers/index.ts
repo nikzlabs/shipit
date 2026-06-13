@@ -3,7 +3,7 @@ import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 
 import { handleAgentEvent } from "./agent-event.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
-import { handleAgentReviewAdded } from "./agent-review-added.js";
+import { handleAiReviewAdded } from "./ai-review-added.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
@@ -49,7 +49,6 @@ import { handleRebaseAborted } from "./rebase-aborted.js";
 import { handleRebaseComplete } from "./rebase-complete.js";
 import { handleRebaseConflicts } from "./rebase-conflicts.js";
 import { handleRebaseStarted } from "./rebase-started.js";
-import { handleReviewUpdated } from "./review-updated.js";
 import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
@@ -106,7 +105,7 @@ type MessageHandlerMap = {
 export const messageHandlers: MessageHandlerMap = {
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
-  agent_review_added: handleAgentReviewAdded,
+  ai_review_added: handleAiReviewAdded,
   auth_required: handleAuthRequired,
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
@@ -152,7 +151,6 @@ export const messageHandlers: MessageHandlerMap = {
   rebase_complete: handleRebaseComplete,
   rebase_conflicts: handleRebaseConflicts,
   rebase_started: handleRebaseStarted,
-  review_updated: handleReviewUpdated,
   rewind_complete: handleRewindComplete,
   rewind_preview: handleRewindPreview,
   rewind_restored: handleRewindRestored,

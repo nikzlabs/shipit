@@ -86,13 +86,12 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     mergeSha: "abc123def456",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
-  agentReview: {
+  aiReview: {
     reviewId: "r1",
     filePath: "a.ts",
-    fileType: "code",
-    findingCount: 2,
-    snapshotHash: "deadbeef",
-    summary: "two findings",
+    markdown: "1. `a.ts:5` — off-by-one\n   Fix: use `<=`.",
+    reviewerLabel: "Reviewed by Codex",
+    reReviewed: true,
     createdAt: "2026-06-05T00:00:00.000Z",
   },
   userReview: { filePaths: ["a.ts", "b.ts"], commentCount: 3 },
@@ -348,6 +347,54 @@ describe("ChatHistoryManager", () => {
     const mgr = new ChatHistoryManager(dbManager);
     mgr.append("sess-1", EVERY_OPTIONAL_FIELD_MESSAGE);
     expect(mgr.load("sess-1")[0]).toEqual(EVERY_OPTIONAL_FIELD_MESSAGE);
+  });
+
+  it("degrades a legacy agent_review row to a plain aiReview card (docs/203 migration)", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    // Simulate a pre-docs/203 row: only the legacy `agent_review` column is set
+    // (no `ai_review`). It must still render as a degraded `aiReview` card.
+    dbManager.db
+      .prepare(
+        "INSERT INTO messages (session_id, role, content, agent_review) VALUES (?, 'assistant', '', ?)",
+      )
+      .run(
+        "sess-legacy",
+        JSON.stringify({
+          reviewId: "legacy-1",
+          filePath: "docs/old.md",
+          fileType: "markdown",
+          findingCount: 3,
+          snapshotHash: "deadbeef",
+          createdAt: "2026-01-01T00:00:00.000Z",
+        }),
+      );
+    const [msg] = mgr.load("sess-legacy");
+    expect(msg.aiReview).toEqual({
+      reviewId: "legacy-1",
+      filePath: "docs/old.md",
+      markdown: "",
+      reviewerLabel: "Reviewed earlier",
+      legacy: true,
+      findingCount: 3,
+      createdAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+
+  it("prefers a present ai_review over a legacy agent_review on the same row", () => {
+    const mgr = new ChatHistoryManager(dbManager);
+    const card = {
+      reviewId: "r9",
+      filePath: "a.ts",
+      markdown: "No material issues found.",
+      reviewerLabel: "Reviewed by Claude",
+      createdAt: "2026-06-05T00:00:00.000Z",
+    };
+    dbManager.db
+      .prepare(
+        "INSERT INTO messages (session_id, role, content, agent_review, ai_review) VALUES (?, 'assistant', '', ?, ?)",
+      )
+      .run("sess-both", JSON.stringify({ reviewId: "old", filePath: "a.ts", findingCount: 1, createdAt: "x" }), JSON.stringify(card));
+    expect(mgr.load("sess-both")[0].aiReview).toEqual(card);
   });
 
   it("every inline-card field is exercised by the serialization contract (no emit-only cards, docs/188)", () => {

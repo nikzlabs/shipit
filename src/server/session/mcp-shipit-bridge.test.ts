@@ -79,7 +79,7 @@ describe("createShipitBridgeServer — ListTools", () => {
     bridge = await connect(selectTools("review,present,voice,bug,permission"));
     const { tools } = await bridge.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["permission_prompt", "present", "report_shipit_bug", "submit_review_comments", "voice_note"],
+      ["permission_prompt", "present", "report_shipit_bug", "submit_review", "voice_note"],
     );
     // ask was not selected.
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();

@@ -26,7 +26,7 @@ export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
  * the user's prompt bubble — are NOT listed; they already pass `hasVisibleContent`.)
  */
 export const CARD_MESSAGE_FIELDS = [
-  "agentReview",
+  "aiReview",
   "voiceNote",
   "bugReport",
   "permissionPrompt",

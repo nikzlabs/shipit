@@ -62,14 +62,13 @@ describe("buildVisualElements", () => {
         }),
       },
       {
-        name: "agentReview",
+        name: "aiReview",
         msg: card({
-          agentReview: {
+          aiReview: {
             reviewId: "r1",
             filePath: "a.ts",
-            fileType: "code",
-            findingCount: 2,
-            snapshotHash: "abc",
+            markdown: "No material issues found.",
+            reviewerLabel: "Reviewed by Codex",
             createdAt: "2026-06-01T00:00:00.000Z",
           },
         }),

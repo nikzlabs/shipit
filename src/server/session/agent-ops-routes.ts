@@ -74,10 +74,10 @@ export function registerAgentOpsRoutes(
     return res.body ?? {};
   }
 
-  // POST /agent-ops/review/submit — chat-native AI review write-back (docs/125).
-  // The consolidated `shipit` bridge forwards `submit_review_comments` here;
-  // the worker relays to the orchestrator with the trusted SESSION_ID injected.
-  app.post<{ Body: { filePath?: string; comments?: unknown[] } }>(
+  // POST /agent-ops/review/submit — plain-text AI review write-back (docs/203).
+  // The consolidated `shipit` bridge forwards `submit_review` here; the worker
+  // relays to the orchestrator with the trusted SESSION_ID injected.
+  app.post<{ Body: { filePath?: string; markdown?: string; reviewerLabel?: string } }>(
     "/agent-ops/review/submit",
     async (request, reply) => relay("POST", "/review-submit", request.body ?? {}, reply),
   );

@@ -231,7 +231,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:parentId/children/:childId/message",
   "POST /api/sessions/:parentId/children/:childId/archive",
   "POST /api/sessions/:parentId/children/:childId/notify-on-merge",
-  // bridges — voice_note / report_shipit_bug / submit_review_comments
+  // bridges — voice_note / report_shipit_bug / submit_review
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/review-submit",

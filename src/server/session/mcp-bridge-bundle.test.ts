@@ -89,7 +89,7 @@ describe("precompiled MCP bridge bundle (docs/199, SHI-128)", () => {
       const out = await handshake(bundle, runDir, "review,present,voice,bug,permission");
       // Single `shipit` server (from initialize serverInfo), all five tools listed.
       expect(out).toContain("shipit");
-      expect(out).toContain("submit_review_comments");
+      expect(out).toContain("submit_review");
       expect(out).toContain("present");
       expect(out).toContain("voice_note");
       expect(out).toContain("report_shipit_bug");

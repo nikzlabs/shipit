@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -246,21 +246,14 @@ export interface PersistedMessage {
     failedAt: string;
   };
   /**
-   * docs/151 — when set, renders an inline `AgentReviewCard`. The review's
-   * snapshot + comments already persist in the `agent_reviews` tables; this
-   * persists the inline transcript breadcrumb (keyed by `reviewId`) so the card
-   * itself survives a reload instead of vanishing while the data lingers only
-   * behind the file modal.
+   * docs/203 — when set, renders an inline plain-text `ReviewCard`. One card per
+   * review run, keyed by `reviewId`; the parent's re-review patches the same
+   * card (the patch lands by replacing the recorded card in `recordedCards`
+   * mid-turn — see `emitOrReplaceChatCard` — not via a finalized-row update).
+   * Legacy pre-docs/203 `agent_review` rows are mapped to a degraded `AiReviewCard`
+   * (`legacy: true`) on read so old transcript cards still render.
    */
-  agentReview?: {
-    reviewId: string;
-    filePath: string;
-    fileType: "markdown" | "code";
-    findingCount: number;
-    snapshotHash: string;
-    summary?: string;
-    createdAt: string;
-  };
+  aiReview?: AiReviewCard;
   /**
    * User-side counterpart to `agentReview`: set on the initiating user message
    * when the user submits doc/diff comments via "Send comments", so the bubble
@@ -317,7 +310,11 @@ interface MessageRow {
   child_merged: string | null;
   spawned_session: string | null;
   spawn_failed: string | null;
+  /** Legacy pre-docs/203 structured agent-review breadcrumb. Read-only — mapped
+   * to a degraded `aiReview` in `fromRow`; never written after docs/203. */
   agent_review: string | null;
+  /** docs/203 — plain-text AI review card (`AiReviewCard` JSON). */
+  ai_review: string | null;
   user_review: string | null;
   notice_id: string | null;
   /**
@@ -333,8 +330,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, issue_write, issue_ref, compaction, sub_agent_consult, child_merged, spawned_session, spawn_failed, agent_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @child_merged, @spawned_session, @spawn_failed, @agent_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, issue_write, issue_ref, compaction, sub_agent_consult, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -344,7 +341,7 @@ const UPDATE_SQL = `
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
     voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, child_merged=@child_merged,
-    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, user_review=@user_review, notice_id=@notice_id
+    spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
 
@@ -411,7 +408,10 @@ export class ChatHistoryManager {
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
       spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
-      agent_review: msg.agentReview ? JSON.stringify(msg.agentReview) : null,
+      // Legacy `agent_review` column — never written after docs/203 (the card is
+      // `aiReview` now). Kept readable so old transcript rows still render.
+      agent_review: null,
+      ai_review: msg.aiReview ? JSON.stringify(msg.aiReview) : null,
       user_review: msg.userReview ? JSON.stringify(msg.userReview) : null,
       notice_id: msg.noticeId ?? null,
     };
@@ -448,7 +448,28 @@ export class ChatHistoryManager {
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
     if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];
-    if (row.agent_review) msg.agentReview = JSON.parse(row.agent_review) as PersistedMessage["agentReview"];
+    if (row.ai_review) {
+      msg.aiReview = JSON.parse(row.ai_review) as AiReviewCard;
+    } else if (row.agent_review) {
+      // docs/203 migration — degrade a legacy structured agent-review breadcrumb
+      // to a plain `aiReview` card so old transcripts still render. The anchored
+      // snapshot + comments are gone; surface file + finding count + a note.
+      const legacy = JSON.parse(row.agent_review) as {
+        reviewId: string;
+        filePath: string;
+        findingCount?: number;
+        createdAt: string;
+      };
+      msg.aiReview = {
+        reviewId: legacy.reviewId,
+        filePath: legacy.filePath,
+        markdown: "",
+        reviewerLabel: "Reviewed earlier",
+        legacy: true,
+        findingCount: legacy.findingCount ?? 0,
+        createdAt: legacy.createdAt,
+      };
+    }
     if (row.user_review) msg.userReview = JSON.parse(row.user_review) as PersistedMessage["userReview"];
     if (row.notice_id) msg.noticeId = row.notice_id;
     return msg;

@@ -1,159 +1,145 @@
 /**
- * compose-review-body — builds the chat message that kicks off a chat-native
- * AI review (docs/125, updated by docs/151).
+ * compose-review-body — builds the chat message that kicks off a plain-text AI
+ * review (docs/203, supersedes the docs/125/151 draft-embedding version).
  *
- * Both the "Ask agent to review" button and the `/review` slash command use
- * this so the two entry points produce an identical prompt. The body:
- *   - tells the parent agent to delegate the review to a subagent (the parent
- *     likely wrote the file, so a first-person review is biased);
- *   - instructs the subagent to call `submit_review_comments` exactly once with
- *     only high-signal findings (empty array if none);
- *   - instructs the subagent to echo the tool result verbatim as its final
- *     assistant message so the structured findings reach the parent through
- *     the Task tool result (docs/151);
- *   - explicitly tells the parent that receiving that echoed result is not the
- *     end of the turn: material findings must be fixed before the parent
- *     responds to the user;
- *   - embeds the user's un-sent draft comments verbatim so the subagent builds
- *     on them instead of duplicating them.
+ * The reviewer is resolved **on the client at button-press time** from the
+ * settings store + agent registry, so the prompt is concrete (not
+ * self-correcting):
+ *   - Multi-agent sessions on AND a *different* agent is signed in → **cross-agent**:
+ *     the parent runs `shipit agent run --agent <other> --prompt-file -` for a
+ *     genuine second-model opinion.
+ *   - otherwise → **subagent**: the parent spawns one fresh same-model `Task`.
  *
- * Embedding rules (docs/151 supersedes the docs/125 rules):
- *   - draft `human` comments only, most recent first — AI comments no longer
- *     live in the draft bucket (they have their own immutable card history);
- *   - already-SENT comments are NOT embedded: a sent review was its own turn
- *     the agent already received, so re-embedding it just repeats what the
- *     model has already seen;
- *   - hard cap of 20 comments total, each truncated to 500 chars;
- *   - on overflow, oldest entries drop first and a "N older comments omitted"
- *     note is appended so the subagent knows the embed is partial.
+ * In both modes the reviewer returns **markdown only** (no MCP tool call), the
+ * parent calls the `submit_review` tool with that markdown to record one review
+ * card, then applies fixes and runs one re-review (which patches the same card).
+ *
+ * Cross-agent failure is a first-class path: `runSubAgent` re-checks
+ * enable/auth/pinned/cap at execution time, so `shipit agent run` can still exit
+ * non-zero after a clean client decision. The prompt tells the parent to fall
+ * back to a same-model `Task` review and note it in the card's reviewer label.
+ *
+ * No draft-comment embedding — that belongs to the user-comment system, which is
+ * now fully decoupled from AI review.
  */
 
-import type { FileReview, ReviewComment } from "../../server/shared/types.js";
-
-const MAX_EMBEDDED_COMMENTS = 20;
-const MAX_COMMENT_CHARS = 500;
-
-interface EmbeddedComment {
-  anchor: string;
-  sourceLabel: string;
-  text: string;
+interface RegistryAgent {
+  id: string;
+  name: string;
+  installed: boolean;
+  authConfigured: boolean;
 }
 
-function truncate(text: string): string {
-  const trimmed = text.trim();
-  if (trimmed.length <= MAX_COMMENT_CHARS) return trimmed;
-  return `${trimmed.slice(0, MAX_COMMENT_CHARS)}…`;
+export type ReviewerMode = "cross-agent" | "subagent";
+
+export interface ReviewComposition {
+  mode: ReviewerMode;
+  /** The other agent's id (cross-agent only). */
+  reviewerAgentId?: string;
+  /** Display name for the reviewer, e.g. "Codex" (cross-agent only). */
+  reviewerName?: string;
+  /** Display name for the current/parent agent, e.g. "Claude". */
+  selfName: string;
 }
 
-function truncateQuote(text: string, max = 80): string {
-  const trimmed = text.trim().replace(/\s+/g, " ");
-  if (trimmed.length <= max) return trimmed;
-  return `${trimmed.slice(0, max)}…`;
-}
-
-function anchorOf(comment: ReviewComment): string {
-  if (comment.kind === "line") return `line ${comment.line} (draft)`;
-  const quote = truncateQuote(comment.quotedText) || "(empty selection)";
-  return `«${quote}» (selection, draft)`;
+/** Short, user-facing agent name for the card attribution ("claude" → "Claude"). */
+export function displayAgentName(agentId: string): string {
+  if (!agentId) return "the agent";
+  return agentId.charAt(0).toUpperCase() + agentId.slice(1);
 }
 
 /**
- * Select up to MAX_EMBEDDED_COMMENTS draft comments to embed, applying the
- * ranking and drop rules. Returns the chosen comments (in render order) plus
- * how many were dropped by the cap.
- *
- * Only un-sent draft comments are embedded. Already-sent comments were
- * delivered to the agent in their own review turn, so re-embedding them just
- * repeats text the model has already seen.
- *
- * Drops AI-source comments defensively: post-docs/151 the draft is human-only
- * anyway, but a session whose draft still carries pre-migration AI rows
- * shouldn't re-embed them.
+ * Resolve the reviewer from a settings/registry snapshot taken at click time.
+ * Pure so the resolution matrix (enableSubAgents × other-agent-authed) is
+ * directly testable. Cross-agent only when Multi-agent is on AND a *different*
+ * agent is installed + auth-configured; otherwise a fresh same-model subagent.
  */
-function selectComments(draft: FileReview | null): { embeds: EmbeddedComment[]; dropped: number } {
-  // Drafts first, most recent last in storage → reverse for newest-first.
-  const draftHuman = draft
-    ? [...draft.comments].reverse().filter((c) => c.source === "human")
-    : [];
-
-  const ranked: EmbeddedComment[] = draftHuman.map((c) => ({
-    anchor: anchorOf(c),
-    sourceLabel: "[user]",
-    text: truncate(c.text),
-  }));
-
-  const embeds = ranked.slice(0, MAX_EMBEDDED_COMMENTS);
-  return { embeds, dropped: Math.max(0, ranked.length - embeds.length) };
+export function resolveReviewer(args: {
+  enableSubAgents: boolean;
+  agentList: RegistryAgent[];
+  activeAgentId: string;
+}): ReviewComposition {
+  const selfName = displayAgentName(args.activeAgentId);
+  if (args.enableSubAgents) {
+    const other = args.agentList.find(
+      (a) => a.id !== args.activeAgentId && a.installed && a.authConfigured,
+    );
+    if (other) {
+      return {
+        mode: "cross-agent",
+        reviewerAgentId: other.id,
+        reviewerName: displayAgentName(other.id),
+        selfName,
+      };
+    }
+  }
+  return { mode: "subagent", selfName };
 }
 
-export function composeReviewMessage(filePath: string, draft: FileReview | null): string {
-  const { embeds, dropped } = selectComments(draft);
-
-  const lines: string[] = [
-    `Review ${filePath}.`,
-    "",
-    "Before reviewing: spawn a subagent and let it perform the review. You (the",
-    "parent) likely wrote or edited this file earlier in this conversation, so a",
-    "first-person review will be biased toward defending the existing text.",
-    "Do not review it yourself.",
-    "",
-    "Brief the subagent to:",
-    "- Approach the file fresh, treating it as work it has not seen.",
-    "- Read related files in the repo as needed for context.",
-    "- Report only material issues that would block correctness, safety,",
-    "  completeness, or the user's stated goal. Do not report style opinions,",
-    "  wording preferences, speculative concerns, or nice-to-have improvements.",
-    "- Before submitting any finding, verify that it has a concrete user impact",
-    "  and a specific fix. If you cannot name both, omit it.",
-    "- Submit every material finding, ordered by severity. Do not suppress an",
-    "  important issue because there are already several findings.",
-    "- Call the `submit_review_comments` MCP tool exactly once with the selected",
-    "  findings as a single array. Do not call it per-comment.",
-    "- For source-line feedback, use `{kind: \"line\", line, text}`. This is",
-    "  valid for both code and markdown files.",
-    "- For markdown prose feedback tied to exact rendered text, use",
-    "  `{kind: \"selection\", quoted_text, text}` with a verbatim quote.",
-    "- If the file has no material findings, still call `submit_review_comments`",
-    "  with an empty array — that is the signal that the review ran.",
-    "- After calling `submit_review_comments`, return the tool result verbatim",
-    "  as your final assistant message. Do not paraphrase, do not add",
-    "  commentary, do not summarize — the parent needs the exact rendered list.",
-    "",
-    "Review standard: this is a convergence pass, not an exhaustive critique.",
-    "Prefer no comment over a weak comment. Skip nits.",
-    "",
-    "Parent continuation after the subagent returns:",
-    "- The subagent's verbatim tool result is input for your next step, not your",
-    "  final answer to the user.",
-    "- Do not stop after printing or summarizing the review feedback.",
-    "- Apply fixes for material findings only. The subagent only reviews; it",
-    "  does not edit.",
-    "- Then spawn one fresh subagent to re-review the updated file.",
-    "- On that re-review, fix only blockers or regressions introduced by the",
-    "  changes.",
-    "- Do not keep looping on lower-severity follow-up suggestions; summarize",
-    "  non-blocking leftovers in chat only if they are worth the user's attention.",
-    "- Your final response to the user should describe the fixes you applied and",
-    "  any verification you ran, not merely repeat the review feedback.",
+function reviewBrief(filePath: string): string[] {
+  return [
+    `Review brief for ${filePath} — return MARKDOWN ONLY, no tool calls:`,
+    "- Approach the file fresh; read related files in the repo for context.",
+    "- Report only MATERIAL issues: correctness, safety, completeness, or the",
+    "  user's stated goal. Skip nits, style, and speculative concerns.",
+    "- Order findings by severity. Write each as `path:line — issue` (line",
+    "  optional), then a specific fix on the next line. Omit a finding if you",
+    "  cannot name a concrete fix.",
+    '- If the file is clean, return exactly: "No material issues found."',
+    "- Return the markdown as your final message. Do NOT call any MCP tool.",
   ];
+}
 
-  if (embeds.length > 0) {
+function parentContinuation(): string[] {
+  return [
+    "",
+    "After you call `submit_review`, the review is INPUT, not your final answer:",
+    "- Apply fixes for the material findings (the reviewer only reviews; it does",
+    "  not edit).",
+    "- Then run ONE fresh re-review the same way and call `submit_review` again",
+    "  with the updated markdown — it patches the SAME card, it does not stack a",
+    "  second one.",
+    "- On the re-review, fix only new blockers or regressions. Do not loop on nits.",
+    "- Your final reply to the user should describe the fixes you applied and any",
+    "  verification you ran — not merely repeat the review.",
+  ];
+}
+
+export function composeReviewMessage(filePath: string, opts: ReviewComposition): string {
+  const lines: string[] = [`Review ${filePath}.`, ""];
+
+  if (opts.mode === "cross-agent" && opts.reviewerAgentId) {
+    const reviewerName = opts.reviewerName ?? displayAgentName(opts.reviewerAgentId);
     lines.push(
+      `Delegate this review to ${reviewerName} — a different model, for a genuine`,
+      "second opinion. Run `shipit agent run` and pass the brief on stdin:",
       "",
-      "--- Existing comments on this file (do not duplicate) ---",
+      `    shipit agent run --agent ${opts.reviewerAgentId} --prompt-file - <<'EOF'`,
+      ...reviewBrief(filePath).map((l) => `    ${l}`),
+      "    EOF",
       "",
-      "The user has already left these comments. Build on them or cover gaps they",
-      "leave; do not repeat them.",
+      `Take ${reviewerName}'s markdown output and call the \`submit_review\` MCP tool`,
+      `with the file path, that markdown, and reviewer_label: "Reviewed by ${reviewerName}".`,
       "",
+      `If \`shipit agent run\` exits non-zero for ANY reason (Multi-agent disabled,`,
+      `${reviewerName} not signed in, the session not pinned/active, or the per-turn`,
+      "spawn cap hit), do NOT abort the turn. Instead spawn one fresh same-model",
+      "Task subagent with the same brief, take its markdown, and call `submit_review`",
+      `with reviewer_label: "Reviewed by ${opts.selfName} (${reviewerName} unavailable)".`,
     );
-    for (const e of embeds) {
-      lines.push(e.anchor, `  ${e.sourceLabel} ${e.text}`, "");
-    }
-    if (dropped > 0) {
-      lines.push(`(${dropped} older comment${dropped === 1 ? "" : "s"} omitted)`);
-    }
-    lines.push("---");
+  } else {
+    lines.push(
+      "You (the parent) likely wrote or edited this file, so do not review it",
+      "yourself — a first-person review is biased. Spawn one fresh Task subagent and",
+      "give it the brief below.",
+      "",
+      ...reviewBrief(filePath),
+      "",
+      "Take the subagent's markdown output and call the `submit_review` MCP tool",
+      `with the file path, that markdown, and reviewer_label: "Reviewed by ${opts.selfName}".`,
+    );
   }
 
+  lines.push(...parentContinuation());
   return lines.join("\n");
 }

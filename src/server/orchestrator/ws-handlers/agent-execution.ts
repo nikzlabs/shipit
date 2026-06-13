@@ -247,7 +247,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   userReview?: { filePaths: string[]; commentCount: number };
   /**
    * docs/125 — when this turn is a chat-native review, the file the
-   * `submit_review_comments` tool is authorized to write on. Set on the runner
+   * `submit_review` tool is authorized to write on. Set on the runner
    * at turn start (here, which is also the dequeue point for queued turns) and
    * cleared when the turn ends.
    */

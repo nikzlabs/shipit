@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, recordChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitOrReplaceChatCard, recordChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
@@ -57,6 +57,33 @@ describe("chat-card-persistence", () => {
     expect(persisted[0].messages.find((m) => (m as { voiceNote?: unknown }).voiceNote)).toMatchObject({
       voiceNote: { id: "v1" },
     });
+  });
+
+  it("emitOrReplaceChatCard records a new card, then REPLACES it in place on a matching re-emit (docs/203)", () => {
+    const { runner, emitted, persisted, chatHistoryManager } = fakeRunner([{ text: "reviewed", toolUse: [] }]);
+    const ctx = { chatHistoryManager, sessionId: "s1" };
+    const matches = (m: PersistedMessage) => (m as { aiReview?: { reviewId?: string } }).aiReview?.reviewId === "r1";
+
+    const ws = (markdown: string, reReviewed: boolean): WsServerMessage =>
+      ({ type: "ai_review_added", sessionId: "s1", card: { reviewId: "r1", filePath: "a.ts", markdown, reviewerLabel: "Reviewed by Codex", createdAt: "t", reReviewed } } as unknown as WsServerMessage);
+    const row = (markdown: string, reReviewed: boolean): PersistedMessage =>
+      ({ role: "assistant", text: "", aiReview: { reviewId: "r1", filePath: "a.ts", markdown, reviewerLabel: "Reviewed by Codex", createdAt: "t", reReviewed } } as unknown as PersistedMessage);
+
+    // First submit → records a new card.
+    expect(emitOrReplaceChatCard(runner, ws("issue A", false), row("issue A", false), ctx, matches)).toEqual({ replaced: false });
+    expect(runner.recordedCards).toHaveLength(1);
+    const anchor = runner.recordedCards[0].afterGroupIndex;
+
+    // Re-review → replaces in place: still ONE card, same anchor, patched message.
+    expect(emitOrReplaceChatCard(runner, ws("clean", true), row("clean", true), ctx, matches)).toEqual({ replaced: true });
+    expect(runner.recordedCards).toHaveLength(1);
+    expect(runner.recordedCards[0].afterGroupIndex).toBe(anchor);
+    expect((runner.recordedCards[0].message as { aiReview?: { markdown?: string; reReviewed?: boolean } }).aiReview)
+      .toMatchObject({ markdown: "clean", reReviewed: true });
+
+    // Both the live emit and the durable persist happened on each call.
+    expect(emitted).toHaveLength(2);
+    expect(persisted).toHaveLength(2);
   });
 
   it("anchors the card after the persistable assistant groups produced so far", () => {

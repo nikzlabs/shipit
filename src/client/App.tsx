@@ -84,8 +84,7 @@ import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
-import { useFileReviewStore } from "./stores/file-review-store.js";
-import { composeReviewMessage } from "./utils/compose-review-body.js";
+import { composeReviewMessage, resolveReviewer } from "./utils/compose-review-body.js";
 import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
 import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
@@ -150,10 +149,7 @@ export default function App() {
   const previewContent = useFileStore((s) => s.previewContent);
   const previewType = useFileStore((s) => s.previewType);
   const previewActions = useFileStore((s) => s.previewActions);
-  const previewMode = useFileStore((s) => s.previewMode);
-  const previewAgentReview = useFileStore((s) => s.previewAgentReview);
   const previewLine = useFileStore((s) => s.previewLine);
-  const previewLoading = useFileStore((s) => s.previewLoading);
   const editFile = useFileStore((s) => s.editFile);
   const editContent = useFileStore((s) => s.editContent);
   const editOriginalContent = useFileStore((s) => s.editOriginalContent);
@@ -423,9 +419,11 @@ export default function App() {
   const handleSend = useCallback(
     async (payload: SendPayload) => {
       const { text, uploadRefs, uploads: payloadUploads } = payload;
-      // docs/125 — `/review [@path]` is the chat-native entry point to AI
-      // review: same composed prompt as the modal button, routed through
-      // `send_review_message` so the orchestrator authorizes the review tool.
+      // docs/203 — `/review [@path]` is a chat-native entry point to AI review:
+      // same composed prompt as the modal button, routed through
+      // `send_review_message` so the orchestrator authorizes the review tool. The
+      // reviewer (cross-agent vs fresh subagent) is resolved here, at click time,
+      // from the settings store + agent registry — the prompt is concrete.
       const trimmed = text.trim();
       if (/^\/review(?:\s|$)/.test(trimmed)) {
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
@@ -447,11 +445,11 @@ export default function App() {
           });
           return;
         }
-        const reviewStore = useFileReviewStore.getState();
-        // Ensure a draft exists so the review tool has somewhere to write and
-        // the server can tell "sent mid-review" from "fresh review".
-        await reviewStore.load(sid, targetFile);
-        const prompt = composeReviewMessage(targetFile, reviewStore.getDraft(sid, targetFile));
+        const prompt = composeReviewMessage(targetFile, resolveReviewer({
+          enableSubAgents: useSettingsStore.getState().enableSubAgents,
+          agentList: useUiStore.getState().agentList,
+          activeAgentId: useUiStore.getState().activeAgentId,
+        }));
         // On /{slug}/new route — graduate: transition URL to /session/{id}, so
         // a /review sent from a fresh session doesn't leave the URL on .../new.
         if (isNewSessionRoute) {
@@ -1035,13 +1033,19 @@ export default function App() {
     [send],
   );
 
-  // docs/125 — "Ask agent to review": start a chat-native review turn. Distinct
+  // docs/203 — "Ask agent to review": start a chat-native review turn. Distinct
   // from send_message so the orchestrator authorizes the review tool for this
-  // file. Closing the modal shifts focus to the chat where the agent works;
-  // new AI comments stream back into the (reopened) modal via `review_updated`.
+  // file. The reviewer (cross-agent vs fresh subagent) is resolved here at click
+  // time from the settings store + agent registry, then baked into the prompt.
+  // Closing the modal shifts focus to the chat; the review card lands in chat.
   const handleAskAgentReview = useCallback(
-    (prompt: string, reviewFilePath: string) => {
+    (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
+      const prompt = composeReviewMessage(reviewFilePath, resolveReviewer({
+        enableSubAgents: useSettingsStore.getState().enableSubAgents,
+        agentList: useUiStore.getState().agentList,
+        activeAgentId: useUiStore.getState().activeAgentId,
+      }));
       // On /{slug}/new route — graduate: transition URL to /session/{id}, same
       // as handleSend. Without this the session becomes real but the URL stays
       // stuck on .../new.
@@ -1364,32 +1368,18 @@ export default function App() {
           onEdit={() => { setShortcutsOpen(false); void handleSettingsOpen("keyboard"); }}
         />
       )}
-      {(previewFile || (previewMode === "agent-review" && previewLoading)) && previewType && (
+      {previewFile && previewType && (
         <FilePreviewModal
-          filePath={previewFile ?? ""}
+          filePath={previewFile}
           content={previewContent}
           fileType={previewType}
           line={previewLine}
-          actions={previewMode === "agent-review" ? [] : previewActions}
-          {...(previewMode === "agent-review"
-            ? {}
-            : { siblings: previewSiblings, onSwitchSibling: handleSwitchSibling })}
-          mode={previewMode}
-          agentReview={previewAgentReview}
+          actions={previewActions}
+          siblings={previewSiblings}
+          onSwitchSibling={handleSwitchSibling}
           onClose={() => useFileStore.getState().closePreview()}
-          {...(previewMode === "agent-review"
-            ? {}
-            : {
-                onSendComments: handleFileSendComments,
-                onAskAgentReview: handleAskAgentReview,
-              })}
-          onSwitchToLive={
-            previewMode === "agent-review" && wsSessionId && previewAgentReview
-              ? () => {
-                  void useFileStore.getState().openPreview(wsSessionId, previewAgentReview.filePath);
-                }
-              : undefined
-          }
+          onSendComments={handleFileSendComments}
+          onAskAgentReview={handleAskAgentReview}
         />
       )}
       {editFile && (
