@@ -311,7 +311,45 @@ describe("buildEnv", () => {
     expect(env).toContain("SESSION_ID=sess-1");
     expect(env).toContain("WORKSPACE_DIR=/workspace");
     expect(env).toContain("WORKER_PORT=9100");
-    expect(env).toContain("HOME=/root");
+    expect(env).toContain("HOME=/home/shipit");
+  });
+
+  // docs/150 — the worker runs as the unprivileged `shipit` user (home
+  // /home/shipit). buildEnv sets HOME + AGENT_HOME (the single source of truth
+  // agentHome() resolves from) and pins the shared Playwright browser path.
+  it("docs/150: sets HOME, AGENT_HOME, and PLAYWRIGHT_BROWSERS_PATH for the non-root worker", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+    expect(env).toContain("HOME=/home/shipit");
+    expect(env).toContain("AGENT_HOME=/home/shipit");
+    expect(env).toContain("PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers");
+  });
+
+  it("docs/150: resolves HOME/AGENT_HOME from the orchestrator's AGENT_HOME (local mode keeps /root)", () => {
+    const prev = process.env.AGENT_HOME;
+    process.env.AGENT_HOME = "/root";
+    try {
+      const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+      expect(env).toContain("HOME=/root");
+      expect(env).toContain("AGENT_HOME=/root");
+    } finally {
+      if (prev === undefined) delete process.env.AGENT_HOME;
+      else process.env.AGENT_HOME = prev;
+    }
+  });
+
+  // docs/150 Rollout — the orchestrator forwards SHIPIT_SESSION_WORKER_UID so the
+  // image entrypoint chowns the mounts to the SAME uid the orchestrator-side
+  // chown helpers use. Unset → not forwarded (entrypoint default + no-op chowns).
+  it("docs/150: forwards SHIPIT_SESSION_WORKER_UID when set", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {
+      SHIPIT_SESSION_WORKER_UID: "1000",
+    } as NodeJS.ProcessEnv);
+    expect(env).toContain("SHIPIT_SESSION_WORKER_UID=1000");
+  });
+
+  it("docs/150: does not forward SHIPIT_SESSION_WORKER_UID when unset", () => {
+    const env = buildEnv(baseConfig(), "/workspace", 9100, undefined, undefined, {} as NodeJS.ProcessEnv);
+    expect(env.some((e) => e.startsWith("SHIPIT_SESSION_WORKER_UID="))).toBe(false);
   });
 
   // docs/183 — the orchestrator resolves the worker image id at startup into

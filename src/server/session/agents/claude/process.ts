@@ -5,6 +5,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import type { ClaudeEvent, ImageAttachment, PermissionMode } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import { agentHome } from "../../../shared/agent-home.js";
 
 /**
  * Phrases that signal an auth failure in CLI output. Used both for non-JSON
@@ -218,7 +219,9 @@ export class ClaudeProcess extends EventEmitter {
     // is false. Always overwrite with the value derived from this call.
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      HOME: "/root",
+      // docs/150 — the worker runs as the unprivileged `shipit` user whose
+      // home is /home/shipit; agentHome() resolves to /root in local mode.
+      HOME: agentHome(),
       NODE_ENV: "development",
     };
     if (autoCreatePr) {
@@ -411,7 +414,9 @@ export class StreamingClaudeProcess extends EventEmitter {
 
     const spawnEnv: Record<string, string> = {
       ...process.env,
-      HOME: "/root",
+      // docs/150 — the worker runs as the unprivileged `shipit` user whose
+      // home is /home/shipit; agentHome() resolves to /root in local mode.
+      HOME: agentHome(),
       NODE_ENV: "development",
     };
     if (autoCreatePr) {

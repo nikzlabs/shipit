@@ -374,6 +374,12 @@ output to UID/GID 1000 right after writing.
       `root:root` and break later `shipit`-side `git` operations.
     - `repo-git.ts:cloneFromCache` — fine on first clone (entrypoint
       handles it), but any post-boot reclone/refetch needs the chown.
+    - `session-credentials.ts:provisionRepoMemory` (docs/155) — seeds the
+      Claude auto-memory dir under `<sessionDir>/.claude/projects/-workspace/
+      memory/` on the **first turn**, after boot. The agent must *write* new
+      memory there, not just read it, so this writer chowns the subtree too —
+      otherwise a root-owned `0755` memory dir silently drops the agent's
+      memory writes.
 
   Audit pass: grep `services/` and `orchestrator/` for `writeFile*`,
   `mkdir*`, `cpSync`, `renameSync`, and `simpleGit(...)` callers that
@@ -517,6 +523,32 @@ After validation, audit `CapAdd` and remove `DAC_OVERRIDE` and
 `NET_BIND_SERVICE` if no regressions surface in the worker, terminal, or
 MCP tool exercises.
 
+## Writable paths (groundwork for SHI-97 — ReadonlyRootfs/seccomp)
+
+SHI-97 makes the container root filesystem read-only (`ReadonlyRootfs: true`)
+with explicit writable mounts. That work needs an exact inventory of every path
+the non-root worker writes to. Enumerated here as part of SHI-31 so SHI-97 can
+flip the rootfs without a write-permission scavenger hunt:
+
+| Path | Writer | Notes |
+|------|--------|-------|
+| `/workspace` | agent, git, installs | Bind mount / volume Subpath. Always writable. |
+| `/uploads` | orchestrator (chowned), agent | Mount. |
+| `/credentials` | orchestrator (chowned §7), agent CLIs | Mount; per-session subtree. |
+| `/dep-cache` | package managers | Mount; shared per-repo. |
+| `/tmp` | agent, Playwright MCP (`/tmp/.playwright-mcp`) | tmpfs candidate for SHI-97. Must stay **exec** (npm lifecycle scripts); a `noexec` tmpfs breaks installs. |
+| `/home/shipit` | agent CLIs, npm | Includes `~/.claude`, `~/.codex` (symlinks into `/credentials`), `~/.claude.json`, `~/.npm-global` (global installs), `~/.npm` (npm cache), `~/.cache` (tool caches). Needs its own writable mount/tmpfs under ReadonlyRootfs. |
+
+Read-only and **must stay** so under SHI-97 (never written at runtime):
+`/app`, `/app/node_modules`, `/opt/agent-cli`, `/opt/playwright-browsers`
+(installed `a+rX` at build time), `/usr/local/bin` shims, `/etc/shipit`
+(agent hooks + managed settings). The worker process is exec'd from `/app` and
+the shims must remain traversable — but none of these need write access.
+
+`PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` is read-only at runtime;
+Playwright MCP writes only its scratch under `/tmp/.playwright-mcp`, so the
+read-only browser store composes with a writable `/tmp`.
+
 ## Touchpoints
 
 - `docker/Dockerfile.session-worker.dev`
@@ -626,15 +658,54 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
   `/root`).
 - `src/server/shipit-docs/environment.md` documents the non-root runtime home.
 
+## Implementation note — what is actually flag-gated (SHI-31)
+
+The implementation deviates from the original Rollout step 1 below in one
+deliberate way, because ShipIt ships the orchestrator **and** the session-worker
+image in a *single* `deploy.sh` run (they are never staged independently):
+
+- **`DEFAULT_AGENT_HOME` is `/home/shipit`, not `/root`.** The resolver default
+  is the *new* home. A real orchestrator (prod or dev) builds and activates the
+  non-root image in the same deploy that ships its own new code, so the home
+  must move with it. `agentHome()` resolves `/home/shipit` whenever `AGENT_HOME`
+  is unset; **local/dogfood mode is the exception and pins `AGENT_HOME=/root`
+  explicitly** (image ENV + `dev` compose service). So `HOME`/`AGENT_HOME` are
+  *defaulted to the new value*, not gated.
+- **The only runtime flag is `SHIPIT_SESSION_WORKER_UID`, and it gates BOTH
+  sides.** Orchestrator: the §7 chown helpers are no-ops when unset. Image: the
+  entrypoint deviates from §2's "always drop via gosu" — it gates the privilege
+  drop on the same var. **Unset (default) → exec the worker as root, no chown**
+  (legacy behavior, byte-for-byte); the image still ships the `shipit` user +
+  the `/home/shipit` symlink layout, but root reads everything so nothing
+  breaks. **Set (e.g. 1000) → chown the mounts + `gosu` to that UID.** Because
+  one var gates the image privilege-drop AND the orchestrator chowns, they can
+  never disagree, and the image is safe to ship *before* the coordinated flip
+  (no "new image is non-root but orchestrator still writes root:root" window).
+  `HOME`/`AGENT_HOME` are NOT gated — they default to `/home/shipit` to match
+  the image's symlink layout whether the worker is root or `shipit`.
+
+Consequence for **"make the new values the permanent default"** (the natural
+follow-up once the rollout is validated):
+
+1. **Config:** bake `SHIPIT_SESSION_WORKER_UID=1000` into the *standing* deploy
+   config (not a one-off env on a single deploy), so every future deploy carries
+   it. The startup fail-fast guard (below, **implemented**) backs this up so a
+   config-rollback that drops the var can't silently regress one session at a
+   time.
+2. **Code cleanup (optional, later):** once a rollback to the root image is off
+   the table, a follow-up PR can delete the `SHIPIT_SESSION_WORKER_UID` gate and
+   make the chowns unconditional, removing the dual code path. The
+   `AGENT_HOME=/root` pin for **local mode stays forever** — local mode is
+   permanent, not a rollout artifact.
+
 ## Rollout
 
-1. Land the `agentHome()` abstraction and tests while still resolving to
-   `/root` (the resolver's default stays `/root` until step 3; `AGENT_HOME`
-   is read at call time so the swap takes effect without re-importing modules
-   — see §3, §9). Land the orchestrator-side `chown` helpers from §7,
-   gated on a new `SHIPIT_SESSION_WORKER_UID` env var on the orchestrator
-   process (default unset = no chown, preserving today's
-   root-writes-everything behavior).
+1. Land the `agentHome()` abstraction and tests. (As implemented the resolver
+   default is `/home/shipit` — see the Implementation note above — not `/root`;
+   `AGENT_HOME` is read at call time so local mode's `/root` pin still wins.)
+   Land the orchestrator-side `chown` helpers from §7, gated on a new
+   `SHIPIT_SESSION_WORKER_UID` env var on the orchestrator process (default
+   unset = no chown, preserving today's root-writes-everything behavior).
 2. Build the new session-worker image with the `shipit` user, entrypoint,
    `gosu`, `NPM_CONFIG_PREFIX` (§6), pinned `PLAYWRIGHT_BROWSERS_PATH`
    (§8), and per-mount sentinel-gated chown (§2). The image's entrypoint
@@ -659,9 +730,17 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
 6. Update doc 067 to keep non-root as a tracked hardening item with this
    doc as the detailed design.
 
-The orchestrator must also fail-fast at startup if its DB contains
-sessions with containers that boot under UID 1000 but the orchestrator
-itself has `SHIPIT_SESSION_WORKER_UID` unset (e.g. after a config-rollback
-regression). Without that guard, an env-var drift silently flips back to
-root-writes-into-1000-readable-mounts and breaks auth one session at a
-time.
+**Implemented:** the orchestrator fail-fasts at startup on this drift —
+`worker-uid-guard.ts` (`assertWorkerUidConsistency`), wired into `buildApp`
+for containerized prod (skipped in local mode and tests). It persists a
+per-boot marker (`<stateDir>/.shipit-worker-uid`) of the UID it ran under;
+if the marker shows a non-root UID, sessions exist, and
+`SHIPIT_SESSION_WORKER_UID` is now unset, it refuses to start. With the
+gated entrypoint the unset worker reverts to root (so reads still succeed),
+but the rollback is almost always unintended and, crucially, the per-mount
+chown sentinels block a re-chown if the var is later re-set — so
+`root:root` files written during the unset window would strand auth one
+session at a time. A deliberate downgrade sets
+`SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE=1` (after archiving/resetting the
+affected sessions). The marker is not overwritten on a fatal, so re-setting
+the var on the next boot recovers cleanly.

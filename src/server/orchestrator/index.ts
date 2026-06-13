@@ -77,6 +77,7 @@ import type { SessionInfo } from "../shared/types.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
 import { CodexOAuthRefresher } from "./agents/codex/oauth-refresher.js";
 import { repushAgentToken, repushProviderAccountToken } from "./session-credentials.js";
+import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
@@ -158,6 +159,17 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     secretStore, reviewStore, agentReviewStore, generateText,
     isTestMode, runtimeMode,
   } = mgrs;
+
+  // docs/150 Rollout — fail-fast on SHIPIT_SESSION_WORKER_UID drift before we
+  // accept any traffic or restore containers. Containerized prod only: local
+  // mode has no `shipit` worker, and tests inject their own state. Throwing here
+  // aborts buildApp, which exits the process — the intended fail-fast.
+  if (runtimeMode === "containerized" && !isTestMode) {
+    assertWorkerUidConsistency({
+      stateDir,
+      hasPersistedSessions: sessionManager.listAll().length > 0,
+    });
+  }
 
   const app = Fastify({ logger: false });
 

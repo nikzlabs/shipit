@@ -6,7 +6,21 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 # Dash — see docs/168) create a venv and install deps; on Debian bookworm these
 # are separate packages from python3, and PEP 668 means a global pip install is
 # refused outside a venv, so a venv is the supported path.
-RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
+# `gosu` (docs/150): the entrypoint drops to the unprivileged `shipit` user
+# after prepping mounts. See Dockerfile.session-worker.prod for the full why.
+RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+
+# docs/150 §1 — rename the upstream `node` user (UID/GID 1000) to `shipit`.
+RUN groupmod --new-name shipit node \
+ && usermod --login shipit --move-home --home /home/shipit node \
+ && chown -R shipit:shipit /home/shipit
+
+# docs/150 §6 — redirect npm's global prefix + per-user cache into the runtime
+# home so `npm install -g` works as the unprivileged `shipit` user.
+ENV NPM_CONFIG_PREFIX=/home/shipit/.npm-global
+ENV PATH=/home/shipit/.npm-global/bin:${PATH}
+RUN mkdir -p /home/shipit/.npm-global /home/shipit/.npm \
+ && chown -R shipit:shipit /home/shipit/.npm-global /home/shipit/.npm
 
 # Enable corepack so `pnpm` and `yarn` resolve on PATH. See the canonical
 # comment in Dockerfile.session-worker.prod: Node ships npm + bundled corepack,
@@ -39,8 +53,14 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
 # system deps via the playwright CLI and then fetch the chrome-for-testing build
 # via @playwright/mcp's installer. Invoke the pinned bins directly (on PATH)
 # rather than `npx <pkg>`, which would re-fetch an unpinned copy.
-RUN playwright install-deps chromium \
- && playwright-mcp install-browser chrome-for-testing
+# docs/150 §8 — pin browsers to a shared path readable by both build (root) and
+# runtime (`shipit`) users; override HOME on install-browser for Chrome's
+# post-install probe. See Dockerfile.session-worker.prod for the full rationale.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/playwright-browsers \
+ && playwright install-deps chromium \
+ && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && chmod -R a+rX /opt/playwright-browsers
 
 WORKDIR /app
 
@@ -91,15 +111,28 @@ COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branc
 COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
 RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
 
-# Credential symlinks (same as dev/prod images).
+# Credential symlinks (docs/150 §4 — home moved from /root to /home/shipit).
 # .codex/ holds the ChatGPT subscription login written by `codex login`
 # (feature 119). Persisting it on the credentials volume lets the session
 # container pick up the user's subscription instead of the API key.
-RUN mkdir -p /workspace /credentials \
- && ln -s /credentials/.claude /root/.claude \
- && ln -sf /credentials/.claude.json /root/.claude.json \
- && ln -s /credentials/.codex /root/.codex
+RUN mkdir -p /workspace /credentials /home/shipit \
+ && ln -s /credentials/.claude /home/shipit/.claude \
+ && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
+ && ln -s /credentials/.codex /home/shipit/.codex \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
+
+# docs/150 — runtime HOME / AGENT_HOME (single source of truth for agentHome()).
+# Placed after all root build steps so /root/.npm build caches are unaffected.
+ENV HOME=/home/shipit
+ENV AGENT_HOME=/home/shipit
 
 EXPOSE 9100
+
+# docs/150 §2 — root entrypoint preps mounts then drops to `shipit` via gosu.
+# The explicit ENTRYPOINT is load-bearing (dockerode Cmd overrides CMD, not
+# ENTRYPOINT). See Dockerfile.session-worker.prod.
+COPY docker/session-worker/entrypoint.sh /usr/local/bin/shipit-entrypoint
+RUN chmod 0755 /usr/local/bin/shipit-entrypoint
+ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]
 
 CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]

@@ -2,6 +2,27 @@
 
 You are running inside a Docker container managed by ShipIt.
 
+## Runtime user — non-root
+
+You run as the unprivileged user **`shipit`** (UID/GID 1000), **not** root. Your
+home directory is `/home/shipit`. `whoami` reports `shipit` and `id -u` reports
+`1000`. This is a defense-in-depth boundary (docs/150): a prompt-injected or
+mistaken shell command can't modify system paths or read root-only files.
+
+What this means in practice:
+
+- **Writable:** `/workspace`, `/uploads`, `/dep-cache`, `/credentials`, `/tmp`,
+  and your home `/home/shipit` (including `~/.claude`, `~/.codex`, the npm
+  global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
+- **Read-only to you:** `/app` (the worker), `/opt/agent-cli` (the agent CLIs),
+  `/usr/local/bin` shims (`gh`, `shipit`, `shipit-git-credential`), and system
+  dirs. You can run them, but not modify them.
+- **`npm install -g`** works — the global prefix is `~/.npm-global` (on your
+  `PATH`), not the root-owned `/usr/local`. Manually-installed CLIs land there.
+- **`sudo` is not available** and there is no passwordless privilege escalation.
+  If something needs system-level changes, do it via the image / `shipit.yaml`,
+  not at runtime.
+
 ## Filesystem layout
 
 | Path | Description |
@@ -9,8 +30,9 @@ You are running inside a Docker container managed by ShipIt.
 | `/workspace` | Project root. This is the git repo. Your working directory. |
 | `/uploads` | User-uploaded files (outside git, never committed). |
 | `/tmp` | Scratch space — use for temporary files, unpacking archives. |
-| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Write-protected (see below). |
+| `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |
+| `/home/shipit` | Your home directory. Agent credentials (via symlink), npm global prefix, and caches live here. |
 
 ### Write-protected paths
 

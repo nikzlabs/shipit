@@ -36,7 +36,28 @@ FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45ef
 # Dash — see docs/168) create a venv and install deps; on Debian bookworm these
 # are separate packages from python3, and PEP 668 means a global pip install is
 # refused outside a venv, so a venv is the supported path.
-RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap && rm -rf /var/lib/apt/lists/*
+# `gosu` (docs/150): the entrypoint runs as root only to prep the writable
+# mounts, then drops to the unprivileged `shipit` user before exec'ing the
+# worker. gosu is the Debian-native, no-TTY privilege-drop tool (su-exec is
+# Alpine-only). It is intentionally NOT setuid — it relies on PID 1's
+# CAP_SETUID/CAP_SETGID, which composes with `no-new-privileges`.
+RUN apt-get update && apt-get install -y git curl python3 python3-pip python3-venv make g++ zip unzip ripgrep bubblewrap gosu && rm -rf /var/lib/apt/lists/*
+
+# docs/150 §1 — rename the upstream `node` user (UID/GID 1000 in node:*-slim) to
+# `shipit`. Reusing the existing 1000 account avoids a useradd collision and
+# keeps a stable runtime UID with home /home/shipit.
+RUN groupmod --new-name shipit node \
+ && usermod --login shipit --move-home --home /home/shipit node \
+ && chown -R shipit:shipit /home/shipit
+
+# docs/150 §6 — npm's default global prefix (/usr/local) is root-owned, so
+# `npm install -g` (MCP package installs, ad-hoc terminal CLIs) would EACCES as
+# `shipit`. Redirect the global prefix and per-user cache into the runtime
+# home, owned by `shipit`.
+ENV NPM_CONFIG_PREFIX=/home/shipit/.npm-global
+ENV PATH=/home/shipit/.npm-global/bin:${PATH}
+RUN mkdir -p /home/shipit/.npm-global /home/shipit/.npm \
+ && chown -R shipit:shipit /home/shipit/.npm-global /home/shipit/.npm
 
 # Enable corepack so `pnpm` and `yarn` resolve on PATH. Node ships npm directly
 # and bundles corepack, but corepack's shims aren't installed until `corepack
@@ -85,8 +106,19 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
 # via @playwright/mcp's installer. We invoke the pinned bins directly (now on
 # PATH) rather than `npx <pkg>`, which would resolve against /app and re-fetch
 # an unpinned copy from the registry.
-RUN playwright install-deps chromium \
- && playwright-mcp install-browser chrome-for-testing
+#
+# docs/150 §8 — pin the browser to a shared path readable by both the build user
+# (root) and the runtime user (`shipit`). The default install lands under
+# $HOME/.cache/ms-playwright (= /root/.cache), unreachable post-`gosu`. Override
+# HOME on the install-browser line too: Chrome's post-install probe writes
+# prefs/font caches into $HOME/.cache. `chmod a+rX` grants read+traverse to
+# `shipit` without making files world-executable. The runtime path is mirrored
+# in container-lifecycle.ts (PLAYWRIGHT_BROWSERS_PATH).
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+RUN mkdir -p /opt/playwright-browsers \
+ && playwright install-deps chromium \
+ && HOME=/opt/playwright-browsers playwright-mcp install-browser chrome-for-testing \
+ && chmod -R a+rX /opt/playwright-browsers
 
 WORKDIR /app
 
@@ -138,17 +170,36 @@ COPY docker/agent-hooks/block-branch-ops.mjs /etc/shipit/agent-hooks/block-branc
 COPY docker/agent-hooks/managed-settings.json /etc/shipit/managed-settings.json
 RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/block-branch-ops.mjs
 
-# Credential symlinks (same as dev/prod images).
+# Credential symlinks (docs/150 §4 — home moved from /root to /home/shipit).
 # .codex/ holds the ChatGPT subscription login written by `codex login`
 # (feature 119). Persisting it on the credentials volume lets the session
-# container pick up the user's subscription instead of the API key.
-RUN mkdir -p /workspace /credentials \
- && ln -s /credentials/.claude /root/.claude \
- && ln -sf /credentials/.claude.json /root/.claude.json \
- && ln -s /credentials/.codex /root/.codex
+# container pick up the user's subscription instead of the API key. `chown -h`
+# the symlinks themselves to `shipit` so the runtime user owns the links.
+RUN mkdir -p /workspace /credentials /home/shipit \
+ && ln -s /credentials/.claude /home/shipit/.claude \
+ && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
+ && ln -s /credentials/.codex /home/shipit/.codex \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
+
+# docs/150 — the worker's runtime HOME. AGENT_HOME is the single source of truth
+# resolved by agentHome() in the worker, agent CLIs, and terminal. Set here so a
+# direct `docker run` of the image (no orchestrator) still drops into the right
+# home; the orchestrator also sets both in the container env. Placed AFTER all
+# root build steps so npm's /root/.npm build cache mounts are unaffected.
+ENV HOME=/home/shipit
+ENV AGENT_HOME=/home/shipit
 
 ENV NODE_ENV=production
 
 EXPOSE 9100
+
+# docs/150 §2 — root entrypoint preps writable mounts then drops to `shipit` via
+# gosu. The explicit ENTRYPOINT is load-bearing: container-lifecycle.ts sets
+# `Cmd: ["node", …]`, and dockerode's Cmd overrides the Dockerfile CMD but NOT
+# the ENTRYPOINT — without this line the script never runs and the worker boots
+# as root.
+COPY docker/session-worker/entrypoint.sh /usr/local/bin/shipit-entrypoint
+RUN chmod 0755 /usr/local/bin/shipit-entrypoint
+ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]
 
 CMD ["node", "--import", "tsx", "src/server/session/session-worker.ts"]

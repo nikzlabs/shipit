@@ -26,6 +26,12 @@ export const WORKSPACE_SKIP_DIRS = new Set([
   "sessions",
   ".shipit",
   ".inner-shipit",
+  // docs/150 — the non-root entrypoint drops a UID-stamped sentinel DIR into
+  // each writable mount (incl. /workspace in prod) to make the boot-time
+  // `chown -R` a one-shot. It's an empty dir, so git never commits it (git
+  // doesn't track empty dirs), but hide it from the file tree / watcher so it
+  // isn't surfaced as workspace noise. Keep in sync with entrypoint.sh.
+  ".shipit-uid-1000",
 ]);
 
 /**

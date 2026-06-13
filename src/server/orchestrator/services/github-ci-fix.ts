@@ -17,6 +17,7 @@ import type { CIFailureLog } from "../../shared/types/github-types.js";
 import { extractFailedCheckRuns } from "../pr-status-poller.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { ServiceError } from "./types.js";
+import { chownToSessionWorker, chownTreeToSessionWorker } from "../session-worker-uid.js";
 
 // ---- CI fix operations ----
 
@@ -37,6 +38,12 @@ export async function fetchCIFailureLogs(
   if (logDir) {
     fs.mkdirSync(logDir, { recursive: true });
     ensureShipitGitignored(sessionDir!);
+    // docs/150 §7 — these dirs/files are written by the root orchestrator into
+    // the workspace mount but read by the agent's `shipit` user. Hand the
+    // `.shipit` tree and `.gitignore` to the worker UID (no-op unless
+    // SHIPIT_SESSION_WORKER_UID is set).
+    chownTreeToSessionWorker(path.join(sessionDir!, ".shipit"));
+    chownToSessionWorker(path.join(sessionDir!, ".gitignore"));
   }
 
   const logs: CIFailureLog[] = [];
@@ -60,6 +67,7 @@ export async function fetchCIFailureLogs(
       const safeName = check.name.replace(/[^a-zA-Z0-9_-]/g, "_");
       const absPath = path.join(logDir, `${safeName}.log`);
       fs.writeFileSync(absPath, cleanLog, "utf-8");
+      chownToSessionWorker(absPath); // docs/150 §7 — agent reads as `shipit`
       // Store relative path — the agent runs from the workspace root
       logFilePath = `.shipit/ci-logs/${safeName}.log`;
     }

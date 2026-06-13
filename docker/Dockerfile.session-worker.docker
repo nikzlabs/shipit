@@ -42,3 +42,12 @@ RUN mkdir -p /usr/local/lib/docker/cli-plugins && \
 RUN apt-get update && apt-get install -y --no-install-recommends \
     systemd \
     && rm -rf /var/lib/apt/lists/*
+
+# docs/150 — the base image now drops to the unprivileged `shipit` user. Host
+# journal files (read-only mounts for docs/128 ops sessions) are group-readable
+# by `systemd-journal`/`adm`, not world-readable, so add `shipit` to those
+# groups or `journalctl -D /var/log/journal` would EACCES post-migration. The
+# `systemd-journal` group is created by the systemd install above; `adm` exists
+# in the Debian base. Best-effort (`|| true`) so an image variant lacking a
+# group never fails the build.
+RUN usermod -aG systemd-journal,adm shipit || true

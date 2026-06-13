@@ -9,6 +9,7 @@ import { findMarkdownFiles } from "../markdown.js";
 import type { DocEntry } from "../../shared/types.js";
 import { ServiceError } from "./types.js";
 import type { UploadedFile } from "../../shared/types.js";
+import { chownToSessionWorker } from "../session-worker-uid.js";
 
 /** Get file tree for a directory. */
 export async function getFileTree(dir: string) {
@@ -248,6 +249,10 @@ export async function saveUploadedFile(
   // Write the file
   const filePath = path.join(uploadsDir, finalName);
   await fs.writeFile(filePath, data);
+  // docs/150 §7 — the orchestrator (root) writes into the per-session uploads
+  // mount; chown so the agent's `shipit` user can read its own attachments.
+  // No-op unless SHIPIT_SESSION_WORKER_UID is set.
+  chownToSessionWorker(filePath);
 
   return {
     name: finalName,

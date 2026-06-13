@@ -86,6 +86,11 @@ services:
     init: true
     environment:
       RUNTIME_MODE: local
+      # docs/150 §9 — local mode hosts agent processes in-process and keeps the
+      # orchestrator on root with HOME=/root. Pin AGENT_HOME so agentHome()
+      # (whose default is now /home/shipit) resolves to /root here, matching the
+      # dogfood image. Belt-and-suspenders over the image ENV.
+      AGENT_HOME: /root
       # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
       # inline in the `command:` above, not here, because we run two
       # processes with different ports inside this single service.
