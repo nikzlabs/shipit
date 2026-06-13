@@ -52,6 +52,23 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "files.pythonhosted.org",
 ];
 
+/**
+ * Baked-in GitHub egress CIDR ranges, used as a fallback when the live
+ * `https://api.github.com/meta` fetch fails or returns nothing (so `git` and
+ * release/raw downloads stay reachable even if the meta endpoint is briefly
+ * unavailable at container-create time). These change rarely; the live fetch is
+ * authoritative when it succeeds. Source: GitHub `meta` `web`/`api`/`git`.
+ */
+export const EGRESS_GITHUB_CIDRS_FALLBACK: readonly string[] = [
+  "140.82.112.0/20",
+  "143.55.64.0/20",
+  "185.199.108.0/22",
+  "192.30.252.0/22",
+  "20.201.28.0/22",
+  "20.205.243.0/24",
+  "2606:50c0::/32",
+];
+
 // ---------------------------------------------------------------------------
 // IP / CIDR validation
 // ---------------------------------------------------------------------------

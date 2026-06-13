@@ -27,6 +27,7 @@ import {
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
+import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -64,6 +65,15 @@ export interface LifecycleDeps {
   dockerImageName?: string;
   dockerProxyHost?: string;
   dockerProxyPort?: number;
+  /**
+   * docs/172 Gap 1 (SHI-90) — Tier A egress enforcement. When `egressEnforce` is
+   * true, after the agent container starts a privileged installer sidecar is run
+   * in its netns to apply the default-deny iptables/ipset firewall (using
+   * `egressSidecarImage`). Both come from `SESSION_EGRESS_ENFORCE` /
+   * `SESSION_EGRESS_SIDECAR_IMAGE`; absent/false → no-op (byte-for-byte unchanged).
+   */
+  egressEnforce?: boolean;
+  egressSidecarImage?: string;
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -617,6 +627,29 @@ export async function createContainer(
 
     sc.containerIp = networkInfo.IPAddress;
     sc.workerUrl = `http://${sc.containerIp}:${deps.workerPort}`;
+
+    // docs/172 Gap 1 (SHI-90) Tier A — install the default-deny egress firewall
+    // into the agent's netns via a privileged sidecar, BEFORE the container is
+    // declared ready (no user turn has run yet, so the injected-agent surface
+    // doesn't exist until after this point). Fail-closed: if the firewall can't
+    // be installed we throw, and the catch below tears the container down rather
+    // than run it with unrestricted egress. Gated on the flag → default no-op.
+    if (deps.egressEnforce) {
+      if (!deps.egressSidecarImage) {
+        throw new Error("SESSION_EGRESS_ENFORCE=1 but SESSION_EGRESS_SIDECAR_IMAGE is not set");
+      }
+      const inputs = await buildTierAEgressInputs();
+      await installEgressFirewall(deps.docker, {
+        agentContainerId: container.id,
+        sidecarImage: deps.egressSidecarImage,
+        inputs,
+        labels: { ...deps.baseLabels(), "shipit-parent-session": config.sessionId },
+      });
+      console.log(
+        `[egress:${config.sessionId}] Tier A firewall installed ` +
+          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)`,
+      );
+    }
 
     // Wait for the worker process to be healthy before declaring the container ready.
     if (!deps.skipHealthCheck) {
