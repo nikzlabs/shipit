@@ -101,11 +101,14 @@ sessions:
 When the post-turn flow sees `session.mergedAt` set, it runs the detection. If
 progressed:
 
-1. `sessionManager.clearMerged(id)` — **new** method, sets `merged_at = NULL`
-   (mirrors how `setPrStatus` already clears `closed_at` on reopen). This is what
-   pulls the session back into **Active**, removes it from the Done group, and
-   reverts it to the normal (slower) disk-eviction ladder. No separate pin
-   needed.
+1. `sessionManager.clearMerged(id)` — **new** method, sets `merged_at = NULL` and
+   stashes a display-only breadcrumb of the prior PR (number + url + title) for
+   the "previously merged" note (mirrors how `setPrStatus` already clears
+   `closed_at` on reopen). Clearing `merged_at` is what pulls the session back
+   into **Active**, removes it from the Done group, gives it the gray fresh-session
+   indicator, and reverts it to the normal (slower) disk-eviction ladder. No
+   separate pin needed. The breadcrumb is display-only — it must not feed
+   `resolvedAt()`, grouping, status color, or the eviction tier.
 2. `setPrStatus(id, null)` — clears the persisted merged summary so the client's
    snapshot reconciliation prunes the stale "merged" card.
 3. Poller `reArm(sessionId)` — drop from `mergedSessions` and `trackSession`
@@ -137,6 +140,30 @@ Two reclaim/visibility surfaces still matter, and both are handled by the re-arm
 
 Requirement: **a merged-but-progressed session is never visually archived and
 never fast-evicted.** It is treated as a plain live session.
+
+## Re-armed card presentation
+
+The re-armed session shows a **"previously merged"** breadcrumb, but its status
+indicator is **gray — identical to a fresh / no-PR session**, not the merged
+purple. The two parts come from different places:
+
+- **Gray comes for free.** The sidebar row's "merged" look is not a color choice
+  — it is the *presence* of `merged_at`, which places the row in the "Recently
+  resolved" group under the `GitMergeIcon` (`SessionSidebar.tsx`). Clearing
+  `merged_at` on re-arm pulls the row back into Active/New with no status glyph
+  (the per-row indicator returns `null` for a session with no live PR card /
+  CI). So "gray like a new session" requires **no extra styling work** — it is
+  the natural consequence of the un-merge.
+- **The breadcrumb needs a retained reference.** Because re-arm clears both
+  `merged_at` and `pr_status`, the prior PR identity is gone. To still render
+  "previously merged #N", retain a **lightweight breadcrumb** on the session —
+  the prior PR number + url (+ title). This is display-only: it must **not**
+  feed `resolvedAt()`, grouping, the status color, or the eviction tier. It is
+  surfaced on the re-armed **"ready"** card (`phase: "ready"`) as a subtle note,
+  e.g. "Previously merged #N · ready for a new PR".
+
+Net: a fresh-looking (gray, Active) session that quietly remembers it shipped
+once.
 
 ## State transitions
 
@@ -170,17 +197,18 @@ never fast-evicted.** It is treated as a plain live session.
   "merged" can be a false positive. Re-arm only fires on real new local work +
   rebased base, so a false-merged session that later shows new work simply gets a
   PR — desirable, not harmful.
-- **Card wording.** Default: re-armed card reads as a clean **"no PR / ready"**.
-  (Open question below.)
+- **Card wording.** Resolved (see "Re-armed card presentation").
 
 ## Key files
 
 | Area | File | Change |
 |---|---|---|
 | Detection | `src/server/shared/git.ts` | Add two-dot diff + `advancedBeyondMergedBase(base)` (uses existing `mergeBase()`); do **not** reuse three-dot `diffStatVsBranch` |
-| Un-merge | `src/server/orchestrator/sessions.ts` | Add `clearMerged(id)` (sets `merged_at = NULL`) |
+| Un-merge | `src/server/orchestrator/sessions.ts` | Add `clearMerged(id)` (sets `merged_at = NULL`, stashes prior-PR breadcrumb); add breadcrumb column + `toRow`/`fromRow` + migration |
 | Re-arm | `src/server/orchestrator/pr-status-poller.ts` | `reArm(sessionId)` — drop from `mergedSessions`, `trackSession` |
-| Post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Replace `if (session.mergedAt) return` with detect → re-arm → fall through |
+| Post-turn | `src/server/orchestrator/services/pr-lifecycle.ts` | Replace `if (session.mergedAt) return` with detect → re-arm → fall through; pass the breadcrumb onto the `ready` card |
+| Card | `src/client/components/PrLifecycleCard.tsx` | Render "Previously merged #N" note on the re-armed `ready` card |
+| Sidebar | `src/client/components/SessionSidebar.tsx` | No change — gray/Active is the natural result of cleared `merged_at`; confirm the row leaves "Recently resolved" |
 | Client | `src/client/stores/pr-store.ts` | Verify snapshot reconciliation prunes the merged card; SSE session-update carries cleared `merged_at` so the session regroups to Active |
 
 ## Testing
@@ -197,5 +225,4 @@ never fast-evicted.** It is treated as a plain live session.
 
 ## Open questions
 
-- **Re-armed card wording:** clean "no PR / ready" (default) vs. a small
-  "previously merged" breadcrumb. Functionally identical; this is a UX call.
+_None — see "Re-armed card presentation"._
