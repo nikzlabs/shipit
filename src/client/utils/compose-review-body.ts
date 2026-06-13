@@ -112,11 +112,13 @@ export function composeReviewMessage(filePath: string, opts: ReviewComposition):
     const reviewerName = opts.reviewerName ?? displayAgentName(opts.reviewerAgentId);
     lines.push(
       `Delegate this review to ${reviewerName} — a different model, for a genuine`,
-      "second opinion. Run `shipit agent run` and pass the brief on stdin:",
+      `second opinion. Run \`shipit agent run --agent ${opts.reviewerAgentId} --prompt-file -\``,
+      "and feed it the review brief below on stdin (write the brief to a file or use",
+      "a heredoc — your choice; don't indent the heredoc terminator).",
       "",
-      `    shipit agent run --agent ${opts.reviewerAgentId} --prompt-file - <<'EOF'`,
-      ...reviewBrief(filePath).map((l) => `    ${l}`),
-      "    EOF",
+      "--- review brief (pass to the reviewer on stdin) ---",
+      ...reviewBrief(filePath),
+      "--- end brief ---",
       "",
       `Take ${reviewerName}'s markdown output and call the \`submit_review\` MCP tool`,
       `with the file path, that markdown, and reviewer_label: "Reviewed by ${reviewerName}".`,

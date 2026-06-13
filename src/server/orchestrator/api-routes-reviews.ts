@@ -289,10 +289,15 @@ export async function registerReviewRoutes(
         reply.code(409).send({ error: "No active session runner — submit_review must run inside a review turn." });
         return;
       }
-      // Only callable inside a review turn, for only the file under review.
-      if (!runner.activeReviewFilePath) {
+      // Only callable inside an ACTIVE review turn, for only the file under
+      // review. `activeReviewFilePath`/`activeReviewId` are reset at the next
+      // turn START, not on completion, so they linger after a review turn ends;
+      // gating on `runner.running` closes that window so a late/stale tool call
+      // (after finalizeInProgress) can't patch recordedCards and re-run
+      // replaceInProgress against an already-finalized turn.
+      if (!runner.running || !runner.activeReviewFilePath) {
         reply.code(403).send({
-          error: "submit_review is only callable inside a review turn (started by /review or “Ask agent to review”).",
+          error: "submit_review is only callable inside an active review turn (started by /review or “Ask agent to review”).",
         });
         return;
       }

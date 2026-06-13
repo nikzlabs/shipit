@@ -159,9 +159,29 @@ describe("Integration: plain-text AI review", () => {
 
     const res = await submitReview({ filePath: planPath, markdown: "x" });
     expect(res.statusCode).toBe(403);
-    expect((res.json() as { error: string }).error).toContain("only callable inside a review turn");
+    expect((res.json() as { error: string }).error).toContain("active review turn");
 
     lastClaude.finish();
+    client.close();
+  });
+
+  it("rejects a stale submit after the review turn has finished (no out-of-turn card)", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive();
+
+    client.send({ type: "send_review_message", text: "Review it.", sessionId, reviewFilePath: planPath });
+    await waitForClaude(() => lastClaude);
+
+    // The turn ends. `activeReviewFilePath`/`activeReviewId` linger until the next
+    // turn starts, but `running` flips to false — a late tool call must not pass.
+    lastClaude.finish();
+    await new Promise((r) => setTimeout(r, 50));
+
+    const res = await submitReview({ filePath: planPath, markdown: "late finding" });
+    expect(res.statusCode).toBe(403);
+    expect((res.json() as { error: string }).error).toContain("active review turn");
+    expect(await historyAiReviews()).toHaveLength(0);
+
     client.close();
   });
 
