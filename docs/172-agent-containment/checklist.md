@@ -47,17 +47,22 @@ tracker as separate issues. None implemented yet.
         persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env
         injection currently on the branch.
   - [ ] **Settings UI** — default-on global toggle (fail-secure, applies on container
-        restart) + per-session override + allowlist editor; browser-only routes added to
-        SHI-129 `HARD_DENIED_GLOBALS` + golden route-table updated.
+        restart) + per-session override + allowlist editor. Browser-only routes are
+        protected by SHI-129's per-route default-deny (just don't set
+        `containerAccessible`); optionally add high-value ones to `HARD_DENY_PREFIXES`
+        (`isHardDeniedGlobal`) as a backstop; update the golden route-table test.
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.
 
 ## P1
 
-- [ ] **Gap 3 — per-repo trust gate.** Defer `agent.install` and compose
-      `command:`/`build:` on first open of an untrusted remote until the user accepts;
-      cache the decision per remote; auto-trust ShipIt-created template repos.
+- [x] **Gap 3 — per-repo trust gate (shipped, docs/178).** Defers `agent.install` and
+      compose `command:`/`build:` on first open of an untrusted remote until the user
+      accepts via `RepoTrustBanner` (`POST /api/repos/trust`); decision persisted per
+      remote in `RepoStore` (`trusted` column, `isTrusted()`/`setTrusted()`); warm-pool
+      pre-install gated; ShipIt-created template repos trusted by construction.
+      (`service-manager-setup.ts`, `docs/178-repo-trust-gate`)
 
 ## P2
 

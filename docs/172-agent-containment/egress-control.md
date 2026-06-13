@@ -141,10 +141,13 @@ separate follow-up (it builds on the Tier C hook).
 
 ## Settings & UX (browser-only, SHI-129-protected)
 
-All egress configuration is mutated **only from the browser** — the routes carry no
-`containerAccessible` flag and are added to SHI-129's `HARD_DENIED_GLOBALS`, so the
-contained agent cannot reach them to loosen its own containment. Stored orchestrator-side
-alongside MCP servers / secrets.
+All egress configuration is mutated **only from the browser**. SHI-129's guard is
+default-deny per route: a route is reachable from a container only if it declares
+`config: { containerAccessible: true }`, so the egress settings routes are protected
+simply by **not** setting that flag — the contained agent cannot reach them to loosen its
+own containment. High-value ones may additionally be listed in `HARD_DENY_PREFIXES`
+(`isHardDeniedGlobal`) as a backstop, but that is belt-and-suspenders, not the mechanism.
+Stored orchestrator-side alongside MCP servers / secrets.
 
 - **Global toggle (default ON, fail-secure).** Two modes for the trusted user:
   *Contained* (default-deny + allowlist + prompts) and *Open* (unrestricted egress, no
@@ -193,7 +196,8 @@ as an operator default / fail-secure floor).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
 - `egress-allowlist.ts` (reused) — host matcher + composition.
-- Settings store field + browser-only routes (added to `HARD_DENIED_GLOBALS`; golden
+- Settings store field + browser-only routes (default-protected by *not* setting
+  `containerAccessible`; optionally add to `HARD_DENY_PREFIXES` as a backstop; golden
   route-table test updated) — `api-routes-*.ts`, `api-container-guard.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.

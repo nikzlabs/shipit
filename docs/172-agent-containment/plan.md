@@ -219,24 +219,22 @@ improvement; for the *active* adversary in the threat model (injected agent, mal
 - **Gap 1 egress control** as the backstop: even an extracted token can't be shipped out
   if egress is default-deny. None of these fully substitutes for the others; they compose.
 
-### Gap 3 — No trust boundary before repo-controlled code runs
+### Gap 3 — No trust boundary before repo-controlled code runs *(shipped — docs/178)*
 
-Opening a freshly cloned repo runs its `shipit.yaml` `agent.install` shell commands
-automatically, with no user confirmation: `readAgentConfig()` at session creation
-(`session-container.ts:836`) → `runInstall()` fired immediately
-(`service-manager-setup.ts:300-306`) → executed in-container via `POST /install`
-(`session-worker.ts:632`). Compose services (`command:` / `build:`) start the same way.
-A search for a trust prompt/boundary finds none — "trust" appears only in code comments.
+**Status: shipped (`docs/178-repo-trust-gate`).** Previously, opening a freshly cloned
+repo ran its `shipit.yaml` `agent.install` shell commands automatically with no user
+confirmation, and compose `command:`/`build:` started the same way — the article's
+**pre-trust code execution** vulnerability ("project settings and hooks executed before
+trust prompts").
 
-This is precisely the article's **pre-trust code execution** vulnerability ("project
-settings and hooks executed before trust prompts"). Their fix was to defer all
-repo-controlled config parsing/execution until after an explicit trust acceptance.
-
-**Mitigation:** a per-repo trust gate. First time a given remote is opened, defer
-`agent.install` and compose `command:`/`build:` until the user accepts (one click, like
-git's `safe.directory` / VS Code workspace trust). Cache the decision per remote so it's
-a one-time prompt, not approval fatigue. Repos created *by* ShipIt from templates are
-trusted by construction. **Full design: `docs/178-repo-trust-gate`.**
+It is now gated by a per-remote trust boundary. `service-manager-setup.ts`
+(`if (remoteUrl && !repoStore.isTrusted(remoteUrl)) { …defer… return; }`) defers
+`agent.install` and compose `command:`/`build:` for any remote the user has not trusted;
+`RepoStore` persists the decision (a `trusted` column with `isTrusted()`/`setTrusted()`),
+and the warm-pool pre-install path is gated too. The user accepts via a one-click
+`RepoTrustBanner` (`POST /api/repos/trust`); repos ShipIt creates from templates are
+trusted by construction. The clone, file tree, diffs, and agent chat still work while
+untrusted — only foreign-code execution is gated. Full design: `docs/178-repo-trust-gate`.
 
 ### Gap 4 — Local/agent-influenced inputs are trusted
 
@@ -278,7 +276,7 @@ provisioned then remounted read-only).
 | ✅ | Open orchestrator API to containers (SHI-129) | A prompt-injected agent could `curl` the full control plane (write secrets, add MCP servers) — and widen its own Gap 1 egress allowlist | Done — bridge-IP origin guard default-denies container callers to a narrow per-session allowlist (`docs/201-container-api-trust-boundary/`) |
 | P0 | Gap 2-R — broker is caller-blind | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
-| P1 | Gap 3 — repo trust gate | Stops "open repo == run its code" | Per-remote trust prompt, deferred install/compose |
+| ✅ | Gap 3 — repo trust gate | Stops "open repo == run its code" | Done — per-remote trust gate defers install/compose until the user trusts the remote (`service-manager-setup.ts`, `RepoStore.isTrusted`, `RepoTrustBanner`; `docs/178-repo-trust-gate`) |
 | P2 | Gap 6 — read-only mounts | Structural, low-risk | Downgrade mounts to `:ro` where possible |
 | P2 | Gap 5 — gVisor / seccomp / ro-rootfs | Hardens the weakest tier | Evaluate `runsc`, custom seccomp, `ReadonlyRootfs` |
 | —  | Gap 4 — untrusted-input lens | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
@@ -302,10 +300,10 @@ provisioned then remounted read-only).
   env, network mode (Gaps 1, 5, 6).
 - `src/server/orchestrator/session-container.ts` — network creation (Gap 1).
 - `src/server/orchestrator/github-auth.ts:225` — git credential helper (Gap 2).
-- `src/server/orchestrator/service-manager-setup.ts:300-306`,
-  `src/server/session/session-worker.ts:632` — `agent.install` auto-execution (Gap 3).
-- `src/server/orchestrator/compose-generator.ts:351-421` — compose validation (solid;
-  `command:`/`build:` still run — Gap 3).
+- `src/server/orchestrator/service-manager-setup.ts:306`,
+  `src/server/session/session-worker.ts:689` — `agent.install` + compose `command:`/`build:`
+  execution, now deferred for untrusted remotes by the docs/178 trust gate (Gap 3, shipped).
+- `src/server/orchestrator/compose-generator.ts:351-421` — compose validation (solid).
 - `src/server/orchestrator/session-credentials.ts`, `session-agent-env.ts` — credential
   provisioning into the container (Gaps 2, 4).
 
