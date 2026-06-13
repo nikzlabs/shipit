@@ -471,6 +471,24 @@ Helper: `chownWorkspaceGitToSessionWorker(workspaceDir)` in
 unset). The worktree files themselves are written by the agent *as the worker
 uid*, so only git's own writes need the handoff.
 
+**Cost — bounded by the object fanout, not the object count.** This runs on the
+post-turn auto-commit *every turn*, so it can't be O(objects). Session clones run
+`gc.auto=0`, so loose objects accumulate unboundedly over a session's life
+(measured 7k+ on the ShipIt repo, and growing). The immutable `0444`
+content-addressed data files under `.git/objects/` are the entire file count but
+need no handoff — the worker only ever *reads* an existing object or creates a
+*new* one, never rewrites one in place. So the walk chowns the object store dir
+and its immediate subdirectories (the fanout dirs, `pack/`, `info/` — so the
+worker can add new objects) and then **stops, without even `lstat`-ing the data
+files**. Everything outside `objects/` (index, the append-only reflogs under
+`.git/logs/`, refs, packed-refs, HEAD) is chowned in full — that's where git's
+rewritten/appended files live and a root-owned copy would block the worker.
+Measured on the ShipIt repo's own `.git` (7k loose objects): a naïve full-tree
+chown is ~54 ms/turn and climbs with the loose-object count; the fanout-bounded
+walk is ~2 ms and stays flat. (The one-shot whole-tree chowns at *session
+creation* — `cloneFromCache`, fork — keep the simple full `chownTreeToSessionWorker`:
+they pay the cost once, off the hot path, and must also chown the worktree.)
+
 ### 8. Playwright browser cache must be reachable by `shipit`
 
 `docker/Dockerfile.session-worker.{dev,prod}` calls
