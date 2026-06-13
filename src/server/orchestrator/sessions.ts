@@ -49,6 +49,8 @@ interface SessionRow {
   pinned_at: string | null;
   /** docs/196 — JSON `SessionMergeWatch` for the notify-on-merge watch, or NULL. */
   merge_watch: string | null;
+  /** docs/194 — JSON string[] of applied merge→issue-lifecycle effect keys, or NULL. */
+  merge_issue_effects: string | null;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -685,6 +687,55 @@ export class SessionManager {
         "UPDATE sessions SET closed_at = NULL WHERE id = ? AND closed_at IS NOT NULL",
       ).run(id);
     }
+  }
+
+  /**
+   * docs/194 — effect-level fire-once guard for the merge→issue-lifecycle writes.
+   * `key` is the effect's natural identity (PR number + issue id + verb). Returns
+   * true once {@link markAppliedMergeIssueEffect} has recorded `key` for this
+   * session, so the merge-completed status flip / resolved-by comment can be
+   * skipped on a re-fire (a viewer reconnect wipes the poller's in-memory
+   * `mergedSessions` guard; this persisted set is what makes the writes idempotent
+   * across reconnects and restarts). Corrupt JSON is treated as "not applied".
+   */
+  hasAppliedMergeIssueEffect(id: string, key: string): boolean {
+    const row = this.db
+      .prepare("SELECT merge_issue_effects FROM sessions WHERE id = ?")
+      .get(id) as { merge_issue_effects: string | null } | undefined;
+    if (!row?.merge_issue_effects) return false;
+    try {
+      const keys = JSON.parse(row.merge_issue_effects) as string[];
+      return Array.isArray(keys) && keys.includes(key);
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * docs/194 — record that a merge→issue-lifecycle effect identified by `key` has
+   * been applied for this session, so a later re-fire skips it. Idempotent: a key
+   * already present is a no-op. Best-effort — the caller marks only after the
+   * effect succeeds, so a transient tracker failure leaves the key unset and a
+   * later re-fire retries it.
+   */
+  markAppliedMergeIssueEffect(id: string, key: string): void {
+    const row = this.db
+      .prepare("SELECT merge_issue_effects FROM sessions WHERE id = ?")
+      .get(id) as { merge_issue_effects: string | null } | undefined;
+    let keys: string[] = [];
+    if (row?.merge_issue_effects) {
+      try {
+        const parsed = JSON.parse(row.merge_issue_effects) as string[];
+        if (Array.isArray(parsed)) keys = parsed;
+      } catch {
+        // Corrupt/legacy JSON — overwrite with a fresh array rather than crash.
+      }
+    }
+    if (keys.includes(key)) return;
+    keys.push(key);
+    this.db
+      .prepare("UPDATE sessions SET merge_issue_effects = ? WHERE id = ?")
+      .run(JSON.stringify(keys), id);
   }
 
   /**

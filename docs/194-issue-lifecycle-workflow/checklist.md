@@ -14,6 +14,11 @@ Implementation, roughly in dependency order:
 - [x] No pointer at all → no-op / no comment (multi-PR case); closed-unmerged → no-op (only fires on `merged_at`)
 - [x] Provenance card for the completion write
 
+## Idempotency (duplicate-cards-on-reconnect fix)
+- [x] Layer 1: persisted, effect-level fire-once guard keyed by `${prNumber}:${issueId}:${verb}` (`SessionManager.hasAppliedMergeIssueEffect` / `markAppliedMergeIssueEffect`, column `merge_issue_effects`) — gates the status flip, resolved-by comment, and progress comment independently; marked only on success so a transient tracker failure still retries (`issue-lifecycle.ts` `runMergeEffect`)
+- [x] Layer 2: deterministic `cardId` (`issue-write-${sessionId}-${prNumber}-${issueId}-${verb}`) for merge-driven cards so the idempotent-by-id client store collapses a re-fire; seed path keeps random id
+- [x] Tests: second-call no-op (no duplicate write/card), refs no-op, deterministic card id, retry-after-failure (`issue-lifecycle.test.ts`); poller re-entrancy + guarded-effect-once (`pr-status-poller.test.ts`); persisted guard round-trip + corrupt-JSON (`sessions.test.ts`)
+
 ## Agent guidance
 - [x] Document `status started` (non-seeded) + the `Closes`/`Refs <pointer>` conventions in `shipit-docs/issues.md`
 - [x] Extend PR-creation guidance in `agent-instructions.ts` (Closes for finishing PR, Refs for partial/progress)

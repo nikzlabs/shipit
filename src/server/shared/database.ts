@@ -571,6 +571,17 @@ const MIGRATIONS: Migration[] = [
       update.run(root, r.id);
     }
   },
+  // docs/194 — effect-level fire-once guard for the merge→issue-lifecycle writes.
+  // `merge_issue_effects` holds a JSON array of applied-effect keys (one per
+  // `Closes`/`Refs` write a merged PR triggered, keyed by PR number + issue id +
+  // verb). The PR poller's in-memory `mergedSessions` guard is wiped on every
+  // viewer reconnect (`trackSession`), which used to let each reconnect re-fire
+  // the same `status completed` / resolved-by comment and spam duplicate cards.
+  // Persisting the applied keys makes those writes idempotent across reconnects
+  // and orchestrator restarts. NULL = no merge effects applied yet.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merge_issue_effects TEXT");
+  },
 ];
 
 export class DatabaseManager {

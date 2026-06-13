@@ -154,6 +154,48 @@ may both fire — that's harmless (closing a closed issue is a no-op) and ShipIt
 comment + card still add the value. We don't depend on the native behavior; it's
 just a benign duplicate.
 
+#### The completed-on-merge writes must be effect-level idempotent
+
+The `onMergedPr` callback is **re-entrant**. The poller's only in-memory
+fire-once edge is `mergedSessions`, and `trackSession()` deletes the session from
+it on **every viewer reconnect** (a deliberate recovery affordance —
+`loadPersisted()` likewise refuses to re-seed it so a rate-limit-induced false
+promotion can't wedge a session). So each reconnect re-promotes the
+already-merged PR and re-fires `onMergedPr` → `applyMergedPrIssueRefs`. Before the
+fix this re-ran the `status completed` flip, re-posted the resolved-by comment,
+and minted a **new random `cardId`** each time, so the client (which dedupes
+issue-write cards by `cardId`) rendered N identical "Set status … Done → Done"
+cards — one per reconnect (observed live: 3 reconnects → 3 cards).
+
+The fix mirrors docs/196's notify-on-merge watch, which survives reconnects
+because it owns a **persisted** `delivered` state machine as a second guard. The
+docs/194 path now has the same:
+
+- **Layer 1 — persisted, effect-level fire-once guard (the real fix).** Each
+  brokered write is gated by a natural-identity key
+  (`${prNumber}:${issueId}:${verb}`, where verb ∈ `completed` / `resolved-comment`
+  / `referenced-comment`) recorded on the session row via
+  `SessionManager.hasAppliedMergeIssueEffect` / `markAppliedMergeIssueEffect`
+  (column `merge_issue_effects`, a JSON `string[]`). The status flip, the
+  resolved-by comment, and the progress comment each get their **own** key, so the
+  "post the resolved-by comment even if the status flip failed" semantics is
+  preserved while making each write fire once. The key is marked **only after the
+  write succeeds**, so a transient tracker failure leaves it unset and a later
+  re-fire (reconnect or restart reconcile) retries it. Best-effort throughout —
+  never throws into the poller. (`runMergeEffect` in `issue-lifecycle.ts`.)
+- **Layer 2 — deterministic `cardId` (defense-in-depth).** Merge-driven cards are
+  minted with `issue-write-${sessionId}-${prNumber}-${issueId}-${verb}` instead of
+  a random UUID, so the client store's idempotent-by-`cardId` upsert collapses any
+  re-fire even if Layer 1 ever regresses. Scoped to the merge path; the seed
+  (`started`) path keeps a random id since it fires exactly once at session
+  creation.
+
+General principle (worth remembering elsewhere): a card being **permanent +
+idempotent-by-id** guarantees it RENDERS once; it does **not** guarantee its
+side EFFECT executes once. Any card emitted from a re-entrant trigger
+(poller/watcher/retry loop) needs an effect-level idempotency key keyed by the
+action's natural identity — not by an in-memory edge that a reconnect can wipe.
+
 ### Where this respects the multi-PR thread
 
 docs/156's insight was that the **issue** is the cross-PR coordination log. This

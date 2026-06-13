@@ -312,6 +312,63 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/194: merge→issue-lifecycle fire-once guard", () => {
+    it("reports a key as applied only after it is marked", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(false);
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed");
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(true);
+    });
+
+    it("scopes keys per session and per effect", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.track("sess-2", "Test");
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed");
+
+      // Different effect key on the same session.
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:resolved-comment")).toBe(false);
+      // Same key on a different session.
+      expect(mgr.hasAppliedMergeIssueEffect("sess-2", "7:42:completed")).toBe(false);
+    });
+
+    it("accumulates multiple keys and is idempotent on re-mark", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:1:completed");
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:2:completed");
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:1:completed"); // duplicate — no-op
+
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:1:completed")).toBe(true);
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:2:completed")).toBe(true);
+      const raw = dbManager.db
+        .prepare("SELECT merge_issue_effects FROM sessions WHERE id = ?")
+        .get("sess-1") as { merge_issue_effects: string };
+      expect(JSON.parse(raw.merge_issue_effects)).toEqual(["7:1:completed", "7:2:completed"]);
+    });
+
+    it("survives a manager restart (DB round-trip)", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed");
+
+      const mgr2 = new SessionManager(dbManager);
+      expect(mgr2.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(true);
+    });
+
+    it("treats corrupt JSON as not-applied without crashing", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      dbManager.db.prepare("UPDATE sessions SET merge_issue_effects = ? WHERE id = ?").run("{not-json", "sess-1");
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(false);
+      // A subsequent mark recovers (overwrites the corrupt value).
+      expect(() => mgr.markAppliedMergeIssueEffect("sess-1", "7:42:completed")).not.toThrow();
+      expect(mgr.hasAppliedMergeIssueEffect("sess-1", "7:42:completed")).toBe(true);
+    });
+  });
+
   describe("markClosed / reopen", () => {
     it("stamps closed_at and demotes the session to Recently resolved", () => {
       const mgr = new SessionManager(dbManager);
