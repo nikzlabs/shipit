@@ -186,8 +186,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   });
 
   // ---- Container manager (Docker isolation) ----
-  const { containerManager, dockerProxyServer, egressProxyServer } = await setupContainerManager({
-    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, credentialStore,
+  const { containerManager, dockerProxyServer } = await setupContainerManager({
+    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode,
   });
 
   // ---- Docker instance for memory stats ----
@@ -2075,7 +2075,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
   });
   registerShutdownHook(app, {
     startupTimer, authManagers, runnerRegistry,
-    dockerProxyServer, egressProxyServer, containerManager, databaseManager,
+    dockerProxyServer, containerManager, databaseManager,
   });
 
   // docs/146 — minimal test-surface decorations. Integration tests need

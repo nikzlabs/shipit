@@ -36,14 +36,14 @@ tracker as separate issues. None implemented yet.
   **Currently on the branch:**
   - [x] Allowlist matcher (`egress-allowlist.ts` + test) — base + `SESSION_EGRESS_ALLOWLIST`
         + live MCP hosts; suffix matching rejects look-alikes. **Keep** — reused by Tier C.
-  - [ ] **Revert the interim explicit-proxy slice** (superseded by the gateway; it presents
-        a non-enforcing `SESSION_EGRESS_PROXY` flag that looks like protection): `egress-proxy.ts`
-        + test, the `buildEnv` `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` injection in
-        `container-lifecycle.ts` + its test, `setEgressProxy` in `session-container.ts`, the
-        `app-lifecycle.ts` startup, and the `index.ts`/`shutdown-manager.ts` wiring. The
-        `CONNECT`-gating logic is salvaged into Tier C's transparent proxy. Trim the
-        `SECURITY-MODEL.md` + `shipit-docs/environment.md` egress copy that describes the
-        env-var mechanism as shipped.
+  - [x] **Reverted the interim explicit-proxy slice** (superseded by the gateway; it
+        presented a non-enforcing `SESSION_EGRESS_PROXY` flag that looked like protection):
+        deleted `egress-proxy.ts` + test, removed the `buildEnv`
+        `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` injection in `container-lifecycle.ts` + its
+        test, `setEgressProxy` in `session-container.ts`, the `app-lifecycle.ts` startup,
+        and the `index.ts`/`shutdown-manager.ts` wiring. Trimmed the `SECURITY-MODEL.md` +
+        `shipit-docs/environment.md` egress copy back to "in design". The `CONNECT`-gating
+        logic lives in git history + the design doc for reuse in Tier C's transparent proxy.
 
   **To build (the actual control):**
   - [ ] **Tier A** — `internal` per-session network + gateway; iptables default-deny +

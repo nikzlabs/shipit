@@ -64,16 +64,6 @@ export interface LifecycleDeps {
   dockerProxyHost?: string;
   dockerProxyPort?: number;
   /**
-   * docs/172 Gap 1 (SHI-90) — address of the egress forward proxy. When set,
-   * each container's HTTP(S) clients are pointed at it via `HTTP_PROXY`/
-   * `HTTPS_PROXY` so outbound traffic is funneled through the default-deny
-   * allowlist. Absent → no proxy env injected (byte-for-byte unchanged).
-   */
-  egressProxyHost?: string;
-  egressProxyPort?: number;
-  /** Hosts the container reaches directly (added to NO_PROXY). */
-  egressNoProxyHosts?: string[];
-  /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
    * without it the pre-stamp is skipped.
@@ -266,21 +256,6 @@ export function buildMounts(
   return { binds, mounts, workspaceDir };
 }
 
-/**
- * docs/172 Gap 1 (SHI-90) — address of the orchestrator-controlled egress
- * forward proxy. When set, the container's HTTP(S) clients are pointed at it
- * via `HTTP_PROXY`/`HTTPS_PROXY` so all outbound traffic is funneled through
- * the default-deny allowlist (`egress-proxy.ts`). `noProxyHosts` are the hosts
- * the container must reach *directly* (the orchestrator API, the docker proxy)
- * and so must NOT be routed through the egress proxy — they're added to
- * `NO_PROXY` alongside the always-present loopback entries.
- */
-export interface EgressProxyEnv {
-  host: string;
-  port: number;
-  noProxyHosts?: string[];
-}
-
 export function buildEnv(
   config: ContainerConfig,
   workspaceDir: string,
@@ -288,7 +263,6 @@ export function buildEnv(
   dockerProxyHost: string | undefined,
   dockerProxyPort: number | undefined,
   procEnv: NodeJS.ProcessEnv = process.env,
-  egressProxy?: EgressProxyEnv,
 ): string[] {
   const env: string[] = [
     `SESSION_ID=${config.sessionId}`,
@@ -353,32 +327,6 @@ export function buildEnv(
     const sessionPrefix = config.sessionId.slice(0, 12);
     env.push(`COMPOSE_PROJECT_NAME=shipit-${sessionPrefix}`);
   }
-  // docs/172 Gap 1 (SHI-90) — point the container's HTTP(S) clients at the
-  // orchestrator egress proxy so outbound traffic is funneled through the
-  // default-deny allowlist. Set both upper- and lower-case forms (git/curl
-  // honor lower-case; many libraries check upper-case) and a NO_PROXY that
-  // bypasses the proxy for the loopback worker and the orchestrator-side hosts
-  // the container must reach directly (the orchestrator API, the docker proxy)
-  // — routing those through the egress proxy would deny ShipIt's own traffic.
-  if (egressProxy) {
-    const proxyUrl = `http://${egressProxy.host}:${egressProxy.port}`;
-    const noProxy = [
-      "localhost",
-      "127.0.0.1",
-      "::1",
-      ...(egressProxy.noProxyHosts ?? []),
-    ]
-      .map((h) => h.trim())
-      .filter(Boolean);
-    const noProxyValue = [...new Set(noProxy)].join(",");
-    env.push(`HTTP_PROXY=${proxyUrl}`);
-    env.push(`HTTPS_PROXY=${proxyUrl}`);
-    env.push(`http_proxy=${proxyUrl}`);
-    env.push(`https_proxy=${proxyUrl}`);
-    env.push(`NO_PROXY=${noProxyValue}`);
-    env.push(`no_proxy=${noProxyValue}`);
-  }
-
   if (config.env) {
     for (const [key, value] of Object.entries(config.env)) {
       env.push(`${key}=${value}`);
@@ -485,14 +433,6 @@ export async function createContainer(
     deps.workerPort,
     deps.dockerProxyHost,
     deps.dockerProxyPort,
-    process.env,
-    deps.egressProxyHost && deps.egressProxyPort
-      ? {
-          host: deps.egressProxyHost,
-          port: deps.egressProxyPort,
-          noProxyHosts: deps.egressNoProxyHosts,
-        }
-      : undefined,
   );
 
   // Expose orchestrator API so the agent can query service status/logs

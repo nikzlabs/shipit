@@ -534,15 +534,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
   /**
-   * docs/172 Gap 1 (SHI-90) — address of the egress forward proxy and the hosts
-   * the container should reach directly. Set via {@link setEgressProxy} once the
-   * proxy is listening; threaded into each container's proxy env vars. Absent →
-   * no egress restriction (byte-for-byte unchanged).
-   */
-  private egressProxyHost?: string;
-  private egressProxyPort?: number;
-  private egressNoProxyHosts?: string[];
-  /**
    * docs/183 — cached Docker image ID of the session-worker base image, the
    * ABI fingerprint the overlay dep store keys its rolling base scope on
    * (`overlayRuntimeKey`). Resolved once via `resolveWorkerImageId`; a failed
@@ -626,9 +617,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       dockerImageName: this.dockerImageName,
       dockerProxyHost: this.dockerProxyHost,
       dockerProxyPort: this.dockerProxyPort,
-      egressProxyHost: this.egressProxyHost,
-      egressProxyPort: this.egressProxyPort,
-      egressNoProxyHosts: this.egressNoProxyHosts,
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),
@@ -821,19 +809,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     if (dockerImageName) {
       this.dockerImageName = dockerImageName;
     }
-  }
-
-  /**
-   * docs/172 Gap 1 (SHI-90) — configure the egress forward proxy (called after
-   * the proxy starts). Containers created afterward have their HTTP(S) clients
-   * pointed at `host:port` via `HTTP_PROXY`/`HTTPS_PROXY`, with `noProxyHosts`
-   * (the orchestrator API + docker proxy) bypassed so ShipIt's own traffic is
-   * never routed through — and thus never denied by — the allowlist.
-   */
-  setEgressProxy(host: string, port: number, noProxyHosts?: string[]): void {
-    this.egressProxyHost = host;
-    this.egressProxyPort = port;
-    this.egressNoProxyHosts = noProxyHosts;
   }
 
   /**
