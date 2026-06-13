@@ -111,7 +111,75 @@ describe("PR status via HTTP", () => {
         number: 42,
         title: "Test PR",
         baseBranch: "main",
+        state: "open",
+        merged: false,
       },
+    });
+  });
+
+  it("surfaces a merged/closed PR when no open PR exists (rebase-stable, state-aware)", async () => {
+    await githubAuth.setToken("test-token");
+    const git = new GitManager(sessionDir);
+    await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
+
+    // No OPEN PR for the branch, but a prior PR already merged. Resolution is
+    // by branch name (rebase-stable), and the any-state fallback surfaces it
+    // instead of reporting "No PR for the current branch".
+    githubAuth.setPrData(null);
+    githubAuth.setFindPrAnyStateResult({
+      url: "https://github.com/test-user/test-repo/pull/7",
+      number: 7,
+      base: "main",
+      title: "Merged PR",
+      body: "",
+      state: "closed",
+      merged_at: "2026-01-01T00:00:00Z",
+      additions: 5,
+      deletions: 2,
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/status` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      pr: { number: 7, title: "Merged PR", baseBranch: "main", state: "closed", merged: true },
+    });
+  });
+
+  it("pr/view resolves a merged PR for the current branch", async () => {
+    await githubAuth.setToken("test-token");
+    const git = new GitManager(sessionDir);
+    await git.addRemote("origin", "https://github.com/test-user/test-repo.git");
+
+    githubAuth.setPrData(null);
+    githubAuth.setFindPrAnyStateResult({
+      url: "https://github.com/test-user/test-repo/pull/7",
+      number: 7,
+      base: "main",
+      title: "Merged PR",
+      body: "merged body",
+      state: "closed",
+      merged_at: "2026-01-01T00:00:00Z",
+      additions: 5,
+      deletions: 2,
+    });
+    githubAuth.setViewPrResult({
+      url: "https://github.com/test-user/test-repo/pull/7",
+      number: 7,
+      base: "main",
+      head: "shipit/feature",
+      title: "Merged PR",
+      body: "merged body",
+      state: "closed",
+      isDraft: false,
+      merged: true,
+      additions: 5,
+      deletions: 2,
+    });
+
+    const res = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/pr/view` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      pr: { number: 7, state: "closed", merged: true },
     });
   });
 });

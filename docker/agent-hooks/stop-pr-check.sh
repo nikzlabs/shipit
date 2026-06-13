@@ -2,10 +2,22 @@
 # ShipIt Stop-hook: enforce PR creation after a meaningful turn.
 #
 # When the agent tries to stop a turn:
-#   - if the branch has commits ahead of its base AND no PR exists,
-#     block the stop and tell the agent to call `gh pr create`.
-#   - in any other state (no commits, PR exists, GitHub not connected,
-#     no remote, hook already retried once), exit 0 silently.
+#   - if the branch has commits ahead of its base, a non-empty net diff vs
+#     base, AND no PR exists in any state, block the stop and tell the agent
+#     to call `gh pr create`.
+#   - in any other state (no commits, empty net diff, a PR already exists in
+#     ANY state — open/merged/closed, GitHub not connected, no remote, hook
+#     already retried once), exit 0 silently.
+#
+# Two guards keep this from re-prompting after a PR has already merged — the
+# duplicate-PR bug where a long-running session opened a fresh PR every turn
+# (#1302 → #1312 → #1314 → …):
+#   1. Net-diff gate: a commits-ahead count > 0 with an *empty* net diff vs
+#      base (a revert, or a branch that merged then rebased onto the updated
+#      base so its content is already there) does NOT force a PR.
+#   2. Any-state PR check: `gh pr view` now resolves a branch's PR by name
+#      even after it merged/closed, so an already-PR'd branch is recognized
+#      instead of looking PR-less.
 #
 # Exit codes (Claude Code Stop-hook semantics):
 #   0  - allow stop
@@ -72,7 +84,20 @@ HEAD_BRANCH=$(git symbolic-ref --quiet --short HEAD 2>/dev/null || echo "")
 BASE_LOCAL=${BASE#origin/}
 [ "$HEAD_BRANCH" != "$BASE_LOCAL" ] || exit 0
 
+# Fail open when the branch introduces no net change vs base. Commits-ahead
+# can be > 0 while the net diff is empty — a revert that cancels itself out, or
+# a branch that was merged and then rebased onto the updated base so its
+# content already lives there. Neither warrants forcing a PR. `git diff
+# --quiet` exits 0 (no diff) / 1 (diff); the `if` suspends `set -e` so a diff
+# doesn't abort the script. Three-dot (base...HEAD) compares against the
+# merge-base, i.e. the net change the branch introduces.
+if git diff --quiet "$BASE...HEAD" 2>/dev/null; then
+  exit 0
+fi
+
 # Does a PR already exist?  gh pr view exits 0 on hit, non-zero on miss/error.
+# It now resolves a branch's PR in ANY state (open/merged/closed), so a branch
+# whose PR already merged is recognized as having one and we do NOT re-prompt.
 # We capture stderr to distinguish "no PR" from "auth failure / not connected"
 # so the hook fails open on configuration problems.
 GH_STDERR=$(gh pr view --json url 2>&1 >/dev/null || true)
