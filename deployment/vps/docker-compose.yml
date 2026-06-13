@@ -28,6 +28,14 @@ services:
       - NODE_ENV=production
       - PORT=4123
       - USE_CONTAINERS=true
+      # docs/150 (SHI-31) — activate the non-root session worker runtime.
+      # Gates BOTH the orchestrator's §7 chowns + safe.directory (git-config.ts)
+      # AND the session image's gosu drop (entrypoint.sh), so image + flag move
+      # together in one deploy. AGENT_HOME is the session containers' home;
+      # the orchestrator's own HOME stays /root (its OAuth refresher / auth.ts
+      # depend on it — see docs/150 §3). Do NOT set HOME here.
+      - SHIPIT_SESSION_WORKER_UID=1000
+      - AGENT_HOME=/home/shipit
       - WORKSPACE_VOLUME=shipit_workspace
       - CREDENTIALS_VOLUME=shipit_credentials
       - DOCKER_NETWORK=shipit

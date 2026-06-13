@@ -20,6 +20,11 @@ services:
       - CLIENT_DEV_PORT=3000
       - VITE_API_HOST=localhost:3001
       - USE_CONTAINERS=true
+      # docs/150 (SHI-31) — non-root session worker runtime. See deployment/vps
+      # for the rationale; orchestrator HOME stays /root (auth.ts), only the
+      # session containers run as shipit(1000).
+      - SHIPIT_SESSION_WORKER_UID=1000
+      - AGENT_HOME=/home/shipit
       - WORKSPACE_VOLUME=shipit-dev_workspace
       - CREDENTIALS_VOLUME=shipit-dev_credentials
       - DOCKER_NETWORK=shipit-dev
