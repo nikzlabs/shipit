@@ -1,14 +1,20 @@
-import { AuthOverlay as AuthOverlayComponent } from "./components/AuthOverlay.js";
 import { OnboardingWizard } from "./components/OnboardingWizard.js";
 import type { AgentOption } from "./agent-types.js";
 import type { CodexDeviceAuthState } from "./components/CodexAuthCard.js";
 
+/**
+ * Gates first-run onboarding. The standalone "Authentication Required" overlay
+ * that used to render here when `authUrl` was set has been removed: it popped a
+ * blocking modal in every open browser window (the URL arrived over a global
+ * SSE broadcast), even tabs unrelated to the session that needed auth. Agent
+ * authentication now lives in Settings → Agents — the model selector disables
+ * unauthenticated agents, and an unauthenticated turn returns an error pointing
+ * there. `authUrl` is still threaded through to the onboarding wizard's Claude
+ * sign-in step (the one place an inline OAuth prompt is intentional).
+ */
 interface AuthOverlayContainerProps {
   authUrl: string | null;
   showOnboarding: boolean;
-  onPasteCode: (code: string) => void;
-  onApiKey: (key: string) => void;
-  onDismissAuth: () => void;
   // Onboarding props
   gitIdentityNeeded: boolean;
   agentList: AgentOption[];
@@ -30,9 +36,6 @@ interface AuthOverlayContainerProps {
 export function AuthOverlayContainer({
   authUrl,
   showOnboarding,
-  onPasteCode,
-  onApiKey,
-  onDismissAuth,
   gitIdentityNeeded,
   agentList,
   onGitIdentitySubmit,
@@ -50,14 +53,6 @@ export function AuthOverlayContainer({
 }: AuthOverlayContainerProps) {
   return (
     <>
-      {authUrl !== null && !showOnboarding && (
-        <AuthOverlayComponent
-          url={authUrl}
-          onPasteCode={onPasteCode}
-          onApiKey={onApiKey}
-          onDismiss={onDismissAuth}
-        />
-      )}
       {showOnboarding && (
         <OnboardingWizard
           initialStep={gitIdentityNeeded ? 1 : 2}

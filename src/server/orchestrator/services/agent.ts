@@ -124,7 +124,10 @@ export async function dispatchAgentMessage(
       deps.authManager.checkCredentials();
     }
     if (!deps.authManager.authenticated) {
-      throw new ServiceError(401, "Claude is not authenticated. Sign in to continue.");
+      throw new ServiceError(
+        401,
+        "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
+      );
     }
   // eslint-disable-next-line no-restricted-syntax -- docs/155: per-backend auth gate (see comment above)
   } else if (activeAgentId === "codex") {

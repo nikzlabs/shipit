@@ -1343,9 +1343,6 @@ export default function App() {
       <AuthOverlayContainer
         authUrl={authUrl}
         showOnboarding={showOnboarding}
-        onPasteCode={(code: string) => { apiPost("/api/auth/code", { code }).catch(() => {}); }}
-        onApiKey={(key: string) => { apiPost("/api/auth/api-key", { key }).catch(() => {}); }}
-        onDismissAuth={() => { useSessionStore.getState().setAuthUrl(null); }}
         gitIdentityNeeded={gitIdentityNeeded}
         agentList={agentList}
         onGitIdentitySubmit={(name: string, email: string) => useGitStore.getState().submitGitIdentity(name, email).catch(() => {})}
