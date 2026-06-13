@@ -677,10 +677,10 @@ export async function createContainer(
           labels: egressLabels,
         });
       }
+      const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";
       console.log(
         `[egress:${config.sessionId}] Tier A firewall installed ` +
-          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)` +
-          `${deps.egressDns ? " + Tier B controlled resolver" : ""}`,
+          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)${dnsNote}`,
       );
     }
 
