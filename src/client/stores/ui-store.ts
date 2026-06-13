@@ -286,7 +286,12 @@ export const useUiStore = create<UiState>((set) => ({
       contextTokens: 0,
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
-      // rightTab intentionally preserved across session switches (persisted to localStorage)
+      // On a session switch the mobile layout should always land on chat —
+      // a new session's first thing to look at is its conversation, never the
+      // workspace/preview tab the previous session happened to be parked on.
+      // (Unlike rightTab, which is the desktop tab and is intentionally
+      // preserved across switches via localStorage.)
+      mobilePanel: "chat" as MobilePanel,
     }),
 
   fetchUsageStats: async (sessionId) => {

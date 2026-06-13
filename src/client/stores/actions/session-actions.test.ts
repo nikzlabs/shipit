@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { createHeadlessSession, resumeSessionInternal } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
+import { useUiStore } from "../ui-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
 function session(id: string, title = id): SessionInfo {
@@ -102,5 +103,15 @@ describe("resumeSessionInternal", () => {
 
     expect(useSessionStore.getState().sessionId).toBe("session-b");
     expect(useSessionStore.getState().compacting).toBe(false);
+  });
+
+  it("resets the mobile panel to chat so a switch never lands on the previous session's workspace tab", () => {
+    // Outgoing session was parked on the workspace/preview tab on mobile.
+    useSessionStore.setState({ sessionId: "session-a" });
+    useUiStore.getState().setMobilePanel("preview");
+
+    resumeSessionInternal("session-b");
+
+    expect(useUiStore.getState().mobilePanel).toBe("chat");
   });
 });
