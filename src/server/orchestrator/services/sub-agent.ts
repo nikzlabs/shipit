@@ -20,7 +20,7 @@
  */
 
 import { randomUUID } from "node:crypto";
-import type { AgentId, SubAgentConsultCard } from "../../shared/types.js";
+import type { AgentId, SubAgentConsultCard, WsServerMessage } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -54,6 +54,17 @@ export interface RunSubAgentDeps {
    * takes a persist context by construction (CLAUDE.md side-channel-card contract).
    */
   chatHistoryManager: InProgressPersister;
+  /**
+   * Forward the sub-agent's latest subscription rate-limit snapshot into the
+   * right `LimitsProvider` so the limit pill reflects quota the consult
+   * consumed (docs/144). Mirrors the WS turn path's `recordAgentRateLimits`.
+   * Optional — test contexts and runtimes without a `LimitsRegistry` omit it.
+   */
+  recordAgentRateLimits?: (
+    agentId: AgentId,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
+  ) => void;
   /** Source-of-truth credentials root (`/credentials`). Omitted in local mode / tests. */
   credentialsDir?: string;
 }
@@ -174,9 +185,43 @@ export async function runSubAgent(
   try {
     const result = await runner.spawnSubAgent({ agentId: subAgentId, prompt, spawnId, depth });
 
-    // §5 — attribute the sub-agent's cost to subAgentId, not the pinned agentId.
-    if (result.costUsd > 0 || result.durationMs > 0) {
-      deps.usageManager.record(sessionId, result.costUsd, result.durationMs, undefined, undefined, { subAgentId });
+    // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
+    // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,
+    // so gate on any telemetry — cost, duration, or tokens — not cost alone.
+    const hasUsage =
+      result.costUsd > 0 ||
+      result.durationMs > 0 ||
+      result.inputTokens !== undefined ||
+      result.outputTokens !== undefined;
+    if (hasUsage) {
+      deps.usageManager.record(
+        sessionId,
+        result.costUsd,
+        result.durationMs,
+        result.inputTokens,
+        result.outputTokens,
+        {
+          subAgentId,
+          ...(result.cacheReadTokens !== undefined ? { cacheRead: result.cacheReadTokens } : {}),
+          ...(result.cacheCreateTokens !== undefined ? { cacheCreate: result.cacheCreateTokens } : {}),
+          ...(result.contextTokens !== undefined ? { contextTokens: result.contextTokens } : {}),
+        },
+      );
+      // Refresh the live bill (cost pill + cumulative tokens). The normal turn
+      // path emits this from `agent-listeners`; a consult runs outside that
+      // path, so without it the recorded usage never reaches the UI until a
+      // reload. Flagged `subAgent` so it updates the rollups but leaves the
+      // context dial — the pinned agent's window — untouched. Transport-only;
+      // the DB row is the persistence (rehydrated via GET /history).
+      emitSubAgentUsageUpdate(deps.usageManager, runner, sessionId);
+    }
+
+    // §5 — the consult drew down the sub-agent's subscription quota. Its
+    // `agent_rate_limits` events are confined to the one-shot adapter, so
+    // forward the carried-back snapshot into that agent's limits provider —
+    // otherwise the pill stays stale until the next primary turn for that agent.
+    if (result.rateLimits) {
+      deps.recordAgentRateLimits?.(subAgentId, result.rateLimits.session, result.rateLimits.weekly);
     }
 
     emitConsultCard({
@@ -220,6 +265,33 @@ export async function runSubAgent(
       removeSubAgentCredentials(credentialsDir, sessionId, subAgentId);
     }
   }
+}
+
+/**
+ * Emit a `usage_update` reflecting a just-recorded sub-agent turn (docs/144).
+ * Rolls the consult's cost + tokens into the session bill and cumulative-token
+ * totals — both are SUM queries over every row, so they already include the new
+ * sub-agent row. Flagged `subAgent: true` so the client updates those rollups
+ * but skips the context dial (the pinned agent's window, not the consult's).
+ */
+function emitSubAgentUsageUpdate(
+  usageManager: UsageManager,
+  runner: { emitMessage: (msg: WsServerMessage) => void },
+  sessionId: string,
+): void {
+  const sessionUsage = usageManager.getSessionUsage(sessionId);
+  if (!sessionUsage) return;
+  const tokenTotals = usageManager.getSessionTokenTotals(sessionId);
+  runner.emitMessage({
+    type: "usage_update",
+    sessionId,
+    totalCostUsd: sessionUsage.totalCostUsd,
+    totalDurationMs: sessionUsage.totalDurationMs,
+    turnCount: sessionUsage.turnCount,
+    cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
+    cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
+    subAgent: true,
+  });
 }
 
 /**

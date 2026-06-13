@@ -37,6 +37,17 @@ function makeDeps(opts: {
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
   const emitMessage = vi.fn();
   const record = vi.fn();
+  const getSessionUsage = vi.fn(() => ({
+    sessionId: "s1",
+    totalCostUsd: 0.03,
+    totalDurationMs: 4200,
+    turnCount: 1,
+  }));
+  const getSessionTokenTotals = vi.fn(() => ({
+    cumulativeInputTokens: 1000,
+    cumulativeOutputTokens: 200,
+  }));
+  const recordAgentRateLimits = vi.fn();
   const replaceInProgress = vi.fn();
   // emitChatCard reads chatMessageGroups/steeredMessages and mutates recordedCards,
   // then persists via chatHistoryManager.replaceInProgress — stub all four.
@@ -47,7 +58,16 @@ function makeDeps(opts: {
     steeredMessages: [] as never[],
     recordedCards: [] as never[],
     spawnSubAgent: vi.fn(async () =>
-      opts.spawnResult ?? { status: "success", text: "2 bugs found", truncated: false, durationMs: 4200, costUsd: 0.03 },
+      opts.spawnResult ?? {
+        status: "success",
+        text: "2 bugs found",
+        truncated: false,
+        durationMs: 4200,
+        costUsd: 0.03,
+        inputTokens: 1000,
+        outputTokens: 200,
+        contextTokens: 1200,
+      },
     ),
   };
   const deps = {
@@ -61,10 +81,11 @@ function makeDeps(opts: {
       get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),
     } as never,
     runnerRegistry: { get: vi.fn(() => (opts.runnerPresent === false ? undefined : runner)) } as never,
-    usageManager: { record } as never,
+    usageManager: { record, getSessionUsage, getSessionTokenTotals } as never,
+    recordAgentRateLimits,
     chatHistoryManager: { replaceInProgress } as never,
   };
-  return { deps, runner, emitMessage, record, replaceInProgress };
+  return { deps, runner, emitMessage, record, replaceInProgress, recordAgentRateLimits };
 }
 
 async function expectServiceError(p: Promise<unknown>, status: number): Promise<ServiceError> {
@@ -129,21 +150,55 @@ describe("runSubAgent — happy path", () => {
     expect(runner.spawnSubAgent).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "codex", prompt: "review this", depth: 0 }),
     );
-    // usage attributed to the sub-agent, not the pinned agent
-    expect(record).toHaveBeenCalledWith("s1", 0.03, 4200, undefined, undefined, { subAgentId: "codex" });
-    // transient running spinner, then the terminal persisted consult card
+    // usage attributed to the sub-agent, not the pinned agent — now WITH the
+    // sub-agent's token breakdown (docs/144), not undefined/undefined.
+    expect(record).toHaveBeenCalledWith("s1", 0.03, 4200, 1000, 200, {
+      subAgentId: "codex",
+      contextTokens: 1200,
+    });
+    // transient running spinner, then the live bill refresh, then the terminal
+    // persisted consult card.
     const msgs = emitMessage.mock.calls.map((c) => c[0] as { type: string });
     expect(msgs[0]).toMatchObject({ type: "sub_agent_spawn", subAgentId: "codex" });
+    // the bill update is flagged subAgent so it doesn't move the context dial
     expect(msgs[1]).toMatchObject({
+      type: "usage_update",
+      sessionId: "s1",
+      subAgent: true,
+      cumulativeInputTokens: 1000,
+      cumulativeOutputTokens: 200,
+    });
+    expect(msgs[2]).toMatchObject({
       type: "sub_agent_consult_card",
       card: expect.objectContaining({ subAgentId: "codex", status: "success", durationMs: 4200, costUsd: 0.03 }),
     });
     // the spinner and the card share a spawnId (the card clears the spinner)
-    expect((msgs[1] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
+    expect((msgs[2] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
       (msgs[0] as unknown as { spawnId: string }).spawnId,
     );
     // the card was persisted in-band (not emit-only) — survives switch/reload
     expect(replaceInProgress).toHaveBeenCalled();
+  });
+
+  it("forwards a carried-back rate-limit snapshot into the sub-agent's limits provider", async () => {
+    const rateLimits = {
+      session: { usedPct: 55, resetAt: "2026-06-13T05:00:00Z" },
+      weekly: { usedPct: 12, resetAt: "2026-06-20T00:00:00Z" },
+    };
+    const { deps, recordAgentRateLimits } = makeDeps({
+      spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0, rateLimits },
+    });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    // attributed to the sub-agent (codex), so its pill — not the pinned agent's — refreshes
+    expect(recordAgentRateLimits).toHaveBeenCalledWith("codex", rateLimits.session, rateLimits.weekly);
+  });
+
+  it("does not touch the limits provider when the consult pushed no rate-limit snapshot", async () => {
+    const { deps, recordAgentRateLimits } = makeDeps({
+      spawnResult: { status: "success", text: "ok", truncated: false, durationMs: 1000, costUsd: 0 },
+    });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    expect(recordAgentRateLimits).not.toHaveBeenCalled();
   });
 
   it("emits an error consult card when the spawn throws (spinner never left spinning)", async () => {

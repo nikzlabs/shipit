@@ -129,4 +129,24 @@ describe("UsageManager", () => {
     expect(turns).toHaveLength(1);
     expect(turns[0].timestamp).toBeDefined();
   });
+
+  it("rolls a sub-agent turn into cost + token totals but keeps it out of the context-dial series (docs/144)", () => {
+    const mgr = new UsageManager(dbManager);
+    // A primary turn, then a sub-agent consult with its own token usage.
+    mgr.record("sess-1", 0.10, 2000, 800, 100, { contextTokens: 1500 });
+    mgr.record("sess-1", 0.04, 1000, 500, 60, { subAgentId: "codex", contextTokens: 700 });
+
+    // The bill and cumulative tokens DO include the consult (SUM over all rows).
+    expect(mgr.getSessionUsage("sess-1")).toMatchObject({ totalCostUsd: 0.14, turnCount: 2 });
+    expect(mgr.getSessionTokenTotals("sess-1")).toEqual({
+      cumulativeInputTokens: 1300,
+      cumulativeOutputTokens: 160,
+    });
+
+    // The dial series excludes the sub-agent turn, so the dial reads the
+    // pinned agent's last turn (1500), not the consult's smaller window (700).
+    const dialTurns = mgr.getPerTurnUsage("sess-1");
+    expect(dialTurns).toHaveLength(1);
+    expect(dialTurns[0].contextTokens).toBe(1500);
+  });
 });

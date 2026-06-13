@@ -49,6 +49,32 @@ export interface SubAgentRunResult {
   truncated: boolean;
   durationMs: number;
   costUsd: number;
+  /**
+   * Turn-wide token totals from the sub-agent's `agent_result` (docs/144 usage
+   * attribution). Carried so the consult's usage is recorded with the same
+   * fidelity as a primary turn — without these the spawn's tokens were dropped
+   * and only its (often $0, for a subscription backend like Codex) cost landed.
+   * Undefined when the backend reported no token telemetry.
+   */
+  inputTokens?: number;
+  outputTokens?: number;
+  cacheReadTokens?: number;
+  cacheCreateTokens?: number;
+  /** Real context-window occupancy at the sub-agent's turn end (last API call). */
+  contextTokens?: number;
+  /**
+   * Latest subscription rate-limit snapshot the backend pushed during the run
+   * (docs/144). A consult consumes the sub-agent's subscription quota, but its
+   * `agent_rate_limits` events are confined to the one-shot adapter and never
+   * reach the orchestrator's `LimitsRegistry` on their own — so the last one is
+   * carried back here for `runSubAgent` to forward into the right provider,
+   * keeping the limit pill from going stale until the next primary turn.
+   * Undefined when the backend pushed no snapshot during the run.
+   */
+  rateLimits?: {
+    session: { usedPct: number | null; resetAt: string } | null;
+    weekly: { usedPct: number | null; resetAt: string } | null;
+  };
   /** Backend-reported error message, when status is "error". */
   error?: string;
 }
@@ -107,6 +133,12 @@ export function runAgentToCompletion(
   let lastFullText = "";
   let costUsd = 0;
   let reportedDurationMs: number | undefined;
+  let inputTokens: number | undefined;
+  let outputTokens: number | undefined;
+  let cacheReadTokens: number | undefined;
+  let cacheCreateTokens: number | undefined;
+  let contextTokens: number | undefined;
+  let rateLimits: SubAgentRunResult["rateLimits"] | undefined;
   let resultStatus: "success" | "error" | undefined;
   let resultError: string | undefined;
 
@@ -141,6 +173,12 @@ export function runAgentToCompletion(
           truncated,
           durationMs: reportedDurationMs ?? Math.max(0, Date.now() - startedAtMs),
           costUsd,
+          ...(inputTokens !== undefined ? { inputTokens } : {}),
+          ...(outputTokens !== undefined ? { outputTokens } : {}),
+          ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+          ...(cacheCreateTokens !== undefined ? { cacheCreateTokens } : {}),
+          ...(contextTokens !== undefined ? { contextTokens } : {}),
+          ...(rateLimits !== undefined ? { rateLimits } : {}),
           ...(resultError !== undefined ? { error: resultError } : {}),
         });
       };
@@ -167,8 +205,18 @@ export function runAgentToCompletion(
         } else if (event.type === "agent_result") {
           if (event.cost?.totalUsd) costUsd = event.cost.totalUsd;
           if (typeof event.durationMs === "number") reportedDurationMs = event.durationMs;
+          if (event.tokens) {
+            inputTokens = event.tokens.input;
+            outputTokens = event.tokens.output;
+            if (event.tokens.cacheRead !== undefined) cacheReadTokens = event.tokens.cacheRead;
+            if (event.tokens.cacheWrite !== undefined) cacheCreateTokens = event.tokens.cacheWrite;
+          }
+          if (typeof event.contextTokens === "number") contextTokens = event.contextTokens;
           resultStatus = event.status;
           if (event.error) resultError = event.error;
+        } else if (event.type === "agent_rate_limits") {
+          // Last-one-wins: the latest snapshot is the freshest quota reading.
+          rateLimits = { session: event.session, weekly: event.weekly };
         }
       });
 

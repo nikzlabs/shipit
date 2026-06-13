@@ -1181,6 +1181,9 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
       ? {
           refreshSubscriptionLimits: (agentId: AgentId, reason: "manual" | "seed") =>
             limitsRegistry.refreshNow(agentId, reason),
+          // docs/144 — let the sub-agent spawn route forward a consult's
+          // rate-limit snapshot into the matching provider.
+          recordAgentRateLimits,
         }
       : {}),
     getSharedRepoDir: getBareCacheDir,

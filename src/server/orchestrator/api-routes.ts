@@ -128,6 +128,17 @@ export interface ApiDeps {
    */
   refreshSubscriptionLimits?: (agentId: AgentId, reason: "manual" | "seed") => Promise<void>;
   /**
+   * docs/144 — push a sub-agent consult's carried-back rate-limit snapshot into
+   * the matching `LimitsProvider`. Same closure the WS turn path uses; threaded
+   * here so the sub-agent spawn route can keep the limit pill fresh. Omitted in
+   * test mode (no `LimitsRegistry`).
+   */
+  recordAgentRateLimits?: (
+    agentId: AgentId,
+    session: { usedPct: number | null; resetAt: string } | null,
+    weekly: { usedPct: number | null; resetAt: string } | null,
+  ) => void;
+  /**
    * docs/164 — override for the bug-report Stage-2 (LLM) redaction pass. When
    * set, the bug-report route uses it instead of shelling out to the session's
    * agent CLI. Wired to a no-op (returns `null` → degrade to the Stage-1 floor)

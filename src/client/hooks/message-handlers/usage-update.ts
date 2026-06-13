@@ -17,10 +17,16 @@ export const handleUsageUpdate: Handler<WsUsageUpdate> = (_ctx, data) => {
   // sessions that don't emit per-turn data. `lastTurnInputTokens` alone
   // undercounts heavily when prompt caching is active, so prefer the
   // cumulative figure when that's all we have.
-  if (update.cumulativeInputTokens !== undefined) {
-    ui.setContextTokens(update.cumulativeInputTokens);
-  } else if (update.lastTurnInputTokens !== undefined) {
-    ui.setContextTokens(update.lastTurnInputTokens);
+  //
+  // A sub-agent consult (docs/144) is excluded: it contributes to the cost +
+  // cumulative-token rollups below, but the context dial tracks the PINNED
+  // agent's window — a one-shot consult must not move that needle.
+  if (!update.subAgent) {
+    if (update.cumulativeInputTokens !== undefined) {
+      ui.setContextTokens(update.cumulativeInputTokens);
+    } else if (update.lastTurnInputTokens !== undefined) {
+      ui.setContextTokens(update.lastTurnInputTokens);
+    }
   }
   ui.setCumulativeTokens(
     update.cumulativeInputTokens ?? 0,
