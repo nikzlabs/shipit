@@ -9,16 +9,32 @@ import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/t
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
 import { parseRepoFileLink } from "../utils/repo-file-link.js";
+import { parseTrackerIssueLink } from "../utils/tracker-link.js";
 import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { useIssuesStore } from "../stores/issues-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 /**
- * Renders a markdown link. Links that point at a repository file (relative
- * paths, optionally `:line` suffixed) open the in-app file preview modal
- * instead of navigating — a bare `target="_blank"` would resolve the relative
- * href against the current `/sessions/<id>` URL and 404. External links and
- * in-page anchors keep the default new-tab behaviour.
+ * Renders a markdown link. Three branches, in priority order:
+ *
+ *  1. **Tracker issue URLs** (Linear/GitHub issue URLs, or the GitHub
+ *     `owner/repo#N` short form) open the in-app Issues viewer when that tracker
+ *     is connected — "inline beats link-out" (CLAUDE.md §1/§2). When the tracker
+ *     is NOT connected we fall through to the default new-tab navigation (the
+ *     escape hatch). The anchor's `href` is the resolved absolute issue URL so
+ *     that fallback works even for the short form. This is checked *before* the
+ *     repo-file branch because the short form (`owner/repo#42`) would otherwise
+ *     be misread by `parseRepoFileLink` as the path `owner/repo` at line 42.
+ *  2. **Repo file links** (relative paths, optionally `:line` suffixed) open the
+ *     in-app file preview modal — a bare `target="_blank"` would resolve the
+ *     relative href against `/sessions/<id>` and 404.
+ *  3. **Everything else** keeps the default new-tab behaviour.
+ *
+ * Store reads happen inside the click handler via `getState()` (not a hook
+ * subscription) so this component stays render-pure and doesn't defeat the
+ * `MarkdownContent` memo, matching the repo-file branch.
  */
 function MarkdownLink({
   href,
@@ -29,6 +45,39 @@ function MarkdownLink({
   title?: string;
   children?: React.ReactNode;
 }) {
+  const issueLink = parseTrackerIssueLink(href);
+  if (issueLink) {
+    const openIssueInApp = (e: React.MouseEvent) => {
+      const connected =
+        useIssuesStore.getState().trackers.find((t) => t.id === issueLink.tracker)?.configured ??
+        false;
+      // Tracker not connected (or its config is still cold) — let the browser
+      // follow the absolute href to the upstream issue in a new tab.
+      if (!connected) return;
+      e.preventDefault();
+      useUiStore.getState().setRightTab("issues");
+      useUiStore.getState().setMobilePanel("preview");
+      void useIssuesStore.getState().openIssue({
+        tracker: issueLink.tracker,
+        ...(issueLink.issueId !== undefined ? { id: issueLink.issueId } : {}),
+        identifier: issueLink.identifier,
+        url: issueLink.url,
+      });
+    };
+    return (
+      <a
+        href={issueLink.url}
+        title={title}
+        target="_blank"
+        rel="noopener noreferrer"
+        onClick={openIssueInApp}
+        className="cursor-pointer"
+      >
+        {children}
+      </a>
+    );
+  }
+
   const repoLink = parseRepoFileLink(href);
   if (repoLink) {
     const openPreview = (e: React.MouseEvent) => {

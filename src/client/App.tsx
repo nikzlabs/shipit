@@ -858,6 +858,18 @@ export default function App() {
     })();
   }, [rightTab]);
 
+  // Warm the tracker-connected state independently of the Issues tab so that a
+  // Linear/GitHub *issue* link clicked in chat/PR markdown can decide whether to
+  // open the in-app viewer vs. link out (see `MarkdownLink`). Without this the
+  // `trackers` list is cold until the user first opens the Issues tab, and a
+  // click would wrongly link out. Keyed on `sessionId` because the GitHub
+  // tracker's `configured` state resolves against the active session's repo
+  // binding; Linear ignores it. `fetchTrackers` is idempotent and cheap.
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: warm tracker config for inline issue-link interception
+  useEffect(() => {
+    void useIssuesStore.getState().fetchTrackers();
+  }, [sessionId]);
+
   // docs/133 Phase 4: tell the server whether the PR tab is the active
   // right-panel tab for this session, so the poller fetches the heavier
   // conversation fields (issue comments + review threads) only while the panel
