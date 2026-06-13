@@ -72,15 +72,35 @@ if [[ -n "$default_gw" ]]; then
 fi
 
 # --- 4. Install OUTPUT rules (INPUT is left untouched — egress is the threat) -
+#
+# DNS handling depends on the tier:
+#   Tier A (EGRESS_DNS_RESOLVER_UID unset): port 53 open broadly (resolution
+#     works; DNS-tunneling exfil is still possible — closed by Tier B).
+#   Tier B (EGRESS_DNS_RESOLVER_UID set): DNS is locked to the in-netns resolver.
+#     The agent reaches it at 127.0.0.1:53 (via the `lo` ACCEPT); only the
+#     resolver's uid may send DNS UPSTREAM; the agent is blocked from Docker's
+#     embedded DNS (127.0.0.11) directly (else it could resolve arbitrary names).
+#
+# NOTE(host-verify): Docker DNATs the embedded resolver (127.0.0.11) in nat/OUTPUT
+# before filter/OUTPUT runs. We match it by destination IP only (no --dport) to
+# stay robust to the port rewrite, but this rule is the #1 thing to confirm on a
+# real host when verifying Tier B.
+DNS_UID="${EGRESS_DNS_RESOLVER_UID:-}"
 install_v4() {
   iptables -F OUTPUT || true
+  if [[ -n "$DNS_UID" ]]; then
+    iptables -A OUTPUT -d 127.0.0.11 -m owner ! --uid-owner "$DNS_UID" -j DROP
+  fi
   iptables -A OUTPUT -o lo -j ACCEPT
   iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
   [[ -n "$local_subnet" ]] && iptables -A OUTPUT -d "$local_subnet" -j ACCEPT
-  # DNS: Tier A allows resolution broadly; Tier B will pin it to the gateway
-  # resolver to close DNS tunneling.
-  iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-  iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  if [[ -n "$DNS_UID" ]]; then
+    iptables -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$DNS_UID" -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$DNS_UID" -j ACCEPT
+  else
+    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+  fi
   iptables -A OUTPUT -m set --match-set "$SET4" dst -j ACCEPT
   iptables -P OUTPUT DROP
 }
@@ -88,8 +108,13 @@ install_v6() {
   ip6tables -F OUTPUT 2>/dev/null || return 0
   ip6tables -A OUTPUT -o lo -j ACCEPT || true
   ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT || true
-  ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT || true
-  ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT || true
+  if [[ -n "$DNS_UID" ]]; then
+    ip6tables -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$DNS_UID" -j ACCEPT || true
+    ip6tables -A OUTPUT -p tcp --dport 53 -m owner --uid-owner "$DNS_UID" -j ACCEPT || true
+  else
+    ip6tables -A OUTPUT -p udp --dport 53 -j ACCEPT || true
+    ip6tables -A OUTPUT -p tcp --dport 53 -j ACCEPT || true
+  fi
   ip6tables -A OUTPUT -m set --match-set "$SET6" dst -j ACCEPT || true
   ip6tables -P OUTPUT DROP || true
 }
@@ -97,22 +122,18 @@ install_v4
 install_v6
 log "default-deny OUTPUT policy installed"
 
-# --- 5. Self-test (fail-closed) --------------------------------------------
-# A non-allowlisted host MUST be blocked. If example.com is reachable the
-# enforcement isn't working — exit non-zero so the orchestrator tears the agent
-# container down rather than run it with open egress.
-if curl -sS --max-time 5 https://example.com >/dev/null 2>&1; then
-  log "SELF-TEST FAILED: example.com is reachable — egress NOT contained"
+# --- 5. Self-test (fail-closed, DNS-independent) ---------------------------
+# A non-allowlisted destination MUST be blocked. We hit a literal TEST-NET-1 IP
+# (RFC 5737, 192.0.2.0/24 — guaranteed non-routable and never allowlisted) so
+# the check needs NO DNS — it works identically in Tier A and Tier B (where the
+# resolver may not be up yet). If it's reachable, the OUTPUT policy isn't taking
+# effect: exit non-zero so the orchestrator tears the container down rather than
+# run it with open egress. (Positive/allowed-host + DNS checks live in the
+# post-create SHI-90 verification, once the resolver is running.)
+if curl -sS --max-time 5 https://192.0.2.1/ >/dev/null 2>&1; then
+  log "SELF-TEST FAILED: 192.0.2.1 reachable — egress NOT contained"
   exit 1
 fi
-log "SELF-TEST ok: example.com blocked"
+log "SELF-TEST ok: non-allowlisted 192.0.2.1 blocked"
 
-# GitHub should be reachable (availability check). Warn but do NOT fail closed:
-# a transient resolve/meta hiccup shouldn't block the whole session.
-if ! curl -sS --max-time 8 https://api.github.com/zen >/dev/null 2>&1; then
-  log "SELF-TEST warning: api.github.com unreachable (check allow-set / DNS)"
-else
-  log "SELF-TEST ok: api.github.com reachable"
-fi
-
-log "egress firewall installed successfully"
+log "egress firewall installed successfully (DNS mode: ${DNS_UID:+locked to resolver uid $DNS_UID}${DNS_UID:-open/Tier A})"

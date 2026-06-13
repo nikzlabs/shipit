@@ -118,6 +118,12 @@ export interface InstallEgressFirewallOpts {
   /** Image that contains `init-firewall.sh` + iptables/ipset/bind-tools. */
   sidecarImage: string;
   inputs: TierAEgressInputs;
+  /**
+   * docs/172 Tier B — when set, the installer locks DNS to the in-netns resolver:
+   * port-53 egress is allowed ONLY for this uid (the resolver's upstream queries),
+   * and the agent is blocked from Docker's embedded DNS. Absent → Tier A (DNS open).
+   */
+  resolverUid?: number;
   /** Labels to stamp on the sidecar container (for cleanup/discovery). */
   labels?: Record<string, string>;
 }
@@ -145,6 +151,7 @@ export async function installEgressFirewall(
     Env: [
       `EGRESS_ALLOWED_HOSTS=${opts.inputs.hosts.join(" ")}`,
       `EGRESS_ALLOWED_CIDRS=${opts.inputs.cidrs.join(" ")}`,
+      ...(opts.resolverUid !== undefined ? [`EGRESS_DNS_RESOLVER_UID=${opts.resolverUid}`] : []),
     ],
   });
 

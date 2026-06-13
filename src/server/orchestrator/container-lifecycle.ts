@@ -28,6 +28,12 @@ import {
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
+import {
+  buildResolverConfigB64,
+  launchEgressResolver,
+  orchestratorInternalNames,
+} from "./egress-dns-install.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -74,6 +80,13 @@ export interface LifecycleDeps {
    */
   egressEnforce?: boolean;
   egressSidecarImage?: string;
+  /**
+   * docs/172 Tier B (SHI-90) — controlled DNS. When true (requires
+   * `egressEnforce`), the agent's resolv.conf is pointed at an in-netns dnsmasq
+   * resolver that forwards only allowlisted domains (closing DNS tunneling) and
+   * pins resolved IPs into the egress ipset. From `SESSION_EGRESS_DNS=1`.
+   */
+  egressDns?: boolean;
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -600,6 +613,10 @@ export async function createContainer(
         CpuPeriod: DEFAULT_CPU_PERIOD,
         PidsLimit: config.pidsLimit,
         NetworkMode: deps.networkName,
+        // docs/172 Tier B — point the agent at the in-netns controlled resolver
+        // (127.0.0.1:53, served by the resolver sidecar launched below). Only set
+        // when Tier B is on, so the Tier A / off paths are byte-for-byte unchanged.
+        Dns: deps.egressDns ? ["127.0.0.1"] : undefined,
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,
         CapDrop: ["ALL"],
@@ -638,16 +655,32 @@ export async function createContainer(
       if (!deps.egressSidecarImage) {
         throw new Error("SESSION_EGRESS_ENFORCE=1 but SESSION_EGRESS_SIDECAR_IMAGE is not set");
       }
+      const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
       const inputs = await buildTierAEgressInputs();
+      // Tier A: install the firewall (and, under Tier B, lock DNS to the resolver uid).
       await installEgressFirewall(deps.docker, {
         agentContainerId: container.id,
         sidecarImage: deps.egressSidecarImage,
         inputs,
-        labels: { ...deps.baseLabels(), "shipit-parent-session": config.sessionId },
+        resolverUid: deps.egressDns ? EGRESS_RESOLVER_UID : undefined,
+        labels: egressLabels,
       });
+      // Tier B: launch the controlled resolver into the agent's netns (after the
+      // installer, so the ipset it pins into already exists). Labeled with the
+      // parent session so cleanupSessionDockerResources tears it down on destroy.
+      if (deps.egressDns) {
+        const configB64 = buildResolverConfigB64({ internalDomains: orchestratorInternalNames() });
+        await launchEgressResolver(deps.docker, {
+          agentContainerId: container.id,
+          sidecarImage: deps.egressSidecarImage,
+          configB64,
+          labels: egressLabels,
+        });
+      }
       console.log(
         `[egress:${config.sessionId}] Tier A firewall installed ` +
-          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)`,
+          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)` +
+          `${deps.egressDns ? " + Tier B controlled resolver" : ""}`,
       );
     }
 
