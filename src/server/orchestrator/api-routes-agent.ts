@@ -83,6 +83,7 @@ export async function registerAgentRoutes(
     Body: { agentId?: AgentId; prompt?: string; depth?: number };
   }>(
     "/api/sessions/:id/agent/spawn",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       try {
         const body = request.body ?? {};

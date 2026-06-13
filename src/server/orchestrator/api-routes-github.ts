@@ -48,7 +48,7 @@ export async function registerGitHubRoutes(
   // ---- GitHub reads ----
 
   // GET /api/sessions/:id/pr/status — PR status
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/pr/status", async (request, reply) => {
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/pr/status", { config: { containerAccessible: true } }, async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     try {
@@ -158,6 +158,7 @@ export async function registerGitHubRoutes(
     };
   }>(
     "/api/sessions/:id/pr/agent-create",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const session = sessionManager.get(request.params.id);
       if (!session) {
@@ -215,6 +216,7 @@ export async function registerGitHubRoutes(
   // the worker→helper→git stdout channel. Scoped to github.com by the service.
   app.post<{ Params: { id: string }; Body: { host?: string; protocol?: string } }>(
     "/api/sessions/:id/git/credential",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       // Session-scoping: only an existing session may broker a credential.
       const session = sessionManager.get(request.params.id);
@@ -239,6 +241,7 @@ export async function registerGitHubRoutes(
     Body: { title?: string; body?: string; labels?: string[] };
   }>(
     "/api/sessions/:id/pr/:number",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -270,6 +273,7 @@ export async function registerGitHubRoutes(
   // GET /api/sessions/:id/pr/list?state=open — list PRs for the session's repo
   app.get<{ Params: { id: string }; Querystring: { state?: string } }>(
     "/api/sessions/:id/pr/list",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -298,6 +302,7 @@ export async function registerGitHubRoutes(
   // GET /api/sessions/:id/pr/view?number=N — view a specific PR
   app.get<{ Params: { id: string }; Querystring: { number?: string } }>(
     "/api/sessions/:id/pr/view",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -333,6 +338,7 @@ export async function registerGitHubRoutes(
     Body: { body: string };
   }>(
     "/api/sessions/:id/pr/:number/comment",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -493,6 +499,7 @@ export async function registerGitHubRoutes(
   // POST /api/sessions/:id/pr/:number/ready — mark draft as ready for review
   app.post<{ Params: { id: string; number: string } }>(
     "/api/sessions/:id/pr/:number/ready",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -521,6 +528,7 @@ export async function registerGitHubRoutes(
   // POST /api/sessions/:id/pr/:number/close — close a PR
   app.post<{ Params: { id: string; number: string } }>(
     "/api/sessions/:id/pr/:number/close",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
@@ -549,6 +557,7 @@ export async function registerGitHubRoutes(
   // POST /api/sessions/:id/pr/:number/reopen — reopen a closed PR
   app.post<{ Params: { id: string; number: string } }>(
     "/api/sessions/:id/pr/:number/reopen",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;

@@ -133,6 +133,17 @@ be hostile.
 - **Orchestrator ↔ container is HTTP-only.** The orchestrator never uses `docker exec`. It
   talks to a Fastify worker inside each container over HTTP, and events stream back over
   SSE. The control channel is a well-defined API surface, not arbitrary command execution.
+- **Containers get a narrow, default-deny slice of the orchestrator API.** A container can
+  reach the orchestrator over the bridge network, so the orchestrator distinguishes
+  container-originated requests by their bridge source IP (the same unforgeable signal the
+  Docker proxy uses; `NET_RAW` is dropped so it can't be spoofed) and **default-denies**
+  them except an explicit allowlist of its own session's callback routes (PR/issue/source
+  ops, the git-credential broker, sub-agent and child-session spawns, service status/logs,
+  and the voice/bug-report/review bridges). High-value globals — secrets, MCP-server config,
+  provider accounts, tracker connections — are additionally hard-denied for container
+  origins. A prompt-injected agent therefore cannot `curl` the control plane to write
+  secrets, add an MCP server, or mutate account settings. Browser callers (which never
+  arrive from a container's bridge IP) are unaffected. See `docs/201-container-api-trust-boundary/`.
 - **Preview proxy guards routing.** Browser previews reach containers through a reverse
   proxy (`preview-proxy.ts`) that validates the session-ID/port from the request, resolves
   the target container IP from **server-side session state** (not user input), and rewrites
@@ -204,7 +215,10 @@ for accepting them today, and where they're headed.
   agent runs, and the egress allow-list above is the containment that would close it.
 - **No orchestrator-level user auth.** As above, this is by design for single-tenant use
   and is covered by the deployment access layer — but it does mean an unprotected exposed
-  instance is fully open. Don't run one.
+  instance is fully open. Don't run one. (This is about the *browser* caller. The separate
+  *container* caller is no longer trusted with the full API: it's default-denied to a narrow
+  per-session allowlist by the bridge-IP guard described under "Agent and container
+  containment" / `docs/201-container-api-trust-boundary/`.)
 - **Pathological-prompt denial of service** (an agent told to burn compute or disk) is a
   cost/usage concern, not a boundary breach, and is out of scope for the isolation model.
 

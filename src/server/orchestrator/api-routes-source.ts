@@ -75,6 +75,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/status
   app.get<{ Params: { id: string } }>(
     "/api/sessions/:id/source/status",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -88,6 +89,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/tree[?path=...]
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
     "/api/sessions/:id/source/tree",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -101,6 +103,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/search?q=...[&path=...]
   app.get<{ Params: { id: string }; Querystring: { q?: string; path?: string } }>(
     "/api/sessions/:id/source/search",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -114,6 +117,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/cat?path=...
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
     "/api/sessions/:id/source/cat",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -127,6 +131,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/log[?path=...&limit=N]
   app.get<{ Params: { id: string }; Querystring: { path?: string; limit?: string } }>(
     "/api/sessions/:id/source/log",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -144,6 +149,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/blame?path=...
   app.get<{ Params: { id: string }; Querystring: { path?: string } }>(
     "/api/sessions/:id/source/blame",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {
@@ -157,6 +163,7 @@ export async function registerSourceRoutes(
   // GET /api/sessions/:id/source/show?commit=...[&path=...]
   app.get<{ Params: { id: string }; Querystring: { commit?: string; path?: string } }>(
     "/api/sessions/:id/source/show",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
       try {

@@ -36,7 +36,8 @@ export async function registerPreviewRoutes(
   });
 
   // GET /api/sessions/:id/services — list compose services with status
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/services", async (request, reply) => {
+  // Container-facing (docs/201): documented direct curl for the agent.
+  app.get<{ Params: { id: string } }>("/api/sessions/:id/services", { config: { containerAccessible: true } }, async (request, reply) => {
     const mgr = deps.serviceManagers?.get(request.params.id);
     if (!mgr) {
       reply.code(404).send({ error: "No compose stack for this session" });
@@ -48,6 +49,7 @@ export async function registerPreviewRoutes(
   // GET /api/sessions/:id/services/:name/logs — fetch service logs (ANSI stripped)
   app.get<{ Params: { id: string; name: string }; Querystring: { lines?: string } }>(
     "/api/sessions/:id/services/:name/logs",
+    { config: { containerAccessible: true } },
     async (request, reply) => {
       const mgr = deps.serviceManagers?.get(request.params.id);
       if (!mgr) {

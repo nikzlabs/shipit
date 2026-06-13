@@ -251,6 +251,7 @@ provisioned then remounted read-only).
 | Pri | Gap | Why first | Rough shape |
 |----|-----|-----------|-------------|
 | ✅ | Gap 2 — host-scoped git helper | Shipped in TRACKER-72 — no plaintext on disk, broker host-aware | Done |
+| ✅ | Open orchestrator API to containers (SHI-129) | A prompt-injected agent could `curl` the full control plane (write secrets, add MCP servers) — and widen its own Gap 1 egress allowlist | Done — bridge-IP origin guard default-denies container callers to a narrow per-session allowlist (`docs/201-container-api-trust-boundary/`) |
 | P0 | Gap 2-R — broker is caller-blind | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | P1 | Gap 3 — repo trust gate | Stops "open repo == run its code" | Per-remote trust prompt, deferred install/compose |
