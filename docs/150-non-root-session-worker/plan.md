@@ -689,8 +689,9 @@ follow-up once the rollout is validated):
 
 1. **Config:** bake `SHIPIT_SESSION_WORKER_UID=1000` into the *standing* deploy
    config (not a one-off env on a single deploy), so every future deploy carries
-   it. Add the startup fail-fast guard (below) so a config-rollback that drops
-   the var can't silently regress one session at a time.
+   it. The startup fail-fast guard (below, **implemented**) backs this up so a
+   config-rollback that drops the var can't silently regress one session at a
+   time.
 2. **Code cleanup (optional, later):** once a rollback to the root image is off
    the table, a follow-up PR can delete the `SHIPIT_SESSION_WORKER_UID` gate and
    make the chowns unconditional, removing the dual code path. The
@@ -729,9 +730,17 @@ follow-up once the rollout is validated):
 6. Update doc 067 to keep non-root as a tracked hardening item with this
    doc as the detailed design.
 
-The orchestrator must also fail-fast at startup if its DB contains
-sessions with containers that boot under UID 1000 but the orchestrator
-itself has `SHIPIT_SESSION_WORKER_UID` unset (e.g. after a config-rollback
-regression). Without that guard, an env-var drift silently flips back to
-root-writes-into-1000-readable-mounts and breaks auth one session at a
-time.
+**Implemented:** the orchestrator fail-fasts at startup on this drift —
+`worker-uid-guard.ts` (`assertWorkerUidConsistency`), wired into `buildApp`
+for containerized prod (skipped in local mode and tests). It persists a
+per-boot marker (`<stateDir>/.shipit-worker-uid`) of the UID it ran under;
+if the marker shows a non-root UID, sessions exist, and
+`SHIPIT_SESSION_WORKER_UID` is now unset, it refuses to start. With the
+gated entrypoint the unset worker reverts to root (so reads still succeed),
+but the rollback is almost always unintended and, crucially, the per-mount
+chown sentinels block a re-chown if the var is later re-set — so
+`root:root` files written during the unset window would strand auth one
+session at a time. A deliberate downgrade sets
+`SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE=1` (after archiving/resetting the
+affected sessions). The marker is not overwritten on a fatal, so re-setting
+the var on the next boot recovers cleanly.

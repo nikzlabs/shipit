@@ -20,7 +20,8 @@ behavior until the var is set.
 - [x] Enumerate the writable paths the worker needs (groundwork for SHI-97 ReadonlyRootfs/seccomp) — see `plan.md` "Writable paths".
 - [x] Hide the `.shipit-uid-1000` chown sentinel from the file tree/watcher.
 - [x] Update `src/server/shipit-docs/environment.md`.
-- [x] Unit/integration tests: `agent-home`, `session-worker-uid`, `container-lifecycle` env, `session-credentials` §7 chown (creds + memory).
+- [x] Startup fail-fast guard on `SHIPIT_SESSION_WORKER_UID` drift (`worker-uid-guard.ts`, wired into `buildApp` for containerized prod). Persists a per-boot marker; refuses to start on a non-root → unset rollback with sessions present, unless `SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE=1`.
+- [x] Unit/integration tests: `agent-home`, `session-worker-uid`, `worker-uid-guard`, `container-lifecycle` env, `session-credentials` §7 chown (creds + memory).
 - [x] Run lint, typecheck, and targeted container/worker tests.
 
 ## Nothing reverted
@@ -34,6 +35,5 @@ entrypoint's privilege drop on the same var — not by reverting any feature.
 
 - [ ] **Validate on a real built image:** Claude/Codex auth + resume + hooks, `agent.install` with native addons, MCP `npmPackage` install, browser tools, brokered git, warm-pool preinstall, archive-restore. (requires image build + deploy)
 - [ ] **Make the new values the standing default** — bake `SHIPIT_SESSION_WORKER_UID=1000` into the permanent deploy config (Rollout step 3), not a one-off env.
-- [ ] **Startup fail-fast guard** on UID/env drift (orchestrator refuses to boot if it sees UID-1000 containers but the var is unset) — the safety net that makes the standing default robust against a config rollback.
-- [ ] **Code cleanup (optional, after rollback is off the table):** delete the `SHIPIT_SESSION_WORKER_UID` gate so the chowns + privilege drop are unconditional. (The `AGENT_HOME=/root` pin for local mode stays forever.)
+- [ ] **Code cleanup (optional, after rollback is off the table):** delete the `SHIPIT_SESSION_WORKER_UID` gate so the chowns + privilege drop are unconditional, and retire the `worker-uid-guard`. (The `AGENT_HOME=/root` pin for local mode stays forever.)
 - [ ] **Tighten `CapAdd`** after the worker runs non-root — drop `DAC_OVERRIDE` and `NET_BIND_SERVICE` if no regressions (§10).
