@@ -1691,7 +1691,7 @@ services:
     expect(mgr.getService("dev")?.status).toBe("running");
   });
 
-  it("killStaleContainers removes stale compose containers but spares the Tier B egress resolver", async () => {
+  it("killStaleContainers removes stale compose containers but spares the Tier B resolver + Tier C proxy", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  dev:\n    image: node:20\n    x-shipit-preview: manual\n");
 
@@ -1703,12 +1703,12 @@ services:
         return Promise.resolve("");
       }
       if (args[0] === "ps") {
-        // The resolver-scoped query carries the extra egress-resolver label filter.
-        const isResolverQuery = args.some((a) => a.includes("shipit-egress-resolver=test-session"));
-        if (isResolverQuery) return Promise.resolve("resolver-id\n");
-        // The broad parent-session query returns both the resolver and a real stale.
+        // Each egress sidecar is excluded via its own AND-filtered keep-label query.
+        if (args.some((a) => a.includes("shipit-egress-resolver=test-session"))) return Promise.resolve("resolver-id\n");
+        if (args.some((a) => a.includes("shipit-egress-proxy=test-session"))) return Promise.resolve("proxy-id\n");
+        // The broad parent-session query returns both sidecars and a real stale.
         if (args.includes("--format")) return Promise.resolve(""); // poll: no containers
-        return Promise.resolve("resolver-id\nstale-compose-id\n");
+        return Promise.resolve("resolver-id\nproxy-id\nstale-compose-id\n");
       }
       if (args.includes("inspect")) {
         return Promise.resolve(JSON.stringify([{ NetworkSettings: { Networks: {} } }]));
@@ -1727,10 +1727,11 @@ services:
 
     await mgr.start();
 
-    // Exactly one rm, targeting the stale compose container — the resolver
-    // (resolver-id) is excluded so it survives the pre-start sweep.
+    // Exactly one rm, targeting the stale compose container — both egress sidecars
+    // (resolver-id, proxy-id) are excluded so they survive the pre-start sweep.
     const sweepRm = rmCalls.find((c) => c.includes("stale-compose-id"));
     expect(sweepRm).toEqual(["rm", "-f", "stale-compose-id"]);
+    expect(rmCalls.flat()).not.toContain("proxy-id");
     expect(rmCalls.flat()).not.toContain("resolver-id");
   });
 

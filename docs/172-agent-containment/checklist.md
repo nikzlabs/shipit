@@ -113,10 +113,38 @@ tracker as separate issues. None implemented yet.
           (`egress-dns-install.ts`), so they can't diverge, AND adding
           `SHIPIT_ORCHESTRATOR_HOST=shipit`/`SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit` to the
           dev compose for prod parity (prod already sets them).
-  - [ ] **Tier C** — transparent SNI/CONNECT proxy (reuse the matcher) for hostname-level
-        HTTPS policy, the allow-once / add-to-allowlist inline card (deny-fast + retry,
-        persisted), and the Phase-2 hook. **Removes** the `HTTP_PROXY`/`NO_PROXY` env
-        injection currently on the branch.
+  - **Tier C** — transparent SNI proxy for hostname-level HTTPS policy (closes the CDN
+    co-tenancy gap: an allowlisted host and a non-allowlisted host on one CDN IP are
+    indistinguishable to the ipset, but their SNI differs). Own flag
+    `SESSION_EGRESS_PROXY=1` (requires Tier B + A), default OFF. **One PR, built in
+    stages (C1 enforcement, then C2 allow-once UX).**
+    - [x] **C1 — SNI-peek proxy + enforcement.** Tiny dependency-free Go binary
+          (`docker/egress-sidecar/sni-proxy`, multi-stage build into the existing sidecar
+          image) that peeks the ClientHello SNI (cleartext — NO decryption / CA injection,
+          E2E TLS preserved) via crypto/tls's own parser, matches the allowlist (mirrors
+          `egress-allowlist.ts`), and splices-or-rejects. Installer REDIRECTs the agent's
+          :443 to it (`init-firewall.sh` `install_sni_redirect`, gated on `EGRESS_PROXY_UID`;
+          needs `route_localnet` since the original dst is external). Orchestrator launch +
+          flag + allowlist composition in `egress-proxy-install.ts`; wired in
+          `container-lifecycle.ts` after the resolver; stale-sweep exclusion via
+          `EGRESS_PROXY_LABEL`. Proxy runs as a dedicated uid (912) with NO `NET_ADMIN`
+          (least privilege; only the installer needs it). Phase-2 identity-validation seam
+          (`validateIdentity`) in place. Unit-tested in `egress-proxy-install.test.ts`.
+    - [ ] **C2 — allow-once / add-to-allowlist inline card.** Deny-fast at the proxy →
+          persisted chat card (the `emitChatCard` + `CARD_MESSAGE_FIELDS` + migration
+          pattern) → user approves → orchestrator decision endpoint (the proxy's
+          `EGRESS_PROXY_DECISION_URL` seam) flips allow → agent retry succeeds. "Add to
+          allowlist" must also reload the resolver (so DNS opens) + ipset (so the IP is
+          permitted) for a brand-new host. NOTE: under Tier B, a genuinely-new host is
+          blocked at DNS first (dnsmasq refuses), so the proxy's card primarily covers the
+          CDN/IP-reuse case; the DNS-layer trigger for brand-new hosts is a follow-up.
+    - [ ] **Verify on a live host** (rebuild the sidecar with the Go binary, all three
+          flags on): an allowlisted SNI splices through; a non-allowlisted SNI to an
+          allowlisted IP is rejected (CDN co-tenancy); legit npm/git/anthropic unaffected;
+          the proxy survives the compose stale-sweep.
+    - [ ] **MCP-hosts + operator-extras plumbing** (shared with Tier B): thread
+          `credentialStore` + `SESSION_EGRESS_ALLOWLIST` into both the resolver config and
+          the proxy allowlist so connected MCP servers / operator hosts are honored.
   - [ ] **Settings UI** — default-on global toggle (fail-secure, applies on container
         restart) + per-session override + allowlist editor. Browser-only routes are
         protected by SHI-129's per-route default-deny (just don't set

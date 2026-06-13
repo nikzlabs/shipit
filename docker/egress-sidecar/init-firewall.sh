@@ -91,6 +91,11 @@ fi
 # (no --dport) in the filter table as a backstop for non-DNS traffic.
 DNS_UID="${EGRESS_DNS_RESOLVER_UID:-}"
 DOCKER_DNS=127.0.0.11
+# Tier C: when set, the agent's outbound :443 is REDIRECTed to the in-netns SNI
+# proxy listening on 127.0.0.1:$PROXY_PORT, owned by $PROXY_UID (excluded so the
+# proxy's own upstream dials aren't re-redirected).
+PROXY_UID="${EGRESS_PROXY_UID:-}"
+PROXY_PORT="${EGRESS_PROXY_PORT:-8443}"
 install_v4() {
   iptables -F OUTPUT || true
   if [[ -n "$DNS_UID" ]]; then
@@ -149,6 +154,27 @@ if [[ -n "$DNS_UID" ]]; then
   log "Tier B DNS redirect installed ($DOCKER_DNS:53 → in-netns resolver 127.0.0.1:53)"
 fi
 
+# --- 4c. Tier C: REDIRECT agent HTTPS to the in-netns SNI proxy --------------
+# Hostname-level HTTPS policy: send the agent's outbound :443 to the SNI proxy on
+# loopback, which peeks the ClientHello SNI and splices-or-rejects (closing the
+# CDN co-tenancy gap that an IP-only ipset can't). The proxy's OWN upstream dials
+# (uid $PROXY_UID) are excluded so we don't loop. Unlike the DNS redirect (which
+# targets the already-loopback 127.0.0.11), the original :443 destination is
+# EXTERNAL, so redirecting it to a loopback listener requires route_localnet —
+# otherwise the kernel drops the rewritten packet (non-loopback source → 127/8) as
+# a martian. route_localnet is network-namespaced, so this only affects the agent.
+install_sni_redirect() {
+  if ! echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null; then
+    sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 \
+      || log "WARN: could not enable route_localnet — SNI redirect may not route to the proxy"
+  fi
+  iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT"
+}
+if [[ -n "$PROXY_UID" ]]; then
+  install_sni_redirect
+  log "Tier C SNI redirect installed (:443 → in-netns proxy 127.0.0.1:$PROXY_PORT)"
+fi
+
 # --- 5. Self-test (fail-closed, DNS-independent) ---------------------------
 # A non-allowlisted destination MUST be blocked. We hit a literal TEST-NET-1 IP
 # (RFC 5737, 192.0.2.0/24 — guaranteed non-routable and never allowlisted) so
@@ -163,4 +189,4 @@ if curl -sS --max-time 5 https://192.0.2.1/ >/dev/null 2>&1; then
 fi
 log "SELF-TEST ok: non-allowlisted 192.0.2.1 blocked"
 
-log "egress firewall installed successfully (DNS mode: ${DNS_UID:+locked to resolver uid $DNS_UID}${DNS_UID:-open/Tier A})"
+log "egress firewall installed successfully (DNS mode: ${DNS_UID:+locked to resolver uid $DNS_UID}${DNS_UID:-open/Tier A}${PROXY_UID:+; Tier C SNI proxy on :$PROXY_PORT})"

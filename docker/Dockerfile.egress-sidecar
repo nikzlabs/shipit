@@ -1,13 +1,25 @@
-# Egress firewall installer sidecar — docs/172-agent-containment Gap 1 (SHI-90), Tier A.
+# Egress firewall sidecar — docs/172-agent-containment Gap 1 (SHI-90).
 #
-# A tiny privileged, short-lived image that the orchestrator runs in the agent
-# container's network namespace (`--network container:<agent> --cap-add NET_ADMIN`)
-# to install the default-deny egress firewall, then exits. See
-# `egress-sidecar/init-firewall.sh` and `docs/172-agent-containment/egress-control.md`.
+# A tiny privileged image the orchestrator runs in the agent container's network
+# namespace (`--network container:<agent> --cap-add NET_ADMIN`). One image, three
+# roles selected by entrypoint:
+#   • Tier A installer (default ENTRYPOINT, short-lived): init-firewall.sh
+#   • Tier B controlled resolver (long-lived): --entrypoint run-resolver.sh
+#   • Tier C SNI proxy (long-lived): --entrypoint /usr/local/bin/sni-proxy
+# See `egress-sidecar/*` and `docs/172-agent-containment/egress-control.md`.
 #
 # Build/publish this and point `SESSION_EGRESS_SIDECAR_IMAGE` at it; enforcement
 # is gated on `SESSION_EGRESS_ENFORCE=1` (default off), so a deployment without
-# this image/flag is unaffected.
+# this image/flag is unaffected. Build context is `docker/`:
+#   docker build -f docker/Dockerfile.egress-sidecar -t shipit-egress-sidecar:dev docker/
+
+# --- Tier C proxy build stage (static, dependency-free Go binary) ------------
+FROM golang:1.23.5-alpine3.20 AS proxy-build
+WORKDIR /src
+COPY egress-sidecar/sni-proxy/ ./
+RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/sni-proxy .
+
+# --- Runtime image -----------------------------------------------------------
 FROM alpine:3.20
 
 # iptables + ip6tables + ipset for the rules; bind-tools for `dig`; curl for the
@@ -20,10 +32,17 @@ RUN apk add --no-cache iptables ip6tables ipset bind-tools curl bash dnsmasq
 # this uid in sync with EGRESS_RESOLVER_UID in src/server/orchestrator/egress-dns.ts.
 RUN addgroup -g 911 egressdns && adduser -D -H -u 911 -G egressdns egressdns
 
+# Dedicated uid the Tier C SNI proxy runs as. The firewall REDIRECTs the agent's
+# :443 to the proxy EXCEPT traffic owned by this uid (so the proxy's own upstream
+# dials aren't re-redirected). Keep in sync with EGRESS_PROXY_UID in
+# src/server/orchestrator/egress-proxy-install.ts.
+RUN addgroup -g 912 egressproxy && adduser -D -H -u 912 -G egressproxy egressproxy
+
 COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY egress-sidecar/run-resolver.sh /usr/local/bin/run-resolver.sh
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh
+COPY --from=proxy-build /out/sni-proxy /usr/local/bin/sni-proxy
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/sni-proxy
 
-# Default entrypoint is the Tier A installer; the Tier B resolver overrides it
-# with `--entrypoint /usr/local/bin/run-resolver.sh`.
+# Default entrypoint is the Tier A installer; the Tier B resolver and Tier C proxy
+# override it with --entrypoint.
 ENTRYPOINT ["/usr/local/bin/init-firewall.sh"]

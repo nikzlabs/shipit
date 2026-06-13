@@ -36,6 +36,13 @@ import {
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import {
+  buildProxyAllowed,
+  launchEgressProxy,
+  EGRESS_PROXY_UID,
+  EGRESS_PROXY_PORT,
+  EGRESS_PROXY_LABEL,
+} from "./egress-proxy-install.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -89,6 +96,13 @@ export interface LifecycleDeps {
    * pins resolved IPs into the egress ipset. From `SESSION_EGRESS_DNS=1`.
    */
   egressDns?: boolean;
+  /**
+   * docs/172 Tier C (SHI-90) — transparent SNI proxy. When true (requires
+   * `egressDns`), a long-lived SNI-peek proxy is launched in the agent's netns
+   * and the installer REDIRECTs the agent's :443 to it for hostname-level HTTPS
+   * policy (closing the CDN co-tenancy gap). From `SESSION_EGRESS_PROXY=1`.
+   */
+  egressProxy?: boolean;
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -663,12 +677,15 @@ export async function createContainer(
       }
       const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
       const inputs = await buildTierAEgressInputs();
-      // Tier A: install the firewall (and, under Tier B, lock DNS to the resolver uid).
+      // Tier A: install the firewall (and, under Tier B, lock DNS to the resolver
+      // uid; under Tier C, REDIRECT :443 to the SNI proxy uid/port).
       await installEgressFirewall(deps.docker, {
         agentContainerId: container.id,
         sidecarImage: deps.egressSidecarImage,
         inputs,
         resolverUid: deps.egressDns ? EGRESS_RESOLVER_UID : undefined,
+        proxyUid: deps.egressProxy ? EGRESS_PROXY_UID : undefined,
+        proxyPort: deps.egressProxy ? EGRESS_PROXY_PORT : undefined,
         labels: egressLabels,
       });
       // Tier B: launch the controlled resolver into the agent's netns (after the
@@ -686,10 +703,24 @@ export async function createContainer(
           labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId },
         });
       }
+      // Tier C: launch the SNI proxy into the agent's netns (after the resolver,
+      // since it dials destination IPs the resolver pinned into the ipset). Same
+      // labeling rationale as the resolver — parent-session for destroy cleanup,
+      // EGRESS_PROXY_LABEL so the compose stale-sweep spares it.
+      if (deps.egressProxy) {
+        await launchEgressProxy(deps.docker, {
+          agentContainerId: container.id,
+          sidecarImage: deps.egressSidecarImage,
+          allowed: buildProxyAllowed(),
+          sessionId: config.sessionId,
+          labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },
+        });
+      }
       const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";
+      const proxyNote = deps.egressProxy ? " + Tier C SNI proxy" : "";
       console.log(
         `[egress:${config.sessionId}] Tier A firewall installed ` +
-          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)${dnsNote}`,
+          `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)${dnsNote}${proxyNote}`,
       );
     }
 

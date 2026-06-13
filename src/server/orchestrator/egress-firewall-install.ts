@@ -124,6 +124,14 @@ export interface InstallEgressFirewallOpts {
    * and the agent is blocked from Docker's embedded DNS. Absent → Tier A (DNS open).
    */
   resolverUid?: number;
+  /**
+   * docs/172 Tier C — when set, the installer REDIRECTs the agent's outbound :443
+   * to the in-netns SNI proxy on {@link proxyPort}, excluding this proxy uid (so
+   * the proxy's own dials aren't re-redirected). Absent → no SNI redirect.
+   */
+  proxyUid?: number;
+  /** Port the SNI proxy listens on (default 8443). Only used with proxyUid. */
+  proxyPort?: number;
   /** Labels to stamp on the sidecar container (for cleanup/discovery). */
   labels?: Record<string, string>;
 }
@@ -152,6 +160,8 @@ export async function installEgressFirewall(
       `EGRESS_ALLOWED_HOSTS=${opts.inputs.hosts.join(" ")}`,
       `EGRESS_ALLOWED_CIDRS=${opts.inputs.cidrs.join(" ")}`,
       ...(opts.resolverUid !== undefined ? [`EGRESS_DNS_RESOLVER_UID=${opts.resolverUid}`] : []),
+      ...(opts.proxyUid !== undefined ? [`EGRESS_PROXY_UID=${opts.proxyUid}`] : []),
+      ...(opts.proxyUid !== undefined && opts.proxyPort !== undefined ? [`EGRESS_PROXY_PORT=${opts.proxyPort}`] : []),
     ],
   });
 
