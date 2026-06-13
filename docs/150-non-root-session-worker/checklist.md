@@ -31,6 +31,16 @@ Reviewed for parts to back out: none. The earlier asymmetry (image dropped to
 break auth if the new image shipped with the var unset) was fixed by gating the
 entrypoint's privilege drop on the same var — not by reverting any feature.
 
+## Activation-blocker fix — deploy validation found two gaps (SHI-31)
+
+A real deploy validation with `SHIPIT_SESSION_WORKER_UID=1000` surfaced two
+gaps the original §7 reasoning missed. Both are the **gate to flipping the var
+in prod**; fixed in this PR, still flag-gated.
+
+- [x] **Root orchestrator git refused on worker-owned worktrees (`detected dubious ownership`).** §7 reasoned only about *write* ownership and never anticipated that root then can't *read/operate* git over a 1000-owned tree. Broke auto-commit, auto-push, branch graduation, the bare-cache fetch, and the `gh pr` branch lookup. Fixed by adding `safe.directory=*` to the orchestrator's **global** git config in `initGlobalGitConfig` — gated on `sessionWorkerUid()`. `safe.directory` is honored only from system/global config (never `-c` / repo-local), and the orchestrator's `GIT_CONFIG_GLOBAL` is root-owned so git-as-root trusts it; one `*` covers the bare cache + every per-session worktree + the `gh`/PR git path (all inherit `GIT_CONFIG_GLOBAL`). Running git as uid 1000 was rejected — it would break on the root-owned bare cache and the root-owned global config.
+- [x] **Post-boot orchestrator git/compose writers left files root:root.** Finished the §7 chown wiring for the writers that were missed: `compose-generator.writeComposeOverride` (the override file **and** its `.shipit` dir — this also clears the transient `EACCES /workspace/.shipit/.install-done` during warm-claim, since the dir is now worker-owned), the post-turn auto-commit (`ws-handlers/post-turn.ts` hands `.git` back on every path), `repo-git.cloneFromCache` (post-boot reclone), and the claim / warm-pool / fork-merge / child-session git ops. New helper `chownWorkspaceGitToSessionWorker(workspaceDir)` chowns `<dir>/.git`.
+- [x] Tests: `safe.directory` gated write (git-config), `chownWorkspaceGitToSessionWorker` (session-worker-uid), compose-override chown (compose-generator).
+
 ## Deferred (separate steps — not in this PR)
 
 - [x] **Validate the built image — container/image side (standalone).** Prod image built; verified on WSL2/Docker: `id -u==1000`/`whoami==shipit` with the flag on, mounts chowned + `.shipit-uid-1000` sentinel, `/app`+`/opt`+shims root-owned but readable/executable by `shipit`, npm global prefix `~/.npm-global` writable (`npm i -g cowsay` resolves there), Playwright chrome under `/opt/playwright-browsers` readable/executable, credential symlinks owned by `shipit`, `HOME`/`AGENT_HOME=/home/shipit`, auto-memory write through `~/.claude` succeeds (owner 1000), `SHIPIT_SKIP_WORKSPACE_CHOWN=1` skips the `/workspace` chown while other mounts still chown, and **flag-off is byte-for-byte legacy** (`id -u==0`, no chown, no sentinel). `gosu` is non-setuid. Guard cases 7/7 green.

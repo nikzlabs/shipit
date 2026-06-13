@@ -229,3 +229,59 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
     expect(helper).toBe(CONTAINER_CREDENTIAL_HELPER);
   });
 });
+
+// docs/150 §7 addendum — the SHI-31 activation blocker. When the session worker
+// runs as an unprivileged uid, the root orchestrator's git ops over the
+// worker-owned worktrees are refused with "detected dubious ownership" unless
+// `safe.directory` is configured in the (trusted) global git config.
+describe("git-config: safe.directory gating (SHI-31)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origUid: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-safedir-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origUid !== undefined) process.env.SHIPIT_SESSION_WORKER_UID = origUid;
+    else delete process.env.SHIPIT_SESSION_WORKER_UID;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // initGlobalGitConfig points GIT_CONFIG_GLOBAL at tmpDir/.gitconfig, so a
+  // plain `git config --global` reads back the file it just wrote.
+  const readSafeDirs = (): string[] => {
+    try {
+      return execSync("git config --global --get-all safe.directory", { encoding: "utf-8" })
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    } catch {
+      return []; // key absent → git exits non-zero
+    }
+  };
+
+  it("adds safe.directory=* when SHIPIT_SESSION_WORKER_UID is set", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    initGlobalGitConfig(tmpDir);
+    expect(readSafeDirs()).toContain("*");
+  });
+
+  it("does NOT add safe.directory when the flag is unset (legacy root worker)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    initGlobalGitConfig(tmpDir);
+    expect(readSafeDirs()).not.toContain("*");
+  });
+
+  it("is idempotent — repeated init does not duplicate the entry", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    initGlobalGitConfig(tmpDir);
+    initGlobalGitConfig(tmpDir);
+    expect(readSafeDirs().filter((d) => d === "*")).toHaveLength(1);
+  });
+});

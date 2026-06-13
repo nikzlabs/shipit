@@ -6,6 +6,7 @@ import {
   sessionWorkerUid,
   chownToSessionWorker,
   chownTreeToSessionWorker,
+  chownWorkspaceGitToSessionWorker,
 } from "./session-worker-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
@@ -72,6 +73,31 @@ describe("session-worker-uid (docs/150 §7)", () => {
       fs.writeFileSync(file, "{}");
       expect(() => chownTreeToSessionWorker(tmpDir)).not.toThrow();
       expect(fs.lstatSync(file).uid).toBe(myUid);
+    });
+
+    it("chownWorkspaceGitToSessionWorker chowns <workspaceDir>/.git only", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const gitDir = path.join(tmpDir, ".git");
+      fs.mkdirSync(path.join(gitDir, "logs"), { recursive: true });
+      const reflog = path.join(gitDir, "logs", "HEAD");
+      fs.writeFileSync(reflog, "");
+      fs.writeFileSync(path.join(gitDir, "index"), "");
+      expect(() => chownWorkspaceGitToSessionWorker(tmpDir)).not.toThrow();
+      expect(fs.lstatSync(reflog).uid).toBe(myUid);
+      expect(fs.lstatSync(path.join(gitDir, "index")).uid).toBe(myUid);
+    });
+
+    it("chownWorkspaceGitToSessionWorker is a no-op when the flag is unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const gitDir = path.join(tmpDir, ".git");
+      fs.mkdirSync(gitDir, { recursive: true });
+      const idx = path.join(gitDir, "index");
+      fs.writeFileSync(idx, "");
+      const before = fs.lstatSync(idx).uid;
+      chownWorkspaceGitToSessionWorker(tmpDir);
+      expect(fs.lstatSync(idx).uid).toBe(before);
     });
 
     it("does not follow symlinks out of the tree", () => {

@@ -14,6 +14,7 @@ import path from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -811,5 +812,12 @@ export function writeComposeOverride(
   fs.mkdirSync(shipitDir, { recursive: true });
   const overridePath = path.join(shipitDir, "compose.override.yml");
   fs.writeFileSync(overridePath, content, "utf-8");
+  // docs/150 §7 addendum: this runs in the root orchestrator but the file lives
+  // inside the worker-owned (uid 1000) workspace. Without the handoff it lands
+  // root:root and the agent's own `docker compose` invocation (run as the
+  // worker uid) can't read it. Chown the dir too — `mkdir` may have just
+  // created `.shipit` as root. No-op unless SHIPIT_SESSION_WORKER_UID is set.
+  chownToSessionWorker(shipitDir);
+  chownToSessionWorker(overridePath);
   return overridePath;
 }

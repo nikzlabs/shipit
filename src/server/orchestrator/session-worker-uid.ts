@@ -71,6 +71,25 @@ export function chownTreeToSessionWorker(targetPath: string): void {
   chownRecursive(targetPath, uid);
 }
 
+/**
+ * Hand a session workspace's `.git` directory back to the worker uid after the
+ * root orchestrator ran git operations in it (clone, fetch, branch, reset,
+ * commit). No-op when `SHIPIT_SESSION_WORKER_UID` is unset.
+ *
+ * docs/150 §7 addendum (SHI-31 activation): the worktree files are written by
+ * the agent *as the worker uid* inside the container, but git's own writes —
+ * `.git/index`, the reflogs under `.git/logs/` (append-only, so the worker
+ * can't even add to a root-owned one), refs, and loose objects — land
+ * `root:root` whenever the root orchestrator runs git here post-boot. The
+ * entrypoint's boot-time chown can't see these later writes, so the next
+ * in-container `git` the agent runs (uid 1000) fails to update them. Chowning
+ * `<workspaceDir>/.git` after each orchestrator-side git op closes that gap.
+ */
+export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
+  if (sessionWorkerUid() === null) return;
+  chownTreeToSessionWorker(path.join(workspaceDir, ".git"));
+}
+
 function chownRecursive(p: string, uid: number): void {
   let stat: fs.Stats;
   try {

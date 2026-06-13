@@ -35,6 +35,7 @@ import {
 import { resolveAgentDockerLimits } from "../session-container.js";
 import { ensureBareCache } from "../repo-git.js";
 import { getErrorMessage } from "../../shared/utils.js";
+import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
 export interface ClaimSessionDeps {
   sessionManager: SessionManager;
@@ -245,6 +246,10 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     // Keep local `main` aligned with `origin/main` on warm/reuse hand-out too,
     // so the agent's `main..HEAD` PR review matches what the PR contains (docs/194).
     await syncLocalDefaultBranchToOrigin(sessionDir);
+    // docs/150 §7 addendum: the fetch/rollback/branch-realign git ops above run
+    // as the root orchestrator against the (already-booted) warm clone, so their
+    // `.git` writes land root:root. Hand `.git` back before the worker uses it.
+    chownWorkspaceGitToSessionWorker(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
     if (headChanged) {
@@ -435,6 +440,9 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         // would make a later `main..HEAD` PR review include already-merged
         // commits (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
+        // docs/150 §7 addendum: hand `.git` back to the worker uid after the
+        // root orchestrator's fetch + `checkout -b` + ref realignment.
+        chownWorkspaceGitToSessionWorker(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);
         deps.sessionManager.setBranch(appSessionId, branchPrefix);

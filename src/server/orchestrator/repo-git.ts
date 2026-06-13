@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
+import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 
 /**
  * Validate a bare cache directory and re-clone it from the remote if it's
@@ -214,6 +215,13 @@ export class RepoGit {
     // post-turn auto-commit never stages the store's internals. Non-tracked, so the
     // committed tree is unchanged; idempotent + best-effort.
     ensurePnpmStoreGitExcluded(sessionDir);
+    // docs/150 §7 addendum: `git clone --local` + the gc/remote config writes
+    // above all run as the root orchestrator. On a cold session the entrypoint
+    // chowns the mount at boot, but a post-boot reclone (warm-pool warming,
+    // cache recovery) runs after that one-shot — so the whole fresh tree
+    // (worktree + `.git`) would stay root:root and be unwritable to the worker
+    // uid. Chown it here. No-op unless SHIPIT_SESSION_WORKER_UID is set.
+    chownTreeToSessionWorker(sessionDir);
     console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
   }
 

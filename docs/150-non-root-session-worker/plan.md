@@ -403,6 +403,74 @@ guaranteed on the underlying volume.
 The orchestrator must run with capabilities to chown to a different UID
 (it does today — it runs as root). No new privilege is needed.
 
+#### 7.1 Addendum — `safe.directory` and the post-boot git/compose writers (SHI-31 activation blocker)
+
+A deploy validation with `SHIPIT_SESSION_WORKER_UID=1000` (the "validate the
+orchestrator-coupled paths" rollout step) surfaced two gaps this section's
+original reasoning missed. Both are flag-gated like everything else here.
+
+**(a) Root orchestrator git is *refused* on worker-owned worktrees.** §7 above
+reasoned only about *write* ownership (chowning orchestrator outputs to 1000)
+and never anticipated that, once the workspace is owned by uid 1000, the **root**
+orchestrator can no longer *read/operate* git on it: git's CVE-2022-24765 check
+fails with `detected dubious ownership`, and `safe.directory` is configured
+nowhere. This broke **every** orchestrator-side git op once the flag was set —
+auto-commit, auto-push (`GitManager`), branch graduation, the bare-cache fetch
+(`git-utils.fetchAndResolveDefaultBranch`), and the `gh pr` branch lookup
+(`services/github.ts` → `git.getCurrentBranch()`), leaving the agent's edits
+uncommitted.
+
+Fix: add `safe.directory=*` to the orchestrator's **global** git config in
+`initGlobalGitConfig` (`git-config.ts`), gated on `sessionWorkerUid()`.
+Rationale for *where* and *what*:
+
+- **Global config, not `-c`.** Git honors `safe.directory` **only** from system
+  or global config — never from a repo-local config or a `-c safe.directory=`
+  command-line override (its own anti-spoofing rule). So it must live in
+  `GIT_CONFIG_GLOBAL`, which every orchestrator git invocation already inherits
+  (`GitManager`/`simpleGit`, the `git-utils` helpers that forward `process.env`,
+  and the `gh`/PR path which shells `git`). One write covers all of them.
+- **The global config file is root-owned**, written by the root orchestrator into
+  its own `/credentials` dir, so git-as-root *trusts* it (git ignores
+  `safe.directory` from a config file owned by another user). The per-session
+  *container* gitconfig (`writeContainerGitConfig`, 1000-owned) is a different
+  file and is irrelevant here.
+- **`*` wildcard** covers the bare cache, every per-session worktree, and future
+  paths without an enumerate-on-create dance. The orchestrator container is the
+  sole (trusted) writer in this process.
+
+**Running the orchestrator's git as uid 1000 was considered and rejected.** It
+would fix dubious-ownership *and* the root:root-leftover problem in one move, but
+it breaks on the **root-owned bare cache** (a `fetch` into `repo-cache/<hash>` as
+1000 would `EACCES`) and on the **root-owned `GIT_CONFIG_GLOBAL`** (which carries
+the inline PAT). `safe.directory` keeps the orchestrator root (full access to all
+infra paths) and only relaxes the ownership *check*.
+
+**(b) Finish the post-boot chown wiring.** The §7 audit list above was not fully
+wired. Completed in this PR (all gated, all no-ops when the flag is unset):
+
+- `compose-generator.writeComposeOverride` — chowns the `compose.override.yml`
+  **and** its enclosing `.shipit` dir (the `mkdir` may have just created it as
+  root). This also clears the transient `EACCES /workspace/.shipit/.install-done`
+  seen during warm-claim reclone: the worker writes that install marker into a
+  now-worker-owned `.shipit`.
+- Post-turn auto-commit (`ws-handlers/post-turn.ts`) — `git status` refreshes
+  `.git/index` and a commit writes objects/refs/reflogs as root; the worker's
+  next in-container git (which *appends* to the reflog) then can't. Hands `.git`
+  back on every path (commit / no-op / throw).
+- `repo-git.cloneFromCache` — a post-boot reclone (warm-pool warming, cache
+  recovery) runs after the one-shot entrypoint chown, so the whole fresh tree is
+  chowned here.
+- The one-shot session-setup git writers — `claim-session` (both the
+  warm-refresh and fresh-clone paths), `warm-pool-manager`, `session-fork-merge`
+  (fork clone + merge), `child-sessions` (`reset --hard <base>`) — each hands
+  `.git` back after its git ops via `chownWorkspaceGitToSessionWorker`.
+
+Helper: `chownWorkspaceGitToSessionWorker(workspaceDir)` in
+`session-worker-uid.ts` chowns `<workspaceDir>/.git` (no-op when the flag is
+unset). The worktree files themselves are written by the agent *as the worker
+uid*, so only git's own writes need the handoff.
+
 ### 8. Playwright browser cache must be reachable by `shipit`
 
 `docker/Dockerfile.session-worker.{dev,prod}` calls
