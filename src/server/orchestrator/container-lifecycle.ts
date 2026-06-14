@@ -626,7 +626,14 @@ export async function createContainer(
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,
         CapDrop: ["ALL"],
-        CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
+        // docs/150 §10 — capability tightening after the non-root migration.
+        // CHOWN/SETUID/SETGID/FOWNER stay: the root entrypoint needs them to chown
+        // the writable mounts and `gosu`-drop to `shipit` (caps are a container-wide
+        // bounding set shared by PID 1 and the worker). KILL stays for process mgmt.
+        // Dropped now that the worker is non-root: DAC_OVERRIDE (the worker owns its
+        // own files and no longer bypasses DAC as root) and NET_BIND_SERVICE (the
+        // worker listens on 9100, not a privileged port).
+        CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
       },
       Env: env,
     });

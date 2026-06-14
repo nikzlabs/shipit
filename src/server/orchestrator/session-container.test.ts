@@ -316,7 +316,7 @@ describe("SessionContainerManager", () => {
             NetworkMode: "shipit-test",
             SecurityOpt: ["no-new-privileges"],
             CapDrop: ["ALL"],
-            CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL"],
+            CapAdd: ["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"],
           }),
         }),
       );
@@ -361,8 +361,11 @@ describe("SessionContainerManager", () => {
 
       const call = mockDocker.createContainer.mock.calls[0][0];
       expect(call.HostConfig.CapDrop).toEqual(["ALL"]);
+      // docs/150 §10 — DAC_OVERRIDE + NET_BIND_SERVICE dropped after the non-root
+      // migration; the entrypoint still needs CHOWN/SETUID/SETGID/FOWNER to chown
+      // mounts + gosu-drop, KILL for process management.
       expect(call.HostConfig.CapAdd).toEqual([
-        "CHOWN", "SETUID", "SETGID", "FOWNER", "DAC_OVERRIDE", "NET_BIND_SERVICE", "KILL",
+        "CHOWN", "SETUID", "SETGID", "FOWNER", "KILL",
       ]);
     });
 
