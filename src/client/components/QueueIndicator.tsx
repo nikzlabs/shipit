@@ -16,6 +16,9 @@ interface QueueIndicatorProps {
  * bottom stack alongside the PR card and rebase banner. The card uses `mx-4`
  * so it visually aligns with the MessageInput box below it, rather than
  * stretching to the full panel width and breaking the stack's silhouette.
+ * `last:mb-2` provides an 8px gap to the MessageInput when this card is the
+ * last thing in the bottom stack (matching AgentStatusBar/RebaseBanner), so
+ * the queue card doesn't butt up against the input on desktop.
  * Displays a count badge with each queued item's truncated text, and lets the
  * user cancel individual items or clear the whole queue.
  */
@@ -23,7 +26,7 @@ export function QueueIndicator({ queue, onCancel }: QueueIndicatorProps) {
   if (queue.length === 0) return null;
 
   return (
-    <div className="mx-4 rounded-xl border border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
+    <div className="mx-4 last:mb-2 rounded-xl border border-(--color-border-primary) bg-(--color-bg-secondary)/20 px-4 py-2">
       <div className="flex items-center justify-between mb-1.5">
         <span className="text-xs font-medium text-(--color-text-secondary) flex items-center gap-1.5">
           <PlayCircleIcon size={ICON_SIZE.XS} weight="fill" className="animate-pulse text-(--color-accent)" />
