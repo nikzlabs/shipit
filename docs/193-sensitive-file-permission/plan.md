@@ -129,6 +129,20 @@ Key properties:
   approved/denied terminal state survive a reconnect, switch, and reload. A
   still-pending card comes back actionable after a reload — the worker holds the
   request, so the user can answer it later.
+  - **Mid-turn resolution must patch the recorded card, not just the DB row.**
+    Unlike bug-report (docs/164) / issue-write (docs/177) cards — which resolve
+    *after* their proposing turn finalizes, so a DB-only `updateXCard` is safe —
+    the permission card resolves *while the agent is still blocked mid-turn*. Its
+    proposing row is still `in_progress=1`, so the next `replaceInProgress`
+    rebuild re-inserts from the turn's `recordedCards` (still holding the pending
+    snapshot) and **clobbers a DB-only `updatePermissionCard` patch back to
+    pending** — the card reverted to its Approve/Deny variant on the next
+    switch/reload. Fix: `agent_permission_resolved` patches the *recorded card*
+    in place via `updateRecordedCard` (`chat-card-persistence.ts`) then
+    `persistTurnInProgress`, so every rebuild and the final end-of-turn persist
+    carry the terminal phase; it falls back to the DB-row `updatePermissionCard`
+    only when the card isn't in this turn's recorded set. This mirrors the
+    `emitOrReplaceChatCard` rationale used by docs/203's mid-turn re-review.
 
 ## Agent-agnostic seam
 
@@ -157,7 +171,8 @@ A future backend implements `setPermissionRequester` (or bridges to
 
 **Orchestrator**
 - `src/server/orchestrator/proxy-agent-process.ts` + `container-session-runner.ts` — `resolvePermission` → `/agent/permission/resolve`.
-- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → patch + `permission_resolved` + clear attention.
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` — `agent_permission_request` → emitChatCard + `session_attention` (Thread C); `agent_permission_resolved` → patch the recorded card via `updateRecordedCard` + `persistTurnInProgress` (mid-turn clobber fix; DB-row `updatePermissionCard` fallback) + `permission_resolved` + clear attention.
+- `src/server/orchestrator/chat-card-persistence.ts` — `updateRecordedCard` (patch a recorded card in place for a transition that lands within its own turn, without re-emitting it).
 - `src/server/orchestrator/{session-runner,container-session-runner}.ts` — `awaitingPermissionIds` per-runner set (Thread C).
 - `src/server/orchestrator/index.ts` — `session_attention` connect snapshot.
 - `src/server/orchestrator/ws-handlers/send-message.ts` — `handleAnswerQuestion` forwards the session's permission mode so a clarifying answer stays in plan mode (Thread A).
