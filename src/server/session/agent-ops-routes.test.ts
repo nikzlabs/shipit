@@ -95,15 +95,15 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toMatchObject({ title: "T", labels: ["feature", "enhancement"] });
   });
 
-  it("PATCH /agent-ops/pr/:number forwards labels", async () => {
+  it("PATCH /agent-ops/pr/:number forwards add/remove labels verbatim", async () => {
     client.setResponse("PATCH", "/pr/8", { ok: true, status: 200, body: { url: "u", number: 8 } });
     await app.inject({
       method: "PATCH",
       url: "/agent-ops/pr/8",
-      payload: { labels: ["bug"] },
+      payload: { addLabels: ["bug"], removeLabels: ["documentation"] },
     });
     expect(client.calls[0].path).toBe("/pr/8");
-    expect(client.calls[0].body).toEqual({ labels: ["bug"] });
+    expect(client.calls[0].body).toEqual({ addLabels: ["bug"], removeLabels: ["documentation"] });
   });
 
   it("PATCH /agent-ops/pr/:number forwards body and number", async () => {

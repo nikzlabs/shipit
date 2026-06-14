@@ -135,8 +135,9 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // PATCH /agent-ops/pr/:number — edit an existing PR
-  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; labels?: string[] } }>(
+  // PATCH /agent-ops/pr/:number — edit an existing PR (title/body and/or
+  // add/remove labels). The body is forwarded verbatim to the orchestrator.
+  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[] } }>(
     "/agent-ops/pr/:number",
     async (request, reply) =>
       relay("PATCH", `/pr/${encodeURIComponent(request.params.number)}`, request.body ?? {}, reply),

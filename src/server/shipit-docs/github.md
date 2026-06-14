@@ -61,8 +61,19 @@ double quotes before the ShipIt `gh` shim receives the body.
 Set **one** primary `--label` that matches the change's intent so the repo's
 release notes group it correctly — e.g. `feature`, `enhancement`, `bug`, `fix`,
 `documentation`, `chore`, `refactor`, `ci`, `test`, or `dependencies`. `--label`
-is repeatable and accepts comma-separated values (`--label a,b`), and works on
-both `gh pr create` and `gh pr edit`.
+is repeatable and accepts comma-separated values (`--label a,b`).
+
+To **re-label after a PR exists**, use `gh pr edit` with `--add-label` and/or
+`--remove-label` (the same flags as the real `gh` CLI). Both are repeatable and
+comma-separated, and you can add and remove in one call. For example, to switch
+a PR from `documentation` to `enhancement`:
+
+```sh
+gh pr edit --add-label enhancement --remove-label documentation
+```
+
+With no PR number, `gh pr edit` operates on the current branch's PR. `--label`
+still works on `gh pr edit` as an additive alias for `--add-label`.
 
 Labeling is **best-effort**: the repo's label set varies, so if a label name
 doesn't exist on the repo the PR is still created/updated — the shim prints the
@@ -90,7 +101,7 @@ The shim:
 | Subcommand | Notes |
 |---|---|
 | `gh pr create [-t TITLE] [-b BODY\|--body-file FILE] [-B BASE] [-d/--draft] [--fill] [-l/--label LABEL]` | Push current branch and open a PR. Use `--body-file -` with a quoted heredoc for markdown bodies. With `--fill`, an empty body is filled from recent commits. `--label` is repeatable / comma-separated and best-effort. |
-| `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [-l/--label LABEL]` | Update title/body and/or add labels. `<n>` defaults to the current branch's PR. `--label` may be given alone (no title/body needed). |
+| `gh pr edit [<n>] [-t TITLE] [-b BODY\|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]` | Update title/body and/or add/remove labels. `<n>` defaults to the current branch's PR. `--add-label`/`--remove-label` are repeatable / comma-separated, may be given alone (no title/body needed), and are best-effort. `--label`/`-l` is an additive alias for `--add-label`. |
 | `gh pr view [<n>] [--json FIELDS]` | Read a PR. With `--json title,body,state,…` returns just those fields. |
 | `gh pr list [--state open\|closed\|all] [--json …]` | List PRs in the session's repo. |
 | `gh pr status` | Print the current branch's PR (or "No PR"). |

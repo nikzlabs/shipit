@@ -396,6 +396,60 @@ describe("agent-driven PR creation (Phase 2)", () => {
     },
   );
 
+  it(
+    "PATCH /pr/:number adds and removes labels best-effort (gh pr edit --add-label/--remove-label)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: `/api/sessions/${sessionId}/pr/12`,
+        payload: { addLabels: ["enhancement"], removeLabels: ["documentation"] },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      expect(result.number).toBe(12);
+      // Add went through the additive labels endpoint…
+      expect(githubAuth.addLabelsCalls).toHaveLength(1);
+      expect(githubAuth.addLabelsCalls[0]).toMatchObject({
+        pullNumber: 12,
+        labels: ["enhancement"],
+      });
+      // …and remove went through the per-label DELETE endpoint.
+      expect(githubAuth.removeLabelCalls).toHaveLength(1);
+      expect(githubAuth.removeLabelCalls[0]).toMatchObject({
+        pullNumber: 12,
+        label: "documentation",
+      });
+      expect(result.labelWarning).toBeUndefined();
+    },
+  );
+
+  it(
+    "PATCH /pr/:number — a label that can't be removed is non-fatal and surfaces a warning",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      githubAuth.setRemoveLabelResult({ success: false, message: "Forbidden" });
+      const { sessionId } = await setupPrimedSession();
+
+      const res = await app.inject({
+        method: "PATCH",
+        url: `/api/sessions/${sessionId}/pr/12`,
+        payload: { removeLabels: ["stuck-label"] },
+      });
+
+      // The edit still succeeds — label removal never blocks it.
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      expect(result.number).toBe(12);
+      expect(result.labelWarning).toContain("could not remove label(s) stuck-label");
+    },
+  );
+
   // Regression test for the ordering bug described in CLAUDE.md note about
   // gh pr create: the agent calls `gh pr create` mid-turn, *before* the
   // end-of-turn `postTurnCommit` has fired. Without the flush, the new PR

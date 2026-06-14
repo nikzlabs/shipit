@@ -36,7 +36,7 @@ const HELP = `${SHIM_NAME} — pull-request operations brokered through the Ship
 
 Supported subcommands:
   gh pr create   [-t TITLE] [-b BODY|--body-file FILE] [-B BASE] [-d|--draft] [--fill] [-l|--label LABEL]
-  gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [-l|--label LABEL]
+  gh pr edit     [<number>] [-t TITLE] [-b BODY|--body-file FILE] [--add-label LABEL] [--remove-label LABEL]
   gh pr view     [<number>] [--json FIELDS] [-w|--web]
   gh pr list     [--state STATE] [--json FIELDS]
   gh pr status
@@ -366,7 +366,11 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
       "--repo": "repo", "-R": "repo",
     },
     arrays: {
-      "--label": "label", "-l": "label",
+      // `--add-label` is the real-gh edit flag; `--label`/`-l` are kept as
+      // additive aliases so existing scripts keep working. All three add.
+      "--add-label": "addLabel",
+      "--label": "addLabel", "-l": "addLabel",
+      "--remove-label": "removeLabel",
     },
   });
   if ("repo" in parsed.values) {
@@ -377,15 +381,20 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
   }
   const num = await resolvePrNumber(parsed.positional, deps);
   const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr edit");
-  const labels = normalizeLabels(parsed.arrays.label);
+  const addLabels = normalizeLabels(parsed.arrays.addLabel);
+  const removeLabels = normalizeLabels(parsed.arrays.removeLabel);
 
   const payload = {
     title: parsed.values.title,
     body,
-    ...(labels.length > 0 ? { labels } : {}),
+    ...(addLabels.length > 0 ? { addLabels } : {}),
+    ...(removeLabels.length > 0 ? { removeLabels } : {}),
   };
-  if (payload.title === undefined && payload.body === undefined && labels.length === 0) {
-    fail(deps.io, "gh pr edit: provide a title (-t), body (-b), or label (--label) to update.");
+  if (
+    payload.title === undefined && payload.body === undefined &&
+    addLabels.length === 0 && removeLabels.length === 0
+  ) {
+    fail(deps.io, "gh pr edit: provide a title (-t), body (-b), --add-label, or --remove-label to update.");
   }
 
   const res = await deps.call("PATCH", `/agent-ops/pr/${num}`, payload, deps.env);

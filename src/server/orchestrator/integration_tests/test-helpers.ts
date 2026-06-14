@@ -428,6 +428,24 @@ export class StubGitHubAuthManager extends EventEmitter {
     return { success: true };
   }
 
+  /** Calls to `removeLabelFromPullRequest`, in order. Inspect from tests. */
+  public removeLabelCalls: { owner: string; repo: string; pullNumber: number; label: string }[] = [];
+  private _removeLabelResult: { success: boolean; message?: string } | null = null;
+  /**
+   * Override what `removeLabelFromPullRequest` returns — e.g. simulate a token
+   * without Issues:write (best-effort label removal must still leave the PR
+   * updated).
+   */
+  setRemoveLabelResult(result: { success: boolean; message?: string } | null) {
+    this._removeLabelResult = result;
+  }
+  async removeLabelFromPullRequest(owner: string, repo: string, pullNumber: number, label: string) {
+    this.removeLabelCalls.push({ owner, repo, pullNumber, label });
+    if (this._removeLabelResult) return this._removeLabelResult;
+    if (!this._authenticated) return { success: false, message: "Not authenticated with GitHub" };
+    return { success: true };
+  }
+
   /** Records the last issue comment posted (docs/133 Phase 4). */
   lastIssueComment: { pullNumber: number; body: string } | null = null;
   async addPullRequestComment(_owner: string, _repo: string, pullNumber: number, body: string) {
