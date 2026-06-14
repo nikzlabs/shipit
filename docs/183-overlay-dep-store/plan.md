@@ -223,6 +223,29 @@ Net: aggregate disk drops sharply (shared base vs. per-session copies), resource
 (N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface
 needing careful GC is "don't reap a base that's a live lowerdir."
 
+### Non-root worker ownership (SHI-145 — interaction with docs/150)
+
+The overlay dep dirs are created by the **root** orchestrator, but the agent writes them as the
+non-root session worker (`SHIPIT_SESSION_WORKER_UID`, docs/150). Two ownership handoffs, symmetric to
+docs/150 §7 and gated on `sessionWorkerUid()` (no-op on the legacy root runtime), keep `npm install`
+working in the default overlay-on configuration:
+
+- **Per-session upper/work dirs → worker uid at create.** `prepareOverlayDirs` (`container-lifecycle.ts`)
+  chowns each spec's `orchDirs.upperdir`/`workdir` right after mkdir. overlayfs stamps a *new* upper file
+  with the writing process's fsuid, so the upperdir must be worker-writable or a new-dep write EACCESes.
+- **Shared base generation → worker uid at publish.** `publishBase`→`finalize` (`overlay-base.ts`) chowns
+  the freshly-materialized `g<N>` before writing the pointer (race-free — nothing mounts a generation
+  until its pointer is published). overlayfs copy-up of an *existing* base dep **preserves the lower
+  file's ownership**, so a root-owned base dep would copy up root-owned and unwritable; a worker-owned
+  base copies up writable. Hardlink-dedup against the prior generation is safe because that generation is
+  itself worker-owned (the chown only flips the newly-copied files). The empty cold-start `g0` lowerdir is
+  left root-owned-but-traversable — cold-start writes all land in the upper.
+
+The entrypoint's one-shot `/workspace` `chown -R` does **not** reliably cover the separately-mounted
+overlay at `/workspace/<dep-dir>` (it ran before/independently of the overlay mount), which is why
+pre-fix ownership was *inconsistent* across sessions on the same scope. These two handoffs are the
+authoritative owners; the entrypoint chown is not relied on for the overlay.
+
 ## Rejected approaches
 
 ### Whole-workspace overlay (the original design) — **superseded**

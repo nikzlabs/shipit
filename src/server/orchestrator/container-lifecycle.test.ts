@@ -2,8 +2,11 @@
  * Unit tests for container-lifecycle functions (buildMounts, buildEnv, buildContainerConfig).
  */
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import type Docker from "dockerode";
 import {
   buildMounts,
@@ -11,12 +14,14 @@ import {
   buildOrchestratorCallbackEnv,
   buildContainerConfig,
   destroyContainer,
+  prepareOverlayDirs,
   type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
   PNPM_STORE_CONTAINER_PATH,
   OPS_DOCKER_HOST,
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
+import type { DepDirOverlaySpec } from "./overlay-session.js";
 import type { HostMount } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
@@ -558,5 +563,71 @@ describe("destroyContainer — overlay volume teardown", () => {
 
     expect(removed).toEqual([]);
     expect(deps.containers.has("sess-x")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// prepareOverlayDirs — overlay dir creation + worker-uid handoff (SHI-145)
+// ---------------------------------------------------------------------------
+
+describe("prepareOverlayDirs (SHI-145)", () => {
+  let tmpDir: string;
+  const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+
+  function makeSpec(root: string, hash: string): DepDirOverlaySpec {
+    const overlayDir = path.join(root, "sessions", "sess-1", "overlay", hash);
+    return {
+      volumeName: `shipit-sess-1_overlay-${hash}`,
+      lowerdir: `/daemon/overlay-base/${hash}/g0`,
+      upperdir: `/daemon/${path.relative("/", path.join(overlayDir, "upper"))}`,
+      workdir: `/daemon/${path.relative("/", path.join(overlayDir, "work"))}`,
+      depDir: "node_modules",
+      mountPath: "/workspace/node_modules",
+      scope: { repoUrl: "https://x/y.git", runtimeKey: "rk", depDir: "node_modules" },
+      scopeHash: hash,
+      generation: 0,
+      orchDirs: {
+        lowerdir: path.join(root, "overlay-base", hash, "g0"),
+        upperdir: path.join(overlayDir, "upper"),
+        workdir: path.join(overlayDir, "work"),
+      },
+    };
+  }
+
+  afterEach(() => {
+    if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("mkdirs the orchestrator-visible lower/upper/work dirs for every spec", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID; // legacy root runtime
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-dirs-"));
+    const spec = makeSpec(tmpDir, "aaaa1111");
+    prepareOverlayDirs([spec]);
+    expect(fs.existsSync(spec.orchDirs!.lowerdir)).toBe(true);
+    expect(fs.existsSync(spec.orchDirs!.upperdir)).toBe(true);
+    expect(fs.existsSync(spec.orchDirs!.workdir)).toBe(true);
+  });
+
+  it("hands the per-session upper/work dirs to the worker uid", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-dirs-"));
+    const spec = makeSpec(tmpDir, "bbbb2222");
+    prepareOverlayDirs([spec]);
+    // The dirs the worker writes through are owned by the configured uid.
+    expect(fs.lstatSync(spec.orchDirs!.upperdir).uid).toBe(myUid);
+    expect(fs.lstatSync(spec.orchDirs!.workdir).uid).toBe(myUid);
+  });
+
+  it("is a no-op for undefined specs and specs without orchDirs", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-dirs-"));
+    expect(() => prepareOverlayDirs(undefined)).not.toThrow();
+    const spec = makeSpec(tmpDir, "cccc3333");
+    delete spec.orchDirs; // mock/unit configs have no orchestrator state dir
+    expect(() => prepareOverlayDirs([spec])).not.toThrow();
   });
 });

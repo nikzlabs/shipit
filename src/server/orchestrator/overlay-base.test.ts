@@ -114,6 +114,64 @@ describe("overlay-base: rolling-base publish CAS", () => {
     expect(fs.existsSync(path.join(res.pointer!.baseDir, "node_modules.marker"))).toBe(true);
   });
 
+  // SHI-145 — the materialized base is handed to the worker uid so overlayfs
+  // copy-up of an existing base dep stays writable for the non-root agent. The
+  // chown itself needs privileges, so we inject a spy and assert it fires on the
+  // freshly-materialized generation (and only after a real materialize).
+  it("hands each materialized base generation to the worker uid (created + advanced)", async () => {
+    const chowned: string[] = [];
+    const chownBaseDir = (dir: string): void => {
+      chowned.push(dir);
+    };
+    const scopeHash = overlayScopeHash(SCOPE.repoUrl, SCOPE.runtimeKey);
+
+    const c1 = commit("c1");
+    const r1 = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: c1 }),
+      isAncestor,
+      chownBaseDir,
+    });
+    expect(r1.outcome).toBe("created");
+    expect(chowned).toEqual([overlayBaseGenDir(stateDir, scopeHash, 1)]);
+
+    const c2 = commit("c2");
+    const r2 = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: c2 }),
+      isAncestor,
+      chownBaseDir,
+    });
+    expect(r2.outcome).toBe("advanced");
+    // The new generation is chowned; the chown is invoked exactly once per publish.
+    expect(chowned).toEqual([
+      overlayBaseGenDir(stateDir, scopeHash, 1),
+      overlayBaseGenDir(stateDir, scopeHash, 2),
+    ]);
+  });
+
+  it("does not chown when a publish is skipped (no materialize, no handoff)", async () => {
+    const chowned: string[] = [];
+    const chownBaseDir = (dir: string): void => {
+      chowned.push(dir);
+    };
+    const c1 = commit("c1");
+    await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor, chownBaseDir });
+    chowned.length = 0;
+    // Equal-commit republish → skipped-equal, nothing materialized.
+    const res = await publishBase({
+      stateDir,
+      scope: SCOPE,
+      candidate: candidate({ commit: c1 }),
+      isAncestor,
+      chownBaseDir,
+    });
+    expect(res.outcome).toBe("skipped-equal");
+    expect(chowned).toEqual([]);
+  });
+
   it("advances forward and bumps depth + generation", async () => {
     const c1 = commit("c1");
     await publishBase({ stateDir, scope: SCOPE, candidate: candidate({ commit: c1 }), isAncestor });
