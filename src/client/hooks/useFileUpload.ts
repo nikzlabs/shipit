@@ -185,10 +185,10 @@ export function useFileUpload(sessionId: string | undefined) {
       .map((u) => ({ path: u.path!, type: "upload" as const }));
   }, [pendingUploads]);
 
-  /** Mark all pending uploads as sent. */
+  /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
-    useFileStore.getState().markUploadsSent(sessionId);
-  }, [sessionId]);
+    useFileStore.getState().markUploadsSent();
+  }, []);
 
   return {
     /** Pending uploads — shown as input chips, cleared on send. */

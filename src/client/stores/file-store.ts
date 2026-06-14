@@ -3,7 +3,6 @@ import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
-import { useSessionStore } from "./session-store.js";
 
 // localStorage-backed set of upload paths the user has explicitly deleted.
 // Prevents hydrateUploads from resurrecting them if the server DELETE fails.
@@ -30,41 +29,6 @@ export function clearUploadTombstone(path: string) {
 }
 function clearDeletedUploads() {
   localStorage.removeItem(DELETED_UPLOADS_KEY);
-}
-
-// localStorage-backed per-session set of upload paths that have been sent in a
-// message. `hydrateUploads` consults this in addition to the loaded chat
-// history when deciding whether an upload is still pending. Without it, a
-// session switch that lands before the server-side `persistUserMessage` write
-// completes (the `await ctx.activateSession()` chain in send-message.ts means
-// the row isn't in the DB yet) would re-mark the just-sent upload as pending
-// — the user sees the chip reappear in the input box, often re-attaches the
-// "lost" file, and ends up with `image.png` + `image-1.png` on disk.
-const SENT_UPLOADS_KEY_PREFIX = "shipit:sentUploads:";
-function getSentUploads(sessionId: string): Set<string> {
-  try {
-    return new Set(JSON.parse(localStorage.getItem(SENT_UPLOADS_KEY_PREFIX + sessionId) ?? "[]") as string[]);
-  } catch {
-    return new Set();
-  }
-}
-function persistSentUploads(sessionId: string, set: Set<string>) {
-  try {
-    if (set.size > 0) {
-      localStorage.setItem(SENT_UPLOADS_KEY_PREFIX + sessionId, JSON.stringify([...set]));
-    } else {
-      localStorage.removeItem(SENT_UPLOADS_KEY_PREFIX + sessionId);
-    }
-  } catch { /* localStorage may be unavailable */ }
-}
-function addSentUploads(sessionId: string, paths: string[]) {
-  if (paths.length === 0) return;
-  const set = getSentUploads(sessionId);
-  let added = false;
-  for (const p of paths) {
-    if (!set.has(p)) { set.add(p); added = true; }
-  }
-  if (added) persistSentUploads(sessionId, set);
 }
 
 interface FileState {
@@ -119,7 +83,7 @@ interface FileState {
   removeSessionUpload: (path: string) => void;
   removeSessionUploadById: (id: string) => void;
   updateSessionUpload: (id: string, patch: Partial<UploadItem>) => void;
-  markUploadsSent: (sessionId: string | undefined) => void;
+  markUploadsSent: () => void;
   hydrateUploads: (sessionId: string) => Promise<void>;
 
   // Unified preview actions
@@ -211,54 +175,20 @@ export const useFileStore = create<FileState>((set, get) => ({
       sessionUploads: state.sessionUploads.map((u) => (u.id === id ? { ...u, ...patch } : u)),
     })),
 
-  markUploadsSent: (sessionId) =>
-    set((state) => {
-      const sentPaths: string[] = [];
-      for (const u of state.sessionUploads) {
-        if (u.pending) {
-          if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
-          if (u.path) sentPaths.push(u.path);
-        }
-      }
-      // Persist sent paths so hydrateUploads recognizes them as sent even when
-      // the server-side `persistUserMessage` hasn't completed yet (e.g. user
-      // switches sessions immediately after send and returns mid-turn).
-      if (sessionId) addSentUploads(sessionId, sentPaths);
-      return {
-        sessionUploads: state.sessionUploads.map((u) =>
-          u.pending ? { ...u, pending: false, previewUrl: undefined } : u,
-        ),
-      };
-    }),
+  markUploadsSent: () =>
+    set((state) => ({
+      sessionUploads: state.sessionUploads.map((u) => {
+        if (!u.pending) return u;
+        if (u.previewUrl) URL.revokeObjectURL(u.previewUrl);
+        return { ...u, pending: false, previewUrl: undefined };
+      }),
+    })),
 
   hydrateUploads: async (sessionId) => {
     try {
       const res = await fetch(`/api/sessions/${sessionId}/files/uploads`);
       if (!res.ok) return;
       const data = (await res.json()) as { files: UploadedFile[] };
-      // Determine which uploads were already sent by checking chat history.
-      // Uploads whose paths appear in a user message's files or uploadPaths array are "sent".
-      // Unreferenced uploads remain pending (attached for the next message).
-      const messages = useSessionStore.getState().messages;
-      const sentPaths = new Set<string>();
-      for (const msg of messages) {
-        if (msg.role === "user") {
-          if (msg.files) {
-            for (const f of msg.files) {
-              if (f.path.startsWith("/uploads/")) sentPaths.add(f.path);
-            }
-          }
-          if (msg.uploadPaths) {
-            for (const p of msg.uploadPaths) sentPaths.add(p);
-          }
-        }
-      }
-      // Union with locally-persisted sent paths. Covers the race where the
-      // server-side message persist hasn't completed by the time /history is
-      // fetched — without this, the just-sent upload would be re-marked pending
-      // and the chip would reappear in the input box on session re-entry.
-      const persistedSent = getSentUploads(sessionId);
-      for (const p of persistedSent) sentPaths.add(p);
       const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg)$/i;
       const deletedPaths = getDeletedUploads();
       // Clean up the deleted set — remove entries for files that no longer exist on the server
@@ -271,29 +201,38 @@ export const useFileStore = create<FileState>((set, get) => ({
         if (deletedPaths.size > 0) localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...deletedPaths]));
         else clearDeletedUploads();
       }
-      // Same cleanup for the per-session sent set — drop entries whose files
-      // are gone from the server (rewind, manual delete, archive recreate).
-      let sentChanged = false;
-      for (const sp of persistedSent) {
-        if (!serverPaths.has(sp)) { persistedSent.delete(sp); sentChanged = true; }
-      }
-      if (sentChanged) persistSentUploads(sessionId, persistedSent);
-      set({
-        sessionUploads: data.files.filter((f) => !deletedPaths.has(f.path)).map((f) => {
-          // For image uploads, construct a URL the browser can use as <img src>
-          const isImage = IMAGE_EXTS.test(f.name);
-          const urlPath = f.path.startsWith("/") ? f.path.slice(1) : f.path;
-          return {
-            id: `hydrated-${++uploadIdCounter}`,
-            name: f.name,
-            status: "ready" as const,
-            size: f.size,
-            path: f.path,
-            progress: 100,
-            pending: !sentPaths.has(f.path),
-            previewUrl: isImage ? `/api/sessions/${sessionId}/files/${urlPath}?raw=true` : undefined,
-          };
-        }),
+      set((state) => {
+        // A chip ("pending" upload) only exists for a file freshly attached in
+        // this live in-memory session and not yet sent. Hydration rebuilds the
+        // /uploads panel from disk, and a file on disk is by definition already
+        // handled — sent in a prior turn, or left over from an earlier visit.
+        // So we never resurrect a chip from disk: every hydrated file is
+        // `pending: false`. The agent can still read it next turn (it stays in
+        // the panel), it just doesn't reappear in the input. The only chips we
+        // preserve are the in-memory pending items themselves (a file attached
+        // but not yet sent must survive a WS reconnect, which keeps the store).
+        const pendingInMemory = state.sessionUploads.filter((u) => u.pending);
+        const pendingPaths = new Set(
+          pendingInMemory.map((u) => u.path).filter((p): p is string => Boolean(p)),
+        );
+        const hydrated = data.files
+          .filter((f) => !deletedPaths.has(f.path) && !pendingPaths.has(f.path))
+          .map((f) => {
+            // For image uploads, construct a URL the browser can use as <img src>
+            const isImage = IMAGE_EXTS.test(f.name);
+            const urlPath = f.path.startsWith("/") ? f.path.slice(1) : f.path;
+            return {
+              id: `hydrated-${++uploadIdCounter}`,
+              name: f.name,
+              status: "ready" as const,
+              size: f.size,
+              path: f.path,
+              progress: 100,
+              pending: false,
+              previewUrl: isImage ? `/api/sessions/${sessionId}/files/${urlPath}?raw=true` : undefined,
+            };
+          });
+        return { sessionUploads: [...pendingInMemory, ...hydrated] };
       });
     } catch {
       // Hydration failure is non-critical

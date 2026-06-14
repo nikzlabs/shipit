@@ -15,8 +15,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useFileStore, markUploadDeleted, clearUploadTombstone } from "./file-store.js";
-import { useSessionStore } from "./session-store.js";
-import type { UploadedFile } from "../../server/shared/types.js";
+import type { UploadItem, UploadedFile } from "../../server/shared/types.js";
 
 const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
 const SESSION_ID = "session-1";
@@ -36,9 +35,6 @@ describe("file-store upload tombstones", () => {
   beforeEach(() => {
     localStorage.clear();
     useFileStore.getState().reset();
-    // hydrateUploads consults chat history to decide which uploads are "sent";
-    // keep it empty so every server upload stays pending (an input chip).
-    useSessionStore.setState({ messages: [] });
   });
 
   afterEach(() => {
@@ -94,7 +90,9 @@ describe("file-store upload tombstones", () => {
       const uploads = useFileStore.getState().sessionUploads;
       expect(uploads).toHaveLength(1);
       expect(uploads[0].path).toBe("/uploads/data.csv");
-      expect(uploads[0].pending).toBe(true);
+      // A file present on disk is already handled (sent or left over); hydration
+      // surfaces it in the /uploads panel but never as an input chip.
+      expect(uploads[0].pending).toBe(false);
     });
 
     it("prunes a tombstone whose file is gone from the server, keeping unrelated files", async () => {
@@ -110,6 +108,57 @@ describe("file-store upload tombstones", () => {
       ]);
       // The stale tombstone for the now-absent file is cleaned up.
       expect(localStorage.getItem(DELETED_UPLOADS_KEY)).toBeNull();
+    });
+  });
+
+  describe("hydrateUploads pending semantics", () => {
+    function pendingUpload(name: string): UploadItem {
+      return {
+        id: `mem-${name}`,
+        name,
+        status: "ready",
+        path: `/uploads/${name}`,
+        progress: 100,
+        pending: true,
+      };
+    }
+
+    it("never resurrects a chip from disk — every hydrated file is non-pending", async () => {
+      // The reported bug: a file sent in a prior turn stays in /uploads and used
+      // to reappear as an input chip after a reload/reconnect. It must not.
+      stubUploadsFetch([uploaded("sent.png"), uploaded("old.csv")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads).toHaveLength(2);
+      expect(uploads.every((u) => u.pending === false)).toBe(true);
+    });
+
+    it("preserves an in-memory pending upload (attached, not yet sent) across hydrate", async () => {
+      // A WS reconnect keeps the Zustand store, so a freshly-attached-but-unsent
+      // chip must survive hydration even though its file is already on disk.
+      useFileStore.getState().addSessionUploads([pendingUpload("draft.png")]);
+      stubUploadsFetch([uploaded("draft.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      // Exactly one entry for the path — the in-memory pending item is kept and
+      // the server copy is not duplicated.
+      expect(uploads.filter((u) => u.path === "/uploads/draft.png")).toHaveLength(1);
+      expect(uploads[0].id).toBe("mem-draft.png");
+      expect(uploads[0].pending).toBe(true);
+    });
+
+    it("markUploadsSent clears pending so the chip disappears but the file remains", () => {
+      useFileStore.getState().addSessionUploads([pendingUpload("note.txt")]);
+
+      useFileStore.getState().markUploadsSent();
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].pending).toBe(false);
     });
   });
 });

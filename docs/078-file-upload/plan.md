@@ -1,4 +1,8 @@
 
+---
+issue: https://linear.app/shipit-ai/issue/SHI-146
+---
+
 # File Upload — Browser-to-Container File Transfer
 
 Allow users to upload files from their local machine into a session container so the agent can reference and operate on them. Uploaded files land in `/uploads/`, a top-level directory outside the git repo, and are passed to the agent as file context.
@@ -119,7 +123,9 @@ Response:
 }
 ```
 
-This endpoint is needed for **state recovery** — when the user refreshes the browser or reconnects, client-side upload state is lost. The client calls this on session connect to reconstruct upload chips and populate the file tree's uploads section.
+This endpoint is needed for **state recovery** — when the user refreshes the browser or reconnects, client-side upload state is lost. The client calls this on session connect to repopulate the file tree's uploads section.
+
+**Hydration never resurrects an input chip.** A "chip" (a `pending` upload in the input box) exists only for a file freshly attached in the live, in-memory session and not yet sent. A file that comes back from this list endpoint is, by definition, already handled — sent in a prior turn, or left over from an earlier visit — so `hydrateUploads` (in `file-store.ts`) marks every hydrated file `pending: false`. It surfaces in the `/uploads` panel (the agent can still read it next turn) but never reappears as a chip in the input. The only chips preserved across a reconnect are the in-memory pending items themselves (the Zustand store survives a WS reconnect, so an attached-but-unsent file keeps its chip; a full page reload or session switch resets the store, after which nothing is a chip until the user attaches again). This replaced an earlier, racy scheme that defaulted hydrated files to `pending` and tried to *prove* each was already sent via a chat-history scan + a per-session `localStorage` "sent paths" set — when the proof was missing (new-session first message, history not yet persisted, cleared storage, another device) an already-sent file's chip reappeared in the input.
 
 ### Limits
 
