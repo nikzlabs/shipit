@@ -257,6 +257,40 @@ export function emitOrReplaceChatCard(
 }
 
 /**
+ * Patch an already-recorded card's persisted message IN PLACE, keyed by
+ * `matches`, WITHOUT re-broadcasting the card. Returns true if a card matched.
+ *
+ * For a lifecycle transition that lands WITHIN the same turn that created the
+ * card. The canonical case is a permission request resolved while the agent is
+ * still BLOCKED mid-turn (docs/193): the proposing-turn row is still
+ * `in_progress=1`, so the next `replaceInProgress` rebuild reads `recordedCards`
+ * and a DB-only `updateXCard` patch would be clobbered back to the recorded
+ * (pending) snapshot — the card reverts to its Approve/Deny variant on the next
+ * switch/reload. Updating the recorded card here makes every rebuild — and the
+ * final end-of-turn persist — carry the patched (terminal) state.
+ *
+ * This differs from `emitOrReplaceChatCard` on two axes: it does NOT re-emit the
+ * card (the transition is communicated by a separate terminal WS message — e.g.
+ * `permission_resolved` — that the client applies to its card store), and it
+ * never records a fresh card when none matches (a transition for a card not in
+ * this turn's recorded set means the proposing turn already finalized, so the
+ * caller should fall back to the DB-row `updateXCard` patch, which is safe then).
+ * Pair a successful patch with `persistTurnInProgress` to flush it to history.
+ */
+export function updateRecordedCard(
+  runner: Pick<SessionRunnerInterface, "recordedCards">,
+  matches: (m: PersistedMessage) => boolean,
+  patch: (m: PersistedMessage) => PersistedMessage,
+): boolean {
+  const idx = runner.recordedCards.findIndex((c) => matches(c.message));
+  if (idx < 0) return false;
+  const updated = runner.recordedCards.slice();
+  updated[idx] = { ...updated[idx], message: patch(updated[idx].message) };
+  runner.recordedCards = updated;
+  return true;
+}
+
+/**
  * docs/138 — build a `system_notice` WS message and its persisted chat row,
  * sharing one stable id. The id lets the client dedupe a notice re-delivered by
  * the turn-event buffer replay on reconnect against the copy already loaded from

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, emitOrReplaceChatCard, recordChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitOrReplaceChatCard, recordChatCard, updateRecordedCard, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
@@ -97,6 +97,54 @@ describe("chat-card-persistence", () => {
 
     // Two persistable groups → anchor 2 (lands after both).
     expect(runner.recordedCards[0].afterGroupIndex).toBe(2);
+  });
+
+  describe("updateRecordedCard — mid-turn lifecycle transition (docs/193 permission clobber)", () => {
+    interface PermMsg { permissionPrompt?: { requestId?: string; phase?: string; remembered?: boolean } }
+    const findCard = (messages: PersistedMessage[], requestId: string) =>
+      messages.find((m) => (m as PermMsg).permissionPrompt?.requestId === requestId) as PermMsg | undefined;
+
+    it("patches a recorded card in place so a LATER in-turn rebuild keeps the terminal state", () => {
+      // One persistable assistant group (the agent says it'll edit, with a tool).
+      const { runner, persisted, chatHistoryManager } = fakeRunner([{ text: "I'll edit .npmrc", toolUse: [{}] }]);
+
+      // 1. Permission card proposed mid-turn (pending), recorded + persisted —
+      //    exactly what emitChatCard does on `agent_permission_request`.
+      recordChatCard(runner, {
+        role: "assistant",
+        text: "",
+        permissionPrompt: { requestId: "p1", phase: "pending", toolName: "Write", path: ".npmrc" },
+      } as unknown as PersistedMessage);
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+      expect(findCard(persisted[persisted.length - 1].messages, "p1")?.permissionPrompt?.phase).toBe("pending");
+
+      // 2. User approves WHILE the agent is still blocked mid-turn. Patch the
+      //    recorded card (not just the DB row), then flush.
+      const patched = updateRecordedCard(
+        runner,
+        (m) => (m as PermMsg).permissionPrompt?.requestId === "p1",
+        (m) => ({
+          ...m,
+          permissionPrompt: { ...(m as Required<PermMsg>).permissionPrompt, phase: "approved", remembered: true },
+        }) as unknown as PersistedMessage,
+      );
+      expect(patched).toBe(true);
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+
+      // 3. A LATER in-turn rebuild (next tool-result boundary, then end-of-turn)
+      //    must STILL carry "approved". Before the fix, this rebuild read the
+      //    recorded card — still pending — and clobbered the card back to its
+      //    Approve/Deny variant on the next switch/reload.
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+      const finalCard = findCard(persisted[persisted.length - 1].messages, "p1");
+      expect(finalCard?.permissionPrompt?.phase).toBe("approved");
+      expect(finalCard?.permissionPrompt?.remembered).toBe(true);
+    });
+
+    it("returns false when no recorded card matches (caller falls back to the DB-row patch)", () => {
+      const { runner } = fakeRunner();
+      expect(updateRecordedCard(runner, () => true, (m) => m)).toBe(false);
+    });
   });
 
   it("emitNoticeInTurn emits + records a notice with a shared id (docs/138)", () => {

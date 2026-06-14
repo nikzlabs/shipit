@@ -14,7 +14,7 @@ import {
   sanitizeVoiceContext,
   VOICE_NOTE_TOOL_NAME,
 } from "../voice/voice-note-router.js";
-import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
+import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
 
@@ -838,10 +838,37 @@ export function wireAgentListeners(
       const turnSessionId = opts.capturedSessionId;
       if (turnSessionId && runner) {
         const phase = event.behavior === "allow" ? "approved" : "denied";
-        deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
-          phase,
-          ...(event.remembered ? { remembered: true } : {}),
-        });
+        // The permission card resolves MID-TURN — the agent is blocked awaiting
+        // the answer, so the proposing-turn row is still in_progress. A DB-only
+        // `updatePermissionCard` patch would be clobbered by the next
+        // `replaceInProgress` rebuild from `recordedCards` (still holding the
+        // pending snapshot), reverting the card to its Approve/Deny variant on
+        // the next switch/reload. Patch the recorded card in place so every
+        // rebuild — and the final end-of-turn persist — carries the terminal
+        // phase, then flush. Fall back to the DB-row patch only if the card
+        // isn't in this turn's recorded set (the proposing turn finalized).
+        const requestId = event.requestId;
+        const remembered = event.remembered;
+        const patchedRecorded = updateRecordedCard(
+          runner,
+          (m) => m.permissionPrompt?.requestId === requestId,
+          (m) => ({
+            ...m,
+            permissionPrompt: {
+              ...m.permissionPrompt!,
+              phase,
+              ...(remembered ? { remembered: true } : {}),
+            },
+          }),
+        );
+        if (patchedRecorded) {
+          persistTurnInProgress(deps.chatHistoryManager, runner, turnSessionId);
+        } else {
+          deps.chatHistoryManager.updatePermissionCard(turnSessionId, event.requestId, {
+            phase,
+            ...(event.remembered ? { remembered: true } : {}),
+          });
+        }
         runner.emitMessage({
           type: "permission_resolved",
           sessionId: turnSessionId,

@@ -341,6 +341,44 @@ describe("ChatHistoryManager", () => {
       mgr.append("sess-1", pendingCard("perm-1"));
       expect(mgr.updatePermissionCard("sess-1", "missing", { phase: "approved" })).toBe(false);
     });
+
+    // Regression: the permission card resolves MID-TURN (the agent is blocked
+    // awaiting the answer), unlike bug-report / issue-write cards which resolve
+    // after their turn finalizes. So a DB-only `updatePermissionCard` patch is
+    // clobbered by the next in-progress rebuild — the card reverts to its
+    // Approve/Deny variant on the next switch/reload. The fix patches the
+    // recorded card so each rebuild carries the terminal phase.
+    it("a later in-progress rebuild clobbers a DB-only patch, but a rebuild from the patched card survives", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "user", text: "add a line to .npmrc" });
+
+      // Proposing turn persists the assistant group + the pending card in-progress
+      // (what emitChatCard → persistTurnInProgress does on the request).
+      const inProgress = (card: PersistedMessage): PersistedMessage[] => [
+        { role: "assistant", text: "editing .npmrc", inProgress: true },
+        { ...card, inProgress: true },
+      ];
+      mgr.replaceInProgress("sess-1", inProgress(pendingCard("perm-1")));
+
+      // DB-only patch flips it to approved...
+      mgr.updatePermissionCard("sess-1", "perm-1", { phase: "approved", remembered: true });
+      expect(mgr.load("sess-1").find((m) => m.permissionPrompt?.requestId === "perm-1")?.permissionPrompt?.phase).toBe("approved");
+
+      // ...but the NEXT rebuild of the same in-progress turn re-inserts from the
+      // turn's recorded cards, which still hold pending — reverting the card.
+      // This is the clobber `updateRecordedCard` prevents.
+      mgr.replaceInProgress("sess-1", inProgress(pendingCard("perm-1")));
+      expect(mgr.load("sess-1").find((m) => m.permissionPrompt?.requestId === "perm-1")?.permissionPrompt?.phase).toBe("pending");
+
+      // With the recorded card itself patched to approved, every rebuild — and
+      // the final end-of-turn persist — carries the terminal phase.
+      const approved = pendingCard("perm-1");
+      approved.permissionPrompt = { ...approved.permissionPrompt!, phase: "approved", remembered: true };
+      mgr.replaceInProgress("sess-1", inProgress(approved));
+      const card = mgr.load("sess-1").find((m) => m.permissionPrompt?.requestId === "perm-1")?.permissionPrompt;
+      expect(card?.phase).toBe("approved");
+      expect(card?.remembered).toBe(true);
+    });
   });
 
   it("round-trips a message carrying every optional field (serialization contract)", () => {
