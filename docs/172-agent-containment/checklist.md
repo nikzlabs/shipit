@@ -144,11 +144,19 @@ tracker as separate issues. None implemented yet.
           is the Settings-UI item below); the card record itself persists. Under Tier B a
           brand-new host is blocked at DNS first, so the card primarily covers the CDN/IP-
           reuse case — a proactive DNS-layer trigger for brand-new hosts is a follow-up.
-    - [ ] **Verify on a live host** (rebuild the sidecar with the Go binary, all three
+    - [x] **Verify on a live host** (rebuild the sidecar with the Go binary, all three
           flags on): an allowlisted SNI splices through; a non-allowlisted SNI to an
           allowlisted IP is rejected (CDN co-tenancy); legit npm/git/anthropic unaffected;
           the proxy survives the compose stale-sweep.
-          - First live-host round found **three defects, now fixed** (re-verify pending):
+          - **Re-verified ✅ on main `2626bc26` — Tier C works, trustworthy.** Every
+            previously-failing check now passes: `route_localnet=1`; npm/git HTTPS + agent
+            turn all succeed; a bad SNI to an allowlisted IP fast-resets (rc 35) and the
+            proxy logs `deny: evil.example.com` (CDN co-tenancy gap closed); the allow-once
+            card emits via the real proxy path (guard now passes the proxy's `?session=`
+            decision query); approval flips allow-once and the retry forwards end-to-end;
+            the decision endpoint is usable yet still cannot grant (WS-only). Proxy keeps
+            uid 912 / no `NET_ADMIN` / both labels.
+          - First live-host round found **three defects, fixed and merged (#1358)**:
             1. **route_localnet never set** — the NET_ADMIN-only installer's `/proc/sys`
                is read-only (EROFS), so `echo 1 >`/`sysctl -w` failed silently and the
                REDIRECT couldn't route to loopback. Fixed least-privilege: set
