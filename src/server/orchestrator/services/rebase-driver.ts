@@ -31,30 +31,17 @@ import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
-import { chownWorkspaceGitToSessionWorker, chownWorktreeToSessionWorker } from "../session-worker-uid.js";
-import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../../shared/shipit-config.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 
-/**
- * Hand the whole session workspace back to the worker uid after the root
- * orchestrator's git ops (SHI-144): both `.git` (object-aware) AND the worktree
- * (minus the declared dep dirs). A rebase rewrites BOTH as `root:root`, and
- * because the rebase driver dispatches its turns with `postTurn: "none"` the
- * normal post-turn handoff never runs — so without handing the *worktree* back
- * too, the non-root agent can run git but still can't EDIT the conflicted files
- * it must resolve (nor can a later turn edit any rebase-rewritten file). No-op
- * when `SHIPIT_SESSION_WORKER_UID` is unset.
- */
-function handWorkspaceBackToWorker(workspaceDir: string): void {
-  chownWorkspaceGitToSessionWorker(workspaceDir);
-  let depDirs: string[];
-  try {
-    depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
-  } catch {
-    depDirs = [...DEFAULT_DEP_DIRS];
-  }
-  chownWorktreeToSessionWorker(workspaceDir, depDirs);
-}
+// Hand the whole session workspace (worktree + `.git`) back to the worker uid
+// after the rebase driver's root git ops (SHI-144). A rebase rewrites BOTH as
+// root:root, and because the driver dispatches turns with `postTurn: "none"`
+// the normal post-turn handoff never runs — so without the worktree handback the
+// non-root agent can run git but can't EDIT the conflicted files it must
+// resolve. Shared with the session-setup + fork-merge paths via
+// `handWorkspaceBackToWorker` (session-worker-uid.ts); no-op when the flag is
+// unset.
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit

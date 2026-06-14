@@ -8,7 +8,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
-import { chownWorkspaceGitToSessionWorker } from "./session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { getErrorMessage } from "./validation.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { workerInstall, workerGet } from "./worker-http.js";
@@ -169,10 +169,12 @@ export function createWarmPool(
         // commits that are already on main but ahead of the stale bare-cache
         // snapshot this clone was cut from (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
-        // docs/150 §7 addendum: hand `.git` back to the worker uid after the
-        // root orchestrator's fetch + `checkout -b` + ref realignment, so the
-        // warm session's first in-container git op can write it.
-        chownWorkspaceGitToSessionWorker(workspaceDir);
+        // docs/150 §7 addendum (SHI-145): hand the workspace back to the worker
+        // uid after the root orchestrator's fetch + `checkout -b` + ref
+        // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE
+        // (not just `.git`), so hand back both — otherwise the warm session's
+        // cloned files stay root-owned and the non-root agent can't edit them.
+        handWorkspaceBackToWorker(workspaceDir);
 
         sessionManager.setBranch(appSessionId, branchPrefix);
 

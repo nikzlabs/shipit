@@ -463,13 +463,34 @@ wired. Completed in this PR (all gated, all no-ops when the flag is unset):
   chowned here.
 - The one-shot session-setup git writers — `claim-session` (both the
   warm-refresh and fresh-clone paths), `warm-pool-manager`, `session-fork-merge`
-  (fork clone + merge), `child-sessions` (`reset --hard <base>`) — each hands
-  `.git` back after its git ops via `chownWorkspaceGitToSessionWorker`.
+  (fork clone + merge), `child-sessions` (`reset --hard <base>`) — each hands the
+  **whole workspace** (`.git` AND the worktree) back after its git ops via
+  `handWorkspaceBackToWorker`.
 
-Helper: `chownWorkspaceGitToSessionWorker(workspaceDir)` in
-`session-worker-uid.ts` chowns `<workspaceDir>/.git` (no-op when the flag is
-unset). The worktree files themselves are written by the agent *as the worker
-uid*, so only git's own writes need the handoff.
+  **SHI-145 — these paths must hand the *worktree* back, not just `.git`.** The
+  early assumption (below) that "the worktree files are always written by the
+  agent as the worker, so only `.git` needs the handoff" holds for the *post-turn
+  auto-commit* but is **false for session setup**: the root orchestrator's
+  `git clone` / `checkout -b <resetTarget>` / `reset --hard` *re-materializes the
+  worktree itself* as `root:root`. Handing only `.git` back left every tracked
+  file in a fresh repo-backed session owned by root, so the non-root agent could
+  run git but `EACCES`'d on its first edit of a tracked file (and a saving
+  `npm install`, which writes the lockfile at the repo root). The overlay
+  `node_modules` masked it — it's a separately-chowned mount, so
+  `npm install --no-save` still worked. Fix: the setup writers call the composite
+  `handWorkspaceBackToWorker`, the same `.git`+worktree handoff the rebase driver
+  and fork-merge already used post-`postTurn:"none"`.
+
+Helpers in `session-worker-uid.ts` (all no-ops when the flag is unset):
+- `chownWorkspaceGitToSessionWorker(workspaceDir)` — chowns `<workspaceDir>/.git`
+  only. Correct for the **post-turn auto-commit**, where the worktree files
+  genuinely *are* agent-written and only git's own writes need the handoff.
+- `chownWorktreeToSessionWorker(workspaceDir, depDirs)` — chowns the worktree,
+  skipping `.git` and the declared dep dirs.
+- `handWorkspaceBackToWorker(workspaceDir)` — the composite of the two (reads
+  `agent.dep-dirs` from the workspace's `shipit.yaml`, falling back to
+  `DEFAULT_DEP_DIRS`). Use it from every path where the root orchestrator rewrote
+  the worktree as well as `.git`: **session setup, rebase, fork-merge**.
 
 **Cost — bounded by the object fanout, not the object count.** This runs on the
 post-turn auto-commit *every turn*, so it can't be O(objects). Session clones run
