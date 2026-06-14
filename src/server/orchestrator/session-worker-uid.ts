@@ -26,6 +26,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
 
 /**
  * The UID the session worker runs as, parsed from `SHIPIT_SESSION_WORKER_UID`,
@@ -130,6 +131,40 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
   if (uid === null) return;
   const exclude = new Set<string>([".git", ...excludeRelDirs.map((d) => path.normalize(d))]);
   chownWorktreeRecursive(workspaceDir, uid, workspaceDir, exclude);
+}
+
+/**
+ * Hand a session workspace back to the worker uid in full after the root
+ * orchestrator ran git operations that rewrote BOTH the `.git` metadata AND the
+ * worktree files — `clone`/`checkout -b`/`reset --hard`/`rebase`/`merge`. No-op
+ * when `SHIPIT_SESSION_WORKER_UID` is unset.
+ *
+ * This is the composite of the two narrower handbacks: {@link
+ * chownWorkspaceGitToSessionWorker} (object-aware `.git`) +
+ * {@link chownWorktreeToSessionWorker} (worktree minus the declared dep dirs,
+ * read from the workspace's `shipit.yaml`; falls back to {@link DEFAULT_DEP_DIRS}
+ * when the config can't be read). Handing back ONLY `.git` — which the
+ * session-setup paths used to do — leaves the worktree the root git op
+ * re-materialized owned `root:root`, so the non-root agent (uid 1000) can run
+ * git but EACCESes on its first edit of a tracked file (docs/150 §7 / SHI-145).
+ *
+ * Use this from every orchestrator-side path that mutates a per-session
+ * workspace's worktree as root: session setup (warm-pool create, claim refresh,
+ * claim branch-off), rebase, and fork-merge. The dep-dir skip keeps the walk
+ * bounded by the source tree rather than the (potentially populated)
+ * `node_modules`, which the worker already owns via its own install / the
+ * overlay mount.
+ */
+export function handWorkspaceBackToWorker(workspaceDir: string): void {
+  if (sessionWorkerUid() === null) return;
+  chownWorkspaceGitToSessionWorker(workspaceDir);
+  let depDirs: string[];
+  try {
+    depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
+  } catch {
+    depDirs = [...DEFAULT_DEP_DIRS];
+  }
+  chownWorktreeToSessionWorker(workspaceDir, depDirs);
 }
 
 /**

@@ -8,6 +8,7 @@ import {
   chownTreeToSessionWorker,
   chownWorkspaceGitToSessionWorker,
   chownWorktreeToSessionWorker,
+  handWorkspaceBackToWorker,
 } from "./session-worker-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
@@ -189,6 +190,84 @@ describe("session-worker-uid (docs/150 §7)", () => {
       fs.writeFileSync(f, "");
       const before = fs.lstatSync(f).uid;
       chownWorktreeToSessionWorker(tmpDir, ["node_modules"]);
+      expect(fs.lstatSync(f).uid).toBe(before);
+    });
+
+    // SHI-145: the session-setup paths (warm-pool create, claim refresh/branch)
+    // used to hand back ONLY `.git`, leaving the root-cloned/reset worktree
+    // owned root:root and uneditable by the non-root agent. The composite helper
+    // hands back BOTH `.git` (object-aware) AND the worktree (minus dep dirs).
+    it("handWorkspaceBackToWorker chowns BOTH the worktree and .git, skipping dep dirs", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // Worktree the root `clone`/`reset --hard` re-materialized.
+      const topFile = path.join(tmpDir, "package.json");
+      const nestedFile = path.join(tmpDir, "src", "App.tsx");
+      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+      fs.writeFileSync(topFile, "{}");
+      fs.writeFileSync(nestedFile, "x");
+      // `.git` metadata the root git ops rewrote.
+      fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, ".git", "index"), "");
+      // No shipit.yaml → falls back to DEFAULT_DEP_DIRS (["node_modules"]).
+      const depFile = path.join(tmpDir, "node_modules", "left-pad", "index.js");
+      fs.mkdirSync(path.dirname(depFile), { recursive: true });
+      fs.writeFileSync(depFile, "");
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        handWorkspaceBackToWorker(tmpDir);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // Worktree handed back (the half that was missing) — this is the fix.
+        expect(chowned.has(topFile)).toBe(true);
+        expect(chowned.has(nestedFile)).toBe(true);
+        // `.git` metadata handed back too (object-aware helper).
+        expect(chowned.has(path.join(tmpDir, ".git", "index"))).toBe(true);
+        // Dep dir skipped wholesale — bounded walk.
+        expect(chowned.has(path.join(tmpDir, "node_modules"))).toBe(false);
+        expect(chowned.has(depFile)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("handWorkspaceBackToWorker honors agent.dep-dirs from shipit.yaml", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent:\n  dep-dirs:\n    - vendor\n");
+      const vendorFile = path.join(tmpDir, "vendor", "pkg", "x.js");
+      const srcFile = path.join(tmpDir, "main.ts");
+      fs.mkdirSync(path.dirname(vendorFile), { recursive: true });
+      fs.writeFileSync(vendorFile, "");
+      fs.writeFileSync(srcFile, "");
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        handWorkspaceBackToWorker(tmpDir);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        expect(chowned.has(srcFile)).toBe(true);
+        // The declared dep dir is skipped instead of the default node_modules.
+        expect(chowned.has(path.join(tmpDir, "vendor"))).toBe(false);
+        expect(chowned.has(vendorFile)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("handWorkspaceBackToWorker is a no-op when the flag is unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const f = path.join(tmpDir, "package.json");
+      fs.writeFileSync(f, "{}");
+      const before = fs.lstatSync(f).uid;
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        handWorkspaceBackToWorker(tmpDir);
+        expect(spy).not.toHaveBeenCalled();
+      } finally {
+        spy.mockRestore();
+      }
       expect(fs.lstatSync(f).uid).toBe(before);
     });
 

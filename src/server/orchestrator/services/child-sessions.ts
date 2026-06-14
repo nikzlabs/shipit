@@ -19,7 +19,7 @@ import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
-import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 /**
  * Read a positive-integer env var override. Returns `undefined` when the var
@@ -311,10 +311,11 @@ export async function spawnChildSession(
     } catch (err) {
       throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
     }
-    // docs/150 §7 addendum: the `reset --hard` ran as the root orchestrator
-    // (the claim that produced this workspace already chowned its `.git`, but
-    // this post-claim write re-roots `.git/index`/refs). Hand `.git` back.
-    chownWorkspaceGitToSessionWorker(newWorkspaceDir);
+    // docs/150 §7 addendum (SHI-145): the `reset --hard` ran as the root
+    // orchestrator. It re-materializes the WORKTREE (not just `.git/index`/refs)
+    // as root:root, so hand the whole workspace back — `.git` alone would leave
+    // the reset worktree files uneditable by the non-root agent.
+    handWorkspaceBackToWorker(newWorkspaceDir);
   }
 
   // graduate-session.ts owns the warm → active transition (docs/156).

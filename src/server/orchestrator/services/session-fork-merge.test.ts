@@ -6,23 +6,22 @@ import { execSync } from "node:child_process";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { mergeSession } from "./session-fork-merge.js";
-import {
-  chownWorkspaceGitToSessionWorker,
-  chownWorktreeToSessionWorker,
-} from "../session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
 
 // SHI-144 (analog): the root orchestrator's `git.merge` into the *active*
 // session's booted clone re-roots BOTH `.git` and the worktree files it
 // rewrites — so `mergeSession` must hand BOTH back to the worker uid, not just
 // `.git` (handing only `.git` back left the merged worktree files root-owned and
-// the non-root agent couldn't edit them). The real helpers are no-ops unless the
+// the non-root agent couldn't edit them). It does so via the shared
+// `handWorkspaceBackToWorker` helper (`.git`/worktree/dep-dir internals unit-
+// tested in session-worker-uid.test.ts). The real helper is a no-op unless the
 // flag is set / chown-to-1000 is permitted (root-only), so we spy to assert the
 // wiring; the real cross-uid proof is the live dev validation.
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
-  return { ...actual, chownWorkspaceGitToSessionWorker: vi.fn(), chownWorktreeToSessionWorker: vi.fn() };
+  return { ...actual, handWorkspaceBackToWorker: vi.fn() };
 });
 
 /** Bare origin + a working clone with one pushed commit on `main`. */
@@ -51,8 +50,7 @@ describe("session-fork-merge: mergeSession ownership handoff (SHI-144 analog)", 
   let origGitEditor: string | undefined;
 
   beforeEach(() => {
-    vi.mocked(chownWorkspaceGitToSessionWorker).mockClear();
-    vi.mocked(chownWorktreeToSessionWorker).mockClear();
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fork-merge-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
@@ -91,8 +89,7 @@ describe("session-fork-merge: mergeSession ownership handoff (SHI-144 analog)", 
     // The merge actually rewrote the active worktree.
     expect(fs.existsSync(path.join(activeDir, "feature.txt"))).toBe(true);
     // Both handoffs fired against the ACTIVE session dir.
-    expect(chownWorkspaceGitToSessionWorker).toHaveBeenCalledWith(activeDir);
-    expect(chownWorktreeToSessionWorker).toHaveBeenCalledWith(activeDir, expect.any(Array));
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(activeDir);
   });
 
   it("hands ownership back even when the merge throws (finally runs)", async () => {
@@ -117,7 +114,6 @@ describe("session-fork-merge: mergeSession ownership handoff (SHI-144 analog)", 
       ),
     ).rejects.toThrow();
 
-    expect(chownWorkspaceGitToSessionWorker).toHaveBeenCalledWith(activeDir);
-    expect(chownWorktreeToSessionWorker).toHaveBeenCalledWith(activeDir, expect.any(Array));
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(activeDir);
   });
 });
