@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-148
 description: Quick/warm-standby first turn silently never ran — the dispatch path swallowed a no-result exit-0 instead of retrying or surfacing an error.
 ---
 
@@ -88,6 +89,41 @@ untouched — it keeps `emitErrorOnNoResult`):
    row + `session_status` reset + `session_agent_finished` + queue drain)
    instead of vanishing.
 
+## Follow-up: the retry must not erase a partial turn (data-loss bug)
+
+The `MAX_NO_RESULT_RETRIES = 1` retry was originally unconditional — *any*
+no-result exit retried. That's correct for the genuinely-empty "never ran" case
+this doc describes, but **wrong when the turn streamed visible work before
+dying**, which is the OOM/SIGHUP case on a memory-pressured session (the agent
+emits assistant text + tool calls, then the CLI is killed with `exit 137`/`129`
+*without* an `agent_result`).
+
+The data-loss chain:
+
+1. Streamed assistant rows are persisted as `in_progress=1` at each tool-result
+   boundary (`agent-listeners.ts`); they're flipped permanent only by
+   `finalizeInProgress` on `agent_result` or the error path.
+2. The dispatch path has **no `onInterruptedTurn`** (that partial-turn finalizer
+   is WS-only, `turn-executor.ts`) — it relies on `onNoResultExit`, which
+   *retried*.
+3. The retry calls `resetRunnerTurnState`, **clearing `runner.chatMessageGroups`
+   in memory** while the streamed rows are still `in_progress=1` in the DB.
+4. When the retry also exits without a result, the surfaced error rebuilds chat
+   history from the now-**empty** groups: `replaceInProgress(sessionId, [])`
+   deletes **every** `in_progress=1` row in the session. Across a long session
+   these unfinalized rows accumulate and vanish in one wipe — "the agent did the
+   work but the turns disappeared", while the diffs survive in git (auto-commit
+   is independent of chat history).
+
+**Fix (`dispatched-turn.ts`):** gate the retry on `producedPartialWork`
+(`buildTurnMessages(...).length > 0`). Only the genuinely-empty exit is retried;
+a partial-work exit surfaces the error **immediately, while the groups are still
+intact**, so the `agent.error` handler's `replaceInProgress` + `finalizeInProgress`
+*preserves* the partial turn instead of deleting it (mirroring the WS path's
+`onInterruptedTurn` guarantee). The surfaced error also switches from "exited …
+without running" to "stopped before finishing … work so far is preserved" in
+that case. The empty "never ran" retry path is unchanged.
+
 ## Key files
 
 - `src/server/orchestrator/turn-executor.ts` — `onNoResultExit` on `TurnInput`;
@@ -95,18 +131,21 @@ untouched — it keeps `emitErrorOnNoResult`):
   before teardown.
 - `src/server/orchestrator/dispatched-turn.ts` — `runOnce(attempt)` loop,
   `MAX_NO_RESULT_RETRIES`, retry-then-surface-error wiring; first-attempt-only
-  user echo / persistence.
+  user echo / persistence; `producedPartialWork` gate that skips the retry (and
+  preserves the partial turn) when the turn streamed work before exiting.
 - `src/server/orchestrator/integration_tests/quick-session-first-turn-exit0.test.ts`
   — regression tests.
 
 ## Verification
 
 `npx vitest run src/server/orchestrator/integration_tests/quick-session-first-turn-exit0.test.ts`
-— 4 tests:
+— 5 tests:
 
 - first no-result exit retries once (a second agent spawns, retry announced);
 - a second no-result exit surfaces a visible error + finished + `running=false`,
   bounded to 2 attempts;
+- **a turn that streams content then exits with no result (OOM/SIGHUP) preserves
+  its partial work, does NOT retry, and surfaces a "work … preserved" error;**
 - a normal turn (`agent_result` then `done`) does NOT retry and surfaces no
   error;
 - an `auth_required` turn does NOT retry.
