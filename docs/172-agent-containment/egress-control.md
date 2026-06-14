@@ -291,9 +291,14 @@ Stored orchestrator-side alongside MCP servers / secrets.
 > (`composeEgressExtraHosts`: `SESSION_EGRESS_ALLOWLIST` + live MCP hosts + durable
 > global + durable session) fed into BOTH `buildResolverConfigB64` and `buildProxyAllowed`.
 > Browser-only routes live in `api-routes-egress.ts`
-> (`GET/PUT /api/egress/settings`, `POST/DELETE /api/egress/hosts`,
-> `GET/PUT /api/egress/session/:id`); the client is `egress-store.ts` + `SettingsEgress.tsx`
-> (Settings → Advanced → "Network egress") with an `egress_settings` SSE sync. **"Add to
+> (`GET/PUT /api/egress/settings`, `GET /api/egress/allowlist`,
+> `POST/DELETE /api/egress/hosts`, `GET/PUT /api/egress/session/:id`); the client is
+> `egress-store.ts` + `SettingsEgress.tsx` (Settings → Advanced → "Network egress") with an
+> `egress_settings` SSE sync. The editor is **first-class**: `GET /api/egress/allowlist`
+> (backed by `buildEffectiveAllowlist`) returns the full *effective* list tagged with
+> **provenance** (`builtin` / `operator` / `mcp` / `user-global` / `user-session`); the UI
+> renders built-in/operator/MCP rows read-only ("Always allowed") and lets the user
+> add/remove/**edit** their own entries at global **or** per-session scope. **"Add to
 > allowlist"** (the Tier C card's `add`, and a session-scoped host add) persists durably AND
 > live-reloads the running session's resolver + proxy (`egress-reload.ts`) so a brand-new
 > host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted with no restart;

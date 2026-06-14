@@ -24,6 +24,7 @@
  */
 
 import type { CredentialStore } from "./credential-store.js";
+import type { EgressAllowlistEntry, EgressAllowlistSource } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -268,4 +269,56 @@ export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): strin
   }
   for (const h of opts.durableHosts ?? []) add(h);
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Effective allowlist with provenance (the Settings editor view)
+// ---------------------------------------------------------------------------
+
+export interface EffectiveAllowlistOpts {
+  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Override the base list (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). */
+  base?: readonly string[];
+  /** Live MCP hosts source. */
+  credentialStore?: CredentialStore;
+  /** Durable user-added global allowlist hosts. */
+  globalHosts?: Iterable<string>;
+  /** Durable user-added per-session allowlist hosts. */
+  sessionHosts?: Iterable<string>;
+}
+
+/**
+ * Compose the **effective** allowlist as an ordered, de-duplicated list of
+ * entries tagged with provenance — exactly what the session can reach and *why*.
+ * Powers the Settings allowlist editor, which renders built-in/MCP/operator
+ * entries read-only and lets the user remove/edit their own.
+ *
+ * Precedence on collision (a host present in more than one source keeps its
+ * first, most-fundamental classification): builtin → operator → mcp →
+ * user-global → user-session. So a user "re-adding" a built-in host shows as the
+ * built-in (non-removable) — removing the redundant user row wouldn't change
+ * reachability anyway. Hosts are normalized; a leading "." (suffix match) is
+ * preserved.
+ */
+export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): EgressAllowlistEntry[] {
+  const env = opts.env ?? process.env;
+  const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
+  const seen = new Set<string>();
+  const entries: EgressAllowlistEntry[] = [];
+  const push = (raw: string, source: EgressAllowlistSource, removable: boolean) => {
+    const host = normalizeHost(raw);
+    if (!host || seen.has(host)) return;
+    seen.add(host);
+    entries.push({ host, source, removable });
+  };
+
+  for (const h of base) push(h, "builtin", false);
+  for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) push(h, "operator", false);
+  if (opts.credentialStore) {
+    for (const h of mcpHostsFromCredentialStore(opts.credentialStore)) push(h, "mcp", false);
+  }
+  for (const h of opts.globalHosts ?? []) push(h, "user-global", true);
+  for (const h of opts.sessionHosts ?? []) push(h, "user-session", true);
+  return entries;
 }

@@ -300,10 +300,16 @@ export function useServerEvents(): void {
     });
 
     // docs/172 / SHI-90 — egress containment settings changed in another tab.
-    // Keep the Settings → Network egress section in sync across tabs.
+    // Refresh the effective allowlist view so the Settings → Network egress
+    // editor stays in sync. Only when already loaded (the panel was opened),
+    // so a background tab that never opened Settings doesn't fetch.
     es.addEventListener("egress_settings", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as EgressSettings;
-      useEgressStore.getState().applySnapshot(data);
+      const store = useEgressStore.getState();
+      if (!store.loaded) return;
+      // Reflect the toggle immediately, then re-fetch the full provenance view.
+      useEgressStore.setState({ globalEnabled: data.globalEnabled });
+      void store.refresh().catch(() => {});
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {

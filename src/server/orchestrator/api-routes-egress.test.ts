@@ -13,7 +13,13 @@ import { DatabaseManager } from "../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import type { ApiDeps } from "./api-routes.js";
-import type { EgressSettings, EgressSessionSettings } from "../shared/types.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
+
+const stubCredentialStore = {
+  getAllMcpServers: () => ({}),
+  getAllMcpOAuthTokens: () => ({}),
+} as unknown as CredentialStore;
 
 describe("egress settings routes", () => {
   let app: FastifyInstance;
@@ -30,6 +36,7 @@ describe("egress settings routes", () => {
     app = Fastify();
     const deps = {
       egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
       sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
       containerManager: { reloadEgress } as unknown,
       runnerRegistry: { get: () => undefined },
@@ -42,6 +49,32 @@ describe("egress settings routes", () => {
   afterEach(async () => {
     await app.close();
     db.close();
+  });
+
+  it("GET /api/egress/allowlist returns the effective list with provenance (built-in + user)", async () => {
+    store.addHost(EGRESS_GLOBAL_SCOPE, "user.example.com");
+    const res = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    expect(res.statusCode).toBe(200);
+    const view = res.json<EgressAllowlistView>();
+    expect(view.session).toBeNull();
+    // Built-ins are present + read-only; the user host is removable.
+    const builtin = view.entries.find((e) => e.host === ".github.com");
+    expect(builtin).toMatchObject({ source: "builtin", removable: false });
+    expect(view.entries.find((e) => e.host === "user.example.com")).toMatchObject({
+      source: "user-global",
+      removable: true,
+    });
+  });
+
+  it("GET /api/egress/allowlist?session=<id> folds in per-session hosts + session view", async () => {
+    store.addHost("session-1", "session.example.com");
+    const res = await app.inject({ method: "GET", url: "/api/egress/allowlist?session=session-1" });
+    const view = res.json<EgressAllowlistView>();
+    expect(view.session?.sessionId).toBe("session-1");
+    expect(view.entries.find((e) => e.host === "session.example.com")).toMatchObject({
+      source: "user-session",
+      removable: true,
+    });
   });
 
   it("GET /api/egress/settings returns the default-on toggle + empty allowlist", async () => {

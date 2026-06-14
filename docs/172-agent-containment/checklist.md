@@ -173,8 +173,12 @@ tracker as separate issues. None implemented yet.
           (Tier C `extraHosts`) at container start — so the resolver's pinned set and the
           proxy's SNI allowlist can never drift. Unit-tested in `egress-allowlist.test.ts`.
   - [x] **Settings UI** — default-on global containment toggle (fail-secure: a missing
-        global setting resolves to Contained), per-session containment override, and an
-        allowlist editor (add/remove hosts). Durable store
+        global setting resolves to Contained), per-session containment override
+        (Inherit / Contained / Open), and a **first-class allowlist editor**: it renders the
+        full **effective** allowlist with **provenance** (built-in / operator / MCP /
+        user-added, via `GET /api/egress/allowlist` + `buildEffectiveAllowlist`), with
+        built-in/operator/MCP rows read-only under "Always allowed" and **user entries
+        add/remove/edit-able at global OR per-session scope**. Durable store
         (`EgressAllowlistStore` — `egress_allowlist` + `egress_settings` tables, DB
         migration) feeds the per-session containment gate + the composition seam at
         container start; the global toggle / per-session override govern whether a session

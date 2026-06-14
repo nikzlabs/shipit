@@ -13,6 +13,7 @@ import {
   mcpHostsFromCredentialStore,
   buildEgressAllowlist,
   composeEgressExtraHosts,
+  buildEffectiveAllowlist,
 } from "./egress-allowlist.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
@@ -212,5 +213,39 @@ describe("composeEgressExtraHosts", () => {
 
   it("includes durable hosts even with no env or MCP source", () => {
     expect(composeEgressExtraHosts({ env: {}, durableHosts: [".user.example.com"] })).toEqual([".user.example.com"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildEffectiveAllowlist — provenance view for the Settings editor
+// ---------------------------------------------------------------------------
+
+describe("buildEffectiveAllowlist", () => {
+  it("tags built-ins as read-only and user hosts as removable", () => {
+    const entries = buildEffectiveAllowlist({
+      env: {},
+      globalHosts: ["userg.example.com"],
+      sessionHosts: ["users.example.com"],
+    });
+    const byHost = new Map(entries.map((e) => [e.host, e]));
+    expect(byHost.get(".github.com")).toMatchObject({ source: "builtin", removable: false });
+    expect(byHost.get("userg.example.com")).toMatchObject({ source: "user-global", removable: true });
+    expect(byHost.get("users.example.com")).toMatchObject({ source: "user-session", removable: true });
+  });
+
+  it("tags operator extras + MCP hosts read-only", () => {
+    const store = stubStore({
+      servers: { acme: { name: "acme", type: "http", url: "https://mcp.acme.dev/sse", enabled: true } },
+    });
+    const entries = buildEffectiveAllowlist({ env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" }, credentialStore: store });
+    expect(entries.find((e) => e.host === "ops.corp")).toMatchObject({ source: "operator", removable: false });
+    expect(entries.find((e) => e.host === "mcp.acme.dev")).toMatchObject({ source: "mcp", removable: false });
+  });
+
+  it("keeps the most-fundamental classification on a collision (builtin wins over a user re-add)", () => {
+    const entries = buildEffectiveAllowlist({ env: {}, globalHosts: [".github.com"] });
+    const gh = entries.filter((e) => e.host === ".github.com");
+    expect(gh).toHaveLength(1);
+    expect(gh[0]).toMatchObject({ source: "builtin", removable: false });
   });
 });

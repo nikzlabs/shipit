@@ -59,9 +59,9 @@ export interface ReloadEgressOpts {
 
 /** Remove every container carrying `label`. Best-effort, errors swallowed. */
 async function removeByLabel(docker: Docker, label: string): Promise<void> {
-  let list: { Id: string }[] = [];
+  let list: { Id: string }[];
   try {
-    list = (await docker.listContainers({ all: true, filters: { label: [label] } })) as { Id: string }[];
+    list = await docker.listContainers({ all: true, filters: { label: [label] } });
   } catch {
     return;
   }

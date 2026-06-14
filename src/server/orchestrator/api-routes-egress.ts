@@ -22,10 +22,11 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
-import { normalizeHost } from "./egress-allowlist.js";
+import { normalizeHost, buildEffectiveAllowlist } from "./egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
-import type { EgressSettings, EgressSessionSettings } from "../shared/types.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /** Stable per (session, host) so a re-denied host updates one card, never duplicates. */
@@ -49,6 +50,28 @@ function sessionSettings(store: EgressAllowlistStore, sessionId: string): Egress
   };
 }
 
+/**
+ * Build the effective-allowlist view (every reachable host + provenance) for the
+ * Settings editor. When `sessionId` is given, the view includes that session's
+ * per-session extras + override/resolution; otherwise it's the global-only view.
+ */
+function allowlistView(
+  store: EgressAllowlistStore,
+  credentialStore: CredentialStore | undefined,
+  sessionId: string | undefined,
+): EgressAllowlistView {
+  const entries = buildEffectiveAllowlist({
+    credentialStore,
+    globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
+    sessionHosts: sessionId ? store.listHosts(sessionId) : [],
+  });
+  return {
+    entries,
+    globalEnabled: store.getGlobalEnabled(),
+    session: sessionId ? sessionSettings(store, sessionId) : null,
+  };
+}
+
 export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const store = deps.egressAllowlistStore;
 
@@ -59,6 +82,18 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   if (store) {
     // Read the global containment toggle + user allowlist.
     app.get("/api/egress/settings", async () => globalSettings(store));
+
+    // The effective allowlist with provenance (built-in / operator / MCP /
+    // user-added) for the Settings editor. `?session=<id>` folds in that
+    // session's per-session extras + override/resolution.
+    app.get<{ Querystring: { session?: string } }>(
+      "/api/egress/allowlist",
+      async (request) => {
+        const sessionId =
+          typeof request.query.session === "string" && request.query.session ? request.query.session : undefined;
+        return allowlistView(store, deps.credentialStore, sessionId);
+      },
+    );
 
     // Flip the global toggle (Contained ↔ Open). Applies at the next container
     // start — egress is a creation-time choice; the client states that.
