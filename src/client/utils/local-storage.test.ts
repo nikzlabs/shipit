@@ -4,10 +4,53 @@ import {
   saveKeybindings,
   getSavedChangedDocsExpanded,
   saveChangedDocsExpanded,
+  getSavedDraftUploads,
+  saveDraftUploads,
+  addDraftUpload,
+  removeDraftUploads,
 } from "./local-storage.js";
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+describe("draft uploads (attached-but-unsent chips)", () => {
+  it("returns [] when nothing is stored", () => {
+    expect(getSavedDraftUploads("s1")).toEqual([]);
+  });
+
+  it("round-trips and scopes paths per session", () => {
+    saveDraftUploads("s1", ["/uploads/a.png", "/uploads/b.csv"]);
+    saveDraftUploads("s2", ["/uploads/c.txt"]);
+    expect(getSavedDraftUploads("s1")).toEqual(["/uploads/a.png", "/uploads/b.csv"]);
+    expect(getSavedDraftUploads("s2")).toEqual(["/uploads/c.txt"]);
+    expect(getSavedDraftUploads("s3")).toEqual([]);
+  });
+
+  it("clears the key when saved empty", () => {
+    saveDraftUploads("s1", ["/uploads/a.png"]);
+    saveDraftUploads("s1", []);
+    expect(getSavedDraftUploads("s1")).toEqual([]);
+    expect(localStorage.getItem("shipit-draft-uploads:s1")).toBeNull();
+  });
+
+  it("addDraftUpload appends without duplicating", () => {
+    addDraftUpload("s1", "/uploads/a.png");
+    addDraftUpload("s1", "/uploads/a.png");
+    addDraftUpload("s1", "/uploads/b.png");
+    expect(getSavedDraftUploads("s1")).toEqual(["/uploads/a.png", "/uploads/b.png"]);
+  });
+
+  it("removeDraftUploads drops the named paths, leaving others", () => {
+    saveDraftUploads("s1", ["/uploads/a.png", "/uploads/b.png", "/uploads/c.png"]);
+    removeDraftUploads("s1", ["/uploads/a.png", "/uploads/c.png"]);
+    expect(getSavedDraftUploads("s1")).toEqual(["/uploads/b.png"]);
+  });
+
+  it("ignores a corrupt stored blob", () => {
+    localStorage.setItem("shipit-draft-uploads:s1", "not json");
+    expect(getSavedDraftUploads("s1")).toEqual([]);
+  });
 });
 
 describe("changed-docs strip collapse state (docs/205)", () => {

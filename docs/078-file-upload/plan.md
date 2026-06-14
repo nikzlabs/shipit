@@ -1,4 +1,8 @@
 
+---
+issue: https://linear.app/shipit-ai/issue/SHI-146
+---
+
 # File Upload — Browser-to-Container File Transfer
 
 Allow users to upload files from their local machine into a session container so the agent can reference and operate on them. Uploaded files land in `/uploads/`, a top-level directory outside the git repo, and are passed to the agent as file context.
@@ -119,7 +123,21 @@ Response:
 }
 ```
 
-This endpoint is needed for **state recovery** — when the user refreshes the browser or reconnects, client-side upload state is lost. The client calls this on session connect to reconstruct upload chips and populate the file tree's uploads section.
+This endpoint is needed for **state recovery** — when the user refreshes the browser or reconnects, client-side upload state is lost. The client calls this on session connect to repopulate the file tree's uploads section.
+
+#### Hydration and the input chip — default off, restored only from the draft set
+
+A "chip" is a `pending` upload rendered in the input box. The rule: **a file on disk is not a chip by default.** `hydrateUploads` (in `file-store.ts`) rebuilds the `/uploads` panel from this endpoint and marks each hydrated file `pending: false` *unless* its path is in the session's **draft-uploads set**. So a file the user already sent, or one left over from an earlier visit, stays in the panel (the agent can still read it next turn) but never reappears as a chip.
+
+The draft-uploads set is the durable record of "attached but not yet sent" — the attachment half of a composer **draft**, persisted in `localStorage` (`shipit-draft-uploads:<sessionKey>`) exactly like the draft *message text* (`shipit-draft-message:<sessionKey>`, see `MessageInput.tsx`). It is maintained at three points (all in `useFileUpload.ts`):
+
+- **add** on upload success (`addDraftUpload`),
+- **remove** when the user dismisses a chip (`removeDraftUploads`),
+- **clear** when the message is sent (`clearUploads` → `removeDraftUploads`).
+
+Because the set is **default-off and only grows on a deliberate attach**, an already-sent file cannot resurrect as a chip. As a belt-and-suspenders **self-heal**, `hydrateUploads` prunes from the draft set, before applying it, any path that (a) the server no longer reports or (b) chat history shows was already sent (referenced in a user message's `uploadPaths`/`files`). So even a missed send-time removal can't leave a stale chip — the next hydrate drops it.
+
+This is what makes the chip survive a reload/session-switch (memory is gone, but the draft set isn't) *and* survive a WS reconnect (the Zustand store is kept, so in-memory `pending` items — including a file still mid-upload with no path yet — are preserved as-is and not duplicated against the hydrated list). It replaced an earlier, racy scheme that did the inverse: defaulted hydrated files to `pending` and tried to *prove* each was already sent via a chat-history scan + a per-session `localStorage` "sent paths" set — when the proof was missing (new-session first message, history not yet persisted, cleared storage, another device) an already-sent file's chip reappeared in the input. (`localStorage` makes the draft set device-local, consistent with the draft message text; cross-device draft sync would require moving both server-side and is out of scope.)
 
 ### Limits
 

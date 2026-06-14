@@ -435,6 +435,58 @@ export function saveDraftMessage(sessionKey: string, text: string): void {
   }
 }
 
+// Paths of uploads that have been attached to the composer but not yet sent —
+// the durable half of a "draft." Draft *text* survives a reload/session-switch
+// via the key above; this is the matching record for the attachment chips so
+// they survive too. The default for a file on disk is NOT a chip (see
+// `hydrateUploads`), so only paths explicitly listed here are restored as
+// chips, and the set self-heals against chat history on hydrate — this is what
+// keeps the resurrection bug (an already-sent file reappearing as a chip) from
+// returning.
+const DRAFT_UPLOADS_KEY_PREFIX = "shipit-draft-uploads:";
+
+/** Read the saved draft (attached-but-unsent) upload paths for a session. */
+export function getSavedDraftUploads(sessionKey: string): string[] {
+  try {
+    const raw = localStorage.getItem(DRAFT_UPLOADS_KEY_PREFIX + sessionKey);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    return Array.isArray(parsed) ? parsed.filter((p): p is string => typeof p === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Persist (or clear, if empty) the draft upload paths for a session. */
+export function saveDraftUploads(sessionKey: string, paths: string[]): void {
+  try {
+    if (paths.length > 0) {
+      localStorage.setItem(DRAFT_UPLOADS_KEY_PREFIX + sessionKey, JSON.stringify(paths));
+    } else {
+      localStorage.removeItem(DRAFT_UPLOADS_KEY_PREFIX + sessionKey);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/** Add a path to a session's draft uploads (attached, not yet sent). */
+export function addDraftUpload(sessionKey: string, path: string): void {
+  const paths = getSavedDraftUploads(sessionKey);
+  if (paths.includes(path)) return;
+  paths.push(path);
+  saveDraftUploads(sessionKey, paths);
+}
+
+/** Remove paths from a session's draft uploads (sent, or chip removed). */
+export function removeDraftUploads(sessionKey: string, toRemove: string[]): void {
+  if (toRemove.length === 0) return;
+  const remove = new Set(toRemove);
+  const paths = getSavedDraftUploads(sessionKey);
+  const next = paths.filter((p) => !remove.has(p));
+  if (next.length !== paths.length) saveDraftUploads(sessionKey, next);
+}
+
 // ---- Issues-tab filters (docs/173) ----
 //
 // The Issues filter bar (search + priority/status/assignee/label facets) is

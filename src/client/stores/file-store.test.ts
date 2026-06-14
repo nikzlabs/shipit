@@ -16,7 +16,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useFileStore, markUploadDeleted, clearUploadTombstone } from "./file-store.js";
 import { useSessionStore } from "./session-store.js";
-import type { UploadedFile } from "../../server/shared/types.js";
+import { getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
+import type { UploadItem, UploadedFile } from "../../server/shared/types.js";
 
 const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
 const SESSION_ID = "session-1";
@@ -36,8 +37,8 @@ describe("file-store upload tombstones", () => {
   beforeEach(() => {
     localStorage.clear();
     useFileStore.getState().reset();
-    // hydrateUploads consults chat history to decide which uploads are "sent";
-    // keep it empty so every server upload stays pending (an input chip).
+    // hydrateUploads scans chat history to self-heal the draft-uploads set;
+    // start empty so a draft path is only pruned when a test adds a sent message.
     useSessionStore.setState({ messages: [] });
   });
 
@@ -94,7 +95,9 @@ describe("file-store upload tombstones", () => {
       const uploads = useFileStore.getState().sessionUploads;
       expect(uploads).toHaveLength(1);
       expect(uploads[0].path).toBe("/uploads/data.csv");
-      expect(uploads[0].pending).toBe(true);
+      // A file present on disk is already handled (sent or left over); hydration
+      // surfaces it in the /uploads panel but never as an input chip.
+      expect(uploads[0].pending).toBe(false);
     });
 
     it("prunes a tombstone whose file is gone from the server, keeping unrelated files", async () => {
@@ -110,6 +113,104 @@ describe("file-store upload tombstones", () => {
       ]);
       // The stale tombstone for the now-absent file is cleaned up.
       expect(localStorage.getItem(DELETED_UPLOADS_KEY)).toBeNull();
+    });
+  });
+
+  describe("hydrateUploads pending semantics", () => {
+    function pendingUpload(name: string): UploadItem {
+      return {
+        id: `mem-${name}`,
+        name,
+        status: "ready",
+        path: `/uploads/${name}`,
+        progress: 100,
+        pending: true,
+      };
+    }
+
+    it("never resurrects a chip from disk — every hydrated file is non-pending", async () => {
+      // The reported bug: a file sent in a prior turn stays in /uploads and used
+      // to reappear as an input chip after a reload/reconnect. It must not.
+      stubUploadsFetch([uploaded("sent.png"), uploaded("old.csv")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads).toHaveLength(2);
+      expect(uploads.every((u) => u.pending === false)).toBe(true);
+    });
+
+    it("preserves an in-memory pending upload (attached, not yet sent) across hydrate", async () => {
+      // A WS reconnect keeps the Zustand store, so a freshly-attached-but-unsent
+      // chip must survive hydration even though its file is already on disk.
+      useFileStore.getState().addSessionUploads([pendingUpload("draft.png")]);
+      stubUploadsFetch([uploaded("draft.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      // Exactly one entry for the path — the in-memory pending item is kept and
+      // the server copy is not duplicated.
+      expect(uploads.filter((u) => u.path === "/uploads/draft.png")).toHaveLength(1);
+      expect(uploads[0].id).toBe("mem-draft.png");
+      expect(uploads[0].pending).toBe(true);
+    });
+
+    it("markUploadsSent clears pending so the chip disappears but the file remains", () => {
+      useFileStore.getState().addSessionUploads([pendingUpload("note.txt")]);
+
+      useFileStore.getState().markUploadsSent();
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads).toHaveLength(1);
+      expect(uploads[0].pending).toBe(false);
+    });
+  });
+
+  describe("hydrateUploads draft restoration", () => {
+    it("restores a chip for an attached-but-unsent file after a reload (memory empty)", async () => {
+      // The file uploaded successfully (so it's on disk + in the draft set) but
+      // the user reloaded before sending. The store is empty (reload), so the
+      // chip can only come back from the persisted draft set.
+      saveDraftUploads(SESSION_ID, ["/uploads/draft.png"]);
+      stubUploadsFetch([uploaded("draft.png"), uploaded("leftover.csv")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      const draft = uploads.find((u) => u.path === "/uploads/draft.png");
+      const leftover = uploads.find((u) => u.path === "/uploads/leftover.csv");
+      expect(draft?.pending).toBe(true); // restored as a chip
+      expect(leftover?.pending).toBe(false); // a non-drafted file stays panel-only
+    });
+
+    it("self-heals: a drafted path that chat history shows was sent is pruned, not shown as a chip", async () => {
+      // Simulates a missed send-time removal: the path lingers in the draft set,
+      // but the user message in chat history references it, so it was sent.
+      saveDraftUploads(SESSION_ID, ["/uploads/sent.png"]);
+      useSessionStore.setState({
+        messages: [{ role: "user", text: "look at this", uploadPaths: ["/uploads/sent.png"] }],
+      });
+      stubUploadsFetch([uploaded("sent.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads[0].pending).toBe(false);
+      // The stale draft entry is pruned from storage too.
+      expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
+    });
+
+    it("self-heals: a drafted path whose file is gone from the server is pruned", async () => {
+      saveDraftUploads(SESSION_ID, ["/uploads/gone.png"]);
+      stubUploadsFetch([uploaded("present.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads.map((u) => u.path)).toEqual(["/uploads/present.png"]);
+      expect(uploads[0].pending).toBe(false);
+      expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
     });
   });
 });

@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import type { UploadedFile, UploadRef, UploadItem } from "../../server/shared/types.js";
 import { useFileStore, markUploadDeleted, clearUploadTombstone } from "../stores/file-store.js";
+import { addDraftUpload, removeDraftUploads } from "../utils/local-storage.js";
 
 export type { UploadItem, UploadStatus } from "../../server/shared/types.js";
 
@@ -61,6 +62,11 @@ export function useFileUpload(sessionId: string | undefined) {
           // deduplicateFilename) leaves a prior delete's tombstone in place, and
           // hydrateUploads filters the new file out on the next reconnect.
           clearUploadTombstone(uploaded.path);
+          // Record the attached-but-unsent path so the chip survives a reload /
+          // session switch (mirrors how the composer's draft text is persisted).
+          // hydrateUploads self-heals this set against chat history, so a path
+          // left here after the file is sent never resurrects a chip.
+          addDraftUpload(sid, uploaded.path);
           st.updateSessionUpload(items[i].id, {
             status: "ready",
             name: uploaded.name,
@@ -157,6 +163,9 @@ export function useFileUpload(sessionId: string | undefined) {
     if (item.path && sessionId) {
       const filename = item.path.replace(/^\/uploads\//, "");
       markUploadDeleted(item.path);
+      // The user dismissed the chip before sending — drop it from the draft set
+      // so it isn't restored on the next reload.
+      removeDraftUploads(sessionId, [item.path]);
       void (async () => {
         try {
           const res = await fetch(`/api/sessions/${sessionId}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" });
@@ -185,10 +194,15 @@ export function useFileUpload(sessionId: string | undefined) {
       .map((u) => ({ path: u.path!, type: "upload" as const }));
   }, [pendingUploads]);
 
-  /** Mark all pending uploads as sent. */
+  /** Mark all pending uploads as sent (clears the input chips). */
   const clearUploads = useCallback(() => {
-    useFileStore.getState().markUploadsSent(sessionId);
-  }, [sessionId]);
+    const sentPaths = pendingUploads.map((u) => u.path).filter((p): p is string => Boolean(p));
+    useFileStore.getState().markUploadsSent();
+    // These paths are now sent, so they're no longer a draft. Removing them
+    // keeps the draft set tight; hydrateUploads would also prune them against
+    // chat history, so a missed removal here can't leave a stale chip.
+    if (sessionId) removeDraftUploads(sessionId, sentPaths);
+  }, [pendingUploads, sessionId]);
 
   return {
     /** Pending uploads — shown as input chips, cleared on send. */
