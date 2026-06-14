@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>PR card — Changed docs quick access</title>
+<style>
+  :root {
+    --color-bg-primary: #030712;
+    --color-bg-secondary: #111827;
+    --color-bg-tertiary: #1f2937;
+    --color-bg-hover: rgba(255, 255, 255, 0.05);
+    --color-text-primary: #f3f4f6;
+    --color-text-secondary: #9ca3af;
+    --color-text-tertiary: #6b7280;
+    --color-text-link: #60a5fa;
+    --color-border-primary: #1f2937;
+    --color-border-secondary: #374151;
+    --color-accent: #3b82f6;
+    --color-accent-subtle: rgba(59, 130, 246, 0.15);
+    --color-success: #22c55e;
+    --color-success-subtle: rgba(34, 197, 94, 0.15);
+    --color-success-border: rgba(34, 197, 94, 0.3);
+    --color-warning: #f59e0b;
+    --color-pr: #a78bfa;
+    --color-pr-subtle: rgba(167, 139, 250, 0.15);
+    --color-pr-border: rgba(167, 139, 250, 0.3);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 32px;
+    background: var(--color-bg-primary);
+    color: var(--color-text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; line-height: 1.4;
+  }
+  h1 { font-size: 15px; font-weight: 600; margin: 0 0 4px; }
+  .caption { color: var(--color-text-tertiary); font-size: 12px; margin: 0 0 24px; max-width: 760px; }
+  .caption b { color: var(--color-text-secondary); font-weight: 600; }
+  .stage { max-width: 720px; margin: 0 auto 34px; }
+  .stage > .label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); margin: 0 0 8px; }
+
+  .panel { border: 1px solid var(--color-border-primary); border-radius: 10px; overflow: hidden; background: var(--color-bg-primary); }
+
+  /* Row 1: PR header bar — height NEVER changes between collapsed/expanded */
+  .pr-bar { display: flex; align-items: center; gap: 12px; padding: 8px 16px; border-bottom: 1px solid var(--color-border-primary); }
+  .badge { width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; background: var(--color-success-subtle); color: var(--color-success); border: 1px solid var(--color-success-border); }
+  .branch { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .branch .title { font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .branch .num { color: var(--color-text-tertiary); }
+  .spacer { margin-left: auto; }
+  .cluster { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
+  .diffstat { font-variant-numeric: tabular-nums; font-size: 12px; }
+  .diffstat .ins { color: var(--color-success); }
+  .diffstat .del { color: #f87171; }
+  .iconbtn { color: var(--color-text-tertiary); padding: 4px; border-radius: 6px; display: flex; cursor: pointer; background:none; border:none; }
+  .iconbtn:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
+
+  /* the changed-docs toggle: two-doc glyph + caret, sits left of the ⋯ menu.
+     Caret points UP (collapsed) → DOWN (expanded), pointing at the open panel below. */
+  .docs-toggle { display:flex; align-items:center; gap:2px; padding:3px 5px; border-radius:6px; cursor:pointer; background:none; border:1px solid transparent; color: var(--color-text-tertiary); }
+  .docs-toggle:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
+  .docs-toggle .caret { transition: transform .15s ease; display:flex; transform: rotate(180deg); }
+  .docs-toggle.active { color: var(--color-pr); background: var(--color-pr-subtle); border-color: var(--color-pr-border); }
+  .docs-toggle.active .caret { transform: rotate(0deg); }
+
+  /* Row 2: the expandable panel — only rendered when open, so collapsed adds 0px */
+  .changed { border-bottom: 1px solid var(--color-border-primary); background: color-mix(in srgb, var(--color-bg-secondary) 45%, transparent); }
+  .changed[hidden] { display:none; }
+
+  /* Option B — compact wrapping badges (several per line) */
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 8px; max-height: 132px; overflow-y: auto; }
+  .chip {
+    display:inline-flex; align-items:center; gap:6px;
+    padding: 4px 9px 4px 7px; border-radius: 999px; cursor:pointer; text-decoration:none;
+    font-size: 12px; color: var(--color-text-primary);
+    background: var(--color-bg-tertiary); border: 1px solid var(--color-border-secondary);
+    max-width: 100%;
+  }
+  .chip:hover { border-color: var(--color-text-tertiary); background: #232f41; }
+  .chip .cdot { width:6px; height:6px; border-radius:999px; flex-shrink:0; }
+  .chip .cdot.M { background: var(--color-warning); }
+  .chip .cdot.A { background: var(--color-success); }
+  .chip .cdot.D { background: #f87171; }
+  .chip .cicon { display:flex; flex-shrink:0; color: var(--color-pr); }
+  .chip.cfg .cicon { color: var(--color-text-link); }
+  .chip .clabel { white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+
+  .chatbody { padding: 18px 16px; min-height: 60px; }
+  .msg { background: var(--color-bg-secondary); border: 1px solid var(--color-border-primary); border-radius: 8px; padding: 10px 12px; max-width: 82%; color: var(--color-text-tertiary); font-size: 12px; }
+  svg { display: block; }
+</style>
+</head>
+<body>
+  <h1>PR card — changed-docs quick access</h1>
+  <p class="caption">A <b>two-document icon left of the ⋯ menu</b> appears only when the PR changed docs/config — its presence is the signal, no count. <b>Collapsed adds zero height</b> (default; remembered per session in localStorage). Click → icon turns active, caret flips down toward the panel, and the changed files appear as <b>compact chips</b> (Option B). Click a chip to open the doc in the rich-markdown preview — no Docs-page detour. Status is a colored dot (amber = modified, green = new, red = deleted); full path on hover.</p>
+
+  <!-- Collapsed (default) -->
+  <div class="stage">
+    <p class="label">Collapsed — default (per-session, localStorage) · header height unchanged</p>
+    <div class="panel">
+      <div class="pr-bar">
+        <span class="badge"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M200,160a32,32,0,1,0,32,32A32,32,0,0,0,200,160Zm0,48a16,16,0,1,1,16-16A16,16,0,0,1,200,208ZM56,80A32,32,0,1,0,24,48,32,32,0,0,0,56,80Zm0-48A16,16,0,1,1,40,48,16,16,0,0,1,56,32Zm8,46.7V177.3a32,32,0,1,1-16,0V78.7a32,32,0,1,1,16,0ZM56,224a16,16,0,1,0-16-16A16,16,0,0,0,56,224Zm144-92.7V112a48.05,48.05,0,0,0-48-48H123.31l13.66-13.66a8,8,0,0,0-11.31-11.31l-27.32,27.31a8,8,0,0,0,0,11.32l27.32,27.31a8,8,0,0,0,11.31-11.31L123.31,80H152a32,32,0,0,1,32,32v19.3a32,32,0,1,0,16,0Z"></path></svg></span>
+        <div class="branch"><span class="title">PR-scoped quick access to changed docs</span><span class="num">#1342</span></div>
+        <span class="spacer"></span>
+        <div class="cluster">
+          <span class="diffstat"><span class="ins">+318</span> <span class="del">−42</span></span>
+          <button class="iconbtn" title="Search"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z"></path></svg></button>
+          <button class="docs-toggle" id="tg1" onclick="toggle('p1','tg1')" title="Changed docs in this PR"><span class="docicon"></span><span class="caret"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"></path></svg></span></button>
+          <button class="iconbtn" title="More"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM48,116a12,12,0,1,0,12,12A12,12,0,0,0,48,116Zm160,0a12,12,0,1,0,12,12A12,12,0,0,0,208,116Z"></path></svg></button>
+        </div>
+      </div>
+      <div class="changed" id="p1" hidden><div class="chips" data-set="small"></div></div>
+      <div class="chatbody"><div class="msg">Click the document icon (left of ⋯) — the header itself never grows; the panel drops in below.</div></div>
+    </div>
+  </div>
+
+  <!-- Expanded -->
+  <div class="stage">
+    <p class="label">Expanded — compact chips (Option B)</p>
+    <div class="panel">
+      <div class="pr-bar">
+        <span class="badge"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M200,160a32,32,0,1,0,32,32A32,32,0,0,0,200,160Zm0,48a16,16,0,1,1,16-16A16,16,0,0,1,200,208ZM56,80A32,32,0,1,0,24,48,32,32,0,0,0,56,80Zm0-48A16,16,0,1,1,40,48,16,16,0,0,1,56,32Zm8,46.7V177.3a32,32,0,1,1-16,0V78.7a32,32,0,1,1,16,0ZM56,224a16,16,0,1,0-16-16A16,16,0,0,0,56,224Zm144-92.7V112a48.05,48.05,0,0,0-48-48H123.31l13.66-13.66a8,8,0,0,0-11.31-11.31l-27.32,27.31a8,8,0,0,0,0,11.32l27.32,27.31a8,8,0,0,0,11.31-11.31L123.31,80H152a32,32,0,0,1,32,32v19.3a32,32,0,1,0,16,0Z"></path></svg></span>
+        <div class="branch"><span class="title">Big refactor touching lots of feature docs</span><span class="num">#1351</span></div>
+        <span class="spacer"></span>
+        <div class="cluster">
+          <span class="diffstat"><span class="ins">+1204</span> <span class="del">−640</span></span>
+          <button class="docs-toggle active" id="tg2" onclick="toggle('p2','tg2')" title="Changed docs in this PR"><span class="docicon"></span><span class="caret"><svg width="11" height="11" viewBox="0 0 256 256" fill="currentColor"><path d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"></path></svg></span></button>
+          <button class="iconbtn" title="More"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM48,116a12,12,0,1,0,12,12A12,12,0,0,0,48,116Zm160,0a12,12,0,1,0,12,12A12,12,0,0,0,208,116Z"></path></svg></button>
+        </div>
+      </div>
+      <div class="changed" id="p2"><div class="chips" data-set="many"></div></div>
+      <div class="chatbody"><div class="msg">Several files share a line, so the strip stays short even for a big PR; the list caps its height and scrolls.</div></div>
+    </div>
+  </div>
+
+<script>
+  const docGlyph = '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M213.66,66.34l-40-40A8,8,0,0,0,168,24H88A16,16,0,0,0,72,40V56H56A16,16,0,0,0,40,72V216a16,16,0,0,0,16,16H168a16,16,0,0,0,16-16V200h16a16,16,0,0,0,16-16V72A8,8,0,0,0,213.66,66.34ZM168,216H56V72h76.69L168,107.31Zm32-32H184V104a8,8,0,0,0-2.34-5.66l-40-40A8,8,0,0,0,136,56H88V40h76.69L200,75.31Z"></path></svg>';
+  const docIconSingle = '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M208,88H152V32ZM216,88V216a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V40A16,16,0,0,1,56,24h88Zm-48,72a8,8,0,0,0-8-8H96a8,8,0,0,0,0,16h64A8,8,0,0,0,168,160Zm0,32a8,8,0,0,0-8-8H96a8,8,0,0,0,0,16h64A8,8,0,0,0,168,192Z"></path></svg>';
+  const cfgIconSingle = '<svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm88,50.16q.06-2.16,0-4.32l14.92-18.64a8,8,0,0,0,1.48-7.06,107.21,107.21,0,0,0-10.88-26.25,8,8,0,0,0-6-3.93l-23.72-2.64q-1.48-1.56-3-3L181,40.54a8,8,0,0,0-3.94-6,107.71,107.71,0,0,0-26.25-10.87,8,8,0,0,0-7.06,1.49L125.16,40Q123,40,120.84,40L102.2,25.11a8,8,0,0,0-7.06-1.48A107.6,107.6,0,0,0,68.89,34.51a8,8,0,0,0-3.93,6L62.32,64.27q-1.56,1.49-3,3L40.54,75a8,8,0,0,0-6,3.94,107.71,107.71,0,0,0-10.87,26.25,8,8,0,0,0,1.49,7.06L40,130.84Q40,133,40,135.16L25.11,153.8a8,8,0,0,0-1.48,7.06,107.21,107.21,0,0,0,10.88,26.25,8,8,0,0,0,6,3.93l23.72,2.64q1.49,1.56,3,3L75,217.46a8,8,0,0,0,3.94,6,107.71,107.71,0,0,0,26.25,10.87,8,8,0,0,0,7.06-1.49L130.84,216q2.16.06,4.32,0l18.64,14.92a8,8,0,0,0,7.06,1.48,107.21,107.21,0,0,0,26.25-10.88,8,8,0,0,0,3.93-6l2.64-23.72q1.56-1.48,3-3L215.46,181a8,8,0,0,0,6-3.94,107.71,107.71,0,0,0,10.87-26.25,8,8,0,0,0-1.49-7.06Z"></path></svg>';
+
+  document.querySelectorAll('.docicon').forEach(el => el.innerHTML = docGlyph);
+
+  const sets = {
+    small: [
+      ['doc','PR-scoped changed docs','docs/205-pr-changed-docs/plan.md','A'],
+      ['doc','PR lifecycle card','docs/156-pr-card-top-chrome/plan.md','M'],
+      ['doc','205 · checklist','docs/205-pr-changed-docs/checklist.md','A'],
+      ['cfg','shipit.yaml','shipit.yaml','M'],
+    ],
+    many: [
+      ['doc','Session lifecycle','docs/045-session-lifecycle/plan.md','M'],
+      ['doc','Warm session pool','docs/061-warm-pool/plan.md','M'],
+      ['doc','Container reconnection','docs/072-reconnect/plan.md','A'],
+      ['doc','Idle eviction','docs/088-idle-eviction/plan.md','M'],
+      ['doc','Disk janitor','docs/120-disk-janitor/plan.md','M'],
+      ['doc','Overlay dep store','docs/183-overlay-dep-store/plan.md','M'],
+      ['doc','PR-scoped changed docs','docs/205-pr-changed-docs/plan.md','A'],
+      ['cfg','docker-compose.yml','docker-compose.yml','M'],
+      ['cfg','shipit.yaml','shipit.yaml','M'],
+    ],
+  };
+  const statusWord = { M:'Modified', A:'New', D:'Deleted' };
+  function chipHtml(r){
+    const icon = r[0]==='doc' ? docIconSingle : cfgIconSingle;
+    const cls = r[0]==='doc' ? 'chip' : 'chip cfg';
+    return `<a class="${cls}" href="#" title="${r[2]} · ${statusWord[r[3]]}"><span class="cicon">${icon}</span><span class="clabel">${r[1]}</span><span class="cdot ${r[3]}"></span></a>`;
+  }
+  document.querySelectorAll('.chips').forEach(el => {
+    el.innerHTML = sets[el.dataset.set].map(chipHtml).join('');
+  });
+
+  function toggle(panelId, tgId){
+    const p = document.getElementById(panelId);
+    const t = document.getElementById(tgId);
+    if(p.hasAttribute('hidden')){ p.removeAttribute('hidden'); t.classList.add('active'); }
+    else { p.setAttribute('hidden',''); t.classList.remove('active'); }
+  }
+</script>
+</body>
+</html>
