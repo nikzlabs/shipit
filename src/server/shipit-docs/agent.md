@@ -21,6 +21,13 @@ The user says something like:
 Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
 
+**Never reach for the raw `codex` / `claude` CLI to do this.** Per-agent
+credential isolation mounts only *your* pinned agent's credentials in this
+container, so invoking the other backend's bare CLI fails with **401
+Unauthorized**. `shipit agent run` is the only authenticated path — it brokers
+through the orchestrator, which supplies the spawned agent's credentials
+server-side.
+
 For an in-turn fan-out under your *own* model (parallel research, parallel
 codegen you'll synthesize), prefer the built-in `Task` tool. `shipit agent run`
 is for a *different* agent (or a deliberately fresh-context helper).
