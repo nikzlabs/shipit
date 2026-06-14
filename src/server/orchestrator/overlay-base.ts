@@ -61,6 +61,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 
 import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
+import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
 // Scope + pointer types
@@ -485,6 +486,17 @@ export interface PublishBaseArgs {
   depthCap?: number;
   /** Override the default snapshot copy (tests / future reflink path). */
   materialize?: MaterializeFn;
+  /**
+   * Hand the freshly-materialized base generation to the session worker uid
+   * (docs/183 × docs/150, SHI-145). Defaults to `chownTreeToSessionWorker`, a
+   * no-op unless `SHIPIT_SESSION_WORKER_UID` is set. The base is materialized by
+   * the **root** orchestrator (tar extract + copy), so its files are root-owned;
+   * overlayfs copy-up preserves the *lower* file's ownership, so a root-owned
+   * base dep copied up stays root-owned and the non-root agent EACCESes when it
+   * tries to modify that dep. Chowning the generation to the worker uid makes
+   * copy-up produce worker-owned (writable) upper files. Injectable so tests can
+   * assert the handoff without privileges. */
+  chownBaseDir?: (dir: string) => void;
 }
 
 /**
@@ -501,6 +513,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     args.materialize ??
     ((snapshotDir, hash, generation, linkDedupBaseDir) =>
       copySnapshotToBase(stateDir, snapshotDir, hash, generation, linkDedupBaseDir));
+  const chownBaseDir = args.chownBaseDir ?? chownTreeToSessionWorker;
 
   if (
     candidate.exitCode !== 0 ||
@@ -518,7 +531,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
 
     // First base for this scope → v0 from empty.
     if (!current) {
-      return finalize(stateDir, materialize, candidate, scopeHash, {
+      return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
         outcome: "created",
         depth: 1,
         generation: 1,
@@ -538,13 +551,13 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
         // the snapshot's CONTENT comes from the clean reinstall (that is the
         // reproducibility reset); hardlinking bytes that happen to be
         // identical changes storage, not the tree.
-        return finalize(stateDir, materialize, candidate, scopeHash, {
+        return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
           outcome: "flattened",
           depth: 1,
           generation: current.generation + 1,
         }, current.baseDir);
       }
-      return finalize(stateDir, materialize, candidate, scopeHash, {
+      return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
         outcome: "advanced",
         depth: wouldBeDepth,
         generation: current.generation + 1,
@@ -563,7 +576,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     // meantime, which must not clobber a healthy forward base. Reset rebuilds a
     // clean base from empty for the rewritten default; everything else skips.
     if (args.currentDefaultCommit && candidate.commit === args.currentDefaultCommit) {
-      return finalize(stateDir, materialize, candidate, scopeHash, {
+      return finalize(stateDir, materialize, chownBaseDir, candidate, scopeHash, {
         outcome: "reset",
         depth: 1,
         generation: current.generation + 1,
@@ -576,6 +589,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
 async function finalize(
   stateDir: string,
   materialize: MaterializeFn,
+  chownBaseDir: (dir: string) => void,
   candidate: PublishCandidate,
   scopeHash: string,
   next: { outcome: PublishOutcome; depth: number; generation: number },
@@ -583,6 +597,15 @@ async function finalize(
   linkDedupBaseDir?: string,
 ): Promise<PublishResult> {
   const baseDir = await materialize(candidate.snapshotDir, scopeHash, next.generation, linkDedupBaseDir);
+  // Hand the just-materialized generation to the worker uid BEFORE the pointer is
+  // written (SHI-145). At this point no session can have mounted it (specs read
+  // the pointer to pick a generation, and we haven't published yet), so chowning
+  // its own files is race-free. Hardlink-dedup shares inodes with the superseded
+  // generation, but that generation is itself worker-owned (it was chowned when
+  // IT was published), so the recursive chown is a no-op on those shared inodes —
+  // only the newly-copied (root-owned) files are flipped. No-op when the worker
+  // uid is unset (legacy root runtime).
+  chownBaseDir(baseDir);
   const pointer: BasePointer = {
     scopeHash,
     commit: candidate.commit,

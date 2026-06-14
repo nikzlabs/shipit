@@ -27,6 +27,7 @@ import {
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -428,6 +429,43 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
   throw new Error(`Worker at ${workerUrl} did not become healthy within ${maxWaitMs / 1000}s`);
 }
 
+/**
+ * Create the orchestrator-visible lower/upper/work dirs an overlay spec needs
+ * before the daemon mounts it, and hand the per-session dirs to the worker uid
+ * (docs/183 × docs/150, SHI-145).
+ *
+ * The daemon's `mount -t overlay` fails with ENOENT unless lowerdir, upperdir AND
+ * workdir all exist, and nothing else creates them: a cold scope has no published
+ * base yet (no `overlay-base/<hash>/`; an empty `g0` lowerdir is a valid cold
+ * start), and the per-session upper/work dirs are born here.
+ *
+ * **The ownership handoff (SHI-145).** These dirs are created by the **root**
+ * orchestrator, but the non-root worker (uid `SHIPIT_SESSION_WORKER_UID`) is what
+ * writes through the merged mount. overlayfs creates a new upper file with the
+ * fsuid of the writing process, so the worker can only `npm install` a NEW dep if
+ * its **upperdir/workdir are worker-owned** — otherwise the write EACCESes. We
+ * `chown` both to the worker uid right after mkdir (no-op when the uid is unset →
+ * legacy root runtime unchanged). The chown is non-recursive: the dirs are freshly
+ * created and empty. The shared `lowerdir` is deliberately left as-is — the empty
+ * cold-start `g0` is read-only and traversable by the worker (mode 0755), and a
+ * populated base generation is made worker-owned at publish time (the base
+ * materialization's recursive chown), so copy-up of an existing dep preserves
+ * worker ownership and stays writable.
+ */
+export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void {
+  if (!specs) return;
+  for (const spec of specs) {
+    if (!spec.orchDirs) continue;
+    fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
+    fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
+    fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
+    // Hand the per-session copy-on-write dirs to the worker uid so the agent's
+    // `npm install` of a new dep lands in the upper as the worker, not root.
+    chownToSessionWorker(spec.orchDirs.upperdir);
+    chownToSessionWorker(spec.orchDirs.workdir);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
@@ -580,18 +618,14 @@ export async function createContainer(
     // later failure removes them via the catch below (`sc.overlayVolumeNames`).
     //
     // The daemon's mount fails with ENOENT unless lowerdir, upperdir AND workdir
-    // all exist — and nothing else creates them: a cold scope has no published
-    // base yet (no `overlay-base/<hash>/`; an empty lowerdir is a valid cold
-    // start), and the per-session upper/work dirs are born here. The spec's own
-    // paths are daemon-host paths the orchestrator container cannot reach, so we
-    // mkdir the orchestrator-visible twins (`orchDirs`, same volume via stateDir).
+    // all exist — and nothing else creates them. `prepareOverlayDirs` mkdirs the
+    // orchestrator-visible twins (`orchDirs`, same volume via stateDir — the spec's
+    // own paths are daemon-host paths the orchestrator container cannot reach) AND
+    // hands the per-session upper/work dirs to the worker uid so the non-root agent
+    // can `npm install` into the overlay (SHI-145).
     if (config.overlaySpecs) {
+      prepareOverlayDirs(config.overlaySpecs);
       for (const spec of config.overlaySpecs) {
-        if (spec.orchDirs) {
-          fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
-          fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
-          fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
-        }
         await createOverlayVolume(deps.docker, spec, deps.baseLabels());
       }
     }
