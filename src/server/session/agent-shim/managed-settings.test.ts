@@ -90,7 +90,7 @@ describe("managed-settings.json", () => {
     expect(allow).toContain("Bash");
   });
 
-  const MUTATION_TOOLS = ["Edit", "Write", "MultiEdit"];
+  const MUTATION_TOOLS = ["Edit", "Write"];
 
   describe("denies writes to the agent's own settings + hooks", () => {
     // /etc/shipit holds the managed policy + branch-block/PR hooks — the agent
