@@ -77,12 +77,15 @@ export const useEgressStore = create<EgressState>((set, get) => ({
   defaultsCustomized: false,
 
   applyView: (v) =>
+    // Coerce defensively: a non-egress / malformed response (e.g. a stray global
+    // fetch mock in an unrelated test, or a transient server error) must never
+    // poison `entries` to `undefined` — the editor renders `entries.filter(...)`.
     set({
-      entries: v.entries,
-      globalEnabled: v.globalEnabled,
-      override: v.session?.override ?? null,
-      effectiveContained: v.session?.effectiveContained ?? v.globalEnabled,
-      defaultsCustomized: v.defaultsCustomized,
+      entries: Array.isArray(v?.entries) ? v.entries : [],
+      globalEnabled: v?.globalEnabled ?? true,
+      override: v?.session?.override ?? null,
+      effectiveContained: v?.session?.effectiveContained ?? v?.globalEnabled ?? true,
+      defaultsCustomized: v?.defaultsCustomized ?? false,
       loaded: true,
     }),
 

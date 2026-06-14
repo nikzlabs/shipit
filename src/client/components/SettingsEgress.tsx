@@ -183,7 +183,7 @@ function AllowlistRow({
 export function SettingsEgress() {
   const sessionId = useSessionStore((s) => s.sessionId);
   const loaded = useEgressStore((s) => s.loaded);
-  const entries = useEgressStore((s) => s.entries);
+  const entries = useEgressStore((s) => s.entries) ?? [];
   const globalEnabled = useEgressStore((s) => s.globalEnabled);
   const override = useEgressStore((s) => s.override);
   const effectiveContained = useEgressStore((s) => s.effectiveContained);
