@@ -616,6 +616,37 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN egress_prompt TEXT");
   },
+  // docs/172 / SHI-90 — durable egress allowlist + containment settings. The
+  // Tier A/B/C enforcement was per-session in-memory (allow-once) and read its
+  // allowlist only from env + the live credential store; this makes the user's
+  // "Add to allowlist" decisions and the global containment toggle survive a
+  // container restart and an orchestrator restart.
+  //
+  // `egress_allowlist` holds user-added hosts keyed by scope ('global' for the
+  // Settings allowlist editor, or a session id for a per-session extra). The
+  // composition seam (egress-allowlist.ts) merges these into the resolver config
+  // and the SNI proxy allowlist at container start.
+  //
+  // `egress_settings` holds the containment toggle keyed by the same scope:
+  // scope 'global' is the default-on global switch (Contained vs Open); a row
+  // keyed by a session id is that session's override. Absence of a row means
+  // "inherit" (a session) / "Contained" (global, fail-secure).
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS egress_allowlist (
+        scope TEXT NOT NULL,
+        host TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (scope, host)
+      );
+      CREATE INDEX IF NOT EXISTS idx_egress_allowlist_scope ON egress_allowlist(scope);
+
+      CREATE TABLE IF NOT EXISTS egress_settings (
+        scope TEXT PRIMARY KEY,
+        enabled INTEGER NOT NULL
+      );
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -659,6 +690,8 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM agent_review_comments").run();
       this.db.prepare("DELETE FROM agent_reviews").run();
       this.db.prepare("DELETE FROM rewind_snapshots").run();
+      this.db.prepare("DELETE FROM egress_allowlist").run();
+      this.db.prepare("DELETE FROM egress_settings").run();
     })();
   }
 

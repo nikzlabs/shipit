@@ -105,6 +105,16 @@ export interface LifecycleDeps {
    */
   egressProxy?: boolean;
   /**
+   * docs/172 (SHI-90) — per-session egress configuration resolved at container
+   * start from the durable allowlist store + live MCP credential store. Lets the
+   * browser global toggle / per-session override govern whether THIS session is
+   * contained (so "Open mode" skips the firewall install entirely) and feeds the
+   * composed extra-host allowlist into BOTH the Tier B resolver config and the
+   * Tier C proxy allowlist. Omitted in tests / no-store runtimes → defaults to
+   * `{ contained: true, extraHosts: [] }` (byte-for-byte the env-only behavior).
+   */
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[] };
+  /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
    * without it the pre-stamp is skipped.
@@ -722,7 +732,15 @@ export async function createContainer(
     // doesn't exist until after this point). Fail-closed: if the firewall can't
     // be installed we throw, and the catch below tears the container down rather
     // than run it with unrestricted egress. Gated on the flag → default no-op.
-    if (deps.egressEnforce) {
+    // docs/172 (SHI-90) — the browser global toggle / per-session override can
+    // turn containment OFF for a session ("Open mode — stop babysitting"); when
+    // it does we skip the firewall install entirely. The composed extra-host
+    // allowlist (operator extras + live MCP hosts + durable user allowlist) is
+    // shared by the Tier B resolver and the Tier C proxy so they never drift.
+    // Default (no resolver wired): contained, no extra hosts — unchanged env-only
+    // behavior.
+    const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
+    if (deps.egressEnforce && egressCfg.contained) {
       if (!deps.egressSidecarImage) {
         throw new Error("SESSION_EGRESS_ENFORCE=1 but SESSION_EGRESS_SIDECAR_IMAGE is not set");
       }
@@ -746,7 +764,10 @@ export async function createContainer(
       // (killStaleContainers) doesn't mistake this long-lived sidecar for a stale
       // compose container and SIGKILL it (docs/172 Bug-2 fix, SHI-90).
       if (deps.egressDns) {
-        const configB64 = buildResolverConfigB64({ internalDomains: orchestratorInternalNames() });
+        const configB64 = buildResolverConfigB64({
+          internalDomains: orchestratorInternalNames(),
+          extraDomains: egressCfg.extraHosts,
+        });
         await launchEgressResolver(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
@@ -768,7 +789,7 @@ export async function createContainer(
         await launchEgressProxy(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
-          allowed: buildProxyAllowed(),
+          allowed: buildProxyAllowed({ extraHosts: egressCfg.extraHosts }),
           sessionId: config.sessionId,
           decisionUrl,
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },

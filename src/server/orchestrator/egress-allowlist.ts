@@ -220,3 +220,52 @@ export function buildEgressAllowlist(opts: BuildAllowlistOpts = {}): EgressAllow
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// Extra-host composition (the single seam fed into BOTH the Tier B resolver
+// config and the Tier C proxy allowlist)
+// ---------------------------------------------------------------------------
+
+export interface ComposeExtraHostsOpts {
+  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Live MCP hosts source (configured HTTP servers + OAuth providers). */
+  credentialStore?: CredentialStore;
+  /**
+   * Durable user allowlist hosts for this session — global + per-session, from
+   * `EgressAllowlistStore.effectiveHosts(sessionId)`. Passed in (already
+   * resolved) so this module stays free of a store dependency.
+   */
+  durableHosts?: Iterable<string>;
+}
+
+/**
+ * Compose the **extra** allowlist hosts (everything ON TOP of the built-in base
+ * list) that BOTH the Tier B resolver and the Tier C SNI proxy must honor:
+ * operator extras (`SESSION_EGRESS_ALLOWLIST`), live MCP server hosts, and the
+ * durable user allowlist (global + per-session).
+ *
+ * This is the one place the three dynamic sources are merged, so the resolver's
+ * `server=`/`ipset=` domain set and the proxy's SNI allowlist can never drift —
+ * a host the resolver resolves-and-pins is also one the proxy splices.
+ * De-duplicated and normalized; the base list is added separately by each
+ * consumer (`buildResolverConfigB64` / `buildProxyAllowed`).
+ */
+export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): string[] {
+  const env = opts.env ?? process.env;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const n = normalizeHost(raw);
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  };
+  for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) add(h);
+  if (opts.credentialStore) {
+    for (const h of mcpHostsFromCredentialStore(opts.credentialStore)) add(h);
+  }
+  for (const h of opts.durableHosts ?? []) add(h);
+  return out;
+}

@@ -11,6 +11,7 @@ import { RepoStore } from "./repo-store.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
 import { SecretStore } from "./secret-store.js";
+import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
@@ -190,6 +191,7 @@ export interface ManagerSet {
   runtimeMode: RuntimeMode;
   secretStore: SecretStore;
   reviewStore: FileReviewStore;
+  egressAllowlistStore: EgressAllowlistStore;
 }
 
 /**
@@ -329,6 +331,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- File review store ----
   const reviewStore = new FileReviewStore(databaseManager);
 
+  // ---- Egress allowlist store (docs/172, SHI-90) ----
+  // Durable user allowlist + containment toggle, fed into the resolver/proxy
+  // composition and the per-session containment gate at container start.
+  const egressAllowlistStore = new EgressAllowlistStore(databaseManager);
+
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
@@ -386,6 +393,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     githubAuthManager,
     secretStore,
     reviewStore,
+    egressAllowlistStore,
     generateText,
     isTestMode,
     runtimeMode,

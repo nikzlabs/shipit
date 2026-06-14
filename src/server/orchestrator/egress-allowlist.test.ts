@@ -12,6 +12,7 @@ import {
   hostFromUrl,
   mcpHostsFromCredentialStore,
   buildEgressAllowlist,
+  composeEgressExtraHosts,
 } from "./egress-allowlist.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
@@ -180,5 +181,36 @@ describe("buildEgressAllowlist", () => {
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
       expect(normalizeHost(e)).toBe(e); // already normalized in source
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeEgressExtraHosts — the shared resolver/proxy extra-host seam
+// ---------------------------------------------------------------------------
+
+describe("composeEgressExtraHosts", () => {
+  it("returns [] for an empty env + no sources", () => {
+    expect(composeEgressExtraHosts({ env: {} })).toEqual([]);
+  });
+
+  it("reads operator extras from SESSION_EGRESS_ALLOWLIST", () => {
+    const hosts = composeEgressExtraHosts({ env: { SESSION_EGRESS_ALLOWLIST: "a.corp, .b.corp" } });
+    expect(hosts).toEqual(["a.corp", ".b.corp"]);
+  });
+
+  it("merges env extras + live MCP hosts + durable hosts, de-duped + normalized", () => {
+    const store = stubStore({
+      servers: { acme: { name: "acme", type: "http", url: "https://mcp.acme.dev/sse", enabled: true } },
+    });
+    const hosts = composeEgressExtraHosts({
+      env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" },
+      credentialStore: store,
+      durableHosts: ["Durable.Example.com.", "ops.corp"], // dup + needs-normalize
+    });
+    expect(hosts).toEqual(["ops.corp", "mcp.acme.dev", "durable.example.com"]);
+  });
+
+  it("includes durable hosts even with no env or MCP source", () => {
+    expect(composeEgressExtraHosts({ env: {}, durableHosts: [".user.example.com"] })).toEqual([".user.example.com"]);
   });
 });

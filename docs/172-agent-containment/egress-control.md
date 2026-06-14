@@ -280,6 +280,27 @@ own containment. High-value ones may additionally be listed in `HARD_DENY_PREFIX
 (`isHardDeniedGlobal`) as a backstop, but that is belt-and-suspenders, not the mechanism.
 Stored orchestrator-side alongside MCP servers / secrets.
 
+> **Shipped (durable allowlist + Settings UI).** The durable layer is
+> `EgressAllowlistStore` (`egress_allowlist` + `egress_settings` SQLite tables via a
+> `DatabaseManager` migration): a `'global'` scope for the editor allowlist + global
+> toggle, and a per-session scope for per-session extra hosts + a containment override.
+> A single closure (`resolveEgressConfig`, built in `index.ts` where the store + the live
+> MCP `CredentialStore` are in scope) resolves, per session at container start,
+> (a) **whether to contain** it — `override ?? globalEnabled`, default Contained — so Open
+> mode skips the firewall install, and (b) the **composed extra-host allowlist**
+> (`composeEgressExtraHosts`: `SESSION_EGRESS_ALLOWLIST` + live MCP hosts + durable
+> global + durable session) fed into BOTH `buildResolverConfigB64` and `buildProxyAllowed`.
+> Browser-only routes live in `api-routes-egress.ts`
+> (`GET/PUT /api/egress/settings`, `POST/DELETE /api/egress/hosts`,
+> `GET/PUT /api/egress/session/:id`); the client is `egress-store.ts` + `SettingsEgress.tsx`
+> (Settings → Advanced → "Network egress") with an `egress_settings` SSE sync. **"Add to
+> allowlist"** (the Tier C card's `add`, and a session-scoped host add) persists durably AND
+> live-reloads the running session's resolver + proxy (`egress-reload.ts`) so a brand-new
+> host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted with no restart;
+> `egress-policy` reconciles its allow-once set against the durable store via an injected
+> source so a durably-added host needs no re-card. The reload swap is env-gated (OFF by
+> default) and its live-host verification is pending.
+
 - **Global toggle (default ON, fail-secure).** Two modes for the trusted user:
   *Contained* (default-deny + allowlist + prompts) and *Open* (unrestricted egress, no
   prompts — "stop babysitting, let it work"). An unreadable/missing setting resolves to
@@ -326,13 +347,17 @@ as an operator default / fail-secure floor).
   + gateway attachment).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
-- `egress-allowlist.ts` (reused) — host matcher + composition.
+- `egress-allowlist.ts` (reused) — host matcher + `composeEgressExtraHosts` composition.
+- `egress-allowlist-store.ts` (durable allowlist + containment toggle, SQLite) +
+  `egress-reload.ts` (live resolver/proxy relaunch on a durable add).
 - `docker/egress-sidecar/sni-proxy/main.go` — the Tier C SNI proxy; Phase-2
   `validateIdentity` (SNI-scoped tenant rules from `EGRESS_PROXY_IDENTITY_RULES`) lives here,
   unit-tested in `sni-proxy/main_test.go`.
-- Settings store field + browser-only routes (default-protected by *not* setting
-  `containerAccessible`; optionally add to `HARD_DENY_PREFIXES` as a backstop; golden
-  route-table test updated) — `api-routes-*.ts`, `api-container-guard.ts`.
+- Browser-only routes (default-protected by *not* setting `containerAccessible`; golden
+  route-table unchanged — no new container route) — `api-routes-egress.ts`,
+  `api-container-guard.ts`.
+- Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Advanced →
+  "Network egress") + `egress_settings` SSE sync in `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.
 

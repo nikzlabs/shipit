@@ -27,6 +27,35 @@ export interface ProviderAccount {
   updatedAt: number;
 }
 
+// ---- Egress settings (docs/172 / SHI-90) ----
+
+/**
+ * Global egress containment settings surfaced to the browser Settings panel.
+ * `globalEnabled` is the default-on containment switch (true = Contained =
+ * default-deny + allowlist + prompts; false = Open = unrestricted egress).
+ * `globalHosts` is the user-managed allowlist (in addition to the built-in base
+ * list, operator extras, and live MCP hosts).
+ */
+export interface EgressSettings {
+  globalEnabled: boolean;
+  globalHosts: string[];
+}
+
+/**
+ * A session's egress view: the resolved containment plus its own override and
+ * per-session extra hosts. `override` is `null` when the session inherits the
+ * global switch, `true`/`false` when it forces Contained/Open.
+ */
+export interface EgressSessionSettings {
+  sessionId: string;
+  override: boolean | null;
+  hosts: string[];
+  /** Resolved containment after applying override over global. */
+  effectiveContained: boolean;
+  /** The current global switch, for rendering the "inherits global" state. */
+  globalEnabled: boolean;
+}
+
 // ---- Runtime mode (feature 118) ----
 
 /**

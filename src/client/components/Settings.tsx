@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { SettingsIntegrations } from "./SettingsIntegrations.js";
+import { SettingsEgress } from "./SettingsEgress.js";
 import { SkillsTab } from "./SkillsTab.js";
 import { KeybindingSettings } from "./KeybindingSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -1848,6 +1849,10 @@ export function Settings({
                   </Button>
                 </div>
               </div>
+
+              <div className="border-t border-(--color-border-secondary)" />
+
+              <SettingsEgress />
 
               <div className="border-t border-(--color-border-secondary)" />
 

@@ -6,9 +6,10 @@ import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useReleaseStore } from "../stores/release-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -296,6 +297,13 @@ export function useServerEvents(): void {
     es.addEventListener("provider_accounts", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { accounts: ProviderAccount[] };
       useSettingsStore.getState().setProviderAccounts(data.accounts);
+    });
+
+    // docs/172 / SHI-90 — egress containment settings changed in another tab.
+    // Keep the Settings → Network egress section in sync across tabs.
+    es.addEventListener("egress_settings", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as EgressSettings;
+      useEgressStore.getState().applySnapshot(data);
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {

@@ -8,11 +8,15 @@ import {
   allowEgressHost,
   shouldCardEgressHost,
   clearEgressPolicy,
+  setEgressDurableSource,
   _resetEgressPolicies,
 } from "./egress-policy.js";
 
 describe("egress-policy", () => {
-  beforeEach(() => _resetEgressPolicies());
+  beforeEach(() => {
+    _resetEgressPolicies();
+    setEgressDurableSource(null);
+  });
 
   it("denies unknown hosts and allows after a user decision", () => {
     expect(isEgressHostAllowed("s1", "cdn.example.com")).toBe(false);
@@ -44,5 +48,25 @@ describe("egress-policy", () => {
     allowEgressHost("s1", "x.com");
     clearEgressPolicy("s1");
     expect(isEgressHostAllowed("s1", "x.com")).toBe(false);
+  });
+
+  describe("durable source reconciliation", () => {
+    it("allows a host present in the durable source even without an in-memory grant", () => {
+      setEgressDurableSource((sid) => (sid === "s1" ? [".durable.example.com"] : []));
+      expect(isEgressHostAllowed("s1", "api.durable.example.com")).toBe(true);
+      // scoped per session — s2's durable set is empty
+      expect(isEgressHostAllowed("s2", "api.durable.example.com")).toBe(false);
+    });
+
+    it("still honors in-memory allow-once grants alongside the durable source", () => {
+      setEgressDurableSource(() => []);
+      allowEgressHost("s1", "once.example.com");
+      expect(isEgressHostAllowed("s1", "once.example.com")).toBe(true);
+    });
+
+    it("a null durable source falls back to in-memory-only (legacy behavior)", () => {
+      setEgressDurableSource(null);
+      expect(isEgressHostAllowed("s1", "anything.example.com")).toBe(false);
+    });
   });
 });

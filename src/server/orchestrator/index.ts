@@ -35,6 +35,8 @@ import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
+import { composeEgressExtraHosts } from "./egress-allowlist.js";
+import { setEgressDurableSource } from "./egress-policy.js";
 import type { GitManager } from "../shared/git.js";
 
 // ---- Sub-module imports ----
@@ -157,9 +159,25 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
-    secretStore, reviewStore, generateText,
+    secretStore, reviewStore, egressAllowlistStore, generateText,
     isTestMode, runtimeMode,
   } = mgrs;
+
+  // ---- Egress containment config resolver (docs/172, SHI-90) ----
+  // The single seam that turns the durable allowlist store + the live MCP
+  // credential store + operator env extras into a per-session egress decision at
+  // container start: whether to contain the session (global toggle / per-session
+  // override) and the composed extra-host allowlist fed into BOTH the Tier B
+  // resolver config and the Tier C SNI proxy. Also injected into `egress-policy`
+  // so the Tier C decision endpoint honors durable allows without re-carding.
+  const resolveEgressConfig = (sessionId: string): { contained: boolean; extraHosts: string[] } => ({
+    contained: egressAllowlistStore.resolveContained(sessionId),
+    extraHosts: composeEgressExtraHosts({
+      credentialStore,
+      durableHosts: egressAllowlistStore.effectiveHosts(sessionId),
+    }),
+  });
+  setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
 
   // docs/150 Rollout — fail-fast on SHIPIT_SESSION_WORKER_UID drift before we
   // accept any traffic or restore containers. Containerized prod only: local
@@ -200,7 +218,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
 
   // ---- Container manager (Docker isolation) ----
   const { containerManager, dockerProxyServer } = await setupContainerManager({
-    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode,
+    deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
   });
 
   // ---- Docker instance for memory stats ----
@@ -1201,6 +1219,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     databaseManager,
     secretStore,
     reviewStore,
+    egressAllowlistStore,
     serviceManagers,
     composeStopPromises,
     // Skip the volume-prune fallback in test mode so unit / integration
@@ -1764,6 +1783,8 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
         usageManager, authManager, authManagers, runParamsPreps, agentRegistry, credentialStore, providerAccountManager,
         ...(deps.trackerFetchImpl !== undefined ? { trackerFetchImpl: deps.trackerFetchImpl } : {}),
         repoStore, warmSessionForRepo, generateText,
+        egressAllowlistStore,
+        ...(containerManager ? { containerManager } : {}),
         getSharedRepoDir: getBareCacheDir, checkGitIdentity, readSystemPrompt, scheduleAutoPush,
         prStatusPoller,
         releaseStatusPoller,

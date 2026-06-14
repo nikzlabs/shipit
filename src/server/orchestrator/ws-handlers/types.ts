@@ -12,6 +12,8 @@ import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { RepoStore } from "../repo-store.js";
+import type { EgressAllowlistStore } from "../egress-allowlist-store.js";
+import type { SessionContainerManager } from "../session-container.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import type { AgentId, AgentProcess } from "../../shared/types.js";
@@ -133,6 +135,19 @@ export interface AppCtx {
   repoStore: RepoStore;
   /** Warm a session for a repo (called after graduation). */
   warmSessionForRepo: (repoUrl: string) => Promise<void>;
+
+  /**
+   * docs/172 (SHI-90) — durable egress allowlist + containment store. The Tier C
+   * card's "Add to allowlist" writes through here so the grant outlives the
+   * session. Optional — test / local contexts that don't exercise egress omit it.
+   */
+  egressAllowlistStore?: EgressAllowlistStore;
+  /**
+   * docs/172 (SHI-90) — used to reload a running session's egress sidecars after
+   * an "Add to allowlist" so the new host takes effect without a restart.
+   * Optional — null in local/test runtimes (the add still persists).
+   */
+  containerManager?: SessionContainerManager;
 
   // Factories
   generateText: (prompt: string, cwd: string) => Promise<string>;
