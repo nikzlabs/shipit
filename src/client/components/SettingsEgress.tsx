@@ -11,7 +11,7 @@ import type { EgressAllowlistEntry, EgressAllowlistSource } from "../../server/s
 
 /** Provenance chip metadata per source — label + Badge variant. */
 const SOURCE_META: Record<EgressAllowlistSource, { label: string; variant: "default" | "info" | "success" }> = {
-  builtin: { label: "Built-in", variant: "default" },
+  builtin: { label: "Default", variant: "default" },
   operator: { label: "Operator", variant: "default" },
   mcp: { label: "MCP", variant: "info" },
   "user-global": { label: "Added", variant: "success" },
@@ -187,6 +187,7 @@ export function SettingsEgress() {
   const globalEnabled = useEgressStore((s) => s.globalEnabled);
   const override = useEgressStore((s) => s.override);
   const effectiveContained = useEgressStore((s) => s.effectiveContained);
+  const defaultsCustomized = useEgressStore((s) => s.defaultsCustomized);
 
   const [hostInput, setHostInput] = useState("");
   const [addScope, setAddScope] = useState<EgressScope>("global");
@@ -255,7 +256,19 @@ export function SettingsEgress() {
     }
   };
 
-  const userEntries = entries.filter((e) => e.removable);
+  const handleRestoreDefaults = async () => {
+    try {
+      await useEgressStore.getState().restoreDefaults();
+    } catch (err) {
+      toast("Failed to restore default allowlist");
+      console.error("[settings] egress restore defaults failed:", err);
+    }
+  };
+
+  // Built-in defaults are overridable, so they live in the editable list
+  // alongside user-added hosts. Operator (deployment env) + MCP (connected
+  // servers) hosts are derived live and shown read-only.
+  const editableEntries = entries.filter((e) => e.removable);
   const derivedEntries = entries.filter((e) => !e.removable);
   const overrideMode: "inherit" | "contained" | "open" = override === null ? "inherit" : override ? "contained" : "open";
 
@@ -308,11 +321,24 @@ export function SettingsEgress() {
       </div>
 
       <div className="space-y-2">
-        <span className="text-xs font-medium text-(--color-text-secondary)">Allowlist</span>
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-xs font-medium text-(--color-text-secondary)">Allowlist</span>
+          {defaultsCustomized && (
+            <button
+              type="button"
+              onClick={() => void handleRestoreDefaults()}
+              className="text-xs text-(--color-text-link) hover:underline"
+              data-testid="settings-egress-restore-defaults"
+            >
+              Restore defaults
+            </button>
+          )}
+        </div>
         <p className="text-xs text-(--color-text-tertiary)">
-          Extra hosts the agent may reach, in addition to the built-ins below. Prefix with a dot
+          Hosts the agent may reach. The shipped defaults are listed below and can be removed or
+          edited — &ldquo;Restore defaults&rdquo; brings them back. Prefix with a dot
           (e.g. <code className="text-(--color-text-secondary)">.example.com</code>) to also match subdomains.
-          New hosts apply on the next container start.
+          Changes apply on the next container start.
         </p>
 
         <div className="flex items-center gap-2">
@@ -351,15 +377,15 @@ export function SettingsEgress() {
           </Button>
         </div>
 
-        {/* User-added entries — removable + editable. */}
-        {loaded && userEntries.length === 0 && (
+        {/* Editable entries — built-in defaults + user-added, all removable/editable. */}
+        {loaded && editableEntries.length === 0 && (
           <p className="text-xs text-(--color-text-tertiary)" data-testid="settings-egress-empty">
-            No custom hosts yet — the built-in allowlist below still applies.
+            The allowlist is empty — restore defaults or add a host above.
           </p>
         )}
-        {userEntries.length > 0 && (
+        {editableEntries.length > 0 && (
           <ul className="flex flex-col gap-1" data-testid="settings-egress-user-list">
-            {userEntries.map((entry) => (
+            {editableEntries.map((entry) => (
               <AllowlistRow
                 key={`${entry.source}:${entry.host}`}
                 entry={entry}
@@ -370,10 +396,12 @@ export function SettingsEgress() {
           </ul>
         )}
 
-        {/* Read-only effective entries — provenance, never editable. */}
+        {/* Read-only derived entries — operator (deployment) + MCP (connected servers). */}
         {derivedEntries.length > 0 && (
           <div className="space-y-1 pt-1" data-testid="settings-egress-derived">
-            <span className="text-xs font-medium text-(--color-text-tertiary)">Always allowed</span>
+            <span className="text-xs font-medium text-(--color-text-tertiary)">
+              Also allowed — from your deployment &amp; connected MCP servers
+            </span>
             <ul className="flex flex-col gap-1">
               {derivedEntries.map((entry) => (
                 <li

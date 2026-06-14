@@ -282,7 +282,7 @@ export interface SessionContainerManagerOpts {
    * passed straight through to `LifecycleDeps.resolveEgressConfig`. Omitted in
    * tests / no-store runtimes → containment defaults on, env-only allowlist.
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[] };
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +545,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerImageName?: string;
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
-  private resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[] };
+  private resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
   /**
    * docs/183 — cached Docker image ID of the session-worker base image, the
    * ABI fingerprint the overlay dep store keys its rolling base scope on
@@ -618,6 +618,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       sessionId,
       sidecarImage,
       extraHosts: cfg.extraHosts,
+      ...(cfg.base ? { base: cfg.base } : {}),
       baseLabels: this.baseLabels(),
       reloadResolver,
       reloadProxy,

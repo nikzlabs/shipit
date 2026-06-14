@@ -38,6 +38,8 @@ interface EgressState {
   override: boolean | null;
   /** Resolved containment for the in-scope session (override ?? global). */
   effectiveContained: boolean;
+  /** True when the user has removed any built-in default (drives "Restore defaults"). */
+  defaultsCustomized: boolean;
 
   applyView: (v: EgressAllowlistView) => void;
   load: (sessionId?: string | null) => Promise<void>;
@@ -47,6 +49,7 @@ interface EgressState {
   addHost: (host: string, scope: EgressScope) => Promise<void>;
   removeHost: (host: string, scope: EgressScope) => Promise<void>;
   editHost: (oldHost: string, newHost: string, scope: EgressScope) => Promise<void>;
+  restoreDefaults: () => Promise<void>;
 }
 
 /** Resolve a UI scope to the API scope string (a session id for "session"). */
@@ -71,6 +74,7 @@ export const useEgressStore = create<EgressState>((set, get) => ({
   globalEnabled: true,
   override: null,
   effectiveContained: true,
+  defaultsCustomized: false,
 
   applyView: (v) =>
     set({
@@ -78,6 +82,7 @@ export const useEgressStore = create<EgressState>((set, get) => ({
       globalEnabled: v.globalEnabled,
       override: v.session?.override ?? null,
       effectiveContained: v.session?.effectiveContained ?? v.globalEnabled,
+      defaultsCustomized: v.defaultsCustomized,
       loaded: true,
     }),
 
@@ -162,6 +167,11 @@ export const useEgressStore = create<EgressState>((set, get) => ({
     // Replace = remove old + add new at the same scope, then reconcile once.
     await postJson("/api/egress/hosts", "DELETE", { host: oldHost, scope: s });
     await postJson("/api/egress/hosts", "POST", { host: next, scope: s });
+    await get().refresh();
+  },
+
+  restoreDefaults: async () => {
+    await postJson("/api/egress/defaults/restore", "POST", {});
     await get().refresh();
   },
 }));

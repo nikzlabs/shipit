@@ -22,7 +22,7 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
-import { normalizeHost, buildEffectiveAllowlist } from "./egress-allowlist.js";
+import { normalizeHost, buildEffectiveAllowlist, isBuiltinDefault } from "./egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -64,11 +64,13 @@ function allowlistView(
     credentialStore,
     globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
     sessionHosts: sessionId ? store.listHosts(sessionId) : [],
+    suppressedDefaults: store.listSuppressedDefaults(),
   });
   return {
     entries,
     globalEnabled: store.getGlobalEnabled(),
     session: sessionId ? sessionSettings(store, sessionId) : null,
+    defaultsCustomized: store.hasSuppressedDefaults(),
   };
 }
 
@@ -121,7 +123,13 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
-        store.addHost(scope, host);
+        // Re-adding a removed built-in default just un-suppresses it (it's a
+        // default, not a user entry). Otherwise it's a user-added host.
+        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
+          store.unsuppressDefault(host);
+        } else {
+          store.addHost(scope, host);
+        }
         deps.sseBroadcast("egress_settings", globalSettings(store));
         // A per-session add can take effect immediately on a running session.
         if (scope !== EGRESS_GLOBAL_SCOPE) {
@@ -143,11 +151,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
-        store.removeHost(scope, host);
+        // Removing a built-in default suppresses it (overridable defaults);
+        // removing anything else deletes that user-added row.
+        if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
+          store.suppressDefault(host);
+        } else {
+          store.removeHost(scope, host);
+        }
         deps.sseBroadcast("egress_settings", globalSettings(store));
         return scope === EGRESS_GLOBAL_SCOPE ? globalSettings(store) : sessionSettings(store, scope);
       },
     );
+
+    // Restore all built-in defaults (clear every user suppression).
+    app.post("/api/egress/defaults/restore", async () => {
+      store.restoreDefaults();
+      deps.sseBroadcast("egress_settings", globalSettings(store));
+      return allowlistView(store, deps.credentialStore, undefined);
+    });
 
     // Read a session's egress view (override + per-session hosts + resolution).
     app.get<{ Params: { id: string } }>(

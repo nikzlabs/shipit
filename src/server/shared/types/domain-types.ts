@@ -86,6 +86,8 @@ export interface EgressAllowlistView {
   globalEnabled: boolean;
   /** The in-scope session's settings, or null for the global-only view. */
   session: EgressSessionSettings | null;
+  /** True when the user has removed any built-in default (drives "Restore defaults"). */
+  defaultsCustomized: boolean;
 }
 
 // ---- Runtime mode (feature 118) ----

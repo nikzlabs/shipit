@@ -113,7 +113,7 @@ export interface LifecycleDeps {
    * Tier C proxy allowlist. Omitted in tests / no-store runtimes → defaults to
    * `{ contained: true, extraHosts: [] }` (byte-for-byte the env-only behavior).
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[] };
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -767,6 +767,7 @@ export async function createContainer(
         const configB64 = buildResolverConfigB64({
           internalDomains: orchestratorInternalNames(),
           extraDomains: egressCfg.extraHosts,
+          ...(egressCfg.base ? { base: egressCfg.base } : {}),
         });
         await launchEgressResolver(deps.docker, {
           agentContainerId: container.id,
@@ -789,7 +790,7 @@ export async function createContainer(
         await launchEgressProxy(deps.docker, {
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
-          allowed: buildProxyAllowed({ extraHosts: egressCfg.extraHosts }),
+          allowed: buildProxyAllowed({ extraHosts: egressCfg.extraHosts, ...(egressCfg.base ? { base: egressCfg.base } : {}) }),
           sessionId: config.sessionId,
           decisionUrl,
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },

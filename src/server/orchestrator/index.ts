@@ -170,12 +170,15 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // override) and the composed extra-host allowlist fed into BOTH the Tier B
   // resolver config and the Tier C SNI proxy. Also injected into `egress-policy`
   // so the Tier C decision endpoint honors durable allows without re-carding.
-  const resolveEgressConfig = (sessionId: string): { contained: boolean; extraHosts: string[] } => ({
+  const resolveEgressConfig = (sessionId: string): { contained: boolean; extraHosts: string[]; base?: string[] } => ({
     contained: egressAllowlistStore.resolveContained(sessionId),
     extraHosts: composeEgressExtraHosts({
       credentialStore,
       durableHosts: egressAllowlistStore.effectiveHosts(sessionId),
     }),
+    // The built-in base minus any defaults the user removed in Settings — so a
+    // removed default is actually closed at the resolver + proxy.
+    base: egressAllowlistStore.effectiveBase(),
   });
   setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
 

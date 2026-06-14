@@ -275,6 +275,12 @@ export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): strin
 // Effective allowlist with provenance (the Settings editor view)
 // ---------------------------------------------------------------------------
 
+/** Is `host` one of the built-in defaults (exact, normalized match)? */
+export function isBuiltinDefault(host: string): boolean {
+  const h = normalizeHost(host);
+  return EGRESS_DEFAULT_ALLOWLIST.some((e) => normalizeHost(e) === h);
+}
+
 export interface EffectiveAllowlistOpts {
   /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
@@ -286,24 +292,33 @@ export interface EffectiveAllowlistOpts {
   globalHosts?: Iterable<string>;
   /** Durable user-added per-session allowlist hosts. */
   sessionHosts?: Iterable<string>;
+  /**
+   * Built-in defaults the user has removed (suppressed) — skipped from the view.
+   * "Restore defaults" clears these so they reappear.
+   */
+  suppressedDefaults?: Iterable<string>;
 }
 
 /**
  * Compose the **effective** allowlist as an ordered, de-duplicated list of
  * entries tagged with provenance — exactly what the session can reach and *why*.
- * Powers the Settings allowlist editor, which renders built-in/MCP/operator
- * entries read-only and lets the user remove/edit their own.
+ * Powers the Settings allowlist editor.
  *
- * Precedence on collision (a host present in more than one source keeps its
- * first, most-fundamental classification): builtin → operator → mcp →
- * user-global → user-session. So a user "re-adding" a built-in host shows as the
- * built-in (non-removable) — removing the redundant user row wouldn't change
- * reachability anyway. Hosts are normalized; a leading "." (suffix match) is
- * preserved.
+ * Built-in defaults are **removable** (the base list is a default the user can
+ * override, not a hard floor); a removed default is passed in `suppressedDefaults`
+ * and skipped here. Operator (`SESSION_EGRESS_ALLOWLIST`) and MCP hosts are
+ * **read-only** — they're derived live from the deployment env / connected MCP
+ * servers, not user defaults. User-added entries are removable/editable.
+ *
+ * Precedence on collision (a host in more than one source keeps its first, most-
+ * fundamental classification): builtin → operator → mcp → user-global →
+ * user-session. Hosts are normalized; a leading "." (suffix match) is preserved.
  */
 export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): EgressAllowlistEntry[] {
   const env = opts.env ?? process.env;
   const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
+  const suppressed = new Set<string>();
+  for (const h of opts.suppressedDefaults ?? []) suppressed.add(normalizeHost(h));
   const seen = new Set<string>();
   const entries: EgressAllowlistEntry[] = [];
   const push = (raw: string, source: EgressAllowlistSource, removable: boolean) => {
@@ -313,7 +328,10 @@ export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): Egre
     entries.push({ host, source, removable });
   };
 
-  for (const h of base) push(h, "builtin", false);
+  for (const h of base) {
+    if (suppressed.has(normalizeHost(h))) continue; // user-removed default
+    push(h, "builtin", true); // defaults are overridable
+  }
   for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) push(h, "operator", false);
   if (opts.credentialStore) {
     for (const h of mcpHostsFromCredentialStore(opts.credentialStore)) push(h, "mcp", false);

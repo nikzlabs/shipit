@@ -17,6 +17,7 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
     entries,
     globalEnabled,
     session: { sessionId: "s1", override, hosts: [], effectiveContained: override ?? globalEnabled, globalEnabled },
+    defaultsCustomized: false,
   });
 
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -42,6 +43,9 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
     }
     if (url === "/api/egress/hosts" && method === "DELETE") {
       entries = entries.filter((e) => e.host !== body?.host);
+      return { ok: true, status: 200, json: async () => ({}) } as Response;
+    }
+    if (url === "/api/egress/defaults/restore" && method === "POST") {
       return { ok: true, status: 200, json: async () => ({}) } as Response;
     }
     return { ok: false, status: 500, json: async () => ({}) } as Response;
@@ -88,7 +92,7 @@ describe("egress-store", () => {
     // Stub that fails the PUT.
     const impl = vi.fn(async (url: string) => {
       if (url.startsWith("/api/egress/allowlist")) {
-        return { ok: true, status: 200, json: async () => ({ entries: [], globalEnabled: true, session: null }) } as Response;
+        return { ok: true, status: 200, json: async () => ({ entries: [], globalEnabled: true, session: null, defaultsCustomized: false }) } as Response;
       }
       return { ok: false, status: 500, json: async () => ({}) } as Response;
     });
@@ -139,6 +143,13 @@ describe("egress-store", () => {
     expect(hosts).not.toContain("old.com");
     expect(calls.some((c) => c.method === "DELETE" && c.body?.host === "old.com")).toBe(true);
     expect(calls.some((c) => c.method === "POST" && c.body?.host === "new.com")).toBe(true);
+  });
+
+  it("restoreDefaults() POSTs the restore endpoint and refreshes", async () => {
+    const { calls } = stubFetch({ entries: [] });
+    await useEgressStore.getState().load(null);
+    await useEgressStore.getState().restoreDefaults();
+    expect(calls.some((c) => c.url === "/api/egress/defaults/restore" && c.method === "POST")).toBe(true);
   });
 
   it("setOverride() PUTs the session override and refreshes", async () => {

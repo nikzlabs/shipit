@@ -7,9 +7,13 @@ import { useSessionStore } from "../stores/session-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/shared/types.js";
 
 /** Stateful fetch stub returning the effective-allowlist view. */
-function stubFetch(initial: EgressAllowlistEntry[], opts: { globalEnabled?: boolean; withSession?: boolean } = {}) {
+function stubFetch(
+  initial: EgressAllowlistEntry[],
+  opts: { globalEnabled?: boolean; withSession?: boolean; defaultsCustomized?: boolean } = {},
+) {
   let entries = [...initial];
   let globalEnabled = opts.globalEnabled ?? true;
+  let defaultsCustomized = opts.defaultsCustomized ?? false;
   let override: boolean | null = null;
   const view = (): EgressAllowlistView => ({
     entries,
@@ -17,6 +21,7 @@ function stubFetch(initial: EgressAllowlistEntry[], opts: { globalEnabled?: bool
     session: opts.withSession
       ? { sessionId: "s1", override, hosts: [], effectiveContained: override ?? globalEnabled, globalEnabled }
       : null,
+    defaultsCustomized,
   });
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
     const method = init?.method ?? "GET";
@@ -24,6 +29,10 @@ function stubFetch(initial: EgressAllowlistEntry[], opts: { globalEnabled?: bool
     if (url.startsWith("/api/egress/allowlist")) return { ok: true, status: 200, json: async () => view() } as Response;
     if (url === "/api/egress/settings" && method === "PUT") globalEnabled = body?.globalEnabled as boolean;
     if (url.startsWith("/api/egress/session/") && method === "PUT") override = (body?.override ?? null) as boolean | null;
+    if (url === "/api/egress/defaults/restore") {
+      defaultsCustomized = false;
+      entries = entries.map((e) => (e.source === "builtin" ? e : e)); // restored set is server-authoritative
+    }
     if (url === "/api/egress/hosts" && method === "POST") {
       const source = body?.scope === "global" ? "user-global" : "user-session";
       entries = [...entries, { host: body?.host as string, source, removable: true }];
@@ -35,8 +44,9 @@ function stubFetch(initial: EgressAllowlistEntry[], opts: { globalEnabled?: bool
   return impl;
 }
 
-const builtin = (host: string): EgressAllowlistEntry => ({ host, source: "builtin", removable: false });
+const builtin = (host: string): EgressAllowlistEntry => ({ host, source: "builtin", removable: true });
 const user = (host: string): EgressAllowlistEntry => ({ host, source: "user-global", removable: true });
+const mcp = (host: string): EgressAllowlistEntry => ({ host, source: "mcp", removable: false });
 
 beforeEach(() => {
   useEgressStore.setState({ loaded: false, sessionId: null, entries: [], globalEnabled: true, override: null, effectiveContained: true });
@@ -57,12 +67,20 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true");
   });
 
-  it("shows built-in entries read-only (no remove control) under 'Always allowed'", async () => {
+  it("shows built-in defaults as removable (overridable defaults)", async () => {
     stubFetch([builtin(".github.com")]);
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-derived")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("settings-egress-user-list")).toBeInTheDocument());
     expect(screen.getByText(".github.com")).toBeInTheDocument();
-    expect(screen.queryByTestId("settings-egress-host-remove-.github.com")).not.toBeInTheDocument();
+    expect(screen.getByTestId("settings-egress-host-remove-.github.com")).toBeInTheDocument();
+  });
+
+  it("shows derived (MCP/operator) entries read-only under 'Also allowed'", async () => {
+    stubFetch([mcp("mcp.acme.dev")]);
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-derived")).toBeInTheDocument());
+    expect(screen.getByText("mcp.acme.dev")).toBeInTheDocument();
+    expect(screen.queryByTestId("settings-egress-host-remove-mcp.acme.dev")).not.toBeInTheDocument();
   });
 
   it("shows a user-added entry with remove + edit controls", async () => {
@@ -109,6 +127,23 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true"));
     await userEvent.click(screen.getByTestId("settings-egress-contained"));
     await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "false"));
+  });
+
+  it("shows 'Restore defaults' only when a default was removed, and POSTs the restore", async () => {
+    const impl = stubFetch([user("custom.example.com")], { defaultsCustomized: true });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-restore-defaults")).toBeInTheDocument());
+    await userEvent.click(screen.getByTestId("settings-egress-restore-defaults"));
+    await waitFor(() =>
+      expect(impl.mock.calls.some(([url]) => url === "/api/egress/defaults/restore")).toBe(true),
+    );
+  });
+
+  it("hides 'Restore defaults' when defaults are untouched", async () => {
+    stubFetch([builtin(".github.com")]);
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-user-list")).toBeInTheDocument());
+    expect(screen.queryByTestId("settings-egress-restore-defaults")).not.toBeInTheDocument();
   });
 
   it("shows the per-session override + scope selector only when a session is active", async () => {

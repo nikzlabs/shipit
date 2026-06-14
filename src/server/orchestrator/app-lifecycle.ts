@@ -111,7 +111,7 @@ export interface ContainerSetupDeps {
    * resolver, passed straight into the production `SessionContainerManager`.
    * Optional: a custom-injected container manager (tests) supplies its own.
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[] };
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
 }
 
 /** Result of container setup. */

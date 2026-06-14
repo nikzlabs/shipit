@@ -47,6 +47,8 @@ export interface ReloadEgressOpts {
   sidecarImage: string;
   /** Composed extra-host allowlist (env + MCP + durable) for this session. */
   extraHosts: string[];
+  /** Effective built-in base (defaults minus user-removed). Defaults to the full base. */
+  base?: string[];
   /** Base labels (parent-session etc.) stamped on the relaunched sidecars. */
   baseLabels: Record<string, string>;
   /** Reload the Tier B resolver (only when DNS enforcement is on). */
@@ -79,7 +81,7 @@ async function removeByLabel(docker: Docker, label: string): Promise<void> {
  * session so a just-added allowlist host takes effect without a restart.
  */
 export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void> {
-  const { docker, sessionId, agentContainerId, sidecarImage, extraHosts, baseLabels } = opts;
+  const { docker, sessionId, agentContainerId, sidecarImage, extraHosts, base, baseLabels } = opts;
   const labels = { ...baseLabels, "shipit-parent-session": sessionId };
 
   if (opts.reloadResolver) {
@@ -87,6 +89,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
     const configB64 = buildResolverConfigB64({
       internalDomains: orchestratorInternalNames(),
       extraDomains: extraHosts,
+      ...(base ? { base } : {}),
     });
     await launchEgressResolver(docker, {
       agentContainerId,
@@ -103,7 +106,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
     await launchEgressProxy(docker, {
       agentContainerId,
       sidecarImage,
-      allowed: buildProxyAllowed({ extraHosts }),
+      allowed: buildProxyAllowed({ extraHosts, ...(base ? { base } : {}) }),
       sessionId,
       decisionUrl,
       labels: { ...labels, [EGRESS_PROXY_LABEL]: sessionId },

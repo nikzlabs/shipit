@@ -172,13 +172,16 @@ tracker as separate issues. None implemented yet.
           BOTH `buildResolverConfigB64` (Tier B `extraDomains`) and `buildProxyAllowed`
           (Tier C `extraHosts`) at container start — so the resolver's pinned set and the
           proxy's SNI allowlist can never drift. Unit-tested in `egress-allowlist.test.ts`.
-  - [x] **Settings UI** — default-on global containment toggle (fail-secure: a missing
-        global setting resolves to Contained), per-session containment override
-        (Inherit / Contained / Open), and a **first-class allowlist editor**: it renders the
-        full **effective** allowlist with **provenance** (built-in / operator / MCP /
-        user-added, via `GET /api/egress/allowlist` + `buildEffectiveAllowlist`), with
-        built-in/operator/MCP rows read-only under "Always allowed" and **user entries
-        add/remove/edit-able at global OR per-session scope**. Durable store
+  - [x] **Settings UI** (its own Settings → **Network** tab) — default-on global containment
+        toggle (fail-secure: a missing global setting resolves to Contained), per-session
+        containment override (Inherit / Contained / Open), and a **first-class allowlist
+        editor**: it renders the full **effective** allowlist with **provenance** (built-in /
+        operator / MCP / user-added, via `GET /api/egress/allowlist` + `buildEffectiveAllowlist`).
+        **Built-in defaults are overridable** — removable/editable, with a **"Restore defaults"**
+        action (`POST /api/egress/defaults/restore`); a removed default is recorded in the
+        reserved `__suppressed_defaults__` scope and filtered out of the resolver/proxy `base`
+        so it's actually closed. Only **operator** + **MCP** rows stay read-only ("Also allowed").
+        User entries are add/remove/edit-able at global OR per-session scope. Durable store
         (`EgressAllowlistStore` — `egress_allowlist` + `egress_settings` tables, DB
         migration) feeds the per-session containment gate + the composition seam at
         container start; the global toggle / per-session override govern whether a session

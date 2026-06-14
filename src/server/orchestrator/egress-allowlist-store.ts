@@ -24,10 +24,19 @@
  */
 
 import type { DatabaseManager } from "../shared/database.js";
-import { normalizeHost } from "./egress-allowlist.js";
+import { normalizeHost, EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 
 /** The reserved scope key for the global (all-session) allowlist + toggle. */
 export const EGRESS_GLOBAL_SCOPE = "global";
+
+/**
+ * Reserved scope key holding the **suppressed built-in defaults** — entries from
+ * {@link EGRESS_DEFAULT_ALLOWLIST} the user has removed via the Settings editor.
+ * The built-in list is a *default*, not a hard floor: removing one records it
+ * here, and "Restore defaults" clears the scope. The `__` sentinel can't collide
+ * with a session id (uuids) or the literal `global`.
+ */
+export const EGRESS_SUPPRESSED_SCOPE = "__suppressed_defaults__";
 
 interface HostRow {
   host: string;
@@ -94,6 +103,49 @@ export class EgressAllowlistStore {
       out.push(h);
     }
     return out;
+  }
+
+  // --- Built-in defaults (overridable) ------------------------------------
+
+  /** The built-in defaults the user has removed (suppressed). */
+  listSuppressedDefaults(): string[] {
+    return this.listHosts(EGRESS_SUPPRESSED_SCOPE);
+  }
+
+  /** Is this built-in default currently suppressed (removed by the user)? */
+  isDefaultSuppressed(host: string): boolean {
+    const h = normalizeEntry(host);
+    return !!h && this.listSuppressedDefaults().includes(h);
+  }
+
+  /** Remove a built-in default — record it as suppressed. Returns true if newly suppressed. */
+  suppressDefault(host: string): boolean {
+    return this.addHost(EGRESS_SUPPRESSED_SCOPE, host);
+  }
+
+  /** Re-enable a previously-removed built-in default. Returns true if it was suppressed. */
+  unsuppressDefault(host: string): boolean {
+    return this.removeHost(EGRESS_SUPPRESSED_SCOPE, host);
+  }
+
+  /** Whether the user has removed any built-in default (drives "Restore defaults"). */
+  hasSuppressedDefaults(): boolean {
+    return this.listSuppressedDefaults().length > 0;
+  }
+
+  /** Restore all built-in defaults (clear every suppression). */
+  restoreDefaults(): void {
+    this.db.prepare("DELETE FROM egress_allowlist WHERE scope = ?").run(EGRESS_SUPPRESSED_SCOPE);
+  }
+
+  /**
+   * The effective built-in base: {@link EGRESS_DEFAULT_ALLOWLIST} minus the
+   * defaults the user has suppressed. Fed into the resolver/proxy config so a
+   * removed default is actually closed at the next container start.
+   */
+  effectiveBase(): string[] {
+    const suppressed = new Set(this.listSuppressedDefaults());
+    return EGRESS_DEFAULT_ALLOWLIST.filter((h) => !suppressed.has(normalizeHost(h)));
   }
 
   // --- Containment toggle --------------------------------------------------

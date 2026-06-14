@@ -57,9 +57,9 @@ describe("egress settings routes", () => {
     expect(res.statusCode).toBe(200);
     const view = res.json<EgressAllowlistView>();
     expect(view.session).toBeNull();
-    // Built-ins are present + read-only; the user host is removable.
+    // Built-ins are present + removable (overridable defaults); the user host too.
     const builtin = view.entries.find((e) => e.host === ".github.com");
-    expect(builtin).toMatchObject({ source: "builtin", removable: false });
+    expect(builtin).toMatchObject({ source: "builtin", removable: true });
     expect(view.entries.find((e) => e.host === "user.example.com")).toMatchObject({
       source: "user-global",
       removable: true,
@@ -122,6 +122,39 @@ describe("egress settings routes", () => {
   it("POST /api/egress/hosts 400s on a blank host", async () => {
     const res = await app.inject({ method: "POST", url: "/api/egress/hosts", payload: { host: "  " } });
     expect(res.statusCode).toBe(400);
+  });
+
+  it("DELETE on a built-in default suppresses it (overridable) and marks defaults customized", async () => {
+    const before = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    const aDefault = before.json<EgressAllowlistView>().entries.find((e) => e.source === "builtin")!.host;
+
+    const res = await app.inject({ method: "DELETE", url: "/api/egress/hosts", payload: { host: aDefault } });
+    expect(res.statusCode).toBe(200);
+    expect(store.isDefaultSuppressed(aDefault)).toBe(true);
+
+    const after = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    const view = after.json<EgressAllowlistView>();
+    expect(view.entries.some((e) => e.host === aDefault)).toBe(false);
+    expect(view.defaultsCustomized).toBe(true);
+  });
+
+  it("POST /api/egress/defaults/restore un-suppresses every removed default", async () => {
+    const aDefault = store.effectiveBase()[0];
+    store.suppressDefault(aDefault);
+    expect(store.hasSuppressedDefaults()).toBe(true);
+
+    const res = await app.inject({ method: "POST", url: "/api/egress/defaults/restore" });
+    expect(res.statusCode).toBe(200);
+    expect(store.hasSuppressedDefaults()).toBe(false);
+    expect(res.json<EgressAllowlistView>().entries.some((e) => e.host === aDefault)).toBe(true);
+  });
+
+  it("re-adding a removed built-in default un-suppresses it (not a redundant user row)", async () => {
+    const aDefault = store.effectiveBase()[0];
+    store.suppressDefault(aDefault);
+    await app.inject({ method: "POST", url: "/api/egress/hosts", payload: { host: aDefault } });
+    expect(store.isDefaultSuppressed(aDefault)).toBe(false);
+    expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).not.toContain(aDefault);
   });
 
   it("DELETE /api/egress/hosts removes a global host", async () => {

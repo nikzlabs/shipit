@@ -77,11 +77,17 @@ export interface ResolverConfigOpts {
   /** Internal names → Docker embedded DNS. */
   internalDomains?: string[];
   upstreams?: string[];
+  /**
+   * Built-in base domains (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). The
+   * caller passes the *effective* base — defaults minus any the user removed in
+   * Settings — so a removed default isn't resolvable.
+   */
+  base?: readonly string[];
 }
 
 /** Build the resolver's dnsmasq config and base64-encode it for env transport. */
 export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
-  const publicDomains = [...EGRESS_DEFAULT_ALLOWLIST, ...(opts.extraDomains ?? [])];
+  const publicDomains = [...(opts.base ?? EGRESS_DEFAULT_ALLOWLIST), ...(opts.extraDomains ?? [])];
   const config = buildDnsmasqConfig({
     publicDomains,
     publicUpstreams: opts.upstreams ?? EGRESS_DNS_DEFAULT_UPSTREAMS,

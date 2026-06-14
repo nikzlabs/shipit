@@ -14,6 +14,7 @@ import {
   buildEgressAllowlist,
   composeEgressExtraHosts,
   buildEffectiveAllowlist,
+  isBuiltinDefault,
 } from "./egress-allowlist.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
@@ -221,16 +222,25 @@ describe("composeEgressExtraHosts", () => {
 // ---------------------------------------------------------------------------
 
 describe("buildEffectiveAllowlist", () => {
-  it("tags built-ins as read-only and user hosts as removable", () => {
+  it("tags built-in defaults AND user hosts as removable (overridable defaults)", () => {
     const entries = buildEffectiveAllowlist({
       env: {},
       globalHosts: ["userg.example.com"],
       sessionHosts: ["users.example.com"],
     });
     const byHost = new Map(entries.map((e) => [e.host, e]));
-    expect(byHost.get(".github.com")).toMatchObject({ source: "builtin", removable: false });
+    expect(byHost.get(".github.com")).toMatchObject({ source: "builtin", removable: true });
     expect(byHost.get("userg.example.com")).toMatchObject({ source: "user-global", removable: true });
     expect(byHost.get("users.example.com")).toMatchObject({ source: "user-session", removable: true });
+  });
+
+  it("skips a suppressed (user-removed) built-in default", () => {
+    const all = buildEffectiveAllowlist({ env: {} });
+    expect(all.some((e) => e.host === ".github.com")).toBe(true);
+    const withSuppressed = buildEffectiveAllowlist({ env: {}, suppressedDefaults: [".github.com"] });
+    expect(withSuppressed.some((e) => e.host === ".github.com")).toBe(false);
+    // other defaults remain
+    expect(withSuppressed.some((e) => e.host === ".anthropic.com")).toBe(true);
   });
 
   it("tags operator extras + MCP hosts read-only", () => {
@@ -246,6 +256,15 @@ describe("buildEffectiveAllowlist", () => {
     const entries = buildEffectiveAllowlist({ env: {}, globalHosts: [".github.com"] });
     const gh = entries.filter((e) => e.host === ".github.com");
     expect(gh).toHaveLength(1);
-    expect(gh[0]).toMatchObject({ source: "builtin", removable: false });
+    expect(gh[0]).toMatchObject({ source: "builtin", removable: true });
+  });
+});
+
+describe("isBuiltinDefault", () => {
+  it("recognizes a built-in default (normalized), rejects others", () => {
+    expect(isBuiltinDefault(".github.com")).toBe(true);
+    expect(isBuiltinDefault(".GitHub.com.")).toBe(true); // case + trailing dot
+    expect(isBuiltinDefault("attacker.com")).toBe(false);
+    expect(isBuiltinDefault("api.github.com")).toBe(false); // not the exact default entry
   });
 });
