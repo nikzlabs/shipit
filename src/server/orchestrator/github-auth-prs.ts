@@ -375,6 +375,42 @@ export async function addLabelsToPullRequest(
 }
 
 /**
+ * Remove a single label from a pull request. PRs are issues on GitHub, so this
+ * uses the issues `labels/{name}` endpoint (`DELETE`).
+ *
+ * Best-effort by contract, mirroring {@link addLabelsToPullRequest}: a label
+ * that isn't on the PR (or doesn't exist on the repo) comes back from GitHub as
+ * a 404, which for *removal* is already the desired end state — so we treat it
+ * as success (idempotent). Other failures (e.g. a token without Issues:write →
+ * 403) return `{ success: false, message }` so the caller can degrade to a
+ * non-fatal warning rather than blocking the edit. We never throw.
+ */
+export async function removeLabelFromPullRequest(
+  token: string,
+  owner: string,
+  repo: string,
+  pullNumber: number,
+  label: string,
+): Promise<{ success: boolean; message?: string }> {
+  try {
+    const res = await fetchGitHub(
+      `https://api.github.com/repos/${owner}/${repo}/issues/${pullNumber}/labels/${encodeURIComponent(label)}`,
+      token,
+      { method: "DELETE" },
+    );
+    // 404 → the label isn't applied to this PR (or doesn't exist). Removal is
+    // idempotent, so the desired state is already met: report success.
+    if (res.status === 404) return { success: true };
+    if (!res.ok) {
+      return { success: false, message: await parseGitHubError(res) };
+    }
+    return { success: true };
+  } catch (err) {
+    return { success: false, message: getErrorMessage(err) };
+  }
+}
+
+/**
  * Mark a draft pull request as ready for review.
  * Uses the GraphQL API since REST does not expose this transition.
  */

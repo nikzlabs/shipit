@@ -457,6 +457,41 @@ async function applyPrLabels(
 }
 
 /**
+ * Remove agent-requested labels from a PR, best-effort — the removal sibling of
+ * {@link applyPrLabels}. GitHub's label-removal endpoint is per-label (DELETE
+ * `issues/{n}/labels/{name}`), so we issue one call per name. A label that
+ * isn't on the PR comes back as a 404, which the auth layer maps to success
+ * (removal is idempotent), so it never produces a warning. Genuine failures
+ * (e.g. a token without Issues:write) are collected into a single non-fatal
+ * warning string the caller surfaces on the shim's stderr — they never block
+ * the edit. Returns `undefined` when there's nothing to remove or all removals
+ * succeeded.
+ */
+async function removePrLabels(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  prNumber: number,
+  labels: string[] | undefined,
+): Promise<string | undefined> {
+  const normalized = (labels ?? []).map((l) => l.trim()).filter(Boolean);
+  if (normalized.length === 0) return undefined;
+  const failed: string[] = [];
+  let lastMessage = "unknown error";
+  for (const label of normalized) {
+    const result = await githubAuthManager.removeLabelFromPullRequest(owner, repo, prNumber, label);
+    if (!result.success) {
+      failed.push(label);
+      lastMessage = result.message ?? "unknown error";
+    }
+  }
+  if (failed.length > 0) {
+    return `Warning: could not remove label(s) ${failed.join(", ")}: ${lastMessage}. The PR was still updated.`;
+  }
+  return undefined;
+}
+
+/**
  * Flush any pending working-tree changes into a commit before a synchronous
  * push/PR operation. The agent calls `gh pr create` mid-turn, *before* the
  * normal end-of-turn `postTurnCommit` has run — without this flush, the new
@@ -705,13 +740,26 @@ export async function agentCreatePr(
 }
 
 /**
- * Edit an existing PR (title/body). When `prNumber` is not provided, the
- * service resolves the open PR for the current branch.
+ * Edit an existing PR (title/body and/or labels). When `prNumber` is not
+ * provided, the service resolves the open PR for the current branch.
+ *
+ * `addLabels` and `removeLabels` mirror real `gh pr edit --add-label` /
+ * `--remove-label`: both are applied best-effort after any title/body PATCH, so
+ * a typo'd or nonexistent label name surfaces a non-fatal `labelWarning` rather
+ * than failing the edit. Adds run before removes; if the same name appears in
+ * both, the remove wins (matching gh).
  */
 export async function editPullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
-  options: { number?: number; title?: string; body?: string; labels?: string[]; remoteUrl?: string },
+  options: {
+    number?: number;
+    title?: string;
+    body?: string;
+    addLabels?: string[];
+    removeLabels?: string[];
+    remoteUrl?: string;
+  },
 ): Promise<{ number: number; url: string; labelWarning?: string }> {
   const resolved = await resolveSessionPr(git, githubAuthManager, options.remoteUrl);
 
@@ -721,9 +769,10 @@ export async function editPullRequest(
     prNumber = resolved.pr.number;
   }
 
-  const labels = (options.labels ?? []).map((l) => l.trim()).filter(Boolean);
+  const addLabels = (options.addLabels ?? []).map((l) => l.trim()).filter(Boolean);
+  const removeLabels = (options.removeLabels ?? []).map((l) => l.trim()).filter(Boolean);
   const hasTitleOrBody = typeof options.title === "string" || typeof options.body === "string";
-  if (!hasTitleOrBody && labels.length === 0) {
+  if (!hasTitleOrBody && addLabels.length === 0 && removeLabels.length === 0) {
     throw new ServiceError(400, "Provide a title, body, or label to update");
   }
 
@@ -748,8 +797,15 @@ export async function editPullRequest(
     number = prNumber;
   }
 
-  const labelWarning = await applyPrLabels(githubAuthManager, resolved.owner, resolved.repo, prNumber, labels);
-  return { number, url, labelWarning };
+  // Both label operations are best-effort and independent; collect any warnings
+  // so a failed add and a failed remove can both be reported in one shot.
+  const warnings: string[] = [];
+  const addWarning = await applyPrLabels(githubAuthManager, resolved.owner, resolved.repo, prNumber, addLabels);
+  if (addWarning) warnings.push(addWarning);
+  const removeWarning = await removePrLabels(githubAuthManager, resolved.owner, resolved.repo, prNumber, removeLabels);
+  if (removeWarning) warnings.push(removeWarning);
+
+  return { number, url, labelWarning: warnings.length > 0 ? warnings.join("\n") : undefined };
 }
 
 /** Comment on an existing PR. */

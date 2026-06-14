@@ -6,7 +6,7 @@ import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
-import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
+import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import { getReleaseByTag as getReleaseByTagImpl, type ReleaseByTag } from "./github-auth-releases.js";
 import { createIssue as createIssueImpl } from "./github-auth-issues.js";
@@ -641,6 +641,22 @@ export class GitHubAuthManager extends EventEmitter {
   }
 
   /**
+   * Remove a single label from a pull request. Best-effort, mirroring
+   * `addLabelsToPullRequest`: a label that isn't present (404) is treated as
+   * success (idempotent); other failures return `{ success: false, message }`
+   * rather than throwing.
+   */
+  async removeLabelFromPullRequest(
+    owner: string,
+    repo: string,
+    pullNumber: number,
+    label: string,
+  ): Promise<{ success: boolean; message?: string }> {
+    if (!this._token) return { success: false, message: "Not authenticated with GitHub" };
+    return removeLabelFromPullRequestImpl(this._token, owner, repo, pullNumber, label);
+  }
+
+  /**
    * Mark a draft pull request as ready for review.
    */
   async markPullRequestReady(
@@ -934,7 +950,7 @@ export class GitHubAuthManager extends EventEmitter {
 
 // Barrel re-exports from sub-modules for backwards compatibility
 export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
-export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
+export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
 export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";
 export { createIssue } from "./github-auth-issues.js";

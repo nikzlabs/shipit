@@ -430,14 +430,87 @@ describe("gh pr edit", () => {
     expect(out.calls.find((c) => c.method === "PATCH")?.path).toBe("/agent-ops/pr/7");
   });
 
-  it("forwards --label without requiring a title or body", async () => {
+  it("forwards --add-label as an addLabels array without requiring a title or body", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "5", "--add-label", "enhancement"],
+      { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ addLabels: ["enhancement"] });
+  });
+
+  it("treats --label/-l as additive aliases for --add-label", async () => {
     const { run } = makeRunner();
     const out = await run(
       ["pr", "edit", "5", "--label", "documentation"],
       { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
     );
     expect(out.exitCode).toBe(0);
-    expect(out.calls[0].body).toMatchObject({ labels: ["documentation"] });
+    expect(out.calls[0].body).toMatchObject({ addLabels: ["documentation"] });
+  });
+
+  it("forwards --remove-label as a removeLabels array", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "5", "--remove-label", "documentation"],
+      { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ removeLabels: ["documentation"] });
+  });
+
+  it("supports add and remove together, each repeated and comma-separated", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      [
+        "pr", "edit", "5",
+        "--add-label", "enhancement,feature", "--add-label", "feature",
+        "--remove-label", "documentation",
+      ],
+      { "PATCH /agent-ops/pr/5": { status: 200, body: { url: "u", number: 5 } } },
+    );
+    expect(out.exitCode).toBe(0);
+    // De-duped and comma-split, mirroring `gh pr create --label`.
+    expect(out.calls[0].body).toMatchObject({
+      addLabels: ["enhancement", "feature"],
+      removeLabels: ["documentation"],
+    });
+  });
+
+  it("falls back to current branch's PR for a label-only edit", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "--add-label", "bug"],
+      {
+        "GET /agent-ops/pr/status": { status: 200, body: { pr: { number: 7 } } },
+        "PATCH /agent-ops/pr/7": { status: 200, body: { url: "u", number: 7 } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    const patch = out.calls.find((c) => c.method === "PATCH");
+    expect(patch?.path).toBe("/agent-ops/pr/7");
+    expect(patch?.body).toMatchObject({ addLabels: ["bug"] });
+  });
+
+  it("prints a best-effort label warning on stderr but still exits 0", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "edit", "5", "--add-label", "nope"],
+      {
+        "PATCH /agent-ops/pr/5": {
+          status: 200,
+          body: {
+            url: "https://github.com/x/y/pull/5",
+            number: 5,
+            labelWarning: "Warning: could not apply label(s) nope: not found. The PR was still updated.",
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout.trim()).toBe("https://github.com/x/y/pull/5");
+    expect(out.stderr).toContain("could not apply label(s) nope");
   });
 
   it("still errors when neither title, body, nor label is given", async () => {

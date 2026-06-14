@@ -238,7 +238,7 @@ export async function registerGitHubRoutes(
   // PATCH /api/sessions/:id/pr/:number — edit an existing PR
   app.patch<{
     Params: { id: string; number: string };
-    Body: { title?: string; body?: string; labels?: string[] };
+    Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[] };
   }>(
     "/api/sessions/:id/pr/:number",
     { config: { containerAccessible: true } },
@@ -257,7 +257,8 @@ export async function registerGitHubRoutes(
           number: num,
           title: request.body?.title,
           body: request.body?.body,
-          labels: request.body?.labels,
+          addLabels: request.body?.addLabels,
+          removeLabels: request.body?.removeLabels,
           remoteUrl: session?.remoteUrl,
         });
       } catch (err) {
