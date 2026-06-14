@@ -1304,14 +1304,15 @@ describe("PrStatusPoller", () => {
 
   // docs/194 regression — a viewer reconnect calls trackSession() again, which
   // wipes the poller's in-memory `mergedSessions` fire-once edge and forces a
-  // poll that re-promotes the already-merged PR, re-invoking onMergedPr. THIS is
-  // the re-entrancy that produced duplicate issue-status cards. The fix is the
-  // consumer's persisted, natural-identity guard (issue-lifecycle's
-  // `hasAppliedMergeIssueEffect` / `markAppliedMergeIssueEffect`, exercised by
-  // issue-lifecycle.test.ts). Here we model that guard with a per-(session,PR)
-  // set and assert the merge EFFECT runs exactly once even though the poller
-  // re-fires the callback on re-track.
-  it("does NOT re-run the merge effect after trackSession re-attaches an already-merged session (docs/194)", async () => {
+  // poll that re-promotes the already-merged PR. This used to re-invoke the
+  // terminal callbacks on every re-track (the re-entrancy behind duplicate
+  // issue-status cards AND the unbounded "Post-merge: marked <id> as merged"
+  // repeats / git-refetch fan-out seen in prod). The poller now guards on the
+  // persisted last-known terminal state (which survives the trackSession wipe),
+  // so onMergedPr fires exactly once across re-tracks. The consumer's persisted
+  // natural-identity guard (issue-lifecycle's `hasAppliedMergeIssueEffect`)
+  // remains as belt-and-suspenders and is exercised by issue-lifecycle.test.ts.
+  it("does NOT re-fire the merge callback after trackSession re-attaches an already-merged session (docs/194)", async () => {
     const withPr = {
       data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
     };
@@ -1348,13 +1349,14 @@ describe("PrStatusPoller", () => {
     expect(effectRuns).toBe(1);
     const callsAfterMerge = onMergedPr.mock.calls.length;
 
-    // Reconnect → re-track wipes mergedSessions + forces an immediate poll that
-    // re-promotes the merged PR and re-invokes onMergedPr.
+    // Reconnect → re-track wipes mergedSessions + forces an immediate poll. The
+    // poller's persisted-terminal-state guard keeps the callback from re-firing,
+    // so the merge side effects don't re-run on reconnect.
     poller.trackSession("s1", "https://github.com/owner/repo");
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(onMergedPr.mock.calls.length).toBeGreaterThan(callsAfterMerge); // poller re-fired
-    expect(effectRuns).toBe(1); // but the persisted guard kept the effect once
+    expect(onMergedPr.mock.calls.length).toBe(callsAfterMerge); // poller did NOT re-fire
+    expect(effectRuns).toBe(1); // effect still ran exactly once
   });
 
   it("fires onPrTerminalState with outcome 'merged' when a PR merges (docs/196)", async () => {
@@ -2344,6 +2346,54 @@ describe("PrStatusPoller — catch-up probe", () => {
 
     // Should trigger post-merge archive
     expect(onMergeDetected).toHaveBeenCalledWith("s1");
+
+    poller.destroy();
+  });
+
+  it("fires the post-merge handler exactly once across repeated polls and a re-track", async () => {
+    // Regression for the production repeat: a merged-but-not-archived session
+    // re-ran the full post-merge handler (archive prune + session_list SSE
+    // fan-out + bare-cache git refetch) on every poll cycle / reconnect.
+    const withPr = { data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } } };
+    const mergedRest = {
+      url: "https://github.com/owner/repo/pull/42",
+      number: 42, base: "main", title: "Add feature", body: "x",
+      state: "closed" as const, merged_at: "2026-05-19T12:00:00Z",
+      additions: 100, deletions: 20,
+    };
+    const githubAuth = makeGitHubAuth(withPr, mergedRest);
+    const sessionManager = makeSessionManager([
+      { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+    ]);
+    const sseBroadcast = vi.fn();
+    const onMergeDetected = vi.fn().mockResolvedValue(undefined);
+
+    const poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast, onMergeDetectedCb: onMergeDetected });
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+
+    // PR drops out of the OPEN bulk view → REST verify promotes to merged → fires once.
+    (githubAuth.graphqlQuery as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { repository: { pullRequests: { nodes: [] } } },
+    });
+    await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onMergeDetected).toHaveBeenCalledTimes(1);
+
+    // Several more steady-state poll cycles while the session stays merged.
+    for (let i = 0; i < 5; i++) {
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(onMergeDetected).toHaveBeenCalledTimes(1);
+
+    // A viewer reconnect / session activation re-tracks (wiping mergedSessions)
+    // and forces an immediate refresh — must still not re-fire.
+    poller.trackSession("s1", "https://github.com/owner/repo");
+    await vi.advanceTimersByTimeAsync(0);
+    await poller.forceRefreshSession("s1");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onMergeDetected).toHaveBeenCalledTimes(1);
 
     poller.destroy();
   });
