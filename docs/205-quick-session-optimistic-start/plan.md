@@ -1,9 +1,19 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-139
-description: Quick-capture fires a new session optimistically — overlay closes immediately, a subtle toast reports ready/failed instead of a blocking spinner.
+description: Quick-capture fires a new session optimistically — overlay closes immediately; success is silent (session appears via SSE), failures surface an error toast.
 ---
 
 # Quick Session — Optimistic Start
+
+## Status
+
+**Phase 1 shipped.** The overlay closes immediately on submit and creates the
+session in the background. On success the session simply appears in the sidebar
+(no toast); on failure an **error toast** reports it. The concurrent
+quick-session **cap was removed** (see below). **Deferred** (not built): a
+success "Session started · View" toast with fast-hit suppression, and an
+optimistic "starting…" sidebar row — both judged unnecessary because creation is
+reliable in practice. The original fuller design is kept below for context.
 
 ## Problem
 
@@ -36,39 +46,53 @@ session row (also broadcast over SSE `session_list`) and the navigate decision
 
 ## Design
 
-Make the **background** quick-capture path fire-and-forget:
+Make the **background** quick-capture path fire-and-forget. **What shipped
+(phase 1):**
 
 1. **Close the overlay immediately on submit** — after local validation passes,
-   don't await the create. The user is back in their current session instantly.
-2. **Report the result with a toast**, not a modal:
-   - **Success →** subtle toast **"Session started · View"**, where *View*
-     navigates to the new session. `Toast` already supports
-     `action: { label, onClick }` (`Toast.tsx:53-65`) — exactly this shape.
-   - **Failure →** toast **"Couldn't start session · Retry"** where *Retry*
-     re-opens the overlay **with the typed text preserved**, so nothing is lost.
-3. **Suppress the success toast on a fast (warm) hit.** If the create resolves
-   within a short threshold (~800ms), skip the toast — the session just quietly
-   appears in the sidebar via the existing `session_list` SSE broadcast. A toast
-   that fires 400ms after the overlay closes reads as a double-flash.
+   don't await the create. The user is back in their current session instantly
+   (`QuickCaptureOverlay.handleSend`).
+2. **Success is silent.** The new session appears in the sidebar via
+   `createHeadlessSession`'s store update and the `session_list` SSE broadcast —
+   no toast. (The fuller design's "Session started · View" toast +
+   fast-hit suppression is **deferred**; with reliable creation it added flicker
+   for little gain.)
+3. **Failure → error toast.** The background helper catches the rejection and
+   shows an **error-variant** toast with the server's message (`Toast` gained a
+   `variant: "success" | "error"`; default stays `success`). No retry/text-
+   preservation yet — deferred.
 4. **Leave the `/repo/*/new` route path unchanged.** There the user is
    explicitly entering the new session, so progress belongs on the session
-   screen, not behind a modal. `handleQuickSessionCreated` already distinguishes
-   the two by comparing the created id to the active session id.
+   screen, not behind a modal. `handleQuickSessionCreated` (`App.tsx:785-792`)
+   already distinguishes the two by comparing the created id to the active id;
+   the helper's `onCreated` callback drives that navigation.
 
 This matches the product principle that **chat is the input surface and the
 agent is the actor** (CLAUDE.md §5): the user describes the session and returns
 to work; they don't operate the boot.
 
+### Removed: the concurrent quick-session cap
+
+`createHeadlessSession` (server) used to reject with **429 "You already have N
+quick sessions running…"** once `MAX_ACTIVE_HEADLESS_SESSIONS` (default 8) live
+quick sessions existed, tracked in a module-level `quickSessionIds` set. With the
+optimistic close, a deterministic 429 would be the one case that vanishes without
+explanation — but more fundamentally the limit was arbitrary and got in the
+user's way. It was **removed entirely**: the set, the env knob, the
+`DEFAULT_MAX_ACTIVE_HEADLESS_SESSIONS` constant, the `maxActiveHeadlessSessions`
+option, and the 429 throw are all gone (`services/headless-sessions.ts`). The
+error toast in (3) now only fires for genuine failures (network, server error).
+
 ### Why move the create off the component
 
-Today the awaited create lives inside the overlay component, which unmounts when
-`open` becomes false (`QuickCaptureOverlay.tsx:116`). For fire-and-forget we
-want the request + toast to **outlive the overlay's mount**. Extract a
-`startQuickSessionInBackground(params)` helper into
-`stores/actions/session-actions.ts` (alongside `createHeadlessSession`) that owns
-the POST, the timing threshold, and the success/failure toast. The overlay
-captures its payload (repo, prompt, agent, model, files, armAutoMerge) at submit
-time, calls the helper, and closes — no stale-closure or unmount races.
+The awaited create used to live inside the overlay component, which unmounts when
+`open` becomes false. For fire-and-forget we want the request + toast to
+**outlive the overlay's mount**, so the work lives in
+`startQuickSessionInBackground(opts, onCreated)` in
+`stores/actions/session-actions.ts` (alongside `createHeadlessSession`): it owns
+the POST and the failure toast. The overlay captures its payload (repo, prompt,
+agent, model, files, armAutoMerge) at submit time, calls the helper, and closes —
+no stale-closure or unmount races.
 
 ## Toast system — already exists (one small gap)
 

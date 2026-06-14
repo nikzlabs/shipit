@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { createHeadlessSession, resumeSessionInternal } from "./session-actions.js";
+import { createHeadlessSession, resumeSessionInternal, startQuickSessionInBackground } from "./session-actions.js";
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
@@ -78,14 +78,66 @@ describe("createHeadlessSession", () => {
   it("throws the server-provided error message", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
       ok: false,
-      status: 429,
-      json: async () => ({ error: "You already have 8 quick sessions running." }),
+      status: 500,
+      json: async () => ({ error: "Something went wrong starting the session." }),
     }));
 
     await expect(createHeadlessSession({
       repoUrl: "https://github.com/acme/app.git",
       initialPrompt: "one more",
-    })).rejects.toThrow("You already have 8 quick sessions running.");
+    })).rejects.toThrow("Something went wrong starting the session.");
+  });
+});
+
+describe("startQuickSessionInBackground (docs/205)", () => {
+  beforeEach(() => {
+    useSessionStore.setState({ sessions: [] });
+    useUiStore.setState({ toast: null });
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    useSessionStore.setState({ sessions: [], sessionId: undefined });
+    useUiStore.setState({ toast: null });
+  });
+
+  it("creates the session, notifies onCreated, and shows no toast on success", async () => {
+    const returned = session("quick-bg", "Background");
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ session: returned }),
+    }));
+    const onCreated = vi.fn();
+
+    startQuickSessionInBackground(
+      { repoUrl: "https://github.com/acme/app.git", initialPrompt: "go" },
+      onCreated,
+    );
+
+    await vi.waitFor(() => expect(onCreated).toHaveBeenCalledWith(returned));
+    expect(useSessionStore.getState().sessions.map((s) => s.id)).toContain("quick-bg");
+    expect(useUiStore.getState().toast).toBeNull();
+  });
+
+  it("surfaces a failure as an error toast and does not call onCreated", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
+      ok: false,
+      status: 500,
+      json: async () => ({ error: "Boom." }),
+    }));
+    const onCreated = vi.fn();
+
+    startQuickSessionInBackground(
+      { repoUrl: "https://github.com/acme/app.git", initialPrompt: "go" },
+      onCreated,
+    );
+
+    await vi.waitFor(() => {
+      const toast = useUiStore.getState().toast;
+      expect(toast?.message).toBe("Boom.");
+      expect(toast?.variant).toBe("error");
+    });
+    expect(onCreated).not.toHaveBeenCalled();
   });
 });
 

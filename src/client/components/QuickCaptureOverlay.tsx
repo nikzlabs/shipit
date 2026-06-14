@@ -6,7 +6,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { createHeadlessSession } from "../stores/actions/session-actions.js";
+import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import { getSavedAgentId, getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
@@ -40,7 +40,6 @@ export function QuickCaptureOverlay({
   // irreversible footgun that would silently ship a review-intended PR. It
   // defaults off and the user must opt in every single time.
   const [armAutoMerge, setArmAutoMerge] = useState(false);
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
   const wasOpenRef = useRef(false);
@@ -115,36 +114,35 @@ export function QuickCaptureOverlay({
 
   if (!open) return null;
 
-  const disabled = submitting || !bootstrapLoaded || selectedRepo?.status !== "ready";
+  const disabled = !bootstrapLoaded || selectedRepo?.status !== "ready";
 
-  const handleSend = async (payload: SendPayload) => {
+  // docs/205 — optimistic start. Close the overlay immediately and create the
+  // session in the background, so the user gets straight back to their current
+  // session instead of waiting behind a modal spinner (a cold clone is
+  // ~10-30s). The new session appears in the sidebar via the `session_list` SSE
+  // broadcast; the server has already dispatched the first prompt by the time
+  // the request returns. A failure surfaces as an error toast since the overlay
+  // is already gone.
+  const handleSend = (payload: SendPayload) => {
     if (!selectedRepo) {
       setError("Add a repo first.");
       return;
     }
-    setSubmitting(true);
-    setError(null);
-    try {
-      const created = await createHeadlessSession({
-        repoUrl: selectedRepo.url,
-        initialPrompt: payload.text,
-        agent: selectedAgentId,
-        ...(selectedModel ? { model: selectedModel } : {}),
-        ...(armAutoMerge ? { armAutoMerge: true } : {}),
-        ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
-      });
-      setPendingFiles([]);
-      // Let the app graduate the URL when the server reused the session the
-      // user is sitting on (a /{slug}/new page's claimed session). See
-      // App.tsx `handleQuickSessionCreated` — a true background session won't
-      // match the active session id and stays put.
-      onSessionCreated?.(created);
-      close();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Couldn't start a session — try again");
-    } finally {
-      setSubmitting(false);
-    }
+    const params = {
+      repoUrl: selectedRepo.url,
+      initialPrompt: payload.text,
+      agent: selectedAgentId,
+      ...(selectedModel ? { model: selectedModel } : {}),
+      ...(armAutoMerge ? { armAutoMerge: true } : {}),
+      ...(payload.deferredFiles.length > 0 ? { files: payload.deferredFiles } : {}),
+    };
+    setPendingFiles([]);
+    close();
+    // Let the app graduate the URL when the server reused the session the user
+    // is sitting on (a /{slug}/new page's claimed session). See App.tsx
+    // `handleQuickSessionCreated` — a true background session won't match the
+    // active session id and stays put.
+    startQuickSessionInBackground(params, (created) => onSessionCreated?.(created));
   };
 
   return (
@@ -205,72 +203,63 @@ export function QuickCaptureOverlay({
             This repo is still cloning.
           </div>
         )}
-        {submitting ? (
-          <div className="flex items-center justify-center gap-2 px-4 py-16 text-sm text-(--color-text-secondary)">
-            <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin" />
-            Starting session
-          </div>
-        ) : (
-          <>
-            <div className="py-3">
-              <MessageInput
-                surface="overlay"
-                onSend={(payload) => void handleSend(payload)}
-                disabled={disabled}
-                isLoading={submitting}
-                permissionMode={permissionMode}
-                onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}
-                pendingFiles={pendingFiles}
-                onRemoveFile={(index) => setPendingFiles((files) => files.filter((_, i) => i !== index))}
-                onAddFile={(path) => setPendingFiles((files) => files.some((f) => f.path === path) ? files : [...files, { path }])}
-                fileTree={[]}
-                skills={[]}
-                agents={agentList}
-                activeAgentId={selectedAgentId}
-                onAgentChange={(agentId) => {
-                  // The agent shown/sent is derived from the model (see
-                  // `selectedAgentId`); we still persist the picked agent so the
-                  // global `vibe-agent-id` preference and ui-store stay in sync,
-                  // but the overlay never reads it back as an independent source.
-                  saveAgentId(agentId);
-                  useUiStore.getState().setActiveAgentId(agentId);
-                }}
-                onModelChange={(model) => {
-                  saveModelId(model);
-                  setSelectedModel(model);
-                }}
-                modelInfo={modelInfo}
-                hasActiveSession={false}
-              />
-            </div>
-            <div className="flex flex-col gap-3 border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
-              {/* docs/175 — auto-merge opt-in. Always present (no CI-presence
-                  gating, decision #2). The note is unconditional and honest:
-                  the per-PR `checks.state === "none"` signal isn't knowable
-                  before the PR exists, so we describe what arming does rather
-                  than claiming a per-repo "no CI gate" verdict. Laid out as a
-                  column so the label, checkbox, and note wrap cleanly and stay
-                  tappable on a narrow (mobile) viewport. */}
-              <label className="flex items-start gap-2 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={armAutoMerge}
-                  onChange={(e) => setArmAutoMerge(e.target.checked)}
-                  disabled={disabled}
-                  className="mt-0.5 size-4 shrink-0 cursor-pointer accent-(--color-accent)"
-                />
-                <span className="min-w-0">
-                  <span className="text-(--color-text-secondary)">Auto-merge when ready</span>
-                  <span className="mt-0.5 block text-(--color-text-tertiary)">
-                    Merges automatically once the PR is mergeable. If it has no CI
-                    checks, it merges immediately — without review.
-                  </span>
-                </span>
-              </label>
-              <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
-            </div>
-          </>
-        )}
+        <div className="py-3">
+          <MessageInput
+            surface="overlay"
+            onSend={(payload) => handleSend(payload)}
+            disabled={disabled}
+            isLoading={false}
+            permissionMode={permissionMode}
+            onPermissionModeChange={(mode) => useSettingsStore.getState().setPermissionMode(undefined, mode)}
+            pendingFiles={pendingFiles}
+            onRemoveFile={(index) => setPendingFiles((files) => files.filter((_, i) => i !== index))}
+            onAddFile={(path) => setPendingFiles((files) => files.some((f) => f.path === path) ? files : [...files, { path }])}
+            fileTree={[]}
+            skills={[]}
+            agents={agentList}
+            activeAgentId={selectedAgentId}
+            onAgentChange={(agentId) => {
+              // The agent shown/sent is derived from the model (see
+              // `selectedAgentId`); we still persist the picked agent so the
+              // global `vibe-agent-id` preference and ui-store stay in sync,
+              // but the overlay never reads it back as an independent source.
+              saveAgentId(agentId);
+              useUiStore.getState().setActiveAgentId(agentId);
+            }}
+            onModelChange={(model) => {
+              saveModelId(model);
+              setSelectedModel(model);
+            }}
+            modelInfo={modelInfo}
+            hasActiveSession={false}
+          />
+        </div>
+        <div className="flex flex-col gap-3 border-t border-(--color-border-primary) px-4 py-3 text-xs text-(--color-text-tertiary)">
+          {/* docs/175 — auto-merge opt-in. Always present (no CI-presence
+              gating, decision #2). The note is unconditional and honest:
+              the per-PR `checks.state === "none"` signal isn't knowable
+              before the PR exists, so we describe what arming does rather
+              than claiming a per-repo "no CI gate" verdict. Laid out as a
+              column so the label, checkbox, and note wrap cleanly and stay
+              tappable on a narrow (mobile) viewport. */}
+          <label className="flex items-start gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={armAutoMerge}
+              onChange={(e) => setArmAutoMerge(e.target.checked)}
+              disabled={disabled}
+              className="mt-0.5 size-4 shrink-0 cursor-pointer accent-(--color-accent)"
+            />
+            <span className="min-w-0">
+              <span className="text-(--color-text-secondary)">Auto-merge when ready</span>
+              <span className="mt-0.5 block text-(--color-text-tertiary)">
+                Merges automatically once the PR is mergeable. If it has no CI
+                checks, it merges immediately — without review.
+              </span>
+            </span>
+          </label>
+          <span>Enter to send · Shift+Enter for newline · Esc to dismiss</span>
+        </div>
       </div>
     </div>
   );

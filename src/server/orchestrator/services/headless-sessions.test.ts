@@ -222,43 +222,6 @@ describe("createHeadlessSession", () => {
     expect(claim.claim).not.toHaveBeenCalled();
   });
 
-  it("enforces the active quick-session cap", async () => {
-    await createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "first",
-        maxActiveHeadlessSessions: 1,
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    );
-
-    await expect(createHeadlessSession(
-      sessionManager,
-      registry as unknown as SessionRunnerRegistry,
-      claimService(),
-      {
-        repoUrl: "https://github.com/acme/app.git",
-        prompt: "second",
-        maxActiveHeadlessSessions: 1,
-      },
-      "claude",
-      undefined,
-      undefined,
-      undefined,
-      graduationDeps,
-    )).rejects.toMatchObject({
-      statusCode: 429,
-      message: "You already have 1 quick sessions running. Open one from the sidebar before starting another.",
-    });
-  });
-
   it("routes credential provisioning through providerAccountManager when one is supplied", async () => {
     // Regression for the quick-session "not logged in" bug. After
     // `migrateDefaultAccounts()` runs at orchestrator startup, the legacy

@@ -9,12 +9,12 @@ import { useSessionStore } from "../stores/session-store.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 
-const createHeadlessSessionMock = vi.hoisted(() => vi.fn());
+const startQuickSessionMock = vi.hoisted(() => vi.fn());
 type MessageInputProps = ComponentProps<typeof MessageInput>;
 let lastMessageInputProps: MessageInputProps | undefined;
 
 vi.mock("../stores/actions/session-actions.js", () => ({
-  createHeadlessSession: createHeadlessSessionMock,
+  startQuickSessionInBackground: startQuickSessionMock,
 }));
 
 vi.mock("./MessageInput.js", () => ({
@@ -69,11 +69,12 @@ function openOverlay() {
 
 describe("QuickCaptureOverlay", () => {
   beforeEach(() => {
-    createHeadlessSessionMock.mockReset();
+    startQuickSessionMock.mockReset();
     lastMessageInputProps = undefined;
     useUiStore.setState({
       quickCaptureOpen: false,
       bootstrapLoaded: false,
+      toast: null,
       agentList: [{
         id: "claude",
         name: "Claude",
@@ -101,7 +102,7 @@ describe("QuickCaptureOverlay", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
-    useUiStore.setState({ quickCaptureOpen: false, bootstrapLoaded: false });
+    useUiStore.setState({ quickCaptureOpen: false, bootstrapLoaded: false, toast: null });
     useRepoStore.setState({ repos: [], activeRepoUrl: undefined });
     useSessionStore.setState({ sessionId: undefined, sessions: [] });
   });
@@ -175,41 +176,47 @@ describe("QuickCaptureOverlay", () => {
     expect(useUiStore.getState().quickCaptureOpen).toBe(false);
   });
 
-  it("submits to the headless-session action and closes without changing sessions", async () => {
+  it("delegates to the background start helper and closes immediately, staying on the current session (docs/205)", async () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
     useSessionStore.setState({ sessionId: "current", sessions: [session("current", "https://github.com/acme/app.git")] });
-    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledWith({
-      repoUrl: "https://github.com/acme/app.git",
-      initialPrompt: "captured prompt",
-      agent: "claude",
-    }));
-    await waitFor(() => expect(useUiStore.getState().quickCaptureOpen).toBe(false));
+    // Optimistic start: the overlay closes synchronously on submit — it does not
+    // await the create — and stays on the user's current session.
+    expect(useUiStore.getState().quickCaptureOpen).toBe(false);
     expect(useSessionStore.getState().sessionId).toBe("current");
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        initialPrompt: "captured prompt",
+        agent: "claude",
+      },
+      expect.any(Function),
+    );
   });
 
-  it("notifies onSessionCreated with the created session so the app can graduate the URL", async () => {
+  it("passes an onCreated callback that notifies onSessionCreated so the app can graduate the URL", () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
     const created = session("graduated", "https://github.com/acme/app.git");
-    createHeadlessSessionMock.mockResolvedValue(created);
     const onSessionCreated = vi.fn();
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} onSessionCreated={onSessionCreated} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    await waitFor(() => expect(onSessionCreated).toHaveBeenCalledWith(created));
+    // Drive the callback the overlay handed to the helper — it should forward to onSessionCreated.
+    const onCreated = startQuickSessionMock.mock.calls[0][1] as (s: SessionInfo) => void;
+    onCreated(created);
+    expect(onSessionCreated).toHaveBeenCalledWith(created);
   });
 
   it("derives the sent agent from the saved model, ignoring a stale vibe-agent-id", async () => {
@@ -229,18 +236,20 @@ describe("QuickCaptureOverlay", () => {
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
-    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
 
-    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledWith({
-      repoUrl: "https://github.com/acme/app.git",
-      initialPrompt: "captured prompt",
-      agent: "claude",
-      model: "claude-opus-4-8",
-    }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      {
+        repoUrl: "https://github.com/acme/app.git",
+        initialPrompt: "captured prompt",
+        agent: "claude",
+        model: "claude-opus-4-8",
+      },
+      expect.any(Function),
+    );
     // The picker also shows the derived agent, so display and send agree.
     expect(lastMessageInputProps?.activeAgentId).toBe("claude");
 
@@ -248,19 +257,18 @@ describe("QuickCaptureOverlay", () => {
     localStorage.removeItem("vibe-model-id");
   });
 
-  it("forwards attached files to createHeadlessSession", async () => {
+  it("forwards attached files to the background start helper", () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
-    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
     fireEvent.click(screen.getByRole("button", { name: "Send mock with file" }));
 
-    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
-    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as {
+    expect(startQuickSessionMock).toHaveBeenCalledTimes(1);
+    const callArgs = startQuickSessionMock.mock.calls[0][0] as {
       repoUrl: string;
       initialPrompt: string;
       agent: string;
@@ -273,30 +281,11 @@ describe("QuickCaptureOverlay", () => {
     expect(callArgs.files[0].name).toBe("note.txt");
   });
 
-  it("renders cap and generic submission errors inline", async () => {
-    useRepoStore.setState({
-      repos: [repo("https://github.com/acme/app.git")],
-      activeRepoUrl: "https://github.com/acme/app.git",
-    });
-    createHeadlessSessionMock.mockRejectedValue(new Error("You already have 8 quick sessions running."));
-    openOverlay();
-
-    const { rerender } = render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
-    expect(await screen.findByText("You already have 8 quick sessions running.")).toBeInTheDocument();
-
-    createHeadlessSessionMock.mockRejectedValueOnce(new Error("Couldn't start a session — try again"));
-    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
-    rerender(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
-    expect(await screen.findByText("Couldn't start a session — try again")).toBeInTheDocument();
-  });
-
   it("auto-merge checkbox defaults off and is not sent when unchecked (docs/175)", async () => {
     useRepoStore.setState({
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
-    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
     openOverlay();
 
     render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
@@ -304,8 +293,8 @@ describe("QuickCaptureOverlay", () => {
     expect(checkbox).not.toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
-    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
-    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(startQuickSessionMock).toHaveBeenCalledTimes(1);
+    const callArgs = startQuickSessionMock.mock.calls[0][0] as Record<string, unknown>;
     expect(callArgs).not.toHaveProperty("armAutoMerge");
   });
 
@@ -314,7 +303,6 @@ describe("QuickCaptureOverlay", () => {
       repos: [repo("https://github.com/acme/app.git")],
       activeRepoUrl: "https://github.com/acme/app.git",
     });
-    createHeadlessSessionMock.mockResolvedValue(session("quick", "https://github.com/acme/app.git"));
     openOverlay();
 
     const setItemSpy = vi.spyOn(Storage.prototype, "setItem");
@@ -326,8 +314,8 @@ describe("QuickCaptureOverlay", () => {
     expect(checkbox).toBeChecked();
 
     fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
-    await waitFor(() => expect(createHeadlessSessionMock).toHaveBeenCalledTimes(1));
-    const callArgs = createHeadlessSessionMock.mock.calls[0][0] as Record<string, unknown>;
+    expect(startQuickSessionMock).toHaveBeenCalledTimes(1);
+    const callArgs = startQuickSessionMock.mock.calls[0][0] as Record<string, unknown>;
     expect(callArgs.armAutoMerge).toBe(true);
 
     // Decision #1: the toggle must never be persisted/remembered. Toggling and

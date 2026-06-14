@@ -155,3 +155,29 @@ export async function createHeadlessSession(opts: {
   });
   return body.session;
 }
+
+/**
+ * docs/205 — optimistic quick-session start. Called fire-and-forget from the
+ * (synchronous) quick-capture submit *after* the overlay has closed, so the user
+ * isn't blocked behind a modal spinner during the boot. Success is silent — the
+ * new session appears in the sidebar via `createHeadlessSession`'s store update
+ * (and the `session_list` SSE broadcast); `onCreated` lets the /{repo}/new route
+ * graduate its URL. A failure surfaces as an error toast since the overlay is
+ * gone. Living here (not in the component) means it survives the overlay unmount.
+ */
+export function startQuickSessionInBackground(
+  opts: Parameters<typeof createHeadlessSession>[0],
+  onCreated?: (session: SessionInfo) => void,
+): void {
+  void (async () => {
+    try {
+      const created = await createHeadlessSession(opts);
+      onCreated?.(created);
+    } catch (err) {
+      useUiStore.getState().setToast({
+        message: err instanceof Error ? err.message : "Couldn't start session — try again",
+        variant: "error",
+      });
+    }
+  })();
+}
