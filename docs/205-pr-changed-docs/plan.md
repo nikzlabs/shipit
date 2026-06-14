@@ -109,6 +109,35 @@ construction.
 - `src/client/components/ChangedDocsStrip.tsx` (new) — chip list, opens `openPreview`.
 - localStorage helper for per-session collapse state (`utils/`).
 
+## Implementation notes (shipped)
+
+Two small divergences from the data-flow sketch above, both keeping the strip a
+pure projection of the PR's file list:
+
+- **Both server emits derive the list from git, not from a pre-existing `files`
+  array.** `pr-lifecycle.ts` doesn't populate `WsPrLifecycleUpdate.files` in the
+  open emit, so `notableFilesForBranch` (`services/notable-files.ts`) computes
+  the list from `git.diffNameStatus(base, HEAD)` for *both* the ready and the
+  auto-create open phases, mirroring `diffStatVsBranch`'s ref fallback
+  (`origin/<base>` → `<base>`) so the strip lines up with the diff stat.
+- **The client preserves `notableFiles` across poller updates.** The steady-state
+  open card is re-emitted by the poller's `pr_status` path (`applyPrStatusUpdates`),
+  which doesn't carry `notableFiles`; that path and `updateCard` both keep
+  `existing?.notableFiles` so the lifecycle-update-derived list survives poll
+  ticks and phase-only updates (creating/error/merged) instead of flickering out.
+
+Classification (`computeNotableFiles`): config allowlist is matched by basename
+and takes precedence over the generic `.md` rule, so `CLAUDE.md` / `AGENTS.md`
+render as config (blue, gear icon), not design docs. Doc titles resolve via the
+new `markdown.resolveDocTitle` (frontmatter `title`, else path-derived — a
+deleted doc still gets a sensible name). Statuses normalize to M/A/D
+(renames/copies → M).
+
+Key files added: `src/server/orchestrator/services/notable-files.ts`,
+`src/client/components/ChangedDocsStrip.tsx`, and the
+`getSavedChangedDocsExpanded` / `saveChangedDocsExpanded` helpers in
+`src/client/utils/local-storage.ts`.
+
 ## Open questions / later
 
 - Chip layout is Option B (density). Option A (full-width rows) is kept in the prototype

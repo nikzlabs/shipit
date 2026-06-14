@@ -5,6 +5,7 @@ import type {
   PrIssueComment,
   PrReviewThread,
   PrReviewThreadComment,
+  NotableFileChange,
 } from "../../server/shared/types/github-types.js";
 import { useSettingsStore } from "./settings-store.js";
 
@@ -100,6 +101,13 @@ export interface PrCardState {
     title: string;
     baseBranch: string;
   };
+  /**
+   * docs/205 — notable files (docs + allowlisted config) changed across the
+   * whole PR, for the collapsible changed-docs strip. A pure projection of the
+   * PR's file list; preserved across poller updates that omit it so the strip
+   * stays sticky.
+   */
+  notableFiles?: NotableFileChange[];
   /** Error message (error phase). */
   errorMessage?: string;
   /**
@@ -283,6 +291,9 @@ export const usePrStore = create<PrState>((set, get) => ({
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
+            // docs/205 — the poller doesn't carry notableFiles; keep the
+            // lifecycle-update-derived list so the strip survives a poll tick.
+            notableFiles: existing?.notableFiles,
           };
         } else {
           nextCards[update.sessionId] = {
@@ -308,6 +319,9 @@ export const usePrStore = create<PrState>((set, get) => ({
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
+            // docs/205 — the poller doesn't carry notableFiles; keep the
+            // lifecycle-update-derived list so the strip survives a poll tick.
+            notableFiles: existing?.notableFiles,
           };
         }
       }
@@ -340,6 +354,10 @@ export const usePrStore = create<PrState>((set, get) => ({
           [sessionId]: {
             ...card,
             autoMerge: card.autoMerge ?? existing?.autoMerge ?? state.autoMergeBySession[sessionId],
+            // docs/205 — phases that don't compute a file list (creating/error/
+            // merged, and the graduate-session ready card) omit notableFiles;
+            // keep the last-known list so the changed-docs strip stays sticky.
+            notableFiles: card.notableFiles ?? existing?.notableFiles,
           },
         },
       };

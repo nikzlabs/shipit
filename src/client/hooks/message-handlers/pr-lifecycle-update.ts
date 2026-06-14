@@ -10,6 +10,7 @@ export const handlePrLifecycleUpdate: Handler<WsPrLifecycleUpdate> = (_ctx, data
     files: data.files,
     totalInsertions: data.totalInsertions,
     totalDeletions: data.totalDeletions,
+    notableFiles: data.notableFiles,
     pr: data.pr,
     checks: data.checks,
     autoMerge: data.autoMerge,

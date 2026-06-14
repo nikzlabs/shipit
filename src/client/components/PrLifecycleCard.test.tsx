@@ -9,6 +9,7 @@ import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
+import { saveChangedDocsExpanded } from "../utils/local-storage.js";
 
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
@@ -1259,5 +1260,64 @@ describe("PrLifecycleCard — open PR details", () => {
     );
     fireEvent.click(container.firstChild as HTMLElement);
     expect(onOpenDetails).not.toHaveBeenCalled();
+  });
+});
+
+// ---- Changed-docs strip (docs/205) ----
+
+describe("PrLifecycleCard — changed-docs strip", () => {
+  beforeEach(() => {
+    localStorage.clear();
+  });
+
+  const cardWithDocs: PrCardState = {
+    ...openPrCard,
+    notableFiles: [
+      { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
+      { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
+    ],
+  };
+
+  it("hides the toggle when the PR changed no notable file", () => {
+    setCard("s1", openPrCard);
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.queryByLabelText("Changed docs in this PR")).not.toBeInTheDocument();
+  });
+
+  it("shows the toggle when notable files are present, collapsed by default", () => {
+    setCard("s1", cardWithDocs);
+    render(<PrLifecycleCard sessionId="s1" />);
+    const toggle = screen.getByLabelText("Changed docs in this PR");
+    expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    // Strip is collapsed → chips not rendered.
+    expect(screen.queryByText("PR-scoped changed docs")).not.toBeInTheDocument();
+  });
+
+  it("expands the strip on toggle and persists the state per session", () => {
+    setCard("s1", cardWithDocs);
+    const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
+    fireEvent.click(screen.getByLabelText("Changed docs in this PR"));
+    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+
+    // Remount (e.g. page reload) — the expanded state is restored from storage.
+    unmount();
+    setCard("s1", cardWithDocs);
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+  });
+
+  it("keeps collapse state independent across sessions", () => {
+    saveChangedDocsExpanded("s1", true);
+    setCard("s1", cardWithDocs);
+    setCard("s2", cardWithDocs);
+
+    const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+
+    rerender(<PrLifecycleCard sessionId="s2" />);
+    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "false");
   });
 });

@@ -1,8 +1,40 @@
 import { describe, it, expect, beforeEach } from "vitest";
-import { getSavedKeybindings, saveKeybindings } from "./local-storage.js";
+import {
+  getSavedKeybindings,
+  saveKeybindings,
+  getSavedChangedDocsExpanded,
+  saveChangedDocsExpanded,
+} from "./local-storage.js";
 
 beforeEach(() => {
   localStorage.clear();
+});
+
+describe("changed-docs strip collapse state (docs/205)", () => {
+  it("defaults to collapsed when no preference is stored", () => {
+    expect(getSavedChangedDocsExpanded("s1")).toBe(false);
+  });
+
+  it("persists expanded state per session independently", () => {
+    saveChangedDocsExpanded("s1", true);
+    saveChangedDocsExpanded("s2", false);
+    expect(getSavedChangedDocsExpanded("s1")).toBe(true);
+    expect(getSavedChangedDocsExpanded("s2")).toBe(false);
+    // A session with no entry still defaults to collapsed.
+    expect(getSavedChangedDocsExpanded("s3")).toBe(false);
+  });
+
+  it("round-trips a collapse after an expand", () => {
+    saveChangedDocsExpanded("s1", true);
+    expect(getSavedChangedDocsExpanded("s1")).toBe(true);
+    saveChangedDocsExpanded("s1", false);
+    expect(getSavedChangedDocsExpanded("s1")).toBe(false);
+  });
+
+  it("ignores a corrupt stored blob", () => {
+    localStorage.setItem("shipit-changed-docs-expanded-by-session", "not json");
+    expect(getSavedChangedDocsExpanded("s1")).toBe(false);
+  });
 });
 
 describe("getSavedKeybindings (docs/180)", () => {

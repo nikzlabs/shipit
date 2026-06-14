@@ -24,6 +24,7 @@ import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import { getErrorMessage } from "../validation.js";
 import { activatePendingAutoMergeForPr, quickCreatePr } from "./github.js";
+import { notableFilesForBranch } from "./notable-files.js";
 
 export interface PrLifecycleDeps {
   sessionManager: SessionManager;
@@ -131,11 +132,15 @@ export async function emitPrLifecycleAfterCommit(args: {
           );
         }
         const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
+        // docs/205 — the changed-docs strip's notable-file list, derived from
+        // the same base...HEAD diff that produced the PR.
+        const notableFiles = await notableFilesForBranch(git, sessionDir, result.baseBranch);
         emit({
           type: "pr_lifecycle_update",
           sessionId,
           cardId: `pr-card-${sessionId}`,
           phase: "open",
+          ...(notableFiles.length > 0 ? { notableFiles } : {}),
           pr: {
             number: result.number,
             title: result.title,
@@ -177,6 +182,9 @@ export async function emitPrLifecycleAfterCommit(args: {
     const headBranch = session.branch || await git.getCurrentBranch();
     const readyBase = previousMergedPr?.baseBranch ?? "main";
     const { insertions: totalInsertions, deletions: totalDeletions } = await git.diffStatVsBranch(readyBase);
+    // docs/205 — notable files (docs + config) changed vs the base, for the
+    // card's collapsible changed-docs strip.
+    const notableFiles = await notableFilesForBranch(git, sessionDir, readyBase);
     const autoMerge = deps.prStatusPoller.getAutoMergeState(sessionId);
     emit({
       type: "pr_lifecycle_update",
@@ -186,6 +194,7 @@ export async function emitPrLifecycleAfterCommit(args: {
       headBranch,
       totalInsertions,
       totalDeletions,
+      ...(notableFiles.length > 0 ? { notableFiles } : {}),
       autoMerge: autoMerge
         ? {
             enabled: autoMerge.enabled,
