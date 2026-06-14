@@ -77,6 +77,7 @@ beforeEach(async () => {
       return new Proxy(real, {
         get(target, prop) {
           if (prop === "push") return async () => {};
+          if (prop === "forcePush") return async () => {};
           if (prop === "listRemoteBranches") return async () => ["main"];
           return (target as never)[prop as never];
         },
@@ -332,6 +333,61 @@ describe("agent-driven PR creation (Phase 2)", () => {
       expect(result.alreadyExisted).toBe(true);
       expect(result.number).toBe(9);
       expect(githubAuth.createPullRequestCalls).toHaveLength(0);
+    },
+  );
+
+  it(
+    "creates a NEW PR when the prior PR merged but the branch progressed past base (#1357)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await setupPrimedSession();
+
+      // The branch's only PR is merged/closed, same as the short-circuit case.
+      githubAuth.setPrData(null);
+      githubAuth.setFindPrAnyStateResult({
+        url: "https://github.com/test-user/test-repo/pull/9",
+        number: 9,
+        base: "main",
+        title: "Earlier (merged) PR",
+        body: "",
+        state: "closed",
+        merged_at: "2026-01-01T00:00:00Z",
+        additions: 0,
+        deletions: 0,
+      });
+
+      // But the branch has been rebased onto the current base and carries new
+      // work: pin origin/main at the current HEAD, then add a commit on top.
+      // `advancedBeyondMergedBase("main")` then reports progressed (merge-base ==
+      // origin/main tip AND a non-empty two-dot diff).
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      const baseSha = execSync("git rev-parse HEAD", { cwd: sessionDir, env: gitEnv })
+        .toString().trim();
+      execSync(`git update-ref refs/remotes/origin/main ${baseSha}`, { cwd: sessionDir, env: gitEnv });
+      fs.writeFileSync(path.join(sessionDir, "followup.ts"), "export const y = 2;\n");
+      execSync("git add -A && git commit -m 'follow-up work'", { cwd: sessionDir, env: gitEnv });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: {
+          title: "Follow-up slice",
+          body: "## Summary\nNew work after the prior PR merged.",
+        },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const result = res.json();
+      // A fresh PR was opened — not the dead merged one.
+      expect(result.alreadyExisted).toBe(false);
+      expect(result.number).toBe(1);
+      expect(githubAuth.createPullRequestCalls).toHaveLength(1);
+      const call = githubAuth.createPullRequestCalls[0];
+      expect(call.title).toBe("Follow-up slice");
+      // New PR targets the prior PR's base, not auto-detected main-by-probe.
+      expect(call.base).toBe("main");
+      expect(call.head).toBe("shipit/test-feature");
     },
   );
 
