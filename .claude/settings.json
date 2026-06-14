@@ -3,10 +3,8 @@
     "allow": [
       "Edit(.claude/skills/**)",
       "Write(.claude/skills/**)",
-      "MultiEdit(.claude/skills/**)",
       "Edit(**/.claude/skills/**)",
-      "Write(**/.claude/skills/**)",
-      "MultiEdit(**/.claude/skills/**)"
+      "Write(**/.claude/skills/**)"
     ]
   }
 }
