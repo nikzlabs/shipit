@@ -37,7 +37,7 @@ function TreeNode({
   onDownload?: (filePath: string) => void;
   onEdit?: (filePath: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 1);
+  const [expanded, setExpanded] = useState(false);
 
   const toggle = useCallback(() => {
     setExpanded((prev) => !prev);
