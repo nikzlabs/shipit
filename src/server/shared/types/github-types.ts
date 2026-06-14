@@ -382,6 +382,22 @@ export interface PrFileStat {
   deletions: number;
 }
 
+/**
+ * docs/205 — a "notable" file changed somewhere across the whole PR: a design
+ * doc (`.md`) or an allowlisted config file. Powers the PR card's collapsible
+ * changed-docs strip, where each entry renders as a chip that opens the file
+ * inline. A pure projection of the PR's changed-file list; not persisted.
+ */
+export interface NotableFileChange {
+  /** Workspace-relative path (used as the chip's tooltip and the open target). */
+  path: string;
+  /** Frontmatter `title` for docs (falls back to a path-derived name); basename for config. */
+  title: string;
+  kind: "doc" | "config";
+  /** Normalized git status — Modified, Added, or Deleted (renames/copies map to M). */
+  status: "M" | "A" | "D";
+}
+
 /** Inline PR lifecycle card state, sent as a WS message. */
 export interface WsPrLifecycleUpdate {
   type: "pr_lifecycle_update";
@@ -395,6 +411,14 @@ export interface WsPrLifecycleUpdate {
   files?: PrFileStat[];
   totalInsertions?: number;
   totalDeletions?: number;
+  /**
+   * docs/205 — notable files (docs + allowlisted config) changed across the
+   * whole PR, for the card's collapsible changed-docs strip. Present on the
+   * "ready" and auto-create "open" emits; omitted on phases that don't compute
+   * a file list (creating/error/merged), where the client preserves the
+   * last-known list so the strip stays sticky.
+   */
+  notableFiles?: NotableFileChange[];
   /** Present in "open" and "merged" phases — PR info. */
   pr?: {
     number: number;

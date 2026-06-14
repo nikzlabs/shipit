@@ -9,17 +9,17 @@
 - [x] Commit mockup + plan
 
 ## Server
-- [ ] Add `NotableFileChange` type + `WsPrLifecycleUpdate.notableFiles`
-- [ ] Compute notable list in `pr-lifecycle.ts` (open phase: from `files`; ready phase: from `diffNameStatus(base, HEAD)`)
-- [ ] Filter classifier (`.md` docs + config allowlist) and attach resolved frontmatter `title`
+- [x] Add `NotableFileChange` type + `WsPrLifecycleUpdate.notableFiles`
+- [x] Compute notable list in `pr-lifecycle.ts` (ready + auto-create open phases) via `notableFilesForBranch` (`diffNameStatus` vs base, same ref fallback as `diffStatVsBranch`)
+- [x] Filter classifier (`.md` docs + config allowlist) and attach resolved frontmatter `title` (`services/notable-files.ts` + `markdown.resolveDocTitle`)
 
 ## Client
-- [ ] `notableFiles` on `PrCardState` + `updateCard` / handler passthrough
-- [ ] `ChangedDocsToggle` button in `PrLifecycleCard` header (left of `PrActionsMenu`), hidden when `notableFiles.length === 0`
-- [ ] `ChangedDocsStrip.tsx` — chip list, status dots, open via `openPreview`
-- [ ] Per-session collapse state in localStorage (default collapsed)
+- [x] `notableFiles` on `PrCardState` + `updateCard` / handler passthrough (preserved across poller `applyPrStatusUpdates` so it stays sticky)
+- [x] `ChangedDocsToggle` button in `PrLifecycleCard` header (left of `PrActionsMenu`), hidden when `notableFiles.length === 0`
+- [x] `ChangedDocsStrip.tsx` — chip list, status dots, open via `openPreview`
+- [x] Per-session collapse state in localStorage (default collapsed)
 
 ## Tests
-- [ ] Server: notable-file classification + `notableFiles` on the emitted update
-- [ ] Client: toggle hidden when empty; chip click calls `openPreview`; collapse state persists per session
-- [ ] `npm run lint:dev` + `npm run typecheck` clean
+- [x] Server: notable-file classification + branch-diff derivation (`notable-files.test.ts`)
+- [x] Client: toggle hidden when empty; chip click calls `openPreview`; collapse state persists per session
+- [x] `npm run lint:dev` + `npm run typecheck` clean

@@ -115,6 +115,32 @@ function titleFromPath(relativePath: string): string {
 }
 
 /**
+ * Resolve a doc's display title the same way the docs panel does: prefer the
+ * frontmatter `title`, else derive a human-readable name from the path (docs/205).
+ *
+ * Reads only the first 1024 bytes (where frontmatter lives). A missing or
+ * unreadable file — e.g. a deleted doc in a PR diff — falls back to the
+ * path-derived title, so a chip for a removed doc still reads sensibly.
+ */
+export async function resolveDocTitle(fullPath: string, relativePath: string): Promise<string> {
+  try {
+    const handle = await fs.open(fullPath, "r");
+    try {
+      const buf = Buffer.alloc(1024);
+      const { bytesRead } = await handle.read(buf, 0, 1024, 0);
+      const content = buf.toString("utf-8", 0, bytesRead);
+      const { title } = parseFrontmatterFields(content);
+      if (title) return title;
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    // Unreadable (e.g. deleted in the diff) — fall back to a path-derived title.
+  }
+  return titleFromPath(relativePath);
+}
+
+/**
  * Read one `.md` file and produce its `DocEntry`. For most docs we sniff
  * only the first 1024 bytes (frontmatter); for `checklist.md` we read the
  * whole file so we can count checkboxes for the progress badge.

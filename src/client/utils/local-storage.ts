@@ -318,6 +318,45 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
   }
 }
 
+// ---- Changed-docs strip collapse state (docs/205) ----
+//
+// Per-session expanded/collapsed state for the PR card's changed-docs strip.
+// Pure view state, so it lives in localStorage (not server-persisted) and can
+// differ between desktop and mobile. Default is COLLAPSED — a session with no
+// stored preference reads as collapsed, keeping the header height unchanged
+// until the user opts in.
+
+const CHANGED_DOCS_EXPANDED_KEY = "shipit-changed-docs-expanded-by-session";
+
+function readChangedDocsMap(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(CHANGED_DOCS_EXPANDED_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, boolean> = {};
+    for (const [id, v] of Object.entries(parsed)) {
+      if (typeof v === "boolean") out[id] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function getSavedChangedDocsExpanded(sessionId: string): boolean {
+  return readChangedDocsMap()[sessionId] ?? false;
+}
+
+export function saveChangedDocsExpanded(sessionId: string, expanded: boolean): void {
+  try {
+    const map = readChangedDocsMap();
+    map[sessionId] = expanded;
+    localStorage.setItem(CHANGED_DOCS_EXPANDED_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 const COLLAPSED_REPOS_KEY = "shipit-collapsed-repos";
 
 export function getSavedCollapsedRepos(): Set<string> {
