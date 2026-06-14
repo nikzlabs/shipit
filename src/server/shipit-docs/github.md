@@ -97,6 +97,12 @@ The shim:
   it. If you rebase the branch onto the current base and add new commits, `gh pr
   create` opens a **new** PR for that work (a merged PR can't be reopened). If the
   branch has no new work beyond what merged, it still prints the old PR's URL.
+  - To continue a session after its PR merged, rebase against the **freshly
+    fetched** remote base — `git fetch origin && git rebase origin/<base>` (e.g.
+    `origin/main`), **not** a local `main` that may be stale. The "has the branch
+    progressed?" check is local-git-only and compares against `origin/<base>`, so
+    rebasing onto a stale ref leaves it looking un-rebased: `gh pr create` won't
+    open the new PR and the session won't return to the active (gray) state.
 - Always operates on the current session's repo. The `--repo` flag is rejected.
 - Never sees the GitHub token; the orchestrator authenticates the request.
 
