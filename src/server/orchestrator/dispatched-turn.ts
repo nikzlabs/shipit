@@ -3,11 +3,18 @@
  *
  * Translates a server-dispatched message (quick / child / CI-fix / HTTP
  * dispatch / queue drain) into a normalized `TurnInput` and delegates. The only
- * dispatch-specific work left here is: create a fresh agent (system turns never
- * reuse a streaming process), echo the message via `emitUserEcho`, persist the
- * user row (text-only), and supply the queue-drain re-entry. Everything else —
- * reset, env-prep, spawn, listeners, post-turn commit/push/PR/drain — lives in
- * the shared executor so this path can't drift from the WS path.
+ * dispatch-specific work left here is: acquire the agent (reuse a resident
+ * streaming process when this turn streams and one is alive — docs/163 — else
+ * spawn fresh; system turns never stream so they always spawn fresh), echo the
+ * message via `emitUserEcho`, persist the user row (text-only), and supply the
+ * queue-drain re-entry. Everything else — reset, env-prep, spawn, listeners,
+ * post-turn commit/push/PR/drain — lives in the shared executor so this path
+ * can't drift from the WS path.
+ *
+ * docs/163 — a child/quick-session dispatched turn runs as a *streaming* process
+ * when live steering is on and the agent supports it (the same gate the WS path
+ * uses), so a follow-up `shipit session message` arriving mid-turn is steered
+ * into the running turn instead of being queued. See `useStreaming` below.
  *
  * Used by both SessionRunner.dispatch and ContainerSessionRunner.dispatch.
  *
@@ -56,6 +63,22 @@ export async function runDispatchedTurn(
 ): Promise<void> {
   const { text, activity } = opts;
 
+  // docs/163 — a child/quick-session dispatched turn must run as a *streaming*
+  // process when live steering is on and the agent supports it, EXACTLY as a
+  // user-typed WS turn does (agent-execution.ts computes the same gate). The
+  // child's own first turn is started through THIS path, so if it spawns
+  // non-streaming the resident process is one-shot, `runner.isStreamingActive`
+  // stays false, and a follow-up `shipit session message` arriving mid-turn
+  // fails `shouldSteerMessage` and is QUEUED instead of injected — the "spawn a
+  // session, then message it, and the message just sits in the queue" bug. With
+  // streaming on, the running turn's agent is steerable, so `trySteerDispatch`
+  // injects the message via `sendUserMessage`, i.e. it behaves as if the user
+  // typed it. System turns (rebase resolution, CI-fix) are explicitly never
+  // steered (`systemTurnInProgress` blocks it), so they stay non-streaming and
+  // keep their fresh-agent-per-turn / one-shot post-turn semantics.
+  const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
+  const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
+
   const drainNext = async (): Promise<void> => {
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
@@ -70,8 +93,24 @@ export async function runDispatchedTurn(
   let noResultRetries = 0;
 
   const runOnce = async (attempt: number): Promise<void> => {
-    // System turns always spawn a fresh agent (no persistent streaming reuse).
-    const agent = createAgent(agentId);
+    // docs/140 + docs/163 — when this dispatched turn streams AND a resident
+    // streaming process from a previous turn is still alive, REUSE it (carry the
+    // message in via `sendUserMessage`) exactly as the WS path does, rather than
+    // spawning a fresh agent. Spawning fresh while the worker still holds the old
+    // streaming process would 409 the `/agent/start` and trigger a kill+restart
+    // (SIGTERM 143) — the respawn-noise bug docs/140 fixed for the WS path. Only
+    // the FIRST attempt can reuse; a no-result retry always spawns fresh (the
+    // resident ref was cleared by the `done` handler when the process exited
+    // without a result). A non-streaming or system turn never reuses — `resident`
+    // stays null, so `createAgent` spawns fresh exactly as before.
+    const resident =
+      useStreaming && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
+    const reuse = resident !== null;
+    const agent = resident ?? createAgent(agentId);
+    // Drop the previous turn's per-turn listeners off a reused process before the
+    // executor wires its own, else they fire N times after N turns (mirrors the
+    // WS path's `existingAgent.removeAllListeners()`).
+    if (reuse) agent.removeAllListeners();
 
     await executeAgentTurn(runner, deps, agent, {
       agentId,
@@ -79,6 +118,14 @@ export async function runDispatchedTurn(
       prompt: text,
       userText: text,
       ...(activity !== undefined ? { activity } : {}),
+      // Only set the key when streaming so a non-steerable dispatch keeps the
+      // exact run-params shape it had before (turn-executor leaves `useStreaming`
+      // out of the run params when this is undefined — see its spawn branch).
+      ...(useStreaming ? { useStreaming: true } : {}),
+      // Carry the message into the resident streaming process via
+      // `sendUserMessage` instead of a fresh `/agent/start` (turn-executor's
+      // reuse branch).
+      ...(reuse ? { reuseExistingAgent: true } : {}),
       ...(opts.permissionMode !== undefined ? { permissionMode: opts.permissionMode } : {}),
       ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
       // docs/169 — post-turn policy + system-turn marker + completion signal.

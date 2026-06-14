@@ -863,6 +863,61 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("starts a DISPATCHED first turn (spawned child / quick session) as a streaming process so a follow-up dispatch steers instead of queuing (docs/163)", async () => {
+    // The actual "spawn a session, then message it" bug: a child/quick session's
+    // FIRST turn is started via `runner.dispatch` (spawnChildSession), NOT the WS
+    // path. It used to spawn NON-streaming, so `runner.isStreamingActive` stayed
+    // false and a follow-up `shipit session message` arriving mid-turn failed the
+    // steer gate and was QUEUED — never injected. The dispatched first turn now
+    // streams (same gate as WS), so the follow-up is steered in via
+    // `sendUserMessage`, exactly as if the user had typed it.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status — emitted after the runner is created
+
+    // Resolve the registry runner created on connect, then start the FIRST turn
+    // via dispatch (exactly as spawnChildSession does — no WS send_message).
+    const runner = await new Promise<AnyMsg>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        const r = (app as AnyMsg).runnerRegistry.get(client.sessionId);
+        if (r) { resolve(r); return; }
+        if (Date.now() - start > 2000) { reject(new Error("runner was never created on connect")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    runner.dispatch({ text: "Build the initial thing" });
+    const claude = await waitForClaude(() => lastClaude);
+    // The FIX: a dispatched first turn streams when steering is on + supported.
+    // Before this change `lastUseStreaming` was falsy and the steer below queued.
+    expect(claude.lastUseStreaming).toBe(true);
+    claude.initSession("dispatched-first-turn-session");
+
+    // Wait until the dispatched turn has marked the runner running + streaming.
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (runner.running && runner.isStreamingActive && runner.getAgent()) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("dispatched turn never became running+streaming")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // Follow-up programmatic message arrives mid-turn — must STEER, not queue.
+    runner.dispatch({ text: "Also handle the edge case" });
+
+    const steered = await drainUntil(client, (m) => m.type === "message_steered");
+    expect(steered).toMatchObject({ type: "message_steered", text: "Also handle the edge case" });
+    // Injected into the running streaming agent — the fake records sendUserMessage
+    // under stdinData — and NOT queued.
+    expect(claude.stdinData).toContain("Also handle the edge case");
+    expect(runner.queueLength).toBe(0);
+
+    client.close();
+  });
+
   it("delivers a dispatch-queued message at turn end even when the streaming process exits WITHOUT an agent_result (never-delivered fix, docs/162)", async () => {
     // Regression: in streaming mode the post-turn queue drain hung off
     // `agent_result` only — the `done` handler returned early without draining.

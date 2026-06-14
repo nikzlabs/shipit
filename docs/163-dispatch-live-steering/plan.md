@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-147
 description: Make the programmatic dispatch path honor live steering (and reliably drain) so a mid-turn `shipit session message` is injected, not silently queued.
 ---
 
@@ -68,6 +69,47 @@ Smallest change that removes both the divergence and the message loss:
   once whether the turn ends via `agent_result`, abnormal `done`, or `error`,
   and never twice.
 
+## The dispatched FIRST turn must itself stream
+
+The bullets above make a *resident streaming agent* the prerequisite for
+steering a dispatched message. But the originating bug is "an agent spawns a
+session and then messages it" — and a child / quick session's **first** turn is
+itself started through the dispatch path (`spawnChildSession → runner.dispatch`),
+not the WS path. That first turn used to always spawn **non-streaming** ("system
+turns spawn a fresh agent"), so `runner.isStreamingActive` stayed `false`. A
+follow-up `shipit session message` arriving mid-turn then failed the
+`shouldSteerMessage` gate and was **queued** — never injected. The shared
+predicate was correct; there was simply never a resident streaming process for
+it to steer into.
+
+The fix lives in `dispatched-turn.ts`:
+
+- **Compute the same streaming gate the WS path uses.** `useStreaming =
+  !systemTurn && steer.liveSteering && steer.steeringCapable` (via the same
+  `steerInputs()` the steer decision reads). A non-system dispatched turn now
+  runs as a streaming process exactly as a user-typed WS turn does, so the
+  resident agent it leaves behind is steerable. System turns (rebase
+  resolution, CI-fix) are explicitly never steered, so they stay non-streaming
+  and keep their fresh-agent-per-turn / one-shot post-turn semantics.
+- **Reuse the resident streaming process across dispatched turns.** When a
+  dispatched turn streams AND a live resident process from a previous turn
+  exists (`attempt === 0 && runner.isStreamingActive`), it carries the message
+  in via `reuseExistingAgent` (→ `sendUserMessage`) instead of a fresh
+  `/agent/start`, mirroring the WS path. Spawning fresh while the worker still
+  holds the old streaming process would 409 `/agent/start` and trigger a
+  kill+restart (the SIGTERM-143 respawn noise docs/140 fixed for WS). The reused
+  process gets `removeAllListeners()` before the executor wires its own, so
+  per-turn listeners don't accumulate. A no-result retry always spawns fresh
+  (the `done` handler cleared the resident ref on exit).
+- **No-result exit fires for streaming dispatched turns too.** In
+  `turn-executor.ts` the `onNoResultExit` hook was moved **above** the
+  `useStreaming` branch so it runs for both streaming and non-streaming
+  dispatched turns. A streaming first turn can still exit with no
+  `agent_result` (crash / hook-abort); without firing the hook the streaming
+  branch would silently report a *completed* turn, re-masking the
+  "first turn never ran" bug. WS leaves `onNoResultExit` unset and is
+  unaffected.
+
 ## Suppressors preserved
 
 Review turns (`reviewFilePath`), system turns (`systemTurnInProgress`), and the
@@ -85,7 +127,11 @@ dispatched message during those states queues and drains at turn end.
   `SystemTurnDeps.steerInputs` added.
 - `src/server/orchestrator/runner-registry-factory.ts` — wires `steerInputs`.
 - `src/server/orchestrator/turn-executor.ts` — streaming `done` + `onError`
-  drain through the guarded `tryDrain`.
+  drain through the guarded `tryDrain`; `onNoResultExit` hook fires for both
+  streaming and non-streaming dispatched turns.
+- `src/server/orchestrator/dispatched-turn.ts` — computes `useStreaming` for
+  non-system dispatched turns and reuses the resident streaming process across
+  turns (`reuseExistingAgent`), so a spawned session's first turn is steerable.
 - `src/server/shared/agent-registry.ts` — `getAgentCapabilities(id)` static
   capability lookup.
 
@@ -96,7 +142,9 @@ dispatched message during those states queues and drains at turn end.
 - `integration_tests/live-steering.test.ts` — end-to-end: a programmatic
   `runner.dispatch` mid-turn is steered (not queued); a queued dispatch message
   is delivered at turn end even when the streaming process exits without an
-  `agent_result`.
+  `agent_result`; **a dispatched FIRST turn (spawned child / quick session)
+  starts as a streaming process so a follow-up dispatch steers instead of
+  queuing** (the "spawn a session, then message it" bug).
 
 ## Scope note
 
