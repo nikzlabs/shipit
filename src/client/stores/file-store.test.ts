@@ -15,6 +15,8 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { useFileStore, markUploadDeleted, clearUploadTombstone } from "./file-store.js";
+import { useSessionStore } from "./session-store.js";
+import { getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
 import type { UploadItem, UploadedFile } from "../../server/shared/types.js";
 
 const DELETED_UPLOADS_KEY = "shipit:deletedUploads";
@@ -35,6 +37,9 @@ describe("file-store upload tombstones", () => {
   beforeEach(() => {
     localStorage.clear();
     useFileStore.getState().reset();
+    // hydrateUploads scans chat history to self-heal the draft-uploads set;
+    // start empty so a draft path is only pruned when a test adds a sent message.
+    useSessionStore.setState({ messages: [] });
   });
 
   afterEach(() => {
@@ -159,6 +164,53 @@ describe("file-store upload tombstones", () => {
       const uploads = useFileStore.getState().sessionUploads;
       expect(uploads).toHaveLength(1);
       expect(uploads[0].pending).toBe(false);
+    });
+  });
+
+  describe("hydrateUploads draft restoration", () => {
+    it("restores a chip for an attached-but-unsent file after a reload (memory empty)", async () => {
+      // The file uploaded successfully (so it's on disk + in the draft set) but
+      // the user reloaded before sending. The store is empty (reload), so the
+      // chip can only come back from the persisted draft set.
+      saveDraftUploads(SESSION_ID, ["/uploads/draft.png"]);
+      stubUploadsFetch([uploaded("draft.png"), uploaded("leftover.csv")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      const draft = uploads.find((u) => u.path === "/uploads/draft.png");
+      const leftover = uploads.find((u) => u.path === "/uploads/leftover.csv");
+      expect(draft?.pending).toBe(true); // restored as a chip
+      expect(leftover?.pending).toBe(false); // a non-drafted file stays panel-only
+    });
+
+    it("self-heals: a drafted path that chat history shows was sent is pruned, not shown as a chip", async () => {
+      // Simulates a missed send-time removal: the path lingers in the draft set,
+      // but the user message in chat history references it, so it was sent.
+      saveDraftUploads(SESSION_ID, ["/uploads/sent.png"]);
+      useSessionStore.setState({
+        messages: [{ role: "user", text: "look at this", uploadPaths: ["/uploads/sent.png"] }],
+      });
+      stubUploadsFetch([uploaded("sent.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads[0].pending).toBe(false);
+      // The stale draft entry is pruned from storage too.
+      expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
+    });
+
+    it("self-heals: a drafted path whose file is gone from the server is pruned", async () => {
+      saveDraftUploads(SESSION_ID, ["/uploads/gone.png"]);
+      stubUploadsFetch([uploaded("present.png")]);
+
+      await useFileStore.getState().hydrateUploads(SESSION_ID);
+
+      const uploads = useFileStore.getState().sessionUploads;
+      expect(uploads.map((u) => u.path)).toEqual(["/uploads/present.png"]);
+      expect(uploads[0].pending).toBe(false);
+      expect(getSavedDraftUploads(SESSION_ID)).toEqual([]);
     });
   });
 });

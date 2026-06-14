@@ -3,6 +3,8 @@ import type { FileTreeNode } from "../components/FileTree.js";
 import type { DocEntry, SkillInfo, UploadedFile, UploadItem } from "../../server/shared/types.js";
 import { detectFilePreviewType, type FilePreviewType } from "../utils/file-preview-type.js";
 import type { FilePreviewAction } from "../components/FilePreviewModal.js";
+import { getSavedDraftUploads, saveDraftUploads } from "../utils/local-storage.js";
+import { useSessionStore } from "./session-store.js";
 
 // localStorage-backed set of upload paths the user has explicitly deleted.
 // Prevents hydrateUploads from resurrecting them if the server DELETE fails.
@@ -201,16 +203,39 @@ export const useFileStore = create<FileState>((set, get) => ({
         if (deletedPaths.size > 0) localStorage.setItem(DELETED_UPLOADS_KEY, JSON.stringify([...deletedPaths]));
         else clearDeletedUploads();
       }
+
+      // A file on disk is, by default, NOT a chip — it was sent in a prior turn
+      // or is left over from an earlier visit, so it belongs in the /uploads
+      // panel (the agent can still read it) but not the input. The ONE thing
+      // that makes a hydrated file a chip again is the per-session draft set:
+      // paths the user attached but hasn't sent yet, persisted so the chip
+      // survives a reload/session-switch exactly like the composer's draft text.
+      //
+      // Self-heal the draft set before applying it: drop any path the server no
+      // longer has, and any path chat history shows was already sent. This is
+      // what structurally prevents the old resurrection bug — even if the
+      // send-time removal was missed, an already-sent file is pruned here and
+      // never shown as a chip.
+      const sentPaths = new Set<string>();
+      for (const msg of useSessionStore.getState().messages) {
+        if (msg.role !== "user") continue;
+        for (const f of msg.files ?? []) {
+          if (f.path.startsWith("/uploads/")) sentPaths.add(f.path);
+        }
+        for (const p of msg.uploadPaths ?? []) sentPaths.add(p);
+      }
+      const draftSet = new Set(getSavedDraftUploads(sessionId));
+      let draftChanged = false;
+      for (const p of [...draftSet]) {
+        if (!serverPaths.has(p) || sentPaths.has(p)) { draftSet.delete(p); draftChanged = true; }
+      }
+      if (draftChanged) saveDraftUploads(sessionId, [...draftSet]);
+
       set((state) => {
-        // A chip ("pending" upload) only exists for a file freshly attached in
-        // this live in-memory session and not yet sent. Hydration rebuilds the
-        // /uploads panel from disk, and a file on disk is by definition already
-        // handled — sent in a prior turn, or left over from an earlier visit.
-        // So we never resurrect a chip from disk: every hydrated file is
-        // `pending: false`. The agent can still read it next turn (it stays in
-        // the panel), it just doesn't reappear in the input. The only chips we
-        // preserve are the in-memory pending items themselves (a file attached
-        // but not yet sent must survive a WS reconnect, which keeps the store).
+        // Preserve in-memory pending items first: a WS reconnect keeps the
+        // Zustand store, so a just-attached chip (possibly still uploading, no
+        // path yet) must not be wiped. Everything else is rebuilt from disk,
+        // pending iff it's in the (self-healed) draft set.
         const pendingInMemory = state.sessionUploads.filter((u) => u.pending);
         const pendingPaths = new Set(
           pendingInMemory.map((u) => u.path).filter((p): p is string => Boolean(p)),
@@ -228,7 +253,7 @@ export const useFileStore = create<FileState>((set, get) => ({
               size: f.size,
               path: f.path,
               progress: 100,
-              pending: false,
+              pending: draftSet.has(f.path),
               previewUrl: isImage ? `/api/sessions/${sessionId}/files/${urlPath}?raw=true` : undefined,
             };
           });
