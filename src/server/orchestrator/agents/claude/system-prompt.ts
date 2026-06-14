@@ -40,6 +40,8 @@ So the three-way split:
 - \`shipit agent run\` — one-shot call to a DIFFERENT agent backend (Codex), result synthesized in THIS turn. No sidebar session, no separate PR.
 - \`shipit session create\` — a persistent, separately-reviewable sibling session / branch / PR.
 
+When you do spawn a session, it is a **child** by default — linked to you, nested in the sidebar, and coordinatable (\`shipit session wait/view/message/notify-on-merge\`). Add **\`--detached\`** for a **completely separate** session that is *not* a child: no nesting, no coordination, no card in this chat — identical to one the user made by hand. Use \`--detached\` only for work **unrelated** to your current task that you'll never need to hear about again (the classic case: the user asks you to spin off a fix for an unrelated bug you noticed). The test: if you'd ever want to \`wait\` on it, follow up, or be told it merged, it should be a child — omit \`--detached\`. See /shipit-docs/sessions.md → *Child vs detached spawns*.
+
 ### How to delegate to a \`Task\` subagent — pass pointers, never paste
 
 A \`Task\` subagent runs in **this same container against \`/workspace\`** and has the full toolset (Read, Grep, Glob, Bash, git, the browser). The one thing it does NOT have is your conversation context — it starts fresh, knowing only what its prompt says plus whatever it discovers by exploring.

@@ -683,6 +683,38 @@ export class SessionManager {
   }
 
   /**
+   * docs/205 — record the spawning turn WITHOUT a parent linkage, for a
+   * `--detached` spawn. A detached session is deliberately parentless (so it
+   * neither nests in the sidebar nor is reachable by the coordination shim —
+   * see {@link findChildren} / `assertChildOfParent`), but it still carries its
+   * originating turn id so {@link countDetachedSpawnedInTurn} can enforce the
+   * per-turn spawn cap against it. This is the one field `setParentSession`
+   * would normally write that a detached spawn still needs; the parent/root
+   * columns stay NULL.
+   */
+  setSpawnedByTurn(id: string, spawnedByTurn: string): void {
+    this.db.prepare("UPDATE sessions SET spawned_by_turn = ? WHERE id = ?").run(spawnedByTurn, id);
+  }
+
+  /**
+   * docs/205 — count detached (parentless) sessions spawned in a given turn.
+   * Mirrors `findChildren`'s `user_archived = 0` filter so the per-turn cap
+   * counts the same liveness class for detached spawns as it does for linked
+   * children. Detached sessions have no `parent_session_id`, so they never show
+   * up in `findChildren` — this is how the per-turn fan-out cap still bounds
+   * them. Scoped only by turn id (a turn belongs to one parent session), so the
+   * count never under-reports; a same-turn-string collision across two parents
+   * would only over-count, which is the safe (fail-closed) direction for a
+   * runaway guard.
+   */
+  countDetachedSpawnedInTurn(spawnedByTurn: string): number {
+    const row = this.db.prepare(
+      "SELECT COUNT(*) AS n FROM sessions WHERE parent_session_id IS NULL AND spawned_by_turn = ? AND user_archived = 0",
+    ).get(spawnedByTurn) as { n: number };
+    return row.n;
+  }
+
+  /**
    * docs/117 — return every non-user-archived session whose `parent_session_id`
    * matches the given parent. Sorted most-recently-spawned first so the
    * sidebar's "spawned in this turn" group naturally bubbles to the top.

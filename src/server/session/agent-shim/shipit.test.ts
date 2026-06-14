@@ -1277,6 +1277,58 @@ describe("shipit session create --shipit-source (docs/162)", () => {
   });
 });
 
+describe("shipit session create --detached (docs/205)", () => {
+  it("forwards detached:true in the payload", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Fix an unrelated bug");
+    const out = await run(
+      ["session", "create", "--prompt-file", pf, "--title", "Unrelated fix", "--detached"],
+      {
+        "POST /agent-ops/session/create": {
+          status: 200, body: { sessionId: "ses_det", branch: "shipit/x", status: "running" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      prompt: "Fix an unrelated bug",
+      title: "Unrelated fix",
+      detached: true,
+    });
+    // The stable text block flags the severance so the agent doesn't try to
+    // wait/view/message it afterward.
+    expect(out.stdout).toContain("session-id: ses_det");
+    expect(out.stdout).toContain("detached:   yes");
+  });
+
+  it("omits detached from the payload when the flag is absent", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Related work");
+    const out = await run(
+      ["session", "create", "--prompt-file", pf, "--title", "Child"],
+      {
+        "POST /agent-ops/session/create": {
+          status: 200, body: { sessionId: "ses_child", branch: "shipit/y", status: "running" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect("detached" in (out.calls[0].body as Record<string, unknown>)).toBe(false);
+    expect(out.stdout).not.toContain("detached:");
+  });
+
+  it("rejects --detached combined with --shipit-source before any broker call", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("Fix the lifecycle loop");
+    const out = await run(
+      ["session", "create", "--prompt-file", pf, "--title", "Fix", "--detached", "--shipit-source"],
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--detached cannot be combined with --shipit-source");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // shipit issue (docs/175 read + docs/177 write)
 // ---------------------------------------------------------------------------
