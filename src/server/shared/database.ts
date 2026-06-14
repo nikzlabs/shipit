@@ -599,7 +599,6 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN previous_merged_pr TEXT");
   },
-<<<<<<< HEAD
   // docs/203 — plain-text AI review card. Replaces the structured agent-review
   // breadcrumb: `ai_review` holds an `AiReviewCard` JSON (file + reviewer label +
   // markdown). The legacy `agent_review` column is kept read-only and mapped to a
@@ -607,7 +606,7 @@ const MIGRATIONS: Migration[] = [
   // history round-trip contract still holds. NULL = ordinary (non-card) message.
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN ai_review TEXT");
-=======
+  },
   // docs/172 / SHI-90 — persist Tier C egress allow-once cards (and their
   // allowed-once / added / denied terminal state) so they survive a session
   // switch / full reload. The card arrives off the agent-event stream (the SNI
@@ -616,7 +615,6 @@ const MIGRATIONS: Migration[] = [
   // loadSessionHistory, which rebuilds the transcript from the DB.
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN egress_prompt TEXT");
->>>>>>> e564e6716 (PR #1334 now carries the whole of Tier C. Say the word and I'll write the Tier C host-verification prompt, or move on to)
   },
 ];
 
