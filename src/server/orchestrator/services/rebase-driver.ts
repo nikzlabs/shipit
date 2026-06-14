@@ -31,7 +31,30 @@ import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
+import { chownWorkspaceGitToSessionWorker, chownWorktreeToSessionWorker } from "../session-worker-uid.js";
+import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../../shared/shipit-config.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
+
+/**
+ * Hand the whole session workspace back to the worker uid after the root
+ * orchestrator's git ops (SHI-144): both `.git` (object-aware) AND the worktree
+ * (minus the declared dep dirs). A rebase rewrites BOTH as `root:root`, and
+ * because the rebase driver dispatches its turns with `postTurn: "none"` the
+ * normal post-turn handoff never runs — so without handing the *worktree* back
+ * too, the non-root agent can run git but still can't EDIT the conflicted files
+ * it must resolve (nor can a later turn edit any rebase-rewritten file). No-op
+ * when `SHIPIT_SESSION_WORKER_UID` is unset.
+ */
+function handWorkspaceBackToWorker(workspaceDir: string): void {
+  chownWorkspaceGitToSessionWorker(workspaceDir);
+  let depDirs: string[];
+  try {
+    depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
+  } catch {
+    depDirs = [...DEFAULT_DEP_DIRS];
+  }
+  chownWorktreeToSessionWorker(workspaceDir, depDirs);
+}
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit
@@ -118,75 +141,97 @@ export async function runRebaseFlow(
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
   }
 
-  // 1. Fetch latest from origin.
-  await git.fetch("origin");
+  try {
+    // 1. Fetch latest from origin.
+    await git.fetch("origin");
 
-  // 2. Resolve the base branch ref.
-  const baseRef = await git.resolveBaseBranchRef(baseBranch);
-  if (!baseRef) {
-    throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
-  }
+    // 2. Resolve the base branch ref.
+    const baseRef = await git.resolveBaseBranchRef(baseBranch);
+    if (!baseRef) {
+      throw new ServiceError(400, `Cannot resolve base branch: ${baseBranch}`);
+    }
 
-  // 3. Check ancestry — already up-to-date?
-  const isAncestor = await git.isAncestor(baseRef, "HEAD");
-  if (isAncestor) {
-    runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true });
-    return { status: "up_to_date" };
-  }
+    // 3. Check ancestry — already up-to-date?
+    const isAncestor = await git.isAncestor(baseRef, "HEAD");
+    if (isAncestor) {
+      runner.emitMessage({ type: "rebase_complete", forcePushed: false, upToDate: true });
+      return { status: "up_to_date" };
+    }
 
-  // 4. Begin rebase.
-  runner.emitMessage({ type: "rebase_started", baseBranch });
+    // 4. Begin rebase.
+    runner.emitMessage({ type: "rebase_started", baseBranch });
 
-  // Errors propagate to the route's `flowPromise.catch`, which emits a single
-  // `rebase_aborted` carrying the error message. Don't emit here too — before
-  // this dedupe the user got two aborts for one failure.
-  let result = await git.rebase(baseRef);
+    // Errors propagate to the route's `flowPromise.catch`, which emits a single
+    // `rebase_aborted` carrying the error message. Don't emit here too — before
+    // this dedupe the user got two aborts for one failure.
+    let result = await git.rebase(baseRef);
 
-  // 5. Clean rebase — go straight to force push.
-  if (result.status === "clean") {
+    // 5. Clean rebase — go straight to force push.
+    if (result.status === "clean") {
+      const forcePushed = await tryForcePush(git, githubAuthManager, runner);
+      runner.emitMessage({ type: "rebase_complete", forcePushed });
+      return { status: "rebased", forcePushed };
+    }
+
+    // 6. Conflict loop — delegate resolution to the agent.
+    let iter = 0;
+    while (result.status === "conflicts") {
+      iter++;
+      if (iter > MAX_REBASE_ITERATIONS) {
+        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+        throw new ServiceError(
+          500,
+          `Too many conflict iterations (>${MAX_REBASE_ITERATIONS}) — rebase aborted`,
+        );
+      }
+
+      runner.emitMessage({
+        type: "rebase_conflicts",
+        conflicts: result.conflicts.map((c) => ({ path: c.path })),
+      });
+
+      // SHI-144: `git.rebase` above ran as the root orchestrator and re-rooted
+      // BOTH `.git` AND the worktree — including the conflicted files this turn's
+      // agent must EDIT. Hand the whole workspace back to the worker uid BEFORE
+      // the resolution turn so the non-root agent can both run git and write the
+      // conflicted files (the root orchestrator can still operate the
+      // worker-owned tree via the `safe.directory=*` global config). No-op when
+      // the flag is unset.
+      handWorkspaceBackToWorker(runner.sessionDir);
+
+      const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
+      await runRebaseResolutionTurn(deps, prompt);
+
+      // The agent may have left files unmodified or staged. `add -A` covers both.
+      await git.stageAll();
+
+      try {
+        result = await git.rebaseContinue();
+      } catch (err) {
+        // Continue can fail if there is nothing staged (agent didn't actually
+        // resolve anything). Abort to leave the tree clean. The route's
+        // `flowPromise.catch` emits a single `rebase_aborted` with the reason.
+        try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+        throw err;
+      }
+    }
+
+    // 7. Force push after successful resolution.
     const forcePushed = await tryForcePush(git, githubAuthManager, runner);
     runner.emitMessage({ type: "rebase_complete", forcePushed });
-    return { status: "rebased", forcePushed };
+    return { status: "conflicts_resolved", iterations: iter, forcePushed };
+  } finally {
+    // SHI-144 / docs/150 §7: every orchestrator git op above (fetch, rebase,
+    // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
+    // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
+    // turn, the rebase driver dispatches its resolution turns with
+    // `postTurn: "none"`, which elides the post-turn handoff — so without this
+    // the non-root agent's next in-container `git` fails on a root-owned `.git`
+    // AND a later turn can't edit any rebase-rewritten file. Hand the whole
+    // workspace back on every exit path (clean, resolved, up-to-date, abort,
+    // throw). No-op when the flag is unset.
+    handWorkspaceBackToWorker(runner.sessionDir);
   }
-
-  // 6. Conflict loop — delegate resolution to the agent.
-  let iter = 0;
-  while (result.status === "conflicts") {
-    iter++;
-    if (iter > MAX_REBASE_ITERATIONS) {
-      try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      throw new ServiceError(
-        500,
-        `Too many conflict iterations (>${MAX_REBASE_ITERATIONS}) — rebase aborted`,
-      );
-    }
-
-    runner.emitMessage({
-      type: "rebase_conflicts",
-      conflicts: result.conflicts.map((c) => ({ path: c.path })),
-    });
-
-    const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
-    await runRebaseResolutionTurn(deps, prompt);
-
-    // The agent may have left files unmodified or staged. `add -A` covers both.
-    await git.stageAll();
-
-    try {
-      result = await git.rebaseContinue();
-    } catch (err) {
-      // Continue can fail if there is nothing staged (agent didn't actually
-      // resolve anything). Abort to leave the tree clean. The route's
-      // `flowPromise.catch` emits a single `rebase_aborted` with the reason.
-      try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      throw err;
-    }
-  }
-
-  // 7. Force push after successful resolution.
-  const forcePushed = await tryForcePush(git, githubAuthManager, runner);
-  runner.emitMessage({ type: "rebase_complete", forcePushed });
-  return { status: "conflicts_resolved", iterations: iter, forcePushed };
 }
 
 /**
@@ -367,6 +412,10 @@ export async function runAutoResolveAttempt(
   try {
     if (await git.isRebaseInProgress()) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
+      // SHI-144: the abort above ran as root and may have re-rooted `.git` +
+      // worktree; hand the whole workspace back so the next agent op isn't
+      // blocked on a root-owned tree.
+      handWorkspaceBackToWorker(runner.sessionDir);
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
   } catch (err) {
@@ -459,6 +508,12 @@ export async function runAutoResolveAttempt(
   const winner = await Promise.race([flowPromise, timeoutPromise]);
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
+  // SHI-144: on the timeout path the teardown's `git.rebaseAbort()` ran as root
+  // (and resolves the race only after it completes), so `.git` + worktree can be
+  // left root-owned without `runRebaseFlow`'s finally having the last write. Hand
+  // the whole workspace back here too — redundant but harmless on the normal
+  // path. No-op when the flag is unset.
+  handWorkspaceBackToWorker(runner.sessionDir);
   try {
     await deps.drainQueue?.();
   } catch (err) {

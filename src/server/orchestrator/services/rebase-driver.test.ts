@@ -8,7 +8,23 @@ import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { SessionRunner } from "../session-runner.js";
 import { runRebaseFlow, buildRebaseConflictPrompt, MAX_REBASE_ITERATIONS } from "./rebase-driver.js";
+import { chownWorkspaceGitToSessionWorker, chownWorktreeToSessionWorker } from "../session-worker-uid.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
+
+// SHI-144: the rebase driver must hand BOTH `.git` AND the worktree back to the
+// worker uid after its root-run git ops (the `postTurn: "none"` path elides the
+// usual post-turn handoff). The real helpers are no-ops unless
+// SHIPIT_SESSION_WORKER_UID is set AND the process can chown to that uid
+// (root-only), and a test can't drop to uid 1000 to reproduce the real EACCES —
+// so we spy on both to assert the driver WIRES each handoff. The end-to-end
+// "agent edits a root-owned conflicted file as 1000" proof is the manual dev
+// validation, noted in docs/150. importOriginal keeps the module's other exports
+// intact for transitive importers.
+vi.mock("../session-worker-uid.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
+  const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
+  return { ...actual, chownWorkspaceGitToSessionWorker: vi.fn(), chownWorktreeToSessionWorker: vi.fn() };
+});
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
@@ -226,6 +242,8 @@ describe("rebase-driver: runRebaseFlow", () => {
   let origGitEditor: string | undefined;
 
   beforeEach(() => {
+    vi.mocked(chownWorkspaceGitToSessionWorker).mockClear();
+    vi.mocked(chownWorktreeToSessionWorker).mockClear();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-driver-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
@@ -621,6 +639,114 @@ describe("rebase-driver: runRebaseFlow", () => {
       sseBroadcast: () => {},
       }, "nonexistent-branch-xyz"),
     ).rejects.toThrow(/Cannot resolve base branch/);
+  });
+
+  // SHI-144: every `runRebaseFlow` exit path must hand BOTH `.git` AND the
+  // worktree back to the worker uid, because the driver runs its git ops as the
+  // root orchestrator (which re-roots both) and dispatches resolution turns with
+  // `postTurn: "none"` (which elides the usual post-turn handoff). Handing only
+  // `.git` back restores git operability but leaves the conflicted files the
+  // agent must EDIT root-owned, so the resolution turn still fails EACCES.
+  it("SHI-144: hands .git AND worktree back to the worker uid on the up-to-date path", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(chownWorkspaceGitToSessionWorker).toHaveBeenCalledWith(workDir);
+    expect(chownWorktreeToSessionWorker).toHaveBeenCalledWith(workDir, expect.any(Array));
+  });
+
+  it("SHI-144: hands .git AND worktree back to the worker uid after a clean rebase", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(chownWorkspaceGitToSessionWorker).toHaveBeenCalledWith(workDir);
+    expect(chownWorktreeToSessionWorker).toHaveBeenCalledWith(workDir, expect.any(Array));
+  });
+
+  it("SHI-144: hands the worktree back BEFORE each resolution turn so the agent can edit conflicted files", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    // The worktree handoff MUST have fired by the time the agent runs (so the
+    // conflicted file is writable). Assert it from inside the resolution fn.
+    let worktreeHandedBackBeforeEdit = false;
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        worktreeHandedBackBeforeEdit = vi.mocked(chownWorktreeToSessionWorker).mock.calls.some(
+          ([dir]) => dir === workDir,
+        );
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+        return "Resolved.";
+      }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      authManager: makeStubAuthManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    expect(worktreeHandedBackBeforeEdit).toBe(true);
+    // Both handoffs fire at least twice: before the resolution turn + in the
+    // final finally.
+    expect(vi.mocked(chownWorkspaceGitToSessionWorker).mock.calls.length).toBeGreaterThanOrEqual(2);
+    expect(vi.mocked(chownWorktreeToSessionWorker).mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("SHI-144: hands .git AND worktree back even when the flow throws (unresolvable base)", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        authManager: makeStubAuthManager(),
+        sseBroadcast: () => {},
+      }, "nonexistent-branch-xyz"),
+    ).rejects.toThrow(/Cannot resolve base branch/);
+
+    // The finally must still run on the throw path — for both handoffs.
+    expect(chownWorkspaceGitToSessionWorker).toHaveBeenCalledWith(workDir);
+    expect(chownWorktreeToSessionWorker).toHaveBeenCalledWith(workDir, expect.any(Array));
   });
 });
 
