@@ -411,3 +411,16 @@ _None — see "Re-armed card presentation"._
 - **Not a chat-history card**: the breadcrumb lives on the *session* row (like
   `pr_status`), not the `messages` table, so the `CARD_MESSAGE_FIELDS` /
   chat-history round-trip machinery does not apply.
+- **`gh pr create` shares the detection (nicolasalt/shipit#1357).** The shim path
+  (`services/github.ts#agentCreatePr`) used to short-circuit on a branch PR in
+  ANY state, so a merged PR blocked a new one even after a rebase + new work —
+  the agent got the dead merged URL and could not surface follow-up work. Fixed
+  to gate the closed/merged short-circuit on the SAME `advancedBeyondMergedBase`
+  check: an **open** PR still wins (push + return), a **closed/merged** PR blocks
+  only when the branch hasn't progressed; when it HAS progressed, `agentCreatePr`
+  force-pushes (`--force-with-lease`, the old remote branch may survive diverged)
+  and opens a NEW PR targeting the prior PR's base. Because the same condition
+  gates both, opening the new PR and the post-turn `detectAndReArmMergedSession`
+  fire together: the new open PR is then picked up by the resumed poller and
+  overwrites the merged card. Coverage in `agent-driven-pr.test.ts`
+  ("creates a NEW PR when the prior PR merged but the branch progressed").

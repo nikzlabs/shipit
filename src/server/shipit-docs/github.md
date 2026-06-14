@@ -91,8 +91,12 @@ rationale. Maintain a stable rationale section instead of appending raw logs.
 The shim:
 
 - Pushes the branch first (you don't need a separate `git push`).
-- Skips creation if a PR is already open for the branch — it just prints the
+- Skips creation if a PR is already **open** for the branch — it just prints the
   existing PR's URL and exits 0.
+- A **merged/closed** PR only blocks creation while the branch hasn't moved past
+  it. If you rebase the branch onto the current base and add new commits, `gh pr
+  create` opens a **new** PR for that work (a merged PR can't be reopened). If the
+  branch has no new work beyond what merged, it still prints the old PR's URL.
 - Always operates on the current session's repo. The `--repo` flag is rejected.
 - Never sees the GitHub token; the orchestrator authenticates the request.
 

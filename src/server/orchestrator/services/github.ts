@@ -621,15 +621,42 @@ export async function agentCreatePr(
 
   const head = await git.getCurrentBranch();
 
-  // Short-circuit if a PR already exists for this branch — in ANY state. A
-  // merged/closed PR must NOT spawn a fresh duplicate (the #1302 → #1312 → …
-  // bug): we return the existing PR's metadata instead of creating a new one.
+  // A PR already on this branch short-circuits creation — but only when it can't
+  // legitimately host the new work. The rule (matches /shipit-docs/github.md and
+  // the re-arm flow, docs/202):
+  //   - An OPEN PR always wins: push the freshly-flushed commits to it and return
+  //     its metadata. This is the documented "skip creation if a PR is open".
+  //   - A CLOSED/MERGED PR blocks a duplicate ONLY when the branch hasn't moved
+  //     past what was merged. A merged PR can't be reopened, so if the branch was
+  //     rebased onto the current base and carries genuinely new work
+  //     (squash-safe `advancedBeyondMergedBase`, docs/202), we fall through and
+  //     open a NEW PR rather than pointing the agent back at a dead PR (#1357).
   const existingPr = await findBranchPr(githubAuthManager, resolved.owner, resolved.repo, head);
+  let reArmBase: string | undefined;
   if (existingPr) {
-    // Only push to a still-OPEN PR so it picks up the commits we just flushed.
-    // A merged/closed PR's branch may be deleted on the remote, and pushing
-    // would either fail or needlessly resurrect it — just return its metadata.
+    // Build the "return the existing PR" response (used for both the open and
+    // the not-progressed-merged short-circuits).
+    const returnExistingPr = async () => {
+      const stats = await git.diffStatVsBranch(existingPr.base);
+      // Apply any requested labels additively to the existing PR — best-effort.
+      const labelWarning = await applyPrLabels(
+        githubAuthManager, resolved.owner, resolved.repo, existingPr.number, options.labels,
+      );
+      return {
+        number: existingPr.number,
+        url: existingPr.url,
+        title: existingPr.title,
+        baseBranch: existingPr.base,
+        headBranch: head,
+        insertions: stats.insertions,
+        deletions: stats.deletions,
+        alreadyExisted: true as const,
+        labelWarning,
+      };
+    };
+
     if (existingPr.state === "open") {
+      // Push so the open PR picks up the commits we just flushed.
       try {
         await git.push("origin", head);
       } catch (err) {
@@ -641,28 +668,30 @@ export async function agentCreatePr(
         }
         throw new ServiceError(500, `Push failed: ${msg}`);
       }
+      return await returnExistingPr();
     }
-    const stats = await git.diffStatVsBranch(existingPr.base);
-    // Apply any requested labels additively to the existing PR — best-effort.
-    const labelWarning = await applyPrLabels(
-      githubAuthManager, resolved.owner, resolved.repo, existingPr.number, options.labels,
-    );
-    return {
-      number: existingPr.number,
-      url: existingPr.url,
-      title: existingPr.title,
-      baseBranch: existingPr.base,
-      headBranch: head,
-      insertions: stats.insertions,
-      deletions: stats.deletions,
-      alreadyExisted: true,
-      labelWarning,
-    };
+
+    // Closed/merged PR. Only re-arm for a NEW PR when the branch has genuinely
+    // progressed beyond the merged base (rebased onto the current base + new
+    // work). Otherwise keep blocking the duplicate and return its metadata.
+    const progressed = await git.advancedBeyondMergedBase(existingPr.base);
+    if (!progressed) {
+      return await returnExistingPr();
+    }
+    // Progressed: open a NEW PR targeting the prior PR's base. The old remote
+    // branch often survives the merge (repos with auto-delete off) pointing at
+    // the pre-rebase commits, so the create-path push below must force-with-lease.
+    reArmBase = existingPr.base;
   }
 
-  // Push the branch (same flow as quickCreatePr).
+  // Push the branch (same flow as quickCreatePr). When re-arming past a merged
+  // PR the surviving remote branch has diverged, so force-with-lease instead.
   try {
-    await git.push("origin", head);
+    if (reArmBase !== undefined) {
+      await git.forcePush("origin", head);
+    } else {
+      await git.push("origin", head);
+    }
   } catch (err) {
     const msg = getErrorMessage(err);
     if (msg.includes("workflow")) {
@@ -673,8 +702,9 @@ export async function agentCreatePr(
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
 
-  // Resolve base branch
-  let baseBranch = options.base?.trim();
+  // Resolve base branch. A re-armed branch keeps the prior PR's base unless the
+  // caller passed an explicit one.
+  let baseBranch = options.base?.trim() || reArmBase;
   if (!baseBranch) {
     const remoteBranches = await git.listRemoteBranches();
     baseBranch = remoteBranches.includes("main") ? "main" :
