@@ -671,6 +671,16 @@ export async function createContainer(
         // agent's DNS (dst 127.0.0.11:53) into the in-netns resolver at the
         // iptables layer (see docker/egress-sidecar/init-firewall.sh). So we leave
         // Dns at Docker's default — the Tier A / off paths are unchanged.
+        //
+        // docs/172 Tier C — enable route_localnet IN THE AGENT'S OWN NETNS so the
+        // installer's nat/OUTPUT REDIRECT of :443 to the loopback SNI proxy isn't
+        // dropped as a martian (non-loopback src → 127/8). It's set HERE, at agent
+        // creation, rather than in the NET_ADMIN-only installer sidecar: Docker keeps
+        // that sidecar's /proc/sys read-only, so `echo 1 >`/`sysctl -w` fail EROFS
+        // there. The agent owns its netns, so this namespaced sysctl is permitted and
+        // affects only this session — least privilege (no Privileged installer).
+        // Gated on Tier C (egressProxy); unset otherwise so Tier A/B are unchanged.
+        Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
         SecurityOpt: ["no-new-privileges"],
         ReadonlyRootfs: false,
         CapDrop: ["ALL"],

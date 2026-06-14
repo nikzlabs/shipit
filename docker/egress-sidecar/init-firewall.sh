@@ -103,6 +103,14 @@ install_v4() {
   fi
   iptables -A OUTPUT -o lo -j ACCEPT
   iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+  # Tier C: the nat/OUTPUT REDIRECT rewrites the agent's :443 dst to
+  # 127.0.0.1:$PROXY_PORT, but the packet's oif is NOT `lo` at filter/OUTPUT time,
+  # so the `-o lo` ACCEPT above misses it and it would hit the DROP policy. Accept
+  # the redirected-to-proxy destination explicitly (host-verified: without this the
+  # redirected :443 times out under `-P OUTPUT DROP`).
+  if [[ -n "$PROXY_UID" ]]; then
+    iptables -A OUTPUT -p tcp -d 127.0.0.1 --dport "$PROXY_PORT" -j ACCEPT
+  fi
   [[ -n "$local_subnet" ]] && iptables -A OUTPUT -d "$local_subnet" -j ACCEPT
   if [[ -n "$DNS_UID" ]]; then
     iptables -A OUTPUT -p udp --dport 53 -m owner --uid-owner "$DNS_UID" -j ACCEPT
@@ -163,11 +171,14 @@ fi
 # EXTERNAL, so redirecting it to a loopback listener requires route_localnet —
 # otherwise the kernel drops the rewritten packet (non-loopback source → 127/8) as
 # a martian. route_localnet is network-namespaced, so this only affects the agent.
+# route_localnet is enabled on the AGENT CONTAINER at creation (HostConfig.Sysctls,
+# gated on Tier C) — this NET_ADMIN-only installer can't write the read-only
+# /proc/sys here (EROFS). We only verify it's on and warn (non-fatal) if not, so a
+# misconfig is visible in the installer logs rather than silently mis-routing.
 install_sni_redirect() {
-  if ! echo 1 > /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null; then
-    sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 \
-      || log "WARN: could not enable route_localnet — SNI redirect may not route to the proxy"
-  fi
+  local rl
+  rl="$(cat /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || echo '?')"
+  [[ "$rl" == "1" ]] || log "WARN: route_localnet=$rl (expected 1) — SNI redirect may not route to the proxy; ensure the agent container sets net.ipv4.conf.all.route_localnet=1"
   iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT"
 }
 if [[ -n "$PROXY_UID" ]]; then

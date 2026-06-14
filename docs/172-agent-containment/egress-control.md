@@ -164,7 +164,13 @@ Key properties:
   > uid (912) so its upstream dials aren't re-redirected; the proxy carries **no
   > `NET_ADMIN`** (only the installer does). Redirecting OUTPUT-chain traffic with an
   > *external* destination to a loopback listener needs `route_localnet` (namespaced), unlike
-  > the Tier B DNS redirect whose target (`127.0.0.11`) was already loopback.
+  > the Tier B DNS redirect whose target (`127.0.0.11`) was already loopback. `route_localnet`
+  > is set as a namespaced `HostConfig.Sysctls` on the **agent container at creation** (it owns
+  > its netns), NOT by the installer sidecar — that sidecar carries only `NET_ADMIN`, so Docker
+  > keeps its `/proc/sys` read-only and an in-script `echo`/`sysctl -w` fails EROFS (a live-host
+  > defect). The redirected packet's filter/OUTPUT oif isn't `lo`, so the firewall also adds an
+  > explicit `-d 127.0.0.1 --dport $PROXY_PORT ACCEPT` before `-P OUTPUT DROP`, else the
+  > REDIRECT'd :443 is dropped.
   >
   > **DNS-layer-first caveat (shapes the allow-once card).** Under Tier B a genuinely-new
   > host can't even be *resolved* (dnsmasq refuses), so the agent never gets an IP and the
