@@ -16,27 +16,11 @@ import { ServiceError } from "./types.js";
 import { saveUploadedFile, MAX_UPLOAD_FILES_PER_REQUEST } from "./files.js";
 import type { ClaimSessionService } from "./claim-session.js";
 
-const quickSessionIds = new Set<string>();
-
 function assertValidBranchName(name: string): void {
   if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
     throw new ServiceError(400, "Invalid branch name");
   }
 }
-
-function readPositiveIntEnv(name: string): number | undefined {
-  const raw = process.env[name];
-  if (!raw) return undefined;
-  const parsed = Number(raw);
-  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
-    console.warn(`[headless-sessions] ignoring ${name}=${raw} (must be a positive integer)`);
-    return undefined;
-  }
-  return parsed;
-}
-
-export const DEFAULT_MAX_ACTIVE_HEADLESS_SESSIONS =
-  readPositiveIntEnv("MAX_ACTIVE_HEADLESS_SESSIONS") ?? 8;
 
 export interface HeadlessUploadInput {
   filename: string;
@@ -95,7 +79,6 @@ export interface CreateHeadlessSessionOptions {
   branch?: string;
   agent?: AgentId;
   model?: string;
-  maxActiveHeadlessSessions?: number;
   /**
    * Raw files uploaded alongside the prompt (multipart). Saved into the new
    * session's uploads dir before the agent turn is dispatched, so the
@@ -147,23 +130,6 @@ export async function createHeadlessSession(
   if (!trimmedPrompt) throw new ServiceError(400, "prompt is required");
   if (trimmedPrompt.length > 50_000) {
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
-  }
-
-  const maxActive = opts.maxActiveHeadlessSessions ?? DEFAULT_MAX_ACTIVE_HEADLESS_SESSIONS;
-  const activeQuick = [...quickSessionIds].filter((id) => {
-    const session = sessionManager.get(id);
-    const runner = runnerRegistry.get(id);
-    if (!session || session.archived || !runner?.running) {
-      quickSessionIds.delete(id);
-      return false;
-    }
-    return true;
-  });
-  if (activeQuick.length >= maxActive) {
-    throw new ServiceError(
-      429,
-      `You already have ${maxActive} quick sessions running. Open one from the sidebar before starting another.`,
-    );
   }
 
   const explicitBranch = opts.branch?.trim() || seed?.branch;
@@ -238,7 +204,6 @@ export async function createHeadlessSession(
     }
   }
 
-  quickSessionIds.add(newSessionId);
   runner.dispatch({
     text: trimmedPrompt,
     ...(uploadRefs.length > 0 ? { uploads: uploadRefs } : {}),

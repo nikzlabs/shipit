@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: setTimeout auto-dismiss with cleanup (timer-based side effect)
 import { useEffect, useState } from "react";
-import { CheckCircleIcon } from "@phosphor-icons/react";
+import { CheckCircleIcon, WarningCircleIcon } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { useUiStore } from "../stores/ui-store.js";
 
@@ -8,6 +8,8 @@ export interface ToastData {
   message: string;
   action?: { label: string; onClick: () => void };
   duration?: number;
+  /** Visual treatment. Defaults to "success" so existing call sites are unchanged. */
+  variant?: "success" | "error";
 }
 
 interface ToastProps {
@@ -41,6 +43,10 @@ export function Toast({ toast }: ToastProps) {
     setTimeout(clearToast, 200);
   };
 
+  const isError = toast.variant === "error";
+  const Icon = isError ? WarningCircleIcon : CheckCircleIcon;
+  const iconColor = isError ? "text-(--color-error)" : "text-(--color-success)";
+
   return (
     <div
       data-testid="toast"
@@ -48,7 +54,7 @@ export function Toast({ toast }: ToastProps) {
         visible ? "opacity-100 translate-y-0" : "opacity-0 translate-y-2"
       }`}
     >
-      <CheckCircleIcon size={16} className="text-(--color-success) shrink-0" />
+      <Icon size={16} className={`${iconColor} shrink-0`} />
       <span>{toast.message}</span>
       {toast.action && (
         <Button
