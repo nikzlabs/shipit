@@ -1316,6 +1316,9 @@ export default function App() {
             onResolvePermission={(requestId, behavior, remember) =>
               send({ type: "resolve_permission", requestId, behavior, ...(remember ? { remember: true } : {}) })
             }
+            onEgressDecision={(cardId, host, action) =>
+              send({ type: "egress_decision", cardId, host, action })
+            }
             onUndoIssueWrite={(cardId) => send({ type: "undo_issue_write", cardId })}
             onOpenIssue={handleOpenIssue}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}

@@ -236,6 +236,10 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
   "POST /api/sessions/:sessionId/review-submit",
+  // docs/172 Tier C (SHI-90) — the SNI proxy queries this for an unknown host.
+  // Query-only: it returns allow/deny and may surface an allow-once card, but
+  // cannot GRANT (granting is the browser-only `egress_decision` WS path).
+  "GET /api/egress/decision",
 ].sort();
 
 describe("GOLDEN container-reachable route table", () => {

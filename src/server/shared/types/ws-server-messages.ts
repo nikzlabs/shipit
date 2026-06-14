@@ -1172,6 +1172,30 @@ export interface WsBugReportFailed {
 }
 
 /**
+ * docs/172 / SHI-90 — the inline egress allow-once card. Emitted when the Tier C
+ * SNI proxy denies a non-allowlisted host and the orchestrator's decision
+ * endpoint surfaces it for the user. The user's choice comes back as
+ * `egress_decision`; the resolution echoes via `WsEgressPromptResolved`.
+ */
+export interface WsEgressPromptCard {
+  type: "egress_prompt_card";
+  sessionId: string;
+  /** Stable id (per session+host) — used to update the card in place. */
+  cardId: string;
+  /** The blocked hostname (the SNI the agent tried to reach). */
+  host: string;
+  createdAt: string;
+}
+
+/** docs/172 / SHI-90 — terminal state for an egress allow-once card. */
+export interface WsEgressPromptResolved {
+  type: "egress_prompt_resolved";
+  sessionId: string;
+  cardId: string;
+  phase: "allowed-once" | "added" | "denied";
+}
+
+/**
  * docs/193 / SHI-112 — the inline permission-request card (agent-agnostic).
  * Emitted when an agent backend raises a gated action the user must approve (a
  * sensitive-file edit, an escalated command). Carries everything the card
@@ -1292,6 +1316,8 @@ export type WsServerMessage =
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsEgressPromptCard
+  | WsEgressPromptResolved
   | WsPermissionRequestCard
   | WsPermissionResolved
   | WsIssueWriteCard

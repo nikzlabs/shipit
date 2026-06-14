@@ -153,6 +153,26 @@ Key properties:
   (`egress-allowlist.ts`) is reused verbatim; what changes is that traffic reaches it via
   the gateway route rather than an env var.
 
+  > **Tier C implementation notes (C1 enforcement shipped).** The proxy is a tiny,
+  > dependency-free **Go** binary (`docker/egress-sidecar/sni-proxy`) baked into the sidecar
+  > image via a multi-stage build. It does **not** terminate or decrypt TLS — it peeks the
+  > **cleartext SNI** in the ClientHello (reusing crypto/tls's own parser via a
+  > `GetConfigForClient` callback that captures `ServerName` and aborts, then replays the
+  > recorded bytes to the upstream so the spliced stream is byte-for-byte intact), checks
+  > the allowlist, and splices to the original destination (recovered via `SO_ORIGINAL_DST`)
+  > or rejects. The installer REDIRECTs the agent's :443 to it, excluding the proxy's own
+  > uid (912) so its upstream dials aren't re-redirected; the proxy carries **no
+  > `NET_ADMIN`** (only the installer does). Redirecting OUTPUT-chain traffic with an
+  > *external* destination to a loopback listener needs `route_localnet` (namespaced), unlike
+  > the Tier B DNS redirect whose target (`127.0.0.11`) was already loopback.
+  >
+  > **DNS-layer-first caveat (shapes the allow-once card).** Under Tier B a genuinely-new
+  > host can't even be *resolved* (dnsmasq refuses), so the agent never gets an IP and the
+  > SNI proxy never sees it. The proxy's unique value — and where the allow-once card fires —
+  > is therefore the **CDN co-tenancy / IP-reuse** case (allowlisted IP, non-allowlisted
+  > SNI). "Add to allowlist" for a brand-new host must reload the resolver (DNS) and ipset
+  > (IP) too; a proactive DNS-layer trigger for brand-new hosts is a C2 follow-up.
+
 ### Why one PR, sequentially (and how it stays reviewable)
 
 Tiers A→B→C are not independently *useful* as shipped increments — Tier A alone still

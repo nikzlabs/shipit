@@ -607,6 +607,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN ai_review TEXT");
   },
+  // docs/172 / SHI-90 — persist Tier C egress allow-once cards (and their
+  // allowed-once / added / denied terminal state) so they survive a session
+  // switch / full reload. The card arrives off the agent-event stream (the SNI
+  // proxy's deny → orchestrator decision endpoint) and is recorded in-band via
+  // emitChatCard; without this column it renders live but vanishes on the next
+  // loadSessionHistory, which rebuilds the transcript from the DB.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN egress_prompt TEXT");
+  },
 ];
 
 export class DatabaseManager {

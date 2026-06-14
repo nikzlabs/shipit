@@ -49,6 +49,7 @@ import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
+import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
@@ -1361,22 +1362,25 @@ export class ServiceManager extends EventEmitter {
     );
     let ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
     if (ids.length === 0) return;
-    // The Tier B egress resolver (docs/172, SHI-90) shares the agent's netns and
-    // is a LONG-LIVED sidecar, not a stale compose container — it carries
-    // shipit-parent-session only so destroy-time cleanup reaps it. Exclude it from
-    // this pre-start sweep, or we'd SIGKILL it ~1s after the agent launches and
-    // leave the session with no resolver. Docker `--filter` has no label negation,
-    // so subtract a second (AND-filtered) query of the resolver-labeled ids.
-    const resolverStdout = await this.composeQuery(
-      [
-        "ps", "-aq",
-        "--filter", `label=shipit-parent-session=${this.sessionId}`,
-        "--filter", `label=${EGRESS_RESOLVER_LABEL}=${this.sessionId}`,
-      ],
-      this.workspaceDir,
-    );
-    const resolverIds = new Set(resolverStdout.split("\n").map(s => s.trim()).filter(Boolean));
-    ids = ids.filter(id => !resolverIds.has(id));
+    // The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) share the agent's
+    // netns and are LONG-LIVED sidecars, not stale compose containers — they carry
+    // shipit-parent-session only so destroy-time cleanup reaps them. Exclude them
+    // from this pre-start sweep, or we'd SIGKILL them ~1s after the agent launches
+    // and leave the session with no resolver / no HTTPS. Docker `--filter` has no
+    // label negation, so subtract a query per keep-label and union the results.
+    const keep = new Set<string>();
+    for (const label of [EGRESS_RESOLVER_LABEL, EGRESS_PROXY_LABEL]) {
+      const out = await this.composeQuery(
+        [
+          "ps", "-aq",
+          "--filter", `label=shipit-parent-session=${this.sessionId}`,
+          "--filter", `label=${label}=${this.sessionId}`,
+        ],
+        this.workspaceDir,
+      );
+      for (const id of out.split("\n").map(s => s.trim()).filter(Boolean)) keep.add(id);
+    }
+    ids = ids.filter(id => !keep.has(id));
     if (ids.length === 0) return;
     console.log(`[compose:${this.sessionId}] Removing ${ids.length} stale container(s)`);
     await this.composeQuery(["rm", "-f", ...ids], this.workspaceDir);

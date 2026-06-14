@@ -35,6 +35,22 @@ export interface PersistedBugReport {
 }
 
 /**
+ * docs/172 / SHI-90 — the persisted state of an inline egress allow-once card.
+ * The Tier C SNI proxy denies a non-allowlisted host and the orchestrator's
+ * decision endpoint emits this card off the agent-event stream, so it's recorded
+ * in-band with the active turn and persisted here; the allow-once / add /
+ * denied transition patches the record in place via `updateEgressPromptCard` so
+ * a resolved card stays resolved on reload. Keyed by `cardId` (stable per
+ * session+host, so a re-denied host doesn't double-card).
+ */
+export interface PersistedEgressPrompt {
+  cardId: string;
+  host: string;
+  phase: "pending" | "allowed-once" | "added" | "denied";
+  createdAt: string;
+}
+
+/**
  * docs/193 / SHI-112 — the persisted state of an inline permission-request card
  * (agent-agnostic: Claude's sensitive-file gate, Codex's escalation approval).
  * Recorded in-band with the turn that raised it (off the agent-event stream via
@@ -158,6 +174,15 @@ export interface PersistedMessage {
    * `updatePermissionCard` so a resolved card stays resolved on reload.
    */
   permissionPrompt?: PersistedPermissionRequest;
+  /**
+   * docs/172 / SHI-90 — when set, this message renders an inline
+   * `EgressPromptCard` (allow once / add to allowlist / deny). The Tier C SNI
+   * proxy denies a non-allowlisted host and the orchestrator decision endpoint
+   * emits it off the agent-event stream, so it's recorded in-band with the turn
+   * via `emitChatCard` and persisted here; the resolution patches this record in
+   * place via `updateEgressPromptCard` so it stays resolved on reload.
+   */
+  egressPrompt?: PersistedEgressPrompt;
   /**
    * docs/177 — when set, this message renders an inline issue-write provenance
    * card ("agent commented on …", "set SHI-28 → In Review") with an Undo
@@ -303,6 +328,7 @@ interface MessageRow {
   voice_note: string | null;
   bug_report: string | null;
   permission_prompt: string | null;
+  egress_prompt: string | null;
   issue_write: string | null;
   issue_ref: string | null;
   compaction: string | null;
@@ -330,8 +356,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, issue_write, issue_ref, compaction, sub_agent_consult, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -340,7 +366,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, child_merged=@child_merged,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, child_merged=@child_merged,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
@@ -401,6 +427,7 @@ export class ChatHistoryManager {
       voice_note: msg.voiceNote ? JSON.stringify(msg.voiceNote) : null,
       bug_report: msg.bugReport ? JSON.stringify(msg.bugReport) : null,
       permission_prompt: msg.permissionPrompt ? JSON.stringify(msg.permissionPrompt) : null,
+      egress_prompt: msg.egressPrompt ? JSON.stringify(msg.egressPrompt) : null,
       issue_write: msg.issueWrite ? JSON.stringify(msg.issueWrite) : null,
       issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
@@ -441,6 +468,7 @@ export class ChatHistoryManager {
     if (row.voice_note) msg.voiceNote = JSON.parse(row.voice_note) as PersistedMessage["voiceNote"];
     if (row.bug_report) msg.bugReport = JSON.parse(row.bug_report) as PersistedBugReport;
     if (row.permission_prompt) msg.permissionPrompt = JSON.parse(row.permission_prompt) as PersistedPermissionRequest;
+    if (row.egress_prompt) msg.egressPrompt = JSON.parse(row.egress_prompt) as PersistedEgressPrompt;
     if (row.issue_write) msg.issueWrite = JSON.parse(row.issue_write) as IssueWriteCard;
     if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
@@ -542,6 +570,33 @@ export class ChatHistoryManager {
         const merged: PersistedBugReport = { ...card, ...patch };
         const msg = this.fromRow(row);
         msg.bugReport = merged;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return true;
+      }
+      return false;
+    })();
+  }
+
+  /**
+   * docs/172 / SHI-90 — patch a persisted egress allow-once card's phase in
+   * place, keyed by `cardId`. Used by the `egress_decision` WS handler so an
+   * allow-once / add / denied resolution survives a reload. Same in-place-update
+   * rationale as `updateBugReportCard`. Returns true if a matching card was found.
+   */
+  updateEgressPromptCard(
+    sessionId: string,
+    cardId: string,
+    patch: Partial<PersistedEgressPrompt>,
+  ): boolean {
+    return this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.egress_prompt) continue;
+        const card = JSON.parse(row.egress_prompt) as PersistedEgressPrompt;
+        if (card.cardId !== cardId) continue;
+        const merged: PersistedEgressPrompt = { ...card, ...patch };
+        const msg = this.fromRow(row);
+        msg.egressPrompt = merged;
         this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
         return true;
       }
