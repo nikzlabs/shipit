@@ -223,6 +223,32 @@ describe("buildAgentSystemInstructions", () => {
     expect(claudeOut).toContain("two fan-out primitives");
   });
 
+  it("both variants document `shipit agent run` as the cross-agent consultation primitive", () => {
+    // docs/144 — a Claude-pinned session asked to "consult Codex" must reach
+    // for the brokered shim, not the raw CLI. Both backends document the path.
+    for (const agentId of ["claude", "codex"] as const) {
+      const out = buildAgentSystemInstructions({ agentId });
+      // The brokered one-shot, stdin-only (never inline -p).
+      expect(out).toContain("shipit agent run --agent");
+      expect(out).toContain("--prompt-file -");
+      // It is gated behind the Multi-agent sessions setting.
+      expect(out).toContain("Multi-agent sessions");
+      // The incident's root cause: the raw CLI is unauthenticated in-container.
+      expect(out).toContain("401 Unauthorized");
+      expect(out).toContain("credential isolation");
+      // Pointer to the full surface.
+      expect(out).toContain("docs/144-cross-agent-review/");
+    }
+  });
+
+  it("targets the OTHER backend in each variant's `shipit agent run` example", () => {
+    // From Claude you consult Codex; from Codex you consult Claude.
+    const claudeOut = buildAgentSystemInstructions({ agentId: "claude" });
+    expect(claudeOut).toContain("shipit agent run --agent codex");
+    const codexOut = buildAgentSystemInstructions({ agentId: "codex" });
+    expect(codexOut).toContain("shipit agent run --agent claude");
+  });
+
   it("renders the unconditional sections alongside the per-agent Parallel sessions section", () => {
     const out = buildAgentSystemInstructions({ agentId: "claude" });
     expect(out).toContain("## Browser access");

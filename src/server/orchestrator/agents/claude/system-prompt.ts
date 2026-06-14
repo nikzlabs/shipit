@@ -6,7 +6,14 @@
  * (and any future backend without an in-process subagent primitive) gets the
  * shorter section in `../codex/system-prompt.ts`.
  *
- * See docs/117-agent-spawned-sessions/plan.md and docs/155 hair 9.
+ * Both variants also document the cross-agent consultation primitive
+ * `shipit agent run --agent <other> --prompt-file -` (docs/144) and warn that
+ * the raw `codex`/`claude` CLI is NOT authenticated inside the container
+ * (per-agent credential isolation), so cross-agent second opinions must go
+ * through the brokered shim, never the bare CLI.
+ *
+ * See docs/117-agent-spawned-sessions/plan.md, docs/144-cross-agent-review/,
+ * and docs/155 hair 9.
  */
 
 export const CLAUDE_PARALLEL_SESSIONS_SECTION = `
@@ -19,7 +26,19 @@ You have two fan-out primitives. They are NOT interchangeable:
 - Use the **\`Task\` tool** for in-turn fan-out: parallel research, parallel codegen on different files, anything where you will synthesize the results in your current reply. \`Task\` subagents run in this container, against this workspace, and disappear when your turn ends.
 - Use **\`shipit session create --prompt-file -\`** (the prompt is read from stdin or a file, never an inline \`-p\` — pass it with a single-quoted heredoc like \`gh pr create --body-file -\`) ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Spawned sessions persist in the user's sidebar across turns — they are not for short-lived fan-out.
 
-So when the user asks for something to be done "with a different agent," "by another agent," "have a separate agent review/check this," and similar — that is a \`Task\` subagent (in-turn fan-out), NOT a new session, unless they explicitly asked for a separate session/branch/workspace.
+So when the user asks for something to be done "with a different agent," "by another agent," "have a separate agent review/check this," and similar — that is a \`Task\` subagent (in-turn fan-out) running THIS SAME agent (Claude), NOT a new session, unless they explicitly asked for a separate session/branch/workspace. The exception is when they name a *different backend* (e.g. Codex) — see \`shipit agent run\` below.
+
+### Consulting a DIFFERENT agent backend (e.g. Codex) — \`shipit agent run\`
+
+The two primitives above both run **this same agent** (Claude). When the user wants a *different model/backend* in the loop — "consult Codex," "ask the other agent," "get a second opinion from a different model," "have Codex audit this" — neither fits. Use the brokered one-shot:
+
+- **\`shipit agent run --agent codex --prompt-file -\`** spawns ANOTHER registered agent (here, Codex), blocks until it returns, and prints its final text on stdout for you to read and synthesize **in this turn**. It is a one-shot consultation / second opinion / bounded delegation — it does NOT create a sidebar session or its own PR, and its work commits under your session. Pass the prompt via stdin/heredoc (\`--prompt-file -\`, never an inline \`-p\`) and put ALL the context the other agent needs INTO that prompt — the task, the relevant \`git diff\`, file references — because it does not share your conversation. Requires the "Multi-agent sessions" setting.
+- **Do NOT invoke the raw \`codex\` (or \`claude\`) CLI directly to consult another agent.** Per-agent credential isolation mounts only the pinned agent's credentials in this container, so the bare \`codex\` CLI fails with 401 Unauthorized. The brokered \`shipit agent run\` — which supplies the other agent's credentials server-side — is the ONLY working path. See /shipit-docs/agent.md and docs/144-cross-agent-review/ for the full surface.
+
+So the three-way split:
+- \`Task\` — in-turn fan-out using the SAME agent (Claude). Parallel research/codegen you synthesize now.
+- \`shipit agent run\` — one-shot call to a DIFFERENT agent backend (Codex), result synthesized in THIS turn. No sidebar session, no separate PR.
+- \`shipit session create\` — a persistent, separately-reviewable sibling session / branch / PR.
 
 ### How to delegate to a \`Task\` subagent — pass pointers, never paste
 
