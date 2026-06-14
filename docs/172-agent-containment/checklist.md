@@ -148,7 +148,7 @@ tracker as separate issues. None implemented yet.
           flags on): an allowlisted SNI splices through; a non-allowlisted SNI to an
           allowlisted IP is rejected (CDN co-tenancy); legit npm/git/anthropic unaffected;
           the proxy survives the compose stale-sweep.
-          - First live-host round found **three defects, now fixed** (re-verify pending):
+          - First live-host round found **three defects, now fixed and merged (#1358)** (live re-verify still pending):
             1. **route_localnet never set** — the NET_ADMIN-only installer's `/proc/sys`
                is read-only (EROFS), so `echo 1 >`/`sysctl -w` failed silently and the
                REDIRECT couldn't route to loopback. Fixed least-privilege: set
