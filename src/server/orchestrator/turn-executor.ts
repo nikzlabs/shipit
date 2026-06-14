@@ -510,6 +510,27 @@ export async function executeAgentTurn(
       input.onInterruptedTurn?.();
     }
 
+    // Process exited without ever producing a turn result (the dispatched
+    // "first turn never ran" bug, docs/163). Hand off to the dispatch
+    // retry/surface hook BEFORE the normal teardown — for BOTH streaming and
+    // non-streaming dispatched turns. A child/quick session now runs its first
+    // turn as a streaming process (so a follow-up `shipit session message` can
+    // steer it, docs/163), and a streaming process can still exit with no
+    // result (crash / hook-abort); without firing the hook here the streaming
+    // branch below would silently report a *completed* turn, re-masking the bug
+    // docs/163 fixed. If the hook claims the turn (retry dispatched or error
+    // surfaced) we stop here; the new turn / error path owns drain + commit +
+    // finished. WS leaves `onNoResultExit` unset and is unaffected.
+    if (
+      input.onNoResultExit &&
+      !receivedResult &&
+      !sawAuthRequired &&
+      !(runner?.wasInterrupted ?? false)
+    ) {
+      const handled = await input.onNoResultExit(code);
+      if (handled) return;
+    }
+
     if (useStreaming) {
       // Streaming post-turn (commit/PR) ran on agent_result when the turn ended
       // cleanly; done is normally process-exit cleanup only. BUT a streaming
@@ -526,22 +547,6 @@ export async function executeAgentTurn(
       emitFinishedIfIdle();
       finishTurn();
       return;
-    }
-
-    // Process exited without ever producing a turn result (the dispatched
-    // "first turn never ran" bug). Hand off to the dispatch retry/surface hook
-    // BEFORE the normal teardown — otherwise we'd report a completed turn for a
-    // turn that did nothing. If the hook claims the turn (retry dispatched or
-    // error surfaced) we stop here; the new turn / error path owns drain +
-    // commit + finished. WS leaves `onNoResultExit` unset and is unaffected.
-    if (
-      input.onNoResultExit &&
-      !receivedResult &&
-      !sawAuthRequired &&
-      !(runner?.wasInterrupted ?? false)
-    ) {
-      const handled = await input.onNoResultExit(code);
-      if (handled) return;
     }
 
     // Non-streaming: drain first (clears queued visual state before the slow
