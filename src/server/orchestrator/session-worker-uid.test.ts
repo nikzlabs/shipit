@@ -7,6 +7,7 @@ import {
   chownToSessionWorker,
   chownTreeToSessionWorker,
   chownWorkspaceGitToSessionWorker,
+  chownWorktreeToSessionWorker,
 } from "./session-worker-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
@@ -134,6 +135,61 @@ describe("session-worker-uid (docs/150 §7)", () => {
       const before = fs.lstatSync(idx).uid;
       chownWorkspaceGitToSessionWorker(tmpDir);
       expect(fs.lstatSync(idx).uid).toBe(before);
+    });
+
+    // SHI-144: the worktree handoff chowns the files the agent edits, skipping
+    // `.git` (handled by the object-aware helper) and the declared dep dirs.
+    it("chownWorktreeToSessionWorker chowns the worktree but skips .git and dep dirs", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      // Worktree source: a top-level file + a nested file the rebase would touch.
+      const topFile = path.join(tmpDir, "package.json");
+      const nestedFile = path.join(tmpDir, "src", "App.tsx");
+      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+      fs.writeFileSync(topFile, "{}");
+      fs.writeFileSync(nestedFile, "x");
+      // `.git` metadata — must be skipped by the worktree walk.
+      fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, ".git", "index"), "");
+      // Dep dirs (top-level + nested) — must be skipped (bounded walk).
+      const depFile = path.join(tmpDir, "node_modules", "left-pad", "index.js");
+      const nestedDepFile = path.join(tmpDir, "client", "node_modules", "x", "i.js");
+      fs.mkdirSync(path.dirname(depFile), { recursive: true });
+      fs.mkdirSync(path.dirname(nestedDepFile), { recursive: true });
+      fs.writeFileSync(depFile, "");
+      fs.writeFileSync(nestedDepFile, "");
+
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        chownWorktreeToSessionWorker(tmpDir, ["node_modules", "client/node_modules"]);
+        const chowned = new Set(spy.mock.calls.map((c) => c[0] as string));
+        // Worktree root + source files: chowned (so the agent can edit + create).
+        expect(chowned.has(tmpDir)).toBe(true);
+        expect(chowned.has(topFile)).toBe(true);
+        expect(chowned.has(nestedFile)).toBe(true);
+        // `.git`: never touched here (the .git helper owns it, object-aware).
+        expect(chowned.has(path.join(tmpDir, ".git"))).toBe(false);
+        expect(chowned.has(path.join(tmpDir, ".git", "index"))).toBe(false);
+        // Dep dirs: skipped wholesale — neither the dir nor its contents walked.
+        expect(chowned.has(path.join(tmpDir, "node_modules"))).toBe(false);
+        expect(chowned.has(depFile)).toBe(false);
+        expect(chowned.has(path.join(tmpDir, "client", "node_modules"))).toBe(false);
+        expect(chowned.has(nestedDepFile)).toBe(false);
+        // The dir leading to a nested dep dir is still chowned (it's source).
+        expect(chowned.has(path.join(tmpDir, "client"))).toBe(true);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("chownWorktreeToSessionWorker is a no-op when the flag is unset", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const f = path.join(tmpDir, "file.ts");
+      fs.writeFileSync(f, "");
+      const before = fs.lstatSync(f).uid;
+      chownWorktreeToSessionWorker(tmpDir, ["node_modules"]);
+      expect(fs.lstatSync(f).uid).toBe(before);
     });
 
     it("does not follow symlinks out of the tree", () => {

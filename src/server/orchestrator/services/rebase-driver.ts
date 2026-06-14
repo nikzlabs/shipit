@@ -31,8 +31,30 @@ import { ServiceError } from "./types.js";
 import { agentLogAppend } from "../log-emit.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
-import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
+import { chownWorkspaceGitToSessionWorker, chownWorktreeToSessionWorker } from "../session-worker-uid.js";
+import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../../shared/shipit-config.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
+
+/**
+ * Hand the whole session workspace back to the worker uid after the root
+ * orchestrator's git ops (SHI-144): both `.git` (object-aware) AND the worktree
+ * (minus the declared dep dirs). A rebase rewrites BOTH as `root:root`, and
+ * because the rebase driver dispatches its turns with `postTurn: "none"` the
+ * normal post-turn handoff never runs — so without handing the *worktree* back
+ * too, the non-root agent can run git but still can't EDIT the conflicted files
+ * it must resolve (nor can a later turn edit any rebase-rewritten file). No-op
+ * when `SHIPIT_SESSION_WORKER_UID` is unset.
+ */
+function handWorkspaceBackToWorker(workspaceDir: string): void {
+  chownWorkspaceGitToSessionWorker(workspaceDir);
+  let depDirs: string[];
+  try {
+    depDirs = resolveShipitConfig(workspaceDir).agent.depDirs;
+  } catch {
+    depDirs = [...DEFAULT_DEP_DIRS];
+  }
+  chownWorktreeToSessionWorker(workspaceDir, depDirs);
+}
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit
@@ -169,11 +191,13 @@ export async function runRebaseFlow(
       });
 
       // SHI-144: `git.rebase` above ran as the root orchestrator and re-rooted
-      // `.git`. Hand it back to the worker uid BEFORE the agent's resolution
-      // turn so the non-root agent's own in-container git works while it edits
-      // (the root orchestrator can still operate the worker-owned tree via the
-      // `safe.directory=*` global config). No-op when the flag is unset.
-      chownWorkspaceGitToSessionWorker(runner.sessionDir);
+      // BOTH `.git` AND the worktree — including the conflicted files this turn's
+      // agent must EDIT. Hand the whole workspace back to the worker uid BEFORE
+      // the resolution turn so the non-root agent can both run git and write the
+      // conflicted files (the root orchestrator can still operate the
+      // worker-owned tree via the `safe.directory=*` global config). No-op when
+      // the flag is unset.
+      handWorkspaceBackToWorker(runner.sessionDir);
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
       await runRebaseResolutionTurn(deps, prompt);
@@ -199,13 +223,14 @@ export async function runRebaseFlow(
   } finally {
     // SHI-144 / docs/150 §7: every orchestrator git op above (fetch, rebase,
     // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
-    // `.git` root-owned. Unlike a normal turn, the rebase driver dispatches its
-    // resolution turns with `postTurn: "none"`, which elides the post-turn
-    // `chownWorkspaceGitToSessionWorker` handoff — so without this the next
-    // in-container `git` the non-root agent runs (here or in a later turn)
-    // fails on a root-owned `.git`. Hand it back on every exit path (clean,
-    // resolved, up-to-date, abort, throw). No-op when the flag is unset.
-    chownWorkspaceGitToSessionWorker(runner.sessionDir);
+    // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
+    // turn, the rebase driver dispatches its resolution turns with
+    // `postTurn: "none"`, which elides the post-turn handoff — so without this
+    // the non-root agent's next in-container `git` fails on a root-owned `.git`
+    // AND a later turn can't edit any rebase-rewritten file. Hand the whole
+    // workspace back on every exit path (clean, resolved, up-to-date, abort,
+    // throw). No-op when the flag is unset.
+    handWorkspaceBackToWorker(runner.sessionDir);
   }
 }
 
@@ -387,9 +412,10 @@ export async function runAutoResolveAttempt(
   try {
     if (await git.isRebaseInProgress()) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      // SHI-144: the abort above ran as root; hand `.git` back so the next
-      // in-container agent git op isn't blocked on a root-owned tree.
-      chownWorkspaceGitToSessionWorker(runner.sessionDir);
+      // SHI-144: the abort above ran as root and may have re-rooted `.git` +
+      // worktree; hand the whole workspace back so the next agent op isn't
+      // blocked on a root-owned tree.
+      handWorkspaceBackToWorker(runner.sessionDir);
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
   } catch (err) {
@@ -483,11 +509,11 @@ export async function runAutoResolveAttempt(
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
   // SHI-144: on the timeout path the teardown's `git.rebaseAbort()` ran as root
-  // (and resolves the race only after it completes), so `.git` can be left
-  // root-owned without `runRebaseFlow`'s finally having the last write. Hand it
-  // back here too — redundant but harmless on the normal path. No-op when the
-  // flag is unset.
-  chownWorkspaceGitToSessionWorker(runner.sessionDir);
+  // (and resolves the race only after it completes), so `.git` + worktree can be
+  // left root-owned without `runRebaseFlow`'s finally having the last write. Hand
+  // the whole workspace back here too — redundant but harmless on the normal
+  // path. No-op when the flag is unset.
+  handWorkspaceBackToWorker(runner.sessionDir);
   try {
     await deps.drainQueue?.();
   } catch (err) {

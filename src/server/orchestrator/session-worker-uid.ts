@@ -105,6 +105,63 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
   chownGitMetadataRecursive(gitDir, uid, path.join(gitDir, "objects"));
 }
 
+/**
+ * Hand a session **worktree** (the files the agent edits) back to the worker
+ * uid after the root orchestrator rewrote them. No-op when
+ * `SHIPIT_SESSION_WORKER_UID` is unset.
+ *
+ * docs/150 §7 addendum (SHI-144): {@link chownWorkspaceGitToSessionWorker} hands
+ * back `.git` so the agent's in-container *git* works, but NOT the worktree. A
+ * root orchestrator `git rebase` / `checkout` / `rebase --continue` / `--abort`
+ * re-materializes worktree files as `root:root` — including the conflicted files
+ * the agent must **edit** to resolve. With only `.git` handed back, git status
+ * passes but the resolution turn (and any later normal turn) still EACCES on
+ * those files, and can't create/replace files in the now root-owned dirs. This
+ * walks the worktree and chowns every node to the worker uid, EXCEPT `.git`
+ * (handled by the object-aware helper) and the declared dep dirs
+ * (`agent.dep-dirs`, e.g. `node_modules`) — passed in via `excludeRelDirs`.
+ * Skipping the dep dirs keeps the walk bounded by the source tree instead of the
+ * dependency count (those are large caches the entrypoint's one-shot chown / the
+ * worker-run install already own; the rebase never touches them — they're
+ * gitignored). Symlinks are chowned in place (`lchown`) and never followed.
+ */
+export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDirs: string[] = []): void {
+  const uid = sessionWorkerUid();
+  if (uid === null) return;
+  const exclude = new Set<string>([".git", ...excludeRelDirs.map((d) => path.normalize(d))]);
+  chownWorktreeRecursive(workspaceDir, uid, workspaceDir, exclude);
+}
+
+/**
+ * Recursive worktree chown that skips `.git` + the declared dep dirs (matched by
+ * path relative to the worktree root, so a nested `client/node_modules` is
+ * skipped too). Mirrors {@link chownRecursive} otherwise: chown every node,
+ * descend real directories only (a symlink lstats as a non-directory, so it's
+ * chowned in place and never followed out of the tree).
+ */
+function chownWorktreeRecursive(p: string, uid: number, root: string, exclude: Set<string>): void {
+  const rel = path.relative(root, p);
+  if (rel !== "" && exclude.has(rel)) return; // skip .git + declared dep dirs
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(p);
+  } catch {
+    return; // gone — nothing to own
+  }
+  lchownLogged(p, uid);
+  if (stat.isDirectory()) {
+    let entries: string[];
+    try {
+      entries = fs.readdirSync(p);
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      chownWorktreeRecursive(path.join(p, entry), uid, root, exclude);
+    }
+  }
+}
+
 function lchownLogged(p: string, uid: number): void {
   try {
     fs.lchownSync(p, uid, uid);
