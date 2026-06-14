@@ -167,6 +167,64 @@ describe("quick-session first-turn exit-0 (docs/163)", () => {
     runner.dispose({ force: true });
   });
 
+  it("preserves partial work and does NOT retry when a turn streams content then exits with no result (OOM/SIGHUP)", async () => {
+    // Regression for the "agent did the work but the turns disappeared" bug.
+    // A dispatched turn (e.g. an agent-spawned / cross-session message) streams
+    // assistant rows as `in_progress=1`, then the CLI is SIGHUP'd/OOM-pressured to
+    // exit 129 WITHOUT an `agent_result`. Retrying would reset the in-memory groups
+    // and the eventual surfaced error would `replaceInProgress([])` the partial rows
+    // out of history. So this turn must finalize its partial work and surface an
+    // error WITHOUT retrying.
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const appended: { role?: string; isError?: boolean; text?: string }[] = [];
+    const messages: { type: string; [k: string]: unknown }[] = [];
+    runner.on("message", (m) => messages.push(m as never));
+    const { deps } = makeDeps(agents, appended as unknown[]);
+    runner.setSystemTurnDeps(deps);
+    const histMgr = deps.listenerDeps.chatHistoryManager as unknown as {
+      replaceInProgress: ReturnType<typeof vi.fn>;
+      finalizeInProgress: ReturnType<typeof vi.fn>;
+    };
+
+    runner.dispatch({ text: "do work" });
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first agent run");
+
+    // The turn streams a visible assistant message (populates chatMessageGroups)…
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "The batch got OOM-killed (exit 137). Let me run smaller batches." }],
+      sessionId: "agent-sid",
+    });
+    // …then the process dies without ever producing an `agent_result`.
+    agents[0]!.emit("done", 129);
+
+    // An error row is persisted — the failure is surfaced, not swallowed.
+    await waitFor(
+      () => appended.some((m) => m.role === "assistant" && m.isError === true),
+      "error chat row",
+    );
+
+    // No retry: the turn already ran, so re-running is unsafe and would erase the work.
+    expect(agents).toHaveLength(1);
+    // The retry notice must NOT appear (the turn did start).
+    expect(messages.some((m) => m.type === "system_notice" && /retry/i.test(String(m.message)))).toBe(false);
+
+    // The partial turn is preserved: the final `replaceInProgress` carried the
+    // streamed assistant text (not an empty wipe) and was finalized.
+    const lastReplace = histMgr.replaceInProgress.mock.calls.at(-1);
+    const persistedMessages = (lastReplace?.[1] ?? []) as { role?: string; text?: string }[];
+    expect(persistedMessages.length).toBeGreaterThan(0);
+    expect(persistedMessages.some((m) => m.text?.includes("OOM-killed"))).toBe(true);
+    expect(histMgr.finalizeInProgress).toHaveBeenCalledWith("s1");
+
+    // The surfaced error tells the user the work is preserved.
+    const errorMsg = messages.find((m) => m.type === "error");
+    expect(String(errorMsg?.message)).toMatch(/preserved/i);
+
+    runner.dispose({ force: true });
+  });
+
   it("does NOT retry when the first turn completes normally (agent_result before done)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];

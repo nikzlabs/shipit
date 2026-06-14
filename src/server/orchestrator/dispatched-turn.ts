@@ -24,7 +24,7 @@
 
 import type { AgentId, AgentProcess } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
-import { emitNoticePostTurn } from "./chat-card-persistence.js";
+import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -154,7 +154,33 @@ export async function runDispatchedTurn(
       // (the user's known "resend the prompt" workaround), then surface a
       // visible error so the failure can never silently vanish again.
       onNoResultExit: async (code) => {
-        if (noResultRetries < MAX_NO_RESULT_RETRIES) {
+        // A turn that streamed visible work (assistant text / tool calls) before
+        // exiting WITHOUT an `agent_result` — the OOM/SIGHUP case (exit 137/129
+        // under memory pressure) — DID run, and must NOT be retried:
+        //   1. Re-running re-executes an already-partially-applied prompt.
+        //   2. The retry's `resetRunnerTurnState` clears `runner.chatMessageGroups`
+        //      in memory while the streamed rows are still `in_progress=1` in the
+        //      DB. When the retry then also exits without a result, the surfaced
+        //      error rebuilds chat history from the now-EMPTY groups, so
+        //      `replaceInProgress([])` deletes the partial turn's rows. Across a
+        //      long memory-pressured session these unfinalized `in_progress=1`
+        //      rows accumulate and vanish in one wipe — "the agent did the work
+        //      but the turns disappeared", while the diffs survive in git.
+        // So only the genuinely-empty "never ran" exit (docs/163) is retried; a
+        // partial-work exit surfaces the error immediately, while the groups are
+        // still intact, so the `agent.error` handler FINALIZES the partial turn
+        // (`replaceInProgress` + `finalizeInProgress`) instead of deleting it.
+        // The WS path preserves partial turns the same way via `onInterruptedTurn`;
+        // dispatch must not retry away from that guarantee.
+        const producedPartialWork =
+          buildTurnMessages(
+            runner.chatMessageGroups,
+            runner.steeredMessages ?? [],
+            runner.recordedCards ?? [],
+            { inProgress: false },
+          ).length > 0;
+
+        if (!producedPartialWork && noResultRetries < MAX_NO_RESULT_RETRIES) {
           noResultRetries++;
           console.warn(
             `[turn] dispatched turn for ${runner.sessionId} exited (code ${code}) with no result — ` +
@@ -171,19 +197,27 @@ export async function runDispatchedTurn(
           return true;
         }
         console.error(
-          `[turn] dispatched turn for ${runner.sessionId} exited with no result after ` +
-            `${noResultRetries} retr${noResultRetries === 1 ? "y" : "ies"} — surfacing error`,
+          `[turn] dispatched turn for ${runner.sessionId} exited with no result ` +
+            `(partialWork=${producedPartialWork}, retries=${noResultRetries}) — surfacing error`,
         );
         // Route through the agent's `error` event so the failure surfaces
         // exactly like any other turn error — a chat error row, a
         // `session_status` reset, `session_agent_finished`, and a queue drain —
-        // instead of being swallowed as a completed turn.
+        // instead of being swallowed as a completed turn. When the turn streamed
+        // partial work before dying, the error handler FINALIZES those still-intact
+        // groups (so the visible work is preserved on reload); phrase the message
+        // as "stopped before finishing" rather than "without running", which only
+        // fits the genuinely-empty case.
         agent.emit(
           "error",
           new Error(
-            code !== null && code !== 0
-              ? `The agent exited with code ${code} without running. Please send your message again.`
-              : "The agent stopped without doing any work. Please send your message again.",
+            producedPartialWork
+              ? (code !== null && code !== 0
+                  ? `The agent stopped before finishing (exit ${code}). The work so far is preserved — send your message again to continue.`
+                  : "The agent stopped before finishing. The work so far is preserved — send your message again to continue.")
+              : (code !== null && code !== 0
+                  ? `The agent exited with code ${code} without running. Please send your message again.`
+                  : "The agent stopped without doing any work. Please send your message again."),
           ),
         );
         return true;
