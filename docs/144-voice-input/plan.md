@@ -144,6 +144,23 @@ slip into agent-like behavior. Tests assert that a transcript shaped
 like a question ("how do I add a button") comes back as the same
 question, not as an answer to it.
 
+**Coding-terminology tuning (two layers, same vocabulary).** The
+context is *always* software development in ShipIt, so cleanup resolves
+words to their coding meaning unconditionally — "a PR" stays two letters
+(pull request, not "APR"), "docs" is documentation (not "dogs"), "JSON"
+not "Jason", and library/tool/assistant names keep canonical casing
+(React, TypeScript, Claude, Codex…). The full guidance lives in
+`CLEANUP_INSTRUCTIONS` (`cleanup-prompt.ts`).
+
+But cleanup can only fix what STT emits — if Whisper hears "APR" there's
+nothing to map back from. So the same vocabulary also **biases the
+speech-recognition step** (`vocabulary.ts`, shared by both STT
+adapters): Whisper gets the term list as its `prompt` parameter,
+Deepgram gets per-token `keywords=<term>:2` boosts (multi-word terms are
+split into single tokens, since nova-2 keyword boosting is per-word). The
+two layers reinforce the same `CODING_VOCABULARY` — bias recognition
+toward the right tokens, then clean up whatever still slips through.
+
 **Failure mode — fall through, don't block.** If the cleanup provider
 errors, times out (>3 s), or returns something obviously wrong (empty
 string, dramatically longer than input, contains telltale "Here is

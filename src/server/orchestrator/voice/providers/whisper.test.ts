@@ -22,6 +22,19 @@ describe("createWhisperProvider", () => {
     expect((init.body as FormData).get("model")).toBe("whisper-1");
   });
 
+  it("biases recognition with the coding vocabulary prompt", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okJson({ text: "x" }));
+    const provider = createWhisperProvider("sk-test", fetchImpl as unknown as typeof fetch);
+
+    await provider.transcribe(Buffer.from("a"), {});
+
+    const form = fetchImpl.mock.calls[0][1].body as FormData;
+    const prompt = form.get("prompt") as string;
+    expect(prompt).toContain("PR");
+    expect(prompt).toContain("JSON");
+    expect(prompt).toContain("Claude");
+  });
+
   it("passes only the leading language subtag", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okJson({ text: "x" }));
     const provider = createWhisperProvider("sk-test", fetchImpl as unknown as typeof fetch);
