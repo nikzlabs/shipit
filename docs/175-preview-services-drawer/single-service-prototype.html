@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<title>Single-service drawer — creative directions</title>
+<style>
+  /* ── ShipIt dark tokens (from themes/dark.css) ── */
+  .dark{
+    --bg0:#030712; --bg1:#111827; --bg2:#1f2937; --elevated:#1f2937;
+    --hover:rgba(255,255,255,.05); --active:rgba(255,255,255,.1);
+    --t1:#f3f4f6; --t2:#9ca3af; --t3:#6b7280; --link:#60a5fa;
+    --b1:#1f2937; --b2:#374151; --focus:#3b82f6;
+    --accent:#3b82f6; --accent-sub:rgba(59,130,246,.15);
+    --success:#22c55e; --success-sub:rgba(34,197,94,.15);
+    --error:#ef4444; --error-sub:rgba(239,68,68,.15);
+    --warning:#f59e0b; --info:#60a5fa; --info-sub:rgba(96,165,250,.15);
+    --code:13px;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:#02040a;color:var(--t1);
+    font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:36px 40px 80px}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+  h1{font-size:20px;margin:0 0 4px;letter-spacing:-.01em}
+  .lede{color:var(--t2);max-width:760px;margin:0 0 8px}
+  .lede b{color:var(--t1);font-weight:600}
+  .principle{color:var(--t3);font-size:12.5px;max-width:760px;margin:0 0 36px}
+  h2{font-size:14px;margin:0;font-weight:600;letter-spacing:-.01em}
+  .head{display:flex;align-items:baseline;gap:10px;margin:38px 0 12px;
+    border-top:1px solid var(--b1);padding-top:22px}
+  .num{font-size:12px;font-weight:700;color:var(--bg0);background:var(--accent);
+    width:20px;height:20px;border-radius:6px;display:inline-flex;align-items:center;justify-content:center;flex:none}
+  .pick{font-size:11px;font-weight:700;color:var(--success);background:var(--success-sub);
+    padding:2px 8px;border-radius:99px;text-transform:uppercase;letter-spacing:.04em}
+  .why{color:var(--t2);font-size:12.5px;margin:8px 2px 0;max-width:820px}
+  .why b{color:var(--t1)}
+
+  /* ── faux preview pane + drawer shell ── */
+  .stage{border:1px solid var(--b1);border-radius:12px;overflow:hidden;background:var(--bg0);
+    box-shadow:0 1px 0 rgba(255,255,255,.02) inset}
+  .preview{height:96px;background:
+    repeating-linear-gradient(45deg,#070b15 0 12px,#090e1a 12px 24px);
+    display:flex;align-items:center;justify-content:center;color:var(--t3);font-size:12px;
+    border-bottom:1px solid var(--b1)}
+  .drawer{background:var(--bg1)}
+  .hdr{display:flex;align-items:center;gap:10px;padding:0 12px;height:38px;font-size:12px;
+    border-bottom:1px solid var(--b1)}
+  .caret{color:var(--t2);font-size:11px}
+  .htitle{font-weight:600;font-size:13px}
+  .bar{display:flex;gap:3px}
+  .bar i{width:18px;height:4px;border-radius:99px;background:var(--success);display:inline-block}
+  .bar i.warn{background:var(--accent)} .bar i.off{background:var(--b2)}
+  .count{color:var(--t2)} .count b{color:var(--t1);font-variant-numeric:tabular-nums}
+  .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:7px;
+    background:var(--bg2);border:1px solid var(--b2);color:var(--t2);font-size:12px;font-weight:500;cursor:default}
+  .right{margin-left:auto;display:flex;align-items:center;gap:8px}
+  .body{padding:12px}
+
+  /* shared bits */
+  .dot{width:8px;height:8px;border-radius:99px;flex:none}
+  .dot.run{background:var(--success);box-shadow:0 0 0 4px var(--success-sub)}
+  .dot.start{background:var(--accent);box-shadow:0 0 0 4px var(--accent-sub)}
+  .dot.err{background:var(--error);box-shadow:0 0 0 4px var(--error-sub)}
+  .dot.off{background:var(--t3)}
+  .badge{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;
+    padding:2px 6px;border-radius:4px;background:var(--bg2);color:var(--t3);border:1px solid var(--b2)}
+  .badge.prev{background:var(--accent-sub);color:var(--link);border-color:transparent}
+  .port{font-size:12px;color:var(--link);background:var(--info-sub);padding:1px 7px;border-radius:5px}
+  .sl{font-size:12px;font-weight:600}
+  .sl.run{color:var(--success)} .sl.start{color:var(--accent)} .sl.off{color:var(--t3)} .sl.err{color:var(--error)}
+  .ico{width:28px;height:28px;border-radius:7px;display:inline-flex;align-items:center;justify-content:center;
+    color:var(--t2);border:1px solid transparent;cursor:pointer}
+  .ico:hover{background:var(--active);color:var(--t1)}
+  .ico svg{width:16px;height:16px}
+  .btn{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:8px;font-size:12.5px;font-weight:600;cursor:pointer;border:1px solid transparent}
+  .btn.primary{background:var(--accent);color:#fff}
+  .btn.ghost{background:var(--bg2);color:var(--t1);border-color:var(--b2)}
+  svg{stroke:currentColor;stroke-width:2;fill:none;stroke-linecap:round;stroke-linejoin:round}
+  .fill{fill:currentColor;stroke:none}
+
+  /* terminal */
+  .term{background:#0d1117;border-radius:8px;border:1px solid var(--b1);padding:10px 12px;
+    font-family:ui-monospace,Menlo,monospace;font-size:12.5px;line-height:1.7;color:#c9d1d9;overflow:hidden}
+  .term .g{color:#8b949e} .term .grn{color:#7ee787} .term .blu{color:#79c0ff}
+  .term .yel{color:#f2cc60} .term .cur{color:#7ee787}
+  .cursor{display:inline-block;width:7px;height:14px;background:#7ee787;vertical-align:-2px;
+    animation:blink 1.1s steps(2) infinite}
+  @keyframes blink{50%{opacity:0}}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .spin{animation:spin 1s linear infinite}
+  @keyframes ping{75%,100%{transform:scale(2);opacity:0}}
+
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:24px}
+  @media(max-width:1040px){.twocol{grid-template-columns:1fr}}
+  .sub{font-size:11px;color:var(--t3);text-transform:uppercase;letter-spacing:.05em;margin:0 0 8px;font-weight:600}
+</style>
+</head>
+<body>
+  <h1>Single-service drawer — thinking past the floating chip</h1>
+  <p class="lede"><b>Reframe:</b> one service isn't “a list of one”, it's <b>the focus</b>. With many services density wins; with one, the drawer is all yours — so fill it with something useful instead of stranding a tiny card.</p>
+  <p class="principle">The most useful thing to fill it with is the service's own <b>live log</b> — which is exactly what this drawer was built to show (docs/175). Header stays full-width, so the collapsed state never changes.</p>
+
+  <!-- ════════════════ 1. CONSOLE ════════════════ -->
+  <div class="head"><span class="num">1</span><h2>Console — the single service <i>is</i> its log</h2><span class="pick">my pick</span></div>
+  <p class="why">No list, no card. The header morphs into the service's toolbar (it already does this when a service is selected) and the body becomes the live terminal, full-bleed. Zero void, maximally useful, and it reuses machinery that already exists. Two sub-states below: booting, then running.</p>
+  <div class="twocol">
+    <div>
+      <p class="sub">while starting</p>
+      <div class="stage">
+        <div class="preview">live preview ↑</div>
+        <div class="drawer">
+          <div class="hdr">
+            <span class="caret">⌄</span>
+            <span class="dot start"></span>
+            <span class="htitle">dev</span>
+            <span class="badge">Manual</span>
+            <span class="sl start">Starting…</span>
+            <span class="right">
+              <span class="ico" title="Stop"><svg class="fill" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span>
+              <span class="btn ghost"><svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg> Send to Agent</span>
+            </span>
+          </div>
+          <div class="body">
+            <div class="term">
+              <div class="g">$ npm run dev</div>
+              <div><span class="g">[12:04:01]</span> installing dependencies…</div>
+              <div><span class="g">[12:04:18]</span> <span class="grn">✓</span> deps ready</div>
+              <div><span class="g">[12:04:19]</span> starting vite <span class="cursor"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <p class="sub">once running</p>
+      <div class="stage">
+        <div class="preview">live preview ↑</div>
+        <div class="drawer">
+          <div class="hdr">
+            <span class="caret">⌄</span>
+            <span class="dot run"></span>
+            <span class="htitle">dev</span>
+            <span class="port mono">:3000</span>
+            <span class="sl run">Running</span>
+            <span class="right">
+              <span class="ico" title="Open"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></span>
+              <span class="ico" title="Restart"><svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg></span>
+              <span class="ico" title="Stop"><svg class="fill" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span>
+              <span class="btn ghost"><svg viewBox="0 0 24 24"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg> Send to Agent</span>
+            </span>
+          </div>
+          <div class="body">
+            <div class="term">
+              <div><span class="g">[12:04:22]</span> <span class="grn">VITE v6.0.1</span> ready in 412 ms</div>
+              <div class="g">  ➜  Local:   http://localhost:3000/</div>
+              <div><span class="g">[12:04:31]</span> <span class="blu">page reload</span> src/App.tsx</div>
+              <div><span class="g">[12:04:44]</span> <span class="yel">hmr update</span> /src/index.css <span class="cursor"></span></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ 2. FOCUS CARD + LOG PEEK ════════════════ -->
+  <div class="head"><span class="num">2</span><h2>Focus card — full-width card with a live log peek</h2></div>
+  <p class="why">Keeps a distinct <b>card</b> identity but lets it span the drawer: identity + controls up top, the last few log lines beneath (dimmed, monospace) filling the vertical space. The peek is clickable to expand into the full console (#1). Half-step between today's chip and a full console — keep the “list” mental model, lose the void.</p>
+  <div class="stage" style="max-width:none">
+    <div class="preview">live preview ↑</div>
+    <div class="drawer">
+      <div class="hdr">
+        <span class="caret">⌄</span><span class="htitle">Services</span>
+        <span class="bar"><i></i></span>
+        <span class="count"><b>1</b> of 1 running</span>
+        <span class="right"><span class="pill"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><rect class="fill" x="6" y="6" width="12" height="12" rx="2"/></svg> Stop all</span></span>
+      </div>
+      <div class="body">
+        <div style="border:1px solid var(--b1);border-radius:10px;overflow:hidden;background:var(--bg2)">
+          <div style="display:flex;align-items:center;gap:12px;padding:11px 10px 11px 16px;position:relative">
+            <span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--success)"></span>
+            <span class="dot run"></span>
+            <div style="flex:1;min-width:0">
+              <div style="display:flex;align-items:center;gap:8px"><span style="font-weight:600">dev</span><span class="badge prev">Preview</span><span class="port mono">:3000</span></div>
+              <div class="sl run" style="margin-top:2px">Running · up 2m</div>
+            </div>
+            <span class="ico" title="Open"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></span>
+            <span class="ico" title="Logs"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/></svg></span>
+            <span class="ico" title="Restart"><svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/></svg></span>
+            <span class="ico" title="Stop"><svg class="fill" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span>
+          </div>
+          <div class="term" style="border-radius:0;border:none;border-top:1px solid var(--b1);background:#0b0f16;color:#9aa4b2">
+            <div><span class="g">[12:04:22]</span> VITE v6.0.1 ready in 412 ms</div>
+            <div><span class="g">[12:04:31]</span> page reload src/App.tsx</div>
+            <div><span class="g">[12:04:44]</span> hmr update /src/index.css</div>
+            <div style="color:var(--link);font-size:11px;margin-top:4px;cursor:pointer">Open full log ↗</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ 3. STATUS HERO ════════════════ -->
+  <div class="head"><span class="num">3</span><h2>Status hero — centered, for a stopped / crashed single service</h2></div>
+  <p class="why">When the one service is <b>stopped or crashed</b> there's no log worth showing, so don't fake a console. Treat it like an intentional empty-state: centered icon, name, status, one big primary action. Centered reads as <b>deliberate</b> here (unlike centering a normal card) because it's a true focal moment. Flips to #1 the instant it boots.</p>
+  <div class="twocol">
+    <div>
+      <p class="sub">stopped</p>
+      <div class="stage">
+        <div class="preview">live preview ↑</div>
+        <div class="drawer">
+          <div class="hdr"><span class="caret">⌄</span><span class="htitle">Services</span><span class="bar"><i class="off"></i></span><span class="count"><b>0</b> of 1 running</span></div>
+          <div class="body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:26px 12px;text-align:center">
+            <div style="width:42px;height:42px;border-radius:12px;background:var(--bg2);border:1px solid var(--b2);display:flex;align-items:center;justify-content:center;color:var(--t3)">
+              <svg viewBox="0 0 24 24" style="width:20px;height:20px"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><path d="M6 6h.01M6 18h.01"/></svg>
+            </div>
+            <div><span style="font-weight:600;font-size:15px">dev</span> <span class="badge" style="margin-left:6px">Manual</span></div>
+            <div class="sl off">Stopped</div>
+            <div class="btn primary" style="margin-top:4px"><svg class="fill" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M8 5v14l11-7z"/></svg> Start service</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div>
+      <p class="sub">crashed</p>
+      <div class="stage">
+        <div class="preview">live preview ↑</div>
+        <div class="drawer">
+          <div class="hdr"><span class="caret">⌄</span><span class="htitle">Services</span><span class="bar"><i style="background:var(--error)"></i></span><span class="count"><b>0</b> of 1 running</span></div>
+          <div class="body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:22px 12px;text-align:center">
+            <div style="width:42px;height:42px;border-radius:12px;background:var(--error-sub);display:flex;align-items:center;justify-content:center;color:var(--error)">
+              <svg viewBox="0 0 24 24" style="width:22px;height:22px"><circle cx="12" cy="12" r="10"/><path d="M12 8v4M12 16h.01"/></svg>
+            </div>
+            <div><span style="font-weight:600;font-size:15px">dev</span></div>
+            <div class="sl err">Crashed · exit 1</div>
+            <div class="mono" style="font-size:11px;color:var(--t2);background:#0d1117;border:1px solid var(--b1);border-radius:6px;padding:6px 10px;max-width:420px">Error: listen EADDRINUSE :3000</div>
+            <div style="display:flex;gap:8px;margin-top:2px">
+              <div class="btn ghost"><svg class="fill" viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M8 5v14l11-7z"/></svg> Restart</div>
+              <div class="btn primary"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg> Ask agent to fix</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ════════════════ how it scales ════════════════ -->
+  <div class="head"><span class="num">≥2</span><h2>Many services — falls back to the compact grid</h2></div>
+  <p class="why">The single-service treatment is the special case. Two or more and we drop to the dense narrow cards (auto-fit grid), where the compactness you asked for earns its keep. The layout simply <b>responds to count</b>.</p>
+  <div class="stage" style="max-width:none">
+    <div class="preview">live preview ↑</div>
+    <div class="drawer">
+      <div class="hdr"><span class="caret">⌄</span><span class="htitle">Services</span><span class="bar"><i></i><i class="off"></i><i></i></span><span class="count"><b>2</b> of 3 running</span><span class="right"><span class="pill">Stop all</span></span></div>
+      <div class="body">
+        <div style="display:grid;gap:8px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr))">
+          <div style="position:relative;background:var(--bg2);border:1px solid var(--b1);border-radius:9px;padding:10px 8px 10px 16px;display:flex;align-items:center;gap:10px"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--success)"></span><span class="dot run"></span><div style="flex:1"><div style="font-weight:600">web</div><div class="sl run" style="font-size:11px">Running</div></div></div>
+          <div style="position:relative;background:var(--bg2);border:1px solid var(--b1);border-radius:9px;padding:10px 8px 10px 16px;display:flex;align-items:center;gap:10px"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--t3)"></span><span class="dot off"></span><div style="flex:1"><div style="font-weight:600">api</div><div class="sl off" style="font-size:11px">Stopped</div></div></div>
+          <div style="position:relative;background:var(--bg2);border:1px solid var(--b1);border-radius:9px;padding:10px 8px 10px 16px;display:flex;align-items:center;gap:10px"><span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--success)"></span><span class="dot run"></span><div style="flex:1"><div style="font-weight:600">db</div><div class="sl run" style="font-size:11px">Running</div></div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
