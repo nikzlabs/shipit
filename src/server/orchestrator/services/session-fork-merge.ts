@@ -14,7 +14,8 @@ import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
-import { chownTreeToSessionWorker, chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
+import { chownTreeToSessionWorker, chownWorkspaceGitToSessionWorker, chownWorktreeToSessionWorker } from "../session-worker-uid.js";
+import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../../shared/shipit-config.js";
 
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
@@ -186,10 +187,22 @@ export async function mergeSession(
         }
       }
     } catch { /* ignore cleanup errors */ }
-    // docs/150 §7 addendum: the push/fetch/merge git ops above ran as the root
-    // orchestrator against the active session's (booted) clone, re-rooting its
-    // `.git`. Hand it back to the worker uid. No-op unless the flag is set.
+    // docs/150 §7 addendum (SHI-144): the push/fetch/merge git ops above ran as
+    // the root orchestrator against the active session's (booted) clone,
+    // re-rooting BOTH its `.git` and the worktree files the merge rewrote. Hand
+    // both back to the worker uid — same gap/fix as the rebase driver: handing
+    // only `.git` back would leave the merged worktree files root-owned, so the
+    // non-root agent couldn't edit them on its next turn. No-op unless the flag
+    // is set. Worktree chown skips the declared dep dirs so the walk stays
+    // bounded by the source tree (the booted clone has a populated node_modules).
     chownWorkspaceGitToSessionWorker(activeSessionDir);
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(activeSessionDir).agent.depDirs;
+    } catch {
+      depDirs = [...DEFAULT_DEP_DIRS];
+    }
+    chownWorktreeToSessionWorker(activeSessionDir, depDirs);
   }
 
   if (result.success) {
