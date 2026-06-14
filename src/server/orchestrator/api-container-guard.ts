@@ -186,7 +186,14 @@ export function registerContainerOriginGuard(
     }
 
     // §3 own-session scope — an allowed route reached for another session is denied.
-    if (sessionSegment(pathname) !== caller.sessionId) {
+    // Most container-facing routes are `/api/sessions/<id>/…`; a few instead carry
+    // the session as a `?session=` query param (the Tier C egress decision query,
+    // docs/172). Fall back to that — still the CALLER'S OWN session, so the scope
+    // property is preserved; a mismatch (or neither present) is denied.
+    const scoped =
+      sessionSegment(pathname) ??
+      new URLSearchParams((request.url ?? "").split("?")[1] ?? "").get("session");
+    if (scoped !== caller.sessionId) {
       return reply
         .code(403)
         .send({ error: "Session containers may only act on their own session." });

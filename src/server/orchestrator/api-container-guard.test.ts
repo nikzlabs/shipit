@@ -107,6 +107,9 @@ describe("registerContainerOriginGuard — request gating", () => {
     );
     app.get("/api/bootstrap", async () => ({ ok: true }));
     app.put("/api/secrets", { config: { containerAccessible: true } }, async () => ({ ok: true }));
+    // A query-scoped container-facing route (Tier C egress decision): the session
+    // arrives as ?session=, not in the path — exercises §3's query-param fallback.
+    app.get("/api/egress/decision", { config: { containerAccessible: true } }, async () => ({ allow: false }));
     await app.ready();
   });
 
@@ -154,6 +157,33 @@ describe("registerContainerOriginGuard — request gating", () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/secrets",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("allows a query-scoped route (?session=own) for the caller's OWN session", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("denies a query-scoped route when ?session= names ANOTHER session", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/egress/decision?host=example.com&session=sess-other",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("denies a query-scoped route when ?session= is absent", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/egress/decision?host=example.com",
       remoteAddress: CONTAINER_IP,
     });
     expect(res.statusCode).toBe(403);

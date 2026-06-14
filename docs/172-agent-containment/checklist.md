@@ -148,6 +148,21 @@ tracker as separate issues. None implemented yet.
           flags on): an allowlisted SNI splices through; a non-allowlisted SNI to an
           allowlisted IP is rejected (CDN co-tenancy); legit npm/git/anthropic unaffected;
           the proxy survives the compose stale-sweep.
+          - First live-host round found **three defects, now fixed** (re-verify pending):
+            1. **route_localnet never set** — the NET_ADMIN-only installer's `/proc/sys`
+               is read-only (EROFS), so `echo 1 >`/`sysctl -w` failed silently and the
+               REDIRECT couldn't route to loopback. Fixed least-privilege: set
+               `net.ipv4.conf.all.route_localnet=1` as a namespaced `HostConfig.Sysctls`
+               on the **agent container** at creation (it owns its netns), gated on Tier C;
+               `install_sni_redirect` now only read-verifies + warns.
+            2. **Tier A `-P OUTPUT DROP` dropped the REDIRECT'd :443** — after nat REDIRECT
+               the dst is `127.0.0.1:$PROXY_PORT` but oif isn't `lo` at filter/OUTPUT, so
+               `-o lo ACCEPT` missed it. Added an explicit
+               `-p tcp -d 127.0.0.1 --dport $PROXY_PORT -j ACCEPT` before the DROP policy.
+            3. **Guard 403'd the proxy's own decision query** — `/api/egress/decision`
+               carries the session as `?session=`, but §3 read it from the path → `null` →
+               403 (card never emitted). §3 now falls back to the `?session=` query param
+               (still the caller's own session). Test gap closed in `api-container-guard.test.ts`.
     - [ ] **MCP-hosts + operator-extras plumbing** (shared with Tier B): thread
           `credentialStore` + `SESSION_EGRESS_ALLOWLIST` into both the resolver config and
           the proxy allowlist so connected MCP servers / operator hosts are honored.
