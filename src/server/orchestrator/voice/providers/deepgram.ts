@@ -9,6 +9,7 @@
  */
 
 import { VoiceProviderError, type SttProvider, type SttTranscribeOptions } from "./types.js";
+import { DEEPGRAM_KEYWORDS } from "../vocabulary.js";
 
 const DEEPGRAM_LISTEN_URL = "https://api.deepgram.com/v1/listen";
 const DEEPGRAM_MODEL = "nova-2";
@@ -19,6 +20,9 @@ export function createDeepgramProvider(apiKey: string, fetchImpl: typeof fetch =
       const params = new URLSearchParams({ model: DEEPGRAM_MODEL, smart_format: "true" });
       // Deepgram expects a 2-letter ISO-639-1 hint; pass the leading subtag.
       if (opts.language) params.set("language", opts.language.split("-")[0]);
+      // Boost coding vocabulary so STT favors "PR"/"JSON" over "APR"/"Jason".
+      // `keywords` repeats once per term with a moderate `:2` intensifier.
+      for (const term of DEEPGRAM_KEYWORDS) params.append("keywords", `${term}:2`);
       const url = `${DEEPGRAM_LISTEN_URL}?${params.toString()}`;
 
       let res: Response;

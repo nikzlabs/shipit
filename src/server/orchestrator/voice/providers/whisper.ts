@@ -8,6 +8,7 @@
  */
 
 import { VoiceProviderError, type SttProvider, type SttTranscribeOptions } from "./types.js";
+import { WHISPER_BIAS_PROMPT } from "../vocabulary.js";
 
 const OPENAI_TRANSCRIBE_URL = "https://api.openai.com/v1/audio/transcriptions";
 const WHISPER_MODEL = "whisper-1";
@@ -30,6 +31,9 @@ export function createWhisperProvider(apiKey: string, fetchImpl: typeof fetch = 
       form.append("model", WHISPER_MODEL);
       // Whisper expects a 2-letter ISO-639-1 hint; pass the leading subtag.
       if (opts.language) form.append("language", opts.language.split("-")[0]);
+      // Bias recognition toward coding vocabulary so STT emits "PR"/"JSON"
+      // rather than "APR"/"Jason" — cleanup can only fix what STT produces.
+      form.append("prompt", WHISPER_BIAS_PROMPT);
       form.append("response_format", "json");
 
       let res: Response;

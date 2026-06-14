@@ -24,6 +24,18 @@ describe("createDeepgramProvider", () => {
     expect(init.headers.Authorization).toBe("Token dg-test");
   });
 
+  it("boosts coding keywords in the query", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(okJson({ results: { channels: [{ alternatives: [{ transcript: "x" }] }] } }));
+    const provider = createDeepgramProvider("dg-test", fetchImpl as unknown as typeof fetch);
+
+    await provider.transcribe(Buffer.from("a"), {});
+
+    const url = String(fetchImpl.mock.calls[0][0]);
+    expect(url.includes("keywords=PR%3A2")).toBe(true);
+    expect(url.includes("keywords=JSON%3A2")).toBe(true);
+    expect(url.includes("keywords=Claude%3A2")).toBe(true);
+  });
+
   it("includes only the leading language subtag in the query", async () => {
     const fetchImpl = vi.fn().mockResolvedValue(okJson({ results: { channels: [{ alternatives: [{ transcript: "x" }] }] } }));
     const provider = createDeepgramProvider("dg-test", fetchImpl as unknown as typeof fetch);
