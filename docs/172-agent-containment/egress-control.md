@@ -192,6 +192,84 @@ though the unit of *enablement* is the whole thing. The PR closes SHI-90; nothin
 egress is contained until Tier C lands. The Phase-2 identity-validating proxy remains a
 separate follow-up (it builds on the Tier C hook).
 
+## Phase 2 — SNI-scoped identity validation for multi-tenant hosts
+
+Tier C decides allow/deny by **hostname**. That still leaves the residual the threat model
+calls out: an allowlisted **multi-tenant** host (S3, GCS, Azure Blob, a shared container
+registry, a per-account API) is approved as a *host*, but a request can target the
+**attacker's** bucket/account/org on that same host — exfiltration into an attacker identity
+on an approved service. Phase 2 implements the `validateIdentity` seam already present in
+`sni-proxy/main.go` to close as much of this as is enforceable.
+
+### The hard constraint shapes what's possible
+
+Tier C's whole premise is **no TLS decryption** — SNI-peek only, no CA injection, E2E TLS
+intact. So identity validation may use **only** signals visible without decrypting: the
+**SNI hostname**, **`SO_ORIGINAL_DST`**, and the per-host rule. The per-request identity that
+lives in the HTTP layer — the path/bucket in path-style S3 (`s3.amazonaws.com/<bucket>/…`),
+the `Authorization` header, a per-account API key (e.g. an Anthropic *workspace* on
+`api.anthropic.com`) — is **encrypted and out of reach**. We deliberately do **not** decrypt
+to read it; that would trade away the E2E-TLS guarantee, which is a non-goal.
+
+**What is therefore enforceable: tenant identity that surfaces as a DNS label in the SNI** —
+i.e. **virtual-hosted-style** addressing, which the major object stores use:
+
+```
+my-bucket.s3.amazonaws.com   my-bucket.s3.us-east-1.amazonaws.com
+my-bucket.storage.googleapis.com   myaccount.blob.core.windows.net
+```
+
+For a configured multi-tenant **base** host, the proxy extracts the **tenant prefix** (the
+SNI labels before the base) and permits the connection only if that prefix is one of the
+session's approved identities.
+
+**What is NOT enforceable under SNI-only (and we say so plainly):**
+
+- **Path-style addressing** (`s3.amazonaws.com/<bucket>/…`): the bucket is in the encrypted
+  path; the SNI is the bare apex. We cannot tell whose bucket it is. So when an identity rule
+  governs a host, the **un-scoped apex SNI is denied by default** — permitting it would be a
+  trivial bypass (just switch from virtual-hosted to path-style). An operator who needs
+  path-style anyway can opt in explicitly (an empty `""` identity), accepting that identity is
+  unenforced for that host.
+- **Per-account identity carried only in an auth header / API key** (e.g. distinguishing two
+  Anthropic workspaces on `api.anthropic.com`, or two orgs on a path-routed registry): the
+  SNI is identical across accounts, so SNI-only cannot separate them. This is a real residual;
+  closing it would require either decryption (rejected) or an out-of-process credential broker
+  that mints per-identity-scoped tokens (orthogonal — see Gap 2-R).
+
+### Mechanism (`validateIdentity`, `sni-proxy/main.go`)
+
+Read per-host rules from a new env var **`EGRESS_PROXY_IDENTITY_RULES`** — a JSON array, each
+entry `{"host": "<base>", "identities": ["<prefix>", …]}`:
+
+- `host` is the multi-tenant **base** host, normalized exactly like the allowlist (a leading
+  dot or an exact form both reduce to the same base — the leading dot only affects allowlist
+  *matching*, done separately by `decide`, not tenant extraction).
+- `identities` are the permitted **tenant prefixes** — the SNI labels before the base
+  (`my-bucket` in `my-bucket.s3.amazonaws.com`), compared case-insensitively. An empty `""`
+  permits the un-scoped apex (the path-style opt-in above).
+- **Unset/empty → no identity scoping** (Tier C behavior is unchanged). Malformed JSON is
+  logged and treated as no rules — the orchestrator builds this value, so a parse error is a
+  bug, not an attack; failing to "no scoping" (the SNI allowlist still applies) beats
+  blackholing the whole session.
+
+The check runs **after** the SNI allowlist decision and **before** dialing upstream, so it is
+a pure additional restriction (never a widening) and denies **fast**, like any other Tier C
+deny — no held socket. When several rules overlap, the **most-specific (longest-base)** rule
+governs, so a tight regional rule isn't loosened by a broad parent rule. Because it needs only
+the SNI, `validateIdentity` no longer takes the upstream connection (we don't, and can't,
+inspect the request body).
+
+### Env-var contract & follow-up (orchestrator wiring is NOT in this change)
+
+This change is **entirely inside `docker/egress-sidecar/`**. It defines and consumes
+`EGRESS_PROXY_IDENTITY_RULES` but does **not** wire it from the orchestrator — that belongs to
+the track that owns the allowlist + launch plumbing (`egress-proxy-install.ts`,
+`container-lifecycle.ts`). **Follow-up (not done here):** compose the per-session identity
+rules (the session's own bucket/account on each configured multi-tenant host, derived from the
+browser-managed config / credential store) and pass them as `EGRESS_PROXY_IDENTITY_RULES` on
+`launchEgressProxy`, mirroring how `EGRESS_PROXY_ALLOWED` is composed today.
+
 ## Settings & UX (browser-only, SHI-129-protected)
 
 All egress configuration is mutated **only from the browser**. SHI-129's guard is
@@ -249,6 +327,9 @@ as an operator default / fail-secure floor).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
 - `egress-allowlist.ts` (reused) — host matcher + composition.
+- `docker/egress-sidecar/sni-proxy/main.go` — the Tier C SNI proxy; Phase-2
+  `validateIdentity` (SNI-scoped tenant rules from `EGRESS_PROXY_IDENTITY_RULES`) lives here,
+  unit-tested in `sni-proxy/main_test.go`.
 - Settings store field + browser-only routes (default-protected by *not* setting
   `containerAccessible`; optionally add to `HARD_DENY_PREFIXES` as a backstop; golden
   route-table test updated) — `api-routes-*.ts`, `api-container-guard.ts`.

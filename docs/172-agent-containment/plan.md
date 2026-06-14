@@ -132,8 +132,13 @@ tiers, built **sequentially in one PR** (one self-contained commit per tier, eac
 
 Config moves to the **browser** (default-on global toggle + per-session override +
 allowlist editor), safe to mutate there because SHI-129 default-denies the container from
-the orchestrator API. The **identity-validating proxy** (verify the request carries *this*
-user's token) stays a Phase-2 follow-up on the Tier C hook.
+the orchestrator API. The **identity-validating proxy** is the **Phase-2** work on the Tier C
+hook: `validateIdentity` (`sni-proxy/main.go`) now enforces **SNI-scoped tenant identity** on
+configured multi-tenant hosts — permitting only the session's approved bucket/account
+*surfaced in the SNI* (virtual-hosted style) and denying an attacker tenant on the same
+allowlisted host. Because the proxy never decrypts TLS, identity carried only in the encrypted
+path or auth header (path-style S3, per-account API keys) is **not** enforceable — see
+[egress-control.md](./egress-control.md) "Phase 2" for the precise boundary and the residual.
 
 ### Gap 2 — GitHub token is host-blind *and* sits in plaintext in the workspace `.git/config` *(highest priority)*
 

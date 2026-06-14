@@ -174,6 +174,22 @@ tracker as separate issues. None implemented yet.
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.
+    - [x] **Proxy-side enforcement (`sni-proxy/main.go`).** `validateIdentity` implemented:
+          SNI-scoped tenant rules from a new `EGRESS_PROXY_IDENTITY_RULES` env var (JSON
+          `[{"host":".s3.amazonaws.com","identities":["my-bucket"]}]`). Extracts the tenant
+          prefix from the SNI (virtual-hosted style), permits only approved identities, denies
+          the un-scoped apex (path-style) by default, most-specific rule wins. NO TLS
+          decryption — header/path identity is explicitly out of scope (documented in
+          egress-control.md "Phase 2"). Unit-tested in `sni-proxy/main_test.go`
+          (`go test`/`gofmt`/`go vet` green; binary builds via the sidecar Dockerfile).
+    - [ ] **Orchestrator wiring (other track — NOT done here).** Compose per-session identity
+          rules (the session's own bucket/account on each configured multi-tenant host) and
+          thread them to `launchEgressProxy` as `EGRESS_PROXY_IDENTITY_RULES`, mirroring
+          `EGRESS_PROXY_ALLOWED`. Owned by the allowlist + launch-wiring track
+          (`egress-proxy-install.ts`, `container-lifecycle.ts`).
+    - [ ] **Verify on a live host** once wired: a non-approved tenant SNI on an allowlisted
+          multi-tenant host (e.g. `attacker.s3.amazonaws.com`) is rejected while the session's
+          own bucket splices through; path-style apex denied unless opted in.
 
 ## P1
 

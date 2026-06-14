@@ -19,12 +19,52 @@
 // hand-rolled TLS parser — the bytes read during the peek are recorded and
 // replayed to the upstream so the spliced stream is byte-for-byte intact.
 //
+// Phase 2 (SHI-90) — SNI-scoped identity validation for multi-tenant hosts.
+//
+// An allowlisted MULTI-TENANT host (S3, GCS, Azure Blob, a shared registry…)
+// can still be abused for exfiltration: the host is approved, but the request
+// targets the ATTACKER's bucket/account/org on it. The defining constraint here
+// is that we do NOT decrypt TLS — SNI-peek only, no CA injection, E2E TLS stays
+// intact (the whole premise of this proxy). So identity validation can use only
+// signals available WITHOUT decryption: the SNI hostname, SO_ORIGINAL_DST, and a
+// per-host rule. The HTTP path, query, and Authorization header — where path-style
+// S3 (`s3.amazonaws.com/<bucket>/…`) and per-account API keys (e.g. an Anthropic
+// workspace on `api.anthropic.com`) carry their identity — are encrypted and
+// therefore OUT OF REACH. We do not, and must not, try to read them.
+//
+// What IS enforceable under SNI-only: tenant identity that surfaces as a DNS
+// label in the SNI — i.e. VIRTUAL-HOSTED-style addressing, which most object
+// stores use:
+//
+//	my-bucket.s3.amazonaws.com   my-bucket.s3.us-east-1.amazonaws.com
+//	my-bucket.storage.googleapis.com   myaccount.blob.core.windows.net
+//
+// For a configured multi-tenant base host, validateIdentity extracts the tenant
+// PREFIX (the labels of the SNI before the base) and permits the connection only
+// if that prefix is one of this session's approved identities. The un-scoped APEX
+// SNI (e.g. bare `s3.amazonaws.com`, used by path-style addressing where the
+// bucket is in the encrypted path) is DENIED by default — allowing it would be a
+// trivial bypass (just switch to path-style) — unless the operator explicitly
+// opts in by listing an empty identity "". This is the honest boundary: we force
+// tenant-in-SNI access and block the addressing modes whose identity we cannot
+// see. See docs/172-agent-containment/egress-control.md "Phase 2".
+//
 // Config (env):
-//   EGRESS_PROXY_LISTEN        loopback addr to listen on (default 127.0.0.1:8443)
-//   EGRESS_PROXY_ALLOWED       space-separated allowlist entries (".x.com" suffix or "x.com" exact)
-//   EGRESS_PROXY_DECISION_URL  optional orchestrator endpoint for unknown hosts (Tier C allow-once);
-//                              unset → unknown SNI is denied-fast (the safe default).
-//   EGRESS_PROXY_SESSION_ID    session id, sent with decision queries
+//
+//	EGRESS_PROXY_LISTEN          loopback addr to listen on (default 127.0.0.1:8443)
+//	EGRESS_PROXY_ALLOWED         space-separated allowlist entries (".x.com" suffix or "x.com" exact)
+//	EGRESS_PROXY_DECISION_URL    optional orchestrator endpoint for unknown hosts (Tier C allow-once);
+//	                             unset → unknown SNI is denied-fast (the safe default).
+//	EGRESS_PROXY_SESSION_ID      session id, sent with decision queries
+//	EGRESS_PROXY_IDENTITY_RULES  optional JSON array of per-host identity rules (Phase 2). Each:
+//	                               {"host":".s3.amazonaws.com","identities":["my-bucket"]}
+//	                             `host` is the multi-tenant base (leading-dot or exact, normalized
+//	                             the same way as the allowlist); `identities` are the permitted
+//	                             tenant prefixes (the SNI labels before the base). An empty
+//	                             identity "" permits the un-scoped apex SNI (path-style; identity
+//	                             NOT enforceable — opt-in). Unset/empty → no identity scoping (the
+//	                             Tier C SNI allowlist decision stands unchanged). Malformed JSON is
+//	                             logged and treated as no rules.
 package main
 
 import (
@@ -54,6 +94,10 @@ var (
 	decisionURL = os.Getenv("EGRESS_PROXY_DECISION_URL")
 	sessionID   = os.Getenv("EGRESS_PROXY_SESSION_ID")
 
+	// Phase-2 SNI-scoped identity rules. Parsed once in main() (after logging is
+	// configured), then read-only — handle() goroutines only read it, so no lock.
+	identityRules []identityRule
+
 	errPeeked = errors.New("clienthello peeked")
 
 	// Short positive/negative caches for orchestrator decisions so a retried
@@ -71,11 +115,13 @@ type decision struct {
 func main() {
 	log.SetFlags(0)
 	log.SetPrefix("[egress-proxy] ")
+	identityRules = parseIdentityRules(os.Getenv("EGRESS_PROXY_IDENTITY_RULES"))
 	ln, err := net.Listen("tcp", listenAddr)
 	if err != nil {
 		log.Fatalf("listen %s: %v", listenAddr, err)
 	}
-	log.Printf("listening on %s; %d allowlist entries; decision-url=%q", listenAddr, len(allowlist), decisionURL)
+	log.Printf("listening on %s; %d allowlist entries; %d identity rule(s); decision-url=%q",
+		listenAddr, len(allowlist), len(identityRules), decisionURL)
 	for {
 		c, err := ln.Accept()
 		if err != nil {
@@ -113,17 +159,21 @@ func handle(c net.Conn) {
 		return
 	}
 
+	// Phase-2 identity validation (docs/172, SHI-90). On a configured multi-tenant
+	// host, permit only this session's approved tenant identity — extracted from
+	// the SNI itself (no decryption). Deny-fast before dialing, like any other
+	// deny: the attacker's bucket/account on an allowlisted host has nowhere to go.
+	if !validateIdentity(sni) {
+		log.Printf("deny: identity not permitted for %s (dst %s)", sni, dst)
+		return
+	}
+
 	up, err := net.DialTimeout("tcp", dst, 10*time.Second)
 	if err != nil {
 		log.Printf("dial upstream %s for %s: %v", dst, sni, err)
 		return
 	}
 	defer up.Close()
-
-	// Phase-2 hook (docs/172): an identity-validating proxy would inspect/verify
-	// the request here — e.g. confirm an outbound token belongs to THIS user, not
-	// an attacker — before forwarding. Left as a seam; Tier C only enforces SNI.
-	validateIdentity(sni, up)
 
 	if _, err := up.Write(hello); err != nil { // replay the peeked ClientHello
 		return
@@ -147,8 +197,116 @@ func pipe(a, b net.Conn) {
 	wg.Wait()
 }
 
-// validateIdentity is the Phase-2 seam (no-op in Tier C).
-func validateIdentity(_ string, _ net.Conn) {}
+// identityRule binds a multi-tenant base host to the set of tenant identities
+// this session is allowed to reach on it. The tenant is the SNI label prefix
+// before the base (e.g. "my-bucket" in "my-bucket.s3.amazonaws.com"); the empty
+// prefix "" is the un-scoped apex (path-style), permitted only if listed.
+type identityRule struct {
+	base       string              // normalized multi-tenant base, e.g. "s3.amazonaws.com"
+	identities map[string]struct{} // normalized permitted tenant prefixes
+}
+
+// rawIdentityRule is the on-the-wire JSON shape of EGRESS_PROXY_IDENTITY_RULES.
+type rawIdentityRule struct {
+	Host       string   `json:"host"`
+	Identities []string `json:"identities"`
+}
+
+// parseIdentityRules parses EGRESS_PROXY_IDENTITY_RULES. Empty/unset → no rules.
+// Malformed JSON is logged and treated as no rules (the orchestrator builds this
+// value, so a parse error is a bug, not an attack — fail to "no identity scoping"
+// rather than blackholing the whole session; the SNI allowlist still applies).
+func parseIdentityRules(raw string) []identityRule {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var parsed []rawIdentityRule
+	if err := json.Unmarshal([]byte(raw), &parsed); err != nil {
+		log.Printf("WARN: EGRESS_PROXY_IDENTITY_RULES is not valid JSON (%v) — no identity scoping applied", err)
+		return nil
+	}
+	rules := make([]identityRule, 0, len(parsed))
+	for _, p := range parsed {
+		base := identityBase(p.Host)
+		if base == "" {
+			log.Printf("WARN: identity rule with empty host skipped")
+			continue
+		}
+		ids := make(map[string]struct{}, len(p.Identities))
+		for _, id := range p.Identities {
+			ids[normHost(id)] = struct{}{}
+		}
+		rules = append(rules, identityRule{base: base, identities: ids})
+	}
+	return rules
+}
+
+// normHost normalizes a hostname (or tenant prefix) for comparison: trim space,
+// drop a single trailing dot, lowercase. Mirrors matchEntry / egress-allowlist.ts.
+func normHost(s string) string {
+	s = strings.TrimSpace(s)
+	s = strings.TrimSuffix(s, ".")
+	return strings.ToLower(strings.TrimSpace(s))
+}
+
+// identityBase normalizes a rule's `host` to its base form: a leading-dot entry
+// (".s3.amazonaws.com") and an exact entry ("s3.amazonaws.com") both reduce to
+// the same base — the leading dot only governs allowlist matching (handled by
+// decide), not tenant extraction.
+func identityBase(host string) string {
+	return normHost(strings.TrimPrefix(strings.TrimSpace(host), "."))
+}
+
+// tenantPrefix returns the tenant portion of `sni` for a rule whose base is
+// `base`, and whether the SNI belongs to that base at all:
+//   - sni == base        → ("", true)            the un-scoped apex (path-style)
+//   - sni == "<x>.base"  → ("<x>", true)         virtual-hosted tenant (x may hold dots)
+//   - otherwise          → ("", false)           not governed by this base
+func tenantPrefix(sni, base string) (string, bool) {
+	h := normHost(sni)
+	if h == base {
+		return "", true
+	}
+	if suffix := "." + base; strings.HasSuffix(h, suffix) {
+		return strings.TrimSuffix(h, suffix), true
+	}
+	return "", false
+}
+
+// matchIdentityRule returns the most-specific (longest-base) identity rule that
+// governs `sni`, or nil if no rule does.
+func matchIdentityRule(sni string) *identityRule {
+	var best *identityRule
+	for i := range identityRules {
+		r := &identityRules[i]
+		if _, ok := tenantPrefix(sni, r.base); ok {
+			if best == nil || len(r.base) > len(best.base) {
+				best = r
+			}
+		}
+	}
+	return best
+}
+
+// validateIdentity enforces SNI-scoped tenant identity on configured multi-tenant
+// hosts (Phase 2, docs/172). It uses ONLY the SNI — no decryption. A host with no
+// identity rule is unaffected (returns true; the Tier C SNI allowlist decision
+// stands). For a governed host, the connection is permitted only if the SNI's
+// tenant prefix is one of the session's approved identities; the un-scoped apex
+// (path-style, identity not visible) is denied unless "" was explicitly listed.
+func validateIdentity(sni string) bool {
+	rule := matchIdentityRule(sni)
+	if rule == nil {
+		return true
+	}
+	tenant, ok := tenantPrefix(sni, rule.base)
+	if !ok {
+		return true // defensive: matchIdentityRule already confirmed it belongs
+	}
+	_, permitted := rule.identities[tenant]
+	return permitted
+}
 
 // decide returns whether traffic to the given SNI is permitted: static allowlist
 // first (fast path), then — only if a decision URL is configured (Tier C
