@@ -374,6 +374,8 @@ export function registerAgentOpsRoutes(
       title?: string;
       agent?: string;
       model?: string;
+      // docs/205 — completely separate (parentless) spawn; forwarded verbatim.
+      detached?: boolean;
     };
   }>(
     "/agent-ops/session/create",

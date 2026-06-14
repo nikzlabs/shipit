@@ -138,7 +138,15 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
 
   // 4. Optional model + parent linkage (child + quick concerns).
   if (model) sessionManager.setModel(sessionId, model);
-  if (parentSessionId) sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
+  if (parentSessionId) {
+    sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
+  } else if (spawnedByTurn) {
+    // docs/205 — a `--detached` spawn is deliberately parentless (flat in the
+    // sidebar, uncoordinatable) but still records its originating turn so the
+    // per-turn spawn cap can count it. `setParentSession` couples the turn id to
+    // a parent, so persist it on its own here when there's no parent to write.
+    sessionManager.setSpawnedByTurn(sessionId, spawnedByTurn);
+  }
 
   // 5. Naming policy: AI rename only when caller pinned nothing AND the
   //    workspace exists. Either explicit field opts out — the caller's

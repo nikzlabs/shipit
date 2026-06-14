@@ -49,6 +49,50 @@ only fan-out primitive — and that doesn't make it cheap. The same
 has signaled they want parallel work. Don't reach for it as a generic
 optimization for your own work.
 
+### Child vs detached spawns
+
+A `shipit session create` spawn comes in two shapes. Pick deliberately:
+
+- **Child (default).** The new session is **linked** to yours: it nests under
+  you in the sidebar, and you can coordinate it — `list`, `view`, `wait`,
+  `message`, `notify-on-merge`. Use this when the spawned work is **related to
+  what you're doing here** and you'll want to track it: you'll want its result,
+  you'll rebase onto it, you'll follow up, or you'll want to be told when it
+  merges.
+
+- **Detached (`--detached`).** The new session is **completely separate** — no
+  parent link, no sidebar nesting, no coordination, and **no card in this
+  chat**. It is identical to a session the user created by hand. Once you spawn
+  it, your relationship to it is over: you **cannot** `wait` / `view` /
+  `message` / `notify-on-merge` it (those only reach children). Use it **only**
+  for work that is **unrelated to your current task and that you will never need
+  to hear about again**.
+
+**The test:** *will I, or the user through this session, ever want to know what
+happened to it?* If **yes** → child (omit `--detached`). If **no** — it's
+incidental, unrelated work you're handing off for good — → `--detached`. Put
+another way: **if a notification would ever be useful, it should have been a
+child.**
+
+**Canonical `--detached` case.** While implementing feature A you (or the user)
+notice an unrelated bug, and the user asks you to spin off a session to fix it.
+That fix has nothing to do with A — you won't wait on it, won't rebase onto it,
+don't care when it merges. Spawn it `--detached` and carry on with A:
+
+```sh
+shipit session create --detached --prompt-file - --title "Fix unrelated logging bug" <<'EOF'
+There's an unrelated bug: the request logger double-encodes the trace id. Fix it
+and open a PR. This is independent of any other in-flight work.
+EOF
+```
+
+**Do NOT use `--detached`** when the spawned work merges into something you
+depend on, when you'll send it follow-ups, or when you want to be notified on
+merge — that is exactly what a child spawn is for. When unsure, prefer the child:
+an unused coordination handle costs nothing, but a detachment you regret cannot
+be undone (there is no link to re-establish, and no `adopt`). `--detached` is
+rejected together with `--shipit-source` (a fix session is inherently tracked).
+
 ## The `shipit` shim
 
 `shipit` is a **ShipIt-provided shim**, not a generic CLI. It exposes a
@@ -65,7 +109,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create --prompt-file FILE --title T [--agent claude\|codex] [--model M] [--turn ID] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. Returns the child's id, branch, and status on stdout. |
+| `shipit session create --prompt-file FILE --title T [--agent claude\|codex] [--model M] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available. |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt; exit is `0` either way and the response prints the queue position. |
@@ -222,12 +266,16 @@ Under the hood, `shipit session create`:
    the parent's working tree.
 3. Persists a parent linkage on the child's session row, so the sidebar can
    group it under the parent and `shipit session list` can scope by parent.
+   **With `--detached` this step is skipped** — no parent linkage is written, so
+   the session is top-level (not nested) and uncoordinatable (see *Child vs
+   detached spawns* above).
 4. Enqueues the `--prompt-file` contents as the child's first user message, so
    the child's agent starts working autonomously the moment its container is ready.
 5. Surfaces the new session in the user's sidebar immediately.
 
-The parent's chat shows a system note that a session was spawned. The
-parent **cannot**:
+For a **child** spawn the parent's chat shows a system note that a session was
+spawned; a **detached** spawn shows nothing in this chat (its only trace is its
+own PR, when it opens one). In both cases the parent **cannot**:
 
 - Read or write the child's files directly (no shared workspace).
 - Approve permission prompts on the child's behalf.

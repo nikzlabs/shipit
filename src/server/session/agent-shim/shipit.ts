@@ -35,7 +35,7 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
                           [--agent claude|codex] [--model M]
-                          [--turn ID] [--shipit-source] [--approximate] [--json]
+                          [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
   shipit session message <id> -m "TEXT" [--json]
@@ -112,6 +112,16 @@ human-readable name describing what it's for. It appears in the sidebar.
 Use \`shipit session create\` when the user explicitly asked for a separate
 session / parallel branch / independent workspace. For in-turn fan-out
 under Claude, prefer the built-in \`Task\` tool.
+
+By default a spawned session is a CHILD: it nests under this session in the
+sidebar and you can coordinate it (\`list\`/\`view\`/\`wait\`/\`message\`/
+\`notify-on-merge\`). Add \`--detached\` for a COMPLETELY SEPARATE session —
+no nesting, no coordination, no card in this chat; identical to a session the
+user made by hand. Use it ONLY for work unrelated to your current task that you
+will never need to hear about again (e.g. spinning off a fix for an unrelated
+bug). The test: if you'd ever want to wait on it, follow up, or be told it
+merged, it should be a child — omit \`--detached\`. \`--detached\` cannot be
+combined with \`--shipit-source\`.
 
 In an Ops session, use \`shipit source *\` to read the ShipIt source code that
 runs this host, then \`shipit session create --shipit-source --title "..."\` to
@@ -435,6 +445,9 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     },
     booleans: {
       "--json": "json",
+      // docs/205 — spawn a completely separate (parentless) session: no
+      // linkage, no sidebar nesting, no coordination, no chat card.
+      "--detached": "detached",
       // docs/162 — Ops-only: target the ShipIt source repo, branched off the
       // exact deployed commit the Ops session inspected.
       "--shipit-source": "shipitSource",
@@ -455,6 +468,12 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   }
   if (parsed.booleans.has("approximate") && !parsed.booleans.has("shipitSource")) {
     fail(deps.io, "shipit session create: --approximate only applies with --shipit-source.");
+  }
+  // docs/205 — a ShipIt fix session is inherently tracked (it's coordinated and
+  // opens a PR against the ShipIt repo under an incident packet), so detaching
+  // it makes no sense. Reject the combination rather than silently ignoring one.
+  if (parsed.booleans.has("detached") && parsed.booleans.has("shipitSource")) {
+    fail(deps.io, "shipit session create: --detached cannot be combined with --shipit-source.");
   }
   const promptFile = parsed.values.promptFile;
   if (!promptFile) {
@@ -498,6 +517,7 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
   if (parsed.values.agent) payload.agent = parsed.values.agent;
   if (parsed.values.model) payload.model = parsed.values.model;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;
+  if (parsed.booleans.has("detached")) payload.detached = true;
   if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;
   if (parsed.booleans.has("approximate")) payload.approximateSource = true;
 
@@ -518,6 +538,11 @@ async function handleSessionCreate(args: string[], deps: RunDeps): Promise<void>
     `branch:     ${asString(res.body.branch)}`,
     `status:     ${asString(res.body.status) || "running"}`,
   ];
+  // docs/205 — make it unmistakable that a detached spawn is severed: the agent
+  // must not expect to `wait`/`view`/`message` it afterward.
+  if (parsed.booleans.has("detached")) {
+    lines.push("detached:   yes (separate session — not a child; cannot be waited on, viewed, or messaged from here)");
+  }
   success(deps.io, lines.join("\n"));
 }
 

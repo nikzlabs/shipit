@@ -1091,5 +1091,122 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(spawnRes.statusCode).toBe(400);
     expect(spawnRes.json().error).toMatch(/no remote URL/i);
   });
+
+  // -------------------------------------------------------------------------
+  // docs/205 — detached spawns (completely separate, no linkage/coordination)
+  // -------------------------------------------------------------------------
+
+  it("POST /spawn --detached creates a session with NO parent/root linkage", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix an unrelated bug", title: "Unrelated fix", detached: true, spawnedByTurn: "turn-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      sessionId: string;
+      session: { parentSessionId?: string; rootSessionId?: string; spawnedByTurn?: string };
+    };
+    // No linkage in the response …
+    expect(body.session.parentSessionId).toBeUndefined();
+    expect(body.session.rootSessionId).toBeUndefined();
+
+    // … nor persisted. But the spawning turn IS recorded (for the per-turn cap).
+    const reloaded = sessionManager.get(body.sessionId);
+    expect(reloaded?.parentSessionId).toBeUndefined();
+    expect(reloaded?.rootSessionId).toBeUndefined();
+    expect(reloaded?.spawnedByTurn).toBe("turn-1");
+  });
+
+  it("a detached session is absent from the parent's children and uncoordinatable", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Fix an unrelated bug", title: "Unrelated fix", detached: true },
+    });
+    const { sessionId: detachedId } = res.json() as { sessionId: string };
+
+    // Not listed as a child of the parent.
+    const list = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children` });
+    expect((list.json().children as unknown[]).length).toBe(0);
+
+    // Not viewable through the parent — coordination resolves via parentSessionId,
+    // which a detached session lacks, so it 404s exactly like a stranger's session.
+    const view = await app.inject({ method: "GET", url: `/api/sessions/${parentId}/children/${detachedId}` });
+    expect(view.statusCode).toBe(404);
+  });
+
+  it("a detached spawn emits NO session_spawned card in the parent chat", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const parentClient = await TestClient.connect(port, parentId);
+
+    try {
+      // Spawn a detached session first, then a normal child. If the detached
+      // spawn (incorrectly) emitted a card, it would arrive BEFORE the child's.
+      // Asserting the first `session_spawned` we see is the CHILD proves the
+      // detached spawn stayed silent — deterministic, no negative timeout.
+      const detached = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "unrelated", title: "Detached one", detached: true },
+      });
+      expect(detached.statusCode).toBe(200);
+      const detachedId = (detached.json() as { sessionId: string }).sessionId;
+
+      const child = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "related work", title: "Real child" },
+      });
+      expect(child.statusCode).toBe(200);
+      const childId = (child.json() as { sessionId: string }).sessionId;
+
+      const spawnedMsg = await parentClient.receiveType("session_spawned", 5000) as {
+        childSessionId: string;
+        title: string;
+      };
+      expect(spawnedMsg.childSessionId).toBe(childId);
+      expect(spawnedMsg.title).toBe("Real child");
+      // Sanity: the card is definitively NOT the detached session's.
+      expect(spawnedMsg.childSessionId).not.toBe(detachedId);
+    } finally {
+      parentClient.close();
+    }
+  });
+
+  it("detached spawns count against the per-turn cap (alongside linked children)", { timeout: 30_000 }, async () => {
+    const parentId = await createParentSession();
+
+    // Mix linked + detached under one turn: 2 + 2 = 4 (the default cap).
+    for (let i = 0; i < 2; i++) {
+      const linked = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: `linked-${i}`, title: `Linked ${i}`, spawnedByTurn: "turn-1" },
+      });
+      expect(linked.statusCode).toBe(200);
+    }
+    for (let i = 0; i < 2; i++) {
+      const det = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: `detached-${i}`, title: `Detached ${i}`, detached: true, spawnedByTurn: "turn-1" },
+      });
+      expect(det.statusCode).toBe(200);
+    }
+
+    // The 5th spawn this turn — detached or not — is over the cap.
+    const limited = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "detached-3", title: "Detached 3", detached: true, spawnedByTurn: "turn-1" },
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json().error).toContain("Per-turn spawn limit");
+  });
 });
 

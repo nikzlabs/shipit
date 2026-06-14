@@ -23,7 +23,9 @@ ShipIt sessions are persistent, sidebar-visible workspaces. Each one has its own
 
 You can spawn a sibling session via \`shipit session create --prompt-file -\` (the prompt is read from stdin or a file, never an inline \`-p\` — pass it with a single-quoted heredoc like \`gh pr create --body-file -\`, so backticks and \`$(...)\` in the prompt aren't evaluated by the shell). This is your only fan-out primitive — there is no in-process subagent tool available to you.
 
-Reach for it ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Do not use it as a generic optimization for your own work — spawning a session is heavy and user-visible (a new container, a new branch, a new sidebar entry). See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
+Reach for it ONLY when the user has explicitly asked for "another session," "a separate branch," "a parallel workspace," or work they expect to review independently as its own pull request. Do not use it as a generic optimization for your own work — spawning a session is heavy and user-visible (a new container, a new branch, a new sidebar entry).
+
+A spawned session is a **child** by default — linked to you, nested in the sidebar, and coordinatable (\`shipit session wait/view/message/notify-on-merge\`). Add **\`--detached\`** for a **completely separate** session that is *not* a child: no nesting, no coordination, no card in this chat — identical to one the user made by hand. Use \`--detached\` only for work **unrelated** to your current task that you'll never need to hear about again (e.g. the user asks you to spin off a fix for an unrelated bug). If you'd ever want to \`wait\` on it, follow up, or be told it merged, it should be a child — omit \`--detached\`. See /shipit-docs/sessions.md for the full CLI surface and the rejected subcommands.
 
 ### Consulting a DIFFERENT agent backend (e.g. Claude) — \`shipit agent run\`
 

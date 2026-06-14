@@ -76,22 +76,39 @@ A detached spawn writes **neither**:
 but because the **per-turn spawn cap** (`MAX_SPAWNED_SESSIONS_PER_TURN`, default
 4) counts through it. A detached spawn still boots a full container, so it must
 still count against the anti-runaway cap. This is purely internal accounting:
-`spawnedByTurn` is never surfaced (the turn-scoped `shipit session list --turn`
-still resolves through `findChildren`, which a parentless session is absent
-from), so it does not make the session visible, listable, or linked. The
-per-**parent** active-children cap does *not* apply to detached spawns (they
-aren't anyone's child); they count only against whatever global/user session
-limits exist, same as a manual session.
+`spawnedByTurn` is never surfaced, so it does not make the session visible,
+listable, or linked. The per-**parent** active-children cap does *not* apply to
+detached spawns (they aren't anyone's child); they count only against the
+per-turn cap (plus whatever global/user session limits exist), same as a manual
+session.
+
+**Counting mechanism (as built).** The per-turn count is the crux: detached
+sessions are parentless, so `findChildren(parent)` — which the old per-turn
+count filtered — never returns them. So the cap now sums two sources:
+
+- linked children of this parent spawned this turn (`findChildren(parent)`
+  filtered by `spawnedByTurn`, unchanged), **plus**
+- detached sessions spawned this turn (`SessionManager.countDetachedSpawnedInTurn`,
+  a `WHERE parent_session_id IS NULL AND spawned_by_turn = ? AND user_archived = 0`
+  count).
+
+Because `graduateSession` only persisted `spawnedByTurn` *through*
+`setParentSession` (which needs a parent), a detached spawn persists it via a
+dedicated `SessionManager.setSpawnedByTurn(id, turn)` path instead. The count is
+scoped only by turn id (a turn belongs to one parent), so it never *under*-counts;
+a same-turn-string collision across two parents would only over-count — the safe,
+fail-closed direction for a runaway guard.
 
 > Decision: keep `spawnedByTurn` for rate-limiting only. If we ever want
 > detached spawns truly uncounted, that's a follow-up — but unbounded
 > container creation from a single turn is a footgun we shouldn't open.
 
-## Agent instruction (destined for `shipit-docs/sessions.md`)
+## Agent instruction (shipped)
 
-This is the load-bearing deliverable — the guidance the running agent reads. It
-ships into `sessions.md` **when the flag lands**, not before (documenting a flag
-that errors would mislead the agent). Draft:
+This is the load-bearing deliverable — the guidance the running agent reads. As
+of this implementation it is **live** in `shipit-docs/sessions.md` (the *Child vs
+detached spawns* section) and in the per-agent runtime system prompts
+(`agents/claude/system-prompt.ts`, `agents/codex/system-prompt.ts`). The wording:
 
 > ### Detached spawns — completely separate, fire-and-forget
 >
@@ -132,24 +149,36 @@ that errors would mislead the agent). Draft:
   auto-pushes, and opens its own PR. The PR is the only thread back to the work,
   and it lives in the normal PR surface, attributable to nobody in particular.
 
-## Key files
+## Key files (as built)
 
-- `src/server/orchestrator/sessions.ts` — `setParentSession()` (the write to
-  skip for detached), `findChildren()`, `filterVisibleInSidebar()`.
-- The `shipit session create` shim handler (orchestrator side) — add `--detached`
-  parsing; when set, skip the parent/root write and the `session_spawned` emit,
-  but still record `spawnedByTurn` and enforce the per-turn cap.
+- `src/server/orchestrator/sessions.ts` — added `setSpawnedByTurn()` (persist the
+  turn id without a parent) and `countDetachedSpawnedInTurn()` (per-turn count for
+  parentless spawns). `filterVisibleInSidebar()`/`findChildren()` unchanged — a
+  detached row is flat + uncoordinatable purely by *not* writing the columns they
+  key off.
+- `src/server/orchestrator/services/graduate-session.ts` — persist `spawnedByTurn`
+  via `setSpawnedByTurn` when there's no `parentSessionId`.
+- `src/server/orchestrator/services/child-sessions.ts` — `detached` option; omit
+  parent/root linkage; per-turn cap sums linked + detached; per-parent cap skipped
+  for detached.
+- `src/server/orchestrator/api-routes-session.ts` — `detached` on the spawn body;
+  gate both the `session_spawned` and `session_spawn_failed` cards off it.
+- `src/server/session/agent-ops-routes.ts` — `detached` on the relay body type.
+- `src/server/session/agent-shim/shipit.ts` — `--detached` flag, `--shipit-source`
+  conflict guard, payload field, output line, help text.
 - `src/client/components/SessionSidebar.tsx` — no change needed; a row with no
   `rootSessionId` already renders top-level.
-- `src/server/shipit-docs/sessions.md` — add the agent instruction above **when
-  the flag ships**.
-- Tests: spawn-with-`--detached` writes no `parentSessionId`/`rootSessionId`,
-  is absent from the parent's `findChildren`, still counts against the per-turn
-  cap, and emits no `session_spawned` event.
+- `src/server/shipit-docs/sessions.md` + `agents/{claude,codex}/system-prompt.ts`
+  — the agent instruction.
+- Tests: `integration_tests/agent-spawned-session.test.ts` (no linkage, absent
+  from `findChildren`, view 404, per-turn cap incl. mixed, no card) and
+  `agent-shim/shipit.test.ts` (forwards `detached`, omits when absent, rejects
+  `--detached --shipit-source`).
 
-## Open questions
+## Resolved decisions
 
-- **Flag name.** `--detached` (git/docker precedent for "no attachment") vs
-  `--standalone` / `--separate`. Leaning `--detached`.
-- **Per-turn cap for detached.** Kept (resource protection). Revisit only if a
-  real workflow needs uncounted spawns.
+- **Flag name:** `--detached` (git/docker precedent for "no attachment").
+- **Per-turn cap for detached:** kept (resource protection), via
+  `countDetachedSpawnedInTurn`. The per-parent active-children cap does not apply.
+- **Failure cards:** a detached spawn is silent in the parent chat on failure too
+  — the agent gets the error on the shim's non-zero exit and handles it itself.

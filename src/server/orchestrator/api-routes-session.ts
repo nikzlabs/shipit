@@ -587,6 +587,9 @@ export async function registerSessionRoutes(
       agent?: AgentId;
       model?: string;
       spawnedByTurn?: string;
+      // docs/205 — spawn a completely separate (parentless) session instead of
+      // a child: no linkage, no sidebar nesting, no coordination, no chat card.
+      detached?: boolean;
       // docs/162 — Ops-only "fix ShipIt itself" target.
       shipitSource?: boolean;
       approximateSource?: boolean;
@@ -712,6 +715,7 @@ export async function registerSessionRoutes(
             ...(body.agent !== undefined ? { agent: body.agent } : {}),
             ...(body.model !== undefined ? { model: body.model } : {}),
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
+            ...(body.detached ? { detached: true } : {}),
             ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
             // docs/162 — fix-session spawns get a lower per-turn cap than
             // generic fan-out children (they each claim the ShipIt repo and
@@ -735,7 +739,10 @@ export async function registerSessionRoutes(
         // the card lands at its true transcript position; `emitChatCard`
         // persists the in-progress turn immediately (docs/191), so it's durable
         // the instant it fires rather than at the next tool-result boundary.
-        const parentRunner = deps.runnerRegistry.get(request.params.parentId);
+        // docs/205 — a `--detached` spawn emits NO card: it is meant to be a
+        // completely separate session the parent never hears about again. The
+        // agent still sees the spawn result on the shim's stdout.
+        const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
           const spawnedSession = {
             childSessionId: result.sessionId,
@@ -781,7 +788,10 @@ export async function registerSessionRoutes(
         // unlike a successful spawn there is NO sidebar row to fall back on, so
         // persistence is the only record of the failure. `id` is generated for
         // live-append idempotency (a failure has no natural key).
-        const parentRunner = deps.runnerRegistry.get(request.params.parentId);
+        // docs/205 — a `--detached` spawn stays silent on failure too (the
+        // parent session is meant never to hear about it); the agent gets the
+        // error on the shim's non-zero exit + stderr and handles it itself.
+        const parentRunner = body.detached ? undefined : deps.runnerRegistry.get(request.params.parentId);
         if (parentRunner) {
           const promptPreview = (body.prompt ?? "")
             .trim()

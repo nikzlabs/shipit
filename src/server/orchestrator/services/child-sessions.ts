@@ -112,6 +112,22 @@ export interface SpawnChildSessionOptions {
    * Combine with `base` to pin the child to the exact inspected source commit.
    */
   repoUrlOverride?: string;
+  /**
+   * docs/205 — spawn a **completely separate** session instead of a child.
+   * When true, NO parent linkage (`parentSessionId`) or root linkage
+   * (`rootSessionId`) is written, so the new session renders as a flat,
+   * top-level row (indistinguishable from a manually-created session) and is
+   * uncoordinatable by construction — the shim's `list`/`view`/`wait`/
+   * `message`/`notify-on-merge` all resolve through `parentSessionId`, which a
+   * detached session lacks. No `session_spawned` card is emitted in the parent
+   * chat either (the route gates on this). The spawning turn id is still
+   * recorded so the per-turn spawn cap counts it; the per-parent active-children
+   * cap does not apply (a detached session is nobody's child).
+   *
+   * For the case where the agent spins off genuinely unrelated work (e.g.
+   * fixing an unrelated bug it noticed) and should never hear about it again.
+   */
+  detached?: boolean;
 }
 
 export interface SpawnChildSessionResult {
@@ -175,21 +191,32 @@ export async function spawnChildSession(
   }
 
   // Quota: per-parent cap on active spawned children. Fail-closed.
-  const maxActive = opts.maxActiveSpawnedSessions ?? DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS;
+  // docs/205 — a detached spawn is not a child (no parent linkage), so it does
+  // not count against and is not bounded by the per-parent active-children cap;
+  // the per-turn cap below is its only fan-out bound.
   const existingChildren = sessionManager.findChildren(parentSessionId);
-  if (existingChildren.length >= maxActive) {
-    throw new ServiceError(
-      429,
-      `This session already has ${existingChildren.length} spawned children (max ${maxActive}). Archive one before spawning another.`,
-    );
+  if (!opts.detached) {
+    const maxActive = opts.maxActiveSpawnedSessions ?? DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS;
+    if (existingChildren.length >= maxActive) {
+      throw new ServiceError(
+        429,
+        `This session already has ${existingChildren.length} spawned children (max ${maxActive}). Archive one before spawning another.`,
+      );
+    }
   }
 
-  // Quota: per-turn cap. Skipped when no turn id is supplied; the per-parent
-  // cap still bounds total fanout.
+  // Quota: per-turn cap. Skipped when no turn id is supplied. Counts BOTH
+  // linked children of this parent (via findChildren) AND detached sessions
+  // spawned in the same turn (docs/205 — detached sessions are parentless so
+  // they never appear in findChildren; `countDetachedSpawnedInTurn` is how the
+  // cap still bounds them). Applies to detached and linked spawns alike — the
+  // cap exists to stop a runaway turn booting unbounded containers, and a
+  // detached spawn boots one just the same.
   if (opts.spawnedByTurn) {
     const maxPerTurn = opts.maxSpawnedSessionsPerTurn ?? DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN;
-    const inThisTurn = existingChildren.filter((c) => c.spawnedByTurn === opts.spawnedByTurn).length;
-    if (inThisTurn >= maxPerTurn) {
+    const linkedThisTurn = existingChildren.filter((c) => c.spawnedByTurn === opts.spawnedByTurn).length;
+    const detachedThisTurn = sessionManager.countDetachedSpawnedInTurn(opts.spawnedByTurn);
+    if (linkedThisTurn + detachedThisTurn >= maxPerTurn) {
       throw new ServiceError(
         429,
         `Per-turn spawn limit reached (${maxPerTurn}). Wait for the current turn to end before spawning more sessions.`,
@@ -305,6 +332,11 @@ export async function spawnChildSession(
   // inherits the parent's root; otherwise the parent IS the root. Computed once
   // here (one field read) so the chain is never walked at read time, and so a
   // grandchild groups under the same top-level session as its parent.
+  // docs/205 — a detached spawn writes NEITHER `parentSessionId` nor
+  // `rootSessionId`: null `rootSessionId` makes the sidebar render it flat
+  // (top-level, like a manual session), and null `parentSessionId` makes it
+  // uncoordinatable by construction. `spawnedByTurn` is still passed so
+  // `graduateSession` records it (for the per-turn cap) even without a parent.
   const rootSessionId = parent.rootSessionId ?? parentSessionId;
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
@@ -313,8 +345,7 @@ export async function spawnChildSession(
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
     ...((opts.model ?? parent.model) ? { model: (opts.model ?? parent.model)! } : {}),
-    parentSessionId,
-    rootSessionId,
+    ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
 
