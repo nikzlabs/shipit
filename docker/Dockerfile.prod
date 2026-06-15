@@ -43,6 +43,21 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
  && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
+# No-op git credential helper (docs/192 / SHI follow-up). Session workspaces
+# carry a *local* `credential.helper = /usr/local/bin/shipit-git-credential` so
+# the in-container agent resolves the brokered GitHub token (docs/088). That
+# brokering binary is installed only in the session-worker images. When the
+# orchestrator runs git against such a workspace (auto-push, `gh pr create`,
+# ls-remote for the force-push lease), git answers `get` from the orchestrator's
+# own global inline helper (consulted first) but still broadcasts `store`/`erase`
+# to EVERY configured helper — including the local broker, which here resolves to
+# a path that does not exist → `shipit-git-credential ...: not found` on every
+# push. Installing a silent no-op at that path absorbs the broker's
+# get/store/erase calls (cat drains stdin, prints nothing, exits 0) so the
+# orchestrator's own global helper remains the sole credential source.
+RUN printf '#!/bin/sh\nexec cat >/dev/null 2>&1\n' > /usr/local/bin/shipit-git-credential \
+ && chmod 0755 /usr/local/bin/shipit-git-credential
+
 WORKDIR /app
 
 # Copy pre-built node_modules from build stage (includes compiled node-pty)

@@ -424,3 +424,27 @@ _None — see "Re-armed card presentation"._
   fire together: the new open PR is then picked up by the resumed poller and
   overwrites the merged card. Coverage in `agent-driven-pr.test.ts`
   ("creates a NEW PR when the prior PR merged but the branch progressed").
+
+- **Force-push lease must be computed fresh, not bare (bug fix).** The re-arm
+  force push above used a bare `--force-with-lease`, which leases against the
+  local remote-tracking ref `refs/remotes/origin/<branch>`. After the merge that
+  ref is stale — the remote branch was deleted at merge (auto-delete / ShipIt's
+  best-effort prune) or simply never re-fetched — so git rejected EVERY re-arm
+  push with `[rejected] (stale info)`, even right after a manual `git fetch`, and
+  the follow-up PR could never be opened. `GitManager.forcePush` now reads the
+  remote's LIVE tip via `git ls-remote` (`remoteBranchSha`) and leases against
+  that explicit value (`forcePushWithLease`); when the remote branch is gone it
+  creates the ref with a plain push (nothing to clobber). This keeps the lease's
+  protection — a genuine concurrent move underneath a known expected sha is still
+  rejected — without the staleness. All force-push sites funnel through
+  `forcePush` (re-arm `quickCreatePr`/`agentCreatePr`, rebase-driver
+  auto-resolve), so they all get the fix. Coverage:
+  `src/server/shared/git-force-push-lease.test.ts`.
+
+  Separately, the orchestrator-side push surfaced
+  `shipit-git-credential ...: not found` noise: session workspaces carry a local
+  `credential.helper` pointing at the in-container broker, which the orchestrator
+  image doesn't install (docs/192). A silent no-op shim is now baked into the
+  orchestrator images (`docker/Dockerfile.{prod,dev,dogfood}`) so git's
+  `store`/`erase` calls to the broker are absorbed; the orchestrator still
+  authenticates via its own global inline helper.

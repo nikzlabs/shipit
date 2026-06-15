@@ -571,11 +571,75 @@ export class GitManager {
     }
   }
 
-  /** Force push with lease — safe force push that fails if remote has unexpected commits. */
+  /**
+   * Read the remote's CURRENT tip sha for `branch` via a live `git ls-remote`
+   * (a network query, independent of the local `refs/remotes/origin/*` tracking
+   * ref). Returns null when the remote has no such branch.
+   *
+   * Used to compute a *non-stale* `--force-with-lease` expected value right
+   * before a force push — see {@link forcePush}.
+   */
+  async remoteBranchSha(remote = "origin", branch?: string): Promise<string | null> {
+    const currentBranch = branch ?? (await this.getCurrentBranch());
+    try {
+      const out = await this.git.listRemote(["--heads", remote, currentBranch]);
+      // `<sha>\trefs/heads/<branch>` per matching ref; empty when absent.
+      const line = out
+        .split("\n")
+        .map((l) => l.trim())
+        .find((l) => l.length > 0);
+      if (!line) return null;
+      const sha = line.split(/\s+/)[0];
+      return /^[0-9a-f]{40}$/i.test(sha) ? sha : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Force push the current branch, leasing against the remote's **live** tip.
+   *
+   * Why not a bare `--force-with-lease`: that form pins the lease to the local
+   * remote-tracking ref `refs/remotes/origin/<branch>`. In the follow-up-PR flow
+   * (a merged PR's branch is rebased onto the now-advanced base and gains new
+   * work — docs/202), that tracking ref is stale: the remote branch was deleted
+   * at merge (auto-delete / ShipIt's best-effort prune), or it simply was never
+   * re-fetched for this branch. So the bare lease's expected value no longer
+   * matches the remote and git rejects *every* push with `[rejected] (stale
+   * info)` — repeatably, even right after a manual `git fetch`.
+   *
+   * Reading the live remote tip via {@link remoteBranchSha} makes the lease
+   * correct post-rebase while keeping it a real lease, not a bare `--force`: if
+   * the remote moves between the read and the push, the expected value no longer
+   * matches and the push is still rejected (see {@link forcePushWithLease}).
+   * ShipIt owns its feature branches, so the only legitimate remote states are
+   * "the pre-rebase commits it pushed itself" or "deleted" — both resolved here.
+   */
   async forcePush(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await this.git.push(remote, currentBranch, ["--force-with-lease", "--set-upstream"]);
-    const msg = `Force pushed to ${remote}/${currentBranch}`;
+    const expected = await this.remoteBranchSha(remote, currentBranch);
+    return this.forcePushWithLease(remote, currentBranch, expected);
+  }
+
+  /**
+   * Force push `branch` with an explicit lease: the remote ref must currently be
+   * at `expectedRemoteSha`, or git rejects the push with `(stale info)` and the
+   * remote is left untouched. Pass `null` when the remote branch is expected to
+   * be absent — that push *creates* the ref, so there is nothing to clobber and
+   * no lease is applied (a bare `--force-with-lease` would itself reject here,
+   * leasing against the stale tracking ref that still names the deleted tip; a
+   * concurrent create is still caught as a non-fast-forward by the plain push).
+   */
+  async forcePushWithLease(
+    remote: string,
+    branch: string,
+    expectedRemoteSha: string | null,
+  ): Promise<string> {
+    const args = expectedRemoteSha
+      ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
+      : ["--set-upstream"];
+    await this.git.push(remote, branch, args);
+    const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
   }
