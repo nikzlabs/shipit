@@ -373,3 +373,20 @@ export function parseGitHubRemote(url: string): { owner: string; repo: string } 
   if (sshMatch) return { owner: sshMatch[1], repo: sshMatch[2] };
   return null;
 }
+
+/**
+ * Swap the `owner/repo` segment of a GitHub remote URL while preserving the
+ * scheme (HTTPS or SSH) and any `.git` suffix. Used to repair a cached remote
+ * URL after a repo is transferred/renamed on GitHub (e.g. nicolasalt/shipit →
+ * nikzlabs/shipit), so it points at the canonical owner.
+ *
+ * Returns the rewritten URL, or `null` if the input isn't a recognizable GitHub
+ * remote (caller leaves the original untouched).
+ */
+export function rewriteGitHubRemoteOwnerRepo(url: string, owner: string, repo: string): string | null {
+  // Match `github.com` followed by either `/` (HTTPS) or `:` (SSH), then the
+  // current owner/repo. Capture the separator so the scheme is preserved.
+  const re = /(github\.com[:/])[^/]+\/[^/.]+/;
+  if (!re.test(url)) return null;
+  return url.replace(re, `$1${owner}/${repo}`);
+}

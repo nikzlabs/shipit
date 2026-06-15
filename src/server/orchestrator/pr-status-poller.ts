@@ -22,7 +22,7 @@ import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
-import { parseGitHubRemote } from "./git-utils.js";
+import { parseGitHubRemote, rewriteGitHubRemoteOwnerRepo } from "./git-utils.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -998,6 +998,59 @@ export class PrStatusPoller {
     return false;
   }
 
+  /**
+   * Reconcile the key a poll was issued under against GitHub's canonical
+   * `nameWithOwner` (which resolves through transfer/rename redirects). On a
+   * mismatch — i.e. the repo was transferred/renamed on GitHub since we cached
+   * its URL — remap every session tracked under the old key to the new key,
+   * persist a corrected `remoteUrl` (so a restart tracks the canonical owner
+   * directly), and move the per-repo cadence bookkeeping. Returns the
+   * (possibly unchanged) identity the caller should continue the poll with.
+   *
+   * A no-op when GitHub returns no `nameWithOwner` (older response, or the
+   * repository didn't resolve) or when it already matches — so this can never
+   * regress the steady-state path.
+   */
+  private reconcileCanonicalRepo(
+    polledKey: string,
+    polledOwner: string,
+    polledRepo: string,
+    nameWithOwner: string | undefined,
+  ): { repoKey: string; owner: string; repo: string } {
+    const unchanged = { repoKey: polledKey, owner: polledOwner, repo: polledRepo };
+    if (!nameWithOwner) return unchanged;
+    const slash = nameWithOwner.indexOf("/");
+    if (slash <= 0 || slash >= nameWithOwner.length - 1) return unchanged;
+    const owner = nameWithOwner.slice(0, slash);
+    const repo = nameWithOwner.slice(slash + 1);
+    const newKey = `${owner}/${repo}`;
+    if (newKey === polledKey) return unchanged;
+
+    console.log(`[pr-poller] Repo transfer detected: ${polledKey} → ${newKey}; remapping tracked sessions`);
+
+    for (const [sessionId, key] of this.sessionRepos) {
+      if (key !== polledKey) continue;
+      this.sessionRepos.set(sessionId, newKey);
+      const remoteUrl = this.sessionManager.get(sessionId)?.remoteUrl;
+      if (remoteUrl) {
+        const rewritten = rewriteGitHubRemoteOwnerRepo(remoteUrl, owner, repo);
+        if (rewritten && rewritten !== remoteUrl) {
+          this.sessionManager.setRemoteUrl(sessionId, rewritten);
+        }
+      }
+    }
+
+    // Carry the cadence timestamp to the new key so the transfer doesn't trigger
+    // an off-schedule immediate re-poll under the new identity.
+    const lastPolled = this.lastPolledAt.get(polledKey);
+    if (lastPolled !== undefined) {
+      this.lastPolledAt.set(newKey, lastPolled);
+      this.lastPolledAt.delete(polledKey);
+    }
+
+    return { repoKey: newKey, owner, repo };
+  }
+
   private async pollRepo(
     repoKey: string,
     owner: string,
@@ -1049,8 +1102,21 @@ export class PrStatusPoller {
     // It already returns `null` on RATE_LIMITED responses (transport or
     // body-level), so a null result here means "do nothing" — never "all PRs
     // closed."
-    const prNodes = (result as unknown as GraphQLResponse)?.data?.repository?.pullRequests?.nodes;
+    const repository = (result as unknown as GraphQLResponse)?.data?.repository;
+    const prNodes = repository?.pullRequests?.nodes;
     if (!prNodes) return;
+
+    // Self-heal a stale cached owner after a GitHub repo transfer/rename.
+    // GitHub's GraphQL `repository(owner, name)` follows the repo's redirect
+    // records, so the live open-PR view keeps working under the old owner — but
+    // the REST merge-detection probe (`verifyMissingPr` → findPullRequestAnyState)
+    // filters `head=<owner>:<branch>`, which matches nothing once the head label
+    // is the new owner, silently breaking merge detection. The response's
+    // `nameWithOwner` is the canonical key; if it differs from the key we polled
+    // under, remap tracked sessions and persist the corrected remoteUrl, then
+    // continue THIS poll with the new identity so the verify below targets the
+    // new owner.
+    ({ repoKey, owner, repo } = this.reconcileCanonicalRepo(repoKey, owner, repo, repository.nameWithOwner));
 
     // Walk any `focused${i}` aliases the query asked for. Conversation data
     // lives here, not on the bulk nodes.

@@ -142,6 +142,12 @@ function makeSessionManager(sessions: { id: string; branch?: string; remoteUrl?:
     setPrStatus: vi.fn(),
     markClosed: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
+    // Mutate the backing array so a later get() reflects the corrected URL,
+    // mirroring the real manager's persist-then-read behavior.
+    setRemoteUrl: vi.fn((id: string, remoteUrl: string | undefined) => {
+      const s = sessions.find((x) => x.id === id);
+      if (s) s.remoteUrl = remoteUrl;
+    }),
   } as unknown as SessionManager;
 }
 
@@ -953,6 +959,83 @@ describe("PrStatusPoller", () => {
     expect(githubAuth.findPullRequestAnyState).toHaveBeenCalled();
     // ...and the session was promoted to merged, not left/re-broadcast as open.
     expect(poller.getStatus("s1")?.prState).toBe("merged");
+  });
+
+  // A GitHub repo transfer/rename (e.g. nicolasalt/shipit → nikzlabs/shipit)
+  // leaves the cached owner stale. The live open-PR view still resolves via
+  // GitHub's redirect, but the REST merge probe filters head=<owner>:<branch>
+  // and silently stops detecting merges. The poller self-heals off the
+  // canonical `nameWithOwner` in the GraphQL response.
+  describe("repo transfer self-heal", () => {
+    it("remaps the cached owner and detects the merge after a transfer", async () => {
+      // The repo was transferred to `nikzlabs`. GitHub resolves the old owner
+      // through its redirect and reports the canonical nameWithOwner. The PR is
+      // no longer in the OPEN bulk view (it merged), so the session routes to the
+      // REST verify — which must target the NEW owner.
+      githubAuth = makeGitHubAuth({
+        data: {
+          repository: {
+            nameWithOwner: "nikzlabs/shipit",
+            pullRequests: { nodes: [] },
+          },
+        },
+      });
+      (githubAuth.findPullRequestAnyState as ReturnType<typeof vi.fn>).mockResolvedValue({
+        number: 42,
+        url: "https://github.com/nikzlabs/shipit/pull/42",
+        title: "Add feature",
+        body: "Original description",
+        state: "closed",
+        merged_at: "2026-05-21T10:00:00Z",
+        merge_commit_sha: "deadbeef",
+        base: "main",
+        additions: 100,
+        deletions: 20,
+      });
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/nicolasalt/shipit.git" },
+      ]);
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
+      await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
+
+      // The REST merge probe used the NEW owner — without the remap it would
+      // have queried `nicolasalt` and matched nothing.
+      expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith(
+        "nikzlabs",
+        "shipit",
+        "shipit/abc-feature",
+      );
+      // The merge was detected and promoted.
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      // The corrected remote URL was persisted (scheme + .git suffix preserved).
+      expect(sessionManager.setRemoteUrl).toHaveBeenCalledWith(
+        "s1",
+        "https://github.com/nikzlabs/shipit.git",
+      );
+    });
+
+    it("is a no-op when nameWithOwner matches the polled key", async () => {
+      githubAuth = makeGitHubAuth({
+        data: {
+          repository: {
+            nameWithOwner: "owner/repo",
+            pullRequests: { nodes: [makeGraphQLPrNode()] },
+          },
+        },
+      });
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
+      expect(poller.getStatus("s1")?.prState).toBe("open");
+    });
   });
 
   // docs/202 — superseded-PR suppression makes re-arm stick.
