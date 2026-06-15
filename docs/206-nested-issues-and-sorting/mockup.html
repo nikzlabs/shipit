@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nested issues + two-level sorting — ShipIt prototype</title>
+<style>
+  /* Approximation of ShipIt's dark theme tokens (gray-950 surface). */
+  :root {
+    --bg-primary: #0a0a0b;
+    --bg-secondary: #131316;
+    --bg-tertiary: #1c1c21;
+    --bg-hover: #1a1a1f;
+    --border-primary: rgba(255, 255, 255, 0.07);
+    --border-secondary: rgba(255, 255, 255, 0.11);
+    --text-primary: #ededf0;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b76;
+    --accent: #6e63f2;
+
+    --pri-urgent: #f2585b;
+    --pri-high: #f2994a;
+    --pri-medium: #e8c547;
+    --pri-low: #5e9cea;
+    --pri-none: #5c5c66;
+  }
+
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    background: #050506;
+    color: var(--text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px;
+    -webkit-font-smoothing: antialiased;
+  }
+  .page {
+    max-width: 920px;
+    margin: 0 auto;
+    padding: 28px 20px 80px;
+  }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .page-head p { margin: 0 0 22px; color: var(--text-secondary); font-size: 13px; max-width: 640px; line-height: 1.5; }
+
+  /* ---- The Issues panel frame (mimics the resizable side panel) ---- */
+  .panel {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.45);
+  }
+
+  /* Top bar: tracker tabs + count + refresh */
+  .topbar {
+    display: flex;
+    align-items: stretch;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+  }
+  .tab {
+    padding: 9px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-tertiary);
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    background: none; border-top: none; border-left: none; border-right: none;
+  }
+  .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+  .tab .binding { color: var(--text-tertiary); font-weight: 500; }
+  .topbar .spacer { flex: 1; }
+  .topbar .count { display: flex; align-items: center; padding: 0 12px; font-size: 12px; color: var(--text-secondary); gap: 4px; }
+  .count b { color: var(--text-primary); }
+
+  /* Sort / control bar */
+  .controlbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 8px 12px;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 12px;
+  }
+  .control-group { display: inline-flex; align-items: center; gap: 6px; }
+  .control-label { color: var(--text-tertiary); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+  select.sortsel {
+    appearance: none;
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-secondary);
+    border-radius: 6px;
+    padding: 4px 24px 4px 9px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 7px center;
+  }
+  select.sortsel:hover { border-color: var(--accent); }
+  .dir-btn {
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border-secondary);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    width: 26px; height: 26px;
+    display: inline-flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    font-size: 13px;
+  }
+  .dir-btn:hover { border-color: var(--accent); color: var(--text-primary); }
+  .then { color: var(--text-tertiary); font-size: 11px; }
+  .controlbar .spacer { flex: 1; }
+  .ghost-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: none; border: 1px solid transparent;
+    color: var(--text-tertiary); font-size: 12px; cursor: pointer;
+    padding: 4px 8px; border-radius: 6px;
+  }
+  .ghost-toggle:hover { color: var(--text-secondary); }
+  .ghost-toggle.on { color: var(--text-primary); }
+  .ghost-toggle.on .dot { background: var(--accent); }
+  .ghost-toggle .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); }
+
+  /* Table header */
+  .grid {
+    display: grid;
+    grid-template-columns: 150px minmax(120px, 1fr) 70px 130px 132px;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 14px;
+  }
+  .thead {
+    position: sticky; top: 0; z-index: 2;
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-secondary);
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+    font-weight: 700; color: var(--text-tertiary);
+  }
+
+  .rows > .row { border-bottom: 1px solid var(--border-primary); }
+  .row {
+    position: relative;
+    cursor: pointer;
+    transition: background 0.12s;
+  }
+  .row:hover { background: var(--bg-hover); }
+  .row:hover::before {
+    content: ""; position: absolute; inset: 0 auto 0 0; width: 2px;
+    background: var(--accent); border-radius: 0 2px 2px 0;
+  }
+  .row.child { background: rgba(255,255,255,0.012); }
+  .row.child:hover { background: var(--bg-hover); }
+
+  /* ID cell: disclosure + tree-line + identifier */
+  .id-cell { display: flex; align-items: center; gap: 6px; min-width: 0; }
+  .disclosure {
+    width: 16px; height: 16px; flex: none;
+    display: inline-flex; align-items: center; justify-content: center;
+    color: var(--text-tertiary); cursor: pointer; border-radius: 4px;
+    transition: transform 0.12s, color 0.12s;
+  }
+  .disclosure:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+  .disclosure.collapsed { transform: rotate(-90deg); }
+  .disclosure.leaf { visibility: hidden; }
+  .indent { width: 18px; flex: none; }
+  .tree-elbow { width: 16px; flex: none; color: var(--text-tertiary); display: inline-flex; justify-content: center; }
+  .ident { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
+  .row:hover .ident { color: var(--text-secondary); }
+  .childcount {
+    font-size: 10px; font-weight: 600; color: var(--text-tertiary);
+    background: var(--bg-tertiary); border: 1px solid var(--border-primary);
+    border-radius: 9px; padding: 0 6px; line-height: 15px;
+  }
+
+  /* Title */
+  .title { min-width: 0; }
+  .title .t { font-size: 13px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.child .title .t { font-weight: 450; color: var(--text-secondary); }
+  .orphan-hint { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+  .orphan-hint .ph { font-family: ui-monospace, monospace; color: var(--text-secondary); }
+  .labels { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 5px;
+    border: 1px solid var(--border-primary); background: var(--bg-secondary);
+    border-radius: 9px; padding: 1px 7px 1px 6px; font-size: 10px; font-weight: 500;
+    color: var(--text-secondary);
+  }
+  .chip .cdot { width: 6px; height: 6px; border-radius: 50%; }
+
+  /* Priority cell — Linear-style bars */
+  .pri { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .pri .bar { width: 3px; border-radius: 1px; background: var(--pri-none); opacity: 0.35; }
+  .pri .b1 { height: 5px; } .pri .b2 { height: 8px; } .pri .b3 { height: 11px; }
+  .pri.urgent { color: var(--pri-urgent); }
+  .pri.urgent .urg { width: 14px; height: 14px; border-radius: 4px; background: var(--pri-urgent); display: inline-flex; align-items: center; justify-content: center; color: #1a0708; font-weight: 800; font-size: 11px; }
+  .pri[data-lvl="high"] .bar { background: var(--pri-high); opacity: 1; }
+  .pri[data-lvl="medium"] .bar.b1, .pri[data-lvl="medium"] .bar.b2 { background: var(--pri-medium); opacity: 1; }
+  .pri[data-lvl="low"] .bar.b1 { background: var(--pri-low); opacity: 1; }
+
+  /* Status cell */
+  .status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
+  .status .sdot { width: 9px; height: 9px; border-radius: 50%; flex: none; border: 1.6px solid currentColor; }
+  .status .sdot.filled { background: currentColor; }
+  .status .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  /* Action */
+  .action { display: flex; justify-content: flex-end; }
+  .start-btn {
+    font-size: 11px; font-weight: 600; color: var(--text-secondary);
+    background: var(--bg-tertiary); border: 1px solid var(--border-secondary);
+    border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap;
+  }
+  .start-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+
+  /* group header (group-by mode) */
+  .grouphdr {
+    display: flex; align-items: center; gap: 8px;
+    padding: 6px 14px; background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-primary);
+    font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em;
+    color: var(--text-secondary); position: sticky; top: 28px; z-index: 1;
+  }
+  .grouphdr .gcount { color: var(--text-tertiary); font-weight: 600; }
+
+  .legend { margin-top: 18px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+  .legend code { background: var(--bg-tertiary); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--text-primary); }
+  .legend b { color: var(--text-primary); }
+  .legend ul { margin: 6px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>Nested issues + two-level sorting</h1>
+    <p>
+      Interactive prototype for the ShipIt Issues panel. Sub-issues render nested under their parent;
+      change the <b>Sort by … then by …</b> controls to re-order. Children are sorted <i>within</i> their
+      parent only — they're never lifted into the top-level order (no Linear-style duplication). Toggle
+      the disclosure triangles to collapse a parent.
+    </p>
+  </div>
+
+  <div class="panel">
+    <!-- Tracker tabs -->
+    <div class="topbar">
+      <button class="tab active">Linear <span class="binding">· SHI</span></button>
+      <button class="tab">GitHub</button>
+      <div class="spacer"></div>
+      <div class="count"><b id="count">0</b>&nbsp;issues</div>
+    </div>
+
+    <!-- Sort control bar -->
+    <div class="controlbar">
+      <div class="control-group">
+        <span class="control-label">Sort by</span>
+        <select class="sortsel" id="primary">
+          <option value="priority">Priority</option>
+          <option value="status">Status</option>
+          <option value="title">Title</option>
+          <option value="updated">Last updated</option>
+          <option value="assignee">Assignee</option>
+        </select>
+        <button class="dir-btn" id="primaryDir" title="Toggle direction">↑</button>
+      </div>
+      <span class="then">then by</span>
+      <div class="control-group">
+        <select class="sortsel" id="secondary">
+          <option value="none">—</option>
+          <option value="priority">Priority</option>
+          <option value="status" selected>Status</option>
+          <option value="title">Title</option>
+          <option value="updated">Last updated</option>
+          <option value="assignee">Assignee</option>
+        </select>
+        <button class="dir-btn" id="secondaryDir" title="Toggle direction">↑</button>
+      </div>
+      <div class="spacer"></div>
+      <button class="ghost-toggle" id="groupToggle" title="Render the primary key as section headers">
+        <span class="dot"></span> Group by primary
+      </button>
+    </div>
+
+    <!-- Header -->
+    <div class="grid thead">
+      <div>Issue</div>
+      <div>Title</div>
+      <div>Priority</div>
+      <div>Status</div>
+      <div style="text-align:right">Action</div>
+    </div>
+
+    <!-- Rows injected here -->
+    <div class="rows" id="rows"></div>
+  </div>
+
+  <div class="legend">
+    <b>What this prototype demonstrates</b>
+    <ul>
+      <li><b>Nesting:</b> a parent shows a disclosure triangle and a child-count pill (<code>3</code>). Children indent under it with a tree elbow. Collapsing hides the subtree.</li>
+      <li><b>Two-level sort:</b> the top-level list is ordered by the primary key, ties broken by the secondary key, with <code>identifier</code> as the final tiebreak. Each axis has its own direction toggle.</li>
+      <li><b>Children stay home:</b> sub-issues are sorted by the same comparator <i>within their parent</i> and never appear at the top level — unlike Linear, which lists a sub-issue both under its parent and again in the flat order.</li>
+      <li><b>Orphan handling:</b> a child whose parent isn't in the current set (e.g. parent is Done and hidden) is promoted to the top level with a <code>↳ in SHI-300</code> hint, so it's never silently dropped.</li>
+      <li><b>Group-by (optional):</b> toggle <i>Group by primary</i> to render the primary key as sticky section headers instead of a sort axis — parents still nest inside each section.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+// ---- Sample data (Linear, team SHI). parentId references another issue's id. ----
+// priorityOrder: 0 urgent … 4 none.  statusOrder: workflow rank for sorting.
+const STATUS = {
+  backlog:    { name: "Backlog",     color: "#9ca3af", filled: false, order: 1 },
+  todo:       { name: "Todo",        color: "#7c818c", filled: false, order: 2 },
+  inprogress: { name: "In Progress", color: "#e8c547", filled: true,  order: 3 },
+  inreview:   { name: "In Review",   color: "#5e9cea", filled: true,  order: 4 },
+  done:       { name: "Done",        color: "#4cb782", filled: true,  order: 5 },
+};
+const PRI = {
+  urgent: { label: "Urgent", order: 0 },
+  high:   { label: "High",   order: 1 },
+  medium: { label: "Medium", order: 2 },
+  low:    { label: "Low",    order: 3 },
+  none:   { label: "None",   order: 4 },
+};
+
+const ISSUES = [
+  { id: "i90",  ident: "SHI-90",  parentId: null,  title: "Egress containment: SNI identity allowlist", pri: "urgent", status: "inprogress", assignee: "Nik",  updated: 95, labels: [["security","#f2585b"],["infra","#5e9cea"]] },
+  { id: "i91",  ident: "SHI-91",  parentId: "i90", title: "Durable allowlist store", pri: "high", status: "done", assignee: "Nik", updated: 80, labels: [] },
+  { id: "i92",  ident: "SHI-92",  parentId: "i90", title: "Containment Settings UI", pri: "medium", status: "inreview", assignee: "Ava", updated: 90, labels: [["frontend","#6e63f2"]] },
+  { id: "i93",  ident: "SHI-93",  parentId: "i90", title: "Tier-C proxy launch wiring", pri: "high", status: "inprogress", assignee: "Nik", updated: 70, labels: [] },
+
+  { id: "i210", ident: "SHI-210", parentId: null, title: "Nested issues in the tracker panel", pri: "high", status: "inprogress", assignee: "Ava", updated: 98, labels: [["tracker","#e8c547"]] },
+  { id: "i211", ident: "SHI-211", parentId: "i210", title: "Add parentId to TrackerIssue + adapters", pri: "high", status: "done", assignee: "Nik", updated: 60, labels: [] },
+  { id: "i212", ident: "SHI-212", parentId: "i210", title: "Disclosure + indentation in IssuesViewer", pri: "medium", status: "inprogress", assignee: "Ava", updated: 88, labels: [["frontend","#6e63f2"]] },
+  { id: "i213", ident: "SHI-213", parentId: "i210", title: "Within-parent ordering", pri: "low", status: "todo", assignee: "Ava", updated: 40, labels: [] },
+
+  { id: "i198", ident: "SHI-198", parentId: null, title: "Two-level, user-defined sort control", pri: "urgent", status: "todo", assignee: "Nik", updated: 75, labels: [["tracker","#e8c547"],["ux","#4cb782"]] },
+  { id: "i199", ident: "SHI-199", parentId: "i198", title: "Sort dropdown + direction toggles", pri: "high", status: "todo", assignee: "Ava", updated: 50, labels: [] },
+  { id: "i200", ident: "SHI-200", parentId: "i198", title: "Persist sort prefs per tracker", pri: "none", status: "backlog", assignee: null, updated: 20, labels: [] },
+
+  { id: "i185", ident: "SHI-185", parentId: null, title: "Inline issue label filter editor", pri: "medium", status: "inreview", assignee: "Ava", updated: 65, labels: [["frontend","#6e63f2"]] },
+  { id: "i150", ident: "SHI-150", parentId: null, title: "Fix flaky ws-disconnect resilience test", pri: "low", status: "todo", assignee: "Nik", updated: 30, labels: [["test","#7c818c"]] },
+
+  // Orphan: parent i300 is Done and excluded from the open list.
+  { id: "i301", ident: "SHI-301", parentId: "i300", title: "Backfill migration for parentId column", pri: "medium", status: "todo", assignee: "Nik", updated: 55, labels: [], orphanParent: "SHI-300" },
+];
+
+const state = {
+  primary: "priority", primaryDir: 1,
+  secondary: "status",  secondaryDir: 1,
+  group: false,
+  collapsed: new Set(),
+};
+
+function val(issue, key) {
+  switch (key) {
+    case "priority": return PRI[issue.pri].order;
+    case "status":   return STATUS[issue.status].order;
+    case "title":    return issue.title.toLowerCase();
+    case "updated":  return -issue.updated; // higher = more recent = first when asc
+    case "assignee": return (issue.assignee || "￿").toLowerCase();
+    default: return 0;
+  }
+}
+function cmpKey(a, b, key, dir) {
+  const va = val(a, key), vb = val(b, key);
+  if (va < vb) return -1 * dir;
+  if (va > vb) return 1 * dir;
+  return 0;
+}
+function comparator(a, b) {
+  let c = cmpKey(a, b, state.primary, state.primaryDir);
+  if (c !== 0) return c;
+  if (state.secondary !== "none") {
+    c = cmpKey(a, b, state.secondary, state.secondaryDir);
+    if (c !== 0) return c;
+  }
+  return a.ident.localeCompare(b.ident, undefined, { numeric: true });
+}
+
+function priBars(lvl) {
+  if (lvl === "urgent") return `<span class="pri urgent" data-lvl="urgent" title="Urgent"><span class="urg">!</span></span>`;
+  return `<span class="pri" data-lvl="${lvl}" title="${PRI[lvl].label}">
+      <span class="bar b1"></span><span class="bar b2"></span><span class="bar b3"></span>
+    </span>`;
+}
+function statusCell(key) {
+  const s = STATUS[key];
+  return `<span class="status" style="color:${s.color}">
+      <span class="sdot ${s.filled ? "filled" : ""}"></span>
+      <span class="sname">${s.name}</span>
+    </span>`;
+}
+function labelsCell(labels) {
+  if (!labels.length) return "";
+  return `<div class="labels">` + labels.map(([n,c]) =>
+    `<span class="chip"><span class="cdot" style="background:${c}"></span>${n}</span>`).join("") + `</div>`;
+}
+
+function rowHTML(issue, { isChild, childCount, collapsed }) {
+  const disclosure = childCount
+    ? `<span class="disclosure ${collapsed ? "collapsed" : ""}" data-toggle="${issue.id}" title="${collapsed ? "Expand" : "Collapse"}">▾</span>`
+    : (isChild ? `<span class="tree-elbow">└</span>` : `<span class="disclosure leaf">▾</span>`);
+  const indent = isChild ? `<span class="indent"></span>` : "";
+  const countPill = childCount ? `<span class="childcount">${childCount}</span>` : "";
+  const orphan = issue.orphanParent
+    ? `<div class="orphan-hint">↳ in <span class="ph">${issue.orphanParent}</span> (hidden)</div>` : "";
+
+  return `<div class="row ${isChild ? "child" : ""}" data-id="${issue.id}">
+    <div class="grid">
+      <div class="id-cell">
+        ${indent}${disclosure}
+        <span class="ident">${issue.ident}</span>
+        ${countPill}
+      </div>
+      <div class="title">
+        <div class="t">${issue.title}</div>
+        ${orphan}
+        ${labelsCell(issue.labels)}
+      </div>
+      <div>${priBars(issue.pri)}</div>
+      <div>${statusCell(issue.status)}</div>
+      <div class="action"><button class="start-btn">Start session</button></div>
+    </div>
+  </div>`;
+}
+
+function childrenOf(id) {
+  return ISSUES.filter(i => i.parentId === id).sort(comparator);
+}
+function isOrphan(issue) {
+  return issue.parentId && !ISSUES.some(p => p.id === issue.parentId);
+}
+
+function render() {
+  // top-level = no parent OR orphaned child (parent not present)
+  const tops = ISSUES.filter(i => !i.parentId || isOrphan(i)).sort(comparator);
+  const rows = document.getElementById("rows");
+  let html = "";
+  let visibleCount = ISSUES.length;
+
+  if (state.group) {
+    // Section headers from the primary key; parents nest inside each section.
+    const groups = new Map();
+    for (const t of tops) {
+      const gk = groupKey(t);
+      if (!groups.has(gk)) groups.set(gk, []);
+      groups.get(gk).push(t);
+    }
+    const orderedKeys = [...groups.keys()].sort((a, b) =>
+      (state.primaryDir) * (groupRank(a) - groupRank(b)));
+    for (const gk of orderedKeys) {
+      const members = groups.get(gk);
+      html += `<div class="grouphdr">${gk} <span class="gcount">${members.length}</span></div>`;
+      for (const t of members) html += subtree(t);
+    }
+  } else {
+    for (const t of tops) html += subtree(t);
+  }
+
+  rows.innerHTML = html;
+  document.getElementById("count").textContent = visibleCount;
+  wire();
+}
+
+function subtree(top) {
+  const kids = childrenOf(top.id);
+  const collapsed = state.collapsed.has(top.id);
+  let html = rowHTML(top, { isChild: false, childCount: kids.length, collapsed });
+  if (!collapsed) {
+    for (const k of kids) html += rowHTML(k, { isChild: true, childCount: 0, collapsed: false });
+  }
+  return html;
+}
+
+// Grouping helpers (group-by mode)
+function groupKey(issue) {
+  if (state.primary === "priority") return PRI[issue.pri].label;
+  if (state.primary === "status")   return STATUS[issue.status].name;
+  if (state.primary === "assignee") return issue.assignee || "Unassigned";
+  if (state.primary === "title")    return issue.title[0].toUpperCase();
+  return "Recently updated";
+}
+function groupRank(key) {
+  for (const k in PRI) if (PRI[k].label === key) return PRI[k].order;
+  for (const k in STATUS) if (STATUS[k].name === key) return STATUS[k].order;
+  return key.charCodeAt(0);
+}
+
+function wire() {
+  document.querySelectorAll(".disclosure[data-toggle]").forEach(el => {
+    el.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const id = el.getAttribute("data-toggle");
+      if (state.collapsed.has(id)) state.collapsed.delete(id);
+      else state.collapsed.add(id);
+      render();
+    });
+  });
+}
+
+// Controls
+const $ = id => document.getElementById(id);
+$("primary").addEventListener("change", e => { state.primary = e.target.value; if (state.secondary === state.primary) { state.secondary = "none"; $("secondary").value = "none"; } render(); });
+$("secondary").addEventListener("change", e => { state.secondary = e.target.value; render(); });
+$("primaryDir").addEventListener("click", e => { state.primaryDir *= -1; e.target.textContent = state.primaryDir === 1 ? "↑" : "↓"; render(); });
+$("secondaryDir").addEventListener("click", e => { state.secondaryDir *= -1; e.target.textContent = state.secondaryDir === 1 ? "↑" : "↓"; render(); });
+$("groupToggle").addEventListener("click", e => {
+  state.group = !state.group;
+  $("groupToggle").classList.toggle("on", state.group);
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
