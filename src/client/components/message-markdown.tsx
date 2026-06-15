@@ -1,25 +1,82 @@
 import { useState, useCallback, useMemo, memo } from "react";
 import hljs from "highlight.js";
 import { CopyIcon, CheckIcon } from "@phosphor-icons/react";
-import Markdown, { type Components } from "react-markdown";
+import Markdown, { defaultUrlTransform, type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkBreaks from "remark-breaks";
 import type { Element as HastElement, Text as HastText } from "hast";
 import { Tooltip, TooltipTrigger, TooltipContent, TooltipProvider } from "./ui/tooltip.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { MessageSegment } from "./MessageList.js";
+import type { OpenIssueRef } from "../stores/issues-store.js";
 import { parseRepoFileLink } from "../utils/repo-file-link.js";
 import { parseTrackerIssueLink } from "../utils/tracker-link.js";
 import { remarkLinkifyPaths } from "../utils/linkify-paths.js";
+import { remarkLinkifyIssues, ISSUE_LINK_SCHEME } from "../utils/linkify-issues.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
 /**
- * Renders a markdown link. Three branches, in priority order:
+ * Open an issue in the inline Issues viewer. Both the tracker-URL link branch
+ * and the bare-key `IssueBadge` route through here so they share one behaviour:
+ * select the Issues tab in the workspace panel AND — the part that matters on
+ * mobile — flip the mobile layout from the chat column to the workspace
+ * (`preview`) column, since on a phone the Issues tab is only visible there.
+ */
+function openIssueInPanel(ref: OpenIssueRef): void {
+  useUiStore.getState().setRightTab("issues");
+  useUiStore.getState().setMobilePanel("preview");
+  void useIssuesStore.getState().openIssue(ref);
+}
+
+/**
+ * An inline Linear-issue badge for a bare key (`TRACKER-43`) the agent mentioned in
+ * prose, produced by `remarkLinkifyIssues` (which wraps the key in a sentinel
+ * `shipit-issue:KEY` link). Clicking opens the issue in the inline Issues viewer
+ * via {@link openIssueInPanel}.
  *
- *  1. **Tracker issue URLs** (Linear/GitHub issue URLs, or the GitHub
+ * The team-key gate lives here, not in the parse: a bare `[A-Z]+-\d+` token
+ * collides with everyday strings (`GPT-4`, `UTF-8`), so we only paint a badge
+ * when Linear is connected AND the token's team prefix matches the bound team
+ * key (`binding.key`, e.g. `TRACKER`). Anything else renders as the raw text — no
+ * badge, no dead click. This is the one render-time store read in this module
+ * (the link branches read in their click handlers instead); it's a scoped leaf
+ * subscription that only re-renders this badge when the tracker set changes, so
+ * it doesn't defeat the `MarkdownContent` memo that guards streaming re-parses.
+ *
+ * Styling keeps the badge within the surrounding line box — `text-[0.85em]`
+ * with `leading-none` and only horizontal padding — so it reads as a pill
+ * without growing the line height (an explicit requirement: badges must not
+ * push prose lines apart).
+ */
+function IssueBadge({ issueKey, children }: { issueKey: string; children?: React.ReactNode }) {
+  const linear = useIssuesStore((s) => s.trackers.find((t) => t.id === "linear"));
+  const boundKey = linear?.binding?.key?.toUpperCase();
+  const teamPrefix = issueKey.slice(0, issueKey.indexOf("-")).toUpperCase();
+  const isIssue = (linear?.configured ?? false) && !!boundKey && teamPrefix === boundKey;
+
+  if (!isIssue) return <>{children}</>;
+
+  return (
+    <button
+      type="button"
+      title={`Open ${issueKey}`}
+      onClick={() => openIssueInPanel({ tracker: "linear", id: issueKey, identifier: issueKey })}
+      className="inline-flex items-center align-middle rounded px-1 text-[0.85em] font-mono font-medium leading-none border border-(--color-accent)/30 bg-(--color-accent)/10 text-(--color-accent) hover:bg-(--color-accent)/20 transition-colors cursor-pointer"
+    >
+      {issueKey}
+    </button>
+  );
+}
+
+/**
+ * Renders a markdown link. Branches, in priority order:
+ *
+ *  1. **Bare Linear keys** (`shipit-issue:KEY`, minted by `remarkLinkifyIssues`)
+ *     render as an inline {@link IssueBadge} that opens the in-app Issues viewer.
+ *  2. **Tracker issue URLs** (Linear/GitHub issue URLs, or the GitHub
  *     `owner/repo#N` short form) open the in-app Issues viewer when that tracker
  *     is connected — "inline beats link-out" (CLAUDE.md §1/§2). When the tracker
  *     is NOT connected we fall through to the default new-tab navigation (the
@@ -27,14 +84,15 @@ import { useUiStore } from "../stores/ui-store.js";
  *     that fallback works even for the short form. This is checked *before* the
  *     repo-file branch because the short form (`owner/repo#42`) would otherwise
  *     be misread by `parseRepoFileLink` as the path `owner/repo` at line 42.
- *  2. **Repo file links** (relative paths, optionally `:line` suffixed) open the
+ *  3. **Repo file links** (relative paths, optionally `:line` suffixed) open the
  *     in-app file preview modal — a bare `target="_blank"` would resolve the
  *     relative href against `/sessions/<id>` and 404.
- *  3. **Everything else** keeps the default new-tab behaviour.
+ *  4. **Everything else** keeps the default new-tab behaviour.
  *
  * Store reads happen inside the click handler via `getState()` (not a hook
  * subscription) so this component stays render-pure and doesn't defeat the
- * `MarkdownContent` memo, matching the repo-file branch.
+ * `MarkdownContent` memo, matching the repo-file branch. (The `IssueBadge`
+ * branch is the documented exception — see its note.)
  */
 function MarkdownLink({
   href,
@@ -45,6 +103,10 @@ function MarkdownLink({
   title?: string;
   children?: React.ReactNode;
 }) {
+  if (href?.startsWith(ISSUE_LINK_SCHEME)) {
+    return <IssueBadge issueKey={href.slice(ISSUE_LINK_SCHEME.length)}>{children}</IssueBadge>;
+  }
+
   const issueLink = parseTrackerIssueLink(href);
   if (issueLink) {
     const openIssueInApp = (e: React.MouseEvent) => {
@@ -55,9 +117,7 @@ function MarkdownLink({
       // follow the absolute href to the upstream issue in a new tab.
       if (!connected) return;
       e.preventDefault();
-      useUiStore.getState().setRightTab("issues");
-      useUiStore.getState().setMobilePanel("preview");
-      void useIssuesStore.getState().openIssue({
+      openIssueInPanel({
         tracker: issueLink.tracker,
         ...(issueLink.issueId !== undefined ? { id: issueLink.issueId } : {}),
         identifier: issueLink.identifier,
@@ -209,10 +269,21 @@ export const markdownComponents: Components = {
   },
 };
 
-// `remarkLinkifyPaths` runs last so it sees GFM's autolinked URLs as `link`
-// nodes (which it skips) and only touches remaining plain text. It turns bare
-// `dir/file.ext` references in prose into in-app file-preview links.
-const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths];
+// `remarkLinkifyPaths` / `remarkLinkifyIssues` run last so they see GFM's
+// autolinked URLs as `link` nodes (which they skip) and only touch remaining
+// plain text. The first turns bare `dir/file.ext` references into in-app
+// file-preview links; the second turns bare Linear keys (`SHI-43`) into in-app
+// issue badges (gated to the connected team at render — see `IssueBadge`).
+const remarkPlugins = [remarkGfm, remarkBreaks, remarkLinkifyPaths, remarkLinkifyIssues];
+
+// `remarkLinkifyIssues` mints `shipit-issue:KEY` hrefs; react-markdown's default
+// `urlTransform` would strip that unknown scheme to "" (losing the key), so we
+// pass our scheme through and delegate everything else to the default sanitiser
+// (which still filters `javascript:`, `data:`, etc.).
+function urlTransform(url: string): string {
+  if (url.startsWith(ISSUE_LINK_SCHEME)) return url;
+  return defaultUrlTransform(url);
+}
 
 /**
  * Render markdown text for assistant messages, PR bodies, plan approval, and
@@ -239,6 +310,7 @@ export const MarkdownContent = memo(({ text }: { text: string }) => {
       <Markdown
         remarkPlugins={remarkPlugins}
         components={markdownComponents}
+        urlTransform={urlTransform}
         skipHtml
       >
         {text}
@@ -260,6 +332,7 @@ export function MarkdownTooltip({ content, children }: { content: string; childr
             <Markdown
               remarkPlugins={remarkPlugins}
               components={markdownComponents}
+              urlTransform={urlTransform}
               skipHtml
             >
               {content}
