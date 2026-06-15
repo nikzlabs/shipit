@@ -107,7 +107,7 @@ export function IssuesSortModal({
                 onChange={(e) => {
                   const primary = e.target.value as SortKey;
                   // Don't let the secondary duplicate the primary — drop it to none.
-                  patch({ primary, ...(prefs.secondary === primary ? { secondary: "none" as SecondaryKey } : {}) });
+                  patch({ primary, ...(prefs.secondary === primary ? { secondary: "none" } : {}) });
                 }}
               >
                 {SORT_KEYS.map((k) => (
