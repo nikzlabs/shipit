@@ -265,6 +265,9 @@ const GOLDEN_CONTAINER_ROUTES = [
   // bridges — voice_note / report_shipit_bug / submit_review
   "POST /api/sessions/:sessionId/voice-note",
   "POST /api/sessions/:sessionId/bug-report",
+  // docs/207 (SHI-153) — the `propose_actions` tool relays an action checklist
+  // card here; container-reachable so the worker can broker it.
+  "POST /api/sessions/:sessionId/propose-actions",
   "POST /api/sessions/:sessionId/review-submit",
   // docs/172 Tier C (SHI-90) — the SNI proxy queries this for an unknown host.
   // Query-only: it returns allow/deny and may surface an allow-once card, but
