@@ -289,9 +289,12 @@ export interface ComposeIdentityRulesOpts {
   /** Env to read `SESSION_EGRESS_IDENTITY_RULES` from (defaults to `process.env`). */
   env?: NodeJS.ProcessEnv;
   /**
-   * Per-session durable identity rules (future: a Settings editor / per-session
-   * source). Merged AFTER the operator env rules — a later rule for the same host
-   * wins. Passed in already-resolved so this module stays store-free; no source
+   * Durable identity rules from the **global** Settings store (future: a global
+   * Network-egress editor). Merged AFTER the operator env rules — a later rule
+   * for the same host wins. Passed in already-resolved so this module stays
+   * store-free. Identity scoping is operator/admin-level policy: it resolves from
+   * exactly two layers — the operator env and the global store — and is **not**
+   * keyed per session (unlike the host allowlist's per-session extras). No source
    * feeds it yet, so today identity rules come from the operator env only.
    */
   durableRules?: Iterable<EgressIdentityRule>;
@@ -333,8 +336,9 @@ function parseIdentityRulesEnv(value: string | undefined): EgressIdentityRule[] 
  *
  *   [{"host":".s3.amazonaws.com","identities":["my-bucket"]}]
  *
- * Mirrors {@link composeEgressExtraHosts} (operator env + a future per-session
- * durable source) but for the identity hook rather than the host allowlist.
+ * Mirrors {@link composeEgressExtraHosts} (operator env + a future global
+ * durable source) but for the identity hook rather than the host allowlist —
+ * identity rules are global-only, never per-session.
  * Hosts are normalized and de-duplicated (last rule per host wins); rules with
  * no host or no identities are dropped. Malformed env is dropped with a warning
  * — identity scoping is **additive** hardening over the host allowlist, never the
