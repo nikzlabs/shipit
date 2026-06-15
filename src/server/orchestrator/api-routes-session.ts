@@ -1228,7 +1228,28 @@ export async function registerSessionRoutes(
           if (runner) runner.dispose({ force: true });
           deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs, deps.presentStore);
         }
+        // Archive every real session for this repo so it leaves the sidebar and
+        // its disk (workspace clone, compose volumes, logs, container) is
+        // reclaimed exactly like a user-initiated archive. Rows stay in the DB
+        // (archived), so history/usage survive — removing the repo only hides
+        // the sessions, it doesn't erase them. Re-fetch each session live so a
+        // child already archived by a parent's cascade is skipped.
+        for (const { id } of sessionManager.findAllByRemoteUrl(url)) {
+          if (id === repo?.warmSessionId) continue; // already fully deleted above
+          const current = sessionManager.get(id);
+          if (!current || current.warm || current.userArchived) continue;
+          await archiveSession(
+            sessionManager,
+            deps.runnerRegistry,
+            deps.getSharedRepoDir,
+            id,
+            deps.pruneSessionVolumes,
+            deps.containerManager,
+            deps.removeSessionLogs,
+          );
+        }
         removeRepo(deps.repoStore, url);
+        deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });
         return { success: true };
       } catch (err) {
