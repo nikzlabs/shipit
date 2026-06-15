@@ -9,6 +9,7 @@ import {
   filterIssues,
   type IssueFilters,
 } from "./issues-filter.js";
+import { DEFAULT_SORT_PREFS, buildSections } from "./issues-sort.js";
 import type { IssuePriorityLevel, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
 
 const LINEAR_CONFIGURED: TrackerInfo = {
@@ -53,11 +54,14 @@ function priorityCounts(issues: TrackerIssue[]): Record<IssuePriorityLevel, numb
 function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps {
   const issues = overrides?.issues ?? [];
   const filters = overrides?.filters ?? emptyFilters();
+  const filtered = filterIssues(issues, filters);
   const base: IssuesViewerProps = {
     trackers: [LINEAR_CONFIGURED],
     activeTracker: "linear",
     issues,
-    filteredIssues: filterIssues(issues, filters),
+    filteredIssues: filtered,
+    sections: buildSections(filtered, DEFAULT_SORT_PREFS, new Set()),
+    sortPrefs: DEFAULT_SORT_PREFS,
     filters,
     statusOptions: distinctStatuses(issues),
     assigneeOptions: distinctAssignees(issues),
@@ -73,6 +77,8 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
+    onSetSortPrefs: vi.fn(),
+    onToggleCollapsed: vi.fn(),
     onOpenIssue: vi.fn(),
     initialScrollTop: 0,
     onPersistScroll: vi.fn(),
@@ -87,8 +93,15 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onToggleLabel: vi.fn(),
     onClearFilters: vi.fn(),
   };
-  // `filteredIssues` derives from issues+filters unless explicitly overridden.
-  return { ...base, ...overrides, filteredIssues: overrides?.filteredIssues ?? base.filteredIssues };
+  // `filteredIssues` derives from issues+filters unless explicitly overridden;
+  // `sections` follows whichever filtered list wins so rows render to match.
+  const finalFiltered = overrides?.filteredIssues ?? base.filteredIssues;
+  return {
+    ...base,
+    ...overrides,
+    filteredIssues: finalFiltered,
+    sections: overrides?.sections ?? buildSections(finalFiltered, overrides?.sortPrefs ?? DEFAULT_SORT_PREFS, new Set()),
+  };
 }
 
 describe("IssuesViewer", () => {
@@ -115,6 +128,56 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("SHI-1")).toBeInTheDocument();
     // Priority badge for urgent renders its label.
     expect(screen.getByText("Urgent")).toBeInTheDocument();
+  });
+
+  it("renders sub-issues nested under their parent with a disclosure + count (docs/206)", () => {
+    const props = defaultProps({
+      issues: [
+        makeIssue({ id: "p", identifier: "SHI-1", title: "Parent task" }),
+        makeIssue({ id: "c", identifier: "SHI-2", title: "Child task", parentId: "p" }),
+      ],
+    });
+    render(<IssuesViewer {...props} />);
+    expect(screen.getByText("Parent task")).toBeInTheDocument();
+    expect(screen.getByText("Child task")).toBeInTheDocument();
+    // The parent carries a collapse control (only parents do).
+    expect(screen.getByRole("button", { name: /Collapse SHI-1/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Collapse SHI-2/ })).toBeNull();
+  });
+
+  it("toggling a parent's disclosure calls onToggleCollapsed (docs/206)", () => {
+    const props = defaultProps({
+      issues: [
+        makeIssue({ id: "p", identifier: "SHI-1", title: "Parent" }),
+        makeIssue({ id: "c", identifier: "SHI-2", title: "Child", parentId: "p" }),
+      ],
+    });
+    render(<IssuesViewer {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: /Collapse SHI-1/ }));
+    expect(props.onToggleCollapsed).toHaveBeenCalledWith("p");
+    // The disclosure's stopPropagation keeps the row from also opening detail.
+    expect(props.onOpenIssue).not.toHaveBeenCalled();
+  });
+
+  it("flags an orphaned sub-issue whose parent is absent (docs/206)", () => {
+    const props = defaultProps({
+      issues: [makeIssue({ id: "o", identifier: "SHI-9", title: "Orphan", parentId: "gone", parentIdentifier: "SHI-1" })],
+    });
+    render(<IssuesViewer {...props} />);
+    // Promoted to the top level with a hint at the missing parent.
+    expect(screen.getByText("Orphan")).toBeInTheDocument();
+    expect(screen.getByText("SHI-1")).toBeInTheDocument();
+  });
+
+  it("opens the sort & group modal from the sliders button (docs/206)", async () => {
+    const user = userEvent.setup();
+    const props = defaultProps({ issues: [makeIssue({})] });
+    render(<IssuesViewer {...props} />);
+    await user.click(screen.getByRole("button", { name: /Sort and group issues/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByLabelText("Primary sort key")).toBeInTheDocument();
+    expect(screen.getByLabelText("Group by field")).toBeInTheDocument();
   });
 
   it("strips the repo path from GitHub identifiers in the ID column", () => {

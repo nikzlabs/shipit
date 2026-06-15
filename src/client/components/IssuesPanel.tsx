@@ -11,6 +11,7 @@ import {
   type StatusOption,
 } from "./issues-filter.js";
 import type { IssueStatusRef } from "./IssueFieldControls.js";
+import { buildSections, type IssueSection } from "./issues-sort.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -30,6 +31,7 @@ const EMPTY_ASSIGNEES: AssigneeOption[] = [];
 const EMPTY_LABELS: LabelOption[] = [];
 const EMPTY_STATUS_REFS: IssueStatusRef[] = [];
 const EMPTY_AVAILABLE_LABELS: IssueLabel[] = [];
+const EMPTY_SECTIONS: IssueSection[] = [];
 
 const ZERO_PRIORITY_COUNTS: Record<IssuePriorityLevel, number> = {
   urgent: 0,
@@ -69,6 +71,8 @@ export function IssuesPanel({
   const error = useIssuesStore((s) => s.error);
   const filters = useIssuesStore((s) => s.filters);
   const includeDone = useIssuesStore((s) => s.includeDone);
+  const sortPrefs = useIssuesStore((s) => s.sortPrefs);
+  const collapsed = useIssuesStore((s) => s.collapsed);
   const selected = useIssuesStore((s) => s.selected);
   const detail = useIssuesStore((s) => s.detail);
   const detailLoading = useIssuesStore((s) => s.detailLoading);
@@ -82,6 +86,14 @@ export function IssuesPanel({
     const result = filterIssues(issues, filters);
     return result.length === 0 ? EMPTY_ISSUES : result;
   }, [issues, filters]);
+
+  // Build the nested render plan (docs/206): sort + group + collapse applied to
+  // the filtered set, client-side. Memoized so the viewer re-renders only when an
+  // input actually changes.
+  const sections = useMemo(() => {
+    if (filteredIssues.length === 0) return EMPTY_SECTIONS;
+    return buildSections(filteredIssues, sortPrefs, collapsed);
+  }, [filteredIssues, sortPrefs, collapsed]);
 
   const statusOptions = useMemo(() => {
     const result = distinctStatuses(issues);
@@ -184,6 +196,8 @@ export function IssuesPanel({
       activeTracker={activeTracker}
       issues={issues}
       filteredIssues={filteredIssues}
+      sections={sections}
+      sortPrefs={sortPrefs}
       filters={filters}
       statusOptions={statusOptions}
       assigneeOptions={assigneeOptions}
@@ -199,6 +213,8 @@ export function IssuesPanel({
       onSelectTracker={handleSelectTracker}
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}
+      onSetSortPrefs={(prefs) => useIssuesStore.getState().setSortPrefs(prefs)}
+      onToggleCollapsed={(id) => useIssuesStore.getState().toggleCollapsed(id)}
       onSetStatus={(issue, status) =>
         useIssuesStore.getState().setIssueStatus(activeTracker, issue, status)
       }

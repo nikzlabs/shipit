@@ -1,14 +1,18 @@
-import { useLayoutEffect, useRef } from "react";
+import { useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowClockwiseIcon,
+  CaretRightIcon,
   CheckCircleIcon,
   PlugIcon,
+  SlidersHorizontalIcon,
   UserIcon,
   WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { Button } from "./ui/button.js";
 import { StartSessionButton } from "./StartSessionButton.js";
 import { IssuesFilterBar } from "./IssuesFilterBar.js";
+import { IssuesSortModal } from "./IssuesSortModal.js";
+import { describeSort, isNonDefaultSort, type IssueRowItem, type IssueSection, type SortPrefs } from "./issues-sort.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
@@ -35,8 +39,16 @@ export interface IssuesViewerProps {
   activeTracker: TrackerId;
   /** Full loaded list (the "M" in "N of M"); the source for derived facets. */
   issues: TrackerIssue[];
-  /** Filtered subset actually rendered as rows (the "N"). */
+  /** Filtered subset (the "N") — drives the count + empty state. */
   filteredIssues: TrackerIssue[];
+  /**
+   * Render plan (docs/206): ordered sections, each a flattened tree of rows. One
+   * label-less section when ungrouped; one labelled section per group otherwise.
+   * Built from `filteredIssues` + sort prefs + collapse state by the panel.
+   */
+  sections: IssueSection[];
+  /** Active two-level sort + group prefs (drives the modal + the dirty dot). */
+  sortPrefs: SortPrefs;
   filters: IssueFilters;
   statusOptions: StatusOption[];
   assigneeOptions: AssigneeOption[];
@@ -57,6 +69,10 @@ export interface IssuesViewerProps {
   onSelectTracker: (id: TrackerId) => void;
   onRefresh: () => void;
   onToggleIncludeDone: () => void;
+  /** Replace the sort/group prefs (from the sort modal). */
+  onSetSortPrefs: (prefs: SortPrefs) => void;
+  /** Collapse/expand a parent issue's subtree (docs/206). */
+  onToggleCollapsed: (issueId: string) => void;
   /** Open the inline detail view for a row (docs/189). */
   onOpenIssue: (issue: TrackerIssue) => void;
   /**
@@ -192,28 +208,43 @@ const ROW_GRID =
 // two-line title can still grow downward; its description + labels flow below.
 const FIRST_LINE = "flex items-center h-6";
 
+/** Desktop indent per nesting level (px), capped so a deep tree can't crush the
+ *  title column on a narrow panel. Mobile uses its own smaller, lower cap. */
+const DESKTOP_INDENT_STEP = 14;
+const DESKTOP_INDENT_MAX_DEPTH = 8;
+const MOBILE_INDENT_STEP = 4;
+const MOBILE_INDENT_MAX_DEPTH = 3;
+
 function IssueRow({
-  issue,
+  row,
   canStart,
   availableStatuses,
   canEditPriority,
   surfaceLum,
   onOpenIssue,
+  onToggleCollapsed,
   onSetStatus,
   onSetPriority,
   onStartSession,
 }: {
-  issue: TrackerIssue;
+  row: IssueRowItem;
   canStart: boolean;
   availableStatuses: IssueStatusRef[];
   canEditPriority: boolean;
   /** Luminance of the row surface, for contrast-adapting the status dot. */
   surfaceLum: number;
   onOpenIssue: (issue: TrackerIssue) => void;
+  onToggleCollapsed: (issueId: string) => void;
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
   onStartSession: (issue: TrackerIssue) => void;
 }) {
+  const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
+  // Mobile (card layout, below @sm) gets NO tree affordances — just a faint
+  // whole-card indent (docs/206). Desktop indents the title cell + shows the
+  // disclosure. The CSS var feeds the row's left padding below @sm only.
+  const mobileIndent = Math.min(depth, MOBILE_INDENT_MAX_DEPTH) * MOBILE_INDENT_STEP;
+  const desktopIndent = Math.min(depth, DESKTOP_INDENT_MAX_DEPTH) * DESKTOP_INDENT_STEP;
   return (
     // The whole row opens the inline detail view (docs/189) — the deep link to
     // the tracker now lives only inside that view, not on the row. A div with a
@@ -229,7 +260,11 @@ function IssueRow({
           onOpenIssue(issue);
         }
       }}
-      className={`${ROW_GRID} group relative px-3 py-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
+      // `--mind` feeds the mobile-only card indent. Below @sm the left padding is
+      // `0.75rem + indent`; at @sm it resets to `pl-3` (desktop indents the title
+      // cell instead, keeping the table columns aligned).
+      style={{ "--mind": `${mobileIndent}px` } as CSSProperties}
+      className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @sm:pl-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
       {/* Issue identifier — plain label; the row click (not this) opens detail. */}
       <span className={`[grid-area:id] ${FIRST_LINE} text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors min-w-0`}>
@@ -238,11 +273,56 @@ function IssueRow({
 
       {/* Title (+ optional description preview + labels), wraps to two lines. The
           row is clickable as a whole (hover bg + accent left-bar already signal
-          that), so there's no hover caret to misalign against a wrapped title. */}
+          that), so there's no hover caret to misalign against a wrapped title.
+          Desktop nesting (docs/206): a depth-indent spacer + disclosure live at
+          the START of the title cell (@sm only) so the table columns stay aligned
+          — only the title content shifts. Mobile gets none of this; its whole
+          card is indented via the row's left padding instead. */}
       <div className="[grid-area:title] min-w-0">
         <div className="flex items-center min-h-6 text-sm font-medium text-(--color-text-primary)">
+          <span
+            className="hidden @sm:flex items-center shrink-0 self-start h-6"
+            style={{ paddingLeft: `${desktopIndent}px` }}
+          >
+            {hasChildren ? (
+              <button
+                type="button"
+                aria-label={collapsed ? `Expand ${issue.identifier}` : `Collapse ${issue.identifier}`}
+                aria-expanded={!collapsed}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onToggleCollapsed(issue.id);
+                }}
+                onKeyDown={(e) => e.stopPropagation()}
+                className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary) cursor-pointer"
+              >
+                <CaretRightIcon
+                  size={ICON_SIZE.XS}
+                  weight="bold"
+                  className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
+                />
+              </button>
+            ) : (
+              // Leaf spacer keeps a leaf's title aligned with its siblings' titles
+              // (which are pushed right by the disclosure button).
+              <span className="mr-1 inline-block size-4 shrink-0" aria-hidden="true" />
+            )}
+          </span>
           <span className="line-clamp-2">{issue.title}</span>
+          {hasChildren && (
+            <span
+              className="hidden @sm:inline-flex shrink-0 ml-1.5 items-center rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-1.5 text-[10px] font-semibold leading-[15px] text-(--color-text-tertiary)"
+              title={`${childCount} sub-issue${childCount !== 1 ? "s" : ""}`}
+            >
+              {childCount}
+            </span>
+          )}
         </div>
+        {orphan && issue.parentIdentifier && (
+          <div className="text-[10px] text-(--color-text-tertiary) mt-0.5">
+            ↳ in <span className="font-mono text-(--color-text-secondary)">{issue.parentIdentifier}</span>
+          </div>
+        )}
         {issue.description && (
           <div className="text-[11px] text-(--color-text-tertiary) line-clamp-1 mt-0.5">
             {issue.description}
@@ -352,6 +432,8 @@ export function IssuesViewer({
   activeTracker,
   issues,
   filteredIssues,
+  sections,
+  sortPrefs,
   filters,
   statusOptions,
   assigneeOptions,
@@ -367,6 +449,8 @@ export function IssuesViewer({
   onSelectTracker,
   onRefresh,
   onToggleIncludeDone,
+  onSetSortPrefs,
+  onToggleCollapsed,
   onOpenIssue,
   initialScrollTop,
   onPersistScroll,
@@ -388,6 +472,7 @@ export function IssuesViewer({
   // Rows sit on the primary surface; adapt status-dot colors to its luminance
   // so pale states stay legible on light themes (computed once for all rows).
   const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
+  const [sortOpen, setSortOpen] = useState(false);
 
   // Restore the saved scroll offset on mount and stash the current one on
   // unmount, so opening an issue and pressing back lands on the same row
@@ -465,6 +550,27 @@ export function IssuesViewer({
                 className={includeDone ? "text-(--color-accent)" : ""}
               />
               <span className="hidden sm:inline">Show done</span>
+            </Button>
+          )}
+          {configured && (
+            // Sort & group editor lives behind this icon — the toolbar (search +
+            // filters) has no room for it inline (docs/206). The accent dot flags
+            // a non-default order; the tooltip names the active order.
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={() => setSortOpen(true)}
+              title={`Sort & group — ${describeSort(sortPrefs)}`}
+              aria-label="Sort and group issues"
+              className="relative inline-flex items-center gap-1.5"
+            >
+              <SlidersHorizontalIcon size={ICON_SIZE.SM} />
+              {isNonDefaultSort(sortPrefs) && (
+                <span
+                  className="absolute top-0.5 right-0.5 size-1.5 rounded-full bg-(--color-accent)"
+                  aria-hidden="true"
+                />
+              )}
             </Button>
           )}
           <Button
@@ -554,25 +660,43 @@ export function IssuesViewer({
         ) : (
           <>
             <TableHeader />
-            <div className="divide-y divide-(--color-border-primary)">
-              {filteredIssues.map((issue) => (
-                <IssueRow
-                  key={issue.id}
-                  issue={issue}
-                  canStart={canStart}
-                  availableStatuses={availableStatuses}
-                  canEditPriority={canEditPriority}
-                  surfaceLum={rowSurfaceLum}
-                  onOpenIssue={onOpenIssue}
-                  onSetStatus={onSetStatus}
-                  onSetPriority={onSetPriority}
-                  onStartSession={onStartSession}
-                />
-              ))}
-            </div>
+            {sections.map((section, si) => {
+              const rootCount = section.rows.filter((r) => r.depth === 0).length;
+              return (
+                <div key={section.label ?? `__all-${si}`}>
+                  {section.label !== null && (
+                    // Group-by section header (docs/206). Not sticky — keeps it
+                    // simple under the already-sticky column header.
+                    <div className="flex items-center gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-primary) text-[11px] font-semibold uppercase tracking-wide text-(--color-text-secondary)">
+                      <span className="truncate">{section.label}</span>
+                      <span className="text-(--color-text-tertiary)">{rootCount}</span>
+                    </div>
+                  )}
+                  <div className="divide-y divide-(--color-border-primary)">
+                    {section.rows.map((row) => (
+                      <IssueRow
+                        key={row.issue.id}
+                        row={row}
+                        canStart={canStart}
+                        availableStatuses={availableStatuses}
+                        canEditPriority={canEditPriority}
+                        surfaceLum={rowSurfaceLum}
+                        onOpenIssue={onOpenIssue}
+                        onToggleCollapsed={onToggleCollapsed}
+                        onSetStatus={onSetStatus}
+                        onSetPriority={onSetPriority}
+                        onStartSession={onStartSession}
+                      />
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
           </>
         )}
       </div>
+
+      <IssuesSortModal open={sortOpen} onOpenChange={setSortOpen} prefs={sortPrefs} onChange={onSetSortPrefs} />
     </div>
   );
 }

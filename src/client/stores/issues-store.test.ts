@@ -32,6 +32,28 @@ describe("issueLookupId", () => {
   });
 });
 
+describe("issues-store sort + collapse (docs/206)", () => {
+  afterEach(() => {
+    localStorage.clear();
+    useIssuesStore.setState({ sortPrefs: { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" }, collapsed: new Set() });
+  });
+
+  it("setSortPrefs updates state and persists to localStorage", () => {
+    useIssuesStore.getState().setSortPrefs({ primary: "title", primaryDir: -1, secondary: "none", secondaryDir: 1, group: "status" });
+    expect(useIssuesStore.getState().sortPrefs.primary).toBe("title");
+    expect(JSON.parse(localStorage.getItem("shipit-issue-sort") ?? "{}")).toMatchObject({ primary: "title", group: "status" });
+  });
+
+  it("toggleCollapsed adds then removes an id, persisting each time", () => {
+    useIssuesStore.getState().toggleCollapsed("node-7");
+    expect(useIssuesStore.getState().collapsed.has("node-7")).toBe(true);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "[]")).toContain("node-7");
+    useIssuesStore.getState().toggleCollapsed("node-7");
+    expect(useIssuesStore.getState().collapsed.has("node-7")).toBe(false);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "[]")).not.toContain("node-7");
+  });
+});
+
 describe("issues-store detail view (docs/189)", () => {
   beforeEach(() => {
     useIssuesStore.getState().reset();

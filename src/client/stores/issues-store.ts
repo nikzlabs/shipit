@@ -23,11 +23,16 @@ import {
   distinctStatuses,
   type IssueFilters,
 } from "../components/issues-filter.js";
+import type { SortPrefs } from "../components/issues-sort.js";
 import {
   getSavedIncludeDone,
+  getSavedIssueCollapsed,
   getSavedIssueFilters,
+  getSavedSortPrefs,
   saveIncludeDone,
+  saveIssueCollapsed,
   saveIssueFilters,
+  saveSortPrefs,
 } from "../utils/local-storage.js";
 import { useSessionStore } from "./session-store.js";
 
@@ -144,6 +149,20 @@ interface IssuesState {
   includeDone: boolean;
 
   /**
+   * User-defined two-level sort + group prefs for the list (docs/206). Applied
+   * client-side over the already-loaded set (the server's order is just a
+   * default), so changing the sort never refetches. Persisted globally.
+   */
+  sortPrefs: SortPrefs;
+
+  /**
+   * Ids of collapsed parent issues (docs/206). Persisted GLOBALLY (not per
+   * session or repo — neither is the issue list), so a collapsed subtree stays
+   * collapsed across reloads. Keyed by `TrackerIssue.id`.
+   */
+  collapsed: Set<string>;
+
+  /**
    * Scroll offset of the list's scroll container, persisted so opening an issue
    * and pressing back lands on the same row the user left (docs/189). The list
    * component fully unmounts behind the detail view, so its DOM `scrollTop` is
@@ -231,6 +250,10 @@ interface IssuesState {
   toggleAssignee: (value: string) => void;
   toggleLabel: (name: string) => void;
   toggleIncludeDone: () => void;
+  /** Replace the sort/group prefs (from the sort modal). Persisted. */
+  setSortPrefs: (prefs: SortPrefs) => void;
+  /** Collapse/expand a parent issue's subtree (docs/206). Persisted. */
+  toggleCollapsed: (issueId: string) => void;
   clearFilters: () => void;
   reset: () => void;
 }
@@ -286,6 +309,8 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   // fetchIssues, so restoring before any fetch is safe.
   filters: getSavedIssueFilters(),
   includeDone: getSavedIncludeDone(),
+  sortPrefs: getSavedSortPrefs(),
+  collapsed: getSavedIssueCollapsed(),
   listScrollTop: 0,
   selected: null,
   detail: null,
@@ -560,6 +585,16 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
     void get().fetchIssues();
   },
 
+  setSortPrefs: (prefs) => set({ sortPrefs: prefs }),
+
+  toggleCollapsed: (issueId) =>
+    set((state) => {
+      const next = new Set(state.collapsed);
+      if (next.has(issueId)) next.delete(issueId);
+      else next.add(issueId);
+      return { collapsed: next };
+    }),
+
   clearFilters: () => set({ filters: emptyFilters() }),
 
   reset: () =>
@@ -629,4 +664,8 @@ async function applyIssueMutation(
 // has to remember to save.
 useIssuesStore.subscribe((state, prev) => {
   if (state.filters !== prev.filters) saveIssueFilters(state.filters);
+  // Sort prefs + collapse state are global reference state (docs/206) — persist
+  // them on every change so they survive a reload, like the filter bar above.
+  if (state.sortPrefs !== prev.sortPrefs) saveSortPrefs(state.sortPrefs);
+  if (state.collapsed !== prev.collapsed) saveIssueCollapsed(state.collapsed);
 });

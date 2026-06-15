@@ -52,10 +52,14 @@ Sort preference (primary/secondary key + direction, group on/off) should persist
 `TrackerIssue` (`src/server/shared/types/domain-types.ts`) gains:
 
 ```ts
-parentId?: string;        // tracker-internal id of the parent issue, when nested
+parentId?: string;         // tracker-internal id of the parent issue, when nested
 parentIdentifier?: string; // human id ("SHI-90") — for the orphan hint without a second fetch
-hasChildren?: boolean;    // hint so a leaf needs no children probe (Linear exposes children count)
+updatedAt?: string;        // ISO-8601 last-updated, for the "Last updated" sort key
 ```
+
+(`hasChildren` was considered but dropped — the tree is built from the loaded
+set, so a parent's children are derived from the rows in hand; a separate
+"has children outside the window" hint isn't used in v1.)
 
 **Adapters:**
 - **Linear** (`trackers/linear/adapter.ts`): the issue query already can select `parent { id identifier }`; map it onto `parentId`/`parentIdentifier`. `children` count → `hasChildren`. The 100-issue cap means orphan promotion must be handled client-side (a parent can fall outside the window).
@@ -66,16 +70,24 @@ hasChildren?: boolean;    // hint so a leaf needs no children probe (Linear expo
 - The fixed sort in `services/issues.ts` becomes a **default**, with the real ordering applied client-side from the sort prefs (the full list is already in the client for filtering — `issues` vs `filteredIssues`). Keeping sort client-side avoids a refetch per sort change and reuses the loaded set.
 - Build the parent→children tree from the flat `filteredIssues` after filtering, so filters and sort compose. A filtered-out parent with surviving children triggers orphan promotion.
 
-## Key files (to touch when implemented)
+## Key files (as implemented)
 
-- `src/server/shared/types/domain-types.ts` — `parentId` / `parentIdentifier` / `hasChildren` on `TrackerIssue`.
-- `src/server/orchestrator/trackers/linear/adapter.ts` — select + map `parent`.
-- `src/server/orchestrator/trackers/github/*` — map native sub-issues when present.
-- `src/client/components/IssuesViewer.tsx` — recursive tree build, disclosure rows + tree spines (table), indent-only child cards (mobile), orphan hint.
-- `src/client/components/IssuesSortModal.tsx` *(new)* — the sliders-icon-triggered modal: two-level sort + group-by.
-- `src/client/components/issues-sort.ts` *(new)* — comparator (primary → secondary → identifier) + recursive tree-builder + orphan promotion (unit-tested).
-- `src/client/stores/settings-store.ts` — persisted per-tracker sort/group prefs (later).
-- `src/server/shipit-docs/issues.md` — note that `shipit issue view` surfaces parent/children for Linear (agent-facing).
+- `src/server/shared/types/domain-types.ts` — `parentId` / `parentIdentifier` / `updatedAt` on `TrackerIssue`.
+- `src/server/orchestrator/trackers/linear/adapter.ts` — selects + maps `parent { id identifier }` and `updatedAt`.
+- GitHub adapter — **unchanged** (flat list; no parent data surfaced).
+- `src/client/components/issues-sort.ts` *(new)* — `SortPrefs` types, `compareIssues` (primary → secondary → identifier), `buildIssueTree` (recursive + orphan promotion + cycle guard), `flattenTree`, `groupRoots`, `buildSections`. Unit-tested in `issues-sort.test.ts`.
+- `src/client/components/IssuesSortModal.tsx` *(new)* — the sliders-icon-triggered dialog: two-level sort + group-by.
+- `src/client/components/IssuesViewer.tsx` — renders `IssueSection[]` with group headers; per-row disclosure + title-cell depth indent (table) and whole-card indent (mobile); orphan hint; sliders button with dirty dot + tooltip.
+- `src/client/components/IssuesPanel.tsx` — builds the sections (`buildSections(filteredIssues, sortPrefs, collapsed)`) and wires the sort/collapse store actions.
+- `src/client/stores/issues-store.ts` — `sortPrefs` + `collapsed` state, `setSortPrefs` / `toggleCollapsed`, persisted via a store subscription.
+- `src/client/utils/local-storage.ts` — `getSavedSortPrefs` / `saveSortPrefs` (`shipit-issue-sort`) + `getSavedIssueCollapsed` / `saveIssueCollapsed` (`shipit-issue-collapsed`), both global.
+- `src/server/shipit-docs/issues.md` — notes Linear parent fields in `shipit issue view --json` (agent-facing).
+
+### Implementation notes
+
+- **Sort is client-side** over the already-loaded `filteredIssues`, so changing the order never refetches — the server's priority order is just the default. Filters and sort compose (a filtered-out parent with surviving children triggers orphan promotion).
+- **Desktop vs mobile indent** is solved in one reflowing row: the title cell carries the disclosure + a depth-indent (`@sm` only, so table columns stay aligned), while the row's left padding carries the whole-card indent below `@sm` (capped at 3 levels × 4px). The disclosure is desktop-only; collapse is reachable only there (see checklist for the accepted narrow-panel edge).
+- **Prefs persist globally** (not per-tracker for v1) — a single order across Linear/GitHub.
 
 ## Open questions
 

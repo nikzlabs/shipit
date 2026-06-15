@@ -1,5 +1,6 @@
 import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/shared/types.js";
 import type { IssueFilters } from "../components/issues-filter.js";
+import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
 
 const SIDEBAR_COLLAPSED_KEY = "vibe-sidebar-collapsed";
 const RIGHT_TAB_KEY = "shipit-right-tab";
@@ -551,6 +552,73 @@ export function saveIssueFilters(filters: IssueFilters): void {
       labels: [...filters.labels],
     };
     localStorage.setItem(ISSUE_FILTERS_KEY, JSON.stringify(payload));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+// ---- Issues-tab sort/group prefs + collapse state (docs/206) ----
+//
+// Both are workspace-scoped reference state (the issue list isn't per-session or
+// per-repo), so they persist in localStorage globally and survive reloads. Sort
+// prefs are validated field-by-field on read so a malformed/old blob can never
+// crash the panel — anything unrecognized falls back to the default.
+
+const ISSUE_SORT_KEY = "shipit-issue-sort";
+const ISSUE_COLLAPSED_KEY = "shipit-issue-collapsed";
+
+const VALID_SORT_KEYS = ["priority", "status", "title", "updated", "assignee"] as const;
+const VALID_GROUP_KEYS = ["none", "priority", "status", "assignee"] as const;
+
+export function getSavedSortPrefs(): SortPrefs {
+  try {
+    const raw = localStorage.getItem(ISSUE_SORT_KEY);
+    if (!raw) return { ...DEFAULT_SORT_PREFS };
+    const p = JSON.parse(raw) as Record<string, unknown>;
+    const sortKeys: readonly string[] = VALID_SORT_KEYS;
+    const groupKeys: readonly string[] = VALID_GROUP_KEYS;
+    const dir = (v: unknown): SortDir => (v === -1 ? -1 : 1);
+    return {
+      primary: typeof p.primary === "string" && sortKeys.includes(p.primary) ? (p.primary as SortKey) : DEFAULT_SORT_PREFS.primary,
+      primaryDir: dir(p.primaryDir),
+      secondary:
+        p.secondary === "none"
+          ? "none"
+          : typeof p.secondary === "string" && sortKeys.includes(p.secondary)
+            ? (p.secondary as SortKey)
+            : DEFAULT_SORT_PREFS.secondary,
+      secondaryDir: dir(p.secondaryDir),
+      group: typeof p.group === "string" && groupKeys.includes(p.group) ? (p.group as GroupKey) : DEFAULT_SORT_PREFS.group,
+    };
+  } catch {
+    return { ...DEFAULT_SORT_PREFS };
+  }
+}
+
+export function saveSortPrefs(prefs: SortPrefs): void {
+  try {
+    localStorage.setItem(ISSUE_SORT_KEY, JSON.stringify(prefs));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function getSavedIssueCollapsed(): Set<string> {
+  try {
+    const raw = localStorage.getItem(ISSUE_COLLAPSED_KEY);
+    if (raw) {
+      const arr = JSON.parse(raw) as unknown;
+      if (Array.isArray(arr)) return new Set(arr.filter((x): x is string => typeof x === "string"));
+    }
+  } catch {
+    /* ignore */
+  }
+  return new Set();
+}
+
+export function saveIssueCollapsed(collapsed: Set<string>): void {
+  try {
+    localStorage.setItem(ISSUE_COLLAPSED_KEY, JSON.stringify([...collapsed]));
   } catch {
     // localStorage may be unavailable
   }

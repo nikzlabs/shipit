@@ -33,6 +33,11 @@ and — importantly for writes — the issue's **available statuses** (the valid
 targets for `shipit issue status`). `--json` emits the raw object. The output
 shape is identical across trackers.
 
+For **Linear** sub-issues, `--json` also carries `parentId` / `parentIdentifier`
+(the parent issue this one nests under) and `updatedAt`; the Issues panel uses
+these to render sub-issues nested beneath their parent. GitHub issues are flat —
+they carry no parent fields.
+
 Add `--comments` to also read the issue's **comment thread** (author, body, and
 timestamp per comment, oldest-first) — for both GitHub and Linear. Use it when
 you're asked to act on issue discussion ("address the review comment", "what did
