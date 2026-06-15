@@ -222,24 +222,48 @@ export interface IssueRowItem {
 }
 
 /**
- * Flatten the tree into the rows to render, in display order. A collapsed node's
- * subtree is omitted (the node itself stays, marked `collapsed`). The `collapsed`
- * set is keyed by issue id.
+ * Whether a parent renders collapsed, resolved from the persisted override map
+ * and the current layout (docs/206). The map holds the user's EXPLICIT toggles
+ * (`true` = collapsed, `false` = expanded); an absent entry means "untouched", so
+ * the layout default applies:
+ *   - **wide / table layout** (`narrow=false`): default EXPANDED — the desktop
+ *     tree is the point, so a parent shows expanded unless explicitly collapsed.
+ *   - **narrow / card layout** (`narrow=true`): default COLLAPSED — on a phone a
+ *     long sub-issue list is unusable, so parents fold to a "N nested issues"
+ *     row unless explicitly expanded.
+ * An explicit toggle is global (it applies to both layouts); only the untouched
+ * default differs, so collapsing on desktop still reads as collapsed on mobile.
  */
-export function flattenTree(nodes: IssueTreeNode[], collapsed: Set<string>): IssueRowItem[] {
+export function collapsePredicate(
+  overrides: Record<string, boolean>,
+  narrow: boolean,
+): (issueId: string) => boolean {
+  return (id) => {
+    const explicit = overrides[id];
+    if (explicit !== undefined) return explicit;
+    return narrow; // untouched: collapsed on narrow, expanded on wide
+  };
+}
+
+/**
+ * Flatten the tree into the rows to render, in display order. A collapsed node's
+ * subtree is omitted (the node itself stays, marked `collapsed`). `isCollapsed`
+ * resolves a parent's collapsed state by issue id (see {@link collapsePredicate}).
+ */
+export function flattenTree(nodes: IssueTreeNode[], isCollapsed: (issueId: string) => boolean): IssueRowItem[] {
   const out: IssueRowItem[] = [];
   const walk = (node: IssueTreeNode) => {
     const hasChildren = node.children.length > 0;
-    const isCollapsed = hasChildren && collapsed.has(node.issue.id);
+    const collapsed = hasChildren && isCollapsed(node.issue.id);
     out.push({
       issue: node.issue,
       depth: node.depth,
       hasChildren,
       childCount: node.children.length,
-      collapsed: isCollapsed,
+      collapsed,
       orphan: node.orphan,
     });
-    if (hasChildren && !isCollapsed) node.children.forEach(walk);
+    if (hasChildren && !collapsed) node.children.forEach(walk);
   };
   nodes.forEach(walk);
   return out;
@@ -303,14 +327,14 @@ export interface IssueSection {
 export function buildSections(
   issues: TrackerIssue[],
   prefs: SortPrefs,
-  collapsed: Set<string>,
+  isCollapsed: (issueId: string) => boolean,
 ): IssueSection[] {
   const roots = buildIssueTree(issues, prefs);
   if (prefs.group === "none") {
-    return [{ label: null, rows: flattenTree(roots, collapsed) }];
+    return [{ label: null, rows: flattenTree(roots, isCollapsed) }];
   }
   return groupRoots(roots, prefs.group).map((g) => ({
     label: g.label,
-    rows: flattenTree(g.nodes, collapsed),
+    rows: flattenTree(g.nodes, isCollapsed),
   }));
 }

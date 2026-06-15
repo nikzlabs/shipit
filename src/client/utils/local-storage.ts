@@ -603,22 +603,39 @@ export function saveSortPrefs(prefs: SortPrefs): void {
   }
 }
 
-export function getSavedIssueCollapsed(): Set<string> {
+/**
+ * Explicit per-parent collapse overrides (docs/206): `{ [issueId]: boolean }`,
+ * `true` = collapsed, `false` = expanded; absent = untouched (layout default).
+ * A legacy array form (`string[]` of collapsed ids) is migrated to `{id: true}`.
+ */
+export function getSavedIssueCollapsed(): Record<string, boolean> {
   try {
     const raw = localStorage.getItem(ISSUE_COLLAPSED_KEY);
     if (raw) {
-      const arr = JSON.parse(raw) as unknown;
-      if (Array.isArray(arr)) return new Set(arr.filter((x): x is string => typeof x === "string"));
+      const parsed = JSON.parse(raw) as unknown;
+      if (Array.isArray(parsed)) {
+        // Legacy: an array of collapsed ids → explicit `true` overrides.
+        const out: Record<string, boolean> = {};
+        for (const x of parsed) if (typeof x === "string") out[x] = true;
+        return out;
+      }
+      if (parsed && typeof parsed === "object") {
+        const out: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === "boolean") out[k] = v;
+        }
+        return out;
+      }
     }
   } catch {
     /* ignore */
   }
-  return new Set();
+  return {};
 }
 
-export function saveIssueCollapsed(collapsed: Set<string>): void {
+export function saveIssueCollapsed(collapsed: Record<string, boolean>): void {
   try {
-    localStorage.setItem(ISSUE_COLLAPSED_KEY, JSON.stringify([...collapsed]));
+    localStorage.setItem(ISSUE_COLLAPSED_KEY, JSON.stringify(collapsed));
   } catch {
     // localStorage may be unavailable
   }

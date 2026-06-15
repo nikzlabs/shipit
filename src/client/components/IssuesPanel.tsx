@@ -11,7 +11,7 @@ import {
   type StatusOption,
 } from "./issues-filter.js";
 import type { IssueStatusRef } from "./IssueFieldControls.js";
-import { buildSections, type IssueSection } from "./issues-sort.js";
+import { buildSections, collapsePredicate, type IssueSection } from "./issues-sort.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -72,7 +72,7 @@ export function IssuesPanel({
   const filters = useIssuesStore((s) => s.filters);
   const includeDone = useIssuesStore((s) => s.includeDone);
   const sortPrefs = useIssuesStore((s) => s.sortPrefs);
-  const collapsed = useIssuesStore((s) => s.collapsed);
+  const collapseById = useIssuesStore((s) => s.collapseById);
   const selected = useIssuesStore((s) => s.selected);
   const detail = useIssuesStore((s) => s.detail);
   const detailLoading = useIssuesStore((s) => s.detailLoading);
@@ -88,12 +88,19 @@ export function IssuesPanel({
   }, [issues, filters]);
 
   // Build the nested render plan (docs/206): sort + group + collapse applied to
-  // the filtered set, client-side. Memoized so the viewer re-renders only when an
-  // input actually changes.
-  const sections = useMemo(() => {
+  // the filtered set, client-side. Two variants — the wide (table) layout
+  // defaults parents EXPANDED, the narrow (card) layout defaults them COLLAPSED
+  // — and the viewer picks one by its measured width. Memoized so the viewer
+  // re-renders only when an input actually changes.
+  const desktopSections = useMemo(() => {
     if (filteredIssues.length === 0) return EMPTY_SECTIONS;
-    return buildSections(filteredIssues, sortPrefs, collapsed);
-  }, [filteredIssues, sortPrefs, collapsed]);
+    return buildSections(filteredIssues, sortPrefs, collapsePredicate(collapseById, false));
+  }, [filteredIssues, sortPrefs, collapseById]);
+
+  const mobileSections = useMemo(() => {
+    if (filteredIssues.length === 0) return EMPTY_SECTIONS;
+    return buildSections(filteredIssues, sortPrefs, collapsePredicate(collapseById, true));
+  }, [filteredIssues, sortPrefs, collapseById]);
 
   const statusOptions = useMemo(() => {
     const result = distinctStatuses(issues);
@@ -196,7 +203,8 @@ export function IssuesPanel({
       activeTracker={activeTracker}
       issues={issues}
       filteredIssues={filteredIssues}
-      sections={sections}
+      desktopSections={desktopSections}
+      mobileSections={mobileSections}
       sortPrefs={sortPrefs}
       filters={filters}
       statusOptions={statusOptions}
@@ -214,7 +222,7 @@ export function IssuesPanel({
       onRefresh={() => void useIssuesStore.getState().fetchIssues()}
       onToggleIncludeDone={() => useIssuesStore.getState().toggleIncludeDone()}
       onSetSortPrefs={(prefs) => useIssuesStore.getState().setSortPrefs(prefs)}
-      onToggleCollapsed={(id) => useIssuesStore.getState().toggleCollapsed(id)}
+      onSetCollapsed={(id, collapsed) => useIssuesStore.getState().setCollapsed(id, collapsed)}
       onSetStatus={(issue, status) =>
         useIssuesStore.getState().setIssueStatus(activeTracker, issue, status)
       }

@@ -156,11 +156,14 @@ interface IssuesState {
   sortPrefs: SortPrefs;
 
   /**
-   * Ids of collapsed parent issues (docs/206). Persisted GLOBALLY (not per
-   * session or repo — neither is the issue list), so a collapsed subtree stays
-   * collapsed across reloads. Keyed by `TrackerIssue.id`.
+   * Explicit collapse overrides for parent issues (docs/206), keyed by
+   * `TrackerIssue.id`: `true` = collapsed, `false` = expanded. An absent entry
+   * means "untouched", so the layout default applies (expanded on the wide table,
+   * collapsed on the narrow card layout — see `collapsePredicate`). Persisted
+   * GLOBALLY (not per session or repo — neither is the issue list) so the tree
+   * stays how the user left it across reloads.
    */
-  collapsed: Set<string>;
+  collapseById: Record<string, boolean>;
 
   /**
    * Scroll offset of the list's scroll container, persisted so opening an issue
@@ -252,8 +255,12 @@ interface IssuesState {
   toggleIncludeDone: () => void;
   /** Replace the sort/group prefs (from the sort modal). Persisted. */
   setSortPrefs: (prefs: SortPrefs) => void;
-  /** Collapse/expand a parent issue's subtree (docs/206). Persisted. */
-  toggleCollapsed: (issueId: string) => void;
+  /**
+   * Record an explicit collapse/expand for a parent (docs/206). `collapsed` is
+   * the new state; it's stored as an override so the layout default no longer
+   * applies to this parent. Persisted.
+   */
+  setCollapsed: (issueId: string, collapsed: boolean) => void;
   clearFilters: () => void;
   reset: () => void;
 }
@@ -310,7 +317,7 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
   filters: getSavedIssueFilters(),
   includeDone: getSavedIncludeDone(),
   sortPrefs: getSavedSortPrefs(),
-  collapsed: getSavedIssueCollapsed(),
+  collapseById: getSavedIssueCollapsed(),
   listScrollTop: 0,
   selected: null,
   detail: null,
@@ -587,13 +594,8 @@ export const useIssuesStore = create<IssuesState>((set, get) => ({
 
   setSortPrefs: (prefs) => set({ sortPrefs: prefs }),
 
-  toggleCollapsed: (issueId) =>
-    set((state) => {
-      const next = new Set(state.collapsed);
-      if (next.has(issueId)) next.delete(issueId);
-      else next.add(issueId);
-      return { collapsed: next };
-    }),
+  setCollapsed: (issueId, collapsed) =>
+    set((state) => ({ collapseById: { ...state.collapseById, [issueId]: collapsed } })),
 
   clearFilters: () => set({ filters: emptyFilters() }),
 
@@ -667,5 +669,5 @@ useIssuesStore.subscribe((state, prev) => {
   // Sort prefs + collapse state are global reference state (docs/206) — persist
   // them on every change so they survive a reload, like the filter bar above.
   if (state.sortPrefs !== prev.sortPrefs) saveSortPrefs(state.sortPrefs);
-  if (state.collapsed !== prev.collapsed) saveIssueCollapsed(state.collapsed);
+  if (state.collapseById !== prev.collapseById) saveIssueCollapsed(state.collapseById);
 });

@@ -35,7 +35,7 @@ describe("issueLookupId", () => {
 describe("issues-store sort + collapse (docs/206)", () => {
   afterEach(() => {
     localStorage.clear();
-    useIssuesStore.setState({ sortPrefs: { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" }, collapsed: new Set() });
+    useIssuesStore.setState({ sortPrefs: { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" }, collapseById: {} });
   });
 
   it("setSortPrefs updates state and persists to localStorage", () => {
@@ -44,13 +44,14 @@ describe("issues-store sort + collapse (docs/206)", () => {
     expect(JSON.parse(localStorage.getItem("shipit-issue-sort") ?? "{}")).toMatchObject({ primary: "title", group: "status" });
   });
 
-  it("toggleCollapsed adds then removes an id, persisting each time", () => {
-    useIssuesStore.getState().toggleCollapsed("node-7");
-    expect(useIssuesStore.getState().collapsed.has("node-7")).toBe(true);
-    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "[]")).toContain("node-7");
-    useIssuesStore.getState().toggleCollapsed("node-7");
-    expect(useIssuesStore.getState().collapsed.has("node-7")).toBe(false);
-    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "[]")).not.toContain("node-7");
+  it("setCollapsed records an explicit override and persists it", () => {
+    useIssuesStore.getState().setCollapsed("node-7", true);
+    expect(useIssuesStore.getState().collapseById["node-7"]).toBe(true);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "{}")).toMatchObject({ "node-7": true });
+    // Re-recording with the opposite value overwrites the override.
+    useIssuesStore.getState().setCollapsed("node-7", false);
+    expect(useIssuesStore.getState().collapseById["node-7"]).toBe(false);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "{}")).toMatchObject({ "node-7": false });
   });
 });
 

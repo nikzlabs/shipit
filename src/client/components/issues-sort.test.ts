@@ -4,6 +4,7 @@ import {
   DEFAULT_SORT_PREFS,
   buildIssueTree,
   buildSections,
+  collapsePredicate,
   compareIssues,
   describeSort,
   flattenTree,
@@ -141,7 +142,7 @@ describe("flattenTree", () => {
 
   it("includes children when expanded", () => {
     const tree = buildIssueTree([parent, child], DEFAULT_SORT_PREFS);
-    const rows = flattenTree(tree, new Set());
+    const rows = flattenTree(tree, () => false);
     expect(rows.map((r) => r.issue.id)).toEqual(["p", "c"]);
     expect(rows[0].hasChildren).toBe(true);
     expect(rows[0].collapsed).toBe(false);
@@ -149,7 +150,7 @@ describe("flattenTree", () => {
 
   it("omits a collapsed parent's subtree but keeps the parent", () => {
     const tree = buildIssueTree([parent, child], DEFAULT_SORT_PREFS);
-    const rows = flattenTree(tree, new Set(["p"]));
+    const rows = flattenTree(tree, (id) => id === "p");
     expect(rows.map((r) => r.issue.id)).toEqual(["p"]);
     expect(rows[0].collapsed).toBe(true);
   });
@@ -166,7 +167,7 @@ describe("groupRoots + buildSections", () => {
 
   it("buildSections returns one label-less section when ungrouped", () => {
     const a = issue({ id: "a", identifier: "T-1" });
-    const sections = buildSections([a], prefs({ group: "none" }), new Set());
+    const sections = buildSections([a], prefs({ group: "none" }), () => false);
     expect(sections).toHaveLength(1);
     expect(sections[0].label).toBeNull();
   });
@@ -174,11 +175,40 @@ describe("groupRoots + buildSections", () => {
   it("buildSections keeps a child nested inside its parent's section", () => {
     const parent = issue({ id: "p", identifier: "T-1", status: { name: "Todo", type: "unstarted" } });
     const child = issue({ id: "c", identifier: "T-2", parentId: "p", status: { name: "Done", type: "completed" } });
-    const sections = buildSections([parent, child], prefs({ group: "status" }), new Set());
+    const sections = buildSections([parent, child], prefs({ group: "status" }), () => false);
     // One section (Todo, the parent's status); the child rides along nested, not
     // hoisted into a separate "Done" section.
     expect(sections.map((s) => s.label)).toEqual(["Todo"]);
     expect(sections[0].rows.map((r) => r.issue.id)).toEqual(["p", "c"]);
+  });
+});
+
+describe("collapsePredicate (docs/206)", () => {
+  it("defaults parents EXPANDED on the wide layout (narrow=false)", () => {
+    const isCollapsed = collapsePredicate({}, false);
+    expect(isCollapsed("anything")).toBe(false);
+  });
+
+  it("defaults parents COLLAPSED on the narrow layout (narrow=true)", () => {
+    const isCollapsed = collapsePredicate({}, true);
+    expect(isCollapsed("anything")).toBe(true);
+  });
+
+  it("an explicit override beats the layout default, both ways", () => {
+    // Explicitly expanded → expanded even on narrow.
+    expect(collapsePredicate({ p: false }, true)("p")).toBe(false);
+    // Explicitly collapsed → collapsed even on wide.
+    expect(collapsePredicate({ p: true }, false)("p")).toBe(true);
+  });
+
+  it("flattens a parent collapsed-by-default on narrow, hiding its children", () => {
+    const parent = issue({ id: "p", identifier: "T-1" });
+    const child = issue({ id: "c", identifier: "T-2", parentId: "p" });
+    const tree = buildIssueTree([parent, child], DEFAULT_SORT_PREFS);
+    const rows = flattenTree(tree, collapsePredicate({}, true));
+    expect(rows.map((r) => r.issue.id)).toEqual(["p"]);
+    expect(rows[0].collapsed).toBe(true);
+    expect(rows[0].childCount).toBe(1);
   });
 });
 

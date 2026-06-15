@@ -13,6 +13,7 @@ import { StartSessionButton } from "./StartSessionButton.js";
 import { IssuesFilterBar } from "./IssuesFilterBar.js";
 import { IssuesSortModal } from "./IssuesSortModal.js";
 import { describeSort, isNonDefaultSort, type IssueRowItem, type IssueSection, type SortPrefs } from "./issues-sort.js";
+import { useNarrowContainer } from "../hooks/useNarrowContainer.js";
 import {
   IssuePriorityEditor,
   IssueStatusEditor,
@@ -42,11 +43,14 @@ export interface IssuesViewerProps {
   /** Filtered subset (the "N") — drives the count + empty state. */
   filteredIssues: TrackerIssue[];
   /**
-   * Render plan (docs/206): ordered sections, each a flattened tree of rows. One
-   * label-less section when ungrouped; one labelled section per group otherwise.
-   * Built from `filteredIssues` + sort prefs + collapse state by the panel.
+   * Render plan (docs/206): ordered sections, each a flattened tree of rows.
+   * Two variants — the wide/table layout defaults parents expanded, the
+   * narrow/card layout defaults them collapsed — and the viewer renders whichever
+   * matches its measured width. One label-less section when ungrouped; one
+   * labelled section per group otherwise.
    */
-  sections: IssueSection[];
+  desktopSections: IssueSection[];
+  mobileSections: IssueSection[];
   /** Active two-level sort + group prefs (drives the modal + the dirty dot). */
   sortPrefs: SortPrefs;
   filters: IssueFilters;
@@ -71,8 +75,8 @@ export interface IssuesViewerProps {
   onToggleIncludeDone: () => void;
   /** Replace the sort/group prefs (from the sort modal). */
   onSetSortPrefs: (prefs: SortPrefs) => void;
-  /** Collapse/expand a parent issue's subtree (docs/206). */
-  onToggleCollapsed: (issueId: string) => void;
+  /** Record an explicit collapse/expand for a parent issue (docs/206). */
+  onSetCollapsed: (issueId: string, collapsed: boolean) => void;
   /** Open the inline detail view for a row (docs/189). */
   onOpenIssue: (issue: TrackerIssue) => void;
   /**
@@ -194,7 +198,7 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
  */
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
-  "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'action_action'] " +
+  "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'nested_nested'_'action_action'] " +
   "@sm:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @sm:gap-x-2.5 @sm:items-start " +
   "@sm:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
@@ -207,6 +211,10 @@ const ROW_GRID =
 // editor-trigger-wrapped priority badge). The title uses `min-h-6` instead so a
 // two-line title can still grow downward; its description + labels flow below.
 const FIRST_LINE = "flex items-center h-6";
+
+/** The `@sm` container-query breakpoint (24rem) in px — below it the row grid
+ *  folds to the card layout, and the panel switches to mobile collapse behavior. */
+const CARD_BREAKPOINT_PX = 384;
 
 /** Desktop indent per nesting level (px), capped so a deep tree can't crush the
  *  title column on a narrow panel. Mobile uses its own smaller, lower cap. */
@@ -222,7 +230,7 @@ function IssueRow({
   canEditPriority,
   surfaceLum,
   onOpenIssue,
-  onToggleCollapsed,
+  onSetCollapsed,
   onSetStatus,
   onSetPriority,
   onStartSession,
@@ -234,17 +242,18 @@ function IssueRow({
   /** Luminance of the row surface, for contrast-adapting the status dot. */
   surfaceLum: number;
   onOpenIssue: (issue: TrackerIssue) => void;
-  onToggleCollapsed: (issueId: string) => void;
+  onSetCollapsed: (issueId: string, collapsed: boolean) => void;
   onSetStatus: (issue: TrackerIssue, status: string) => Promise<string | null>;
   onSetPriority: (issue: TrackerIssue, level: IssuePriorityLevel) => Promise<string | null>;
   onStartSession: (issue: TrackerIssue) => void;
 }) {
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
-  // Mobile (card layout, below @sm) gets NO tree affordances — just a faint
-  // whole-card indent (docs/206). Desktop indents the title cell + shows the
-  // disclosure. The CSS var feeds the row's left padding below @sm only.
+  // Mobile (card layout) gets a faint whole-card indent + a "N nested issues"
+  // toggle (docs/206); desktop indents the title cell + shows the disclosure
+  // caret. The CSS var feeds the row's left padding below @sm only.
   const mobileIndent = Math.min(depth, MOBILE_INDENT_MAX_DEPTH) * MOBILE_INDENT_STEP;
   const desktopIndent = Math.min(depth, DESKTOP_INDENT_MAX_DEPTH) * DESKTOP_INDENT_STEP;
+  const toggle = () => onSetCollapsed(issue.id, !collapsed);
   return (
     // The whole row opens the inline detail view (docs/189) — the deep link to
     // the tracker now lives only inside that view, not on the row. A div with a
@@ -291,7 +300,7 @@ function IssueRow({
                 aria-expanded={!collapsed}
                 onClick={(e) => {
                   e.stopPropagation();
-                  onToggleCollapsed(issue.id);
+                  toggle();
                 }}
                 onKeyDown={(e) => e.stopPropagation()}
                 className="mr-1 inline-flex size-4 shrink-0 items-center justify-center rounded text-(--color-text-tertiary) hover:bg-(--color-bg-tertiary) hover:text-(--color-text-primary) cursor-pointer"
@@ -391,6 +400,35 @@ function IssueRow({
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
+      {/* Card-only nested-issues toggle (docs/206). On the narrow card layout the
+          tree has no disclosure caret; instead a parent shows a tappable "N nested
+          issues" row, collapsed by default, so a long sub-issue list doesn't bury
+          the rest of the list. Hidden in the table layout (the caret takes over). */}
+      {hasChildren && (
+        <button
+          type="button"
+          aria-label={
+            collapsed
+              ? `Show ${childCount} nested issue${childCount !== 1 ? "s" : ""} in ${issue.identifier}`
+              : `Hide nested issues in ${issue.identifier}`
+          }
+          aria-expanded={!collapsed}
+          onClick={(e) => {
+            e.stopPropagation();
+            toggle();
+          }}
+          onKeyDown={(e) => e.stopPropagation()}
+          className="@sm:hidden [grid-area:nested] mt-0.5 inline-flex w-fit items-center gap-1 rounded text-[11px] font-medium text-(--color-text-secondary) hover:text-(--color-text-primary) cursor-pointer"
+        >
+          <CaretRightIcon
+            size={ICON_SIZE.XS}
+            weight="bold"
+            className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
+          />
+          {childCount} nested issue{childCount !== 1 ? "s" : ""}
+        </button>
+      )}
+
       {/* Wrapped in the shared first-line band so the button centers on the same
           baseline as the other cells (the row is `items-start`). The cell fills
           the action track and `justify-center` centers the button in it — the
@@ -432,7 +470,8 @@ export function IssuesViewer({
   activeTracker,
   issues,
   filteredIssues,
-  sections,
+  desktopSections,
+  mobileSections,
   sortPrefs,
   filters,
   statusOptions,
@@ -450,7 +489,7 @@ export function IssuesViewer({
   onRefresh,
   onToggleIncludeDone,
   onSetSortPrefs,
-  onToggleCollapsed,
+  onSetCollapsed,
   onOpenIssue,
   initialScrollTop,
   onPersistScroll,
@@ -473,6 +512,14 @@ export function IssuesViewer({
   // so pale states stay legible on light themes (computed once for all rows).
   const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
   const [sortOpen, setSortOpen] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // Tie collapse behavior to the SAME width that flips the row layout (the `@sm`
+  // container breakpoint, 24rem). When the panel is card-width, render the
+  // narrow sections (parents collapsed by default + "N nested issues" toggle);
+  // when table-width, the desktop sections (expanded + disclosure). Measured on
+  // the scroll container (the `@container`) so the two always agree. (docs/206)
+  const isNarrow = useNarrowContainer(scrollRef, CARD_BREAKPOINT_PX);
+  const sections = isNarrow ? mobileSections : desktopSections;
 
   // Restore the saved scroll offset on mount and stash the current one on
   // unmount, so opening an issue and pressing back lands on the same row
@@ -481,7 +528,6 @@ export function IssuesViewer({
   // before paint, with no visible jump. Empty deps: this is a mount/unmount
   // pair, and the captured `initialScrollTop`/`onPersistScroll` are exactly the
   // values we want (the offset at mount, the persist fn for unmount).
-  const scrollRef = useRef<HTMLDivElement>(null);
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
@@ -682,7 +728,7 @@ export function IssuesViewer({
                         canEditPriority={canEditPriority}
                         surfaceLum={rowSurfaceLum}
                         onOpenIssue={onOpenIssue}
-                        onToggleCollapsed={onToggleCollapsed}
+                        onSetCollapsed={onSetCollapsed}
                         onSetStatus={onSetStatus}
                         onSetPriority={onSetPriority}
                         onStartSession={onStartSession}

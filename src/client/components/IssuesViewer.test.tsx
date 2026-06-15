@@ -9,8 +9,14 @@ import {
   filterIssues,
   type IssueFilters,
 } from "./issues-filter.js";
-import { DEFAULT_SORT_PREFS, buildSections } from "./issues-sort.js";
+import { DEFAULT_SORT_PREFS, buildSections, collapsePredicate } from "./issues-sort.js";
 import type { IssuePriorityLevel, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
+
+// Force the container-width signal so we can exercise both layouts deterministically
+// (jsdom has no layout, so the real ResizeObserver path always reads 0/desktop).
+// Defaults to wide/desktop; individual tests flip `mockNarrow.value` to true.
+const mockNarrow = vi.hoisted(() => ({ value: false }));
+vi.mock("../hooks/useNarrowContainer.js", () => ({ useNarrowContainer: () => mockNarrow.value }));
 
 const LINEAR_CONFIGURED: TrackerInfo = {
   id: "linear",
@@ -60,7 +66,8 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     activeTracker: "linear",
     issues,
     filteredIssues: filtered,
-    sections: buildSections(filtered, DEFAULT_SORT_PREFS, new Set()),
+    desktopSections: buildSections(filtered, DEFAULT_SORT_PREFS, collapsePredicate({}, false)),
+    mobileSections: buildSections(filtered, DEFAULT_SORT_PREFS, collapsePredicate({}, true)),
     sortPrefs: DEFAULT_SORT_PREFS,
     filters,
     statusOptions: distinctStatuses(issues),
@@ -78,7 +85,7 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
     onSetSortPrefs: vi.fn(),
-    onToggleCollapsed: vi.fn(),
+    onSetCollapsed: vi.fn(),
     onOpenIssue: vi.fn(),
     initialScrollTop: 0,
     onPersistScroll: vi.fn(),
@@ -94,13 +101,15 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onClearFilters: vi.fn(),
   };
   // `filteredIssues` derives from issues+filters unless explicitly overridden;
-  // `sections` follows whichever filtered list wins so rows render to match.
+  // the section sets follow whichever filtered list wins so rows render to match.
   const finalFiltered = overrides?.filteredIssues ?? base.filteredIssues;
+  const finalPrefs = overrides?.sortPrefs ?? DEFAULT_SORT_PREFS;
   return {
     ...base,
     ...overrides,
     filteredIssues: finalFiltered,
-    sections: overrides?.sections ?? buildSections(finalFiltered, overrides?.sortPrefs ?? DEFAULT_SORT_PREFS, new Set()),
+    desktopSections: overrides?.desktopSections ?? buildSections(finalFiltered, finalPrefs, collapsePredicate({}, false)),
+    mobileSections: overrides?.mobileSections ?? buildSections(finalFiltered, finalPrefs, collapsePredicate({}, true)),
   };
 }
 
@@ -145,7 +154,7 @@ describe("IssuesViewer", () => {
     expect(screen.queryByRole("button", { name: /Collapse SHI-2/ })).toBeNull();
   });
 
-  it("toggling a parent's disclosure calls onToggleCollapsed (docs/206)", () => {
+  it("toggling a parent's disclosure records an explicit collapse (docs/206)", () => {
     const props = defaultProps({
       issues: [
         makeIssue({ id: "p", identifier: "SHI-1", title: "Parent" }),
@@ -153,10 +162,32 @@ describe("IssuesViewer", () => {
       ],
     });
     render(<IssuesViewer {...props} />);
+    // Default (desktop/wide) is expanded, so the disclosure collapses it.
     fireEvent.click(screen.getByRole("button", { name: /Collapse SHI-1/ }));
-    expect(props.onToggleCollapsed).toHaveBeenCalledWith("p");
+    expect(props.onSetCollapsed).toHaveBeenCalledWith("p", true);
     // The disclosure's stopPropagation keeps the row from also opening detail.
     expect(props.onOpenIssue).not.toHaveBeenCalled();
+  });
+
+  it("on the narrow card layout, collapses parents by default with a 'N nested issues' toggle (docs/206)", () => {
+    mockNarrow.value = true;
+    try {
+      const props = defaultProps({
+        issues: [
+          makeIssue({ id: "p", identifier: "SHI-1", title: "Parent" }),
+          makeIssue({ id: "c", identifier: "SHI-2", title: "Child", parentId: "p" }),
+        ],
+      });
+      render(<IssuesViewer {...props} />);
+      // Parent shows; the child is folded away behind the collapsed default.
+      expect(screen.getByText("Parent")).toBeInTheDocument();
+      expect(screen.queryByText("Child")).toBeNull();
+      // Tapping the nested-issues row expands it (records an explicit expand).
+      fireEvent.click(screen.getByRole("button", { name: /Show 1 nested issue in SHI-1/ }));
+      expect(props.onSetCollapsed).toHaveBeenCalledWith("p", false);
+    } finally {
+      mockNarrow.value = false;
+    }
   });
 
   it("flags an orphaned sub-issue whose parent is absent (docs/206)", () => {
