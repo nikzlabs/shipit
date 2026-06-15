@@ -37,8 +37,9 @@ of competing for a tab.
   - A self-contained **vertical** drag-resize (the shared `useResizablePanel`
     hook is horizontal-only). Height is clamped so the preview above always
     keeps at least `MIN_PREVIEW_PX`.
-- **`ServiceLogViewer.tsx`** — the xterm.js read-only log viewer, extracted
-  verbatim from the old `ServicesPanel` so the drawer can embed it. Mounts only
+- **`LogView.tsx`** — the xterm.js read-only log viewer (the unified viewer from
+  docs/192; superseded the original `ServiceLogViewer`). The drawer embeds it for
+  the selected-service drill-in and the single-service focus card. Mounts only
   when the Preview tab is actually visible (`active` prop), so xterm never opens
   against a hidden, zero-size container.
 - **`ServiceList.tsx`** — the expanded list view, redesigned as **cards** (see
@@ -102,10 +103,33 @@ backend or data-model changes; everything renders from the existing
 All colors use design tokens; `--color-warning`/`--color-error` replaced the
 ad-hoc `text-orange-400` the old rows used.
 
+### Single-service focus card + left-grouped controls
+
+Two refinements once the drawer shipped (visual reference:
+`single-service-prototype.html`):
+
+- **Lone service = the focus, not a list-of-one.** When exactly one service
+  exists (the common case — e.g. a repo's single `dev` service), a narrow card
+  left-aligned in a wide drawer looked stranded against a big void. Instead,
+  `FocusServiceCard` (in `PreviewServicesDrawer.tsx`) renders a full-width card
+  whose **live log is shown directly** beneath a compact identity+controls row —
+  no drill-in, no "open log" hop. It fills the drawer with the one genuinely
+  useful thing (per CLAUDE.md §1–2). The header sheds its health bar + bulk
+  buttons in this mode (the card carries the per-service controls), and a
+  crashed service shows its error + "Ask the agent to fix" above the log.
+  Multiple services still render the compact `ServiceList`, and clicking one
+  drills into the existing toolbar+log view.
+- **Controls grouped on the left.** The per-service action buttons used to be
+  pushed to the far right by a `flex-1` spacer on the name column, so on wide
+  monitors the cursor had to travel the whole drawer to reach them. The spacer
+  is gone; controls now sit next to the name. Bulk controls were already
+  left-grouped.
+
 ## Key files
 
-- `src/client/components/PreviewServicesDrawer.tsx` — the drawer (new)
-- `src/client/components/ServiceLogViewer.tsx` — extracted xterm log viewer (new)
+- `src/client/components/PreviewServicesDrawer.tsx` — the drawer + `FocusServiceCard` (new)
+- `docs/175-preview-services-drawer/single-service-prototype.html` — design reference for the focus card / left-grouped controls
+- `src/client/components/LogView.tsx` — unified xterm log viewer (docs/192), embedded by the drawer
 - `src/client/components/ServiceList.tsx` — card-based service list (redesigned)
 - `src/client/App.tsx` — flex-column layout, tab removal, `rightTab` coercion
 - `src/client/stores/ui-store.ts` — `RightTab` (no longer includes `"services"`)
