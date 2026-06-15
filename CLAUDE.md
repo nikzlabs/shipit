@@ -391,6 +391,22 @@ The browser uses two parallel channels:
 - **Styling** — Tailwind CSS v4 utility classes. Dark-mode-only color scheme (gray-950 backgrounds).
 - **Strict TypeScript** — `strict: true` in tsconfig. Target ES2022, module ESNext with bundler resolution.
 
+## Prompts
+
+LLM prompts (agent system instructions, voice-transcript cleanup, session naming, etc.) are **content, not logic**, and the two must stay separated. The governing split:
+
+- **Prompt *text* is data.** Static, self-contained prompt bodies and fragments should live as standalone partials so they review as prose, diff cleanly, and edit without touching code or escaping backticks/`${}`. Today some are exported string constants (`agents/claude/system-prompt.ts` → `CLAUDE_PARALLEL_SESSIONS_SECTION`, `voice/cleanup-prompt.ts` → `CLEANUP_INSTRUCTIONS`); the direction is to move that text into `.md` files imported raw at **compile time** (a missing/renamed file must fail the build, never crash at runtime). This mirrors the existing `src/server/shipit-docs/*.md` convention for agent-facing prose.
+- **Prompt *composition* is code.** Axis branching, fragment selection, and interleaving stay in TypeScript. `agent-instructions.ts` is the canonical example: `renderInstructions(agentId, isOps)` splices fragments into a skeleton, and there are exactly two session-fixed axes (`agentId`, `isOps`).
+- **The prompt-cache contract is load-bearing — do not break it.** Every `(agentId, isOps)` variant is rendered **once at module load** into `PRECOMPUTED_INSTRUCTIONS`; the per-turn path (`buildAgentSystemInstructions`) is a pure lookup of a frozen constant. This keeps the string handed to the CLI byte-stable across a session's turns so the Anthropic prompt cache stays warm. Never move composition to a per-call or runtime-`fs.readFile` path — keep it render-once, and keep prompt text loaded at compile time.
+
+### Testing prompts
+
+**Test composition and caching, never literal wording.**
+
+- **Do** assert: which fragment is selected per `agentId`/`isOps`, that variants are distinct, that the non-ops default is byte-identical, reference-equality of the precomputed constants (cache stability), and that the prompt is threaded/appended/omitted by the call sites. When a composition test must detect a fragment's presence/absence, key off a **stable structural anchor** — a `##` section header or a command token (`shipit session create`) — not a sentence.
+- **Don't** assert that the prose contains specific phrases or sentences (e.g. "the PR section says *Do not ask first*"). Those tests churn on every copy-edit, gate CI on wording, and verify nothing the prompt file doesn't already state. They were removed from `agent-instructions.test.ts`; don't reintroduce them. A pure prompt-text edit should require **no** test changes.
+- Provider/integration tests that need to confirm a prompt is *used* reference the **imported constant** (`expect(sent.messages[0].content).toContain(CLEANUP_INSTRUCTIONS)`) or derive the expectation from the builder — not a pasted copy of the text. These stay valid when the text moves to `.md`. See `voice/providers/*-cleanup.test.ts` and `integration_tests/system-prompt.test.ts`.
+
 ## Dependency policy
 
 Two rules govern what goes into `package.json`. Both are enforced by `npm run check-deps` (`scripts/check-dependency-age.ts`); wire it into CI.
