@@ -45,14 +45,27 @@ cards), curated set. Each row shows a connection state and a small **"Managed by
 affordance signalling that credentials are brokered out of the container — the visible cue
 for the security-model difference.
 
-- **GitHub** — auto-"Connected" with username/avatar when account auth is present; token form
-  (`GitHubTokenForm`) otherwise. The GitHub-specific PR-automation toggle (`PullRequestSettings`,
-  "Auto-create PR after every meaningful turn") stays nested under this row — it is a
-  GitHub-scoped behavior, not a generic setting, so it reads naturally here.
-- **Linear** — the existing `SettingsTrackers` flow verbatim: paste token → pick team →
-  Connected (team name + key) → Change team / Disconnect.
-- **Future** — placeholder slot for additional first-party integrations (Jira, Sentry, …). New
-  entries are added to this curated list, not exposed as "add your own."
+Each integration is **one self-contained card** (`bg-secondary`, soft border, rounded): a
+header carries the logo tile, name, "Managed by ShipIt" badge, and the integration's action
+buttons in a **consistent top-right slot**; the integration's own settings/state live **inside
+the same card** below a `border-secondary` divider — never as a separate floating card. This
+keeps "the integration" and "its related settings" visually grouped (a single source of edge),
+and puts Disconnect in the same place for every service.
+
+- **GitHub** — auto-"Connected" with username/avatar when account auth is present (token form
+  via `GitHubTokenForm` otherwise). The GitHub-specific PR-automation toggle (`PullRequestSettings`,
+  "Auto-create PR after every meaningful turn") renders **inside the GitHub card** below the
+  header divider — a GitHub-scoped behavior, visually owned by GitHub rather than floating as
+  its own nested card.
+- **Linear** — the existing `SettingsTrackers` flow (paste token → pick team → Connected →
+  Change team / Disconnect), restructured into the same single-card shape. **Disconnect** (an
+  integration-level action) sits top-right in the header, matching GitHub. **Change team** is
+  team-scoped, so it renders on the connected team's own line in the detail below the divider —
+  next to what it acts on, not floated far up in the header. The team picker / token form render
+  in that same below-divider region.
+- **Future** — additional first-party integrations (Jira, Sentry, …) are added to this curated
+  list, not exposed as "add your own." (The standing "More first-party integrations… land here"
+  caption was removed — it described an empty future state and added noise.)
 
 ### Section 2 — MCP servers (custom / advanced)
 

@@ -79,7 +79,7 @@ function PullRequestSettings() {
   };
 
   return (
-    <div className="ml-12 flex items-center justify-between gap-4 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-primary) px-3 py-2">
+    <div className="flex items-center justify-between gap-4 px-3 py-2.5">
       <div>
         <span className="text-sm text-(--color-text-primary)">Auto-create PR after every meaningful turn</span>
         <p className="text-xs text-(--color-text-tertiary)">
@@ -122,8 +122,8 @@ function GitHubConnectionCard({
   }
 
   return (
-    <div className="space-y-2">
-      <div className="flex flex-wrap items-center gap-3 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3">
+    <div className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)">
+      <div className="flex flex-wrap items-start gap-3 p-3">
         <LogoTile>
           <GithubLogoIcon size={ICON_SIZE.MD} weight="fill" />
         </LogoTile>
@@ -152,16 +152,17 @@ function GitHubConnectionCard({
           disabled={disconnecting}
           className={`ml-auto rounded-md border px-3 py-1.5 text-sm transition-colors ${
             disconnecting
-              ? "cursor-not-allowed border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-tertiary) opacity-50"
+              ? "cursor-not-allowed border-(--color-border-secondary) bg-(--color-bg-elevated) text-(--color-text-tertiary) opacity-50"
               : confirmingLogout
                 ? "border-(--color-error)/50 bg-(--color-error-subtle) text-(--color-error)"
-                : "border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
+                : "border-(--color-border-secondary) bg-(--color-bg-elevated) text-(--color-text-secondary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary)"
           }`}
           data-testid="settings-disconnect"
         >
           {disconnecting ? "Disconnecting..." : confirmingLogout ? "Click again to disconnect" : "Disconnect"}
         </button>
       </div>
+      <div className="h-px bg-(--color-border-secondary)" />
       <PullRequestSettings />
     </div>
   );
@@ -200,9 +201,6 @@ export function SettingsIntegrations({
           onGitHubTokenSubmit={onGitHubTokenSubmit}
         />
         <SettingsTrackers embedded logo={<LogoTile><LinearLogo /></LogoTile>} />
-        <p className="text-xs text-(--color-text-tertiary)">
-          More first-party integrations (Jira, Sentry, …) land here — not as “add your own”.
-        </p>
       </section>
 
       <div className="h-px bg-(--color-border-secondary)" />

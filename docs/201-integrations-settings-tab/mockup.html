@@ -70,14 +70,21 @@
   .divider { height: 1px; background: var(--border-soft); margin: 22px 0; }
 
   /* ---- curated rows ---- */
-  .row {
-    display: flex; align-items: center; gap: 12px;
-    flex-wrap: wrap; row-gap: 10px;
-    padding: 12px 14px;
+  /* One self-contained card per integration: header row + (divider + settings)
+     all inside a single bordered card, so the integration and its related
+     settings read as one grouped unit. */
+  .card {
     background: var(--bg-secondary);
     border: 1px solid var(--border-soft);
     border-radius: 10px;
     margin-bottom: 8px;
+    overflow: hidden;
+  }
+  .card-divider { height: 1px; background: var(--border-soft); }
+  .row {
+    display: flex; align-items: flex-start; gap: 12px;
+    flex-wrap: wrap; row-gap: 10px;
+    padding: 12px 14px;
   }
   .logo {
     width: 34px; height: 34px; border-radius: 8px; flex-shrink: 0;
@@ -115,13 +122,9 @@
   .btn.ghost { background: transparent; border-color: transparent; color: var(--text-secondary); }
   .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 
-  /* ---- nested github setting ---- */
+  /* ---- per-integration setting row (lives inside the card, below a divider) ---- */
   .nested {
-    margin: -2px 0 8px 46px;
-    padding: 9px 12px;
-    background: var(--bg-page);
-    border: 1px solid var(--border-soft);
-    border-radius: 8px;
+    padding: 11px 14px;
     display: flex; align-items: center; justify-content: space-between; gap: 12px;
   }
   .nested-label { font-size: 12px; color: var(--text-secondary); }
@@ -176,46 +179,56 @@
         </div>
         <p class="section-sub">First-party integrations. Credentials are brokered by ShipIt and never enter the session container; their data renders inline in chat.</p>
 
-        <!-- GitHub -->
-        <div class="row">
-          <div class="logo">
-            <svg viewBox="0 0 24 24" fill="#ececee"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.6v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17 4.6 18 4.9 18 4.9c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
-          </div>
-          <div class="row-main">
-            <div class="row-title">
-              GitHub
-              <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+        <!-- GitHub — header + PR toggle inside ONE card -->
+        <div class="card">
+          <div class="row">
+            <div class="logo">
+              <svg viewBox="0 0 24 24" fill="#ececee"><path d="M12 .5C5.7.5.5 5.7.5 12a11.5 11.5 0 0 0 7.9 10.9c.6.1.8-.2.8-.6v-2c-3.2.7-3.9-1.4-3.9-1.4-.5-1.3-1.3-1.7-1.3-1.7-1-.7.1-.7.1-.7 1.2.1 1.8 1.2 1.8 1.2 1 1.8 2.8 1.3 3.5 1 .1-.7.4-1.3.7-1.6-2.6-.3-5.3-1.3-5.3-5.7 0-1.3.5-2.3 1.2-3.1-.1-.3-.5-1.5.1-3.1 0 0 1-.3 3.3 1.2a11.5 11.5 0 0 1 6 0C17 4.6 18 4.9 18 4.9c.6 1.6.2 2.8.1 3.1.8.8 1.2 1.8 1.2 3.1 0 4.4-2.7 5.4-5.3 5.7.4.4.8 1.1.8 2.2v3.3c0 .4.2.7.8.6A11.5 11.5 0 0 0 23.5 12C23.5 5.7 18.3.5 12 .5Z"/></svg>
             </div>
-            <div class="row-sub"><span class="dot ok"></span>Connected as <strong style="color:var(--text-primary);font-weight:500">nikz</strong></div>
+            <div class="row-main">
+              <div class="row-title">
+                GitHub
+                <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+              </div>
+              <div class="row-sub"><span class="dot ok"></span>Connected as <strong style="color:var(--text-primary);font-weight:500">nikz</strong></div>
+            </div>
+            <div class="row-actions">
+              <button class="btn ghost">Disconnect</button>
+            </div>
           </div>
-          <div class="row-actions">
-            <button class="btn ghost">Disconnect</button>
+          <div class="card-divider"></div>
+          <div class="nested">
+            <span class="nested-label">Auto-create a pull request after every meaningful turn</span>
+            <div class="toggle"></div>
           </div>
-        </div>
-        <div class="nested">
-          <span class="nested-label">Auto-create a pull request after every meaningful turn</span>
-          <div class="toggle"></div>
         </div>
 
-        <!-- Linear -->
-        <div class="row">
-          <div class="logo">
-            <svg viewBox="0 0 100 100" fill="#5e6ad2"><path d="M2 60c0-1 1-2 2-1l36 36c1 1 0 2-1 2A50 50 0 0 1 2 60Zm-1-14c0-.6.2-1 .6-1.4L43 86.4c.4.4.8.6 1.4.6a50 50 0 0 1-9-2.3L3 52.6A50 50 0 0 1 1 46Zm3-15.6c.2-.5.8-.7 1.2-.3l60.7 60.7c.4.4.2 1-.3 1.2a50 50 0 0 1-5.5 1.9L2.5 35.9A50 50 0 0 1 4 30.4ZM10 19.4 80.6 90c12.4-9 20.4-23.7 20.4-40.2C101 22.6 78.4 0 50.2 0 33.7 0 19 8 10 20.4Z"/></svg>
-          </div>
-          <div class="row-main">
-            <div class="row-title">
-              Linear
-              <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+        <!-- Linear — header (Disconnect top-right) + connection detail inside ONE card.
+             "Change team" sits on the team's own line, not up in the header. -->
+        <div class="card">
+          <div class="row">
+            <div class="logo">
+              <svg viewBox="0 0 100 100" fill="#5e6ad2"><path d="M2 60c0-1 1-2 2-1l36 36c1 1 0 2-1 2A50 50 0 0 1 2 60Zm-1-14c0-.6.2-1 .6-1.4L43 86.4c.4.4.8.6 1.4.6a50 50 0 0 1-9-2.3L3 52.6A50 50 0 0 1 1 46Zm3-15.6c.2-.5.8-.7 1.2-.3l60.7 60.7c.4.4.2 1-.3 1.2a50 50 0 0 1-5.5 1.9L2.5 35.9A50 50 0 0 1 4 30.4ZM10 19.4 80.6 90c12.4-9 20.4-23.7 20.4-40.2C101 22.6 78.4 0 50.2 0 33.7 0 19 8 10 20.4Z"/></svg>
             </div>
-            <div class="row-sub"><span class="dot ok"></span>Core <span class="key">SHI</span> · issues render inline</div>
+            <div class="row-main">
+              <div class="row-title">
+                Linear
+                <span class="badge"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2 4 5v6c0 5 3.4 8.6 8 11 4.6-2.4 8-6 8-11V5l-8-3Z"/></svg>Managed by ShipIt</span>
+              </div>
+              <div class="row-sub">Connect Linear to see your prioritized issues in the Issues tab. Read-only.</div>
+            </div>
+            <div class="row-actions">
+              <button class="btn ghost">Disconnect</button>
+            </div>
           </div>
-          <div class="row-actions">
+          <div class="card-divider"></div>
+          <div class="nested">
+            <span style="display:flex;align-items:center;gap:9px;font-size:13px">
+              <span class="dot ok"></span>Core <span class="key">SHI</span> · Connected
+            </span>
             <button class="btn">Change team</button>
-            <button class="btn ghost">Disconnect</button>
           </div>
         </div>
-
-        <p class="hint">More first-party integrations (Jira, Sentry, …) land here — not as "add your own."</p>
 
         <div class="divider"></div>
 

@@ -121,102 +121,113 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
     }
   };
 
-  return (
+  const connected = Boolean(info?.configured) && !changingTeam;
+
+  // Disconnect is an integration-level action, so it sits in the card header
+  // (top-right) — the same place GitHub's Disconnect lives. "Change team" is
+  // team-scoped, so it lives on the team's own line in the detail below, not
+  // up here far from the team it acts on.
+  const headerActions = connected ? (
+    <div className="ml-auto shrink-0">
+      <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
+        Disconnect
+      </Button>
+    </div>
+  ) : null;
+
+  // The integration's own state/settings, rendered inside the same card below a
+  // divider — not as a separate floating card.
+  const detail = connected ? (
+    <div className="flex items-center gap-3">
+      <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
+      <div className="min-w-0 flex-1">
+        <p className="text-sm font-medium text-(--color-text-primary)">
+          {info?.binding?.name ?? "Linear"}
+          {info?.binding && (
+            <span className="ml-1 text-(--color-text-tertiary) font-mono text-xs">{info.binding.key}</span>
+          )}
+        </p>
+        <p className="text-xs text-(--color-text-secondary)">Connected</p>
+      </div>
+      <Button variant="secondary" size="md" disabled={busy} onClick={handleChangeTeam} className="ml-auto shrink-0">
+        Change team
+      </Button>
+    </div>
+  ) : tokenConfigured || changingTeam ? (
+    <div className="space-y-3">
+      <p className="text-xs text-(--color-text-secondary)">Pick the team whose issues you want to see:</p>
+      {teams.length === 0 ? (
+        <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
+      ) : (
+        <div className="flex flex-col gap-1">
+          {teams.map((team) => (
+            <button
+              key={team.id}
+              disabled={busy}
+              onClick={() => void handleSelectTeam(team)}
+              className="flex items-center gap-2 px-3 py-2 text-left text-sm rounded-md border border-(--color-border-secondary) bg-(--color-bg-elevated) hover:bg-(--color-bg-hover) text-(--color-text-primary) disabled:opacity-50"
+            >
+              <span className="font-mono text-xs text-(--color-text-tertiary)">{team.key}</span>
+              <span className="truncate">{team.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  ) : (
+    <div className="space-y-3">
+      <label className="block text-xs text-(--color-text-secondary)" htmlFor="linear-token">
+        Linear API token
+      </label>
+      <input
+        id="linear-token"
+        type="password"
+        value={token}
+        onChange={(e) => setToken(e.target.value)}
+        placeholder="lin_api_..."
+        data-testid="linear-token-input"
+        className="w-full bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-1 focus:ring-(--color-border-focus)"
+      />
+      <p className="text-xs text-(--color-text-tertiary)">
+        Create a personal API key in Linear → Settings → Security &amp; access → Personal API keys.
+        Stored server-side and never shown again.
+      </p>
+      <Button variant="primary" size="md" disabled={busy || !token.trim()} onClick={handleConnect}>
+        {busy ? "Connecting…" : "Connect Linear"}
+      </Button>
+    </div>
+  );
+
+  const card = (
     <div
-      className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
+      className="rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)"
       data-testid="settings-trackers"
     >
-      <div
-        className={
-          embedded
-            ? "flex items-start gap-3 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3"
-            : undefined
-        }
-      >
-        {embedded && logo}
-        <div className="min-w-0">
+      <div className="flex items-start gap-3 p-3">
+        {logo}
+        <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
             <h3 className="text-sm font-medium text-(--color-text-primary)">Linear</h3>
-            {embedded && <ManagedByShipItBadge />}
+            <ManagedByShipItBadge />
           </div>
           <p className="text-xs text-(--color-text-secondary) mt-1">
             Connect Linear to see your prioritized issues in the Issues tab and start a session from
             any of them. Read-only: ShipIt never changes your issues.
           </p>
         </div>
+        {headerActions}
       </div>
-
-      {error && (
-        <div className="p-3 rounded bg-(--color-error-subtle) text-(--color-error) text-xs">{error}</div>
-      )}
-
-      {info?.configured && !changingTeam ? (
-        <div className="space-y-4">
-          <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
-            <span className="w-2.5 h-2.5 rounded-full bg-(--color-success) shrink-0" />
-            <div className="min-w-0 flex-1">
-              <p className="text-sm font-medium text-(--color-text-primary)">
-                {info.binding?.name ?? "Linear"}
-                {info.binding && (
-                  <span className="ml-1 text-(--color-text-tertiary) font-mono text-xs">{info.binding.key}</span>
-                )}
-              </p>
-              <p className="text-xs text-(--color-text-secondary)">Connected</p>
-            </div>
-          </div>
-          <div className="flex gap-2">
-            <Button variant="secondary" size="md" disabled={busy} onClick={handleChangeTeam}>
-              Change team
-            </Button>
-            <Button variant="ghost" size="md" disabled={busy} onClick={handleDisconnect} data-testid="trackers-disconnect">
-              Disconnect
-            </Button>
-          </div>
-        </div>
-      ) : tokenConfigured || changingTeam ? (
-        <div className="space-y-3">
-          <p className="text-xs text-(--color-text-secondary)">Pick the team whose issues you want to see:</p>
-          {teams.length === 0 ? (
-            <p className="text-xs text-(--color-text-tertiary)">No teams found for this token.</p>
-          ) : (
-            <div className="flex flex-col gap-1">
-              {teams.map((team) => (
-                <button
-                  key={team.id}
-                  disabled={busy}
-                  onClick={() => void handleSelectTeam(team)}
-                  className="flex items-center gap-2 px-3 py-2 text-left text-sm rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) hover:bg-(--color-bg-hover) text-(--color-text-primary) disabled:opacity-50"
-                >
-                  <span className="font-mono text-xs text-(--color-text-tertiary)">{team.key}</span>
-                  <span className="truncate">{team.name}</span>
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          <label className="block text-xs text-(--color-text-secondary)" htmlFor="linear-token">
-            Linear API token
-          </label>
-          <input
-            id="linear-token"
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="lin_api_..."
-            data-testid="linear-token-input"
-            className="w-full bg-(--color-bg-elevated) border border-(--color-border-secondary) rounded px-3 py-2 text-sm text-(--color-text-primary) placeholder-(--color-text-tertiary) focus:outline-none focus:ring-1 focus:ring-(--color-border-focus)"
-          />
-          <p className="text-xs text-(--color-text-tertiary)">
-            Create a personal API key in Linear → Settings → Security &amp; access → Personal API keys.
-            Stored server-side and never shown again.
-          </p>
-          <Button variant="primary" size="md" disabled={busy || !token.trim()} onClick={handleConnect}>
-            {busy ? "Connecting…" : "Connect Linear"}
-          </Button>
-        </div>
-      )}
+      <div className="h-px bg-(--color-border-secondary)" />
+      <div className="p-3 space-y-3">
+        {error && (
+          <div className="p-2 rounded bg-(--color-error-subtle) text-(--color-error) text-xs">{error}</div>
+        )}
+        {detail}
+      </div>
     </div>
+  );
+
+  return embedded ? card : (
+    <div className="px-5 py-4 overflow-y-auto h-full">{card}</div>
   );
 }
