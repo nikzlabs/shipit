@@ -13,6 +13,7 @@ import { UsageManager } from "./usage.js";
 import { SecretStore } from "./secret-store.js";
 import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
+import { PresentStore } from "./present-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig } from "./git-config.js";
@@ -192,6 +193,7 @@ export interface ManagerSet {
   secretStore: SecretStore;
   reviewStore: FileReviewStore;
   egressAllowlistStore: EgressAllowlistStore;
+  presentStore: PresentStore;
 }
 
 /**
@@ -336,6 +338,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // composition and the per-session containment gate at container start.
   const egressAllowlistStore = new EgressAllowlistStore(databaseManager);
 
+  // ---- Present store (docs/093) ----
+  // Durable Present-tab metadata so presentations survive a session-container
+  // restart. Seeds a fresh runner's cache and backs the re-register-on-restart
+  // byte-serving path; holds metadata only (bytes stay on disk/git).
+  const presentStore = new PresentStore(databaseManager);
+
   // ---- Text generation (AI-powered features) ----
   // Tests inject a stub. In production, agentFactory is unavailable (agents
   // live inside session containers), so the default uses agentFactory only
@@ -394,6 +402,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
     secretStore,
     reviewStore,
     egressAllowlistStore,
+    presentStore,
     generateText,
     isTestMode,
     runtimeMode,

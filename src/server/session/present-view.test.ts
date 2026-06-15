@@ -197,4 +197,78 @@ describe("registerPresentFilesRoutes", () => {
       await app.close();
     }
   });
+
+  // docs/093 — re-register a presentation into a fresh worker's registry after a
+  // container restart, then serve its bytes from the persisted path.
+  it("registers a presentation and then serves its raw bytes", async () => {
+    const filePath = path.join(tmpDir, "reregister.html");
+    await writeFile(filePath, "<h1>restored</h1>", "utf8");
+    const app = await buildApp(new PresentRegistry());
+    try {
+      // Empty registry → raw read misses first.
+      expect((await app.inject({ method: "GET", url: "/present/pres_re/raw" })).statusCode).toBe(404);
+
+      const reg = await app.inject({
+        method: "POST",
+        url: "/present/register",
+        payload: {
+          presentId: "pres_re",
+          resolvedPath: filePath,
+          filePath: "docs/x.html",
+          mimeType: "text/html",
+          createdAt: "2026-06-15T00:00:00.000Z",
+          title: "Restored",
+        },
+      });
+      expect(reg.statusCode).toBe(200);
+      expect((reg.json() as { ok: boolean }).ok).toBe(true);
+
+      const res = await app.inject({ method: "GET", url: "/present/pres_re/raw" });
+      expect(res.statusCode).toBe(200);
+      const body = res.json() as { content: string; mimeType: string; title?: string };
+      expect(body.content).toBe("<h1>restored</h1>");
+      expect(body.mimeType).toBe("text/html");
+      expect(body.title).toBe("Restored");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("rejects a register call missing required fields", async () => {
+    const app = await buildApp(new PresentRegistry());
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/present/register",
+        payload: { presentId: "pres_x" },
+      });
+      expect(res.statusCode).toBe(400);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("404s after register when the persisted file is gone from disk", async () => {
+    const app = await buildApp(new PresentRegistry());
+    try {
+      const reg = await app.inject({
+        method: "POST",
+        url: "/present/register",
+        payload: {
+          presentId: "pres_gone",
+          resolvedPath: path.join(tmpDir, "never-written.html"),
+          filePath: "/tmp/never-written.html",
+          mimeType: "text/html",
+          createdAt: "2026-06-15T00:00:00.000Z",
+        },
+      });
+      expect(reg.statusCode).toBe(200);
+      // Registration succeeds, but the on-disk read fails → graceful 404.
+      const res = await app.inject({ method: "GET", url: "/present/pres_gone/raw" });
+      expect(res.statusCode).toBe(404);
+      expect((res.json() as { error: string }).error).toMatch(/no longer on disk/i);
+    } finally {
+      await app.close();
+    }
+  });
 });

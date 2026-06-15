@@ -1091,6 +1091,11 @@ export class SessionWorker extends EventEmitter {
           ...(result.meta.title !== undefined ? { title: result.meta.title } : {}),
           filePath: result.meta.filePath,
           createdAt: result.meta.createdAt,
+          // docs/093 — the container-internal absolute path, carried on the SSE
+          // event (not the client-facing WS message) so the orchestrator can
+          // persist it and re-register this artifact with a freshly-started
+          // worker after a container restart.
+          resolvedPath: result.meta.resolvedPath,
         },
       });
 

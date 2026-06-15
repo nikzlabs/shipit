@@ -496,12 +496,15 @@ export function deleteSession(
   usageManager?: UsageManager,
   /** docs/192 — drop the session's durable `logs/` dir + in-memory ring. */
   removeSessionLogs?: (sessionId: string) => void,
+  /** docs/093 — drop the session's persisted Present-tab metadata. */
+  presentStore?: { deleteSession: (sessionId: string) => void },
 ): boolean {
   const deleted = sessionManager.delete(sessionId);
   if (deleted) {
     chatHistoryManager?.delete(sessionId);
     usageManager?.delete(sessionId);
     removeSessionLogs?.(sessionId);
+    presentStore?.deleteSession(sessionId);
   }
   return deleted;
 }

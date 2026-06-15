@@ -34,6 +34,8 @@ import type {
 } from "../../shared/types.js";
 import { SessionWorker } from "../../session/session-worker.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import { DatabaseManager } from "../../shared/database.js";
+import { PresentStore } from "../present-store.js";
 
 // ---------------------------------------------------------------------------
 // Minimal agent stub (the worker requires an agentFactory; the present path
@@ -335,5 +337,132 @@ describe("Integration: present tool pipeline (worker → SSE → runner WS)", ()
     expect(runner.presentations.map((p) => p.presentId)).toEqual(ids);
     // No spontaneous clears — the only present_cleared paths are revision + full clear.
     expect(presentClearedMsgs()).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable persistence across a container restart (docs/093)
+//
+// A runner constructed with a PresentStore persists each present_content to the
+// store and seeds its cache from the store at construction. After a simulated
+// restart (fresh worker, empty registry) a NEW runner over the SAME store still
+// carries the presentation (so `present_state` replays it) and can serve the
+// bytes again — re-registering the artifact with the fresh worker on the first
+// raw-read miss. A throwaway whose file is gone surfaces a graceful 404.
+// ---------------------------------------------------------------------------
+
+describe("Integration: present persistence across container restart", () => {
+  let dbManager: DatabaseManager;
+  let presentStore: PresentStore;
+  let work: string;
+
+  beforeEach(async () => {
+    dbManager = new DatabaseManager(":memory:");
+    presentStore = new PresentStore(dbManager);
+    work = await mkdtemp(path.join(os.tmpdir(), "present-restart-"));
+  });
+
+  afterEach(async () => {
+    dbManager.close();
+    await rm(work, { recursive: true, force: true });
+  });
+
+  async function startWorker(): Promise<{ worker: SessionWorker; url: string }> {
+    const worker = new SessionWorker({
+      agentFactory: () => new FakeWorkerAgent(),
+      port: 0,
+      host: "127.0.0.1",
+      workspaceDir: work,
+    });
+    const address = await worker.start();
+    const port = Number(/:(\d+)$/.exec(address)?.[1] ?? 0);
+    return { worker, url: `http://127.0.0.1:${port}` };
+  }
+
+  function makeRunner(url: string): ContainerSessionRunner {
+    const runner = new ContainerSessionRunner({
+      sessionId: "restart-session",
+      sessionDir: "/tmp/present-restart-test",
+      defaultAgentId: "claude",
+      workerUrl: url,
+      presentStore,
+    });
+    runner.attachViewer();
+    return runner;
+  }
+
+  async function submit(url: string, file: string, content: string): Promise<string> {
+    await writeFile(file, content, "utf8");
+    const res = await fetch(`${url}/agent-ops/present/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ file, mimeType: "text/html" }),
+    });
+    expect(res.ok).toBe(true);
+    return ((await res.json()) as { presentId: string }).presentId;
+  }
+
+  it("persists a presentation and re-serves it after a fresh-worker restart", async () => {
+    const filePath = path.join(work, "committed.html");
+
+    // --- Before restart: present an artifact on worker A. ---
+    const a = await startWorker();
+    const runnerA = makeRunner(a.url);
+    await new Promise((r) => setTimeout(r, 200));
+    const presentId = await submit(a.url, filePath, "<h1>kept</h1>");
+    await waitFor(() => presentStore.list("restart-session").length === 1, 3000, "persisted");
+
+    const persisted = presentStore.list("restart-session")[0];
+    expect(persisted.presentId).toBe(presentId);
+    expect(persisted.resolvedPath).toBe(filePath); // re-serve target after restart
+
+    runnerA.dispose({ force: true });
+    await a.worker.stop();
+
+    // --- Restart: worker B is fresh (empty registry); the file is still on disk
+    // (it's a "committed workspace file"). A NEW runner over the same store. ---
+    const b = await startWorker();
+    const runnerB = makeRunner(b.url);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Seeded from the store → `present_state` would replay it.
+    expect(runnerB.presentations.map((p) => p.presentId)).toEqual([presentId]);
+
+    // The fresh worker's registry is empty, so the first raw read 404s; the
+    // runner re-registers from the persisted resolvedPath and retries.
+    const raw = await runnerB.proxyPresentRaw(presentId);
+    expect(raw.content).toBe("<h1>kept</h1>");
+    expect(raw.mimeType).toBe("text/html");
+
+    runnerB.dispose({ force: true });
+    await b.worker.stop();
+  });
+
+  it("surfaces a graceful error when the source file is gone after restart", async () => {
+    const filePath = path.join(work, "throwaway.html");
+
+    const a = await startWorker();
+    const runnerA = makeRunner(a.url);
+    await new Promise((r) => setTimeout(r, 200));
+    const presentId = await submit(a.url, filePath, "<p>temp</p>");
+    await waitFor(() => presentStore.list("restart-session").length === 1, 3000, "persisted");
+    runnerA.dispose({ force: true });
+    await a.worker.stop();
+
+    // Simulate a /tmp throwaway that did NOT survive the restart.
+    await rm(filePath, { force: true });
+
+    const b = await startWorker();
+    const runnerB = makeRunner(b.url);
+    await new Promise((r) => setTimeout(r, 100));
+
+    // Metadata still seeds the tab, but serving the bytes fails gracefully
+    // (re-register succeeds, the on-disk read 404s) → the Present tab shows its
+    // "no longer available" placeholder rather than crashing.
+    expect(runnerB.presentations.map((p) => p.presentId)).toEqual([presentId]);
+    await expect(runnerB.proxyPresentRaw(presentId)).rejects.toThrow();
+
+    runnerB.dispose({ force: true });
+    await b.worker.stop();
   });
 });
