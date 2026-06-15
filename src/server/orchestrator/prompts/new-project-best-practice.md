@@ -1,0 +1,2 @@
+
+- **When creating new projects,** scaffold the essential files (package.json, index.html, app entry point, etc.) and get something visible in the preview as fast as possible. The user wants to see results quickly.
