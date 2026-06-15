@@ -78,17 +78,13 @@ npm install
 
 ## Commands
 
-- **`npm run test:dev`** — **preferred for development.** Runs only tests affected by your uncommitted changes + a small set of smoke tests. Much faster than the full suite. Use this while iterating.
-- `npm run test:dev -- --list` — dry run: shows which test files would run without executing them.
-- `npm run test:smoke` — run only the smoke tests (core connectivity, HTTP bootstrap, git, one client component).
-- `npm test` — run **all** tests (full suite). Use sparingly during development — the CI runs this automatically on every PR. Only run locally if you suspect wide-reaching breakage.
-- `npx vitest run src/server/git-core.test.ts` — run a single test file.
-- **`npm run lint:dev`** — **preferred for development.** ESLint over only files changed vs `origin/main` + uncommitted/staged. Same `test:dev` rationale: the full type-aware lint loads all 697 TS files (~50 s, ~2.85 GiB RSS), and most edits only touch a handful. CI still runs the full lint, so this is for the inner loop.
-- `npm run lint:dev -- --list` — dry run: shows which files would be linted.
-- `npm run lint` — full ESLint on `src/`. Cached (`node_modules/.cache/eslint/`), so a re-run after no edits is near-instant. Run sparingly during development — use when you suspect a cross-file rule (e.g. `no-deprecated`) has been tripped in files you didn't touch.
-- `npm run typecheck` — TypeScript type checking (`tsc --noEmit`). Incremental via `node_modules/.cache/tsc/.tsbuildinfo`, so warm runs are ~5 s instead of ~17 s. No per-file variant: TS programs are whole-project by design.
-- `npm run dev` — start dev server (tsx)
-- `npm run build` — build client with Vite
+- **`npm run test:dev`** — **dev default.** Only tests affected by uncommitted changes + smoke tests (`-- --list` to dry-run). Use while iterating.
+- `npm run test:smoke` — smoke tests only (core connectivity, HTTP bootstrap, git, one client component).
+- `npm test` — full suite. Sparingly — CI runs it on every PR; run locally only if you suspect wide breakage. Single file: `npx vitest run <file>.test.ts`.
+- **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
+- `npm run lint` — full ESLint on `src/` (cached; warm re-run near-instant). Sparingly — when you suspect a cross-file rule (e.g. `no-deprecated`) tripped elsewhere.
+- `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
+- `npm run dev` — dev server (tsx). `npm run build` — Vite client build.
 
 ## Debugging the UI
 
@@ -96,7 +92,7 @@ The Playwright MCP server is configured and launches its own browser. Use `brows
 
 ## Dogfooding ShipIt in ShipIt
 
-When the ShipIt repo is opened in production ShipIt, the outer orchestrator surfaces the `dev` Compose service from `docker-compose.yml` in the preview panel as a manual service — the user starts it on demand (it's heavy: `npm install` + `vite build` + a second orch process, so we don't pay that cost on every session boot). Once started, that service runs an *inner* orchestrator with `RUNTIME_MODE=local`, which serves the ShipIt UI on port 3000 inside the outer session container. The outer's preview panel renders the inner UI, giving you a chat-driven dev loop on the ShipIt source itself. Local mode skips Docker entirely (no per-inner-session containers, no inner Compose stacks); inner agent processes spawn in-process via `claude-adapter` / `codex-adapter`. See `docs/118-shipit-ui-local/plan.md` for the full design and the list of degraded behaviors (no inner terminal, no inner file watcher, no inner-session preview). `docs/131-dogfood-seed-sessions/plan.md` covers the seed script that provisions reproducible repo-backed inner sessions on dev-service boot. The `dev` service's credentials (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GITHUB_TOKEN`) are **user-supplied secrets**: set them once in the outer ShipIt's Settings → Secrets panel, keyed by those names, so the inner orch boots authenticated. Prefer a long-lived `ANTHROPIC_API_KEY` (which doesn't rotate) over a short-lived OAuth token. See `docs/184-remove-platform-secret-forwarding/plan.md`.
+When the ShipIt repo is opened in production ShipIt, the outer orchestrator surfaces the `dev` Compose service as a **manual** preview service (heavy — `npm install` + `vite build` + a second orch — so it's started on demand, not every boot). It runs an *inner* orchestrator with `RUNTIME_MODE=local` serving the ShipIt UI on port 3000, rendered in the outer preview panel — a chat-driven dev loop on the ShipIt source. Local mode skips Docker (no inner containers/Compose; inner agents spawn in-process via `claude-adapter`/`codex-adapter`). Full design + degraded behaviors (no inner terminal/file-watcher/preview): `docs/118-shipit-ui-local`; seed sessions: `docs/131-dogfood-seed-sessions`. The `dev` service's creds (`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `GITHUB_TOKEN`) are **user-supplied secrets** set once in the outer Settings → Secrets (prefer a long-lived `ANTHROPIC_API_KEY` over an OAuth token); see `docs/184-remove-platform-secret-forwarding`.
 
 ## Project structure
 
@@ -142,7 +138,7 @@ src/
       container-discovery.ts  Find running containers
       container-health.ts     Container health checks
       preview-proxy.ts     Reverse proxy for container previews
-      docker-proxy.ts      Docker socket proxy for secure container access
+      docker-proxy.ts      Docker socket proxy for container access
       agents/        Per-agent orchestrator-side code (docs/155)
         index.ts           buildAgentRuntime() — assembles per-agent maps
         types.ts           LimitsProvider interface (and future runtime types)
@@ -227,7 +223,7 @@ android/         Standalone Android WebView wrapper (separate Gradle build).
 
 ## Architecture
 
-Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers). Architecture knowledge is packaged as skills in `.claude/skills/` for progressive disclosure — each skill auto-loads when the task context matches.
+Three-layer system: browser (React SPA) → orchestrator (Fastify) → session workers (Docker containers). Architecture knowledge is packaged as skills in `.claude/skills/` for progressive disclosure — each skill surfaces by description and the agent loads it when the task matches. **Both backends read `.claude/skills/`** — Claude and Codex auto-disclose the same set (no `.codex/skills/` needed), so reference detail demoted into a skill reaches both; see `docs/209-cross-agent-skill-disclosure`. Always-on invariants belong in this file (`CLAUDE.md`, shared with Codex via the `AGENTS.md` symlink), not in a skill.
 
 ### Available skills
 
@@ -250,25 +246,11 @@ These are non-obvious architectural patterns that aren't apparent from the file 
 
 ### Orchestrator ↔ container communication
 
-Session containers run a Fastify server (`session-worker.ts`) that exposes HTTP endpoints for agent control, terminal, file operations, and secrets. The orchestrator talks to containers exclusively over HTTP — never Docker exec.
-
-- **Commands flow via HTTP**: `worker-http.ts` sends requests to the container's worker URL (e.g., `POST /agent/start`, `POST /terminal/resize`). `ContainerSessionRunner` wraps these calls and exposes them as the `SessionRunner` interface.
-- **Events flow back via SSE**: Containers stream real-time events (agent output, terminal data, file changes) over `GET /events`. The orchestrator's `sse-client.ts` connects to this endpoint and relays events to the browser's WebSocket.
-- **Proxy agent pattern**: `ProxyAgentProcess` implements the `AgentProcess` interface but delegates everything to the container over HTTP+SSE. This lets orchestrator code treat local and remote agents identically.
-- **Single container + compose**: Each session gets one agent container. Dev servers and other services run in Docker Compose stacks managed by `ServiceManager`.
-- **SSE reconnection**: Exponential backoff (1s, 2s, 4s… capped at 10s). On reconnect, terminal output is replayed with a reset sequence (`\x1bc`) to avoid corrupted xterm.js rendering. Terminal retries are limited to 3 attempts.
-- **Backpressure**: If an SSE client can't keep up with terminal output, the PTY is paused until `drain` fires. This prevents unbounded memory growth.
-- **Multi-viewer**: Multiple browser tabs can attach to the same runner. The runner broadcasts to all via `emitMessage()`. Resources (SSE, preview) start on first viewer attach and persist after detach for fast re-attach.
+Orchestrator ↔ session container is HTTP-only (never Docker exec): commands out via `worker-http.ts` (`ContainerSessionRunner` wraps them as the `SessionRunner` interface), events back over SSE (`sse-client.ts` → browser WS). `ProxyAgentProcess` implements `AgentProcess` but delegates to the container so local/remote agents look identical. Full detail — SSE reconnection/backpressure, multi-viewer broadcast, single-container+compose — in the **session-containers** and **session-processes** skills.
 
 ### WS handler context (three-level DI)
 
-WS handlers receive a composed context object with three layers. Handlers declare exactly which layers they need:
-
-- **`ConnectionCtx`** — per-WebSocket-connection: `send()`, `broadcastLog()`, `getActiveDir()`, `activateSession()`
-- **`RunnerCtx`** — per-session-runner: `agentFactory()`, `getAgent()`, turn state accumulators, message queue, terminal
-- **`AppCtx`** — app-wide singletons: all managers, factories, config
-
-Handlers that need everything use `FullCtx = ConnectionCtx & RunnerCtx & AppCtx`. Simpler handlers declare only what they need (e.g., terminal handlers need `ConnectionCtx & RunnerCtx` only).
+WS handlers compose three context layers and declare only what they need: `ConnectionCtx` (per-connection: `send()`, `getActiveDir()`, …), `RunnerCtx` (per-runner: `agentFactory()`, turn-state, terminal), `AppCtx` (app-wide singletons). `FullCtx` is all three. See the **server-architecture** skill.
 
 ### WebSocket lifecycle MUST NOT affect server behavior
 
@@ -288,32 +270,23 @@ Concrete rules:
 
 - **Never trigger `agent.kill()`, `terminal.kill()`, `container.destroy()`, etc. from a WebSocket close handler.** The only thing `socket.on("close")` should do is call `detachFromRunner()` (which decrements the viewer count and removes per-connection listeners). Period.
 
-The bug class is now structurally impossible because the silent-no-op setters are gone — there is no `ctx.setIsClaudeRunning(...)` to call. If a future contributor needs to mutate runner state, the type system forces them to obtain a runner reference first, which forces them to think about lifetime. Integration coverage lives in `src/server/orchestrator/integration_tests/ws-disconnect-resilience.test.ts` — those tests should be considered the executable contract for this section.
+The bug class is structurally impossible now the silent-no-op setters are gone — mutating runner state forces you to resolve a runner reference first, forcing you to think about lifetime. Executable contract: `integration_tests/ws-disconnect-resilience.test.ts`.
 
 ### Service layer pattern
 
-Three-tier: **Routes/WS handlers → Services → Managers**
-
-- Services (`services/*.ts`) are pure async functions that compose manager calls and return typed results.
-- Services take domain types (not handler context), making them testable and reusable by both HTTP routes and WS handlers.
-- Application errors use `ServiceError(statusCode, message)` with HTTP semantics. Routes catch these and respond with the given status code.
+Three-tier **Routes/WS handlers → Services → Managers**: services (`services/*.ts`) are pure async fns over domain types (not handler context), reusable by routes and WS handlers; app errors are `ServiceError(statusCode, message)` with HTTP semantics. See the **server-architecture** skill.
 
 ### WS message type system
 
-Messages use discriminated unions with a `type` literal field (`ws-client-messages.ts`, `ws-server-messages.ts`). The dispatch switch in `index.ts` narrows each message to its specific type before passing to the handler — handlers receive the narrowed type, not the union.
+Discriminated unions keyed on a `type` literal (`ws-client-messages.ts`, `ws-server-messages.ts`); the dispatch switch in `index.ts` narrows to the specific type before calling the handler.
 
 ### Post-turn flow
 
-After the agent finishes a turn (`agent_result` event in `agent-execution.ts`):
-1. `postTurnCommit()` auto-commits changes
-2. `scheduleAutoPush()` debounces a push (5s) if GitHub auth is configured
-3. PR lifecycle card is emitted if a remote exists
-
-**Critical**: Session context (sessionId, sessionDir) is captured at turn *start*, not at the "done" event. This prevents session switches mid-turn from corrupting commits.
+After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → `scheduleAutoPush()` debounces a 5s push (if GitHub auth) → PR lifecycle card emitted (if a remote exists). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
 
 ### Message group boundaries
 
-Agent events are grouped into chat history entries based on tool-result boundaries. Each `agent_tool_result` sets a `needsNewMessageGroup` flag so the next `agent_assistant` event starts a fresh group. This preserves the visual message structure when reloading — groups map 1:1 to message bubbles in the UI. Key file: `agent-listeners.ts`.
+Agent events group into chat-history entries at tool-result boundaries: each `agent_tool_result` sets `needsNewMessageGroup` so the next `agent_assistant` starts a fresh group, keeping groups 1:1 with message bubbles on reload. Key file: `agent-listeners.ts`.
 
 ### Chat transcript content MUST be persisted, not just emitted
 
@@ -321,55 +294,29 @@ Anything that renders **inline in the chat transcript** — a message bubble or 
 
 The dividing line: **transient** signals (spinners, `preview_status`, queue counts, live activity) are emit-only and correctly disappear. **Transcript content** (any card the user expects to still be there tomorrow, and any terminal state like "filed"/"failed") must persist. If it has a place in the scrollback, it has a row in the DB.
 
-The established pattern for a **side-channel card** (one that arrives outside the agent-event stream — an HTTP relay or a post-turn WS message, so `buildTurnMessages` doesn't capture it on its own):
-
-1. **Emit it via `emitChatCard` (`chat-card-persistence.ts`), never bare `emitMessage`.** That single primitive does three things atomically: emits the live WS message, records the card in-band with the turn — anchored by `afterGroupIndex` so `buildTurnMessages` interleaves it at its true transcript position instead of an out-of-band `append` floating it above the whole turn — AND persists the in-progress turn immediately (`persistTurnInProgress`), so the card is in chat history the instant it fires rather than at the next tool-result boundary. It requires a persist context (`{ chatHistoryManager, sessionId }`), so a card cannot be emitted without being persisted. This closes the disappear-then-reappear window (docs/191): before, a side-channel card was only *recorded* and a mid-turn `loadSessionHistory` (any WS reconnect) replaced the transcript with a DB snapshot lacking the card, flickering it out until a later boundary. It is the one supported way to add a transcript card, so a card can't ship emit-only or deferred-persist.
-2. **Add a typed field on `PersistedMessage`** (e.g. `voiceNote`, `bugReport`) plus the column + `toRow`/`fromRow` (and a `database.ts` migration). Lifecycle transitions patch that record in place (e.g. `updateBugReportCard`) — the proposing-turn row is finalized by then, so a direct update is safe.
-3. **Rehydrate on the client** in `loadSessionHistory` (seed any store the card reads from), and make the **live append + any store upsert idempotent by id** so the reconnect buffer replay and the reload history replay never double-render or clobber a terminal state.
-4. **Register the card field in `CARD_MESSAGE_FIELDS`** (`client/components/visual-elements.ts`) if it renders on an empty-text message. This single list is the source of truth that drives `buildVisualElements`'s `hasCardContent` (so the carrier message isn't dropped before render — the other half of this bug class) AND is enumerated by the guard test in step 5. A field NOT in the list won't render on an empty-text message at all — you'll notice in dev. (Cards riding on a message that carries its own `text` — e.g. `userReview` — don't need listing.)
-5. **Add a history round-trip test** (persist → `load()` → assert) and a no-duplicate-on-replay test, and add the field's payload to `EVERY_OPTIONAL_FIELD_MESSAGE` in `chat-history.test.ts`.
-
-**The executable contract (docs/188) — this is what makes the rule self-enforcing, not the prose above.** Two guard tests turn a forgotten step into a red build instead of a "spot it in review" miss:
-- `chat-history.test.ts` asserts every `CARD_MESSAGE_FIELDS` entry appears in `EVERY_OPTIONAL_FIELD_MESSAGE`, which must deep-equal after `append`→`load`. Chain: **in the render list ⇒ in the contract message ⇒ survives a reload ⇒ has a column + `toRow`/`fromRow`.** A card that ships emit-only fails here, naming the field.
-- `visual-elements.test.ts` asserts every `CARD_MESSAGE_FIELDS` entry keeps its empty-text carrier message (the render half).
-
-If you find yourself reaching for `emitMessage` to put a card in the chat, reach for `emitChatCard` instead and wire steps 2–5. Key files: `chat-card-persistence.ts` (`emitChatCard`, `buildTurnMessages`, `persistTurnInProgress`), `chat-history.ts`, `agent-listeners.ts` (turn event handling, re-exports the turn-rebuild helpers), `session-data.ts` (`loadSessionHistory`), `visual-elements.ts` (`CARD_MESSAGE_FIELDS`).
+The established pattern for a **side-channel card** (one arriving outside the agent-event stream — an HTTP relay or post-turn WS message, so `buildTurnMessages` won't capture it on its own): **emit via `emitChatCard` (`chat-card-persistence.ts`), never bare `emitMessage`.** That one primitive atomically emits the live message, records the card in-band (anchored by `afterGroupIndex` so it interleaves at its true position), and persists the in-progress turn (`persistTurnInProgress`) — it requires a persist context, so a card cannot ship emit-only or deferred-persist. Then: add a typed `PersistedMessage` field (+ column + `toRow`/`fromRow` + `database.ts` migration); rehydrate it in `loadSessionHistory` (live append + store upsert idempotent by id); register it in `CARD_MESSAGE_FIELDS` (`visual-elements.ts`) if it renders on an empty-text message; add the history round-trip + no-duplicate-on-replay tests and extend `EVERY_OPTIONAL_FIELD_MESSAGE`. Two guard tests (`chat-history.test.ts`, `visual-elements.test.ts`) make this self-enforcing — a forgotten step is a red build naming the field. Full recipe + rationale: `docs/188-persist-transcript-cards`, `docs/191-card-persist-on-emit`. Key files: `chat-card-persistence.ts`, `chat-history.ts`, `agent-listeners.ts`, `session-data.ts`, `visual-elements.ts`.
 
 ### Preview routing
 
-Browser previews reach containers through a reverse proxy (`preview-proxy.ts`):
-- **Subdomain routing** (primary): `{sessionId}--{port}.localhost` → container. Avoids path prefix conflicts with frameworks like Vite.
-- **Path-based routing** (fallback): `/preview/:sessionId/:port/*` for debugging.
-- **HMR patching**: Injects a script that rewrites dev-server WebSocket URLs to use page origin, so hot-reload works through the proxy.
-- **Config-driven restarts**: File changes to `shipit.yaml` trigger immediate preview restart. Lockfile changes (`package-lock.json`, `yarn.lock`) are debounced with a 30s cooldown to avoid npm-install feedback loops.
+Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` (primary, avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` (fallback), HMR-URL patching so hot-reload works through the proxy, config-driven restarts (`shipit.yaml` immediate; lockfiles debounced 30s to avoid npm-install loops). See the **session-processes** skill.
 
 ### Disk cleanup
 
-Three orthogonal surfaces, split so each prune runs where the leak actually happens:
+Orthogonal surfaces, each prune where the leak happens:
+- **Per-session teardown** drops named volumes — `ServiceManager.stop({ removeVolumes: true })` (signaled by `removeVolumesOnDispose = true`), used by `archiveSession`/`fullReset` but **not** idle eviction/restart/reconcile (those preserve build state for resume).
+- **`deployment/vps/deploy.sh`** owns build-time image/builder prunes (BuildKit cache only grows from builds, so the prune is causal there). `FORCE_REBUILD=1` for a clean rebuild; agent CLIs install via `npm ci` from `docker/agent-cli/package-lock.json`.
+- **`disk-janitor.ts`** runs once at orchestrator startup (no timer — see docstring) for leaks the deploy prune can't see: orphan `shipit-managed=true` compose volumes, unreferenced `repo-cache`/`dep-cache`, and an opt-in archived-workspace sweep (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`) that drops only the checkout + `node_modules`, never chat/usage/metadata.
+- **Overlay dep store** (docs/183, `OVERLAY_DEP_STORE`, default off): N per-dep-dir `type=overlay` volumes + immutable shared base generations, with three N-aware reclaim paths (per-session teardown, crash-orphan prefix sweep, superseded-generation reaping).
 
-- **Per-session teardown drops named volumes** when the session goes away for good. `ServiceManager.stop({ removeVolumes: true })` appends `--volumes` to `docker compose down`, dropping user-declared named volumes (e.g. `node_modules` caches) along with the containers. The flag is signaled by setting `removeVolumesOnDispose = true` on the container runner before disposal — `archiveSession` and `fullReset` do this. Idle eviction, restartAgent recovery, and reconciles keep the default `false` so the user can resume without losing build state.
-- **`deployment/vps/deploy.sh` owns build-time prunes.** After each `docker compose build` it runs `docker image prune -af --filter "until=168h"` and `docker builder prune -f --filter "until=72h"`. BuildKit cache only grows because of builds, so this is where the prune is causal — duplicating it on a timer would just do redundant work. `--no-cache` is no longer the default (it was eating ~80 GB on prod); set `FORCE_REBUILD=1` for a clean rebuild. The agent CLIs (Claude/Codex/Playwright-MCP) install from a committed lockfile (`docker/agent-cli/package-lock.json`) via `npm ci`, so their versions are deterministic and change only when that lockfile changes — bumped by the Renovate GitHub App with a cooldown, gated on the CLI contract test .
-- **`disk-janitor.ts` runs once at orchestrator startup** (no periodic timer — see the module docstring for why). It covers leaks the deploy-time prune can't see: orphan ShipIt-managed compose volumes (matched by the `shipit-managed=true` label the override stamps onto every user-declared volume — sessions can be archived between deploys, leaking volumes that `deploy.sh` never touches), unreferenced `repo-cache/<hash>` / `dep-cache/<hash>` directories, and — opt-in via `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=<n>` — a safety-net sweep for archived workspaces that outlived archive's normal cleanup (interrupted shutdown, legacy data). The sweep only drops the on-disk git checkout + `node_modules`; chat history, usage, and session metadata are always preserved, and unarchive re-clones from the bare cache. Sessions without a `remoteUrl` are skipped defensively. BuildKit/image prune deliberately lives in `deploy.sh`, not here.
-- **Overlay dep store volumes/bases (docs/183, gated behind `OVERLAY_DEP_STORE`, default off — inert otherwise).** When enabled, an overlay session carries **N per-dep-dir** `type=overlay` volumes (`shipit-<id12>_overlay-<hash>`, one per declared `agent.dep-dirs`) plus a shared read-only rolling base per `(repo, runtime, dep-dir)` under `overlay-base/<scope-hash>/`. Three reclaim surfaces, all N-aware: **(a)** per-session teardown — `destroyContainer` `docker volume rm`s **every** name in `SessionContainer.overlayVolumeNames`, and disk-tier escalation's `hot→light` `reclaimToLight` reaches the same path via `containerManager.destroy()` (no host-path `rm` of `node_modules` at that rung; the deps are a disposable cache re-derived on next mount). **(b)** crash-orphan backstop — the same `sweepOrphanSessionVolumes` `^shipit-([a-f0-9-]{12})_` prefix sweep reclaims any per-dep-dir volume whose session is gone (the discriminator suffix is after the `_`, so one prefix match covers all N). Note the compose `pruneSessionVolumes`/`pruneVolumes` label filter (`shipit-session=<id>`) can't reach overlay volumes (they're labeled `shipit-session=true`), so the prefix sweep is their only orphan path. **(c)** shared bases — bases are **immutable generations** `overlay-base/<hash>/g<N>` (a publish materializes the next generation beside the previous and moves only the pointer — renaming over a mounted lowerdir breaks merged-readdir for every live same-scope mount, spike-proven; see docs/183 FINDINGS). `sweepOrphanedOverlayBases` reaps a whole stale scope dir only when it's in neither the per-`(session × dep-dir)` live-set (`liveOverlayScopeHashes`) nor within the age cutoff, and inside LIVE scopes it reaps superseded generations (+ crash-orphaned `.tmp-*` copies) older than the cutoff — `g0` (the empty cold-start lowerdir) and the pointer's current generation are always kept.
+Full detail: `docs/183-overlay-dep-store`, the `disk-janitor.ts` docstring, and the **session-containers** skill.
 
-### Client dual-channel communication
+### Client communication & stores
 
-The browser uses two parallel channels:
-- **Per-session WebSocket** (`/ws/sessions/{id}`) — streaming agent output, diffs, preview status. Managed by `useWebSocket` with exponential backoff reconnection (2s → 30s cap).
-- **Global SSE** (`/api/events` via `useServerEvents`) — session list, repo status, auth events, PR status. Always active.
-
-### Client store patterns
-
-- **Cross-store access**: Stores reference each other via `useXStore.getState()` inside actions, not subscriptions. This avoids circular dependencies.
-- **Coordinated resets**: `stores/actions/session-actions.ts` is the single source of truth for resetting stores during session switches.
-- **Hydration order**: HTTP bootstrap loads once on mount → per-session WS triggers `loadSessionHistory()` on connect → WS messages stream real-time updates. Guards prevent race conditions (e.g., WS data arriving before HTTP response).
-- **Stale message guard**: `useMessageHandler` checks `data.sessionId !== currentSessionId` to discard messages from previous sessions after a switch.
+Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`, agent output/diffs/preview via `useWebSocket`, backoff 2s→30s) and global **SSE** (`/api/events` via `useServerEvents`: session list, repo/auth/PR status). Stores cross-reference via `useXStore.getState()` (not subscriptions, avoids cycles); resets are centralized in `stores/actions/session-actions.ts`; hydration is HTTP bootstrap → WS `loadSessionHistory()` → live WS, with `sessionId` stale-message guards. See the **client-architecture** skill.
 
 ### Integration test patterns
 
-- **`TestClient`** buffers WS messages from connection time, preventing races where the server sends before the test listens. Tests call `receive()` which returns buffered or waits for new messages.
-- **Container mocking**: `isTestMode` flag in `buildApp()` enables `POST /api/_test/sessions` to create sessions without Docker.
-- **Fakes with test controls**: `FakeClaudeProcess`, `StubGitHubAuthManager`, etc. have injection methods (`setPrData()`, `setCheckStatus()`) for test scenarios.
+`TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes (`FakeClaudeProcess`, `StubGitHubAuthManager`) expose injection methods (`setPrData()`, …). See the **testing-and-quality** skill.
 
 ## Workflow
 
@@ -393,19 +340,15 @@ The browser uses two parallel channels:
 
 ## Prompts
 
-LLM prompts (agent system instructions, voice-transcript cleanup, session naming, etc.) are **content, not logic**, and the two must stay separated. The governing split:
+LLM prompts (agent system instructions, voice cleanup, session naming, etc.) are **content, not logic** — keep them separated:
 
-- **Prompt *text* is data — it lives in `.md` files.** Static prompt bodies and fragments are `.md` files co-located with the code that composes them, so they review as prose, diff cleanly, and edit without escaping backticks/`${}`. Load them with `loadPrompt(import.meta.url, "./x.md")` (`orchestrator/load-prompt.ts`) **at module top level** — once at init, never per-call. A missing/renamed file throws there, failing the boot loudly instead of crashing mid-turn. Do **not** use a bundler `?raw` import: the orchestrator runs straight from TS source via tsx in prod (`node --import tsx …`, see `docker/Dockerfile.prod`), so there is no bundler; `fs.readFileSync(new URL(...))` works identically under tsx, Node, and vitest, and the `.md` ships via the existing `COPY src/server/orchestrator/`. Examples: `agents/<id>/system-prompt.md` (still exported as `CLAUDE_PARALLEL_SESSIONS_SECTION` etc.), `voice/cleanup-prompt.md` (`CLEANUP_INSTRUCTIONS`), and `orchestrator/prompts/*.md` (the agent-instructions skeleton + fragments). This mirrors the `src/server/shipit-docs/*.md` convention for agent-facing prose.
-- **Prompt *composition* is code.** Axis branching, fragment selection, and interleaving stay in TypeScript. `agent-instructions.ts` is the canonical example: `renderInstructions(agentId, isOps)` fills `{{TOKEN}}` holes in `prompts/skeleton.md` (via `fillPromptTokens`) with the right fragment per axis, and there are exactly two session-fixed axes (`agentId`, `isOps`). `fillPromptTokens` throws on an unfilled token (the "no literal `{{FOO}}` reaches the model" guard) and uses a function replacer so `$`-sequences in fragments are inserted literally.
-- **The prompt-cache contract is load-bearing — do not break it.** Every `(agentId, isOps)` variant is rendered **once at module load** into `PRECOMPUTED_INSTRUCTIONS`; the per-turn path (`buildAgentSystemInstructions`) is a pure lookup of a frozen constant. This keeps the string handed to the CLI byte-stable across a session's turns so the Anthropic prompt cache stays warm. Never move composition (or the `.md` reads) to a per-call path — keep both render-once at module init.
+- **Prompt *text* is data — it lives in `.md` files** co-located with the composing code (review as prose, diff cleanly, no backtick/`${}` escaping). Load via `loadPrompt(import.meta.url, "./x.md")` (`orchestrator/load-prompt.ts`) **at module top level** — once at init, never per-call (a missing file then throws at boot, not mid-turn). Not a bundler `?raw` import: prod runs TS via tsx, no bundler, so `fs.readFileSync(new URL(...))` is what works. Examples: `agents/<id>/system-prompt.md`, `voice/cleanup-prompt.md`, `orchestrator/prompts/*.md`.
+- **Prompt *composition* is code.** Axis branching/fragment selection stay in TS — `agent-instructions.ts`: `renderInstructions(agentId, isOps)` fills `{{TOKEN}}` holes in `prompts/skeleton.md` via `fillPromptTokens` (which throws on an unfilled token — the "no literal `{{FOO}}` reaches the model" guard).
+- **The prompt-cache contract is load-bearing.** Every `(agentId, isOps)` variant renders **once at module load** into `PRECOMPUTED_INSTRUCTIONS`; the per-turn path is a pure lookup of a frozen constant, keeping the CLI string byte-stable so the Anthropic prompt cache stays warm. Never move composition or the `.md` reads to a per-call path.
 
 ### Testing prompts
 
-**Test composition and caching, never literal wording.**
-
-- **Do** assert: which fragment is selected per `agentId`/`isOps`, that variants are distinct, that the non-ops default is byte-identical, reference-equality of the precomputed constants (cache stability), and that the prompt is threaded/appended/omitted by the call sites. Keep the one cheap **load guard**: every variant renders non-empty with no leftover `{{TOKEN}}` (catches a missing/renamed `.md` or an unmapped token). When a composition test must detect a fragment's presence/absence, key off a **stable structural anchor** — a `##` section header or a command token (`shipit session create`) — not a sentence.
-- **Don't** assert that the prose contains specific phrases or sentences (e.g. "the PR section says *Do not ask first*"). Those tests churn on every copy-edit, gate CI on wording, and verify nothing the prompt file doesn't already state. They were removed from `agent-instructions.test.ts`; don't reintroduce them. A pure prompt-text edit (editing a `prompts/*.md`) should require **no** test changes.
-- Provider/integration tests that need to confirm a prompt is *used* reference the **imported constant** (`expect(sent.messages[0].content).toContain(CLEANUP_INSTRUCTIONS)`) or derive the expectation from the builder — not a pasted copy of the text. This is why they were unaffected by the `.md` move. See `voice/providers/*-cleanup.test.ts` and `integration_tests/system-prompt.test.ts`.
+**Test composition and caching, never literal wording.** *Do* assert: fragment selection per `agentId`/`isOps`, variant distinctness, non-ops byte-identity, reference-equality of the precomputed constants (cache stability), call-site threading, and the cheap load guard (every variant non-empty, no leftover `{{TOKEN}}`); key presence/absence checks off a **structural anchor** (`##` header, a command token), not a sentence. *Don't* assert specific prose phrases (they churn on copy-edits and were removed from `agent-instructions.test.ts`) — a pure `prompts/*.md` edit should need **no** test changes. Provider/integration tests reference the **imported constant** (`toContain(CLEANUP_INSTRUCTIONS)`), not a pasted copy. See `voice/providers/*-cleanup.test.ts`, `integration_tests/system-prompt.test.ts`.
 
 ## Dependency policy
 
@@ -426,18 +369,7 @@ docs/
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
-Feature docs describe individual features and may include planned-but-not-implemented designs. Docs are **reference material** — what a feature is, why, and how. Work tracking lives in the issue tracker (Linear / GitHub Issues), which a doc links to via its `issue:` pointer; see the design docs reference.
-
-Features are numbered by creation order. When implementing or modifying a feature, read its `plan.md` first. When a feature has remaining work, check its `checklist.md`. When adding a new feature, create `docs/NNN-new-feature/plan.md`.
-
-The recognized frontmatter fields are `issue`, `title`, and `description` — all optional. A `plan.md` with no frontmatter still appears in the list. The docs list groups structurally: a doc is **tracked** if it is a feature-directory `plan.md`/`checklist.md`, carries an `issue:` pointer, or has a `checklist.md` sibling; within Tracked, docs whose `checklist.md` is 100% complete fold into a collapsed **Done** group, everything else stays **Active**.
-
-`issue:` points at the work item that tracks the doc; the tracker is inferred from the pointer's shape. **Linear must be a full URL without the title slug** (`https://linear.app/<workspace>/issue/TRACKER-28`) — a bare `TRACKER-28` is not accepted. **GitHub** is `owner/repo#123` or a full issue URL. ShipIt renders a jump-to-issue chip from the pointer. A doc with no `issue:` is pure reference.
-
-```yaml
----
----
-```
+Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Features are numbered by creation order; read a feature's `plan.md` first, check its `checklist.md` for remaining work, create `docs/NNN-new-feature/plan.md` for a new one. Frontmatter fields `issue`/`title`/`description` are all optional (a `plan.md` with none still lists). The docs list groups structurally: **tracked** = a feature-dir `plan.md`/`checklist.md`, an `issue:` pointer, or a `checklist.md` sibling; within Tracked, a 100%-complete `checklist.md` folds into collapsed **Done**, else **Active**. `issue:` is tracker-inferred from its shape — **Linear = full URL without the title slug** (`https://linear.app/<workspace>/issue/TRACKER-28`, a bare `TRACKER-28` is rejected), **GitHub = `owner/repo#123`** or a full URL; ShipIt renders a jump-to-issue chip.
 
 ### Keep the tracker in sync when you touch a design doc
 
@@ -446,38 +378,21 @@ Whenever you create or materially update a `docs/NNN-*` design doc, sync its tra
 - **Doc has an `issue:` pointer (Linear *or* GitHub).** Post a comment on that issue summarizing what changed in the doc and why: `shipit issue comment <pointer> --body-file - <<'EOF' … EOF`. The pointer's shape selects the tracker; pass it verbatim. This applies equally to GitHub-attached docs — comment, don't open a second tracker item.
 - **Doc has no `issue:` pointer.** Create a Linear issue to track it, then cross-link — all in the same turn (docs/187). Run `shipit issue create --title "<doc title>" --body-file - <<'EOF' … EOF` (it defaults to Linear; the body should summarize the doc and link back to its path). The command prints the new issue's identifier and URL on stdout, so read that URL and write it into the doc's `issue:` frontmatter (full URL, no title slug) in the same turn. Creation is do-then-surface — a provenance card with Undo (which cancels the issue) is posted automatically; you don't propose-and-wait. If Linear isn't connected, the command says so — surface that to the user rather than falling back to a GitHub issue.
 
-This rule is specific to the ShipIt repo and deliberately lives here, not in `src/server/shipit-docs/design-docs.md` — that file ships to every repo edited inside ShipIt, and those projects don't necessarily want their docs wired to a tracker this way.
+This rule is ShipIt-specific and deliberately lives here, not in `src/server/shipit-docs/design-docs.md` (which ships to every repo edited inside ShipIt). A `checklist.md` can sit alongside any doc and drives the Active/Done grouping — mark all items `[x]` when the work is finished.
 
-A `checklist.md` can exist alongside any doc — it tracks remaining work items and drives the Active/Done grouping. When the work is finished, mark all checklist items complete (`[x]`).
-
-**Where does a fact live — `checklist.md`, `plan.md`, or the Linear issue? Never mirror.** The repo tracks work in three places, and the boundary is easy to get wrong: all three can describe "the work," so it's tempting to keep the same notes in more than one. Don't — duplication creates sources of truth that drift, and then there's no single answer to "is this done?" or "what's the priority?" Decide with one mechanical test, not a vibe.
-
-**The deciding question: "Would this fact require a *commit* to change?"**
-
-- If it changes *because the code changed* → it belongs to the diff → a **committed file** (`checklist.md` or `plan.md`).
-- If it changes for *planning or coordination* reasons — priority, status, ownership, scheduling, cross-issue relationships, async discussion — → it must live in **Linear**. Forcing volatile coordination metadata into a committed file means every reprioritization is a commit + PR; that churn is the exact smell this rule exists to prevent.
-
-Equivalent one-liner: **does it belong to the diff, or to the conversation about the work?** Diff → committed. Conversation/coordination → Linear. (The older "altitude" framing — coarse in the issue, fine in the checklist — is a fine secondary intuition, but the commit test decides.)
+**Where does a fact live — `checklist.md`, `plan.md`, or the Linear issue? Never mirror; duplicated sources drift.** Decide with one mechanical test: **"Would this fact require a *commit* to change?"** Changes *because the code changed* → committed file (`checklist.md`/`plan.md`). Changes for *planning/coordination* (priority, status, ownership, scheduling, cross-issue relations, async discussion) → **Linear**. One-liner: does it belong to the diff, or to the conversation about the work?
 
 | Surface | Holds | Must NOT hold |
 |---|---|---|
-| **`checklist.md`** | The branch's implementation to-do: granular build steps checked off in the *same PR* ("wire `toRow`/`fromRow`", "add the history round-trip test"). Diffable, branch-scoped; drives the docs-list Active/Done grouping. | Priorities, the status of *other* work, or cross-issue links. |
-| **`plan.md` / committed design docs** | What the feature *is* and *how it works* **as of this commit**: design, architecture, key files, **settled** rationale. Plus exactly **one** `issue:` frontmatter pointer (the doc's own tracking issue). | Live priority, a roster of sibling issues' statuses, or scheduling. |
-| **The Linear issue** | The unit of work plus everything on a **non-code cadence**: priority, status (automated via `Closes`/`Refs`), cross-issue dependencies/relations, ownership, scheduling, async discussion, rationale still being argued, and progress narration across PRs/branches. | — (a tracker is a conversation medium; markdown is not). |
+| **`checklist.md`** | The branch's implementation to-do: granular build steps checked off in the *same PR*. Diffable, branch-scoped; drives the docs-list Active/Done grouping. | Priorities, the status of *other* work, cross-issue links. |
+| **`plan.md` / committed docs** | What the feature *is*/*how it works* **as of this commit**: design, key files, **settled** rationale. Plus exactly **one** `issue:` self-pointer. | Live priority, sibling-issue status rosters, scheduling. |
+| **The Linear issue** | The work unit + everything on a **non-code cadence**: priority, status (automated via `Closes`/`Refs`), cross-issue relations, ownership, scheduling, discussion, progress narration across PRs. | — (a tracker is a conversation medium; markdown is not). |
 
-When you do work, you **comment on the issue** — you do not commit a status update.
+When you do work, you **comment on the issue** — you do not commit a status update. A committed doc MAY name sibling issue IDs inline as stable identifiers ("blocked on SHI-79") but MUST NOT record their **priority/status** (that drifts) — no sibling-status *tables*; let Linear hold live state and cross-issue relations. A design doc may carry the author's **analyzed ordering** as settled narrative ("sequenced first"); the live priority of record stays in Linear, and the two are deliberately not reconciled. Quick test: if a checklist item could be copied verbatim into the issue as a sub-task, it's in the wrong place.
 
-**Cross-referencing other issues from a committed doc: pointers OK, status not.** A committed doc MAY name sibling or dependency issue IDs **inline as stable identifiers** ("blocked on SHI-79", "see SHI-90") — identifiers don't drift. It MUST NOT record those issues' **priority or status** — that drifts and would force commits to maintain. The doc's own `issue:` frontmatter stays the canonical self-pointer (Linear = full URL without the title slug; GitHub = `owner/repo#n`). Live cross-issue *relationships* — dependency ordering, priority across issues — belong in **Linear as issue relations/links**, not in committed prose.
+When a doc describes UI whose layout is load-bearing (filters, tables, breakpoints), commit the prototype beside `plan.md` — `mockup.html`, `mockup.svg`, or a `mocks/` subdir — as a self-contained static artifact (inline CSS / SVG, no build step, diffable; `.png` is a supplement, not the source of truth). Link it from `plan.md` with a "Visual reference" note. (The `present` tool's tab is ephemeral; committed mocks are reviewable in PRs and survive sessions.)
 
-**Anti-pattern — no sibling-issue priority/status *tables* in committed docs.** The classic "mirror" is a table in a `plan.md` enumerating other gaps' priorities and statuses (P0/P1, "in progress"/"todo"). It looks tidy and goes silently stale the moment anything is reprioritized or shipped, because nothing forces a commit to update it. If you want to show how several issues relate, name their IDs and let Linear hold the live state.
-
-**Gray area — analyzed ordering vs. priority of record.** A threat-model or design doc may legitimately carry the **author's analyzed ordering** as settled design narrative ("we judged the SNI-identity gap the load-bearing one, so it's sequenced first"). That's a *finding*, fixed as of the commit — keep it. But the **live priority of record is Linear**, and the two are deliberately **not** kept in sync: the doc reads "as analyzed", Linear reads "as currently planned". Don't try to reconcile them, and don't edit the doc every time Linear's ordering shifts — that would turn the finding back into a mirror.
-
-The quick test: if a checklist item could be copied verbatim into the issue as a sub-task, it's in the wrong place — it belongs to the issue. If it's a build step that only makes sense next to the code on this branch, it belongs in `checklist.md`. Keep rationale and discussion out of `checklist.md` (the issue's job), keep granular build steps out of the issue (the checklist's job), and keep volatile coordination metadata out of every committed file.
-
-When a doc describes UI whose layout is load-bearing (filters, tables, responsive breakpoints), commit the prototype into the feature folder as a sibling of `plan.md` — `mockup.html`, `mockup.svg`, or a `mocks/` subdir for several. Prefer self-contained, static artifacts (one HTML file with inline CSS, or SVG) so they open with no build step and stay diffable; `.png` screenshots are an acceptable supplement but aren't diffable, so keep HTML/SVG as the source of truth. Link the mock from `plan.md` with a short "Visual reference" note so a reader lands on the picture. The `present` tool's tab is ephemeral and never touches the repo; committed mocks are reviewable in PRs, render in the file tree, and survive across sessions.
-
-`plan.md` may also include an optional `description` field — a single-line summary of what the feature is about. The docs viewer renders it under the title (wrapping to at most two lines) so a doc's purpose is legible without opening it. Keep it to one sentence; it's parsed as a single line, so no multi-line YAML block scalars. Example:
+`plan.md` may also carry an optional single-line `description:` field — the docs viewer renders it under the title (one sentence, no multi-line YAML scalars):
 
 ```yaml
 ---
