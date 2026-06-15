@@ -22,7 +22,7 @@ import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
 import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
-import { parseGitHubRemote, rewriteGitHubRemoteOwnerRepo } from "./git-utils.js";
+import { parseGitHubRemote } from "./git-utils.js";
 import {
   buildPrStatusQuery,
   extractFocusedPrNodes,
@@ -999,56 +999,40 @@ export class PrStatusPoller {
   }
 
   /**
-   * Reconcile the key a poll was issued under against GitHub's canonical
-   * `nameWithOwner` (which resolves through transfer/rename redirects). On a
-   * mismatch — i.e. the repo was transferred/renamed on GitHub since we cached
-   * its URL — remap every session tracked under the old key to the new key,
-   * persist a corrected `remoteUrl` (so a restart tracks the canonical owner
-   * directly), and move the per-repo cadence bookkeeping. Returns the
-   * (possibly unchanged) identity the caller should continue the poll with.
+   * Resolve the owner/repo THIS poll's GitHub REST calls should target, given
+   * the canonical `nameWithOwner` GitHub returned. When a repo is
+   * transferred/renamed (e.g. nicolasalt/shipit → nikzlabs/shipit), the bulk
+   * GraphQL poll keeps working under the cached (old) owner — GitHub's
+   * `repository(owner, name)` follows the repo's redirect records — but the REST
+   * merge-detection probe filters `head=<owner>:<branch>`, which matches nothing
+   * once the head label carries the NEW owner, silently breaking merge
+   * detection. `nameWithOwner` is the canonical identity; when it differs from
+   * the key we polled under, return it so the REST calls below hit the new owner.
    *
-   * A no-op when GitHub returns no `nameWithOwner` (older response, or the
-   * repository didn't resolve) or when it already matches — so this can never
-   * regress the steady-state path.
+   * Deliberately does NOT mutate any persisted or in-memory identity (session
+   * `remoteUrl`, `sessionRepos`, the RepoStore record, or the bare-cache hash).
+   * Those three must agree on one URL or the client orphans the sessions (it
+   * groups them under a repo by exact-URL match) — an earlier version rewrote the
+   * session rows alone and detached every session from its repo. The cached URL
+   * stays consistent everywhere (git keeps working via GitHub's redirect); only
+   * the owner/repo used for this poll's API calls is corrected, re-derived every
+   * poll, statelessly. No-op when GitHub returns no `nameWithOwner` or it already
+   * matches, so the steady-state path is unchanged.
    */
-  private reconcileCanonicalRepo(
+  private canonicalApiTarget(
     polledKey: string,
     polledOwner: string,
     polledRepo: string,
     nameWithOwner: string | undefined,
-  ): { repoKey: string; owner: string; repo: string } {
-    const unchanged = { repoKey: polledKey, owner: polledOwner, repo: polledRepo };
+  ): { owner: string; repo: string } {
+    const unchanged = { owner: polledOwner, repo: polledRepo };
     if (!nameWithOwner) return unchanged;
     const slash = nameWithOwner.indexOf("/");
     if (slash <= 0 || slash >= nameWithOwner.length - 1) return unchanged;
     const owner = nameWithOwner.slice(0, slash);
     const repo = nameWithOwner.slice(slash + 1);
-    const newKey = `${owner}/${repo}`;
-    if (newKey === polledKey) return unchanged;
-
-    console.log(`[pr-poller] Repo transfer detected: ${polledKey} → ${newKey}; remapping tracked sessions`);
-
-    for (const [sessionId, key] of this.sessionRepos) {
-      if (key !== polledKey) continue;
-      this.sessionRepos.set(sessionId, newKey);
-      const remoteUrl = this.sessionManager.get(sessionId)?.remoteUrl;
-      if (remoteUrl) {
-        const rewritten = rewriteGitHubRemoteOwnerRepo(remoteUrl, owner, repo);
-        if (rewritten && rewritten !== remoteUrl) {
-          this.sessionManager.setRemoteUrl(sessionId, rewritten);
-        }
-      }
-    }
-
-    // Carry the cadence timestamp to the new key so the transfer doesn't trigger
-    // an off-schedule immediate re-poll under the new identity.
-    const lastPolled = this.lastPolledAt.get(polledKey);
-    if (lastPolled !== undefined) {
-      this.lastPolledAt.set(newKey, lastPolled);
-      this.lastPolledAt.delete(polledKey);
-    }
-
-    return { repoKey: newKey, owner, repo };
+    if (`${owner}/${repo}` === polledKey) return unchanged;
+    return { owner, repo };
   }
 
   private async pollRepo(
@@ -1106,17 +1090,12 @@ export class PrStatusPoller {
     const prNodes = repository?.pullRequests?.nodes;
     if (!prNodes) return;
 
-    // Self-heal a stale cached owner after a GitHub repo transfer/rename.
-    // GitHub's GraphQL `repository(owner, name)` follows the repo's redirect
-    // records, so the live open-PR view keeps working under the old owner — but
-    // the REST merge-detection probe (`verifyMissingPr` → findPullRequestAnyState)
-    // filters `head=<owner>:<branch>`, which matches nothing once the head label
-    // is the new owner, silently breaking merge detection. The response's
-    // `nameWithOwner` is the canonical key; if it differs from the key we polled
-    // under, remap tracked sessions and persist the corrected remoteUrl, then
-    // continue THIS poll with the new identity so the verify below targets the
-    // new owner.
-    ({ repoKey, owner, repo } = this.reconcileCanonicalRepo(repoKey, owner, repo, repository.nameWithOwner));
+    // After a repo transfer/rename, target this poll's REST calls (merge verify,
+    // auto-fix, auto-merge) at the canonical owner GitHub resolves to, while
+    // leaving every persisted identity untouched (see canonicalApiTarget). The
+    // bulk GraphQL above already worked via GitHub's redirect; only the
+    // owner-qualified REST `head` filter needs the new owner.
+    ({ owner, repo } = this.canonicalApiTarget(repoKey, owner, repo, repository.nameWithOwner));
 
     // Walk any `focused${i}` aliases the query asked for. Conversation data
     // lives here, not on the bulk nodes.
