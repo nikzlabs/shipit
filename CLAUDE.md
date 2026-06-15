@@ -298,7 +298,7 @@ The established pattern for a **side-channel card** (one arriving outside the ag
 
 ### Preview routing
 
-Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` (primary, avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` (fallback), HMR-URL patching so hot-reload works through the proxy, config-driven restarts (`shipit.yaml` immediate; lockfiles debounced 30s to avoid npm-install loops). See the **session-processes** skill.
+Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` (primary, avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` (fallback), HMR-URL patching so hot-reload works through the proxy, config-driven restarts (`shipit.yaml` immediate; lockfiles debounced 30s to avoid npm-install loops). Full detail: `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
 
 ### Disk cleanup
 
@@ -308,7 +308,7 @@ Orthogonal surfaces, each prune where the leak happens:
 - **`disk-janitor.ts`** runs once at orchestrator startup (no timer — see docstring) for leaks the deploy prune can't see: orphan `shipit-managed=true` compose volumes, unreferenced `repo-cache`/`dep-cache`, and an opt-in archived-workspace sweep (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`) that drops only the checkout + `node_modules`, never chat/usage/metadata.
 - **Overlay dep store** (docs/183, `OVERLAY_DEP_STORE`, default off): N per-dep-dir `type=overlay` volumes + immutable shared base generations, with three N-aware reclaim paths (per-session teardown, crash-orphan prefix sweep, superseded-generation reaping).
 
-Full detail: `docs/183-overlay-dep-store`, the `disk-janitor.ts` docstring, and the **session-containers** skill.
+Full detail: `docs/183-overlay-dep-store` (overlay store), the `disk-janitor.ts` docstring (janitor), `deployment/vps/deploy.sh` (build-time prune); the per-session container-teardown path is in the **session-containers** skill.
 
 ### Client communication & stores
 
