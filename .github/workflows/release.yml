@@ -28,7 +28,7 @@ jobs:
   # human-facing version and the tag can never silently drift.
   version-guard:
     name: Tag matches package.json
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -48,7 +48,7 @@ jobs:
   # 1. A release must be green — reuse the same gates as ci.yml.
   check:
     name: Lint, Type Check & Build
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -63,7 +63,7 @@ jobs:
 
   test:
     name: Test
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -78,7 +78,7 @@ jobs:
   promote:
     name: Promote to stable
     needs: [version-guard, check, test]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
         with:
