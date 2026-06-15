@@ -426,33 +426,36 @@ export function MessageInput({
     requestAnimationFrame(() => textareaRef.current?.focus());
   }, [surface]);
 
-  // Guard against iframe focus theft: when the textarea is focused and an iframe
-  // (e.g. preview loading) steals focus, the textarea fires a blur event with no
-  // relatedTarget (cross-origin iframes don't expose it). Reclaim focus in that case
-  // ONLY — never reclaim when activeElement is <body>, because that's the normal
-  // result of the user mousedown-ing on a non-focusable element (e.g. chat text)
-  // to start a text selection. Reclaiming on body-blur would refocus the textarea
-  // mid-drag and cancel the in-progress selection — see issue: text in conversation
-  // wasn't selectable while the textarea was focused.
+  // Guard against iframe focus theft on LOAD only: when the textarea is focused
+  // and an iframe (e.g. the preview reloading after an edit) finishes loading and
+  // pulls focus to itself, the textarea fires a blur with no relatedTarget
+  // (cross-origin iframes don't expose it). That steal is involuntary — the user
+  // was typing, not navigating — so we reclaim it.
   //
-  // ALSO never reclaim when the focus loss followed a user click on an iframe
-  // — that's the user intentionally clicking the preview (e.g. to play a WebGL/
-  // Canvas game where the canvas doesn't itself take focus). Reclaiming there
-  // means subsequent keystrokes type into this textarea instead of reaching the
-  // game. We track the most-recent iframe pointerdown via a capture-phase
-  // listener on the document.
-  const lastIframePointerDownRef = useRef(0);
-  // eslint-disable-next-line no-restricted-syntax -- global listener for iframe-click detection
+  // EVERY other focus loss is the user's own doing and must be left alone:
+  //   - mousedown on non-focusable chat text to start a selection (activeElement
+  //     becomes <body>) — reclaiming there cancels the in-progress selection;
+  //   - deliberately clicking into the preview iframe (canvas/WebGL games,
+  //     embedded apps), switching to the Present tab, or interacting with a doc —
+  //     reclaiming there fights the user for the cursor while they work on the
+  //     right side, which is the annoyance this guard now avoids.
+  //
+  // So the reclaim is gated strictly on "an iframe just fired a load event": we
+  // record the timestamp of the most-recent iframe load via a capture-phase
+  // listener (load doesn't bubble, but a capture-phase listener on the document
+  // still sees it for any descendant iframe) and only reclaim if the blur lands
+  // within a short window after that load.
+  const lastIframeLoadRef = useRef(0);
+  // eslint-disable-next-line no-restricted-syntax -- global listener for iframe-load detection
   useEffect(() => {
-    const handler = (e: PointerEvent) => {
+    const handler = (e: Event) => {
       const target = e.target as Element | null;
       if (target?.tagName === "IFRAME") {
-        lastIframePointerDownRef.current = Date.now();
+        lastIframeLoadRef.current = Date.now();
       }
     };
-    // Capture phase so we see the event even if the iframe stops propagation.
-    document.addEventListener("pointerdown", handler, true);
-    return () => document.removeEventListener("pointerdown", handler, true);
+    document.addEventListener("load", handler, true);
+    return () => document.removeEventListener("load", handler, true);
   }, []);
 
   const handleBlur = useCallback((e: React.FocusEvent<HTMLTextAreaElement>) => {
@@ -462,14 +465,15 @@ export function MessageInput({
     // need the activeElement check below to disambiguate those two cases.
     if (e.relatedTarget) return;
     requestAnimationFrame(() => {
-      // Only reclaim if focus actually went to an iframe. Body becoming the
-      // active element means the user clicked outside any focusable widget
-      // (typically to start a text selection); leave focus alone there.
+      // Only an iframe taking focus is a candidate. Body becoming the active
+      // element means the user clicked outside any focusable widget (typically to
+      // start a text selection); leave focus alone there.
       const active = document.activeElement;
       if (active?.tagName !== "IFRAME") return;
-      // User just clicked the iframe → leave focus in the iframe so keystrokes
-      // reach the preview (canvas/WebGL games, embedded apps, etc.).
-      if (Date.now() - lastIframePointerDownRef.current < 500) return;
+      // Reclaim ONLY if an iframe just finished loading — that's the involuntary
+      // load-time focus steal. With no recent load, the user deliberately moved
+      // into the iframe (preview click, Present tab, doc), so leave focus there.
+      if (Date.now() - lastIframeLoadRef.current > 500) return;
       textareaRef.current?.focus();
     });
   }, []);
