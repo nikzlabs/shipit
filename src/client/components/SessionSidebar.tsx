@@ -10,6 +10,7 @@ import { WithTooltip } from "./ui/tooltip.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "./ui/dropdown-menu.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { RepoSwitcher } from "./RepoSwitcher.js";
+import { RemoveRepoDialog } from "./RemoveRepoDialog.js";
 import { PrStateBadge } from "./PrLifecycleCard.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
@@ -692,10 +693,6 @@ function RepoGroup({
   onDragEnd: (e: React.DragEvent) => void;
 }) {
   const repoName = parseRepoName(repo.url);
-  // "Click again to confirm" idiom (see Settings.tsx). Kept local to the menu so
-  // it resets whenever the dropdown closes — preventing a stale "confirming" state
-  // from carrying over to the next time the user opens the menu.
-  const [confirmingRemove, setConfirmingRemove] = useState(false);
 
   // FLIP animation for session rows reordering (PR merged sinks to bottom) or
   // exiting (archive). Library defaults — single duration/easing per parent,
@@ -825,11 +822,6 @@ function RepoGroup({
         <OverflowMenu
           label={`${repoName} repository menu`}
           contentClassName="w-52"
-          onOpenChange={(open) => {
-            // Reset the destructive-confirm state every time the menu closes,
-            // so a partial confirmation never carries to the next open.
-            if (!open) setConfirmingRemove(false);
-          }}
         >
             <DropdownMenuItem onSelect={onViewAll}>
               <ListBulletsIcon size={ICON_SIZE.XS} className="shrink-0" />
@@ -841,20 +833,14 @@ function RepoGroup({
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             <DropdownMenuItem
-              onSelect={(e) => {
-                if (!confirmingRemove) {
-                  // First click: keep the menu open and switch label to confirmation.
-                  e.preventDefault();
-                  setConfirmingRemove(true);
-                  return;
-                }
-                // Second click: run the action; menu closes via default Radix behavior.
-                onRemoveRepo();
-              }}
+              // Opens a confirmation dialog (RemoveRepoDialog) rather than acting
+              // inline: removal archives every session and reclaims their disk, so
+              // the user gets an explicit deleted-vs-kept breakdown first.
+              onSelect={onRemoveRepo}
               className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
             >
               <TrashIcon size={ICON_SIZE.XS} className="shrink-0" />
-              {confirmingRemove ? "Click again to confirm" : "Remove Repository"}
+              Remove Repository
             </DropdownMenuItem>
         </OverflowMenu>
       </div>
@@ -1077,6 +1063,11 @@ export function SessionSidebar({
   const [draggedRepoUrl, setDraggedRepoUrl] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<{ url: string; position: "before" | "after" } | null>(null);
 
+  // Repo-removal confirmation dialog target (null = closed). Holds the repo URL,
+  // display name, and the count of sessions that will be archived so the dialog
+  // can spell out the consequences before the destructive action runs.
+  const [removeRepoTarget, setRemoveRepoTarget] = useState<{ url: string; name: string; sessionCount: number } | null>(null);
+
   // Group sessions by repo URL with a STABLE sort within each group.
   // Sessions are intentionally NOT sorted by `lastUsedAt`: that field updates on every
   // agent event during a turn, which would reshuffle the list under the user's cursor and
@@ -1193,13 +1184,16 @@ export function SessionSidebar({
   }, [mobile, onClose]);
 
   const handleRemoveRepo = useCallback((repoUrl: string) => {
-    // Backend semantics (services/repos.ts + docs/059): the repo entry and its
-    // warm session are removed; existing sessions are preserved on disk but become
-    // invisible in the sidebar until the repo is re-added. The "Click again to
-    // confirm" idiom in the menu item guards against accidental clicks; we don't
-    // need a separate dialog.
-    void useRepoStore.getState().removeRepo(repoUrl);
-  }, []);
+    // Backend semantics (api-routes-session.ts DELETE /api/repos/:url + docs/059):
+    // the repo entry and its warm session are removed, and every real session for
+    // the repo is archived — hidden from the sidebar, disk reclaimed, DB row kept.
+    // Removal is consequential enough (it can drop uncommitted working copies) to
+    // warrant an explicit deleted-vs-kept dialog rather than an inline confirm.
+    const count = sessions.filter(
+      (s) => s.remoteUrl === repoUrl && !s.userArchived && !s.warm,
+    ).length;
+    setRemoveRepoTarget({ url: repoUrl, name: parseRepoName(repoUrl), sessionCount: count });
+  }, [sessions]);
 
   // Single repo mode: check if we only have one repo
   const isSingleRepo = repos.length === 1;
@@ -1505,6 +1499,17 @@ export function SessionSidebar({
         className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
       />
     )}
+    {/* Repo-removal confirmation (Radix portals, so placement here is fine) */}
+    <RemoveRepoDialog
+      open={removeRepoTarget !== null}
+      repoName={removeRepoTarget?.name ?? ""}
+      sessionCount={removeRepoTarget?.sessionCount ?? 0}
+      onClose={() => setRemoveRepoTarget(null)}
+      onConfirm={() => {
+        if (removeRepoTarget) void useRepoStore.getState().removeRepo(removeRepoTarget.url);
+        setRemoveRepoTarget(null);
+      }}
+    />
     </div>
   );
 }

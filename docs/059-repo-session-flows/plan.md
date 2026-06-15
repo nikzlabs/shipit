@@ -115,7 +115,8 @@ Follows the same pattern as `SessionManager` — JSON file persistence, synchron
 
 - `GET /api/repos` — returns `repoStore.list()`
 - `POST /api/repos` — adds a repo. Body: `{ url }` (or `{ repoName, description, isPrivate, templateId }` for new repos — reuses existing `createRepoWithTemplate` logic). Kicks off clone in background, returns immediately with `{ repo: RepoInfo }` where `status: "cloning"`.
-- `DELETE /api/repos/:url` — removes a repo and its warm session. Does NOT delete existing visible sessions (they may have valuable work).
+- `DELETE /api/repos/:url` — removes a repo. Fully deletes the unclaimed warm session, and **archives** every real session for the repo (same path as a user-initiated archive: `archiveSession` per session) so they leave the sidebar and their disk is reclaimed (working copy, container, compose volumes, logs). The session DB rows are **kept** (flagged `user_archived`), so chat history/usage survive and the sessions reappear under **All Sessions** — restorable — if the repo is re-added. Restoring re-clones a fresh working copy from the bare cache (or the remote if the cache was swept), so only uncommitted/unpushed work is lost.
+  - **Client confirmation:** the repo overflow menu's "Remove Repository" opens `RemoveRepoDialog` (a modal built on `ui/dialog.tsx`) that spells out this deleted-vs-kept breakdown and the re-add story, replacing the old inline "click again to confirm" idiom — removal is now consequential enough (it can drop uncommitted working copies) to warrant an explicit dialog. The dialog is rendered at the `SessionSidebar` level; the menu item just opens it with the repo's name + count of sessions to be archived.
 
 **Clone happens on add:** When the user adds an existing repo via `POST /api/repos`, the server:
 

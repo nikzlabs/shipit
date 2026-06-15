@@ -306,14 +306,33 @@ describe("SessionSidebar", () => {
     expect(useUiStore.getState().projectSettingsRepoUrl).toBe(repoA.url);
   });
 
-  it("requires a second click to confirm Remove Repository", async () => {
+  it("opens a confirmation dialog (not an inline confirm) from Remove Repository", async () => {
     const user = userEvent.setup();
     render(<SessionSidebar {...defaultProps} />);
     await user.click(screen.getByLabelText("repo repository menu"));
-    // First click on Remove keeps the menu open and swaps the label to confirmation.
     await user.click(screen.getByText("Remove Repository"));
-    expect(screen.getByText("Click again to confirm")).toBeTruthy();
-    expect(screen.queryByText("Remove Repository")).toBeNull();
+    // A modal appears explaining what's removed vs kept — the menu's inline
+    // "click again" idiom is gone. The dialog confirm button is distinctly cased.
+    expect(screen.getByText("Remove repository")).toBeTruthy();
+    expect(screen.getByText(/Nothing on GitHub is changed/)).toBeTruthy();
+    expect(screen.getByText("Cancel")).toBeTruthy();
+  });
+
+  it("removes the repo only after confirming in the dialog", async () => {
+    const user = userEvent.setup();
+    const removeRepo = vi.fn(async () => true);
+    useRepoStore.setState({ removeRepo });
+    render(<SessionSidebar {...defaultProps} />);
+    await user.click(screen.getByLabelText("repo repository menu"));
+    await user.click(screen.getByText("Remove Repository"));
+    // Cancelling does nothing…
+    await user.click(screen.getByText("Cancel"));
+    expect(removeRepo).not.toHaveBeenCalled();
+    // …confirming calls removeRepo with the repo URL.
+    await user.click(screen.getByLabelText("repo repository menu"));
+    await user.click(screen.getByText("Remove Repository"));
+    await user.click(screen.getByText("Remove repository"));
+    expect(removeRepo).toHaveBeenCalledWith(repoA.url);
   });
 
   it("shows no placeholder text when a repo group has no sessions (the 'New session' button is always present)", () => {
