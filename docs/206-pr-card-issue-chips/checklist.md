@@ -12,4 +12,4 @@
 - [x] Update `ChangedDocsStrip.test.tsx` / `PrLifecycleCard.test.tsx` for the issues-present + issues-only cases.
 - [x] `npm run lint:dev` + `npm run typecheck` clean.
 - [x] Create the Linear issue for this doc (SHI-151), write its URL into `plan.md` frontmatter.
-- [ ] Open PR (`Closes` SHI-151 once the work is complete).
+- [x] Open PR (#1374, `Closes` SHI-151).
