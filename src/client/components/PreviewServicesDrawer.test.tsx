@@ -47,15 +47,29 @@ describe("PreviewServicesDrawer", () => {
     expect(screen.queryByText("web")).toBeNull();
   });
 
-  it("expands on header click and shows the service list", () => {
+  it("expands on header click and shows the service", () => {
     const services = [svc({ name: "web", port: 3000 })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
     expect(screen.getByText("web")).toBeInTheDocument();
   });
 
-  it("drills into a service's log view and mounts the LogView when active", () => {
+  it("a single service shows its log directly in a focus card (no drill-in)", () => {
     const services = [svc({ name: "web", port: 3000 })];
+    render(<PreviewServicesDrawer services={services} {...baseProps()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
+    // The log is mounted on the service channel without any drill-in click...
+    const view = screen.getByTestId("log-view");
+    expect(view.getAttribute("data-channel")).toBe("service:web");
+    // ...the focus card carries its own controls (left-grouped)...
+    expect(screen.getByText("Send to Agent")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop web" })).toBeInTheDocument();
+    // ...and there is no "Back to services" since we never left it.
+    expect(screen.queryByRole("button", { name: "Back to services" })).toBeNull();
+  });
+
+  it("with multiple services, drilling into one mounts its log view + toolbar", () => {
+    const services = [svc({ name: "web", port: 3000 }), svc({ name: "db", status: "stopped" })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
     fireEvent.click(screen.getByRole("button", { name: "web" }));
@@ -71,11 +85,10 @@ describe("PreviewServicesDrawer", () => {
     const services = [svc({ name: "web", port: 3000 })];
     render(<PreviewServicesDrawer services={services} {...baseProps()} active={false} />);
     fireEvent.click(screen.getByRole("button", { name: "Expand services" }));
-    fireEvent.click(screen.getByRole("button", { name: "web" }));
     expect(screen.queryByTestId("log-view")).toBeNull();
   });
 
-  it("clicking a service's port chip pivots the preview port", () => {
+  it("clicking a single service's port chip pivots the preview port", () => {
     const services = [svc({ name: "web", port: 3000 })];
     const props = baseProps();
     render(<PreviewServicesDrawer services={services} {...props} />);

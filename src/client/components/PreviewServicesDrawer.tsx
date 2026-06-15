@@ -8,6 +8,8 @@ import {
   PlayIcon,
   StopIcon,
   ArrowClockwiseIcon,
+  ArrowSquareOutIcon,
+  WarningCircleIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -92,6 +94,128 @@ function ToolbarButton({ onClick, title, children }: { onClick: () => void; titl
   );
 }
 
+const statusText: Record<ManagedServiceState["status"], string> = {
+  running: "Running",
+  starting: "Starting…",
+  error: "Crashed",
+  stopped: "Stopped",
+};
+const statusTextColor: Record<ManagedServiceState["status"], string> = {
+  running: "text-(--color-success)",
+  starting: "text-(--color-accent)",
+  error: "text-(--color-error)",
+  stopped: "text-(--color-text-tertiary)",
+};
+
+/**
+ * Single-service view: a full-width card whose live log is shown *directly*
+ * beneath a compact identity+controls row. A lone service is the focus, not a
+ * list-of-one, so it fills the drawer with the one genuinely useful thing — its
+ * log — instead of stranding a narrow chip against a wide void (the original
+ * complaint). All controls are grouped on the LEFT, next to the name, so they
+ * don't drift to the far edge on wide monitors.
+ */
+function FocusServiceCard({
+  svc,
+  active,
+  send,
+  onRestart,
+  onSelectPreviewPort,
+  onSendToAgent,
+  onAskFix,
+  externalUrl,
+}: {
+  svc: ManagedServiceState;
+  active: boolean;
+  send: (msg: WsClientMessage) => void;
+  onRestart: (name: string) => void;
+  onSelectPreviewPort: (port: number) => void;
+  onSendToAgent: (name: string, status: string) => void;
+  onAskFix: (svc: ManagedServiceState) => void;
+  externalUrl: string | null;
+}) {
+  const isError = svc.status === "error";
+  return (
+    <div className="flex-1 min-h-0 p-2.5 flex flex-col">
+      <div className="relative flex flex-col flex-1 min-h-0 rounded-lg bg-(--color-bg-tertiary) border border-(--color-border-primary) overflow-hidden">
+        <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${segColor[svc.status]}`} aria-hidden />
+
+        {/* Identity + controls — all grouped on the left. */}
+        <div className="flex items-center gap-2.5 pl-4 pr-2 py-2 shrink-0 border-b border-(--color-border-primary)">
+          <StatusDot status={svc.status} />
+          <span className="font-semibold text-(--color-text-primary) text-sm truncate">{svc.name}</span>
+          <span
+            className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0 ${
+              svc.preview === "auto"
+                ? "bg-(--color-accent-subtle) text-(--color-accent)"
+                : "bg-(--color-bg-active) text-(--color-text-tertiary)"
+            }`}
+          >
+            {svc.preview === "auto" ? "Preview" : "Manual"}
+          </span>
+          {svc.port && svc.status === "running" && (
+            <button
+              type="button"
+              onClick={() => onSelectPreviewPort(svc.port!)}
+              title={`Show :${svc.port} in the preview`}
+              className="font-mono text-xs text-(--color-text-link) bg-(--color-info-subtle) hover:bg-(--color-accent-subtle) px-1.5 py-0.5 rounded transition-[background-color] duration-(--duration-fast) shrink-0 cursor-pointer"
+            >
+              :{svc.port}
+            </button>
+          )}
+          <span className={`text-xs font-semibold shrink-0 ${statusTextColor[svc.status]}`}>{statusText[svc.status]}</span>
+
+          <div className="flex items-center gap-0.5 shrink-0">
+            {externalUrl && (
+              <Button variant="ghost" size="sm" onClick={() => window.open(externalUrl, "_blank", "noopener,noreferrer")} title={`Open ${svc.name} in a new tab`} aria-label={`Open ${svc.name} in a new tab`} className="h-7 w-7 p-0">
+                <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+              </Button>
+            )}
+            {svc.status === "running" && (
+              <Button variant="ghost" size="sm" onClick={() => onRestart(svc.name)} title={`Restart ${svc.name}`} aria-label={`Restart ${svc.name}`} className="h-7 w-7 p-0">
+                <ArrowClockwiseIcon size={ICON_SIZE.SM} />
+              </Button>
+            )}
+            {svc.status === "stopped" || svc.status === "error" ? (
+              <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: svc.name })} title={`Start ${svc.name}`} aria-label={`Start ${svc.name}`} className="h-7 w-7 p-0">
+                <PlayIcon size={ICON_SIZE.SM} weight="fill" />
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: svc.name })} title={`Stop ${svc.name}`} aria-label={`Stop ${svc.name}`} className="h-7 w-7 p-0">
+                <StopIcon size={ICON_SIZE.SM} weight="fill" />
+              </Button>
+            )}
+            <Button variant="secondary" size="md" onClick={() => onSendToAgent(svc.name, svc.status)} title="Send logs to agent">
+              <PaperPlaneRightIcon size={ICON_SIZE.SM} />
+              <span className="ml-1">Send to Agent</span>
+            </Button>
+          </div>
+        </div>
+
+        {/* A crashed service summarizes its error + a one-click fix above the log. */}
+        {isError && svc.error && (
+          <div className="flex items-start gap-2 px-4 py-2 shrink-0 bg-(--color-error-subtle) border-b border-(--color-error)/25 text-xs text-(--color-error)">
+            <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-px" />
+            <span className="min-w-0">
+              {svc.error}{" "}
+              <button type="button" onClick={() => onAskFix(svc)} className="text-(--color-text-link) hover:underline font-medium whitespace-nowrap cursor-pointer">
+                Ask the agent to fix →
+              </button>
+            </span>
+          </div>
+        )}
+
+        {/* The live log, shown directly — the reason the focus card fills the space. */}
+        {active ? (
+          <LogView channel={`service:${svc.name}`} send={send} />
+        ) : (
+          <div className="flex-1" style={{ backgroundColor: "#030712" }} />
+        )}
+      </div>
+    </div>
+  );
+}
+
 interface PreviewServicesDrawerProps {
   services: ManagedServiceState[];
   /** Active session id — used to build per-service external (new-tab) URLs. */
@@ -137,16 +261,21 @@ export function PreviewServicesDrawer({
     setExpanded(!expanded);
   }, [expanded, setExpanded]);
 
+  // Pull a service's recent lines straight from the log-store (docs/192) — the
+  // same model `<LogView>` renders, so "Send to Agent" ships exactly what's on
+  // screen, no separate accumulation. Used by both the selected-service toolbar
+  // and the single-service focus card.
+  const sendLogsToAgent = useCallback((name: string, status: string) => {
+    const recs = useLogStore.getState().channels[`service:${name}`]?.records ?? [];
+    const text = recs.map((r) => r.text).join("").split("\n").slice(-MAX_PLAIN_LINES).join("\n").trim();
+    onSendToAgent(name, status, text);
+  }, [onSendToAgent]);
+
   const handleSendToAgent = useCallback(() => {
     if (!effectiveService) return;
     const svc = services.find((s) => s.name === effectiveService);
-    // Pull the selected service's recent lines straight from the log-store
-    // (docs/192) — the same model `<LogView>` renders, so "Send to Agent"
-    // ships exactly what's on screen, no separate accumulation.
-    const recs = useLogStore.getState().channels[`service:${effectiveService}`]?.records ?? [];
-    const text = recs.map((r) => r.text).join("").split("\n").slice(-MAX_PLAIN_LINES).join("\n").trim();
-    onSendToAgent(effectiveService, svc?.status ?? "unknown", text);
-  }, [effectiveService, services, onSendToAgent]);
+    sendLogsToAgent(effectiveService, svc?.status ?? "unknown");
+  }, [effectiveService, services, sendLogsToAgent]);
 
   // --- Restart = client-orchestrated stop → start. Sending both at once would
   //     let `start` race the still-running container, so we stop now and start
@@ -228,6 +357,11 @@ export function PreviewServicesDrawer({
 
   const runningCount = services.filter((s) => s.status === "running").length;
   const showToolbar = expanded && !!selectedSvc;
+  // A lone service isn't "a list of one" — it's the focus. Render it as a
+  // full-width card with its live log shown directly, instead of a stranded
+  // chip in a wide drawer. Bulk controls are hidden in this mode since the
+  // card carries the per-service controls. (Explicit drill-in still wins.)
+  const singleSvc = expanded && !effectiveService && services.length === 1 ? services[0] : null;
 
   return (
     <div
@@ -302,30 +436,34 @@ export function PreviewServicesDrawer({
             </div>
           </>
         ) : expanded ? (
-          // Expanded list view: health bar + bulk controls.
+          // Expanded list view: health bar + bulk controls. For a single
+          // service the focus card below carries the controls, so the header
+          // stays minimal (just the count) to avoid duplicate affordances.
           <>
             <div className="flex items-center gap-2 min-w-0">
-              <HealthBar services={services} />
+              {!singleSvc && <HealthBar services={services} />}
               <span className="text-(--color-text-secondary) whitespace-nowrap">
                 <span className="text-(--color-text-primary) font-semibold tabular-nums">{runningCount}</span> of {services.length} running
               </span>
             </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              {restartable.length > 0 && (
-                <ToolbarButton onClick={restartAll} title="Restart all running services">
-                  <ArrowClockwiseIcon size={ICON_SIZE.XS} /> Restart all
-                </ToolbarButton>
-              )}
-              {stoppable.length > 0 ? (
-                <ToolbarButton onClick={stopAll} title="Stop all running services">
-                  <StopIcon size={ICON_SIZE.XS} weight="fill" /> Stop all
-                </ToolbarButton>
-              ) : startable.length > 0 ? (
-                <ToolbarButton onClick={startAll} title="Start all services">
-                  <PlayIcon size={ICON_SIZE.XS} weight="fill" /> Start all
-                </ToolbarButton>
-              ) : null}
-            </div>
+            {!singleSvc && (
+              <div className="flex items-center gap-1.5 shrink-0">
+                {restartable.length > 0 && (
+                  <ToolbarButton onClick={restartAll} title="Restart all running services">
+                    <ArrowClockwiseIcon size={ICON_SIZE.XS} /> Restart all
+                  </ToolbarButton>
+                )}
+                {stoppable.length > 0 ? (
+                  <ToolbarButton onClick={stopAll} title="Stop all running services">
+                    <StopIcon size={ICON_SIZE.XS} weight="fill" /> Stop all
+                  </ToolbarButton>
+                ) : startable.length > 0 ? (
+                  <ToolbarButton onClick={startAll} title="Start all services">
+                    <PlayIcon size={ICON_SIZE.XS} weight="fill" /> Start all
+                  </ToolbarButton>
+                ) : null}
+              </div>
+            )}
           </>
         ) : (
           // Collapsed: compact count + status dots.
@@ -347,6 +485,17 @@ export function PreviewServicesDrawer({
             ) : (
               <div className="flex-1" style={{ backgroundColor: "#030712" }} />
             )
+          ) : singleSvc ? (
+            <FocusServiceCard
+              svc={singleSvc}
+              active={active}
+              send={send}
+              onRestart={handleRestart}
+              onSelectPreviewPort={onSelectPreviewPort}
+              onSendToAgent={sendLogsToAgent}
+              onAskFix={handleAskFix}
+              externalUrl={externalUrlFor(singleSvc)}
+            />
           ) : (
             <div className="flex-1 overflow-auto p-2.5">
               <ServiceList

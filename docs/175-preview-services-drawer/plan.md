@@ -102,9 +102,32 @@ backend or data-model changes; everything renders from the existing
 All colors use design tokens; `--color-warning`/`--color-error` replaced the
 ad-hoc `text-orange-400` the old rows used.
 
+### Single-service focus card + left-grouped controls
+
+Two refinements once the drawer shipped (visual reference:
+`single-service-prototype.html`):
+
+- **Lone service = the focus, not a list-of-one.** When exactly one service
+  exists (the common case — e.g. a repo's single `dev` service), a narrow card
+  left-aligned in a wide drawer looked stranded against a big void. Instead,
+  `FocusServiceCard` (in `PreviewServicesDrawer.tsx`) renders a full-width card
+  whose **live log is shown directly** beneath a compact identity+controls row —
+  no drill-in, no "open log" hop. It fills the drawer with the one genuinely
+  useful thing (per CLAUDE.md §1–2). The header sheds its health bar + bulk
+  buttons in this mode (the card carries the per-service controls), and a
+  crashed service shows its error + "Ask the agent to fix" above the log.
+  Multiple services still render the compact `ServiceList`, and clicking one
+  drills into the existing toolbar+log view.
+- **Controls grouped on the left.** The per-service action buttons used to be
+  pushed to the far right by a `flex-1` spacer on the name column, so on wide
+  monitors the cursor had to travel the whole drawer to reach them. The spacer
+  is gone; controls now sit next to the name. Bulk controls were already
+  left-grouped.
+
 ## Key files
 
-- `src/client/components/PreviewServicesDrawer.tsx` — the drawer (new)
+- `src/client/components/PreviewServicesDrawer.tsx` — the drawer + `FocusServiceCard` (new)
+- `docs/175-preview-services-drawer/single-service-prototype.html` — design reference for the focus card / left-grouped controls
 - `src/client/components/ServiceLogViewer.tsx` — extracted xterm log viewer (new)
 - `src/client/components/ServiceList.tsx` — card-based service list (redesigned)
 - `src/client/App.tsx` — flex-column layout, tab removal, `rightTab` coercion

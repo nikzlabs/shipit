@@ -98,6 +98,8 @@
   <h1>Single-service drawer — thinking past the floating chip</h1>
   <p class="lede"><b>Reframe:</b> one service isn't “a list of one”, it's <b>the focus</b>. With many services density wins; with one, the drawer is all yours — so fill it with something useful instead of stranding a tiny card.</p>
   <p class="principle">The most useful thing to fill it with is the service's own <b>live log</b> — which is exactly what this drawer was built to show (docs/175). Header stays full-width, so the collapsed state never changes.</p>
+  <p class="lede" style="margin-top:14px;border-left:3px solid var(--success);padding-left:12px">
+    <b>DECIDED →</b> Direction <b>#2 (Focus card)</b> for the single-service case, with the log shown <b>directly</b> (no “Open full log” button). Plus a global fix: <b>all controls grouped on the left</b> (incl. “Stop all”) so they aren't stranded at the far edge on wide monitors. The other directions below are kept as record.</p>
 
   <!-- ════════════════ 1. CONSOLE ════════════════ -->
   <div class="head"><span class="num">1</span><h2>Console — the single service <i>is</i> its log</h2><span class="pick">my pick</span></div>
@@ -162,8 +164,8 @@
   </div>
 
   <!-- ════════════════ 2. FOCUS CARD + LOG PEEK ════════════════ -->
-  <div class="head"><span class="num">2</span><h2>Focus card — full-width card with a live log peek</h2></div>
-  <p class="why">Keeps a distinct <b>card</b> identity but lets it span the drawer: identity + controls up top, the last few log lines beneath (dimmed, monospace) filling the vertical space. The peek is clickable to expand into the full console (#1). Half-step between today's chip and a full console — keep the “list” mental model, lose the void.</p>
+  <div class="head"><span class="num">2</span><h2>Focus card — full-width card, log shown directly</h2><span class="pick">chosen</span></div>
+  <p class="why"><b>Final design.</b> A full-width card: identity + <b>controls grouped on the left</b> (no far-edge travel), and the <b>live log right there</b> beneath — no “Open full log” hop, it's already the log. Note the action buttons sit next to the name, not pushed to the right edge; the wide log below justifies the card's width so the top row's right-side gap reads fine.</p>
   <div class="stage" style="max-width:none">
     <div class="preview">live preview ↑</div>
     <div class="drawer">
@@ -171,27 +173,25 @@
         <span class="caret">⌄</span><span class="htitle">Services</span>
         <span class="bar"><i></i></span>
         <span class="count"><b>1</b> of 1 running</span>
-        <span class="right"><span class="pill"><svg viewBox="0 0 24 24" style="width:13px;height:13px"><rect class="fill" x="6" y="6" width="12" height="12" rx="2"/></svg> Stop all</span></span>
       </div>
       <div class="body">
-        <div style="border:1px solid var(--b1);border-radius:10px;overflow:hidden;background:var(--bg2)">
-          <div style="display:flex;align-items:center;gap:12px;padding:11px 10px 11px 16px;position:relative">
+        <div style="border:1px solid var(--b1);border-radius:10px;overflow:hidden;background:var(--bg2);display:flex;flex-direction:column">
+          <div style="display:flex;align-items:center;gap:10px;padding:11px 10px 11px 16px;position:relative">
             <span style="position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--success)"></span>
             <span class="dot run"></span>
-            <div style="flex:1;min-width:0">
-              <div style="display:flex;align-items:center;gap:8px"><span style="font-weight:600">dev</span><span class="badge prev">Preview</span><span class="port mono">:3000</span></div>
-              <div class="sl run" style="margin-top:2px">Running · up 2m</div>
-            </div>
-            <span class="ico" title="Open"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></span>
-            <span class="ico" title="Logs"><svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3"/><path d="M13 15h4"/></svg></span>
+            <div style="display:flex;align-items:center;gap:8px;min-width:0"><span style="font-weight:600">dev</span><span class="badge prev">Preview</span><span class="port mono">:3000</span><span class="sl run" style="margin-left:4px">Running · up 2m</span></div>
+            <!-- controls: left-grouped, right after the name -->
+            <span class="ico" title="Open in new tab"><svg viewBox="0 0 24 24"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></svg></span>
             <span class="ico" title="Restart"><svg viewBox="0 0 24 24"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/></svg></span>
             <span class="ico" title="Stop"><svg class="fill" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg></span>
+            <span class="btn ghost" style="margin-left:2px"><svg viewBox="0 0 24 24" style="width:14px;height:14px"><path d="M22 2 11 13"/><path d="M22 2 15 22l-4-9-9-4Z"/></svg> Send to Agent</span>
           </div>
-          <div class="term" style="border-radius:0;border:none;border-top:1px solid var(--b1);background:#0b0f16;color:#9aa4b2">
-            <div><span class="g">[12:04:22]</span> VITE v6.0.1 ready in 412 ms</div>
-            <div><span class="g">[12:04:31]</span> page reload src/App.tsx</div>
-            <div><span class="g">[12:04:44]</span> hmr update /src/index.css</div>
-            <div style="color:var(--link);font-size:11px;margin-top:4px;cursor:pointer">Open full log ↗</div>
+          <div class="term" style="border-radius:0;border:none;border-top:1px solid var(--b1);background:#030712;color:#c9d1d9;min-height:150px">
+            <div><span class="g">[12:04:22]</span> <span class="grn">VITE v6.0.1</span> ready in 412 ms</div>
+            <div class="g">  ➜  Local:   http://localhost:3000/</div>
+            <div><span class="g">[12:04:31]</span> <span class="blu">page reload</span> src/App.tsx</div>
+            <div><span class="g">[12:04:38]</span> <span class="yel">hmr update</span> /src/components/ServiceList.tsx</div>
+            <div><span class="g">[12:04:44]</span> <span class="yel">hmr update</span> /src/index.css <span class="cursor"></span></div>
           </div>
         </div>
       </div>
