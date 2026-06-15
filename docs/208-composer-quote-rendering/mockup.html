@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Composer quote rendering — recommendation & alternatives</title>
+<style>
+  :root {
+    --bg-primary: #030712;
+    --bg-secondary: #111827;
+    --bg-tertiary: #1f2937;
+    --bg-hover: rgba(255, 255, 255, 0.05);
+    --text-primary: #f3f4f6;
+    --text-secondary: #9ca3af;
+    --text-tertiary: #6b7280;
+    --border-secondary: #374151;
+    --accent: #3b82f6;
+    --accent-hover: #2563eb;
+    --info: #60a5fa;
+    --success: #22c55e;
+    --error: #ef4444;
+    --pr: #a78bfa;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    padding: 40px 24px 80px;
+    line-height: 1.5;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 22px; font-weight: 650; margin: 0 0 6px; }
+  .sub { color: var(--text-secondary); font-size: 14px; margin: 0 0 32px; max-width: 760px; }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+    gap: 22px;
+  }
+  .col { display: flex; flex-direction: column; }
+  .tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 11px; font-weight: 650; letter-spacing: .04em; text-transform: uppercase;
+    padding: 3px 9px; border-radius: 999px; width: fit-content; margin-bottom: 10px;
+  }
+  .tag.rec { background: rgba(34,197,94,.15); color: var(--success); border: 1px solid rgba(34,197,94,.3); }
+  .tag.rej { background: rgba(239,68,68,.12); color: var(--error); border: 1px solid rgba(239,68,68,.25); }
+  .col h2 { font-size: 15px; font-weight: 620; margin: 0 0 4px; }
+  .col .why { font-size: 12.5px; color: var(--text-secondary); margin: 0 0 14px; min-height: 52px; }
+
+  /* ── composer shell ─────────────────────────────── */
+  .composer {
+    display: flex; flex-direction: column;
+    border-radius: 12px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-secondary);
+  }
+  .composer.focus { border-color: rgba(59,130,246,.8); box-shadow: 0 0 0 1px rgba(59,130,246,.8); }
+  .ta {
+    font: inherit; font-size: 13.5px; line-height: 1.55;
+    padding: 12px 14px 8px;
+    color: var(--text-primary);
+    white-space: pre-wrap;
+    min-height: 130px;
+  }
+  .ta .muted { color: var(--text-tertiary); }
+  .ta .reply { color: var(--text-primary); }
+  .ta .cursor {
+    display: inline-block; width: 1.5px; height: 1.05em; vertical-align: text-bottom;
+    background: var(--accent); margin-left: 1px; animation: blink 1.1s steps(1) infinite;
+  }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  /* plain `> ` lines (status quo + recommended share this text model) */
+  .q-plain { color: var(--text-tertiary); }
+
+  /* recommended: decoration-only left rail behind the same plain text */
+  .q-rail {
+    position: relative;
+    padding-left: 12px;
+    color: var(--text-secondary);
+  }
+  .q-rail::before {
+    content: ""; position: absolute; left: 0; top: 2px; bottom: 2px;
+    width: 3px; border-radius: 2px; background: var(--info); opacity: .7;
+  }
+  .q-rail .gt { color: rgba(96,165,250,.55); }
+
+  /* toolbar */
+  .bar { display: flex; align-items: center; gap: 6px; padding: 6px 8px 8px; }
+  .icon-btn {
+    width: 28px; height: 28px; border-radius: 8px; border: 0; cursor: pointer;
+    background: transparent; color: var(--text-tertiary);
+    display: grid; place-items: center; font-size: 16px;
+  }
+  .icon-btn:hover { background: var(--bg-hover); color: var(--text-secondary); }
+  .spacer { flex: 1; }
+  .pill {
+    font-size: 11px; color: var(--text-secondary);
+    border: 1px solid var(--border-secondary); border-radius: 8px;
+    padding: 3px 8px; background: transparent;
+  }
+  .send {
+    width: 30px; height: 30px; border-radius: 8px; border: 0; cursor: pointer;
+    background: var(--accent); color: #fff; display: grid; place-items: center; font-size: 15px;
+  }
+  .send:hover { background: var(--accent-hover); }
+
+  /* reply chip (rejected option C) */
+  .chip {
+    margin: 10px 12px 0;
+    border-left: 3px solid var(--info);
+    background: rgba(96,165,250,.08);
+    border-radius: 6px;
+    padding: 7px 10px;
+    display: flex; align-items: flex-start; gap: 8px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .chip .qbody { flex: 1; }
+  .chip .qbody .lbl { color: var(--info); font-weight: 600; font-size: 10.5px; letter-spacing: .04em; text-transform: uppercase; display:block; margin-bottom: 2px; }
+  .chip .x {
+    cursor: pointer; color: var(--text-tertiary); border: 0; background: transparent; font-size: 14px; line-height: 1;
+  }
+  .chip .x:hover { color: var(--text-primary); }
+
+  /* rich blockquote (rejected option B) */
+  .q-rich {
+    margin: 2px 0 8px;
+    border-left: 3px solid var(--text-tertiary);
+    background: rgba(255,255,255,.03);
+    border-radius: 0 6px 6px 0;
+    padding: 8px 12px;
+    color: var(--text-secondary);
+    font-size: 13px;
+  }
+  .q-rich .item { display: flex; gap: 7px; align-items: baseline; }
+  .q-rich .box { color: var(--info); font-family: ui-monospace, monospace; }
+
+  .note {
+    margin-top: 12px; font-size: 11.5px; color: var(--text-tertiary);
+    border-top: 1px dashed var(--border-secondary); padding-top: 10px;
+  }
+  .note b { color: var(--text-secondary); font-weight: 600; }
+  .checkbox { color: var(--info); font-family: ui-monospace, monospace; }
+  .legend {
+    margin-top: 40px; padding: 16px 18px; border: 1px solid var(--border-secondary);
+    border-radius: 10px; background: var(--bg-secondary); font-size: 13px; color: var(--text-secondary);
+    max-width: 860px;
+  }
+  .legend b { color: var(--text-primary); }
+  .legend ul { margin: 8px 0 0; padding-left: 18px; }
+  .legend li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Composer quote rendering</h1>
+  <p class="sub">
+    Three ways the same quoted action-card snapshot could appear in the message composer.
+    Recommendation on the left; the two rejected alternatives on the right. Dark mode, ShipIt tokens.
+  </p>
+
+  <div class="grid">
+
+    <!-- ── RECOMMENDED ─────────────────────────────── -->
+    <div class="col">
+      <span class="tag rec">✓ Recommended</span>
+      <h2>Plain editable text + decoration-only left rail</h2>
+      <p class="why">Quote stays editable markdown <code>&gt;&nbsp;</code> lines — the textarea is the single source of truth. A backdrop accent (behind the text) just makes it <em>read</em> as a quote. Send-fidelity, voice, drafts, multi-quote all unchanged.</p>
+      <div class="composer focus">
+        <div class="ta">
+<span class="q-rail"><span class="gt">&gt; </span>Resolve action checklist — <b style="color:var(--text-secondary)">3 items</b>
+<span class="gt">&gt; </span><span class="checkbox">[x]</span> Add a history round-trip test
+<span class="gt">&gt; </span><span class="checkbox">[ ]</span> Wire toRow / fromRow
+<span class="gt">&gt; </span><span class="checkbox">[ ]</span> Register in CARD_MESSAGE_FIELDS</span>
+
+<span class="reply">Skip the third one for now, do the first two.<span class="cursor"></span></span></div>
+        <div class="bar">
+          <button class="icon-btn" title="Add files">＋</button>
+          <button class="icon-btn" title="Dictate">🎙</button>
+          <span class="spacer"></span>
+          <span class="pill">Opus 4.8</span>
+          <button class="send" title="Send">↑</button>
+        </div>
+      </div>
+      <p class="note"><b>Why it wins:</b> the user can still trim/annotate any <span class="checkbox">[x]</span> line, dictation appends into the same box, and the agent receives exactly the <code>&gt;</code> text shown. The rail is pure decoration — delete it and nothing breaks.</p>
+    </div>
+
+    <!-- ── REJECTED B ──────────────────────────────── -->
+    <div class="col">
+      <span class="tag rej">✕ Rejected — rich editor</span>
+      <h2>Styled blockquote rendered in-place</h2>
+      <p class="why">Prettiest, but needs contentEditable / a rich editor. That rewrites the composer core and re-implements IME, paste, <code>@</code>/<code>/</code> autocomplete, voice-splice, draft serialization & a11y — for a quote bar.</p>
+      <div class="composer">
+        <div class="ta" style="padding-top:12px;">
+          <div class="q-rich">
+            <div style="color:var(--text-tertiary);font-size:11px;margin-bottom:5px;">Resolve action checklist — 3 items</div>
+            <div class="item"><span class="box">[x]</span> Add a history round-trip test</div>
+            <div class="item"><span class="box">[ ]</span> Wire toRow / fromRow</div>
+            <div class="item"><span class="box">[ ]</span> Register in CARD_MESSAGE_FIELDS</div>
+          </div>
+          <span class="reply">Skip the third one for now, do the first two.<span class="cursor"></span></span>
+        </div>
+        <div class="bar">
+          <button class="icon-btn" title="Add files">＋</button>
+          <button class="icon-btn" title="Dictate">🎙</button>
+          <span class="spacer"></span>
+          <span class="pill">Opus 4.8</span>
+          <button class="send" title="Send">↑</button>
+        </div>
+      </div>
+      <p class="note"><b>Cost vs. benefit upside-down:</b> six working integrations lean on "value is a plain string with a cursor." A document model puts all of them at risk to make a quote look nicer.</p>
+    </div>
+
+    <!-- ── REJECTED C ──────────────────────────────── -->
+    <div class="col">
+      <span class="tag rej">✕ Rejected as default — reply chip</span>
+      <h2>Removable context chip above the textarea</h2>
+      <p class="why">Good for <em>reply-to</em> flows, but the quote lives <b>outside</b> the editable text — so the user can't trim individual <span class="checkbox">[x]</span> lines, which is exactly what the action card needs. Adds a second source of truth.</p>
+      <div class="composer focus">
+        <div class="chip">
+          <div class="qbody">
+            <span class="lbl">Quoting · 3 checklist items</span>
+            <span style="color:var(--text-tertiary)">[x] history round-trip test · [ ] wire toRow/fromRow · [ ] register CARD_MESSAGE_FIELDS</span>
+          </div>
+          <button class="x" title="Remove quote">✕</button>
+        </div>
+        <div class="ta" style="min-height:96px;">
+<span class="reply">Skip the third one for now, do the first two.<span class="cursor"></span></span></div>
+        <div class="bar">
+          <button class="icon-btn" title="Add files">＋</button>
+          <button class="icon-btn" title="Dictate">🎙</button>
+          <span class="spacer"></span>
+          <span class="pill">Opus 4.8</span>
+          <button class="send" title="Send">↑</button>
+        </div>
+      </div>
+      <p class="note"><b>Breaks editability:</b> a non-editable chip can't be trimmed or annotated inline. Fine to revisit later, scoped only to pure reply-reference flows (chat quote-reply, doc replies) — not action-cards.</p>
+    </div>
+
+  </div>
+
+  <div class="legend">
+    <b>The deciding constraint:</b> the action-card "Add comment…" snapshot is something the user
+    <b>edits</b> — they trim items and annotate the <span class="checkbox">[x]</span>/<span class="checkbox">[ ]</span> lines before sending.
+    That rules out any representation where the quote isn't freely-editable text.
+    <ul>
+      <li><b>Recommended</b> keeps the quote as editable text and only decorates it — no new editor, no new source of truth, perfect send-fidelity.</li>
+      <li><b>Rich editor (B)</b> would deliver the look but at a cost wildly out of proportion to "make a quote look like a quote."</li>
+      <li><b>Reply chip (C)</b> is the right pattern for quoting-then-replying, but the wrong one for seed-and-annotate. Keep it in the back pocket for the reply flows only.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
