@@ -1,8 +1,25 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
-    <!-- Production: HTTPS only. Debug: allow cleartext too, so a dev can point
-         at a local ShipIt running on http during testing. -->
+    <!-- Production default: HTTPS only. A public ShipIt (Cloudflare tunnel,
+         reverse proxy) must use TLS, so cleartext stays off by default. -->
     <base-config cleartextTrafficPermitted="false" />
+
+    <!-- Tailscale exception: a tailnet-hosted ShipIt is reached over plain HTTP
+         (the app AND its preview subdomains), because no wildcard TLS cert
+         exists for *.ts.net — see tailscale/tailscale#7081 and
+         deployment/vps/tailscale.sh. Traffic is still encrypted end-to-end by
+         WireGuard underneath, and the tailnet is the access boundary, so this
+         is safe. includeSubdomains covers both the MagicDNS FQDN
+         (shipit.tailnet.ts.net) and preview hosts
+         ({sessionId}--{port}.shipit.tailnet.ts.net) in one entry. This applies
+         to release builds too — it is the supported way to use the app over
+         Tailscale. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="true">ts.net</domain>
+    </domain-config>
+
+    <!-- Debug builds additionally trust user-added CAs (e.g. a local mitmproxy)
+         and allow cleartext to any host so a dev can point at a LAN ShipIt. -->
     <debug-overrides>
         <trust-anchors>
             <certificates src="system" />

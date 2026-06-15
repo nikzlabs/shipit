@@ -10,9 +10,11 @@ import com.shipit.wrapper.databinding.ActivitySettingsBinding
  * [Prefs.shipitUrl] is null), and reachable later via the overflow menu in
  * [MainActivity].
  *
- * Validates that the input parses as an `http(s)` URL with a host. Allows
- * `http://` only in debug builds — production must be HTTPS so cookies and
- * websocket traffic are encrypted.
+ * Validates that the input parses as an `http(s)` URL with a host. `http://`
+ * is allowed for two cases: debug builds (local LAN testing), and any host on
+ * a Tailscale tailnet (`*.ts.net`), where ShipIt is served over plain HTTP
+ * because no wildcard TLS cert exists for `*.ts.net` — WireGuard already
+ * encrypts the tailnet end-to-end. Every other production host must be HTTPS.
  */
 class SettingsActivity : AppCompatActivity() {
     private lateinit var binding: ActivitySettingsBinding
@@ -63,9 +65,24 @@ class SettingsActivity : AppCompatActivity() {
         val scheme = parsed.scheme?.lowercase()
         val host = parsed.host
         if (host.isNullOrBlank()) return getString(R.string.settings_error_invalid)
-        if (scheme != "https" && !(BuildConfig.DEBUG && scheme == "http")) {
+        val cleartextOk = BuildConfig.DEBUG || isTailnetHost(host)
+        if (scheme != "https" && !(cleartextOk && scheme == "http")) {
             return getString(R.string.settings_error_https_required)
         }
         return null
+    }
+
+    /**
+     * True for MagicDNS hosts on a Tailscale tailnet (`*.ts.net`), which are
+     * served over plain HTTP. Kept in sync with the `ts.net` domain rule in
+     * `res/xml/network_security_config.xml` — both must allow the same hosts or
+     * a URL that passes validation here still fails the platform cleartext
+     * check at load time. The bare MagicDNS short name (e.g. `shipit`) and the
+     * raw `100.x` tailnet IP are intentionally NOT matched: only the full FQDN
+     * lets ShipIt's preview subdomains resolve and matches the network config.
+     */
+    private fun isTailnetHost(host: String): Boolean {
+        val h = host.lowercase()
+        return h == "ts.net" || h.endsWith(".ts.net")
     }
 }

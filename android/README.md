@@ -79,8 +79,8 @@ Optional: upload the same APK as an AAB to Play Console for the regular
 ## App behavior
 
 - **First launch**: Settings screen prompts for the ShipIt URL. Validated as
-  a parseable `https://` URL with a host. Cleartext `http://` is allowed only
-  in debug builds.
+  a parseable `https://` URL with a host. Cleartext `http://` is allowed for
+  Tailscale hosts (`*.ts.net`) and in debug builds — see "Tailscale" below.
 - **Normal launch**: WebView loads the saved URL full-screen.
 - **Toolbar overflow**: "Open settings" re-launches the settings screen so the
   URL can be changed. "Reload" reloads the current page.
@@ -89,6 +89,22 @@ Optional: upload the same APK as an AAB to Play Console for the regular
   cleanly, and OAuth providers don't try to render inside the WebView).
 - **File chooser**: chat attachments work via `WebChromeClient.onShowFileChooser`.
 - **Back button**: WebView history; falls through to default if at the root.
+
+## Tailscale (HTTP-only) hosts
+
+If you expose ShipIt over a Tailscale tailnet (`deployment/vps/tailscale.sh`),
+it is served over plain **HTTP** — there is no wildcard TLS cert for `*.ts.net`,
+and WireGuard already encrypts the tailnet end-to-end. The app permits cleartext
+HTTP for `*.ts.net` hosts in **release builds too**, so no debug APK is needed.
+
+Two things to get right:
+
+- **Authentication needs nothing extra.** Tailnet membership is the access
+  boundary, so there's no login screen — just point the app at your host.
+- **Enter the full MagicDNS FQDN**, e.g. `http://shipit.tailnet.ts.net:4123`.
+  The bare short name (`shipit`) and the raw `100.x` tailnet IP are rejected on
+  purpose: only the FQDN lets ShipIt's preview subdomains
+  (`{sessionId}--{port}.shipit.tailnet.ts.net`) resolve.
 
 ## Known limitations / v1.1 ideas
 

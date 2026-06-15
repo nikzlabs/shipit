@@ -39,6 +39,12 @@
 - [x] `CLAUDE.md` — added `android/` entry under "Project structure" pointing at the README + the design doc.
 - [x] `.gitignore` — added `android/.gradle/`, `android/build/`, `android/app/build/`, `android/local.properties`, `android/.idea/`, `android/captures/`, `android/.cxx/`, `*.keystore`, `*.jks`.
 
+## Tailscale (HTTP-only) support
+- [x] `network_security_config.xml` — base stays `cleartextTrafficPermitted="false"`; added a `ts.net` `domain-config` (`includeSubdomains`) so release builds reach the tailnet app + preview subdomains over HTTP.
+- [x] `SettingsActivity.validate()` — accept `http://` for `*.ts.net` hosts (`isTailnetHost()`) regardless of `BuildConfig.DEBUG`; bare short name and raw `100.x` IP still rejected (FQDN required for preview resolution + network-config match).
+- [x] Strings — helper + error text mention the `*.ts.net` http allowance.
+- [x] `plan.md` + `android/README.md` — Tailscale deployment section: HTTP-only rationale, "auth needs nothing special", enter the full MagicDNS FQDN.
+
 ## Quality gates
 - [x] `npm run lint` — clean.
 - [x] `npm run typecheck` — clean.

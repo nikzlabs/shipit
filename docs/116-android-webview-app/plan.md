@@ -58,6 +58,19 @@ The simplest version doesn't even need the deep-link intercept: GitHub/Anthropic
 
 `EncryptedSharedPreferences` (AndroidX Security). Single key: `shipit_url`. We don't persist credentials — those live in the host's cookies inside the WebView's data store, which Android already encrypts at rest.
 
+### Tailscale (HTTP-only) deployment
+
+A self-hoster who exposes ShipIt over a Tailscale tailnet (`deployment/vps/tailscale.sh`) reaches it over **plain HTTP** — both the app and its preview subdomains — because no wildcard TLS cert exists for `*.ts.net` (upstream `tailscale/tailscale#7081`). WireGuard already encrypts the tailnet end-to-end and the tailnet itself is the access boundary, so HTTP there is safe.
+
+This is also the deployment where **authentication needs nothing special**: there is no per-user login screen to render, so the WebView-blocks-OAuth concern (and the punt to Custom Tabs) simply doesn't arise. The tailnet membership *is* the auth.
+
+The one thing the app must do is permit cleartext HTTP **scoped to the tailnet**, in both the release and debug builds:
+
+- `res/xml/network_security_config.xml` keeps `cleartextTrafficPermitted="false"` as the base (public Cloudflare deploys stay HTTPS-only) and adds a `<domain-config cleartextTrafficPermitted="true">` for `<domain includeSubdomains="true">ts.net</domain>`. `includeSubdomains` covers the MagicDNS FQDN (`shipit.tailnet.ts.net`) **and** the preview hosts (`{sessionId}--{port}.shipit.tailnet.ts.net`) in one rule.
+- `SettingsActivity.validate()` allows `http://` when the host ends in `.ts.net` (via `isTailnetHost()`), independent of `BuildConfig.DEBUG`. The two must stay in sync — a URL that validates but isn't in the network config still fails the platform cleartext check at load.
+
+**Users must enter the full MagicDNS FQDN** (`http://shipit.tailnet.ts.net:4123`), not the bare short name `shipit` or the raw `100.x` tailnet IP. Only the FQDN matches the `ts.net` rule and only the FQDN lets the preview subdomains resolve — so the bare name and IP are intentionally rejected.
+
 ### Build environment — no local toolchain
 
 The user explicitly does not want a local Android toolchain. Build is a **manually-triggered GitHub Actions workflow** (`workflow_dispatch`, *not* on push):
