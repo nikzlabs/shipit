@@ -39,7 +39,7 @@ This doc proposes nested rendering plus a user-defined **two-level** sort.
 The toolbar row already holds **search** and **filter** controls (`IssuesFilterBar`), so there's no room for two sort dropdowns + direction toggles + a group select inline (decision: confirmed). Instead:
 
 - A **sliders icon button** sits at the end of the toolbar. Clicking it opens a **modal** with the full editor: *Sort by* (key + Asc/Desc) → *then by* (key + Asc/Desc) → *Group by* (field).
-- The icon shows an **accent dot** when the active order differs from the default, and a **one-line summary** ("Sorted by Priority ↑ → Status ↑") renders under the toolbar so the order is legible without opening the modal.
+- The icon shows an **accent dot** when the active order differs from the default. The active order ("Priority ↑ → Status ↑") lives in the **icon's hover tooltip** — deliberately **no standing summary row**, so the toolbar stays one line tall (decision: vertical space in the side panel is scarce; the dot is the at-a-glance signal, the tooltip is the on-demand detail).
 - Changes apply live; **Done** closes; **Reset to default** restores `priority → identifier`, no grouping.
 
 ### Persistence (later)

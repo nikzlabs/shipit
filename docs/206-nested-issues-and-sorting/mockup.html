@@ -147,9 +147,6 @@
   .btn-reset { background: none; border: none; color: var(--text-tertiary); font-size: 12px; cursor: pointer; }
   .btn-reset:hover { color: var(--text-secondary); }
   .btn-done { background: var(--accent); border: none; color: #fff; font-size: 13px; font-weight: 600; padding: 7px 18px; border-radius: 7px; cursor: pointer; }
-  .summary-line { font-size: 11px; color: var(--text-tertiary); padding: 6px 14px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
-  .summary-line b { color: var(--text-secondary); font-weight: 600; }
-
   .legend { margin-top: 26px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
   .legend code { background: var(--bg-tertiary); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--text-primary); }
   .legend b { color: var(--text-primary); }
@@ -193,8 +190,6 @@
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h11M4 12h7M4 17h4"/><path d="M18 4v10M18 20l3-3M18 20l-3-3" stroke-width="2"/></svg>
           </button>
         </div>
-
-        <div class="summary-line" id="summaryLine"></div>
 
         <div class="grid thead">
           <div>Issue</div><div>Title</div><div>Priority</div><div>Status</div><div style="text-align:right">Action</div>
@@ -275,7 +270,7 @@
     <b>What changed from the first prototype</b>
     <ul>
       <li><b>Recursive nesting:</b> parents nest to any depth (SHI-90 → SHI-93 → SHI-94 → SHI-95). Each level adds a tree spine; collapsing any node hides its whole subtree.</li>
-      <li><b>Modal editor:</b> the sliders icon opens the two-level sort + group-by editor. The icon shows an accent dot when the order differs from the default, and a one-line summary appears under the toolbar so the active order is visible without opening the modal.</li>
+      <li><b>Modal editor:</b> the sliders icon opens the two-level sort + group-by editor. The icon shows an accent dot when the order differs from the default; the active order lives in the icon's hover tooltip (no standing summary row — the toolbar stays one line tall).</li>
       <li><b>Independent Group-by:</b> with the modal's extra room, grouping is its own field (None / Priority / Status / Assignee), not tied to the primary sort key.</li>
       <li><b>Mobile = indent only:</b> the card layout drops disclosure triangles and tree lines; a child card is indented with a left rule. (Confirmed direction — no collapse/expand at this width.)</li>
       <li><b>GitHub stays flat:</b> no parent data, so the GitHub tab renders today's flat list — nothing to build there.</li>
@@ -431,11 +426,13 @@ function render() {
 
 function label(key) { return ({priority:"Priority",status:"Status",title:"Title",updated:"Last updated",assignee:"Assignee"})[key] || key; }
 function updateSummary() {
+  // No standing summary row (keeps the toolbar one line tall) — the active order
+  // lives in the icon's tooltip, and the dirty dot flags a non-default order.
   const dir = d => d === 1 ? "↑" : "↓";
-  let s = `<b>${label(state.primary)}</b> ${dir(state.primaryDir)}`;
-  if (state.secondary !== "none") s += ` → <b>${label(state.secondary)}</b> ${dir(state.secondaryDir)}`;
-  if (state.group !== "none") s += ` · grouped by <b>${label(state.group)}</b>`;
-  document.getElementById("summaryLine").innerHTML = "Sorted by " + s;
+  let s = `${label(state.primary)} ${dir(state.primaryDir)}`;
+  if (state.secondary !== "none") s += ` → ${label(state.secondary)} ${dir(state.secondaryDir)}`;
+  if (state.group !== "none") s += `  ·  grouped by ${label(state.group)}`;
+  document.getElementById("openSort").title = "Sort & group — " + s;
   const dirty = JSON.stringify({p:state.primary,pd:state.primaryDir,s:state.secondary,sd:state.secondaryDir,g:state.group})
             !== JSON.stringify({p:DEFAULTS.primary,pd:DEFAULTS.primaryDir,s:DEFAULTS.secondary,sd:DEFAULTS.secondaryDir,g:DEFAULTS.group});
   document.getElementById("openSort").classList.toggle("dirty", dirty);
