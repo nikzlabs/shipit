@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Issue chips in the PR card — options</title>
+<style>
+  :root{
+    --color-bg-primary:#030712; --color-bg-secondary:#111827; --color-bg-tertiary:#1f2937;
+    --color-bg-hover:rgba(255,255,255,0.05);
+    --color-text-primary:#f3f4f6; --color-text-secondary:#9ca3af; --color-text-tertiary:#6b7280;
+    --color-text-link:#60a5fa;
+    --color-border-primary:#1f2937; --color-border-secondary:#374151;
+    --color-success:#22c55e; --color-success-subtle:rgba(34,197,94,.15); --color-success-border:rgba(34,197,94,.3);
+    --color-warning:#f59e0b; --color-error:#ef4444;
+    --color-pr:#a78bfa; --color-pr-subtle:rgba(167,139,250,.15); --color-pr-border:rgba(167,139,250,.3);
+    --linear:#8b95f6; --github:#d1d5db;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--color-bg-primary);color:var(--color-text-primary);
+    font-family:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:14px;line-height:1.5;padding:32px 24px 64px}
+  .wrap{max-width:760px;margin:0 auto}
+  h1{font-size:20px;font-weight:650;margin:0 0 6px}
+  .sub{color:var(--color-text-secondary);font-size:13px;margin:0 0 28px}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 30px;padding:12px 14px;
+    border:1px solid var(--color-border-primary);border-radius:10px;background:var(--color-bg-secondary);font-size:12px}
+  .legend b{color:var(--color-text-primary);font-weight:600}
+  .legend span{color:var(--color-text-secondary)}
+  .opt{margin:0 0 34px}
+  .opt-head{display:flex;align-items:baseline;gap:8px;margin:0 0 4px}
+  .opt-head .num{font-size:11px;font-weight:700;letter-spacing:.04em;color:var(--color-bg-primary);
+    background:var(--color-pr);border-radius:5px;padding:2px 7px}
+  .opt-head h2{font-size:15px;font-weight:620;margin:0}
+  .opt-note{color:var(--color-text-secondary);font-size:12.5px;margin:0 0 12px}
+  .tradeoff{font-size:12px;color:var(--color-text-tertiary);margin:8px 2px 0}
+  .tradeoff .good{color:var(--color-success)} .tradeoff .bad{color:var(--color-warning)}
+
+  /* ---- PR card chrome (faithful to PrLifecycleCard) ---- */
+  .card{border:1px solid var(--color-border-primary);border-radius:12px;overflow:hidden;background:var(--color-bg-primary)}
+  .pr-bar{display:flex;align-items:center;gap:12px;padding:8px 14px;border-bottom:1px solid var(--color-border-primary)}
+  .pr-badge{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;flex:0 0 auto;
+    background:var(--color-success-subtle);color:var(--color-success);border:1px solid var(--color-success-border)}
+  .pr-title{font-size:12.5px;color:var(--color-text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
+  .pr-meta{display:flex;align-items:center;gap:12px;flex:0 0 auto;font-size:12px}
+  .stat .ins{color:var(--color-success)} .stat .del{color:var(--color-error);margin-left:4px}
+  .stat{border:1px solid var(--color-border-secondary);border-radius:6px;padding:2px 7px}
+  .ci{color:var(--color-success);display:flex;align-items:center;gap:4px}
+  .toolbtn{display:flex;align-items:center;gap:2px;padding:4px 7px;border-radius:6px;cursor:pointer;
+    color:var(--color-pr);background:var(--color-pr-subtle);border:1px solid var(--color-pr-border)}
+  .toolbtn.plain{color:var(--color-text-tertiary);background:transparent;border-color:transparent}
+  .dots{color:var(--color-text-tertiary);padding:4px 6px;cursor:pointer}
+
+  /* ---- the expandable panel ---- */
+  .panel{padding:9px 14px;border-bottom:1px solid var(--color-border-primary);background:rgba(17,24,39,.45)}
+  .panel:last-child{border-bottom:none}
+  .chiprow{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+
+  /* file chip (existing) */
+  .fchip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 9px 4px 8px;border-radius:999px;
+    font-size:12px;cursor:pointer;color:var(--color-text-primary);background:var(--color-bg-tertiary);
+    border:1px solid var(--color-border-secondary)}
+  .fchip .dot{width:6px;height:6px;border-radius:50%}
+  .fchip .dot.m{background:var(--color-warning)} .fchip .dot.a{background:var(--color-success)}
+  .fchip svg{flex:0 0 auto}
+
+  /* issue chip variants */
+  .ichip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:4px 10px 4px 8px;border-radius:999px;
+    font-size:12px;cursor:pointer;color:var(--color-text-primary);background:var(--color-bg-tertiary);
+    border:1px solid var(--color-border-secondary);white-space:nowrap}
+  .ichip:hover{background:var(--color-bg-hover);border-color:var(--color-text-tertiary)}
+  .ichip .id{font-variant-numeric:tabular-nums;font-weight:600;color:var(--color-text-primary)}
+  .ichip .ttl{color:var(--color-text-secondary);overflow:hidden;text-overflow:ellipsis;max-width:180px}
+  .ichip svg{flex:0 0 auto}
+  /* intent-tinted variant */
+  .ichip.closes{border-color:var(--color-success-border);background:var(--color-success-subtle)}
+  .ichip.closes .verb{color:var(--color-success)}
+  .ichip.refs .verb{color:var(--color-text-tertiary)}
+  .ichip.origin{border-style:dashed}
+  .verb{font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}
+  .verb.refs{color:var(--color-text-tertiary)} .verb.origin{color:var(--color-pr)}
+
+  .divider{width:1px;align-self:stretch;background:var(--color-border-secondary);margin:0 3px}
+  .grouplabel{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+    color:var(--color-text-tertiary);margin-right:2px;display:inline-flex;align-items:center;gap:5px}
+  .subrow{display:flex;align-items:flex-start;gap:10px;padding:3px 0}
+  .subrow + .subrow{border-top:1px dashed var(--color-border-primary);margin-top:3px;padding-top:7px}
+  .subrow .lbl{flex:0 0 78px;padding-top:5px;font-size:10.5px;font-weight:700;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--color-text-tertiary)}
+  .subrow .lbl.pr-c{color:var(--color-success)}
+  .hdr-ichip{font-size:11.5px;padding:2px 8px 2px 7px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Issue chips in the PR card</h1>
+  <p class="sub">Folded into the existing collapsible “changed docs” panel (docs/205) — no new surface. Issues are deduped from two sources and shown as clickable chips that open the issue inline.</p>
+
+  <div class="legend">
+    <span><b>Sources merged &amp; deduped:</b></span>
+    <span>① first user message &amp; session origin (created from an issue)</span>
+    <span>② PR body <code>Closes</code> / <code>Refs</code> pointers</span>
+    <span><b>Trackers:</b> Linear <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg> &amp; GitHub <svg width="12" height="12" viewBox="0 0 16 16"><path fill="var(--github)" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.3c-2.23.49-2.7-1.08-2.7-1.08-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg></span>
+  </div>
+
+  <!-- ============ OPTION 1 ============ -->
+  <div class="opt">
+    <div class="opt-head"><span class="num">1</span><h2>Inline, issues first, divider</h2></div>
+    <p class="opt-note">Issue chips lead the same wrapping row, separated from file chips by a thin divider. One row, minimal new concept.</p>
+    <div class="card">
+      <div class="pr-bar">
+        <span class="pr-badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 3a1.5 1.5 0 1 0-1.9 1.4v6.2a1.5 1.5 0 1 0 1 0V8.6c.9.4 1.9.7 2.4 1.3v.7a1.5 1.5 0 1 0 1-.0V9.9c-1-1.2-2.6-1.6-3.4-2V4.4A1.5 1.5 0 0 0 11.5 3ZM4.5 3a1.5 1.5 0 0 1 .5 2.9v4.2a1.5 1.5 0 1 1-1 0V5.9A1.5 1.5 0 0 1 4.5 3Z"/></svg></span>
+        <span class="pr-title">Egress: durable allowlist store + containment Settings UI</span>
+        <span class="pr-meta">
+          <span class="stat"><span class="ins">+612</span><span class="del">−88</span></span>
+          <span class="ci">✓ CI 4/4</span>
+          <span class="toolbtn">▤ ⌄</span>
+          <span class="dots">⋯</span>
+        </span>
+      </div>
+      <div class="panel">
+        <div class="chiprow">
+          <span class="ichip closes" title="Closes — Linear SHI-90">
+            <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+            <span class="id">SHI-90</span><span class="ttl">Durable egress allowlist</span>
+          </span>
+          <span class="ichip refs" title="Refs — GitHub #1366">
+            <svg width="12" height="12" viewBox="0 0 16 16"><path fill="var(--github)" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.3c-2.23.49-2.7-1.08-2.7-1.08-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            <span class="id">#1366</span><span class="ttl">Non-root worktree handoff</span>
+          </span>
+          <span class="divider"></span>
+          <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-pr)"><path d="M3 1.5h6l4 4v9H3z"/></svg><span>egress allowlist</span><span class="dot m"></span></span>
+          <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-text-link)"><path d="M8 4.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/></svg><span>shipit.yaml</span><span class="dot a"></span></span>
+        </div>
+      </div>
+    </div>
+    <p class="tradeoff"><span class="good">+</span> Fewest moving parts; reuses the row verbatim. &nbsp; <span class="bad">−</span> With many files, issues can wrap away from the top and lose prominence.</p>
+  </div>
+
+  <!-- ============ OPTION 2 ============ -->
+  <div class="opt">
+    <div class="opt-head"><span class="num">2</span><h2>Labeled sub-rows</h2></div>
+    <p class="opt-note">The panel splits into two labeled mini-sections. Issues always sit on their own line above the files, so they never get buried.</p>
+    <div class="card">
+      <div class="pr-bar">
+        <span class="pr-badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 3a1.5 1.5 0 1 0-1.9 1.4v6.2a1.5 1.5 0 1 0 1 0V8.6c.9.4 1.9.7 2.4 1.3v.7a1.5 1.5 0 1 0 1-.0V9.9c-1-1.2-2.6-1.6-3.4-2V4.4A1.5 1.5 0 0 0 11.5 3ZM4.5 3a1.5 1.5 0 0 1 .5 2.9v4.2a1.5 1.5 0 1 1-1 0V5.9A1.5 1.5 0 0 1 4.5 3Z"/></svg></span>
+        <span class="pr-title">Egress: durable allowlist store + containment Settings UI</span>
+        <span class="pr-meta">
+          <span class="stat"><span class="ins">+612</span><span class="del">−88</span></span>
+          <span class="ci">✓ CI 4/4</span>
+          <span class="toolbtn">▤ ⌄</span>
+          <span class="dots">⋯</span>
+        </span>
+      </div>
+      <div class="panel">
+        <div class="subrow">
+          <span class="lbl pr-c">Closes</span>
+          <div class="chiprow">
+            <span class="ichip" title="Linear SHI-90">
+              <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+              <span class="id">SHI-90</span><span class="ttl">Durable egress allowlist</span>
+            </span>
+            <span class="ichip" title="Linear SHI-145">
+              <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+              <span class="id">SHI-145</span><span class="ttl">Non-root setup</span>
+            </span>
+          </div>
+        </div>
+        <div class="subrow">
+          <span class="lbl">Docs</span>
+          <div class="chiprow">
+            <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-pr)"><path d="M3 1.5h6l4 4v9H3z"/></svg><span>egress allowlist</span><span class="dot m"></span></span>
+            <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-text-link)"><path d="M8 4.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z"/></svg><span>shipit.yaml</span><span class="dot a"></span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="tradeoff"><span class="good">+</span> Issues stay prominent; labels read as plain English. &nbsp; <span class="bad">−</span> Taller panel; the “Closes” label folds intent into the section instead of the chip.</p>
+  </div>
+
+  <!-- ============ OPTION 3 ============ -->
+  <div class="opt">
+    <div class="opt-head"><span class="num">3</span><h2>Intent-led pill, single row</h2></div>
+    <p class="opt-note">Each chip carries its own verb segment (<b>Closes</b> / <b>Refs</b> / <b>From session</b>), so source &amp; intent travel with the chip and order doesn’t matter. Files follow after a divider.</p>
+    <div class="card">
+      <div class="pr-bar">
+        <span class="pr-badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 3a1.5 1.5 0 1 0-1.9 1.4v6.2a1.5 1.5 0 1 0 1 0V8.6c.9.4 1.9.7 2.4 1.3v.7a1.5 1.5 0 1 0 1-.0V9.9c-1-1.2-2.6-1.6-3.4-2V4.4A1.5 1.5 0 0 0 11.5 3ZM4.5 3a1.5 1.5 0 0 1 .5 2.9v4.2a1.5 1.5 0 1 1-1 0V5.9A1.5 1.5 0 0 1 4.5 3Z"/></svg></span>
+        <span class="pr-title">Egress: durable allowlist store + containment Settings UI</span>
+        <span class="pr-meta">
+          <span class="stat"><span class="ins">+612</span><span class="del">−88</span></span>
+          <span class="ci">✓ CI 4/4</span>
+          <span class="toolbtn">▤ ⌄</span>
+          <span class="dots">⋯</span>
+        </span>
+      </div>
+      <div class="panel">
+        <div class="chiprow">
+          <span class="ichip closes" title="Closes — Linear SHI-90">
+            <span class="verb" style="color:var(--color-success)">Closes</span>
+            <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+            <span class="id">SHI-90</span>
+          </span>
+          <span class="ichip refs" title="Refs — GitHub #1366">
+            <span class="verb refs">Refs</span>
+            <svg width="12" height="12" viewBox="0 0 16 16"><path fill="var(--github)" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.3c-2.23.49-2.7-1.08-2.7-1.08-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+            <span class="id">#1366</span>
+          </span>
+          <span class="ichip origin" title="This session was started from SHI-201">
+            <span class="verb origin">From session</span>
+            <svg width="11" height="11" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+            <span class="id">SHI-201</span>
+          </span>
+          <span class="divider"></span>
+          <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-pr)"><path d="M3 1.5h6l4 4v9H3z"/></svg><span>egress allowlist</span><span class="dot m"></span></span>
+        </div>
+      </div>
+    </div>
+    <p class="tradeoff"><span class="good">+</span> Self-describing; surfaces the <b>session-origin</b> issue even before any PR body exists. &nbsp; <span class="bad">−</span> Verb text widens chips; titles dropped to keep them compact (full title in tooltip).</p>
+  </div>
+
+  <!-- ============ OPTION 4 ============ -->
+  <div class="opt">
+    <div class="opt-head"><span class="num">4</span><h2>One issue chip in the header + full list in panel</h2></div>
+    <p class="opt-note">The single primary issue (the <code>Closes</code>, or the session origin) rides in the always-visible header next to the title; the rest live in the expandable panel. Glanceable without expanding.</p>
+    <div class="card">
+      <div class="pr-bar">
+        <span class="pr-badge"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 3a1.5 1.5 0 1 0-1.9 1.4v6.2a1.5 1.5 0 1 0 1 0V8.6c.9.4 1.9.7 2.4 1.3v.7a1.5 1.5 0 1 0 1-.0V9.9c-1-1.2-2.6-1.6-3.4-2V4.4A1.5 1.5 0 0 0 11.5 3ZM4.5 3a1.5 1.5 0 0 1 .5 2.9v4.2a1.5 1.5 0 1 1-1 0V5.9A1.5 1.5 0 0 1 4.5 3Z"/></svg></span>
+        <span class="ichip closes hdr-ichip" title="Closes Linear SHI-90">
+          <svg width="10" height="10" viewBox="0 0 100 100"><path fill="var(--linear)" d="M1.2 61a49 49 0 0 0 37.8 37.8L1.2 61Zm-1.1-15.7 54.6 54.6a49.6 49.6 0 0 0 10-2.6L2.7 35.3a49.6 49.6 0 0 0-2.6 10Zm6.4-18.4 65.6 65.6a50 50 0 0 0 7-5.1L11.6 19.9a50 50 0 0 0-5.1 7Zm10.7-13.3 60.9 60.9A50 50 0 1 0 17.2 13.6Z"/></svg>
+          <span class="id">SHI-90</span>
+        </span>
+        <span class="pr-title" style="flex:1">Egress: durable allowlist store + containment Settings UI</span>
+        <span class="pr-meta">
+          <span class="stat"><span class="ins">+612</span><span class="del">−88</span></span>
+          <span class="toolbtn">▤ ⌄</span>
+          <span class="dots">⋯</span>
+        </span>
+      </div>
+      <div class="panel">
+        <div class="subrow">
+          <span class="lbl">Also refs</span>
+          <div class="chiprow">
+            <span class="ichip" title="Refs GitHub #1366">
+              <svg width="12" height="12" viewBox="0 0 16 16"><path fill="var(--github)" fill-rule="evenodd" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38v-1.3c-2.23.49-2.7-1.08-2.7-1.08-.36-.92-.89-1.17-.89-1.17-.73-.5.05-.49.05-.49.8.06 1.23.83 1.23.83.71 1.22 1.87.87 2.33.66.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.03 2.2-.82 2.2-.82.44 1.11.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+              <span class="id">#1366</span><span class="ttl">Non-root worktree handoff</span>
+            </span>
+          </div>
+        </div>
+        <div class="subrow">
+          <span class="lbl">Docs</span>
+          <div class="chiprow">
+            <span class="fchip"><svg width="12" height="12" viewBox="0 0 16 16" fill="var(--color-pr)"><path d="M3 1.5h6l4 4v9H3z"/></svg><span>egress allowlist</span><span class="dot m"></span></span>
+          </div>
+        </div>
+      </div>
+    </div>
+    <p class="tradeoff"><span class="good">+</span> Primary issue visible with the panel collapsed — zero clicks. &nbsp; <span class="bad">−</span> Crowds an already-busy header; only works when there’s one clear “primary”.</p>
+  </div>
+
+  <p class="sub" style="margin-top:34px">All variants share one chip component &amp; one deduped data source; they differ only in <b>placement</b> and whether intent rides in the chip or a section label. My pick: <b>Option 3</b> (self-describing, covers the pre-PR session-origin case) — or <b>Option 1</b> if we want the smallest change.</p>
+</div>
+</body>
+</html>

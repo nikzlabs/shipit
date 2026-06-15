@@ -8,6 +8,7 @@ import { AUTO_MERGE_ICON_CLASS } from "../design-tokens.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
+import { useIssuesStore } from "../stores/issues-store.js";
 import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
 import { saveChangedDocsExpanded } from "../utils/local-storage.js";
 
@@ -1281,13 +1282,13 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   it("hides the toggle when the PR changed no notable file", () => {
     setCard("s1", openPrCard);
     render(<PrLifecycleCard sessionId="s1" />);
-    expect(screen.queryByLabelText("Changed docs in this PR")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Related issues and changed docs in this PR")).not.toBeInTheDocument();
   });
 
   it("shows the toggle when notable files are present, collapsed by default", () => {
     setCard("s1", cardWithDocs);
     render(<PrLifecycleCard sessionId="s1" />);
-    const toggle = screen.getByLabelText("Changed docs in this PR");
+    const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toBeInTheDocument();
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     // Strip is collapsed → chips not rendered.
@@ -1297,15 +1298,15 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   it("expands the strip on toggle and persists the state per session", () => {
     setCard("s1", cardWithDocs);
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
-    fireEvent.click(screen.getByLabelText("Changed docs in this PR"));
+    fireEvent.click(screen.getByLabelText("Related issues and changed docs in this PR"));
     expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
-    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
 
     // Remount (e.g. page reload) — the expanded state is restored from storage.
     unmount();
     setCard("s1", cardWithDocs);
     render(<PrLifecycleCard sessionId="s1" />);
-    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
   });
 
@@ -1315,9 +1316,55 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     setCard("s2", cardWithDocs);
 
     const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
-    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
 
     rerender(<PrLifecycleCard sessionId="s2" />);
-    expect(screen.getByLabelText("Changed docs in this PR")).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "false");
+  });
+});
+
+// ---- Related-issue chips (docs/206) ----
+
+describe("PrLifecycleCard — related-issue chips", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    saveChangedDocsExpanded("s1", true); // expand the panel so chips render
+    useSessionStore.setState({ messages: [] });
+    useIssuesStore.setState({ openIssue: vi.fn() });
+  });
+
+  it("surfaces a Closes pointer from the PR body as an intent-led chip", () => {
+    setCard("s1", { ...openPrCard, pr: { ...openPrCard.pr!, body: "## Summary\n\nCloses SHI-90" } });
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByText("Closes")).toBeInTheDocument();
+    expect(screen.getByText("SHI-90")).toBeInTheDocument();
+  });
+
+  it("shows the panel toggle for an issues-only PR (no notable files)", () => {
+    setCard("s1", { ...openPrCard, pr: { ...openPrCard.pr!, body: "Closes SHI-7" } });
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByLabelText("Related issues and changed docs in this PR")).toBeInTheDocument();
+    expect(screen.getByText("SHI-7")).toBeInTheDocument();
+  });
+
+  it("recovers the session-origin issue from the first user message", () => {
+    setCard("s1", openPrCard); // PR body names no issue
+    useSessionStore.setState({
+      messages: [{ role: "user", text: "You are working on issue SHI-201: ship it" }],
+    });
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.getByText("From session")).toBeInTheDocument();
+    expect(screen.getByText("SHI-201")).toBeInTheDocument();
+  });
+
+  it("opens the inline issue detail when a chip is clicked", () => {
+    const openIssue = vi.fn();
+    useIssuesStore.setState({ openIssue });
+    setCard("s1", { ...openPrCard, pr: { ...openPrCard.pr!, body: "Closes SHI-90" } });
+    render(<PrLifecycleCard sessionId="s1" />);
+    fireEvent.click(screen.getByText("SHI-90"));
+    expect(openIssue).toHaveBeenCalledWith(
+      expect.objectContaining({ tracker: "linear", identifier: "SHI-90", id: "SHI-90" }),
+    );
   });
 });

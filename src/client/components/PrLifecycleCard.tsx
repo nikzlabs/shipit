@@ -8,8 +8,9 @@
  * stable home. See docs/156.
  */
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useMemo } from "react";
 import { usePrStore } from "../stores/pr-store.js";
+import { collectPrCardIssueRefs } from "../utils/pr-card-issue-refs.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
@@ -803,8 +804,8 @@ function ChangedDocsToggle({ expanded, onToggle }: { expanded: boolean; onToggle
       type="button"
       onClick={onToggle}
       aria-expanded={expanded}
-      aria-label="Changed docs in this PR"
-      title="Changed docs in this PR"
+      aria-label="Related issues and changed docs in this PR"
+      title="Related issues and changed docs in this PR"
       className={`flex items-center gap-0.5 px-1.5 py-1 rounded border transition-colors cursor-pointer ${
         expanded
           ? "text-(--color-pr) bg-(--color-pr-subtle) border-(--color-pr-border)"
@@ -846,7 +847,21 @@ export function PrLifecycleCard({
   // PR changed no notable file (its presence is the signal). Collapse state is
   // pure view state, per session in localStorage, defaulting to collapsed.
   const notableFiles = card?.notableFiles ?? [];
-  const hasNotableFiles = notableFiles.length > 0;
+
+  // docs/206 — related-issue chips, computed purely from data already on the
+  // client: the PR body (poller `prBody`, falling back to the lifecycle card's
+  // `pr.body`) for Closes/Refs, and the session's first user message for the
+  // issue it was started from. No server round-trip.
+  const prBody = usePrStore((s) => s.statusBySession[sessionId]?.prBody) ?? card?.pr?.body;
+  const firstUserText = useSessionStore((s) => s.messages.find((m) => m.role === "user")?.text);
+  const issueRefs = useMemo(
+    () => collectPrCardIssueRefs({ prBody, firstUserMessage: firstUserText }),
+    [prBody, firstUserText],
+  );
+
+  // The panel (and its header toggle) appears when there's anything to show in
+  // it — related issues OR notable files. An issues-only PR still gets a toggle.
+  const hasPanelContent = notableFiles.length > 0 || issueRefs.length > 0;
   // Collapse state is per-session view state in localStorage, default collapsed.
   // We adjust state during render when `sessionId` changes (re-reading the saved
   // value) rather than reaching for useEffect — the React-endorsed "store info
@@ -933,12 +948,12 @@ export function PrLifecycleCard({
               <MagnifyingGlassIcon size={ICON_SIZE.SM} weight="bold" />
             </button>
           )}
-          {hasNotableFiles && <ChangedDocsToggle expanded={docsExpanded} onToggle={toggleDocs} />}
+          {hasPanelContent && <ChangedDocsToggle expanded={docsExpanded} onToggle={toggleDocs} />}
           <PrActionsMenu sessionId={sessionId} />
         </div>
       </div>
-      {hasNotableFiles && docsExpanded && (
-        <ChangedDocsStrip sessionId={sessionId} notableFiles={notableFiles} />
+      {hasPanelContent && docsExpanded && (
+        <ChangedDocsStrip sessionId={sessionId} notableFiles={notableFiles} issueRefs={issueRefs} />
       )}
     </>
   );

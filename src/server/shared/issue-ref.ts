@@ -84,3 +84,60 @@ export function parseIssueRef(raw: string): ParsedIssueRef {
     url: /^https?:\/\//i.test(issue) ? issue : undefined,
   };
 }
+
+/**
+ * Extract issue pointers from FREE-FORM text — e.g. a session's first user
+ * message — as opposed to the keyword-anchored PR-body parse
+ * ({@link parsePrBodyIssueRefs}). Used to recover the issue a session was
+ * *started from*: `seedFromIssueRef` plants `You are working on issue <KEY>: …`
+ * + `Issue link: <url>` as the first message (docs/206).
+ *
+ * Only UNAMBIGUOUS shapes are matched, on purpose. A bare Linear key pattern
+ * (`[A-Z]+-\d+`) collides with everyday tokens — `UTF-8`, `ISO-8601`, `GPT-4`,
+ * `H-1B` — so scanning raw text for it would mint phantom issues. The accepted
+ * shapes:
+ *
+ *  - Linear issue URLs   `https://linear.app/<ws>/issue/KEY[/slug]`
+ *  - GitHub issue URLs   `https://github.com/<o>/<r>/issues/<n>`
+ *  - GitHub short refs   `owner/repo#n`
+ *  - Bare Linear keys **only when preceded by the word `issue`**
+ *    (case-insensitive: `working on issue SHI-90`, `issue: SHI-90`) — the form
+ *    the seed always produces and natural phrasing usually does. A bare
+ *    `SHI-90` with no `issue` lead-in is deliberately NOT matched.
+ *
+ * Deduped by `tracker:issueId` in first-seen order; unresolvable tokens drop.
+ */
+export function extractIssueRefsFromText(text: string | null | undefined): ParsedIssueRef[] {
+  if (!text) return [];
+  const out: ParsedIssueRef[] = [];
+  const seen = new Set<string>();
+  // Gather every candidate with its position, so the final list is in document
+  // order regardless of which pattern matched it. Dedup happens on push.
+  const candidates: { index: number; token: string }[] = [];
+  const collect = (re: RegExp, group: number) => {
+    for (const m of text.matchAll(re)) {
+      candidates.push({ index: m.index ?? 0, token: m[group] ?? "" });
+    }
+  };
+  // Linear + GitHub issue URLs.
+  collect(/https?:\/\/linear\.app\/[^/\s]+\/issue\/[A-Za-z]+-\d+(?:\/[^\s)]*)?/gi, 0);
+  collect(/https?:\/\/github\.com\/[^/\s]+\/[^/\s]+\/issues\/\d+/gi, 0);
+  // GitHub short refs `owner/repo#n`. The lookbehind keeps it from biting into
+  // a URL's path (`…/issues/5` has no `#`, but `github.com/o/r#5` would).
+  collect(/(?<![\w/])[^/\s#]+\/[^/\s#]+#\d+/g, 0);
+  // Bare Linear keys, gated on an `issue` lead-in (the separator allows
+  // `issue SHI-9`, `issue: SHI-9`, `issue #SHI-9`).
+  collect(/\bissue\b[\s:#-]*([A-Za-z]+-\d+)/gi, 1);
+
+  candidates.sort((a, b) => a.index - b.index);
+  for (const { token } of candidates) {
+    const parsed = parseIssueRef(token);
+    if (parsed.tracker === "unknown" || !parsed.issueId) continue;
+    const key = `${parsed.tracker}:${parsed.issueId}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(parsed);
+  }
+
+  return out;
+}
