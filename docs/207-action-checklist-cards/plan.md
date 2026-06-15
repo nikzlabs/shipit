@@ -162,11 +162,16 @@ own" path **routes through the existing composer** (which already has voice):
 2. **Add comment…** *(secondary — the "I agree, but…" / "actually…" path)*.
    Instead of sending, this seeds the **main input box** with a **snapshot of the
    whole card** — *every* action listed with a checkbox marker reflecting its
-   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. The user
-   appends their own words (typed **or dictated** — the composer's voice button is
-   right there) and sends normally. The sent message is the snapshot **plus** the
-   user's addition, so the agent sees the full menu, what the user leaned toward,
-   and the freeform note — all self-contained.
+   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. The
+   **literal `[x]`/`[ ]` text is the chosen format** (decided): it parses cleanly
+   for the agent and reads clearly for a human, and the user can freely edit the
+   lines before sending. The user then appends their own words (typed **or
+   dictated** — the composer's voice button is right there) and sends normally.
+   The sent message is the snapshot **plus** the user's addition, so the agent
+   sees the full menu, what the user leaned toward, and the freeform note — all
+   self-contained. *(How that quote is visually **rendered** inside the composer —
+   plain text vs. a styled quote block — is a separate, composer-wide question;
+   being investigated in its own session, see SHI-153 thread.)*
 
    **Add comment… is never disabled.** Unlike Submit, it doesn't require a
    selection: commenting on the menu is valid with any subset, including none
