@@ -22,16 +22,25 @@ This doc proposes nested rendering plus a user-defined **two-level** sort.
 ### Nesting
 
 - **Each issue renders once.** A sub-issue appears **only** under its parent — never also in the top-level list. This is the deliberate departure from Linear, which duplicates a sub-issue (once flat, once nested). One row per issue keeps counts honest and avoids the "why is this here twice" confusion.
-- **Parents own a disclosure + child-count pill.** A parent shows a rotate-on-collapse triangle and a `N` pill; children indent one level with a tree elbow. Collapse state is client-side (per session, not persisted in v1).
-- **One level deep, for now.** Linear allows arbitrary nesting; v1 renders a single parent→child level. Grandchildren attach to their nearest *rendered* ancestor. (Revisit if real data shows deep trees.)
-- **Orphan promotion.** A child whose parent is **not in the current set** (parent is Done and `includeDone` is off, on another team, or beyond the 100-issue fetch cap) is **promoted to the top level** with a `↳ in SHI-300` hint, rather than silently dropped. This is the load-bearing edge case — the fetched window almost never contains every parent.
+- **Parents own a disclosure + child-count pill.** A parent shows a rotate-on-collapse triangle and a `N` pill; children indent with a tree spine per level. Collapse state is client-side (per session, not persisted in v1).
+- **Recursive — arbitrary depth.** Nesting recurses to any depth (decision: confirmed). Each level adds one indent step + tree spine; collapsing any node hides its whole subtree. The tree is built from the flat `filteredIssues` by walking `parentId` links, so depth is whatever the data declares.
+- **Mobile (card layout, below `@sm`) drops the tree.** No disclosure triangles, no tree spines, no collapse/expand. A child card is simply **indented** (depth × a small step, capped) with a **left rule** as the only nesting hint (decision: confirmed). The card layout already exists in `IssuesViewer` (`@sm` container query); nesting there is indent-only so the narrow column isn't eaten by tree chrome.
+- **Orphan promotion.** A child whose parent is **not in the current set** (parent is Done and `includeDone` is off, on another team, or beyond the 100-issue fetch cap) is **promoted to the top level** with a `↳ in SHI-300` hint, rather than silently dropped. This is the load-bearing edge case — the fetched window almost never contains every parent. With recursion this applies at any level: a subtree whose root is missing reattaches at the nearest present ancestor, or the top level if none.
 
 ### Two-level sorting
 
 - **Primary key, then secondary key, then `identifier` as the final tiebreak.** Each of the two axes has an independent direction toggle (asc/desc). Sort keys: **Priority, Status, Title, Last updated, Assignee**.
 - **Status ordering** uses a workflow rank derived from the normalized `status.type` (`triage < backlog < unstarted < started < completed < canceled`), not alphabetical — so "Todo → In Progress → Done" sorts intuitively. Priority uses the existing `priority.sortOrder` (0 urgent … 4 none).
 - **Children are sorted within their parent only.** The same comparator orders the sub-issues under each parent, but children are **excluded from the top-level sort** — the top level is ordered by parents (and orphans) alone. A high-priority child never reorders its parent.
-- **Optional "Group by primary"** (toggle): render the primary key as sticky section headers instead of a sort axis; parents still nest inside each section. Secondary key orders within the section. This covers the "grouped correspondingly" half of the request without forcing grouping as the only mode.
+- **Independent "Group by"** (None / Priority / Status / Assignee): render the chosen field as sticky section headers; parents still nest inside each section, ordered by the sort keys. With the editor in a modal there's room for grouping to be its **own field** rather than an overlay on the primary sort key.
+
+### Surfacing the editor — modal behind an icon
+
+The toolbar row already holds **search** and **filter** controls (`IssuesFilterBar`), so there's no room for two sort dropdowns + direction toggles + a group select inline (decision: confirmed). Instead:
+
+- A **sliders icon button** sits at the end of the toolbar. Clicking it opens a **modal** with the full editor: *Sort by* (key + Asc/Desc) → *then by* (key + Asc/Desc) → *Group by* (field).
+- The icon shows an **accent dot** when the active order differs from the default, and a **one-line summary** ("Sorted by Priority ↑ → Status ↑") renders under the toolbar so the order is legible without opening the modal.
+- Changes apply live; **Done** closes; **Reset to default** restores `priority → identifier`, no grouping.
 
 ### Persistence (later)
 
@@ -49,7 +58,7 @@ hasChildren?: boolean;    // hint so a leaf needs no children probe (Linear expo
 
 **Adapters:**
 - **Linear** (`trackers/linear/adapter.ts`): the issue query already can select `parent { id identifier }`; map it onto `parentId`/`parentIdentifier`. `children` count → `hasChildren`. The 100-issue cap means orphan promotion must be handled client-side (a parent can fall outside the window).
-- **GitHub** (`trackers/github/`): GitHub's native **sub-issues** (GA 2024) expose parent/child via the REST `sub_issues` endpoints / GraphQL `parent`. Where available, map them; where not (older repos, task-list-only relationships), every issue is parentless and the list degrades to today's flat behavior. **No task-list-markdown parsing** — too lossy.
+- **GitHub** (`trackers/github/`): **flat list, no work** (decision: confirmed). We don't surface GitHub parent/child relationships — every issue is parentless and the GitHub tab renders exactly today's flat behavior. No `parentId` mapping, no sub-issues API calls, no task-list parsing. Nesting is a Linear-only capability in this design.
 
 ## Sorting surface
 
@@ -61,14 +70,14 @@ hasChildren?: boolean;    // hint so a leaf needs no children probe (Linear expo
 - `src/server/shared/types/domain-types.ts` — `parentId` / `parentIdentifier` / `hasChildren` on `TrackerIssue`.
 - `src/server/orchestrator/trackers/linear/adapter.ts` — select + map `parent`.
 - `src/server/orchestrator/trackers/github/*` — map native sub-issues when present.
-- `src/client/components/IssuesViewer.tsx` — tree build, disclosure rows, indentation, orphan hint.
-- `src/client/components/IssuesSortControl.tsx` *(new)* — the two-dropdown sort bar.
-- `src/client/components/issues-sort.ts` *(new)* — comparator + tree-builder (unit-tested).
-- `src/client/stores/settings-store.ts` — persisted per-tracker sort prefs (later).
-- `src/server/shipit-docs/issues.md` — note that `shipit issue view` surfaces parent/children (agent-facing).
+- `src/client/components/IssuesViewer.tsx` — recursive tree build, disclosure rows + tree spines (table), indent-only child cards (mobile), orphan hint.
+- `src/client/components/IssuesSortModal.tsx` *(new)* — the sliders-icon-triggered modal: two-level sort + group-by.
+- `src/client/components/issues-sort.ts` *(new)* — comparator (primary → secondary → identifier) + recursive tree-builder + orphan promotion (unit-tested).
+- `src/client/stores/settings-store.ts` — persisted per-tracker sort/group prefs (later).
+- `src/server/shipit-docs/issues.md` — note that `shipit issue view` surfaces parent/children for Linear (agent-facing).
 
 ## Open questions
 
-- Deep nesting (>1 level): flatten-to-one or true recursion? Defer until data warrants.
-- Should "Group by primary" persist independently of the sort axis, or is it mutually exclusive with using that key as a sort key? Prototype treats group as an overlay on the existing primary selection.
-- GitHub: is the sub-issues API reliably present for our users' repos, or do we hide nesting on the GitHub tab until confirmed?
+- Persist collapse state across reloads, or reset each session? (Prototype: per-session only.)
+- Mobile indent cap: how many levels before indent stops growing? (Prototype caps at 4 steps.)
+- Group-by + deep nesting: do grouped sections only group **top-level** issues (current prototype) — confirmed reasonable, but worth a sanity check on real data.
