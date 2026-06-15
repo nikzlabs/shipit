@@ -9,7 +9,14 @@ import {
   filterIssues,
   type IssueFilters,
 } from "./issues-filter.js";
+import { DEFAULT_SORT_PREFS, buildSections, collapsePredicate } from "./issues-sort.js";
 import type { IssuePriorityLevel, TrackerInfo, TrackerIssue } from "../../server/shared/types.js";
+
+// Force the container-width signal so we can exercise both layouts deterministically
+// (jsdom has no layout, so the real ResizeObserver path always reads 0/desktop).
+// Defaults to wide/desktop; individual tests flip `mockNarrow.value` to true.
+const mockNarrow = vi.hoisted(() => ({ value: false }));
+vi.mock("../hooks/useNarrowContainer.js", () => ({ useNarrowContainer: () => mockNarrow.value }));
 
 const LINEAR_CONFIGURED: TrackerInfo = {
   id: "linear",
@@ -53,11 +60,15 @@ function priorityCounts(issues: TrackerIssue[]): Record<IssuePriorityLevel, numb
 function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps {
   const issues = overrides?.issues ?? [];
   const filters = overrides?.filters ?? emptyFilters();
+  const filtered = filterIssues(issues, filters);
   const base: IssuesViewerProps = {
     trackers: [LINEAR_CONFIGURED],
     activeTracker: "linear",
     issues,
-    filteredIssues: filterIssues(issues, filters),
+    filteredIssues: filtered,
+    desktopSections: buildSections(filtered, DEFAULT_SORT_PREFS, collapsePredicate({}, false)),
+    mobileSections: buildSections(filtered, DEFAULT_SORT_PREFS, collapsePredicate({}, true)),
+    sortPrefs: DEFAULT_SORT_PREFS,
     filters,
     statusOptions: distinctStatuses(issues),
     assigneeOptions: distinctAssignees(issues),
@@ -73,6 +84,8 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onSelectTracker: vi.fn(),
     onRefresh: vi.fn(),
     onToggleIncludeDone: vi.fn(),
+    onSetSortPrefs: vi.fn(),
+    onSetCollapsed: vi.fn(),
     onOpenIssue: vi.fn(),
     initialScrollTop: 0,
     onPersistScroll: vi.fn(),
@@ -87,8 +100,17 @@ function defaultProps(overrides?: Partial<IssuesViewerProps>): IssuesViewerProps
     onToggleLabel: vi.fn(),
     onClearFilters: vi.fn(),
   };
-  // `filteredIssues` derives from issues+filters unless explicitly overridden.
-  return { ...base, ...overrides, filteredIssues: overrides?.filteredIssues ?? base.filteredIssues };
+  // `filteredIssues` derives from issues+filters unless explicitly overridden;
+  // the section sets follow whichever filtered list wins so rows render to match.
+  const finalFiltered = overrides?.filteredIssues ?? base.filteredIssues;
+  const finalPrefs = overrides?.sortPrefs ?? DEFAULT_SORT_PREFS;
+  return {
+    ...base,
+    ...overrides,
+    filteredIssues: finalFiltered,
+    desktopSections: overrides?.desktopSections ?? buildSections(finalFiltered, finalPrefs, collapsePredicate({}, false)),
+    mobileSections: overrides?.mobileSections ?? buildSections(finalFiltered, finalPrefs, collapsePredicate({}, true)),
+  };
 }
 
 describe("IssuesViewer", () => {
@@ -115,6 +137,78 @@ describe("IssuesViewer", () => {
     expect(screen.getByText("SHI-1")).toBeInTheDocument();
     // Priority badge for urgent renders its label.
     expect(screen.getByText("Urgent")).toBeInTheDocument();
+  });
+
+  it("renders sub-issues nested under their parent with a disclosure + count (docs/206)", () => {
+    const props = defaultProps({
+      issues: [
+        makeIssue({ id: "p", identifier: "SHI-1", title: "Parent task" }),
+        makeIssue({ id: "c", identifier: "SHI-2", title: "Child task", parentId: "p" }),
+      ],
+    });
+    render(<IssuesViewer {...props} />);
+    expect(screen.getByText("Parent task")).toBeInTheDocument();
+    expect(screen.getByText("Child task")).toBeInTheDocument();
+    // The parent carries a collapse control (only parents do).
+    expect(screen.getByRole("button", { name: /Collapse SHI-1/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Collapse SHI-2/ })).toBeNull();
+  });
+
+  it("toggling a parent's disclosure records an explicit collapse (docs/206)", () => {
+    const props = defaultProps({
+      issues: [
+        makeIssue({ id: "p", identifier: "SHI-1", title: "Parent" }),
+        makeIssue({ id: "c", identifier: "SHI-2", title: "Child", parentId: "p" }),
+      ],
+    });
+    render(<IssuesViewer {...props} />);
+    // Default (desktop/wide) is expanded, so the disclosure collapses it.
+    fireEvent.click(screen.getByRole("button", { name: /Collapse SHI-1/ }));
+    expect(props.onSetCollapsed).toHaveBeenCalledWith("p", true);
+    // The disclosure's stopPropagation keeps the row from also opening detail.
+    expect(props.onOpenIssue).not.toHaveBeenCalled();
+  });
+
+  it("on the narrow card layout, collapses parents by default with a 'N nested issues' toggle (docs/206)", () => {
+    mockNarrow.value = true;
+    try {
+      const props = defaultProps({
+        issues: [
+          makeIssue({ id: "p", identifier: "SHI-1", title: "Parent" }),
+          makeIssue({ id: "c", identifier: "SHI-2", title: "Child", parentId: "p" }),
+        ],
+      });
+      render(<IssuesViewer {...props} />);
+      // Parent shows; the child is folded away behind the collapsed default.
+      expect(screen.getByText("Parent")).toBeInTheDocument();
+      expect(screen.queryByText("Child")).toBeNull();
+      // Tapping the nested-issues row expands it (records an explicit expand).
+      fireEvent.click(screen.getByRole("button", { name: /Show 1 nested issue in SHI-1/ }));
+      expect(props.onSetCollapsed).toHaveBeenCalledWith("p", false);
+    } finally {
+      mockNarrow.value = false;
+    }
+  });
+
+  it("flags an orphaned sub-issue whose parent is absent (docs/206)", () => {
+    const props = defaultProps({
+      issues: [makeIssue({ id: "o", identifier: "SHI-9", title: "Orphan", parentId: "gone", parentIdentifier: "SHI-1" })],
+    });
+    render(<IssuesViewer {...props} />);
+    // Promoted to the top level with a hint at the missing parent.
+    expect(screen.getByText("Orphan")).toBeInTheDocument();
+    expect(screen.getByText("SHI-1")).toBeInTheDocument();
+  });
+
+  it("opens the sort & group modal from the sliders button (docs/206)", async () => {
+    const user = userEvent.setup();
+    const props = defaultProps({ issues: [makeIssue({})] });
+    render(<IssuesViewer {...props} />);
+    await user.click(screen.getByRole("button", { name: /Sort and group issues/ }));
+    const dialog = screen.getByRole("dialog");
+    expect(dialog).toBeInTheDocument();
+    expect(screen.getByLabelText("Primary sort key")).toBeInTheDocument();
+    expect(screen.getByLabelText("Group by field")).toBeInTheDocument();
   });
 
   it("strips the repo path from GitHub identifiers in the ID column", () => {

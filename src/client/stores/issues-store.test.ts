@@ -32,6 +32,29 @@ describe("issueLookupId", () => {
   });
 });
 
+describe("issues-store sort + collapse (docs/206)", () => {
+  afterEach(() => {
+    localStorage.clear();
+    useIssuesStore.setState({ sortPrefs: { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" }, collapseById: {} });
+  });
+
+  it("setSortPrefs updates state and persists to localStorage", () => {
+    useIssuesStore.getState().setSortPrefs({ primary: "title", primaryDir: -1, secondary: "none", secondaryDir: 1, group: "status" });
+    expect(useIssuesStore.getState().sortPrefs.primary).toBe("title");
+    expect(JSON.parse(localStorage.getItem("shipit-issue-sort") ?? "{}")).toMatchObject({ primary: "title", group: "status" });
+  });
+
+  it("setCollapsed records an explicit override and persists it", () => {
+    useIssuesStore.getState().setCollapsed("node-7", true);
+    expect(useIssuesStore.getState().collapseById["node-7"]).toBe(true);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "{}")).toMatchObject({ "node-7": true });
+    // Re-recording with the opposite value overwrites the override.
+    useIssuesStore.getState().setCollapsed("node-7", false);
+    expect(useIssuesStore.getState().collapseById["node-7"]).toBe(false);
+    expect(JSON.parse(localStorage.getItem("shipit-issue-collapsed") ?? "{}")).toMatchObject({ "node-7": false });
+  });
+});
+
 describe("issues-store detail view (docs/189)", () => {
   beforeEach(() => {
     useIssuesStore.getState().reset();

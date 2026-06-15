@@ -486,6 +486,26 @@ export interface TrackerIssue {
   url: string;
   /** Issue body / description (markdown). Used to seed the session prompt. */
   description?: string;
+  /**
+   * Tracker-internal id of this issue's parent, when it's a sub-issue (docs/206).
+   * Drives the nested rendering in the Issues panel — children group under the
+   * parent that carries the matching `id`. Linear exposes a `parent` relation;
+   * GitHub surfaces none (its tab stays flat), so this is Linear-only in practice.
+   * Absent for a top-level issue.
+   */
+  parentId?: string;
+  /**
+   * Human identifier of the parent (e.g. "SHI-90"), carried alongside `parentId`
+   * so the UI can label an *orphaned* sub-issue — one whose parent fell outside
+   * the fetched/filtered window — without a second lookup (docs/206).
+   */
+  parentIdentifier?: string;
+  /**
+   * ISO-8601 last-updated timestamp, when the tracker supplies one. Surfaced so
+   * the Issues panel can offer a "Last updated" sort key (docs/206); the Linear
+   * adapter already orders its fetch by `updatedAt`, this just exposes the value.
+   */
+  updatedAt?: string;
   priority: IssuePriority;
   /**
    * The issue's labels, each carrying its display name and the tracker's own

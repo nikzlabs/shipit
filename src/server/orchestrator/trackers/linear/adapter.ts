@@ -107,8 +107,11 @@ interface LinearIssueNode {
   title: string;
   url: string;
   description?: string | null;
+  updatedAt?: string | null;
   priority: number;
   priorityLabel?: string | null;
+  /** Parent issue when this is a sub-issue (docs/206) — drives nested rendering. */
+  parent?: { id: string; identifier: string } | null;
   labels?: { nodes: { name: string; color?: string | null }[] } | null;
   state?: { name: string; type?: string; color?: string } | null;
   assignee?: { id?: string | null; name?: string | null; displayName?: string | null; avatarUrl?: string | null } | null;
@@ -131,6 +134,8 @@ function toTrackerIssue(node: LinearIssueNode): TrackerIssue {
     title: node.title,
     url: stripLinearUrlSlug(node.url),
     ...(node.description ? { description: node.description } : {}),
+    ...(node.parent ? { parentId: node.parent.id, parentIdentifier: node.parent.identifier } : {}),
+    ...(node.updatedAt ? { updatedAt: node.updatedAt } : {}),
     priority: mapLinearPriority(node.priority, node.priorityLabel ?? undefined),
     ...(labels.length > 0 ? { labels } : {}),
     ...(node.state
@@ -186,8 +191,10 @@ const ISSUE_FIELDS = `
   title
   url
   description
+  updatedAt
   priority
   priorityLabel
+  parent { id identifier }
   labels { nodes { name color } }
   state { name type color }
   assignee { id name displayName avatarUrl }

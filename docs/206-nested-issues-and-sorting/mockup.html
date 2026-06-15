@@ -1,0 +1,488 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Nested issues + two-level sorting — ShipIt prototype</title>
+<style>
+  :root {
+    --bg-primary: #0a0a0b;
+    --bg-secondary: #131316;
+    --bg-tertiary: #1c1c21;
+    --bg-hover: #1a1a1f;
+    --border-primary: rgba(255, 255, 255, 0.07);
+    --border-secondary: rgba(255, 255, 255, 0.11);
+    --text-primary: #ededf0;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b76;
+    --accent: #6e63f2;
+    --pri-urgent: #f2585b;
+    --pri-high: #f2994a;
+    --pri-medium: #e8c547;
+    --pri-low: #5e9cea;
+    --pri-none: #5c5c66;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; background: #050506; color: var(--text-primary);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    font-size: 14px; -webkit-font-smoothing: antialiased;
+  }
+  .page { max-width: 1040px; margin: 0 auto; padding: 28px 20px 80px; }
+  .page-head h1 { font-size: 20px; margin: 0 0 4px; letter-spacing: -0.01em; }
+  .page-head p { margin: 0 0 22px; color: var(--text-secondary); font-size: 13px; max-width: 680px; line-height: 1.5; }
+
+  .stage { display: grid; grid-template-columns: 1fr 320px; gap: 22px; align-items: start; }
+  @media (max-width: 880px) { .stage { grid-template-columns: 1fr; } }
+  .col-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-tertiary); font-weight: 700; margin: 0 0 8px 2px; }
+
+  .panel {
+    background: var(--bg-primary); border: 1px solid var(--border-secondary);
+    border-radius: 10px; overflow: hidden; box-shadow: 0 10px 40px rgba(0,0,0,0.45);
+  }
+
+  /* Tracker tabs */
+  .topbar { display: flex; align-items: stretch; background: var(--bg-secondary); border-bottom: 1px solid var(--border-secondary); }
+  .tab { padding: 9px 14px; font-size: 12px; font-weight: 600; color: var(--text-tertiary); border-bottom: 2px solid transparent; cursor: pointer; background: none; border-top: none; border-left: none; border-right: none; }
+  .tab.active { color: var(--text-primary); border-bottom-color: var(--accent); }
+  .tab .binding { color: var(--text-tertiary); font-weight: 500; }
+  .topbar .spacer { flex: 1; }
+  .topbar .count { display: flex; align-items: center; padding: 0 12px; font-size: 12px; color: var(--text-secondary); gap: 4px; }
+  .count b { color: var(--text-primary); }
+
+  /* Filter/search toolbar — the row that's already crowded, hence the modal. */
+  .toolbar { display: flex; align-items: center; gap: 8px; padding: 7px 10px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
+  .search { flex: 1; min-width: 0; display: inline-flex; align-items: center; gap: 6px; background: var(--bg-tertiary); border: 1px solid var(--border-secondary); border-radius: 6px; padding: 4px 9px; color: var(--text-tertiary); font-size: 12px; }
+  .search input { flex: 1; min-width: 0; background: none; border: none; outline: none; color: var(--text-primary); font-size: 12px; }
+  .fpill { font-size: 12px; color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-secondary); border-radius: 6px; padding: 4px 9px; white-space: nowrap; display: inline-flex; align-items: center; gap: 5px; }
+  .fpill svg { opacity: 0.7; }
+  .sort-btn {
+    flex: none; width: 30px; height: 28px; display: inline-flex; align-items: center; justify-content: center;
+    background: var(--bg-tertiary); border: 1px solid var(--border-secondary); border-radius: 6px; color: var(--text-secondary); cursor: pointer; position: relative;
+  }
+  .sort-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+  .sort-btn.dirty::after { content: ""; position: absolute; top: -3px; right: -3px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); border: 1.5px solid var(--bg-secondary); }
+
+  /* Table */
+  .grid { display: grid; grid-template-columns: 168px minmax(120px, 1fr) 70px 124px 122px; align-items: center; gap: 10px; padding: 7px 14px; }
+  .thead { position: sticky; top: 0; z-index: 2; background: var(--bg-secondary); border-bottom: 1px solid var(--border-secondary); font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 700; color: var(--text-tertiary); }
+  .rows > .row { border-bottom: 1px solid var(--border-primary); }
+  .row { position: relative; cursor: pointer; transition: background 0.12s; }
+  .row:hover { background: var(--bg-hover); }
+  .row:hover::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 2px; background: var(--accent); border-radius: 0 2px 2px 0; }
+  .row.child { background: rgba(255,255,255,0.012); }
+
+  .id-cell { display: flex; align-items: center; gap: 5px; min-width: 0; }
+  .disclosure { width: 16px; height: 16px; flex: none; display: inline-flex; align-items: center; justify-content: center; color: var(--text-tertiary); cursor: pointer; border-radius: 4px; transition: transform 0.12s, color 0.12s; font-size: 11px; }
+  .disclosure:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+  .disclosure.collapsed { transform: rotate(-90deg); }
+  .disclosure.leaf { visibility: hidden; }
+  .tree-spine { width: 14px; flex: none; align-self: stretch; position: relative; }
+  .tree-spine::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: var(--border-secondary); }
+  .ident { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
+  .row:hover .ident { color: var(--text-secondary); }
+  .childcount { font-size: 10px; font-weight: 600; color: var(--text-tertiary); background: var(--bg-tertiary); border: 1px solid var(--border-primary); border-radius: 9px; padding: 0 6px; line-height: 15px; }
+
+  .title { min-width: 0; }
+  .title .t { font-size: 13px; font-weight: 500; color: var(--text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .row.child .title .t { font-weight: 450; color: var(--text-secondary); }
+  .orphan-hint { font-size: 10px; color: var(--text-tertiary); margin-top: 2px; }
+  .orphan-hint .ph { font-family: ui-monospace, monospace; color: var(--text-secondary); }
+  .labels { display: flex; gap: 5px; margin-top: 5px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--border-primary); background: var(--bg-secondary); border-radius: 9px; padding: 1px 7px 1px 6px; font-size: 10px; font-weight: 500; color: var(--text-secondary); }
+  .chip .cdot { width: 6px; height: 6px; border-radius: 50%; }
+
+  .pri { display: inline-flex; align-items: flex-end; gap: 2px; height: 12px; }
+  .pri .bar { width: 3px; border-radius: 1px; background: var(--pri-none); opacity: 0.35; }
+  .pri .b1 { height: 5px; } .pri .b2 { height: 8px; } .pri .b3 { height: 11px; }
+  .pri[data-lvl="high"] .bar { background: var(--pri-high); opacity: 1; }
+  .pri[data-lvl="medium"] .bar.b1, .pri[data-lvl="medium"] .bar.b2 { background: var(--pri-medium); opacity: 1; }
+  .pri[data-lvl="low"] .bar.b1 { background: var(--pri-low); opacity: 1; }
+  .pri.urgent .urg { width: 14px; height: 14px; border-radius: 4px; background: var(--pri-urgent); display: inline-flex; align-items: center; justify-content: center; color: #1a0708; font-weight: 800; font-size: 11px; }
+
+  .status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text-secondary); min-width: 0; }
+  .status .sdot { width: 9px; height: 9px; border-radius: 50%; flex: none; border: 1.6px solid currentColor; }
+  .status .sdot.filled { background: currentColor; }
+  .status .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .action { display: flex; justify-content: flex-end; }
+  .start-btn { font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--bg-tertiary); border: 1px solid var(--border-secondary); border-radius: 6px; padding: 4px 10px; cursor: pointer; white-space: nowrap; }
+  .start-btn:hover { color: var(--text-primary); border-color: var(--accent); }
+
+  .grouphdr { display: flex; align-items: center; gap: 8px; padding: 6px 14px; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-secondary); }
+  .grouphdr .gcount { color: var(--text-tertiary); font-weight: 600; }
+
+  /* ---- Mobile / card layout (narrow panel) ---- */
+  .mcard { position: relative; padding: 11px 12px; border-bottom: 1px solid var(--border-primary); cursor: pointer; }
+  .mcard:hover { background: var(--bg-hover); }
+  .mcard.child { border-left: 2px solid var(--border-secondary); }
+  .mcard-top { display: flex; align-items: center; gap: 8px; }
+  .mcard-top .ident { flex: none; }
+  .mcard-top .pri { margin-left: auto; }
+  .mcard .mt { font-size: 13px; font-weight: 500; color: var(--text-primary); margin: 5px 0 0; line-height: 1.35; }
+  .mcard.child .mt { color: var(--text-secondary); font-weight: 450; }
+  .mcard-meta { display: flex; align-items: center; gap: 8px; margin-top: 7px; font-size: 11px; color: var(--text-tertiary); }
+  .note { font-size: 11px; color: var(--text-tertiary); padding: 8px 12px; line-height: 1.5; background: var(--bg-secondary); border-bottom: 1px solid var(--border-primary); }
+
+  /* ---- Modal ---- */
+  .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); display: none; align-items: center; justify-content: center; z-index: 50; }
+  .backdrop.open { display: flex; }
+  .modal { width: 380px; max-width: calc(100vw - 32px); background: var(--bg-secondary); border: 1px solid var(--border-secondary); border-radius: 12px; box-shadow: 0 24px 70px rgba(0,0,0,0.6); overflow: hidden; }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 13px 16px; border-bottom: 1px solid var(--border-primary); }
+  .modal-head h3 { margin: 0; font-size: 14px; }
+  .modal-head .x { background: none; border: none; color: var(--text-tertiary); cursor: pointer; font-size: 18px; line-height: 1; padding: 2px 6px; border-radius: 6px; }
+  .modal-head .x:hover { color: var(--text-primary); background: var(--bg-tertiary); }
+  .modal-body { padding: 14px 16px; display: flex; flex-direction: column; gap: 16px; }
+  .field { display: flex; flex-direction: column; gap: 7px; }
+  .field > label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); font-weight: 700; }
+  .field-row { display: flex; align-items: center; gap: 8px; }
+  select.sortsel { flex: 1; appearance: none; background: var(--bg-tertiary); color: var(--text-primary); border: 1px solid var(--border-secondary); border-radius: 7px; padding: 7px 26px 7px 10px; font-size: 13px; font-weight: 500; cursor: pointer; background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23a1a1aa' stroke-width='2.5'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E"); background-repeat: no-repeat; background-position: right 9px center; }
+  select.sortsel:hover { border-color: var(--accent); }
+  .seg { display: inline-flex; flex: none; border: 1px solid var(--border-secondary); border-radius: 7px; overflow: hidden; }
+  .seg button { background: var(--bg-tertiary); border: none; color: var(--text-tertiary); font-size: 11px; font-weight: 600; padding: 7px 11px; cursor: pointer; }
+  .seg button + button { border-left: 1px solid var(--border-secondary); }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .then-label { font-size: 11px; color: var(--text-tertiary); margin: -6px 0 0 2px; }
+  .modal-foot { display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-top: 1px solid var(--border-primary); }
+  .btn-reset { background: none; border: none; color: var(--text-tertiary); font-size: 12px; cursor: pointer; }
+  .btn-reset:hover { color: var(--text-secondary); }
+  .btn-done { background: var(--accent); border: none; color: #fff; font-size: 13px; font-weight: 600; padding: 7px 18px; border-radius: 7px; cursor: pointer; }
+  .legend { margin-top: 26px; font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+  .legend code { background: var(--bg-tertiary); padding: 1px 6px; border-radius: 4px; font-size: 11px; color: var(--text-primary); }
+  .legend b { color: var(--text-primary); }
+  .legend ul { margin: 6px 0 0; padding-left: 18px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="page-head">
+    <h1>Nested issues + two-level sorting</h1>
+    <p>
+      Refined prototype. <b>Deep nesting recurses</b> (SHI-90 goes four levels deep) on the desktop table.
+      The <b>sort &amp; group editor moved into a modal</b> behind the sliders icon — the toolbar row already
+      holds search and filters. The narrow panel on the right shows the <b>mobile card layout</b>: no tree
+      affordances, just a subtle indent + left rule on child cards. Click the sliders icon to open the editor.
+    </p>
+  </div>
+
+  <div class="stage">
+    <!-- ===================== DESKTOP PANEL ===================== -->
+    <div>
+      <p class="col-label">Desktop — table, recursive nesting</p>
+      <div class="panel">
+        <div class="topbar">
+          <button class="tab active">Linear <span class="binding">· SHI</span></button>
+          <button class="tab">GitHub</button>
+          <div class="spacer"></div>
+          <div class="count"><b id="count">0</b>&nbsp;issues</div>
+        </div>
+
+        <div class="toolbar">
+          <span class="search">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3"/></svg>
+            <input placeholder="Search issues…" />
+          </span>
+          <span class="fpill">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 5h16M7 12h10M10 19h4"/></svg>
+            Filter
+          </span>
+          <button class="sort-btn" id="openSort" title="Sort &amp; group">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h11M4 12h7M4 17h4"/><path d="M18 4v10M18 20l3-3M18 20l-3-3" stroke-width="2"/></svg>
+          </button>
+        </div>
+
+        <div class="grid thead">
+          <div>Issue</div><div>Title</div><div>Priority</div><div>Status</div><div style="text-align:right">Action</div>
+        </div>
+        <div class="rows" id="rows"></div>
+      </div>
+    </div>
+
+    <!-- ===================== MOBILE PANEL ===================== -->
+    <div>
+      <p class="col-label">Mobile — cards, indent-only</p>
+      <div class="panel">
+        <div class="topbar">
+          <button class="tab active" style="padding:8px 12px;">Linear</button>
+          <div class="spacer"></div>
+          <div class="count"><b id="mcount">0</b></div>
+        </div>
+        <div class="note">No disclosure or tree lines at this width — a child card just sits faintly indented (4px per level, capped at 3) with a left rule. The hint reads without eating the narrow column.</div>
+        <div id="mrows"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== SORT & GROUP MODAL ===================== -->
+  <div class="backdrop" id="backdrop">
+    <div class="modal" role="dialog" aria-label="Sort and group">
+      <div class="modal-head">
+        <h3>Sort &amp; group</h3>
+        <button class="x" id="closeSort" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="field">
+          <label>Sort by</label>
+          <div class="field-row">
+            <select class="sortsel" id="primary">
+              <option value="priority">Priority</option>
+              <option value="status">Status</option>
+              <option value="title">Title</option>
+              <option value="updated">Last updated</option>
+              <option value="assignee">Assignee</option>
+            </select>
+            <div class="seg" id="primaryDir"><button data-d="1" class="on">Asc</button><button data-d="-1">Desc</button></div>
+          </div>
+          <span class="then-label">then by</span>
+          <div class="field-row">
+            <select class="sortsel" id="secondary">
+              <option value="none">None</option>
+              <option value="priority">Priority</option>
+              <option value="status" selected>Status</option>
+              <option value="title">Title</option>
+              <option value="updated">Last updated</option>
+              <option value="assignee">Assignee</option>
+            </select>
+            <div class="seg" id="secondaryDir"><button data-d="1" class="on">Asc</button><button data-d="-1">Desc</button></div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Group by</label>
+          <div class="field-row">
+            <select class="sortsel" id="group">
+              <option value="none" selected>None</option>
+              <option value="priority">Priority</option>
+              <option value="status">Status</option>
+              <option value="assignee">Assignee</option>
+            </select>
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-reset" id="resetSort">Reset to default</button>
+        <button class="btn-done" id="doneSort">Done</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <b>What changed from the first prototype</b>
+    <ul>
+      <li><b>Recursive nesting:</b> parents nest to any depth (SHI-90 → SHI-93 → SHI-94 → SHI-95). Each level adds a tree spine; collapsing any node hides its whole subtree.</li>
+      <li><b>Modal editor:</b> the sliders icon opens the two-level sort + group-by editor. The icon shows an accent dot when the order differs from the default; the active order lives in the icon's hover tooltip (no standing summary row — the toolbar stays one line tall).</li>
+      <li><b>Independent Group-by:</b> with the modal's extra room, grouping is its own field (None / Priority / Status / Assignee), not tied to the primary sort key.</li>
+      <li><b>Mobile = indent only:</b> the card layout drops disclosure triangles and tree lines; a child card is faintly indented (4px/level, capped at 3) with a left rule. No collapse/expand at this width.</li>
+      <li><b>Collapse persists:</b> collapsing a parent is saved to localStorage <i>globally</i> (not per session or repo — the issue list isn't either), so the tree stays how you left it across reloads. Try collapsing a parent and refreshing.</li>
+      <li><b>GitHub stays flat:</b> no parent data, so the GitHub tab renders today's flat list — nothing to build there.</li>
+    </ul>
+  </div>
+</div>
+
+<script>
+const STATUS = {
+  backlog:    { name: "Backlog",     color: "#9ca3af", filled: false, order: 1 },
+  todo:       { name: "Todo",        color: "#7c818c", filled: false, order: 2 },
+  inprogress: { name: "In Progress", color: "#e8c547", filled: true,  order: 3 },
+  inreview:   { name: "In Review",   color: "#5e9cea", filled: true,  order: 4 },
+  done:       { name: "Done",        color: "#4cb782", filled: true,  order: 5 },
+};
+const PRI = {
+  urgent: { label: "Urgent", order: 0 }, high: { label: "High", order: 1 },
+  medium: { label: "Medium", order: 2 }, low: { label: "Low", order: 3 }, none: { label: "None", order: 4 },
+};
+
+const ISSUES = [
+  { id: "i90",  ident: "SHI-90",  parentId: null,  title: "Egress containment: SNI identity allowlist", pri: "urgent", status: "inprogress", assignee: "Nik", updated: 95, labels: [["security","#f2585b"],["infra","#5e9cea"]] },
+  { id: "i91",  ident: "SHI-91",  parentId: "i90", title: "Durable allowlist store", pri: "high", status: "done", assignee: "Nik", updated: 80, labels: [] },
+  { id: "i92",  ident: "SHI-92",  parentId: "i90", title: "Containment Settings UI", pri: "medium", status: "inreview", assignee: "Ava", updated: 90, labels: [["frontend","#6e63f2"]] },
+  { id: "i93",  ident: "SHI-93",  parentId: "i90", title: "Tier-C proxy launch wiring", pri: "high", status: "inprogress", assignee: "Nik", updated: 70, labels: [] },
+  { id: "i94",  ident: "SHI-94",  parentId: "i93", title: "Per-route SNI rule matcher", pri: "medium", status: "inprogress", assignee: "Nik", updated: 66, labels: [] },
+  { id: "i95",  ident: "SHI-95",  parentId: "i94", title: "Unit tests for the SNI matcher", pri: "low", status: "todo", assignee: "Ava", updated: 44, labels: [["test","#7c818c"]] },
+
+  { id: "i210", ident: "SHI-210", parentId: null, title: "Nested issues in the tracker panel", pri: "high", status: "inprogress", assignee: "Ava", updated: 98, labels: [["tracker","#e8c547"]] },
+  { id: "i211", ident: "SHI-211", parentId: "i210", title: "Add parentId to TrackerIssue + adapters", pri: "high", status: "done", assignee: "Nik", updated: 60, labels: [] },
+  { id: "i212", ident: "SHI-212", parentId: "i210", title: "Disclosure + indentation in IssuesViewer", pri: "medium", status: "inprogress", assignee: "Ava", updated: 88, labels: [["frontend","#6e63f2"]] },
+  { id: "i213", ident: "SHI-213", parentId: "i210", title: "Recursive within-parent ordering", pri: "low", status: "todo", assignee: "Ava", updated: 40, labels: [] },
+
+  { id: "i198", ident: "SHI-198", parentId: null, title: "Two-level sort + group editor (modal)", pri: "urgent", status: "todo", assignee: "Nik", updated: 75, labels: [["tracker","#e8c547"],["ux","#4cb782"]] },
+  { id: "i199", ident: "SHI-199", parentId: "i198", title: "Sliders icon + modal shell", pri: "high", status: "todo", assignee: "Ava", updated: 50, labels: [] },
+  { id: "i200", ident: "SHI-200", parentId: "i198", title: "Persist sort/group prefs per tracker", pri: "none", status: "backlog", assignee: null, updated: 20, labels: [] },
+
+  { id: "i185", ident: "SHI-185", parentId: null, title: "Inline issue label filter editor", pri: "medium", status: "inreview", assignee: "Ava", updated: 65, labels: [["frontend","#6e63f2"]] },
+  { id: "i150", ident: "SHI-150", parentId: null, title: "Fix flaky ws-disconnect resilience test", pri: "low", status: "todo", assignee: "Nik", updated: 30, labels: [["test","#7c818c"]] },
+
+  // Orphan: parent i300 is Done and excluded from the open list.
+  { id: "i301", ident: "SHI-301", parentId: "i300", title: "Backfill migration for parentId column", pri: "medium", status: "todo", assignee: "Nik", updated: 55, labels: [], orphanParent: "SHI-300" },
+];
+
+const DEFAULTS = { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" };
+// Collapsed parents persist GLOBALLY (localStorage), keyed by issue id — the issue
+// list isn't scoped to a session or a repo, so neither is its collapse state.
+const COLLAPSE_KEY = "shipit.issues.collapsed";
+const loadCollapsed = () => { try { return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]")); } catch { return new Set(); } };
+const saveCollapsed = () => { try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...state.collapsed])); } catch (e) {} };
+const state = Object.assign({}, DEFAULTS, { collapsed: loadCollapsed() });
+
+function val(i, k) {
+  switch (k) {
+    case "priority": return PRI[i.pri].order;
+    case "status":   return STATUS[i.status].order;
+    case "title":    return i.title.toLowerCase();
+    case "updated":  return -i.updated;
+    case "assignee": return (i.assignee || "￿").toLowerCase();
+    default: return 0;
+  }
+}
+function cmpKey(a, b, k, dir) { const x = val(a,k), y = val(b,k); if (x<y) return -dir; if (x>y) return dir; return 0; }
+function comparator(a, b) {
+  let c = cmpKey(a, b, state.primary, state.primaryDir);
+  if (c) return c;
+  if (state.secondary !== "none") { c = cmpKey(a, b, state.secondary, state.secondaryDir); if (c) return c; }
+  return a.ident.localeCompare(b.ident, undefined, { numeric: true });
+}
+function childrenOf(id) { return ISSUES.filter(i => i.parentId === id).sort(comparator); }
+function isOrphan(i) { return i.parentId && !ISSUES.some(p => p.id === i.parentId); }
+function topLevel() { return ISSUES.filter(i => !i.parentId || isOrphan(i)).sort(comparator); }
+
+function priBars(lvl) {
+  if (lvl === "urgent") return `<span class="pri urgent" title="Urgent"><span class="urg">!</span></span>`;
+  return `<span class="pri" data-lvl="${lvl}" title="${PRI[lvl].label}"><span class="bar b1"></span><span class="bar b2"></span><span class="bar b3"></span></span>`;
+}
+function statusCell(k) { const s = STATUS[k]; return `<span class="status" style="color:${s.color}"><span class="sdot ${s.filled?"filled":""}"></span><span class="sname">${s.name}</span></span>`; }
+function labelsCell(ls) { return ls.length ? `<div class="labels">` + ls.map(([n,c]) => `<span class="chip"><span class="cdot" style="background:${c}"></span>${n}</span>`).join("") + `</div>` : ""; }
+
+// ---- Desktop recursive render ----
+function rowHTML(issue, depth, childCount, collapsed) {
+  let spines = "";
+  for (let d = 0; d < depth; d++) spines += `<span class="tree-spine"></span>`;
+  const disc = childCount
+    ? `<span class="disclosure ${collapsed?"collapsed":""}" data-toggle="${issue.id}">▾</span>`
+    : `<span class="disclosure leaf">▾</span>`;
+  const pill = childCount ? `<span class="childcount">${childCount}</span>` : "";
+  const orphan = issue.orphanParent ? `<div class="orphan-hint">↳ in <span class="ph">${issue.orphanParent}</span> (hidden)</div>` : "";
+  return `<div class="row ${depth?"child":""}">
+    <div class="grid">
+      <div class="id-cell">${spines}${disc}<span class="ident">${issue.ident}</span>${pill}</div>
+      <div class="title"><div class="t">${issue.title}</div>${orphan}${labelsCell(issue.labels)}</div>
+      <div>${priBars(issue.pri)}</div>
+      <div>${statusCell(issue.status)}</div>
+      <div class="action"><button class="start-btn">Start session</button></div>
+    </div>
+  </div>`;
+}
+function subtree(issue, depth) {
+  const kids = childrenOf(issue.id);
+  const collapsed = state.collapsed.has(issue.id);
+  let html = rowHTML(issue, depth, kids.length, collapsed);
+  if (kids.length && !collapsed) for (const k of kids) html += subtree(k, depth + 1);
+  return html;
+}
+
+// ---- Mobile recursive flatten (indent only) ----
+function mobileCards(issue, depth, out) {
+  out.push({ issue, depth });
+  for (const k of childrenOf(issue.id)) mobileCards(k, depth + 1, out);
+}
+function mcardHTML({ issue, depth }) {
+  const indent = Math.min(depth, 3) * 4; // cap at 3 levels, 4px per step — a faint hint, not a tree
+  return `<div class="mcard ${depth?"child":""}" style="padding-left:${12 + indent}px">
+    <div class="mcard-top"><span class="ident">${issue.ident}</span>${priBars(issue.pri)}</div>
+    <div class="mt">${issue.title}</div>
+    <div class="mcard-meta">${statusCell(issue.status)}${issue.assignee?`<span>· ${issue.assignee}</span>`:""}</div>
+  </div>`;
+}
+
+// ---- Grouping ----
+function groupKey(i) {
+  if (state.group === "priority") return PRI[i.pri].label;
+  if (state.group === "status")   return STATUS[i.status].name;
+  if (state.group === "assignee") return i.assignee || "Unassigned";
+  return "";
+}
+function groupRank(key) {
+  for (const k in PRI) if (PRI[k].label === key) return PRI[k].order;
+  for (const k in STATUS) if (STATUS[k].name === key) return STATUS[k].order;
+  return key.charCodeAt(0) || 0;
+}
+
+function render() {
+  const tops = topLevel();
+  let html = "";
+  if (state.group !== "none") {
+    const groups = new Map();
+    for (const t of tops) { const gk = groupKey(t); if (!groups.has(gk)) groups.set(gk, []); groups.get(gk).push(t); }
+    const keys = [...groups.keys()].sort((a, b) => groupRank(a) - groupRank(b));
+    for (const gk of keys) { html += `<div class="grouphdr">${gk} <span class="gcount">${groups.get(gk).length}</span></div>`; for (const t of groups.get(gk)) html += subtree(t, 0); }
+  } else {
+    for (const t of tops) html += subtree(t, 0);
+  }
+  document.getElementById("rows").innerHTML = html;
+  document.getElementById("count").textContent = ISSUES.length;
+
+  // Mobile
+  const flat = [];
+  for (const t of tops) mobileCards(t, 0, flat);
+  document.getElementById("mrows").innerHTML = flat.map(mcardHTML).join("");
+  document.getElementById("mcount").textContent = ISSUES.length;
+
+  updateSummary();
+  wire();
+}
+
+function label(key) { return ({priority:"Priority",status:"Status",title:"Title",updated:"Last updated",assignee:"Assignee"})[key] || key; }
+function updateSummary() {
+  // No standing summary row (keeps the toolbar one line tall) — the active order
+  // lives in the icon's tooltip, and the dirty dot flags a non-default order.
+  const dir = d => d === 1 ? "↑" : "↓";
+  let s = `${label(state.primary)} ${dir(state.primaryDir)}`;
+  if (state.secondary !== "none") s += ` → ${label(state.secondary)} ${dir(state.secondaryDir)}`;
+  if (state.group !== "none") s += `  ·  grouped by ${label(state.group)}`;
+  document.getElementById("openSort").title = "Sort & group — " + s;
+  const dirty = JSON.stringify({p:state.primary,pd:state.primaryDir,s:state.secondary,sd:state.secondaryDir,g:state.group})
+            !== JSON.stringify({p:DEFAULTS.primary,pd:DEFAULTS.primaryDir,s:DEFAULTS.secondary,sd:DEFAULTS.secondaryDir,g:DEFAULTS.group});
+  document.getElementById("openSort").classList.toggle("dirty", dirty);
+}
+
+function wire() {
+  document.querySelectorAll(".disclosure[data-toggle]").forEach(el => {
+    el.addEventListener("click", e => {
+      e.stopPropagation();
+      const id = el.getAttribute("data-toggle");
+      state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id);
+      saveCollapsed();
+      render();
+    });
+  });
+}
+
+// ---- Modal wiring ----
+const $ = id => document.getElementById(id);
+$("openSort").addEventListener("click", () => $("backdrop").classList.add("open"));
+$("closeSort").addEventListener("click", () => $("backdrop").classList.remove("open"));
+$("doneSort").addEventListener("click", () => $("backdrop").classList.remove("open"));
+$("backdrop").addEventListener("click", e => { if (e.target === $("backdrop")) $("backdrop").classList.remove("open"); });
+$("primary").addEventListener("change", e => { state.primary = e.target.value; if (state.secondary === state.primary) { state.secondary = "none"; $("secondary").value = "none"; } render(); });
+$("secondary").addEventListener("change", e => { state.secondary = e.target.value; render(); });
+$("group").addEventListener("change", e => { state.group = e.target.value; render(); });
+function wireSeg(segId, key) {
+  $(segId).querySelectorAll("button").forEach(btn => btn.addEventListener("click", () => {
+    state[key] = Number(btn.getAttribute("data-d"));
+    $(segId).querySelectorAll("button").forEach(b => b.classList.toggle("on", b === btn));
+    render();
+  }));
+}
+wireSeg("primaryDir", "primaryDir");
+wireSeg("secondaryDir", "secondaryDir");
+$("resetSort").addEventListener("click", () => {
+  Object.assign(state, DEFAULTS);
+  $("primary").value = DEFAULTS.primary; $("secondary").value = DEFAULTS.secondary; $("group").value = DEFAULTS.group;
+  $("primaryDir").querySelectorAll("button").forEach(b => b.classList.toggle("on", Number(b.getAttribute("data-d")) === DEFAULTS.primaryDir));
+  $("secondaryDir").querySelectorAll("button").forEach(b => b.classList.toggle("on", Number(b.getAttribute("data-d")) === DEFAULTS.secondaryDir));
+  render();
+});
+
+render();
+</script>
+</body>
+</html>
