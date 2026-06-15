@@ -19,11 +19,21 @@ import {
 // hoisted `vi.mock` factory.
 const ptyHoisted = vi.hoisted(() => ({
   calls: [] as { cmd: string; args: readonly string[]; opts: { env?: Record<string, string> } }[],
+  // Captured CLI lifecycle callbacks + a kill counter, so the freshness suite
+  // can drive the exit path and assert the PTY isn't SIGHUP'd prematurely.
+  exitHandlers: [] as ((e: { exitCode: number }) => void)[],
+  killed: 0,
 }));
 vi.mock("node-pty", () => ({
   spawn: (cmd: string, args: readonly string[], opts: { env?: Record<string, string> }) => {
     ptyHoisted.calls.push({ cmd, args, opts });
-    return { pid: 4242, onData: () => {}, onExit: () => {}, write: () => {}, kill: () => {} };
+    return {
+      pid: 4242,
+      onData: () => {},
+      onExit: (cb: (e: { exitCode: number }) => void) => { ptyHoisted.exitHandlers.push(cb); },
+      write: () => {},
+      kill: () => { ptyHoisted.killed++; },
+    };
   },
 }));
 
@@ -420,5 +430,127 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     expect(ptyHoisted.calls[0].opts.env?.HOME).toBe("/root");
     expect(mgr.getActiveAccountId()).toBeNull();
     mgr.kill();
+  });
+});
+
+describe("AuthManager / fresh-credential completion gate", () => {
+  // Regression for the stale-credential short-circuit: re-authenticating an
+  // account that already has a credential file used to "complete" on the very
+  // first 500ms poll tick (pure existsSync), killing the CLI before it could
+  // exchange the pasted code into a new token. The completion checks now
+  // require the credential file to be *newer* than a baseline captured at flow
+  // start, so only a genuinely-new write counts.
+  let tmp: string;
+  const CRED_REL = path.join(".claude", ".credentials.json");
+
+  // Absolute mtimes (epoch ms) — deterministic regardless of wall clock or
+  // fake timers. STALE < FRESH, so a rewrite to FRESH advances past baseline.
+  const STALE_MTIME = 1_000_000_000_000; // 2001
+  const FRESH_MTIME = 2_000_000_000_000; // 2033
+
+  /** Write a credential file and stamp it with an explicit mtime. */
+  function writeCred(mtimeMs: number): void {
+    const credPath = path.join(tmp, CRED_REL);
+    fs.mkdirSync(path.dirname(credPath), { recursive: true });
+    fs.writeFileSync(credPath, "{}");
+    const when = new Date(mtimeMs);
+    fs.utimesSync(credPath, when, when);
+  }
+
+  /** Capture the normalized terminal events for assertions. */
+  function track(mgr: AuthManager): { complete: number; failed: { reason?: string }[] } {
+    const seen = { complete: 0, failed: [] as { reason?: string }[] };
+    mgr.on("complete", () => { seen.complete++; });
+    mgr.on("failed", (p?: { reason?: string }) => { seen.failed.push(p ?? {}); });
+    return seen;
+  }
+
+  beforeEach(() => {
+    ptyHoisted.calls.length = 0;
+    ptyHoisted.exitHandlers.length = 0;
+    ptyHoisted.killed = 0;
+    tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-fresh-"));
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it("poll does NOT complete on a pre-existing stale file, and leaves the CLI alive", () => {
+    writeCred(STALE_MTIME);
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-stale", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    // One poll tick: the stale file must not be mistaken for a fresh write.
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(0);
+    expect(seen.failed).toHaveLength(0);
+    expect(ptyHoisted.killed).toBe(0); // CLI not SIGHUP'd mid-exchange
+
+    // The CLI finishes the exchange and writes fresh credentials.
+    writeCred(FRESH_MTIME);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(1);
+    expect(ptyHoisted.killed).toBe(1); // killed exactly once, on real success
+  });
+
+  it("poll completes when credentials first appear (no pre-existing file)", () => {
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-new", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(0); // nothing written yet
+
+    writeCred(FRESH_MTIME);
+    vi.advanceTimersByTime(500);
+    expect(seen.complete).toBe(1);
+  });
+
+  it("poll times out (failed) when no fresh write ever lands, despite a stale file", () => {
+    writeCred(STALE_MTIME);
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-timeout", credentialDir: tmp });
+    mgr.sendCode("auth-code-xyz");
+
+    // 60 ticks × 500ms = 30s — the full poll budget.
+    vi.advanceTimersByTime(30_000);
+    expect(seen.complete).toBe(0);
+    expect(seen.failed).toHaveLength(1);
+    expect(seen.failed[0].reason).toBe("timeout");
+  });
+
+  it("exit handler reports failure on a stale file (no fresh write)", () => {
+    writeCred(STALE_MTIME);
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-exit-stale", credentialDir: tmp });
+
+    expect(ptyHoisted.exitHandlers.length).toBeGreaterThan(0);
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 129 });
+
+    expect(seen.complete).toBe(0);
+    expect(seen.failed).toHaveLength(1);
+    expect(seen.failed[0].reason).toBe("error");
+  });
+
+  it("exit handler reports success when the CLI wrote fresh credentials", () => {
+    writeCred(STALE_MTIME);
+    const mgr = new AuthManager();
+    const seen = track(mgr);
+    mgr.startOAuthFlow({ accountId: "acct-exit-fresh", credentialDir: tmp });
+
+    writeCred(FRESH_MTIME); // CLI persisted a new token before exiting
+    for (const cb of ptyHoisted.exitHandlers) cb({ exitCode: 0 });
+
+    expect(seen.complete).toBe(1);
+    expect(seen.failed).toHaveLength(0);
   });
 });

@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readlinkSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readlinkSync, statSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
@@ -284,6 +284,22 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
   private activeCredentialDir: string | null = null;
   /** Provider-account id for the in-flight flow, or `null` when singleton. */
   private activeFlowAccountId: string | null = null;
+  /**
+   * Newest credential-file mtime (epoch ms) observed in the active flow's
+   * config dir at the moment the flow *started*, or `0` when no credential
+   * file was present. The completion checks (poll + exit) treat the flow as
+   * successful only once a credential file is newer than this baseline —
+   * i.e. the CLI actually wrote *fresh* credentials for the code just pasted.
+   *
+   * Without this, `checkCredentials()` (pure `existsSync`) reports success on
+   * the very first poll tick whenever *any* credential file is already on disk
+   * — which is always true when re-authenticating an account that has a stale
+   * or expired file. That short-circuit fires within 500ms, `kill()`s the
+   * `claude /login` PTY mid-exchange (SIGHUP, exit 129), and the pasted code is
+   * never exchanged into a new token: the login is a silent no-op and the
+   * account never legitimately reaches `ready`.
+   */
+  private credentialBaselineMtime = 0;
 
   get authenticated(): boolean {
     return this._authenticated;
@@ -464,6 +480,36 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
   }
 
   /**
+   * Newest mtime (epoch ms) across the candidate credential files in the
+   * active flow's config dir, or `0` when none exist. Used to baseline the
+   * flow at start and to detect a genuinely-new write afterwards.
+   */
+  private credentialMtimeMs(): number {
+    const configDir = this.claudeConfigDir(this.activeCredentialDir);
+    let newest = 0;
+    for (const fileName of CLAUDE_CREDENTIAL_FILES) {
+      try {
+        const { mtimeMs } = statSync(path.join(configDir, fileName));
+        if (mtimeMs > newest) newest = mtimeMs;
+      } catch {
+        // Missing file — skip.
+      }
+    }
+    return newest;
+  }
+
+  /**
+   * Did the CLI write *fresh* credentials since the active flow started?
+   * True only when a credential file is now newer than the baseline captured
+   * in {@link startOAuthFlow}. This is the flow-completion gate — distinct
+   * from {@link checkCredentials}, which answers the broader "is auth
+   * configured at all?" (and so honors a pre-existing file + env vars).
+   */
+  private hasFreshCredentials(): boolean {
+    return this.credentialMtimeMs() > this.credentialBaselineMtime;
+  }
+
+  /**
    * Start the OAuth flow by spawning `claude /login` in a pseudo-terminal.
    *
    * Uses node-pty to allocate a real PTY, so the CLI sees a terminal and
@@ -490,6 +536,11 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     // root, so it reads/writes `<root>/.claude` + `<root>/.claude.json`.
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    // Baseline the credential file's mtime *before* spawning the CLI, so the
+    // completion checks below only fire on a genuinely-new write. Re-auth of
+    // an account with a stale/expired file would otherwise look instantly
+    // "complete" and kill the CLI before it exchanges the pasted code.
+    this.credentialBaselineMtime = this.credentialMtimeMs();
     const home = this.homeFor(this.activeCredentialDir);
 
     // Skip the first-run onboarding wizard by marking it complete
@@ -570,8 +621,9 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         }
       }
 
-      // Check if credentials were written
-      if (this.checkCredentials()) {
+      // Check if *fresh* credentials were written by this flow. A pre-existing
+      // stale file must not count — see `credentialBaselineMtime`.
+      if (this.hasFreshCredentials()) {
         console.log("[auth] Authentication successful");
         // Only the singleton flow owns the global `_authenticated` flag; a
         // scoped flow's success is reflected on its account row instead.
@@ -676,12 +728,13 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
   /** Poll for credentials appearing on disk after code submission. */
   private startCredentialsPoll(): void {
     this.clearCredentialsPoll();
-    console.log("[auth] Starting credentials poll (checking", CLAUDE_CONFIG_DIR, "every 500ms)");
+    const configDir = this.claudeConfigDir(this.activeCredentialDir);
+    console.log("[auth] Starting credentials poll (checking", configDir, "for a fresh write every 500ms)");
     let attempts = 0;
     this.credentialsPollInterval = setInterval(() => {
       attempts++;
-      if (this.checkCredentials()) {
-        console.log("[auth] Credentials detected on disk after code submission");
+      if (this.hasFreshCredentials()) {
+        console.log("[auth] Fresh credentials detected on disk after code submission");
         if (!this.activeCredentialDir) this._authenticated = true;
         this.lastPendingDetails = null;
         this.clearCredentialsPoll();
@@ -693,7 +746,7 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         this.clearActiveScope();
       } else if (attempts >= 60) {
         // Give up after 30 seconds (60 × 500ms)
-        console.log("[auth] Credentials poll timed out — no credentials found in", CLAUDE_CONFIG_DIR);
+        console.log("[auth] Credentials poll timed out — no fresh credentials written to", configDir);
         this.lastPendingDetails = null;
         this.clearCredentialsPoll();
         this.emit("auth_failed");
