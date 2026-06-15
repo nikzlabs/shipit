@@ -31,7 +31,7 @@ jobs:
     # different head repo, so this skips them entirely — no CI minutes spent on
     # untrusted code, regardless of the repo's first-time-contributor setting.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -57,7 +57,7 @@ jobs:
   test:
     name: Test
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
