@@ -177,6 +177,7 @@ export function AllSessionsDialog({
                   onRestore={handleUnarchive}
                   repoLabel={selectedRepo === ALL_REPOS && session.remoteUrl ? parseRepoLabel(session.remoteUrl) : undefined}
                   disabled={actioningId === session.id}
+                  overflowMenuPortaled={false}
                 />
               ))
             )}

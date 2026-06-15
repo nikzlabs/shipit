@@ -175,6 +175,11 @@ interface SessionItemProps {
    * on desktop it hover-reveals on inactive rows.
    */
   isTouch?: boolean;
+  /**
+   * Render the overflow menu through a portal by default. Dialog-contained rows
+   * disable this so Radix Dialog's modal focus/aria scope owns the menu too.
+   */
+  overflowMenuPortaled?: boolean;
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
@@ -261,7 +266,7 @@ function DiskTierBadge({ session }: { session: SessionInfo }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, overflowMenuPortaled = true }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
@@ -470,6 +475,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           <OverflowMenu
             label="Session actions"
             triggerClassName="h-7 w-7"
+            portaled={overflowMenuPortaled}
             onOpenChange={setMenuOpen}
           >
             {!isArchived && (

@@ -20,6 +20,8 @@ interface OverflowMenuProps {
   contentClassName?: string;
   /** Optional trigger styling for local sizing/spacing. */
   triggerClassName?: string;
+  /** Render menu content through a portal; disable when nested inside modal dialogs. */
+  portaled?: boolean;
   /** Called whenever the menu opens or closes. */
   onOpenChange?: (open: boolean) => void;
 }
@@ -31,10 +33,11 @@ export function OverflowMenu({
   side = "bottom",
   contentClassName,
   triggerClassName,
+  portaled = true,
   onOpenChange,
 }: OverflowMenuProps) {
   return (
-    <DropdownMenu onOpenChange={onOpenChange}>
+    <DropdownMenu modal={false} onOpenChange={onOpenChange}>
       <DropdownMenuTrigger asChild>
         <button
           className={cn(
@@ -47,7 +50,7 @@ export function OverflowMenu({
           <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align={align} side={side} className={contentClassName}>
+      <DropdownMenuContent align={align} side={side} className={contentClassName} portaled={portaled}>
         {children}
       </DropdownMenuContent>
     </DropdownMenu>
