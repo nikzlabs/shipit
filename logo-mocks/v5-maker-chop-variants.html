@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nikzlabs — Maker's chop variations vol.05</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --paper: #f1ece1;
+    --ink:   #16182a;
+    --coral: #ff5640;
+    --blue:  #2740ff;
+    --gold:  #e7a92b;
+    --line:  rgba(22,24,42,0.16);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: var(--paper);
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 26px 26px, 26px 26px;
+    font-family: "Space Mono", ui-monospace, monospace;
+    padding: 54px 40px 90px; position: relative;
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+    opacity: 0.06; mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  header { max-width: 1180px; margin: 0 auto 30px; }
+  .kicker { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--blue); font-weight: 700; margin: 0 0 8px; }
+  h1 { font-family: "Fraunces", Georgia, serif; font-weight: 900; font-size: clamp(40px, 7vw, 78px);
+       line-height: 0.9; margin: 0; letter-spacing: -2px; }
+  .sub p { margin: 14px 0 0; font-size: 13px; max-width: 640px; line-height: 1.55; color: #3a3c4e; }
+  .sub em { color: var(--coral); font-style: normal; font-weight: 700; }
+  .rule { height: 3px; background: var(--ink); max-width: 1180px; margin: 22px auto 30px; position: relative; }
+  .rule::before { content: ""; position: absolute; right: 0; top: -4px; width: 11px; height: 11px; background: var(--coral); border-radius: 50%; }
+
+  .grid { max-width: 1180px; margin: 0 auto; display: grid; grid-template-columns: repeat(4, 1fr); gap: 0; border: 2px solid var(--ink); }
+  .cell { border: 1px solid var(--ink); padding: 18px 16px 14px; position: relative; background: var(--paper);
+          display: flex; flex-direction: column; opacity: 0; transform: translateY(12px);
+          animation: rise .5s cubic-bezier(.2,.7,.3,1) forwards; }
+  .cell:nth-child(1){animation-delay:.04s}.cell:nth-child(2){animation-delay:.09s}.cell:nth-child(3){animation-delay:.14s}
+  .cell:nth-child(4){animation-delay:.19s}.cell:nth-child(5){animation-delay:.24s}.cell:nth-child(6){animation-delay:.29s}
+  .cell:nth-child(7){animation-delay:.34s}.cell:nth-child(8){animation-delay:.39s}.cell:nth-child(9){animation-delay:.44s}
+  .cell:nth-child(10){animation-delay:.49s}.cell:nth-child(11){animation-delay:.54s}.cell:nth-child(12){animation-delay:.59s}
+  @keyframes rise { to { opacity: 1; transform: none; } }
+  .cell.star { outline: 3px solid var(--coral); outline-offset: -3px; z-index: 2; }
+
+  .fig { display: flex; justify-content: space-between; align-items: center; font-size: 9.5px; letter-spacing: 1.2px; text-transform: uppercase; }
+  .fig .no { font-weight: 700; }
+  .fig .ph { color: var(--blue); }
+  .stage { height: 120px; display: flex; align-items: center; justify-content: center; margin: 6px 0 10px; }
+  .name { font-family:"Fraunces",serif; font-weight:600; font-size:16px; letter-spacing:-.3px; }
+  .note { font-size:10.5px; color:#4a4c5e; line-height:1.45; margin-top:3px; }
+
+  .section { max-width:1180px; margin:44px auto 14px; font-size:11px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
+  .section span { color: var(--coral); }
+
+  .ctx { max-width:1180px; margin:0 auto; border:2px solid var(--ink); display:grid; grid-template-columns: 1.4fr 1fr; }
+  .ctx > div { padding:30px; border-right:1px solid var(--ink); display:flex; align-items:center; justify-content:center; gap:28px; flex-wrap:wrap; }
+  .ctx > div:last-child { border-right:0; background:var(--ink); }
+  .ctx .lab { font-size:10px; letter-spacing:1px; color:#5a5c6e; width:100%; text-align:center; margin-top:6px; }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="kicker">nikzlabs — Maker's chop · variations · vol.05</p>
+  <h1>The chop, twelve ways</h1>
+  <div class="sub">
+    <p>Locked onto the one you liked. The <em>carved arch</em> (a doorway / the “n”) stays the constant; what varies is <em>form</em>, <em>ink</em>, and <em>treatment</em>. The coral box is the original for reference.</p>
+  </div>
+</header>
+<div class="rule"></div>
+
+<div class="grid">
+
+  <!-- A: original -->
+  <div class="cell star">
+    <div class="fig"><span class="no">A</span><span class="ph">original</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="original chop">
+        <defs><filter id="roA" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.045 0.06" numOctaves="3" seed="7" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3.5"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#roA)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Original</div>
+    <div class="note">Coral round-square, blue print-shift, carved arch.</div>
+  </div>
+
+  <!-- B: wax seal circle + rim text -->
+  <div class="cell">
+    <div class="fig"><span class="no">B</span><span class="ph">circle seal</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="circular seal chop">
+        <defs>
+          <filter id="roB" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" seed="2" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3"/></filter>
+          <path id="rimB" d="M60,60 m -30,0 a 30,30 0 1,1 60,0 a 30,30 0 1,1 -60,0"/>
+        </defs>
+        <circle cx="60" cy="60" r="37" fill="#2740ff" transform="translate(-3,3)" opacity="0.9"/>
+        <g filter="url(#roB)">
+          <circle cx="60" cy="60" r="37" fill="#ff5640"/>
+          <circle cx="60" cy="60" r="30.5" fill="none" stroke="#f1ece1" stroke-width="1.6"/>
+          <path d="M46 73 V62 a14 14 0 0 1 28 0 V73" fill="none" stroke="#f1ece1" stroke-width="8"/>
+          <line x1="41" y1="73" x2="79" y2="73" stroke="#f1ece1" stroke-width="4"/>
+          <text font-family="Space Mono, monospace" font-weight="700" font-size="6.4" letter-spacing="2.4" fill="#f1ece1">
+            <textPath href="#rimB" startOffset="6%">NIKZLABS · EST · MMXXVI ·</textPath>
+          </text>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Wax seal</div>
+    <div class="note">Official-stamp ring text orbits the arch.</div>
+  </div>
+
+  <!-- C: mono ink / emboss -->
+  <div class="cell">
+    <div class="fig"><span class="no">C</span><span class="ph">monotone</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="monochrome ink chop">
+        <defs><filter id="roC" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.05 0.07" numOctaves="3" seed="11" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="4"/></filter></defs>
+        <g filter="url(#roC)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#16182a"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Mono / emboss</div>
+    <div class="note">Single ink — for foil, deboss, one-color print.</div>
+  </div>
+
+  <!-- D: flash blue -->
+  <div class="cell">
+    <div class="fig"><span class="no">D</span><span class="ph">colour alt</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="blue ink chop">
+        <defs><filter id="roD" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.045 0.06" numOctaves="3" seed="5" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3.5"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640" transform="translate(-3.5,3.5)" opacity="0.85"/>
+        <g filter="url(#roD)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Flash blue</div>
+    <div class="note">Blue stamp, coral shift — the cool inversion.</div>
+  </div>
+
+  <!-- E: heavy overprint -->
+  <div class="cell">
+    <div class="fig"><span class="no">E</span><span class="ph">overprint</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="overprint chop">
+        <g style="mix-blend-mode:multiply">
+          <g transform="translate(-5,-3)"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></g>
+          <g transform="translate(5,3)"><rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></g>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Heavy overprint</div>
+    <div class="note">Two passes far off-register; overlap goes dark.</div>
+  </div>
+
+  <!-- F: hexagon -->
+  <div class="cell">
+    <div class="fig"><span class="no">F</span><span class="ph">form</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="hexagon chop">
+        <defs><filter id="roF" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" seed="9" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3.2"/></filter></defs>
+        <polygon points="60,22 93,41 93,79 60,98 27,79 27,41" fill="#2740ff" transform="translate(-3,3)" opacity="0.9"/>
+        <g filter="url(#roF)">
+          <polygon points="60,22 93,41 93,79 60,98 27,79 27,41" fill="#ff5640"/>
+          <path d="M43 80 V61 a17 17 0 0 1 34 0 V80" fill="none" stroke="#f1ece1" stroke-width="10"/>
+          <line x1="38" y1="80" x2="82" y2="80" stroke="#f1ece1" stroke-width="4.5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Hexagon</div>
+    <div class="note">Package/module silhouette (npm, Docker).</div>
+  </div>
+
+  <!-- G: hard square brutalist -->
+  <div class="cell">
+    <div class="fig"><span class="no">G</span><span class="ph">form</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="hard square chop">
+        <defs><filter id="roG" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.04" numOctaves="2" seed="6" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.5"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" fill="#2740ff" transform="translate(-4,4)" opacity="0.9"/>
+        <g filter="url(#roG)">
+          <rect x="22" y="22" width="74" height="74" fill="#ff5640"/>
+          <path d="M39 82 V59 a21 21 0 0 1 42 0 V82" fill="none" stroke="#f1ece1" stroke-width="13"/>
+          <line x1="32" y1="82" x2="88" y2="82" stroke="#f1ece1" stroke-width="6"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Hard square</div>
+    <div class="note">Sharp corners, fat arch — brutalist weight.</div>
+  </div>
+
+  <!-- H: arcade / double arch -->
+  <div class="cell">
+    <div class="fig"><span class="no">H</span><span class="ph">motif</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="arcade double arch chop">
+        <defs><filter id="roH" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="3" seed="14" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3.2"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#roH)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M37 80 V64 a11 11 0 0 1 22 0 V80" fill="none" stroke="#f1ece1" stroke-width="8"/>
+          <path d="M61 80 V64 a11 11 0 0 1 22 0 V80" fill="none" stroke="#f1ece1" stroke-width="8"/>
+          <line x1="33" y1="80" x2="87" y2="80" stroke="#f1ece1" stroke-width="4.5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Arcade</div>
+    <div class="note">Two arches — a colonnade. “labs”, plural / scaling.</div>
+  </div>
+
+  <!-- I: lit port -->
+  <div class="cell">
+    <div class="fig"><span class="no">I</span><span class="ph">motif</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="arch with light chop">
+        <defs><filter id="roI" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.045 0.06" numOctaves="3" seed="3" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3.2"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#roI)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+        <circle cx="60" cy="62" r="6.5" fill="#f1ece1"/>
+        <circle cx="60" cy="62" r="3.6" fill="#e7a92b"/>
+      </svg>
+    </div>
+    <div class="name">Lit port</div>
+    <div class="note">A glowing experiment inside the doorway.</div>
+  </div>
+
+  <!-- J: worn -->
+  <div class="cell">
+    <div class="fig"><span class="no">J</span><span class="ph">treatment</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="worn chop">
+        <defs><filter id="roJ" x="-25%" y="-25%" width="150%" height="150%"><feTurbulence type="fractalNoise" baseFrequency="0.06 0.08" numOctaves="4" seed="21" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="5.5"/></filter></defs>
+        <g filter="url(#roJ)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+        <g fill="#f1ece1" opacity="0.9">
+          <circle cx="34" cy="40" r="1.4"/><circle cx="80" cy="34" r="1.1"/><circle cx="48" cy="30" r="1"/>
+          <circle cx="88" cy="62" r="1.5"/><circle cx="30" cy="70" r="1.2"/><circle cx="66" cy="90" r="1.3"/>
+          <circle cx="54" cy="46" r="0.9"/><circle cx="74" cy="78" r="1"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Worn</div>
+    <div class="note">Heavy erosion — an old rubber stamp, low-fi.</div>
+  </div>
+
+  <!-- K: keyline seal -->
+  <div class="cell">
+    <div class="fig"><span class="no">K</span><span class="ph">treatment</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="keyline chop">
+        <defs><filter id="roK" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.045" numOctaves="3" seed="8" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="3"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#roK)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <rect x="29" y="29" width="60" height="60" rx="5" fill="none" stroke="#f1ece1" stroke-width="1.6"/>
+          <path d="M42 79 V61 a18 18 0 0 1 36 0 V79" fill="none" stroke="#f1ece1" stroke-width="10"/>
+          <line x1="37" y1="79" x2="83" y2="79" stroke="#f1ece1" stroke-width="4.5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Keyline seal</div>
+    <div class="note">Inner border — the “certified” chop look.</div>
+  </div>
+
+  <!-- L: requisition / dashed -->
+  <div class="cell">
+    <div class="fig"><span class="no">L</span><span class="ph">treatment</span></div>
+    <div class="stage">
+      <svg width="104" height="104" viewBox="0 0 120 120" role="img" aria-label="requisition chop">
+        <defs><filter id="roL" x="-20%" y="-20%" width="140%" height="140%"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed="17" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.6"/></filter></defs>
+        <g filter="url(#roL)">
+          <rect x="22" y="22" width="74" height="74" rx="4" fill="#16182a"/>
+          <rect x="29" y="29" width="60" height="60" fill="none" stroke="#e7a92b" stroke-width="1.6" stroke-dasharray="5 4"/>
+          <path d="M42 79 V61 a18 18 0 0 1 36 0 V79" fill="none" stroke="#f1ece1" stroke-width="10"/>
+          <line x1="37" y1="79" x2="83" y2="79" stroke="#f1ece1" stroke-width="4.5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Requisition</div>
+    <div class="note">Dashed amber border on ink — utilitarian ticket.</div>
+  </div>
+
+</div>
+
+<div class="section">In <span>context</span></div>
+<div class="ctx">
+  <div>
+    <!-- favicon scale of the original -->
+    <svg width="56" height="56" viewBox="0 0 120 120" aria-label="chop 56"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+    <svg width="32" height="32" viewBox="0 0 120 120" aria-label="chop 32"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+    <svg width="16" height="16" viewBox="0 0 120 120" aria-label="chop 16"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+    <div class="lab">56 / 32 / 16&nbsp;px — favicon legibility</div>
+  </div>
+  <div>
+    <svg width="280" height="74" viewBox="0 0 280 74" role="img" aria-label="chop lockup on dark">
+      <rect x="6" y="9" width="56" height="56" rx="7" fill="#ff5640"/>
+      <path d="M19 58 V44 a15 15 0 0 1 30 0 V58" fill="none" stroke="#16182a" stroke-width="8.5"/>
+      <line x1="15" y1="58" x2="53" y2="58" stroke="#16182a" stroke-width="4"/>
+      <text x="78" y="42" font-family="Fraunces, serif" font-weight="900" font-size="34" letter-spacing="-1.5" fill="#f1ece1">nikzlabs</text>
+      <text x="80" y="58" font-family="Space Mono, monospace" font-size="9" letter-spacing="3.5" fill="#ff5640">RESEARCH &amp; SHIPPING</text>
+    </svg>
+    <div class="lab" style="color:#8a8c9e">lockup, reversed on ink</div>
+  </div>
+</div>
+
+</body>
+</html>
