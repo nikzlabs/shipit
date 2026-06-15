@@ -6,7 +6,13 @@ description: Should quoted content in the message composer get richer rendering 
 
 # Composer quote rendering
 
-**Status: design investigation. Nothing implemented — this is a recommendation.**
+**Status: decided — keep the status quo (plain editable text). No code change.**
+
+> **Decision (2026-06-15):** quoted content in the composer stays as plain,
+> editable markdown `> ` text. We are **not** adopting a richer rendering — no
+> rich editor, no quote-as-chip, and (for now) not even the decoration-only
+> left rail. The investigation below records why; the rest of the doc is kept as
+> the rationale for the decision, not an open proposal.
 
 When content is quoted **into the main message composer**, today it lands as
 plain markdown `> ` lines inside the `<textarea>` with no special visual
@@ -23,26 +29,27 @@ replies, and the action-card snapshot would all share whatever we decide.
 **Visual reference:** [`mockup.html`](./mockup.html) — recommended treatment
 plus the two rejected alternatives, side by side, dark mode.
 
-## TL;DR — the recommendation
+## TL;DR — the decision
 
 **Keep the composer a plain-text `<textarea>`. Do not move to a
 contentEditable / rich editor, and do not move the quote out of the editable
 text into a non-editable chip.** The quote stays as editable markdown `> `
-lines — exactly what is sent to the agent.
+lines — exactly what is sent to the agent. This is the shipped behaviour today,
+and we are keeping it.
 
-Ship **one** low-risk, decoration-only enhancement: a subtle left-rail accent
-on contiguous `> ` lines, painted by a mirrored backdrop *behind* the textarea
-so the text model is untouched. Treat it as optional polish gated on a
-feasibility spike; if the spike is fragile, **status quo plain text is an
-acceptable final answer** and we lose nothing the feature needs.
+The decoration-only left rail (a mirrored backdrop accent on `> ` lines, option
+D1 below) was considered as cheap polish but is **deferred, not adopted** — the
+`> ` convention is already legible to anyone who's used markdown or email, and
+the status quo loses nothing the feature needs. It stays on file as a possible
+future enhancement, not pending work.
 
 **What the action-cards feature should assume: plain editable text.** That is
 the most robust substrate for trim / annotate / voice-append / persistence, and
 it requires nothing from this doc to ship.
 
-The two richer options are rejected as defaults (details below): a rich editor
-is disproportionate cost and endangers the textarea's many integrations; a
-"quote lives in a removable chip outside the editable text" banner **breaks the
+The two richer options are rejected (details below): a rich editor is
+disproportionate cost and endangers the textarea's many integrations; a "quote
+lives in a removable chip outside the editable text" banner **breaks the
 action-card editability requirement** and introduces a second source of truth.
 
 ## 1. How quoting works today
@@ -161,7 +168,7 @@ For the payoff — making a quote *look* like a quote — this is wildly
 disproportionate. **Reject B.** D1 buys ~80% of B's visual benefit with none of
 the model change.
 
-## 4. Recommendation & rationale
+## 4. Decision & rationale
 
 1. **Composer stays a plain `<textarea>`. Reject the rich editor (B).** Cost vs.
    benefit is upside-down, and it endangers six working integrations.
@@ -171,12 +178,11 @@ the model change.
    enhancement scoped **only** to pure reply-reference flows — chat quote-reply,
    doc replies — where the quote is genuinely never edited; it should not be
    coupled to this investigation or block action-cards.)
-3. **Optionally ship D1** — the decoration-only left-rail highlight — behind a
-   short feasibility spike. If the mirrored-backdrop proves robust against
-   `field-sizing` + scroll, it's a cheap, pure-CSS-ish win. If it's fragile,
-   **stop and keep status quo plain text** — the `> ` convention is already
-   legible to anyone who's used markdown or email, and nothing the feature needs
-   is lost.
+3. **The decoration-only left rail (D1) is deferred, not adopted.** It was the
+   one richer-than-status-quo idea cheap enough to consider, but the status quo
+   is good enough: the `> ` convention is already legible, and a mirrored
+   backdrop is finicky against `field-sizing` + scroll. We keep it on file as a
+   possible future polish rather than open work — no spike is scheduled.
 4. **Guidance for action-cards (SHI-153): assume plain editable text.** The
    "Add comment…" snapshot should be inserted exactly as it is today — markdown
    text the user freely trims and annotates. Do **not** build the action-card on
@@ -185,7 +191,7 @@ the model change.
 
 This is the CLAUDE.md §5 / "keep it simple" answer: the composer is the input
 surface, and the cheapest representation that the agent receives verbatim is the
-right one. We improve *legibility* without taking on an editor.
+right one. The net result is **no code change** — we keep what ships today.
 
 ## Key files (touched only if D1 is built)
 
