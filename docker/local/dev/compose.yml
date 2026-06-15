@@ -53,6 +53,21 @@ services:
     profiles:
       - build-only
 
+  # Egress firewall sidecar (docs/172 Gap 1, SHI-90). Built into shipit-egress-sidecar:dev
+  # and run by the orchestrator in the agent netns when SESSION_EGRESS_ENFORCE=1.
+  # Build-only (like session-worker) — built by dev.sh, never started by `up`. Its
+  # build context is `docker/` (the Dockerfile COPYs `egress-sidecar/*`), so the
+  # context here is ../.. relative to this compose file. Without this, a change to
+  # docker/egress-sidecar/ never reaches the running sidecar — it lags whatever was
+  # last built manually (SHI-90 verification finding, 2026-06-15).
+  egress-sidecar:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.egress-sidecar
+    image: shipit-egress-sidecar:dev
+    profiles:
+      - build-only
+
 networks:
   shipit-dev:
     name: shipit-dev

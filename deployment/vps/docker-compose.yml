@@ -2,7 +2,7 @@
 # Binds to localhost only — Caddy reverse proxy handles public traffic + TLS.
 #
 # Usage:
-#   docker compose build session-worker shipit
+#   docker compose build session-worker shipit egress-sidecar
 #   docker compose build session-worker-docker   # after session-worker (layers on :prod)
 #   docker compose up -d
 #
@@ -94,6 +94,22 @@ services:
       context: ../..
       dockerfile: docker/Dockerfile.session-worker.prod
     image: shipit-session-worker:prod
+    profiles:
+      - build-only
+
+  # Egress firewall sidecar (docs/172 Gap 1, SHI-90). One image, three roles
+  # (Tier A installer / Tier B resolver / Tier C SNI proxy) run by the orchestrator
+  # in the agent netns when SESSION_EGRESS_ENFORCE=1. Build-only (like session-worker)
+  # — built by deploy.sh, never started by `up`. Its Dockerfile COPYs `egress-sidecar/*`
+  # so the build context is `docker/` (../../docker from here). Building it on every
+  # deploy keeps the sidecar in lockstep with main; enforcement stays default-OFF until
+  # an operator sets SESSION_EGRESS_ENFORCE=1 + SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
+  # (see docs/172-agent-containment/egress-control.md).
+  egress-sidecar:
+    build:
+      context: ../../docker
+      dockerfile: Dockerfile.egress-sidecar
+    image: shipit-egress-sidecar:prod
     profiles:
       - build-only
 

@@ -89,7 +89,12 @@ if [ -n "$AVAIL_GB" ] && [ "$AVAIL_GB" -lt "$MIN_FREE_GB" ]; then
   exit 1
 fi
 
-# Build both images (session-worker is a build-only profile, must be named explicitly).
+# Build the images (session-worker + egress-sidecar are build-only profiles, must be
+# named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the SHI-90 egress
+# firewall image — built every deploy so a docker/egress-sidecar/ change ships in lockstep
+# with main instead of lagging a stale manual build. It's independent of session-worker
+# (no FROM dependency), so it builds here alongside it; enforcement stays default-OFF
+# until an operator sets SESSION_EGRESS_ENFORCE=1 + SESSION_EGRESS_SIDECAR_IMAGE.
 # Reuses Docker's build cache by default; set FORCE_REBUILD=1 (or "true",
 # "yes", "on") to bypass it.
 #
@@ -111,7 +116,7 @@ case "${FORCE_REBUILD:-0}" in
     BUILD_ARGS+=("--no-cache")
     ;;
 esac
-docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit
+docker compose -f "$COMPOSE_FILE" build "${BUILD_ARGS[@]}" session-worker shipit egress-sidecar
 
 # docs/128 — build the docker-capable session image (Docker CLI + journalctl) on
 # top of the :prod image we just built. It does `FROM shipit-session-worker:prod`,

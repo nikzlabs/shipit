@@ -59,11 +59,16 @@ tracker as separate issues. None implemented yet.
           (runs the sidecar in the agent netns with `NET_ADMIN`, fail-closed on non-zero).
           Hooked into `createContainer` after start / before ready; gated on
           `SESSION_EGRESS_ENFORCE=1` (default OFF) with `SESSION_EGRESS_SIDECAR_IMAGE`.
-    - [ ] **Verify on a live host** (not possible in the sandbox): build + publish the
-          sidecar image, set the two env vars on a canary/dogfood session, run the SHI-90
-          Tier A checks (raw-socket blocked, `example.com` fails, `api.github.com` works,
-          `npm install`/`git fetch` unaffected). Deploy wiring (`deployment/vps`) to build
-          the image is part of enabling.
+    - [x] **Verified on a live host (2026-06-15, dogfood container-mode orchestrator).**
+          All three tiers enabled (`SESSION_EGRESS_ENFORCE/DNS/PROXY=1`), sidecar rebuilt,
+          fresh session. Tier A floor holds: a raw socket to a non-allowlisted host on a
+          NON-redirected port (80, 4444) times out (OUTPUT DROP); a literal-IP `:443`
+          (`192.0.2.1`) and a raw `:443` connect both land on the SNI proxy and are
+          `deny: no SNI` (cannot exfil — TCP connects to the proxy, which refuses to splice
+          without a valid allowlisted SNI); Tier B refuses `data.attacker-example.com`
+          (EREFUSED) while `api.anthropic.com`/`registry.npmjs.org` resolve and reach (404/200);
+          `corepack`/`pnpm` reached `registry.npmjs.org` through egress. Deploy wiring
+          (`deployment/vps`) to build the image is part of enabling.
   - **Tier B** — controlled DNS resolver (dnsmasq) in the agent netns: forwards only
     allowlisted domains (closes DNS tunneling — `dig secret.attacker.com` is refused) and
     pins resolved IPs into the Tier A ipset (kills stale-IP breakage). Own flag
@@ -203,8 +208,14 @@ tracker as separate issues. None implemented yet.
         default-deny protects them (golden route-table unchanged — no new container route).
         Client: `egress-store.ts` (Zustand) + `SettingsEgress.tsx` (Advanced tab) +
         `egress_settings` SSE sync. Tests: store, routes, reload seam, WS write-through,
-        client store + component. **Live-host verification of the reload swap is pending**
-        (egress enforcement is env-gated OFF by default and not exercisable in the sandbox).
+        client store + component. **Reload swap verified on a live host (2026-06-15).** On a
+        running contained session, `https://example.com` was blocked (Tier B NXDOMAIN, rc=6);
+        `POST /api/egress/hosts {host:".example.com", scope:<sessionId>}` returned 200 and
+        triggered `reloadEgress` → the proxy sidecar was relaunched (`13→14` allowlist entries)
+        and the resolver re-pinned, while the **agent container was NOT restarted** (same
+        container id + StartedAt); `https://example.com` then returned 200 with no restart.
+        The reload also carried `identityRules` through — the relaunched proxy kept `1 identity
+        rule(s)` and still denied `attacker.s3.amazonaws.com` (rc=35).
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.
@@ -229,9 +240,29 @@ tracker as separate issues. None implemented yet.
           when set, omitted when ""). **Follow-up:** no per-session identity SOURCE is wired yet
           (only the operator-global env), so today every contained session gets the same rules;
           a per-session editor would feed `durableRules`.
-    - [ ] **Verify on a live host** once wired: a non-approved tenant SNI on an allowlisted
-          multi-tenant host (e.g. `attacker.s3.amazonaws.com`) is rejected while the session's
-          own bucket splices through; path-style apex denied unless opted in.
+    - [x] **Verified on a live host (2026-06-15, dogfood container-mode orchestrator).**
+          With `SESSION_EGRESS_IDENTITY_RULES=[{"host":".s3.amazonaws.com","identities":["my-bucket"]}]`:
+          the env reached the proxy as `EGRESS_PROXY_IDENTITY_RULES` (W); `my-bucket.s3.amazonaws.com`
+          spliced through to real S3 (403, rc=0) (I1); `attacker.s3.amazonaws.com` (I2) and the
+          path-style apex `s3.amazonaws.com` (I3) were both fast-reset (rc=35) — same allowlisted
+          host/IP, different SNI tenant → denied; proxy logged `deny: identity not permitted for …`
+          for both and nothing for the approved bucket (I4); a non-multi-tenant allowlisted host
+          (`registry.npmjs.org`) was unaffected (200) (R); and a malformed `SESSION_EGRESS_IDENTITY_RULES`
+          failed OPEN — orchestrator warned, the proxy got no `EGRESS_PROXY_IDENTITY_RULES`
+          (`0 identity rule(s)`), and both tenants spliced (F).
+          **Operational finding:** the prebuilt `shipit-egress-sidecar:dev` image predated the
+          Phase-2 commit (`c04a5922`), so the *old* binary silently spliced `attacker.s3` through
+          (no `validateIdentity`, and its startup log lacked the `identity rule(s)` segment). The
+          runbook's "rebuild the sidecar from `main`" prerequisite is load-bearing — without it
+          identity scoping is inert. Root cause: NO build path rebuilt the egress sidecar — it was
+          built ONLY by a manual `docker build`, so a `docker/egress-sidecar/` change silently
+          lagged `main` (here, `dev.sh` was run right before the verify but left the sidecar stale).
+          **Fixed (2026-06-15):** added a build-only `egress-sidecar` service to both
+          `docker/local/dev/compose.yml` (→ `shipit-egress-sidecar:dev`) and
+          `deployment/vps/docker-compose.yml` (→ `shipit-egress-sidecar:prod`), and wired it into
+          both `docker/local/dev.sh` and `deployment/vps/deploy.sh` build commands, so every dev
+          boot / prod deploy rebuilds the sidecar in lockstep with `main`. Enforcement stays
+          default-OFF until an operator sets `SESSION_EGRESS_ENFORCE=1` + `SESSION_EGRESS_SIDECAR_IMAGE`.
 
 ## P1
 
