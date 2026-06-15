@@ -10,7 +10,8 @@ Status: **prototype only.** `mockup.html` + `plan.md` exist; no production code 
 - [ ] `issues-sort.ts`: comparator (primary → secondary → identifier) + **recursive** tree builder + orphan promotion + unit tests
 - [ ] `IssuesSortModal.tsx`: sliders icon → modal with two-level sort + group-by; active-order summary + dirty dot
 - [ ] `IssuesViewer.tsx` (table): recursive disclosure rows, per-level tree spine, child-count pill, orphan hint
-- [ ] `IssuesViewer.tsx` (mobile card): indent-only child cards + left rule, no tree affordances
+- [ ] `IssuesViewer.tsx` (mobile card): indent-only child cards (4px/level, cap 3) + left rule, no tree affordances
 - [ ] Group-by section-header mode (None / Priority / Status / Assignee)
+- [ ] Persist collapse state globally in localStorage (keyed by issue id; not session/repo scoped)
 - [ ] Persist per-tracker sort/group prefs in `settings-store`
 - [ ] Update `shipit-docs/issues.md` for Linear parent/children in `shipit issue view`

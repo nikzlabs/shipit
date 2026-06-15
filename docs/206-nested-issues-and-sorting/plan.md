@@ -24,7 +24,8 @@ This doc proposes nested rendering plus a user-defined **two-level** sort.
 - **Each issue renders once.** A sub-issue appears **only** under its parent — never also in the top-level list. This is the deliberate departure from Linear, which duplicates a sub-issue (once flat, once nested). One row per issue keeps counts honest and avoids the "why is this here twice" confusion.
 - **Parents own a disclosure + child-count pill.** A parent shows a rotate-on-collapse triangle and a `N` pill; children indent with a tree spine per level. Collapse state is client-side (per session, not persisted in v1).
 - **Recursive — arbitrary depth.** Nesting recurses to any depth (decision: confirmed). Each level adds one indent step + tree spine; collapsing any node hides its whole subtree. The tree is built from the flat `filteredIssues` by walking `parentId` links, so depth is whatever the data declares.
-- **Mobile (card layout, below `@sm`) drops the tree.** No disclosure triangles, no tree spines, no collapse/expand. A child card is simply **indented** (depth × a small step, capped) with a **left rule** as the only nesting hint (decision: confirmed). The card layout already exists in `IssuesViewer` (`@sm` container query); nesting there is indent-only so the narrow column isn't eaten by tree chrome.
+- **Collapse state persists globally.** Collapsing a parent is saved to **localStorage**, keyed by issue id, **not scoped to a session or repo** (decision: confirmed) — the issue list itself isn't session- or repo-scoped, so its collapse state shouldn't be either. The tree stays as the user left it across reloads and across sessions. (Client-only; no server round-trip.)
+- **Mobile (card layout, below `@sm`) drops the tree.** No disclosure triangles, no tree spines, no collapse/expand. A child card is simply **indented** with a **left rule** as the only nesting hint (decision: confirmed). The indent is deliberately **faint — 4px per level, capped at 3 levels** (decision: confirmed) — so it reads as a hint without eating the narrow column. The card layout already exists in `IssuesViewer` (`@sm` container query).
 - **Orphan promotion.** A child whose parent is **not in the current set** (parent is Done and `includeDone` is off, on another team, or beyond the 100-issue fetch cap) is **promoted to the top level** with a `↳ in SHI-300` hint, rather than silently dropped. This is the load-bearing edge case — the fetched window almost never contains every parent. With recursion this applies at any level: a subtree whose root is missing reattaches at the nearest present ancestor, or the top level if none.
 
 ### Two-level sorting
@@ -78,6 +79,4 @@ hasChildren?: boolean;    // hint so a leaf needs no children probe (Linear expo
 
 ## Open questions
 
-- Persist collapse state across reloads, or reset each session? (Prototype: per-session only.)
-- Mobile indent cap: how many levels before indent stops growing? (Prototype caps at 4 steps.)
 - Group-by + deep nesting: do grouped sections only group **top-level** issues (current prototype) — confirmed reasonable, but worth a sanity check on real data.

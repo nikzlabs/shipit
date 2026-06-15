@@ -207,7 +207,7 @@
           <div class="spacer"></div>
           <div class="count"><b id="mcount">0</b></div>
         </div>
-        <div class="note">No disclosure or tree lines at this width — a child card just sits indented with a left rule. Depth still reads, the row stays tappable.</div>
+        <div class="note">No disclosure or tree lines at this width — a child card just sits faintly indented (4px per level, capped at 3) with a left rule. The hint reads without eating the narrow column.</div>
         <div id="mrows"></div>
       </div>
     </div>
@@ -272,7 +272,8 @@
       <li><b>Recursive nesting:</b> parents nest to any depth (SHI-90 → SHI-93 → SHI-94 → SHI-95). Each level adds a tree spine; collapsing any node hides its whole subtree.</li>
       <li><b>Modal editor:</b> the sliders icon opens the two-level sort + group-by editor. The icon shows an accent dot when the order differs from the default; the active order lives in the icon's hover tooltip (no standing summary row — the toolbar stays one line tall).</li>
       <li><b>Independent Group-by:</b> with the modal's extra room, grouping is its own field (None / Priority / Status / Assignee), not tied to the primary sort key.</li>
-      <li><b>Mobile = indent only:</b> the card layout drops disclosure triangles and tree lines; a child card is indented with a left rule. (Confirmed direction — no collapse/expand at this width.)</li>
+      <li><b>Mobile = indent only:</b> the card layout drops disclosure triangles and tree lines; a child card is faintly indented (4px/level, capped at 3) with a left rule. No collapse/expand at this width.</li>
+      <li><b>Collapse persists:</b> collapsing a parent is saved to localStorage <i>globally</i> (not per session or repo — the issue list isn't either), so the tree stays how you left it across reloads. Try collapsing a parent and refreshing.</li>
       <li><b>GitHub stays flat:</b> no parent data, so the GitHub tab renders today's flat list — nothing to build there.</li>
     </ul>
   </div>
@@ -316,7 +317,12 @@ const ISSUES = [
 ];
 
 const DEFAULTS = { primary: "priority", primaryDir: 1, secondary: "status", secondaryDir: 1, group: "none" };
-const state = Object.assign({}, DEFAULTS, { collapsed: new Set() });
+// Collapsed parents persist GLOBALLY (localStorage), keyed by issue id — the issue
+// list isn't scoped to a session or a repo, so neither is its collapse state.
+const COLLAPSE_KEY = "shipit.issues.collapsed";
+const loadCollapsed = () => { try { return new Set(JSON.parse(localStorage.getItem(COLLAPSE_KEY) || "[]")); } catch { return new Set(); } };
+const saveCollapsed = () => { try { localStorage.setItem(COLLAPSE_KEY, JSON.stringify([...state.collapsed])); } catch (e) {} };
+const state = Object.assign({}, DEFAULTS, { collapsed: loadCollapsed() });
 
 function val(i, k) {
   switch (k) {
@@ -379,7 +385,7 @@ function mobileCards(issue, depth, out) {
   for (const k of childrenOf(issue.id)) mobileCards(k, depth + 1, out);
 }
 function mcardHTML({ issue, depth }) {
-  const indent = Math.min(depth, 4) * 14;
+  const indent = Math.min(depth, 3) * 4; // cap at 3 levels, 4px per step — a faint hint, not a tree
   return `<div class="mcard ${depth?"child":""}" style="padding-left:${12 + indent}px">
     <div class="mcard-top"><span class="ident">${issue.ident}</span>${priBars(issue.pri)}</div>
     <div class="mt">${issue.title}</div>
@@ -444,6 +450,7 @@ function wire() {
       e.stopPropagation();
       const id = el.getAttribute("data-toggle");
       state.collapsed.has(id) ? state.collapsed.delete(id) : state.collapsed.add(id);
+      saveCollapsed();
       render();
     });
   });
