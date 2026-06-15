@@ -12,6 +12,7 @@ vi.mock("../session-namer.js", () => ({
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execSync } from "node:child_process";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../index.js";
@@ -31,6 +32,37 @@ import {
 } from "./test-helpers.js";
 
 const REPO_URL = "https://github.com/owner/quick-capture-test.git";
+
+/**
+ * Build a multipart/form-data body for app.inject() with a mix of text fields
+ * and file parts (the shape the quick-capture overlay POSTs when the user
+ * attaches an image).
+ */
+function buildMultipart(
+  fields: Record<string, string>,
+  files: { name: string; filename: string; content: Buffer }[],
+): { payload: Buffer; boundary: string } {
+  const boundary = `----FormBoundary${crypto.randomUUID().replace(/-/g, "")}`;
+  const parts: Buffer[] = [];
+  for (const [name, value] of Object.entries(fields)) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="${name}"\r\n\r\n` +
+      `${value}\r\n`,
+    ));
+  }
+  for (const file of files) {
+    parts.push(Buffer.from(
+      `--${boundary}\r\n` +
+      `Content-Disposition: form-data; name="${file.name}"; filename="${file.filename}"\r\n` +
+      `Content-Type: application/octet-stream\r\n\r\n`,
+    ));
+    parts.push(file.content);
+    parts.push(Buffer.from("\r\n"));
+  }
+  parts.push(Buffer.from(`--${boundary}--\r\n`));
+  return { payload: Buffer.concat(parts), boundary };
+}
 
 async function waitFor(predicate: () => boolean, timeoutMs = 5000, label = "condition"): Promise<void> {
   const deadline = Date.now() + timeoutMs;
@@ -152,6 +184,54 @@ describe("Integration: quick-capture headless sessions", () => {
       cwd: session!.workspaceDir!,
       encoding: "utf8",
     }).trim()).toBe("quick/flaky-test");
+  });
+
+  it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
+    // Regression: an image attached in the quick-capture overlay is saved into
+    // the new session's uploads dir but was NEVER folded into the prompt the
+    // agent receives — `runDispatchedTurn` passed `prompt: text` only, dropping
+    // `opts.uploads`. The agent never saw the screenshot. The dispatch path now
+    // resolves upload refs and assembles the same `<attached_images>` prompt
+    // block the WS path does, so the first turn references the image by path.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const png = Buffer.from(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+      "base64",
+    );
+    const { payload, boundary } = buildMultipart(
+      {
+        repoUrl: REPO_URL,
+        initialPrompt: "Match this design",
+        branch: "quick/with-image",
+        agent: "claude",
+      },
+      [{ name: "file", filename: "screenshot.png", content: png }],
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload,
+      headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string; session: { workspaceDir?: string } };
+    const session = sessionManager.get(body.sessionId);
+
+    await waitFor(() => createdAgents.some((a) => a.runCalled), 5000, "headless agent start");
+    const prompt = createdAgents.find((a) => a.runCalled)!.lastPrompt;
+    // The agent's prompt carries the user text AND the attached-image block that
+    // points it at the saved /uploads/ path — proof the image reached the turn.
+    expect(prompt).toContain("Match this design");
+    expect(prompt).toContain("<attached_images>");
+    expect(prompt).toMatch(/\/uploads\/screenshot[^\s]*\.png/);
+
+    // The image was actually written to the session's uploads dir on disk.
+    const uploadsDir = path.join(path.dirname(session!.workspaceDir!), "uploads");
+    const saved = fs.readdirSync(uploadsDir).filter((f) => f.endsWith(".png"));
+    expect(saved.length).toBe(1);
   });
 
   it("never recycles a user's ungraduated /{repo}/new draft", { timeout: 20_000 }, async () => {
