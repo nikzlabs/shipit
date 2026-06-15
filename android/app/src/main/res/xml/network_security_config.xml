@@ -10,8 +10,10 @@
          deployment/vps/tailscale.sh. Traffic is still encrypted end-to-end by
          WireGuard underneath, and the tailnet is the access boundary, so this
          is safe. includeSubdomains covers both the MagicDNS FQDN
-         (shipit.tailnet.ts.net) and preview hosts
-         ({sessionId}--{port}.shipit.tailnet.ts.net) in one entry. This applies
+         (shipit.tailnet.ts.net) and preview hosts whose subdomain joins
+         the sessionId and port with a double dash (sessionId, then two
+         dashes, then port, then .shipit.tailnet.ts.net) in one entry.
+         This applies
          to release builds too — it is the supported way to use the app over
          Tailscale. -->
     <domain-config cleartextTrafficPermitted="true">
