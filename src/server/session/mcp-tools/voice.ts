@@ -14,8 +14,12 @@ const TOOL_DESCRIPTION = [
   "a turn when you need the user's attention, and sparingly mid-task for an",
   "occasional heads-up. The `summary` is a one-or-two-sentence HEADLINE written",
   "for the ear (no markdown, no code, no file paths, no PR numbers) — it grabs",
-  "attention and orients the user; it does NOT convey the body (the screen still",
-  "holds the options, plan, or diff). Set `needsAttention: true` only when you",
+  "attention and orients the user. Don't read the full on-screen detail aloud",
+  "(plan text, diff, long-form option descriptions stay on screen) — BUT when you",
+  "are asking a question, the headline MUST voice the actual question and a brief",
+  "gist of the options, since a hands-free user can't see the screen (\"Postgres or",
+  "SQLite? Postgres is sturdier, SQLite is zero-setup\" — not \"I have a question,",
+  "options are on screen\"). Set `needsAttention: true` only when you",
   "genuinely need the user (a question, a decision, plan approval, blocking",
   "ambiguity, an error needing input, or a failed/abandoned turn) — these are",
   "spoken aloud. Set `needsAttention: false` for FYIs (work done, nothing to",
@@ -31,7 +35,7 @@ const inputSchema = {
     summary: {
       type: "string",
       description:
-        "A one-or-two-sentence spoken headline written for the ear. No markdown, code, file paths, commit hashes, or PR numbers.",
+        "A one-or-two-sentence spoken headline written for the ear. No markdown, code, file paths, commit hashes, or PR numbers. When asking a question, voice the actual question plus a brief gist of the options (a compressed version answerable by ear) — never just 'options are on screen'.",
     },
     needsAttention: {
       type: "boolean",
