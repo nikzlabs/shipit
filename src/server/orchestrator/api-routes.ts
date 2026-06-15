@@ -55,6 +55,7 @@ import { registerLimitsRoutes } from "./api-routes-limits.js";
 import { registerMarketplaceRoutes } from "./api-routes-marketplace.js";
 import { registerVoiceRoutes } from "./api-routes-voice.js";
 import { registerBugReportRoutes } from "./api-routes-bug-report.js";
+import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import type { SecretStore } from "./secret-store.js";
@@ -359,6 +360,7 @@ export async function registerApiRoutes(
   await registerAgentRoutes(app, deps);
   await registerVoiceRoutes(app, deps);
   await registerBugReportRoutes(app, deps);
+  await registerProposeActionsRoutes(app, deps);
   await registerEgressRoutes(app, deps);
   await registerIssueRoutes(app, deps);
   await registerLimitsRoutes(app, deps);

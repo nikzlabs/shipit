@@ -35,6 +35,7 @@ export const CARD_MESSAGE_FIELDS = [
   "issueRef",
   "compaction",
   "subAgentConsult",
+  "actionChecklist",
   "spawnedSession",
   "spawnFailed",
   "forkChild",

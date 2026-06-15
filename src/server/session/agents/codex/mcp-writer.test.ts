@@ -74,7 +74,7 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", ()
     expect(cfg).toMatch(/command = ".+node"/);
     // Tool subset is passed via the child env, allowlisted with env_vars.
     expect(cfg).toContain('env_vars = ["SHIPIT_MCP_TOOLS"]');
-    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "review,present,voice,ask,bug" });
+    expect(runtimeEnv).toMatchObject({ SHIPIT_MCP_TOOLS: "review,present,voice,ask,bug,propose_actions" });
     // No per-tool servers remain.
     expect(cfg).not.toContain("[mcp_servers.shipit-review]");
     expect(cfg).not.toContain("[mcp_servers.shipit-ask]");

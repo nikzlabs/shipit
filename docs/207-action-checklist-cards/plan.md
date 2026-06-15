@@ -290,23 +290,55 @@ These were open questions; the following are the settled answers.
 
 ## Still open
 
-- **Codex parity.** Like `ask` (docs/147), the tool should be shaped identically
-  for Codex so both backends emit the same card. (Direction is clear; flagged as
-  a build item, not a design question.)
+- **Codex parity — done.** Like `ask` (docs/147), `propose_actions` is registered
+  for both backends (it's in both `SHIPIT_MCP_TOOLS` lists), so Claude and Codex
+  emit the same card through the same orchestrator route.
+- **Composer quote rendering.** How the "Add comment…" snapshot *renders* inside
+  the composer (plain text vs. a styled quote block) is a separate, composer-wide
+  question tracked outside this doc; today it seeds as plain text via
+  `setPrefillText`, which is self-contained regardless of how it's later styled.
 
-## Key files (anticipated)
+## Key files (implemented — SHI-153)
 
-- `src/server/session/mcp-tools/propose-actions.ts` — new MCP tool (mirror
-  `ask.ts`).
-- `src/server/session/mcp-shipit-bridge.ts` — register the tool.
-- `src/server/orchestrator/chat-card-persistence.ts` — emit/persist via
-  `emitChatCard`.
-- `src/server/orchestrator/chat-history.ts` + `database.ts` — `actionChecklist`
-  field, column, migration.
-- `src/client/components/ActionChecklistCard.tsx` — new card component.
-- `src/client/components/visual-elements.ts` — add to `CARD_MESSAGE_FIELDS`.
-- `src/client/utils/send-user-message.ts` — batch-submit the selected payloads.
-- `src/server/shared/types/ws-client-messages.ts` — resolution message type.
+Server (tool → relay → orchestrator → persist):
+- `src/server/session/mcp-tools/propose-actions.ts` — the `propose_actions` MCP
+  tool (mirror of `ask.ts`); non-blocking, fail-fast pre-check, form-only
+  `instructions`.
+- `src/server/session/mcp-shipit-bridge.ts` — registers the tool; it ships to
+  **both** `SHIPIT_MCP_TOOLS` lists (Claude `…,permission,propose_actions`; Codex
+  `…,bug,propose_actions`) in `agents/claude/adapter.ts` + `agents/codex/adapter.ts`.
+- `src/server/session/agent-ops-routes.ts` — worker relay `POST
+  /agent-ops/propose-actions` → orchestrator `/propose-actions`.
+- `src/server/orchestrator/api-routes-propose-actions.ts` — authoritative
+  validation (`validateProposeActions`), emit-time provenance (branch/HEAD via
+  `createGitManager`), and the single `emitChatCard` call. No `update*Card` path —
+  the card is immutable.
+- `src/server/orchestrator/chat-history.ts` + `shared/database.ts` —
+  `actionChecklist` field + `action_checklist` column + `toRow`/`fromRow` +
+  migration (written once on emit, never patched).
+- `src/server/shared/types/domain-types.ts` — `ActionChecklistCard` /
+  `ActionChecklistItem` (shared by WS payload, persisted row, client card).
+- `src/server/shared/types/ws-server-messages.ts` — `WsActionChecklistCard`
+  (`action_checklist_card`). There is **no** client → server resolution message:
+  a submit is a normal `send_message` user turn, so nothing new was needed on the
+  client-message side.
+
+Client (render + the two resolve paths):
+- `src/client/components/ActionChecklistCard.tsx` — the card (button vs checklist,
+  transient ack, the two buttons).
+- `src/client/utils/action-checklist-message.ts` — pure builders:
+  `formatProposalMessage` (Submit) and `formatCommentSnapshot` (Add comment…),
+  both from `payload`s + provenance.
+- `src/client/hooks/message-handlers/action-checklist-card.ts` — live append,
+  idempotent by `cardId`; registered in `message-handlers/index.ts`.
+- `src/client/components/visual-elements.ts` — `actionChecklist` in
+  `CARD_MESSAGE_FIELDS`.
+- `src/client/components/MessageList.tsx` — renders the card; **Submit reuses the
+  existing `onSendFollowUp`** (queue-aware, one message → one turn), **Add
+  comment… seeds the composer** via `setPrefillText` — so no new App-level wiring.
+
+The card carries no client store (the full payload lives on the chat message, like
+`issueRef`), so `loadSessionHistory` rehydrates it for free.
 
 ## Relationship to prior art
 

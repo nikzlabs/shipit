@@ -30,7 +30,8 @@ import { PermissionRequestCard } from "./PermissionRequestCard.js";
 import { CompactionCard } from "./CompactionCard.js";
 import { IssueWriteCard } from "./IssueWriteCard.js";
 import { IssueRefCard } from "./IssueRefCard.js";
-import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData, SubAgentConsultCard as SubAgentConsultCardData, AiReviewCard } from "../../server/shared/types.js";
+import { ActionChecklistCard } from "./ActionChecklistCard.js";
+import type { IssueWriteCard as IssueWriteCardData, IssueRefCard as IssueRefCardData, CompactionCard as CompactionCardData, SubAgentConsultCard as SubAgentConsultCardData, ActionChecklistCard as ActionChecklistCardData, AiReviewCard } from "../../server/shared/types.js";
 import { extractTurnProse, hasSpeakableProse } from "../voice/extract-turn-prose.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
@@ -343,6 +344,16 @@ export interface ChatMessage {
    * store, cleared when this card arrives.
    */
   subAgentConsult?: SubAgentConsultCardData;
+  /**
+   * docs/207 / SHI-153 — when set, this message renders an `ActionChecklistCard`
+   * inline (a button for one proposed action, a checklist for 2+). The card has
+   * no lifecycle and no store, so both the live `action_checklist_card` WS
+   * handler and a history rehydration carry the full payload on the message; the
+   * component renders straight from it. The only post-submit visual change (the
+   * transient "Submitted · N sent" ack) is client-only component state, never
+   * persisted — so on reload the card returns to its original definition.
+   */
+  actionChecklist?: ActionChecklistCardData;
 }
 
 export interface TextSegment {
@@ -973,6 +984,21 @@ export function MessageList({
             <div key={i} className="flex justify-start">
               <div className="max-w-2xl w-full">
                 <IssueRefCard card={msg.issueRef} onOpen={onOpenIssue} />
+              </div>
+            </div>
+          );
+        }
+
+        // docs/207 / SHI-153 — action checklist card. Carries no chat text of
+        // its own; renders the interactive `ActionChecklistCard` straight from the
+        // message payload (no store, no lifecycle). Submit reuses the same
+        // follow-up sender as the rest of the chat (queue-aware, one message →
+        // one turn); Add comment seeds the composer client-side.
+        if (msg.actionChecklist) {
+          return (
+            <div key={i} className="flex justify-start">
+              <div className="max-w-2xl w-full">
+                <ActionChecklistCard card={msg.actionChecklist} onSubmit={onSendFollowUp} />
               </div>
             </div>
           );

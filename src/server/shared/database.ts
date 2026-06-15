@@ -673,6 +673,16 @@ const MIGRATIONS: Migration[] = [
       CREATE INDEX IF NOT EXISTS idx_presentations_session ON presentations(session_id);
     `);
   },
+  // docs/207 / SHI-153 — persist "action checklist" cards so they survive a
+  // session switch / full reload. The card arrives off the agent-event stream
+  // (the `propose_actions` tool's HTTP relay) and is recorded in-band via
+  // emitChatCard; without this column the inline card renders live but vanishes
+  // on the next loadSessionHistory, which rebuilds the transcript from the DB.
+  // The card is immutable (no lifecycle), so the column is written once on emit
+  // and never patched.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN action_checklist TEXT");
+  },
 ];
 
 export class DatabaseManager {

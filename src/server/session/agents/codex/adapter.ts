@@ -778,7 +778,7 @@ export class CodexAdapter
     // approval channel). The value is passed through `runtimeEnv` (the child's
     // env) and allowlisted via `env_vars`, matching how user-server env is wired.
     if (ctx.shipitBridge) {
-      runtimeEnv.SHIPIT_MCP_TOOLS = "review,present,voice,ask,bug";
+      runtimeEnv.SHIPIT_MCP_TOOLS = "review,present,voice,ask,bug,propose_actions";
       lines.push(
         "",
         "[mcp_servers.shipit]",

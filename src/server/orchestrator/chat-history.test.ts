@@ -33,6 +33,17 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
   egressPrompt: { cardId: "eg1", host: "evil.example.com", phase: "denied", createdAt: "2026-06-05T00:00:00.000Z" },
   compaction: { id: "c1", trigger: "manual", preTokens: 100, postTokens: 20, durationMs: 9, createdAt: "t" },
   subAgentConsult: { cardId: "sac1", spawnId: "spawn-1", subAgentId: "codex", status: "success", durationMs: 47000, costUsd: 0.03, truncated: false, createdAt: "2026-06-05T00:00:00.000Z" },
+  actionChecklist: {
+    cardId: "ac1",
+    title: "Optional follow-ups",
+    actions: [
+      { id: "a1", label: "Open a PR", description: "From the current branch", defaultChecked: true, payload: "Open a PR for this change." },
+      { id: "a2", label: "File an issue", payload: "File a follow-up issue for the rate-limit edge case." },
+    ],
+    branch: "shipit/apobab",
+    headSha: "abc12345",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

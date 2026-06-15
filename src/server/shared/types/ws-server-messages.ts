@@ -1,6 +1,6 @@
 import type { AgentId, AgentEvent } from "./agent-types.js";
 import type { PermissionMode } from "./attachment-types.js";
-import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard } from "./domain-types.js";
+import type { GitCommitInfo, SessionInfo, DocEntry, FileTreeNode, FileDiff, RepoInfo, SecretRequirement, WsChatHistoryMessage, IssueWriteCard, IssueWriteUndoState, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard } from "./domain-types.js";
 import type {
   WsGitHubStatus,
   WsGitHubPushResult,
@@ -1307,12 +1307,27 @@ export interface WsSubAgentConsultCard {
   card: SubAgentConsultCard;
 }
 
+/**
+ * docs/207 / SHI-153 — the persisted "action checklist" transcript card. Emitted
+ * via `emitChatCard` so it both broadcasts live AND records in-band with the
+ * turn, surviving a reconnect, a session switch, and a full reload. Carries the
+ * full `ActionChecklistCard`; the card has no lifecycle (it is an immutable,
+ * reusable message composer), so there is no follow-up update message — the
+ * durable record of a submit is the user message the card sends, not card state.
+ */
+export interface WsActionChecklistCard {
+  type: "action_checklist_card";
+  sessionId: string;
+  card: ActionChecklistCard;
+}
+
 export type WsServerMessage =
   | WsAgentEvent
   | WsVoiceNote
   | WsCompactionStatus
   | WsCompactionCard
   | WsSubAgentConsultCard
+  | WsActionChecklistCard
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed

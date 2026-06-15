@@ -468,7 +468,7 @@ export class ClaudeAdapter
       mcpServers.shipit = {
         command: ctx.shipitBridge.tsxBin,
         args: [ctx.shipitBridge.bridgePath],
-        env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission" },
+        env: { SHIPIT_MCP_TOOLS: "review,present,voice,bug,permission,propose_actions" },
       };
       // The permission tool is the CLI's `--permission-prompt-tool` (set below
       // at run time): instead of auto-denying a gated sensitive-file edit in
