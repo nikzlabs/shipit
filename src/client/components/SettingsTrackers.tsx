@@ -126,7 +126,13 @@ export function SettingsTrackers({ embedded = false, logo }: { embedded?: boolea
       className={embedded ? "flex flex-col gap-4" : "px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full"}
       data-testid="settings-trackers"
     >
-      <div className={embedded ? "flex items-start gap-3" : undefined}>
+      <div
+        className={
+          embedded
+            ? "flex items-start gap-3 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3"
+            : undefined
+        }
+      >
         {embedded && logo}
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
