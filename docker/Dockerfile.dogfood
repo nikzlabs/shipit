@@ -47,6 +47,17 @@ RUN ln -sf /opt/agent-cli/node_modules/.bin/claude /usr/local/bin/claude \
  && ln -sf /opt/agent-cli/node_modules/.bin/codex /usr/local/bin/codex \
  && ln -sf /opt/agent-cli/node_modules/.bin/playwright-mcp /usr/local/bin/playwright-mcp
 
+# No-op git credential helper. Session workspaces carry a local
+# `credential.helper = /usr/local/bin/shipit-git-credential` (the brokering
+# binary, installed only in the session-worker images). When the orchestrator —
+# or, in local mode (RUNTIME_MODE=local), the in-process agent — runs git
+# against such a workspace, git answers `get` from the global inline helper but
+# still calls the local broker for `store`/`erase`; without the binary that
+# fails with "shipit-git-credential: not found" (docs/192). This silent no-op
+# absorbs those calls so the global helper stays the sole credential source.
+RUN printf '#!/bin/sh\nexec cat >/dev/null 2>&1\n' > /usr/local/bin/shipit-git-credential \
+ && chmod 0755 /usr/local/bin/shipit-git-credential
+
 # docs/150 §9 — local mode (RUNTIME_MODE=local) keeps the orchestrator on root.
 # It hosts the agent processes in-process (claude-adapter / codex-adapter), which
 # resolve their HOME via agentHome(). Since DEFAULT_AGENT_HOME is /home/shipit,
