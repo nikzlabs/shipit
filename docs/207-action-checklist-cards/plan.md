@@ -132,10 +132,8 @@ every other card in ShipIt: **the card has no terminal state and no connection t
 the agent or session state at click-time.** It is a persistent helper for
 composing and sending a user message. Concretely:
 
-- User ticks 0..N boxes (or, for a single action, clicks the one button).
-- On **Submit**, the selected actions' `payload`s are concatenated into **one**
-  user message and sent exactly as if the user had typed it: starts a turn if the
-  agent is idle, queues via the existing message queue if it's mid-turn.
+- User ticks 0..N boxes (or, for a single action, the one item is the implicit
+  selection).
 - The card **does not lock**. After a submit it stays fully interactive. The user
   can come back a minute — or a week — later, tick a different subset, and submit
   again. Submitting twice with different subsets is a normal, supported flow.
@@ -148,11 +146,38 @@ selection is **ephemeral client state** recomputed each time the user opens the
 card. There is nothing to patch server-side on submit — the submit is just a
 normal user message.
 
-### Free-text escape
+### Two ways to resolve — and why there is no card-local input
 
-Consistent with `AskUserQuestion` and the "chat is the input surface" principle,
-the card includes an "or tell me something else" affordance that just focuses the
-normal composer — the user is never trapped in the offered actions.
+A card-local free-text box was rejected: ShipIt's **voice input lives in the main
+composer**, so a second input on the card would either orphan voice or force us to
+re-wire it. Instead, the card has **two buttons**, and the "say something of my
+own" path **routes through the existing composer** (which already has voice):
+
+1. **Submit / Do it** *(primary — the zero-typing path)*. The selected actions'
+   `payload`s are concatenated into **one** user message and sent exactly as if
+   the user had typed it: starts a turn if the agent is idle, queues via the
+   existing message queue if it's mid-turn. No composer involved.
+2. **Add comment…** *(secondary — the "I agree, but…" path)*. Instead of sending,
+   this drops the selected actions into the **main input box as a quote** and
+   focuses it. The user then appends their own words (typed **or dictated** — the
+   composer's voice button is right there) and sends normally. The sent message is
+   the quoted action text **plus** the user's addition, so it stays self-contained.
+
+For **multi-select**, both buttons operate on the **checked** subset and are
+disabled when nothing is checked — the selection itself carries the user's
+agreement, and "Add comment…" pre-fills the composer with exactly the items they
+agreed to.
+
+For a **single action**, there's nothing to *select*, so the two buttons split the
+intent the selection would otherwise carry: **Do it** is unqualified agreement;
+**Add comment…** quotes the one action so the user can qualify it ("yes, but name
+the PR …") or redirect ("hold off — do X first"). The agent reads the natural
+language to tell agreement from redirection. Keeping **Add comment…** on the
+single-action card (rather than dropping it) is what gives the user a way to
+*disagree or amend* without retyping the suggestion — the one expressive gap a
+lone button would otherwise leave. *(Open: whether the secondary button earns its
+place on single-action cards, or if "just type in the composer, the suggestion is
+right above" is enough. Leaning keep-it for consistency.)*
 
 ## Persistence & lifecycle (mandatory — this is a transcript card)
 
