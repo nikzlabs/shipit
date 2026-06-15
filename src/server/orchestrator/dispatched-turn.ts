@@ -22,9 +22,11 @@
  * fire-and-forget via `void runDispatchedTurn(...)`.
  */
 
-import type { AgentId, AgentProcess } from "../shared/types.js";
+import type { AgentId, AgentProcess, FileAttachment, ImageAttachment } from "../shared/types.js";
 import { executeAgentTurn } from "./turn-executor.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
+import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -79,6 +81,76 @@ export async function runDispatchedTurn(
   const steer = opts.systemTurn ? undefined : deps.steerInputs?.();
   const useStreaming = steer ? steer.liveSteering && steer.steeringCapable : false;
 
+  // Fold any attachments into the prompt EXACTLY as the WS path does
+  // (agent-execution.ts:runAgentWithMessage). A quick / child session dispatch
+  // carries `uploads` (saved into the session's uploads dir by
+  // `createHeadlessSession` before this turn fires) and may carry `files` /
+  // inline `images`. Without resolving them here, `executeAgentTurn` would
+  // receive a text-only prompt and the agent would never see the attached
+  // image — the file sits on disk, unreferenced. We resolve upload refs to
+  // ImageAttachments / FileAttachments, save images to the uploads dir
+  // (referenced in place via `existingPath`), and assemble the slash-aware
+  // prompt. `uploadPaths` is persisted on the user row so the bubble rehydrates
+  // with its image/file chips and `hydrateUploads` sees the upload as sent.
+  const sessionDir = runner.sessionDir;
+  let validatedFiles: FileAttachment[] = [];
+  let images: ImageAttachment[] | undefined =
+    opts.images && opts.images.length > 0 ? opts.images : undefined;
+  let uploadPaths: string[] | undefined;
+  if (sessionDir) {
+    if (opts.files && opts.files.length > 0) {
+      const result = await resolveFileAttachments(opts.files, sessionDir);
+      if (result.error) {
+        emitNoticePostTurn(
+          (m) => runner.emitMessage(m),
+          deps.listenerDeps.chatHistoryManager,
+          runner.sessionId,
+          `Some attached files couldn't be read: ${result.error}`,
+          "warn",
+        );
+      } else {
+        validatedFiles = result.files;
+      }
+    }
+    if (opts.uploads && opts.uploads.length > 0) {
+      const uploadResult = await resolveUploadRefs(opts.uploads, sessionDir);
+      if (uploadResult.error) {
+        emitNoticePostTurn(
+          (m) => runner.emitMessage(m),
+          deps.listenerDeps.chatHistoryManager,
+          runner.sessionId,
+          `Some attached uploads couldn't be read: ${uploadResult.error}`,
+          "warn",
+        );
+      } else {
+        validatedFiles = [...validatedFiles, ...uploadResult.files];
+        if (uploadResult.images.length > 0) {
+          images = [...(images ?? []), ...uploadResult.images];
+        }
+        // Record the original `/uploads/...` paths even when the upload was a
+        // non-image file, so the user bubble rehydrates with its chips.
+        uploadPaths = opts.uploads.map((u) => u.path);
+      }
+    }
+  }
+  const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
+  const imageContext =
+    images && images.length > 0 && sessionDir ? saveImagesToUploadsDir(images, sessionDir) : "";
+  const prompt = assembleAgentPrompt({ userText: text, fileContext, imageContext });
+
+  // Chat-history metadata for the persisted user row — mirrors the WS path so a
+  // reload shows the same inline image / file chips on the dispatched bubble.
+  const historyImages = images?.map((img) => ({ data: img.data, mediaType: img.mediaType }));
+  const historyFiles =
+    validatedFiles.length > 0
+      ? validatedFiles.map((f) => ({
+          path: f.path,
+          contentPreview: f.content.slice(0, 200),
+          startLine: f.startLine,
+          endLine: f.endLine,
+        }))
+      : undefined;
+
   const drainNext = async (): Promise<void> => {
     if (runner.queueLength === 0) return;
     const next = runner.dequeue();
@@ -115,7 +187,7 @@ export async function runDispatchedTurn(
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
-      prompt: text,
+      prompt,
       userText: text,
       ...(activity !== undefined ? { activity } : {}),
       // Only set the key when streaming so a non-steerable dispatch keeps the
@@ -142,7 +214,14 @@ export async function runDispatchedTurn(
       emitUserEcho: attempt === 0,
       persistUserMessage:
         attempt === 0
-          ? (sid) => deps.listenerDeps.chatHistoryManager.append(sid, { role: "user", text })
+          ? (sid) =>
+              deps.listenerDeps.chatHistoryManager.append(sid, {
+                role: "user",
+                text,
+                ...(historyImages ? { images: historyImages } : {}),
+                ...(historyFiles ? { files: historyFiles } : {}),
+                ...(uploadPaths && uploadPaths.length > 0 ? { uploadPaths } : {}),
+              })
           : () => { /* user row already persisted on the first attempt */ },
       isNewSession: false,
       fallbackTitle: text.slice(0, 80) || "Agent",

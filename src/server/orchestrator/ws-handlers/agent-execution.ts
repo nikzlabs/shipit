@@ -1,6 +1,3 @@
-import fs from "node:fs";
-import path from "node:path";
-import crypto from "node:crypto";
 import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
@@ -19,78 +16,18 @@ import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
 import { detectAndReArmMergedSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
+import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
 
 // docs/149 — re-export so existing `selectAgentEnvForPush` consumers (unit
 // tests, secret-resolver coverage) keep their import path working while the
 // canonical home moves to `session-agent-env.ts`.
 export { selectAgentEnvForPush };
 
-/**
- * Save base64 images to the session's uploads directory on the host.
- * Returns a prompt prefix referencing the on-disk files (container paths).
- * The agent reads them with the Read tool, which natively supports images.
- *
- * Images that carry `existingPath` (set by `resolveUploadRefs` for images
- * sourced from `/uploads/` upload refs) are referenced in place — they are
- * NOT re-saved. Re-saving under a randomized filename would create a
- * duplicate and the original would have to be deleted, leaving the on-disk
- * path out of sync with the `uploadPaths` recorded in chat history. That
- * mismatch was the root cause of uploaded images reappearing as attached
- * after a reload (see fix history in commits b7375baa5, 654b2c931).
- */
-export function saveImagesToUploadsDir(images: ImageAttachment[], workspaceDir: string): string {
-  const uploadsDir = path.join(path.dirname(workspaceDir), "uploads");
-  fs.mkdirSync(uploadsDir, { recursive: true });
-
-  const containerPaths: string[] = [];
-  for (const img of images) {
-    if (img.existingPath) {
-      // Image already lives on disk at this path (came in via an upload ref).
-      // Reference in place — don't re-save under a new name.
-      containerPaths.push(img.existingPath);
-      continue;
-    }
-    const ext = img.mediaType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
-    const name = img.filename
-      ? `${path.parse(img.filename).name}-${crypto.randomUUID().slice(0, 8)}.${ext}`
-      : `image-${crypto.randomUUID().slice(0, 8)}.${ext}`;
-    fs.writeFileSync(path.join(uploadsDir, name), Buffer.from(img.data, "base64"));
-    containerPaths.push(`/uploads/${name}`);
-  }
-
-  const refs = containerPaths.map((p) => `- ${p}`).join("\n");
-  return `<attached_images>\nThe user has attached the following image(s) to this message. Use the Read tool to view each one:\n${refs}\n</attached_images>`;
-}
-
-/**
- * Assemble the final prompt string from the user text plus optional file and
- * image context.
- *
- * Normally context is PREPENDED to the user text. But when the user invokes a
- * slash command / skill (`/my-skill …`), the Claude CLI only resolves the
- * command when the `/token` sits at index 0 of the prompt. Prepending file or
- * image context would push the `/` off the front and the command would be
- * silently swallowed as literal prose. So for slash invocations we APPEND the
- * context after the user text instead, keeping `/my-skill` at position 0.
- *
- * Extracted as a pure function for unit testability — the ordering decision is
- * the contract. See docs/138.
- */
-export function assembleAgentPrompt(input: {
-  userText: string;
-  fileContext: string;
-  imageContext: string;
-}): string {
-  const { userText, fileContext, imageContext } = input;
-  const isSlashInvocation = /^\/[a-zA-Z0-9._-]+/.test(userText.trimStart());
-  return (
-    isSlashInvocation
-      ? [userText, fileContext, imageContext]
-      : [imageContext, fileContext, userText]
-  )
-    .filter(Boolean)
-    .join("\n\n");
-}
+// The prompt-assembly helpers moved to `../prompt-assembly.ts` so the dispatch
+// path (`dispatched-turn.ts`) can reuse them without importing this ctx-heavy
+// module. Re-exported here for the existing import sites (`send-message.ts`,
+// `agent-prompt.test.ts`).
+export { saveImagesToUploadsDir, assembleAgentPrompt };
 
 /** Full handler context — send-message handlers need all three sub-contexts. */
 type FullCtx = ConnectionCtx & RunnerCtx & AppCtx;

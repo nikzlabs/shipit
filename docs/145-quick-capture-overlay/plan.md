@@ -280,6 +280,22 @@ emits `session_status { running: false }`, broadcasts
 quick session from being created with the prompt recorded but no agent work
 starting and no visible recovery signal.
 
+Attachment handling on the dispatch path: when the user attaches an image (or
+file) in the overlay, the raw `File[]` rides the multipart `POST
+/api/sessions/headless` body, and `createHeadlessSession` saves each into the
+new session's uploads dir, producing `UploadRef[]` it hands to
+`runner.dispatch({ text, uploads })`. The dispatch turn runner
+(`runDispatchedTurn`) then resolves those refs to `ImageAttachment[]` /
+`FileAttachment[]` and assembles the SAME `<attached_images>` prompt block the
+WS path builds (`assembleAgentPrompt` + `saveImagesToUploadsDir`, both now in
+`orchestrator/prompt-assembly.ts` so the dispatch path can reuse them without
+importing the ctx-heavy `agent-execution.ts`). Without this, the upload was
+written to disk but the dispatched first turn received a text-only prompt — the
+agent never saw the screenshot. The resolved `uploadPaths` are also persisted on
+the user row so the bubble rehydrates with its image chips on reload. The WS
+path's `runAgentWithMessage` already did this resolution; folding it into
+`runDispatchedTurn` keeps the two turn entry points from drifting.
+
 What is **new** server-side:
 
 - A new HTTP route or service entry point — name TBD, "headless session"
