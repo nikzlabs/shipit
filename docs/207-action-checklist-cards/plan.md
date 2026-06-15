@@ -33,6 +33,9 @@ it a week later, tick a (possibly different) subset, and submit again. Think of
 it as a saved, pre-filled message the user can fire any number of times — not a
 one-shot prompt that resolves and dies.
 
+**Visual reference:** [`mockup.html`](./mockup.html) — a static prototype of every
+state (single-action, multi fresh / recommended / partial, after-submit receipt).
+
 ## Why a new primitive (and not `AskUserQuestion`)
 
 ShipIt already renders several button-cards, and at first glance this looks like

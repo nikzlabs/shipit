@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Action checklist card — states</title>
+<style>
+  :root {
+    --bg: #09090b;
+    --panel: #0e0e11;
+    --surface: #141418;
+    --surface-2: #1a1a1f;
+    --border: #26262c;
+    --text: #e7e7ea;
+    --text-2: #9b9ba4;
+    --text-3: #6b6b74;
+    --accent: #4aa8ff;        /* info / proposal accent */
+    --accent-dim: rgba(74,168,255,.14);
+    --accent-border: rgba(74,168,255,.40);
+    --ok: #46c08a;
+    --ok-dim: rgba(70,192,138,.14);
+    --radius: 10px;
+    font-synthesis: none;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 14px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    padding: 40px 24px 80px;
+  }
+  .wrap { max-width: 760px; margin: 0 auto; }
+
+  header.page { margin-bottom: 8px; }
+  header.page h1 { font-size: 20px; font-weight: 650; letter-spacing: -.01em; margin: 0 0 4px; }
+  header.page p { color: var(--text-2); margin: 0; font-size: 13px; }
+  .legend { color: var(--text-3); font-size: 12px; margin-top: 6px; }
+
+  .state { margin-top: 34px; }
+  .state > .state-label {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-3); margin-bottom: 10px;
+  }
+  .state > .state-label .note { text-transform: none; letter-spacing: 0; font-weight: 400; color: var(--text-3); }
+
+  /* The chat row the card sits in */
+  .chatrow {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 16px 14px 14px;
+  }
+
+  /* The card itself — left-accent treatment, mirrors other ShipIt cards */
+  .card { border-left: 2px solid var(--accent-border); padding-left: 14px; }
+
+  .card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .card-head .ico { color: var(--accent); display: inline-flex; }
+  .card-head .title { font-weight: 600; color: var(--text); }
+  .card-head .count { color: var(--text-3); font-size: 12px; }
+
+  .actions { margin-top: 10px; display: flex; flex-direction: column; gap: 2px; }
+
+  /* checklist item */
+  .item {
+    display: flex; gap: 10px; align-items: flex-start;
+    padding: 8px 10px; border-radius: 8px; cursor: pointer;
+    transition: background .12s ease;
+    user-select: none;
+  }
+  .item:hover { background: var(--surface); }
+  .item.checked { background: var(--accent-dim); }
+
+  .box {
+    flex: 0 0 auto; width: 17px; height: 17px; margin-top: 1px;
+    border: 1.5px solid #3a3a42; border-radius: 5px;
+    display: inline-flex; align-items: center; justify-content: center;
+    transition: background .12s ease, border-color .12s ease;
+  }
+  .item.checked .box { background: var(--accent); border-color: var(--accent); }
+  .box svg { opacity: 0; transition: opacity .12s ease; }
+  .item.checked .box svg { opacity: 1; }
+
+  .item .body .label { color: var(--text); font-weight: 500; }
+  .item .body .desc { color: var(--text-2); font-size: 12.5px; margin-top: 1px; }
+  .rec {
+    margin-left: 8px; font-size: 10px; font-weight: 600; letter-spacing: .04em;
+    color: var(--accent); background: var(--accent-dim);
+    padding: 1px 6px; border-radius: 999px; vertical-align: 1.5px;
+  }
+
+  /* footer: submit + escape */
+  .foot { display: flex; align-items: center; gap: 14px; margin-top: 12px; padding-left: 0; }
+  .btn {
+    font: inherit; font-weight: 600; font-size: 13px;
+    border: 1px solid transparent; border-radius: 8px;
+    padding: 7px 14px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 7px;
+    transition: background .12s ease, opacity .12s ease, border-color .12s ease;
+  }
+  .btn-primary { background: var(--accent); color: #07223c; }
+  .btn-primary:hover { background: #62b5ff; }
+  .btn-primary[disabled] { background: var(--surface-2); color: var(--text-3); border-color: var(--border); cursor: not-allowed; }
+  .escape { color: var(--text-3); font-size: 12.5px; text-decoration: none; cursor: pointer; }
+  .escape:hover { color: var(--text-2); }
+
+  /* single-action variant */
+  .single { display: flex; align-items: flex-start; gap: 12px; margin-top: 10px; }
+  .single .body { flex: 1; }
+  .single .label { font-weight: 500; }
+  .single .desc { color: var(--text-2); font-size: 12.5px; margin-top: 1px; }
+
+  /* receipt (after submit) — informational, NOT a lock */
+  .receipt {
+    display: inline-flex; align-items: center; gap: 6px;
+    margin-top: 10px; font-size: 12px; color: var(--text-3);
+  }
+  .receipt .dot { color: var(--ok); }
+
+  .caption { color: var(--text-3); font-size: 12px; margin-top: 8px; }
+  .pill-dim { color: var(--text-3); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="page">
+    <h1>Action checklist card — all states</h1>
+    <p>Static mockup for <code>docs/207-action-checklist-cards</code>. A reusable, agent-authored
+       message composer: tick a subset, submit once. No lock, no terminal state — every card stays interactive forever.</p>
+    <p class="legend">Accent = proposal/info. Items in tinted rows are checked. Submit batches the ticked actions into one message.</p>
+  </header>
+
+  <!-- 1. SINGLE ACTION -->
+  <section class="state">
+    <div class="state-label">1 · Single action <span class="note">— collapses to one button, no checkboxes</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104m-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88"/></svg>
+          </span>
+          <span class="title">Suggested next step</span>
+        </div>
+        <div class="single">
+          <div class="body">
+            <div class="label">Open a PR for this change</div>
+            <div class="desc">Creates a pull request from the current branch with a generated title and body.</div>
+          </div>
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary">
+            <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="m221.66 133.66-72 72a8 8 0 0 1-11.32-11.32L196.69 136H40a8 8 0 0 1 0-16h156.69l-58.35-58.34a8 8 0 0 1 11.32-11.32l72 72a8 8 0 0 1 0 11.32"/></svg>
+            Do it
+          </button>
+          <a class="escape">or tell me something else</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2. MULTIPLE — FRESH (nothing checked, submit disabled) -->
+  <section class="state">
+    <div class="state-label">2 · Multiple · fresh <span class="note">— nothing ticked yet, submit disabled</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M228.24 86.24 84.24 230.24a6 6 0 0 1-8.48 0l-56-56a6 6 0 1 1 8.48-8.48L80 217.51 219.76 77.76a6 6 0 0 1 8.48 8.48Z" opacity=".0"/><path d="M104 80a8 8 0 0 1 8-8h120a8 8 0 0 1 0 16H112a8 8 0 0 1-8-8m128 40H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16m0 48H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16M67.06 53.66a8 8 0 0 0-11.32 0L40 69.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 133.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 197.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31"/></svg>
+          </span>
+          <span class="title">Optional follow-ups</span>
+          <span class="count">· 3 actions</span>
+        </div>
+        <div class="actions">
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Add tests for the new endpoint</span>
+              <div class="desc">Unit + integration coverage for the happy path and the validation errors.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Update the API docs</span>
+              <div class="desc">Document the new route in the reference and regenerate the schema.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Run the full lint + typecheck</span>
+              <div class="desc">Catch anything the dev-loop subset skipped before opening the PR.</div>
+            </span>
+          </label>
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary" disabled>Select actions to submit</button>
+          <a class="escape">or tell me something else</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3. MULTIPLE — WITH RECOMMENDATIONS PRE-CHECKED -->
+  <section class="state">
+    <div class="state-label">3 · Multiple · agent-recommended <span class="note">— defaultChecked items ticked, user can still change</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M104 80a8 8 0 0 1 8-8h120a8 8 0 0 1 0 16H112a8 8 0 0 1-8-8m128 40H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16m0 48H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16M67.06 53.66a8 8 0 0 0-11.32 0L40 69.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 133.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 197.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31"/></svg>
+          </span>
+          <span class="title">Optional follow-ups</span>
+          <span class="count">· 3 actions</span>
+        </div>
+        <div class="actions">
+          <label class="item checked">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Add tests for the new endpoint <span class="rec">RECOMMENDED</span></span>
+              <div class="desc">Unit + integration coverage for the happy path and the validation errors.</div>
+            </span>
+          </label>
+          <label class="item checked">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Run the full lint + typecheck <span class="rec">RECOMMENDED</span></span>
+              <div class="desc">Catch anything the dev-loop subset skipped before opening the PR.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Update the API docs</span>
+              <div class="desc">Document the new route in the reference and regenerate the schema.</div>
+            </span>
+          </label>
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary">
+            <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="m221.66 133.66-72 72a8 8 0 0 1-11.32-11.32L196.69 136H40a8 8 0 0 1 0-16h156.69l-58.35-58.34a8 8 0 0 1 11.32-11.32l72 72a8 8 0 0 1 0 11.32"/></svg>
+            Submit 2 actions
+          </button>
+          <a class="escape">or tell me something else</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4. MULTIPLE — PARTIAL (user mid-pick) -->
+  <section class="state">
+    <div class="state-label">4 · Multiple · partial selection <span class="note">— user has ticked one, count updates live</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M104 80a8 8 0 0 1 8-8h120a8 8 0 0 1 0 16H112a8 8 0 0 1-8-8m128 40H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16m0 48H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16M67.06 53.66a8 8 0 0 0-11.32 0L40 69.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 133.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 197.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31"/></svg>
+          </span>
+          <span class="title">Optional follow-ups</span>
+          <span class="count">· 3 actions</span>
+        </div>
+        <div class="actions">
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Add tests for the new endpoint</span>
+              <div class="desc">Unit + integration coverage for the happy path and the validation errors.</div>
+            </span>
+          </label>
+          <label class="item checked">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Update the API docs</span>
+              <div class="desc">Document the new route in the reference and regenerate the schema.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Run the full lint + typecheck</span>
+              <div class="desc">Catch anything the dev-loop subset skipped before opening the PR.</div>
+            </span>
+          </label>
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary">
+            <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="m221.66 133.66-72 72a8 8 0 0 1-11.32-11.32L196.69 136H40a8 8 0 0 1 0-16h156.69l-58.35-58.34a8 8 0 0 1 11.32-11.32l72 72a8 8 0 0 1 0 11.32"/></svg>
+            Submit 1 action
+          </button>
+          <a class="escape">or tell me something else</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5. AFTER SUBMIT — STILL INTERACTIVE -->
+  <section class="state">
+    <div class="state-label">5 · After submit · still reusable <span class="note">— no lock; informational receipt only, boxes remain live</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M104 80a8 8 0 0 1 8-8h120a8 8 0 0 1 0 16H112a8 8 0 0 1-8-8m128 40H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16m0 48H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16M67.06 53.66a8 8 0 0 0-11.32 0L40 69.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 133.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 197.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31"/></svg>
+          </span>
+          <span class="title">Optional follow-ups</span>
+          <span class="count">· 3 actions</span>
+        </div>
+        <div class="actions">
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Add tests for the new endpoint</span>
+              <div class="desc">Unit + integration coverage for the happy path and the validation errors.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Update the API docs</span>
+              <div class="desc">Document the new route in the reference and regenerate the schema.</div>
+            </span>
+          </label>
+          <label class="item">
+            <span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span>
+            <span class="body">
+              <span class="label">Run the full lint + typecheck</span>
+              <div class="desc">Catch anything the dev-loop subset skipped before opening the PR.</div>
+            </span>
+          </label>
+        </div>
+        <div class="receipt">
+          <span class="dot" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104m-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88"/></svg>
+          </span>
+          Sent “Add tests”, “Update the API docs” · 2 days ago
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary" disabled>Select actions to submit</button>
+          <a class="escape">or tell me something else</a>
+        </div>
+        <div class="caption">The receipt is informational — the card never locks. Tick any subset (even the same ones) and submit again.</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6. SINGLE ACTION — AFTER SUBMIT -->
+  <section class="state">
+    <div class="state-label">6 · Single action · after submit <span class="note">— button stays live, receipt shows last send</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico" aria-hidden="true">
+            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104m-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88"/></svg>
+          </span>
+          <span class="title">Suggested next step</span>
+        </div>
+        <div class="single">
+          <div class="body">
+            <div class="label">Open a PR for this change</div>
+            <div class="desc">Creates a pull request from the current branch with a generated title and body.</div>
+          </div>
+        </div>
+        <div class="receipt">
+          <span class="dot" aria-hidden="true">
+            <svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104m-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88"/></svg>
+          </span>
+          Sent · 5 min ago
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary">
+            <svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="m221.66 133.66-72 72a8 8 0 0 1-11.32-11.32L196.69 136H40a8 8 0 0 1 0-16h156.69l-58.35-58.34a8 8 0 0 1 11.32-11.32l72 72a8 8 0 0 1 0 11.32"/></svg>
+            Do it again
+          </button>
+          <a class="escape">or tell me something else</a>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <p class="caption" style="margin-top:40px">
+    States not needing a separate mockup: <span class="pill-dim">“stale”, “expired”, “dismissed”, “locked/resolved” — by design, none of these exist.</span>
+    A card the user never touches simply sits inert and reusable in history.
+  </p>
+</div>
+</body>
+</html>
