@@ -35,7 +35,8 @@ one-shot prompt that resolves and dies.
 
 **Visual reference:** [`mockup.html`](./mockup.html) — a static prototype of every
 state (single-action, multi fresh / recommended / partial, the "Add comment…"
-composer hand-off, and the deliberate non-state after submit).
+composer hand-off, the transient post-Submit "cleared" ack, and the same card
+reset to original after reload).
 
 ## Why a new primitive (and not `AskUserQuestion`)
 
@@ -214,9 +215,12 @@ established side-channel-card pattern, **not** bare `emitMessage`:
 5. Add the history round-trip test + no-duplicate-on-replay test, and add the
    field's payload to `EVERY_OPTIONAL_FIELD_MESSAGE` in `chat-history.test.ts`.
 
-Because the card carries no lifecycle, the persistence story is markedly simpler
-than `bugReport` / `issueWrite` (no `update*Card` patch path). It persists like a
-piece of static content that happens to have buttons.
+Because the card carries no *persisted* lifecycle, the persistence story is
+markedly simpler than `bugReport` / `issueWrite` (no `update*Card` patch path). It
+persists like a piece of static content that happens to have buttons. The only
+post-submit visual change (the transient "cleared + Submitted" ack) lives purely
+in client component state and is **discarded on rehydrate** — it never reaches the
+persisted record, so there is nothing to patch.
 
 ## Resolved design decisions
 
@@ -265,12 +269,24 @@ These were open questions; the following are the settled answers.
   a patch path. A subtle "proposed <date>" line may appear on older cards; that is
   static emit-time data, still immutable.
 
-- **No "sent" receipt — by design.** An earlier mockup showed a "Sent … 2 days
-  ago" receipt; it was **removed**. A persisted receipt is *mutable lifecycle
-  state*, which directly contradicts the immutable-card / no-patch-path model
-  above (Codex design review caught the contradiction). The durable record of a
-  submit is simply **the user message that now sits in the transcript** below the
-  card. After a submit the card looks **identical** to its pre-submit state.
+- **A transient post-submit acknowledgment — client-only, never persisted.**
+  Leaving the card visually unchanged after a Submit looked broken ("did my click
+  do anything?"). So directly after a **Submit** (the direct path only), the card
+  shows an **ephemeral "cleared" state**: the ticked boxes reset and a brief
+  "Submitted · N sent" confirmation appears. This is **client-only transient UI** —
+  the spinner / `preview_status` category in CLAUDE.md's transient-vs-transcript
+  split — and is **never written to the card record**. On reload or session-switch
+  the card **rehydrates from its immutable definition** back to its original state
+  (fresh, or `defaultChecked` if it had recommendations); the transient ack is
+  gone. So the immutable-card / no-patch-path model is fully intact — nothing about
+  a submit is persisted *on the card*; the durable record is the **user message in
+  the transcript** below it. Deliberately **not** a "Sent … 2 days ago" receipt:
+  that earlier mockup showed *persisted, timestamped* lifecycle state, which
+  contradicted the model (Codex review caught it). The transient ack carries **no
+  relative timestamp** and dies on reload, which is exactly what keeps it on the
+  transient side of the line.
+  **Add comment…** does **not** trigger this — it moves the action into the
+  composer, so the card is correctly left untouched.
 
 ## Still open
 

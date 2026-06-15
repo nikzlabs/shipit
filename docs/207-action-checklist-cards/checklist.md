@@ -7,7 +7,8 @@ build steps for when implementation starts.
 - [ ] Register the tool in the shipit MCP bridge + Codex parity
 - [ ] `actionChecklist` field on `PersistedMessage` + column + `toRow`/`fromRow` + migration (immutable list, no patch path)
 - [ ] Emit via `emitChatCard` (in-band, persisted-on-fire)
-- [ ] `ActionChecklistCard.tsx` — single-button vs checklist render; stays interactive (no lock, **no sent-receipt**)
+- [ ] `ActionChecklistCard.tsx` — single-button vs checklist render; stays interactive (no lock, **no persisted receipt**)
+- [ ] Transient post-Submit ack: clear boxes + brief "Submitted · N sent" in **client component state only** (Submit path only; Add comment leaves card untouched); discarded on rehydrate so reload shows the original state
 - [ ] Submit: snapshot selected ids+payloads **atomically** at click, record the user message immediately, never re-read checkbox state after enqueue (queue-aware), reusable across submits
 - [ ] "Add comment…" seeds composer with the **payloads** (not labels) as the `[x]`/`[ ]` snapshot; never disabled
 - [ ] Stamp submitted message with **provenance** (proposed-at date, branch/HEAD) + "inspect current state, adapt/decline if obsolete" framing

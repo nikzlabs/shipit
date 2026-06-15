@@ -83,6 +83,9 @@
 
   .receipt { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--text-3); }
   .receipt .dot { color: var(--ok); }
+  .ack { display: inline-flex; align-items: center; gap: 6px; margin-top: 10px; font-size: 12px; color: var(--ok); animation: ackin .25s ease both; }
+  .ack .dot { color: var(--ok); display: inline-flex; }
+  @keyframes ackin { from { opacity: 0; transform: translateY(2px); } to { opacity: 1; transform: none; } }
 
   .caption { color: var(--text-3); font-size: 12px; margin-top: 8px; }
   .annot { font-style: italic; color: #8a6d3b; opacity: .9; }
@@ -221,26 +224,51 @@
     </div>
   </section>
 
-  <!-- 6. AFTER SUBMIT — NO VISUAL CHANGE -->
+  <!-- 6. JUST AFTER SUBMIT — TRANSIENT, CLIENT-ONLY -->
   <section class="state">
-    <div class="state-label">6 · After submit <span class="note">— there is no "after submit" state</span></div>
+    <div class="state-label">6 · Just after Submit <span class="note">— transient "cleared" ack (client-only); Submit path only</span></div>
+    <div class="chatrow">
+      <div class="card">
+        <div class="card-head">
+          <span class="ico"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M104 80a8 8 0 0 1 8-8h120a8 8 0 0 1 0 16H112a8 8 0 0 1-8-8m128 40H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16m0 48H112a8 8 0 0 0 0 16h120a8 8 0 0 0 0-16M67.06 53.66a8 8 0 0 0-11.32 0L40 69.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 133.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31m0 64a8 8 0 0 0-11.32 0L40 197.41l-7.6-7.6a8 8 0 0 0-11.31 11.31l13.25 13.25a8 8 0 0 0 11.32 0l21.4-21.4a8 8 0 0 0 0-11.31"/></svg></span>
+          <span class="title">Optional follow-ups</span><span class="count">· 3 actions</span>
+        </div>
+        <div class="actions">
+          <label class="item"><span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span><span class="body"><span class="label">Add tests for the new endpoint</span><div class="desc">Unit + integration coverage for the happy path and the validation errors.</div></span></label>
+          <label class="item"><span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span><span class="body"><span class="label">Update the API docs</span><div class="desc">Document the new route in the reference and regenerate the schema.</div></span></label>
+          <label class="item"><span class="box"><svg width="11" height="11" viewBox="0 0 256 256" fill="#07223c"><path d="M232.49 80.49l-128 128a12 12 0 0 1-17 0l-56-56a12 12 0 1 1 17-17L96 183 215.51 63.51a12 12 0 0 1 17 17Z"/></svg></span><span class="body"><span class="label">File a follow-up issue for the rate-limit case</span><div class="desc">Track the rate-limit edge case we spotted but didn’t fix in this change.</div></span></label>
+        </div>
+        <div class="ack">
+          <span class="dot"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M173.66 98.34a8 8 0 0 1 0 11.32l-56 56a8 8 0 0 1-11.32 0l-24-24a8 8 0 0 1 11.32-11.32L112 148.69l50.34-50.35a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a104.11 104.11 0 0 1 104 104m-16 0a88 88 0 1 0-88 88 88.1 88.1 0 0 0 88-88"/></svg></span>
+          Submitted · 2 actions sent
+        </div>
+        <div class="foot">
+          <button class="btn btn-primary" disabled>Submit</button>
+          <button class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 0 0-91.82 152.88L24.83 210.93a16 16 0 0 0 20.24 20.24l34.05-11.35A104 104 0 1 0 128 24m-40 96a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12"/></svg>Add comment…</button>
+        </div>
+        <div class="caption annot">↳ mockup note: boxes <strong>cleared</strong> + a transient "Submitted" line give immediate feedback that the click registered. This is <strong>client-only / ephemeral</strong> (the spinner category, not persisted) — it is never written to the card record and has <strong>no relative timestamp</strong>. Only the direct <strong>Submit</strong> path shows it; <strong>Add comment…</strong> leaves the card untouched (the action moved into the composer).</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6b. SAME CARD AFTER RELOAD -->
+  <section class="state">
+    <div class="state-label">6b · …same card after reload <span class="note">— rehydrates from the immutable definition; transient ack is gone</span></div>
     <div class="chatrow" style="display:flex; gap:12px; align-items:flex-start">
-      <span class="ico" style="color:var(--accent); margin-top:1px"><svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor"><path d="M232 56v144a16 16 0 0 1-16 16H40a16 16 0 0 1-16-16V56a16 16 0 0 1 16-16h176a16 16 0 0 1 16 16M40 200h176V56H40Zm32-112h112a8 8 0 0 0 0-16H72a8 8 0 0 0 0 16m0 32h112a8 8 0 0 0 0-16H72a8 8 0 0 0 0 16m0 32h64a8 8 0 0 0 0-16H72a8 8 0 0 0 0 16"/></svg></span>
+      <span class="ico" style="color:var(--accent); margin-top:1px"><svg width="18" height="18" viewBox="0 0 256 256" fill="currentColor"><path d="M197.66 90.34a8 8 0 0 1 0 11.32L93.66 205.66a8 8 0 0 1-11.32 0l-48-48a8 8 0 0 1 11.32-11.32L88 188.69 186.34 90.34a8 8 0 0 1 11.32 0M232 128A104 104 0 1 1 128 24a8 8 0 0 1 0 16 88 88 0 1 0 88 88 8 8 0 0 1 16 0"/></svg></span>
       <div>
-        <div style="color:var(--text); font-weight:500; margin-bottom:4px">Submitting does not change the card.</div>
+        <div style="color:var(--text); font-weight:500; margin-bottom:4px">On reload / session-switch the card returns to its original state.</div>
         <div style="color:var(--text-2); font-size:13px">
-          The submit just sends a normal user message; the card returns to exactly state&nbsp;2 / state&nbsp;3 (boxes as the user left them, Submit re-armed once a box is ticked).
-          There is <strong>no receipt, no lock, no "done" badge</strong> — the durable record is the user message that now sits in the transcript below the card.
-          Come back in a week, tick a different subset, submit again.
+          The transient "Submitted" ack and the cleared boxes were never persisted, so rehydration from the immutable card definition shows it exactly as first emitted (state&nbsp;2 fresh, or state&nbsp;3 if it had <code>defaultChecked</code> items). The durable record of the submit is the <strong>user message in the transcript</strong> below — not anything on the card. Tick a subset, submit again.
         </div>
       </div>
     </div>
-    <div class="caption annot" style="margin-left:2px">↳ mockup note: the dropped "Sent… 2 days ago" receipt was mutable lifecycle state that contradicted the immutable-card model (flagged in the Codex design review). Removed.</div>
   </section>
 
   <p class="caption" style="margin-top:40px">
-    States that do NOT exist by design: <span class="pill-dim">“stale”, “expired”, “dismissed”, “locked/resolved”, “sent receipt”.</span>
-    An untouched card just sits inert and reusable in history; a used one looks no different.
+    Persisted card states: <span class="pill-dim">fresh / default-checked only</span> — that's the whole lifecycle on disk.
+    The post-Submit "cleared + Submitted" look is <span class="pill-dim">transient client-only</span> and resets on reload.
+    States that do NOT exist at all: <span class="pill-dim">“stale”, “expired”, “dismissed”, “locked/resolved”, a persisted “sent receipt”.</span>
   </p>
 </div>
 </body>
