@@ -10,6 +10,7 @@ import {
   ArrowClockwiseIcon,
   ArrowSquareOutIcon,
   WarningCircleIcon,
+  StackIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
@@ -135,35 +136,39 @@ function FocusServiceCard({
   externalUrl: string | null;
 }) {
   const isError = svc.status === "error";
+  const isStopped = svc.status === "stopped";
   return (
     <div className="flex-1 min-h-0 p-2.5 flex flex-col">
       <div className="relative flex flex-col flex-1 min-h-0 rounded-lg bg-(--color-bg-tertiary) border border-(--color-border-primary) overflow-hidden">
         <span className={`absolute left-0 top-0 bottom-0 w-[3px] ${segColor[svc.status]}`} aria-hidden />
 
-        {/* Identity + controls — all grouped on the left. */}
+        {/* Identity + controls — all grouped on the left. Identity shrinks and
+            truncates first so long Compose names never crush the controls. */}
         <div className="flex items-center gap-2.5 pl-4 pr-2 py-2 shrink-0 border-b border-(--color-border-primary)">
-          <StatusDot status={svc.status} />
-          <span className="font-semibold text-(--color-text-primary) text-sm truncate">{svc.name}</span>
-          <span
-            className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0 ${
-              svc.preview === "auto"
-                ? "bg-(--color-accent-subtle) text-(--color-accent)"
-                : "bg-(--color-bg-active) text-(--color-text-tertiary)"
-            }`}
-          >
-            {svc.preview === "auto" ? "Preview" : "Manual"}
-          </span>
-          {svc.port && svc.status === "running" && (
-            <button
-              type="button"
-              onClick={() => onSelectPreviewPort(svc.port!)}
-              title={`Show :${svc.port} in the preview`}
-              className="font-mono text-xs text-(--color-text-link) bg-(--color-info-subtle) hover:bg-(--color-accent-subtle) px-1.5 py-0.5 rounded transition-[background-color] duration-(--duration-fast) shrink-0 cursor-pointer"
+          <div className="flex items-center gap-2.5 min-w-0">
+            <StatusDot status={svc.status} />
+            <span className="font-semibold text-(--color-text-primary) text-sm truncate min-w-0">{svc.name}</span>
+            <span
+              className={`text-[10px] font-bold uppercase tracking-wide px-1.5 py-0.5 rounded shrink-0 ${
+                svc.preview === "auto"
+                  ? "bg-(--color-accent-subtle) text-(--color-accent)"
+                  : "bg-(--color-bg-active) text-(--color-text-tertiary)"
+              }`}
             >
-              :{svc.port}
-            </button>
-          )}
-          <span className={`text-xs font-semibold shrink-0 ${statusTextColor[svc.status]}`}>{statusText[svc.status]}</span>
+              {svc.preview === "auto" ? "Preview" : "Manual"}
+            </span>
+            {svc.port && svc.status === "running" && (
+              <button
+                type="button"
+                onClick={() => onSelectPreviewPort(svc.port!)}
+                title={`Show :${svc.port} in the preview`}
+                className="font-mono text-xs text-(--color-text-link) bg-(--color-info-subtle) hover:bg-(--color-accent-subtle) px-1.5 py-0.5 rounded transition-[background-color] duration-(--duration-fast) shrink-0 cursor-pointer"
+              >
+                :{svc.port}
+              </button>
+            )}
+            <span className={`text-xs font-semibold shrink-0 ${statusTextColor[svc.status]}`}>{statusText[svc.status]}</span>
+          </div>
 
           <div className="flex items-center gap-0.5 shrink-0">
             {externalUrl && (
@@ -176,11 +181,14 @@ function FocusServiceCard({
                 <ArrowClockwiseIcon size={ICON_SIZE.SM} />
               </Button>
             )}
-            {svc.status === "stopped" || svc.status === "error" ? (
+            {/* Stopped services use the prominent empty-state Start below, so the
+                header only carries Start for the crashed (error) case. */}
+            {isError && (
               <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: svc.name })} title={`Start ${svc.name}`} aria-label={`Start ${svc.name}`} className="h-7 w-7 p-0">
                 <PlayIcon size={ICON_SIZE.SM} weight="fill" />
               </Button>
-            ) : (
+            )}
+            {(svc.status === "running" || svc.status === "starting") && (
               <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: svc.name })} title={`Stop ${svc.name}`} aria-label={`Stop ${svc.name}`} className="h-7 w-7 p-0">
                 <StopIcon size={ICON_SIZE.SM} weight="fill" />
               </Button>
@@ -193,11 +201,11 @@ function FocusServiceCard({
         </div>
 
         {/* A crashed service summarizes its error + a one-click fix above the log. */}
-        {isError && svc.error && (
+        {isError && (
           <div className="flex items-start gap-2 px-4 py-2 shrink-0 bg-(--color-error-subtle) border-b border-(--color-error)/25 text-xs text-(--color-error)">
             <WarningCircleIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0 mt-px" />
             <span className="min-w-0">
-              {svc.error}{" "}
+              {svc.error || "Service crashed."}{" "}
               <button type="button" onClick={() => onAskFix(svc)} className="text-(--color-text-link) hover:underline font-medium whitespace-nowrap cursor-pointer">
                 Ask the agent to fix →
               </button>
@@ -205,8 +213,19 @@ function FocusServiceCard({
           </div>
         )}
 
-        {/* The live log, shown directly — the reason the focus card fills the space. */}
-        {active ? (
+        {isStopped ? (
+          // A stopped service has no live log worth showing — surface a purposeful
+          // empty state with a clear Start action instead of a blank terminal.
+          <div className="flex-1 flex flex-col items-center justify-center gap-3 p-6 text-center">
+            <StackIcon size={ICON_SIZE.LG} className="text-(--color-text-tertiary)" />
+            <span className="text-sm text-(--color-text-secondary)">This service isn’t running.</span>
+            <Button variant="primary" size="md" onClick={() => send({ type: "start_service", name: svc.name })}>
+              <PlayIcon size={ICON_SIZE.SM} weight="fill" />
+              <span className="ml-1">Start service</span>
+            </Button>
+          </div>
+        ) : active ? (
+          // The live log, shown directly — the reason the focus card fills the space.
           <LogView channel={`service:${svc.name}`} send={send} />
         ) : (
           <div className="flex-1" style={{ backgroundColor: "#030712" }} />
@@ -253,8 +272,11 @@ export function PreviewServicesDrawer({
   const [selectedService, setSelectedService] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
-  // Derive effective selection — if the service disappeared, treat as deselected.
-  const effectiveService = selectedService && services.some((s) => s.name === selectedService) ? selectedService : null;
+  // Derive effective selection — if the service disappeared, treat as
+  // deselected. A lone service always renders the focus card (below), so a stale
+  // selection from a multi-service moment never traps us in the drill-in view.
+  const effectiveService =
+    services.length > 1 && selectedService && services.some((s) => s.name === selectedService) ? selectedService : null;
   const selectedSvc = effectiveService ? services.find((s) => s.name === effectiveService) ?? null : null;
 
   const toggleExpanded = useCallback(() => {
@@ -415,17 +437,17 @@ export function PreviewServicesDrawer({
             )}
             <div className="ml-auto flex items-center gap-1 shrink-0">
               {selectedSvc.status === "running" && (
-                <Button variant="ghost" size="sm" onClick={() => handleRestart(selectedSvc.name)} title={`Restart ${selectedSvc.name}`} className="h-7 w-7 p-0">
+                <Button variant="ghost" size="sm" onClick={() => handleRestart(selectedSvc.name)} title={`Restart ${selectedSvc.name}`} aria-label={`Restart ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <ArrowClockwiseIcon size={ICON_SIZE.SM} />
                 </Button>
               )}
               {(selectedSvc.status === "stopped" || selectedSvc.status === "error") && (
-                <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedSvc.name })} title={`Start ${selectedSvc.name}`} className="h-7 w-7 p-0">
+                <Button variant="ghost" size="sm" onClick={() => send({ type: "start_service", name: selectedSvc.name })} title={`Start ${selectedSvc.name}`} aria-label={`Start ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <PlayIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}
               {(selectedSvc.status === "running" || selectedSvc.status === "starting") && (
-                <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedSvc.name })} title={`Stop ${selectedSvc.name}`} className="h-7 w-7 p-0">
+                <Button variant="ghost" size="sm" onClick={() => send({ type: "stop_service", name: selectedSvc.name })} title={`Stop ${selectedSvc.name}`} aria-label={`Stop ${selectedSvc.name}`} className="h-7 w-7 p-0">
                   <StopIcon size={ICON_SIZE.SM} weight="fill" />
                 </Button>
               )}

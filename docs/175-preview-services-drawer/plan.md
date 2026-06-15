@@ -37,8 +37,9 @@ of competing for a tab.
   - A self-contained **vertical** drag-resize (the shared `useResizablePanel`
     hook is horizontal-only). Height is clamped so the preview above always
     keeps at least `MIN_PREVIEW_PX`.
-- **`ServiceLogViewer.tsx`** — the xterm.js read-only log viewer, extracted
-  verbatim from the old `ServicesPanel` so the drawer can embed it. Mounts only
+- **`LogView.tsx`** — the xterm.js read-only log viewer (the unified viewer from
+  docs/192; superseded the original `ServiceLogViewer`). The drawer embeds it for
+  the selected-service drill-in and the single-service focus card. Mounts only
   when the Preview tab is actually visible (`active` prop), so xterm never opens
   against a hidden, zero-size container.
 - **`ServiceList.tsx`** — the expanded list view, redesigned as **cards** (see
@@ -128,7 +129,7 @@ Two refinements once the drawer shipped (visual reference:
 
 - `src/client/components/PreviewServicesDrawer.tsx` — the drawer + `FocusServiceCard` (new)
 - `docs/175-preview-services-drawer/single-service-prototype.html` — design reference for the focus card / left-grouped controls
-- `src/client/components/ServiceLogViewer.tsx` — extracted xterm log viewer (new)
+- `src/client/components/LogView.tsx` — unified xterm log viewer (docs/192), embedded by the drawer
 - `src/client/components/ServiceList.tsx` — card-based service list (redesigned)
 - `src/client/App.tsx` — flex-column layout, tab removal, `rightTab` coercion
 - `src/client/stores/ui-store.ts` — `RightTab` (no longer includes `"services"`)
