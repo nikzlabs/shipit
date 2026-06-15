@@ -543,6 +543,51 @@ runtime. `chmod a+rX` (capital X = "directory or already-executable") gives
 the runtime user read+traverse access without making every file
 executable.
 
+#### 8.1 Addendum — the read-only browser store breaks the MCP's *profile* dir (SHI-145 regression)
+
+A live session surfaced a gap this section's reasoning missed. The §8 design
+correctly makes the browser *binary* read-only and readable by `shipit` — but
+`@playwright/mcp` also wants a **writable** location, and it anchors it to the
+same path:
+
+```
+Error: EACCES: permission denied, mkdir '/opt/playwright-browsers/mcp-chrome-for-testing-<hash>'
+```
+
+The browser never launches, so every `browser_*` tool and `present`-tab
+screenshot verification is blocked.
+
+**Root cause (this is *not* a browser-download/revision mismatch).** By default
+`@playwright/mcp` launches a **persistent** browser context. For a persistent
+context it creates a per-cwd *user-data-dir* (browser profile) named
+`mcp-<channel>-<sha256(cwd)[0:7]>` and `mkdir`s it under playwright-core's
+`registryDirectory` — which resolves to `PLAYWRIGHT_BROWSERS_PATH`
+(`/opt/playwright-browsers`). That directory is the §8 read-only shared browser
+store (`a+rX`, root-owned), so as the unprivileged `shipit` user (uid 1000) the
+profile `mkdir` fails with EACCES. The browser binary itself
+(`chromium-<rev>`, which *is* the Chrome-for-Testing build — `browsers.json`
+names it `chromium`, title "Chrome for Testing") is correctly pre-installed and
+readable; there is **no runtime download**. The `mcp-chrome-for-testing-<hash>`
+name is the *profile* dir, not a browser revision — the `mcp-` prefix and
+cwd-hash suffix are the tell. Before SHI-145 the worker ran as root and the
+profile `mkdir` into the root-owned store silently succeeded, which is why this
+only surfaced after the non-root move.
+
+**Fix — `--isolated`, not loosening the store.** The launch command in
+`src/server/session/agents/playwright-mcp.ts` passes `--isolated`. Isolated mode
+launches the browser with an ephemeral profile under `os.tmpdir()` (`/tmp`,
+always writable — see the writable-paths table below) and never writes to
+`registryDirectory`. This keeps the §8 store read-only and shared exactly as
+designed. We don't need a persistent profile: the MCP server is per-session and
+the browser only drives the live preview, so there is no cross-session
+cookie/login state worth keeping. Pinning the browser revision (the initially
+hypothesized fix) would do nothing — the binary was never the problem.
+`chown`-ing the store to `shipit` or repointing `PLAYWRIGHT_BROWSERS_PATH` into
+`/home/shipit` were rejected for the same reason: they re-introduce a writable
+shared browser store, the very thing §8 removed. Regression guard:
+`src/server/session/agents/playwright-mcp.test.ts` asserts `--isolated` stays in
+the launch command.
+
 ### 9. Local-mode (dogfood) compatibility
 
 In `RUNTIME_MODE=local` the orchestrator process *is* the agent host:
@@ -653,8 +698,11 @@ Read-only and **must stay** so under SHI-97 (never written at runtime):
 the shims must remain traversable — but none of these need write access.
 
 `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` is read-only at runtime;
-Playwright MCP writes only its scratch under `/tmp/.playwright-mcp`, so the
-read-only browser store composes with a writable `/tmp`.
+Playwright MCP writes only its scratch under `/tmp/.playwright-mcp` **and**, in
+`--isolated` mode (§8.1), its ephemeral browser profile under `os.tmpdir()`
+(`/tmp`), so the read-only browser store composes with a writable `/tmp`.
+Without `--isolated` the MCP would `mkdir` a persistent profile *inside* the
+read-only store and EACCES — see §8.1.
 
 ## Touchpoints
 
@@ -667,6 +715,8 @@ read-only browser store composes with a writable `/tmp`.
 - `src/server/orchestrator/container-lifecycle.test.ts`
 - `src/server/session/claude.ts`
 - `src/server/session/terminal.ts`
+- `src/server/session/agents/playwright-mcp.ts` — `--isolated` so the MCP's
+  browser profile stays off the read-only browser store (§8.1).
 - `src/server/session/agents/codex-adapter.ts`
 - `src/server/session/session-worker.ts`
 - Agent registry/auth probing code that references root-home credential paths.
@@ -706,7 +756,10 @@ Playwright MCP writes under `/tmp/.playwright-mcp` and reads the browser binary
 from `PLAYWRIGHT_BROWSERS_PATH` (or the default `$HOME/.cache/ms-playwright`).
 The build-time install lands under the *building* user's home; without the §8
 pin to a shared `/opt/playwright-browsers` path, the first `browser_*` call
-under `shipit` returns "browser not installed".
+under `shipit` returns "browser not installed". A separate, subtler failure
+(§8.1) is that the MCP's *persistent* browser profile is `mkdir`'d into that same
+read-only store and EACCES's under `shipit`; `--isolated` in the launch command
+moves the profile to a writable `/tmp` temp dir.
 
 ### MCP install regressions
 
