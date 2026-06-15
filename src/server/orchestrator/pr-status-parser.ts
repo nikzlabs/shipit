@@ -182,6 +182,7 @@ export function buildPrStatusQuery(opts: {
   return `
 query($owner: String!, $name: String!) {
   repository(owner: $owner, name: $name) {
+    nameWithOwner
     pullRequests(first: ${first}, states: [OPEN], orderBy: { field: UPDATED_AT, direction: DESC }) {
       nodes {
         ${PR_LIGHT_FIELDS}
@@ -263,6 +264,14 @@ export interface GraphQLPrNode {
 export interface GraphQLResponse {
   data?: {
     repository?: {
+      /**
+       * Canonical `owner/repo` as GitHub resolves it. GitHub's GraphQL
+       * `repository(owner, name)` follows transfer/rename redirect records, so
+       * querying a transferred repo by its OLD owner still returns the NEW
+       * `nameWithOwner`. The poller diffs this against the key it polled under
+       * to self-heal a stale cached owner after a repo transfer.
+       */
+      nameWithOwner?: string;
       pullRequests?: {
         nodes: GraphQLPrNode[];
       };

@@ -437,6 +437,31 @@ actually been pushed (checked via the local remote-tracking ref, no network),
 so un-pushed / no-PR sessions add zero GitHub calls; once a PR is known, the
 early `getStatus` return short-circuits before this runs.
 
+**Repo-transfer self-heal.** A GitHub repo transfer or rename (e.g.
+`nicolasalt/shipit` → `nikzlabs/shipit`) leaves the cached owner stale at three
+layers: the workspace git remote, the persisted `remoteUrl` column, and the
+poller's in-memory `sessionRepos` map (none update on a transfer — GitHub's
+redirect keeps `git push`/`fetch` working under the old URL). The *live open-PR*
+view survives because the bulk GraphQL `repository(owner, name)` follows GitHub's
+redirect records and the poller matches PRs by `headRefName` (branch only). But
+merge detection routes through `verifyMissingPr` → `findPullRequestAnyState`,
+whose REST query filters `head=<owner>:<branch>` — after a transfer the head
+label carries the *new* owner, so the stale-owner filter matches nothing, returns
+`null`, and the merge is **never promoted** (the exact "PRs work but merges aren't
+detected" symptom). Fix: the bulk query now also selects `nameWithOwner` (the
+canonical key GitHub resolves to). On each poll, `reconcileCanonicalRepo` diffs it
+against the key the poll was issued under; on a mismatch it remaps every session's
+`sessionRepos` entry to the new key, persists a corrected `remoteUrl` (via
+`rewriteGitHubRemoteOwnerRepo`, preserving scheme + `.git` suffix — so a restart
+tracks the canonical owner directly), and moves the cadence timestamp. The *same*
+poll then continues with the new owner, so the REST verify targets the right repo
+and the merge is detected within one cycle. The workspace git remote is left as-is
+(GitHub's redirect keeps it functional); only the identity ShipIt uses for API
+calls is corrected. No-op when `nameWithOwner` is absent or already matches, so the
+steady-state path is unchanged. Key files: `pr-status-parser.ts` (query +
+`GraphQLResponse.nameWithOwner`), `pr-status-poller.ts` (`reconcileCanonicalRepo`),
+`git-utils.ts` (`rewriteGitHubRemoteOwnerRepo`).
+
 ## Implementation Order
 
 1. **Phase 1** (inline card + CI status poller + conversation-aware descriptions) — the foundation. See [phase-1.md](./phase-1.md).

@@ -18,6 +18,7 @@ import {
   stripUrlCredentials,
   canonicalRepoKey,
   syncLocalDefaultBranchToOrigin,
+  rewriteGitHubRemoteOwnerRepo,
 } from "./git-utils.js";
 
 function git(cwd: string, args: string): string {
@@ -32,6 +33,36 @@ function commitFile(repoDir: string, name: string, content: string, message: str
   git(repoDir, `commit -m "${message}" --no-gpg-sign`);
   return git(repoDir, "rev-parse HEAD");
 }
+
+describe("rewriteGitHubRemoteOwnerRepo", () => {
+  it("rewrites an HTTPS remote, preserving the .git suffix", () => {
+    expect(
+      rewriteGitHubRemoteOwnerRepo("https://github.com/nicolasalt/shipit.git", "nikzlabs", "shipit"),
+    ).toBe("https://github.com/nikzlabs/shipit.git");
+  });
+
+  it("rewrites an HTTPS remote without a .git suffix", () => {
+    expect(
+      rewriteGitHubRemoteOwnerRepo("https://github.com/nicolasalt/shipit", "nikzlabs", "shipit"),
+    ).toBe("https://github.com/nikzlabs/shipit");
+  });
+
+  it("rewrites an SSH remote, preserving the scheme", () => {
+    expect(
+      rewriteGitHubRemoteOwnerRepo("git@github.com:nicolasalt/shipit.git", "nikzlabs", "shipit"),
+    ).toBe("git@github.com:nikzlabs/shipit.git");
+  });
+
+  it("handles a repo rename (owner unchanged, repo changes)", () => {
+    expect(
+      rewriteGitHubRemoteOwnerRepo("https://github.com/acme/old-name.git", "acme", "new-name"),
+    ).toBe("https://github.com/acme/new-name.git");
+  });
+
+  it("returns null for a non-GitHub URL", () => {
+    expect(rewriteGitHubRemoteOwnerRepo("https://gitlab.com/a/b.git", "x", "y")).toBeNull();
+  });
+});
 
 describe("stripUrlCredentials", () => {
   it("removes embedded userinfo from an HTTPS URL", () => {
