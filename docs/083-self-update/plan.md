@@ -112,3 +112,11 @@ regardless of build outcome**.
 | `deployment/vps/setup.sh` | Install systemd units |
 | `deployment/vps/docker-compose.yml` | Bind-mount /opt/shipit |
 | `deployment/README.md` | Simplified setup guide |
+
+## Related
+
+- [docs/200-self-update-ssh-origin](../200-self-update-ssh-origin/plan.md) — the
+  in-container update check fetches over the configured origin, which fails if
+  that origin is an SSH remote (the orchestrator image has no SSH key/known_hosts).
+  Doc 200 adds a global `insteadOf` rewrite so github.com SSH URLs resolve to
+  HTTPS + the credential-helper token.

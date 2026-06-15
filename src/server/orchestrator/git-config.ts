@@ -64,6 +64,40 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     }
   }
 
+  // docs/200 — make the orchestrator's git transport-agnostic for github.com.
+  // An SSH origin (`git@github.com:owner/repo.git`) is unusable from inside the
+  // orchestrator container: the image ships no SSH key and no `known_hosts`, so
+  // any git op over SSH dies with "Host key verification failed" before auth is
+  // ever attempted. This silently broke the self-update check — a host whose
+  // `/opt/shipit` origin was re-pointed at an SSH URL (e.g. when moving the
+  // private upstream onto a deploy key) could no longer fetch updates, even with
+  // a perfectly valid GitHub token: SSH never consults the credential helper.
+  //
+  // Rewrite GitHub SSH URLs to HTTPS for ALL orchestrator git ops via a global
+  // `url.<base>.insteadOf`. HTTPS then flows through the global credential helper
+  // (the Settings-UI token installed by setGlobalCredentialHelper), which is how
+  // every other orchestrator git op already authenticates. Scope: this writes
+  // only the orchestrator's GIT_CONFIG_GLOBAL — session containers get a separate
+  // sanitized config (writeContainerGitConfig), and the host's own git config is
+  // untouched, so a host-side SSH deploy key keeps working for update.sh.
+  //
+  // `--replace-all <key> <value> <value_regex>` keeps each entry single and
+  // idempotent across repeated init calls: the value_regex matches only this one
+  // entry, so a re-run replaces it in place instead of appending a duplicate.
+  const GITHUB_HTTPS_INSTEAD_OF = "url.https://github.com/.insteadOf";
+  for (const [from, valueRegex] of [
+    ["git@github.com:", "^git@github\\.com:$"],
+    ["ssh://git@github.com/", "^ssh://git@github\\.com/$"],
+  ] as const) {
+    try {
+      execFileSync("git", [
+        "config", "--global", "--replace-all", GITHUB_HTTPS_INSTEAD_OF, from, valueRegex,
+      ]);
+    } catch {
+      // git may not be installed yet (unlikely but safe)
+    }
+  }
+
   // Force git to never open an editor. The orchestrator runs git non-interactively
   // (e.g. `git rebase --continue` after agent-driven conflict resolution), and the
   // container has no editor installed. Without this, `git rebase --continue` fails
