@@ -160,7 +160,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     createGitManager, createRepoGit, databaseManager, sessionManager,
     repoStore, chatHistoryManager, usageManager, authManager, codexAuthManager,
     credentialStore, providerAccountManager, agentRegistry, githubAuthManager,
-    secretStore, reviewStore, egressAllowlistStore, generateText,
+    secretStore, reviewStore, egressAllowlistStore, presentStore, generateText,
     isTestMode, runtimeMode,
   } = mgrs;
 
@@ -295,7 +295,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   const loopDetector = createSessionLoopDetector();
 
   // ---- Runner factory ----
-  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker });
+  const effectiveRunnerFactory = buildRunnerFactory({ deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker, presentStore });
 
   // ---- Service manager registry (per-session compose stacks) ----
   const serviceManagers = new Map<string, ServiceManager>();
@@ -1228,6 +1228,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     secretStore,
     reviewStore,
     egressAllowlistStore,
+    presentStore,
     serviceManagers,
     composeStopPromises,
     // Skip the volume-prune fallback in test mode so unit / integration

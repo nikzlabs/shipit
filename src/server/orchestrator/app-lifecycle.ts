@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
+import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
 import { isOverlayEnabled } from "./overlay-session.js";
@@ -269,6 +270,13 @@ export interface RunnerFactoryDeps {
    * `services/recovery.ts`.
    */
   oomBreaker?: SessionOomCircuitBreaker;
+  /**
+   * docs/093 — durable Present-tab store. Passed into every
+   * `ContainerSessionRunner` so a freshly-created runner (after a container
+   * restart / idle eviction) seeds its presentation cache from persistence and
+   * can re-register artifacts with the new worker to serve their bytes again.
+   */
+  presentStore?: PresentStore;
 }
 
 /**
@@ -387,7 +395,7 @@ async function createContainerForRunner(opts: {
 export function buildRunnerFactory(
   factoryDeps: RunnerFactoryDeps,
 ): SessionRunnerFactory | undefined {
-  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker } = factoryDeps;
+  const { deps, containerManager, credentialsDir, sessionManager, runtimeMode, broadcastLog, oomBreaker, presentStore } = factoryDeps;
 
   // Explicit injection always wins (tests, custom orchestrations).
   if (deps.runnerFactory) return deps.runnerFactory;
@@ -426,6 +434,7 @@ export function buildRunnerFactory(
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: existing.workerUrl,
+        ...(presentStore ? { presentStore } : {}),
       });
     }
 
@@ -439,6 +448,7 @@ export function buildRunnerFactory(
         sessionDir: o.sessionDir,
         defaultAgentId: o.defaultAgentId,
         workerUrl: "http://0.0.0.0:0",
+        ...(presentStore ? { presentStore } : {}),
       });
 
       void (async () => {
@@ -485,6 +495,7 @@ export function buildRunnerFactory(
       sessionDir: o.sessionDir,
       defaultAgentId: o.defaultAgentId,
       workerUrl: "http://0.0.0.0:0", // placeholder — updated after container starts
+      ...(presentStore ? { presentStore } : {}),
     });
     console.log(`[container] ${existing ? "Replacing stale" : "Creating"} container for session ${o.sessionId}...`);
     void createContainerForRunner({

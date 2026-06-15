@@ -60,6 +60,7 @@ import { registerIssueRoutes } from "./api-routes-issues.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
+import type { PresentStore } from "./present-store.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 
 /**
@@ -185,6 +186,13 @@ export interface ApiDeps {
   egressAllowlistStore?: EgressAllowlistStore;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
+  /**
+   * docs/093 — durable Present-tab metadata store. Backs the `presentations`
+   * field in the `/history` payload so the Present tab rehydrates on session
+   * load (in addition to the WS `present_state` replay). Omitted in test setups
+   * that don't exercise the Present tab.
+   */
+  presentStore?: PresentStore;
   /**
    * Marketplace store (docs/149 — skill install UX). When present, the
    * Settings → Skills tab + install/uninstall routes are wired. Test setups

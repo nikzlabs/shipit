@@ -143,3 +143,26 @@ receive): the `present_content` translation + field mapping (sessionId is the
 runner's, mimeType defaults to text/html); the `presentations` cache that the
 `present_state` replay reads on attach; the `replaceId` revision flow; and the
 `present_cleared` path driven through a real 21-entry LRU eviction.
+
+## Durable persistence across a container restart (docs/093 follow-up)
+
+Make Present-tab artifacts survive a reload, session switch, and **container
+restart** by persisting metadata orchestrator-side. Bytes stay on disk/git.
+
+- [x] `presentations` table migration + `clearAll()` drop (`database.ts`)
+- [x] `PresentStore` (SQLite, session-scoped, metadata + `resolvedPath`): record/replace/clear/list/listForClient/get/deleteSession
+- [x] Construct `presentStore` in DI; thread into the runner factory + `ApiDeps`
+- [x] Worker `present_content` SSE carries `resolvedPath` (SSE only — not the client WS message)
+- [x] Runner seeds `_presentations` from the store at construction
+- [x] Runner persists on SSE `present_content` / `present_cleared`
+- [x] Worker `POST /present/register` route to rehydrate a fresh worker's registry
+- [x] `proxyPresentRaw` re-registers from the persisted record on a fresh-worker miss, then retries
+- [x] `/history` carries `presentations`; client `loadSessionHistory` hydrates the store
+- [x] `deleteSession` drops persisted rows (full reset covered by `clearAll`)
+- [x] Server round-trip test (`present-store.test.ts`)
+- [x] Restart integration test — re-serve committed artifact + graceful 404 for a gone `/tmp` file (`present-flow.test.ts`)
+- [x] Worker register-route test (`present-view.test.ts`)
+- [x] Client rehydrate idempotency test (`present-store.test.ts`)
+- [x] Update agent-facing `shipit-docs/present.md` (remove "disappears on restart" language)
+- [x] Update `plan.md` with the persistence subsystem + key files
+- [x] `npm run typecheck` + `npm run lint:dev` clean; present tests pass

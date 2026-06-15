@@ -16,6 +16,7 @@ import { useBugReportStore, type BugReportCardState } from "../stores/bug-report
 import { useEgressPromptStore, type EgressPromptCardState } from "../stores/egress-prompt-store.js";
 import { usePermissionStore, type PermissionCardState } from "../stores/permission-store.js";
 import { useIssueWriteStore } from "../stores/issue-write-store.js";
+import { usePresentStore } from "../stores/present-store.js";
 import type { IssueWriteCard } from "../../server/shared/types.js";
 
 interface PreviewStatusResponse {
@@ -57,6 +58,19 @@ interface HistoryResponse {
     action: "chat" | "code" | "both" | "fork";
     expiresAt: number;
   } | null;
+  /**
+   * docs/093 — durable Present-tab metadata. Rehydrates the present-store on
+   * session load so the Present tab survives a reload / session switch / a
+   * container restart (the artifact's bytes fetch lazily as today). Metadata
+   * only — no `content`.
+   */
+  presentations?: {
+    presentId: string;
+    mimeType: string;
+    title?: string;
+    filePath: string;
+    createdAt: string;
+  }[];
 }
 
 interface BootstrapResponse {
@@ -147,6 +161,15 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   if (persistedWrites.length > 0) {
     useIssueWriteStore.getState().seedCards(persistedWrites);
   }
+
+  // docs/093 — rehydrate the Present tab from durable metadata so it survives a
+  // reload / session switch / container restart. `hydrate` replaces the list
+  // without bumping the unseen badge or auto-switching the panel (silent sync),
+  // is idempotent by presentId, and preserves any already-fetched bytes — so it
+  // and the WS `present_state` replay can't double-render. Always called (even
+  // empty) so a now-cleared session drops a stale tab.
+  usePresentStore.getState().hydrate(data.presentations ?? []);
+
   if (data.agentRunning) {
     session.setIsLoading(true);
   } else {

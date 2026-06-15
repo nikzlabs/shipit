@@ -286,4 +286,41 @@ export function registerPresentFilesRoutes(
       return reply.header("Cache-Control", "no-store").send(artifact);
     },
   );
+
+  // docs/093 — rehydrate a presentation's metadata into THIS worker's registry.
+  // After a container restart the worker is fresh and its registry is empty, but
+  // the orchestrator still holds the durable metadata (incl. `resolvedPath`). On
+  // the first `/present/:id/raw` miss it re-registers the artifact here, then
+  // re-reads the bytes from disk — so a workspace-committed artifact re-renders
+  // after a restart. Bytes are never sent; only the path + metadata. Idempotent.
+  app.post<{
+    Body: {
+      presentId?: string;
+      resolvedPath?: string;
+      filePath?: string;
+      mimeType?: string;
+      title?: string;
+      createdAt?: string;
+    };
+  }>("/present/register", async (request, reply): Promise<unknown> => {
+    const { presentId, resolvedPath, filePath, mimeType, title, createdAt } = request.body ?? {};
+    if (
+      typeof presentId !== "string" || presentId.length === 0
+      || typeof resolvedPath !== "string" || resolvedPath.length === 0
+      || typeof filePath !== "string" || filePath.length === 0
+      || typeof mimeType !== "string" || mimeType.length === 0
+    ) {
+      return reply.code(400).send({
+        error: "presentId, resolvedPath, filePath and mimeType are required",
+      });
+    }
+    registry.put(presentId, {
+      resolvedPath,
+      filePath,
+      mimeType,
+      createdAt: typeof createdAt === "string" && createdAt.length > 0 ? createdAt : new Date().toISOString(),
+      ...(typeof title === "string" && title.length > 0 ? { title } : {}),
+    });
+    return reply.send({ ok: true });
+  });
 }

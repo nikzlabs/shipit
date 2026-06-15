@@ -567,10 +567,10 @@ attach). Mechanism:
   `present_content` overlapping a `present_state` hydrate replaces in place
   instead of duplicating.
 
-This resolves open question #2 for the *session-switch* axis. Browser **refresh**
-still drops presentations (the store isn't persisted to localStorage and HTTP
-bootstrap doesn't carry present state) — that remains acceptable per the
-ephemeral design, and the runner cache only survives as long as the container.
+This resolved open question #2 for the *session-switch* axis. Browser **refresh**
+and **container restart** are now covered too — see *Durable persistence across a
+container restart* below. (The runner cache alone only survives as long as the
+container, which is exactly the gap that section closes.)
 
 ### React #300 guard
 
@@ -579,6 +579,77 @@ return for the empty state. When `present-store` reset to empty on session
 switch, the early return fired and skipped that hook → "rendered fewer hooks
 than expected" (#300). All hooks now run unconditionally before the early
 return.
+
+## Durable persistence across a container restart
+
+The runner cache + `present_state` replay above made the Present tab survive a
+**session switch**, but everything was still in-memory: the worker's
+`PresentRegistry`, the orchestrator runner's `_presentations`, and the client
+store. A session container is destroyed (not paused) when it goes idle, so a
+restart wiped all three and the Present tab came back **empty** — even for an
+artifact whose source file is a committed workspace file still on disk. The
+motivating report: a user presented a workspace-committed prototype, the
+container idle-recycled, and the tab returned blank.
+
+The fix adds an **orchestrator-side durable store** so presentation *metadata*
+outlives the container. Bytes are still never persisted — they're re-read from
+the source file on demand (workspace-committed files survive in git; `/tmp`
+throwaways may not).
+
+Mechanism:
+
+- **`PresentStore` (`present-store.ts`)** — a SQLite-backed, session-scoped
+  metadata store (new `presentations` table, migration in `database.ts`). It
+  holds the client-facing fields **plus** the container-internal `resolvedPath`
+  (needed to re-serve bytes after a restart). `record()` mirrors the runner's
+  reducer: a `replaceId` revision updates the superseded row **in place** so it
+  keeps its carousel slot; an idempotent re-delivery updates by `present_id`;
+  otherwise it appends (rows sort by insertion-order `id`). Bytes are never
+  stored.
+- **Worker → orchestrator carries `resolvedPath`.** The worker's
+  `present_content` SSE event now includes the resolved absolute path (on the
+  SSE event only — NOT the client-facing WS message, which keeps container paths
+  off the client). The orchestrator runner reads it and persists the full record.
+- **Runner persists + seeds.** `ContainerSessionRunner` takes an optional
+  `presentStore` (threaded via `buildRunnerFactory`). Its SSE `present_content` /
+  `present_cleared` handlers write through to the store, and the **constructor
+  seeds `_presentations` from the store** — so a runner created for a freshly
+  restarted container already carries the session's presentations and replays
+  them via `present_state` on viewer attach.
+- **Re-serve after restart via re-register.** A fresh worker's registry is
+  empty, so the first `GET /present/:id/raw` 404s. `proxyPresentRaw` catches
+  that, looks up the persisted record, POSTs it to the worker's new
+  **`POST /present/register`** route (handing back `resolvedPath` + metadata),
+  and retries the read. A workspace-committed file then re-renders fully; a
+  `/tmp` file that's gone makes the retry 404 too — propagated so the Present
+  tab shows its existing graceful "no longer available" placeholder (the
+  `fetchError` branch in `PresentPane`), never a crash.
+- **Client rehydrate on session load.** `GET /history` now carries
+  `presentations` (metadata only, from `PresentStore.listForClient`), and
+  `loadSessionHistory` calls `usePresentStore.hydrate()`. This is belt-and-
+  suspenders with the WS `present_state` replay — both seed from the same
+  authoritative DB, and `hydrate` / `addOrReplace` are idempotent by
+  `present_id` (preserving already-fetched bytes), so a reconnect + a history
+  replay never double-render.
+- **Cleanup.** `database.ts clearAll()` (full reset) drops the table; the
+  permanent `deleteSession` service drops the session's rows. Archive does NOT
+  delete (so an unarchive can rehydrate). Rows are keyed by `session_id`, so an
+  orphan is harmless.
+
+This resolves open question #2 (persistence across reload) for all three axes —
+reload, session switch, and container restart — for artifacts whose source file
+is durable. The scope is deliberately **metadata-only**: bytes stay on disk/git.
+
+### Key files (persistence)
+- `src/server/orchestrator/present-store.ts` — **new** `PresentStore` (SQLite, session-scoped metadata)
+- `src/server/shared/database.ts` — `presentations` table migration + `clearAll()` drop
+- `src/server/orchestrator/container-session-runner.ts` — seed from store, persist on SSE, re-register in `proxyPresentRaw`
+- `src/server/session/session-worker.ts` — `resolvedPath` on the `present_content` SSE event
+- `src/server/session/present-view.ts` — **new** `POST /present/register` route (rehydrate the worker registry)
+- `src/server/orchestrator/app-di.ts` / `app-lifecycle.ts` / `index.ts` — construct + thread `presentStore` into the runner factory and `ApiDeps`
+- `src/server/orchestrator/api-routes-session.ts` — `presentations` in the `/history` payload
+- `src/client/utils/session-data.ts` — `usePresentStore.hydrate()` on session load
+- `src/server/orchestrator/services/session.ts` — `deleteSession` drops persisted rows
 
 ## Key files (to be updated when implemented)
 

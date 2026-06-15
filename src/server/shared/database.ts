@@ -647,6 +647,32 @@ const MIGRATIONS: Migration[] = [
       );
     `);
   },
+  // docs/093 — durable Present-tab metadata. Presentations were in-memory only
+  // (worker PresentRegistry + orchestrator runner cache + client store), so they
+  // vanished on a container restart even when the source file was a committed
+  // workspace artifact. This table holds the orchestrator-side metadata —
+  // including the container-internal `resolved_path` so the orchestrator can
+  // re-register a presentation with a freshly-started worker and serve its bytes
+  // again. Bytes are never stored; they're re-read from disk on demand. `id` is
+  // the insertion-order rowid the carousel sorts by; a `replaceId` revision
+  // updates the superseded row in place so it keeps its slot. `present_id` is the
+  // natural unique key shared end-to-end with the worker, runner cache, and
+  // client store.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS presentations (
+        id INTEGER PRIMARY KEY,
+        present_id TEXT NOT NULL UNIQUE,
+        session_id TEXT NOT NULL,
+        file_path TEXT NOT NULL,
+        resolved_path TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        title TEXT,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_presentations_session ON presentations(session_id);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -692,6 +718,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM rewind_snapshots").run();
       this.db.prepare("DELETE FROM egress_allowlist").run();
       this.db.prepare("DELETE FROM egress_settings").run();
+      this.db.prepare("DELETE FROM presentations").run();
     })();
   }
 

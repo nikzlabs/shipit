@@ -28,6 +28,7 @@ import { EventEmitter } from "node:events";
 import type { AgentProcess, AgentId, AgentEvent, AgentRunParams, TerminalProcess } from "../shared/types.js";
 import type { WsServerMessage, ClaudeContentBlockToolUse, SkillInfo, PermissionMode, PermissionDecision } from "../shared/types.js";
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
+import type { PresentStore } from "./present-store.js";
 import type { SessionRunnerInterface, SessionRunnerEvents, QueuedMessage, SystemTurnDeps, ChatMessageGroup, SteeredMessage, RecordedChatCard, AgentDispatchOptions } from "./session-runner.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult } from "../shared/sub-agent-run.js";
 import { runDispatchedTurn, toQueuedMessage } from "./session-runner.js";
@@ -128,8 +129,19 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   // Authoritative cache of agent-emitted presentations (docs/093), mirrored
   // from the SSE present_content/present_cleared stream so a viewer attaching
-  // after the tool fired can hydrate via the `present_state` replay.
+  // after the tool fired can hydrate via the `present_state` replay. Seeded from
+  // the durable `_presentStore` at construction so a runner created for a freshly
+  // restarted container still carries the session's presentations.
   private _presentations: PresentStateEntry[] = [];
+
+  /**
+   * docs/093 — durable Present-tab metadata store (orchestrator-side). Optional:
+   * tests construct runners without it and fall back to in-memory-only behavior.
+   * When present, `present_content` / `present_cleared` SSE events are persisted
+   * here so the Present tab survives a container restart, and `proxyPresentRaw`
+   * uses it to re-register an artifact with a freshly-started worker.
+   */
+  private readonly _presentStore: PresentStore | undefined;
 
   // Compose service management
   private _serviceManager: ServiceManager | null = null;
@@ -194,12 +206,22 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     sessionDir: string;
     defaultAgentId: AgentId;
     workerUrl: string;
+    presentStore?: PresentStore;
   }) {
     super();
     this.sessionId = opts.sessionId;
     this.sessionDir = opts.sessionDir;
     this._agentId = opts.defaultAgentId;
     this.workerUrl = opts.workerUrl;
+    this._presentStore = opts.presentStore;
+    // Seed the presentation cache from durable storage (docs/093) so a runner
+    // created for a freshly restarted container replays the session's
+    // presentations via `present_state` on viewer attach. Metadata only — the
+    // bytes are re-read from disk on demand (and re-registered with the new
+    // worker by `proxyPresentRaw`).
+    if (this._presentStore) {
+      this._presentations = this._presentStore.listForClient(this.sessionId);
+    }
     // If workerUrl looks like a placeholder, defer readiness until setWorkerUrl() is called.
     if (opts.workerUrl === "http://0.0.0.0:0") {
       this._workerReady = new Promise<void>((resolve) => { this._resolveWorkerReady = resolve; });
@@ -1034,15 +1056,40 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * file from disk fresh and returns `{ content, mimeType }`; nothing is cached
    * orchestrator-side. Backs the authenticated `GET …/present/:id/content`
    * route the Present tab renders from.
+   *
+   * After a container restart the new worker's `PresentRegistry` is empty, so
+   * the first read 404s. When we hold a durable record for the id, re-register
+   * it with the fresh worker (handing back the persisted `resolvedPath`) and
+   * retry once. If the file is genuinely gone (a `/tmp` throwaway after a
+   * restart), the retry 404s too — propagated so the Present tab shows a
+   * graceful "no longer available" placeholder.
    */
   async proxyPresentRaw(
     presentId: string,
   ): Promise<{ content: string; mimeType: string }> {
     await this._workerReady;
-    return workerGet(
-      this.workerUrl,
-      `/present/${encodeURIComponent(presentId)}/raw`,
-    ) as Promise<{ content: string; mimeType: string }>;
+    const read = () =>
+      workerGet(
+        this.workerUrl,
+        `/present/${encodeURIComponent(presentId)}/raw`,
+      ) as Promise<{ content: string; mimeType: string }>;
+    try {
+      return await read();
+    } catch (err) {
+      const record = this._presentStore?.get(presentId);
+      if (!record) throw err;
+      // Re-register with the (possibly fresh) worker, then retry. A failure to
+      // register surfaces the original error rather than masking it.
+      await workerPost(this.workerUrl, "/present/register", {
+        presentId: record.presentId,
+        resolvedPath: record.resolvedPath,
+        filePath: record.filePath,
+        mimeType: record.mimeType,
+        createdAt: record.createdAt,
+        ...(record.title !== undefined ? { title: record.title } : {}),
+      });
+      return await read();
+    }
   }
 
   // --- Worker resource lifecycle ---
@@ -1533,6 +1580,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
             title?: string;
             filePath?: string;
             createdAt?: string;
+            // docs/093 — the worker's container-internal absolute path. Carried
+            // on the SSE event (NOT the client-facing WS message) so the
+            // orchestrator can persist it and re-register the artifact with a
+            // freshly-started worker after a container restart.
+            resolvedPath?: string;
           };
           if (
             typeof evt.presentId === "string"
@@ -1547,6 +1599,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
             this.cachePresentation(entry, evt.replaceId);
+            // Persist durably so the Present tab survives a container restart.
+            // resolvedPath is required to re-serve bytes later; skip persistence
+            // if a (legacy) worker didn't send it — the in-memory cache still works.
+            if (this._presentStore && typeof evt.resolvedPath === "string") {
+              this._presentStore.record(
+                {
+                  presentId: entry.presentId,
+                  sessionId: this.sessionId,
+                  filePath: entry.filePath,
+                  resolvedPath: evt.resolvedPath,
+                  mimeType: entry.mimeType,
+                  createdAt: entry.createdAt,
+                  ...(entry.title !== undefined ? { title: entry.title } : {}),
+                },
+                evt.replaceId,
+              );
+            }
             this.emitMessage({
               type: "present_content",
               sessionId: this.sessionId,
@@ -1570,6 +1639,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           } else {
             this._presentations = [];
           }
+          // Mirror the clear into durable storage so a dropped/superseded
+          // presentation doesn't resurrect after a restart.
+          this._presentStore?.clear(this.sessionId, evt.presentId);
           this.emitMessage({
             type: "present_cleared",
             sessionId: this.sessionId,

@@ -159,6 +159,24 @@ describe("present-store", () => {
     expect(usePresentStore.getState().unseenCount).toBe(0);
   });
 
+  it("rehydrates an empty store from persisted metadata then dedupes a live re-delivery (docs/093 restart)", () => {
+    // After a container restart the store starts empty; session load hydrates it
+    // from durable metadata (the /history payload), and the WS present_state
+    // replay may re-deliver the same id. Neither should double-render.
+    usePresentStore.getState().hydrate([
+      { presentId: "p1", mimeType: "text/html", filePath: "docs/m.html", createdAt: "2026-06-15T00:00:00.000Z" },
+    ]);
+    expect(usePresentStore.getState().presentations.map((p) => p.presentId)).toEqual(["p1"]);
+    // A live present_content for the SAME id replaces in place, not appends.
+    usePresentStore.getState().addOrReplace(makePresent({ presentId: "p1", filePath: "docs/m.html" }));
+    expect(usePresentStore.getState().presentations).toHaveLength(1);
+    // A second hydrate (e.g. another reload) stays idempotent.
+    usePresentStore.getState().hydrate([
+      { presentId: "p1", mimeType: "text/html", filePath: "docs/m.html", createdAt: "2026-06-15T00:00:00.000Z" },
+    ]);
+    expect(usePresentStore.getState().presentations).toHaveLength(1);
+  });
+
   it("reset returns to initial state", () => {
     usePresentStore.getState().addOrReplace(makePresent());
     usePresentStore.getState().reset();

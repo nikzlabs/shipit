@@ -158,6 +158,12 @@ export async function registerSessionRoutes(
     const sessionUsage = deps.usageManager.getSessionUsage(request.params.id) ?? null;
     const tokenTotals = deps.usageManager.getSessionTokenTotals(request.params.id);
 
+    // docs/093 — durable Present-tab metadata so the tab rehydrates on session
+    // load even if the WS `present_state` replay is missed (or the runner isn't
+    // active yet). Metadata only; bytes fetch lazily as today. Hydrate is
+    // idempotent by presentId, so this and the WS replay can't double-render.
+    const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
+
     return {
       messages,
       commits,
@@ -168,6 +174,7 @@ export async function registerSessionRoutes(
       sessionUsage,
       cumulativeInputTokens: tokenTotals?.cumulativeInputTokens,
       cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
+      presentations,
     };
   });
 
@@ -1219,7 +1226,7 @@ export async function registerSessionRoutes(
           // Forced — user is removing the repo, so the warm session is
           // explicitly being torn down regardless of agent state.
           if (runner) runner.dispose({ force: true });
-          deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs);
+          deleteSession(sessionManager, repo.warmSessionId, deps.chatHistoryManager, deps.usageManager, deps.removeSessionLogs, deps.presentStore);
         }
         removeRepo(deps.repoStore, url);
         deps.sseBroadcast("repo_list", { repos: listRepos(deps.repoStore) });

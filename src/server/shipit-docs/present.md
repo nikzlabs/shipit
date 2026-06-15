@@ -105,9 +105,15 @@ what the user sees and would defeat the point of the check.
   throwaway survives for the container's lifetime; a workspace file survives as
   long as it's there. If you overwrite or delete the file, the next view
   reflects that. Re-present (or write the file again) to restore it.
-- Presentations disappear when the container is stopped or the session is
-  archived. A presentation backed by a tracked workspace file still survives as
-  a committed file — re-present it to bring it back into the tab.
+- Present-tab artifacts **persist across a reload, a session switch, and a
+  container restart** — their metadata is saved durably on the orchestrator (not
+  in the container), and the bytes are re-read from the source file on demand.
+  So a presentation backed by a **tracked workspace file** comes back and
+  re-renders fully after the session container is recycled, because the
+  committed file is still on disk. A **`/tmp` throwaway** whose file did not
+  survive the restart shows a graceful "source no longer available" placeholder
+  in the tab instead of vanishing — re-present (or re-write the file) to restore
+  it. The Present tab is only fully wiped on a session delete / full reset.
 - There is no user-facing "save" button. If the user wants to keep a `/tmp`
   artifact, they'll ask you to write it into the repo — just `present` a file
   you've written to the workspace, or write it there on request.
