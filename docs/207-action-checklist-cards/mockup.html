@@ -148,8 +148,8 @@
         </div>
         <div class="foot">
           <button class="btn btn-primary" disabled>Submit</button>
-          <button class="btn btn-ghost" disabled>Add comment…</button>
-          <span class="caption" style="margin:0 0 0 2px">Select actions to enable</span>
+          <button class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 0 0-91.82 152.88L24.83 210.93a16 16 0 0 0 20.24 20.24l34.05-11.35A104 104 0 1 0 128 24m-40 96a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12"/></svg>Add comment…</button>
+          <span class="caption" style="margin:0 0 0 2px">Submit needs a selection · Add comment works on the whole menu</span>
         </div>
       </div>
     </div>
@@ -201,12 +201,14 @@
 
   <!-- 5. ADD COMMENT → COMPOSER HAND-OFF -->
   <section class="state">
-    <div class="state-label">5 · "Add comment…" pressed <span class="note">— selected items dropped into the main composer as a quote; voice + text available</span></div>
+    <div class="state-label">5 · "Add comment…" pressed <span class="note">— full menu snapshot ([x]/[ ]) seeded into the main composer; voice + text available</span></div>
     <div class="chatrow">
       <div class="composer">
         <div class="quote">
-          <div class="q-head">From “Optional follow-ups”</div>
-          Add tests for the new endpoint<br/>Update the API docs
+          <div class="q-head">Re: Optional follow-ups</div>
+          <span style="font-family:ui-monospace,monospace">[x]</span> Add tests for the new endpoint<br/>
+          <span style="font-family:ui-monospace,monospace">[&nbsp;]</span> Update the API docs<br/>
+          <span style="font-family:ui-monospace,monospace">[x]</span> Run the full lint + typecheck
         </div>
         <div class="typed">…also bump the integration timeout while you’re in there<span class="caret"></span></div>
         <div class="bar">
@@ -238,7 +240,7 @@
         </div>
         <div class="foot">
           <button class="btn btn-primary" disabled>Submit</button>
-          <button class="btn btn-ghost" disabled>Add comment…</button>
+          <button class="btn btn-ghost"><svg width="15" height="15" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 0 0-91.82 152.88L24.83 210.93a16 16 0 0 0 20.24 20.24l34.05-11.35A104 104 0 1 0 128 24m-40 96a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12m40 0a12 12 0 1 1 12-12 12 12 0 0 1-12 12"/></svg>Add comment…</button>
         </div>
         <div class="caption">The receipt is informational — the card never locks. Tick any subset (even the same ones) and submit again.</div>
       </div>

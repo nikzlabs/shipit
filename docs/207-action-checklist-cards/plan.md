@@ -156,28 +156,31 @@ own" path **routes through the existing composer** (which already has voice):
 1. **Submit / Do it** *(primary — the zero-typing path)*. The selected actions'
    `payload`s are concatenated into **one** user message and sent exactly as if
    the user had typed it: starts a turn if the agent is idle, queues via the
-   existing message queue if it's mid-turn. No composer involved.
-2. **Add comment…** *(secondary — the "I agree, but…" path)*. Instead of sending,
-   this drops the selected actions into the **main input box as a quote** and
-   focuses it. The user then appends their own words (typed **or dictated** — the
-   composer's voice button is right there) and sends normally. The sent message is
-   the quoted action text **plus** the user's addition, so it stays self-contained.
+   existing message queue if it's mid-turn. No composer involved. Submit acts on
+   the **selected** set, so it's **disabled when nothing is checked** — there's
+   nothing to send.
+2. **Add comment…** *(secondary — the "I agree, but…" / "actually…" path)*.
+   Instead of sending, this seeds the **main input box** with a **snapshot of the
+   whole card** — *every* action listed with a checkbox marker reflecting its
+   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. The user
+   appends their own words (typed **or dictated** — the composer's voice button is
+   right there) and sends normally. The sent message is the snapshot **plus** the
+   user's addition, so the agent sees the full menu, what the user leaned toward,
+   and the freeform note — all self-contained.
 
-For **multi-select**, both buttons operate on the **checked** subset and are
-disabled when nothing is checked — the selection itself carries the user's
-agreement, and "Add comment…" pre-fills the composer with exactly the items they
-agreed to.
+   **Add comment… is never disabled.** Unlike Submit, it doesn't require a
+   selection: commenting on the menu is valid with any subset, including none
+   (e.g. *"none of these — do X instead"*, with all boxes `[ ]` giving the agent
+   the context). This also makes the two buttons behave **identically across
+   single- and multi-action cards** — which was the goal.
 
-For a **single action**, there's nothing to *select*, so the two buttons split the
-intent the selection would otherwise carry: **Do it** is unqualified agreement;
-**Add comment…** quotes the one action so the user can qualify it ("yes, but name
-the PR …") or redirect ("hold off — do X first"). The agent reads the natural
-language to tell agreement from redirection. Keeping **Add comment…** on the
-single-action card (rather than dropping it) is what gives the user a way to
-*disagree or amend* without retyping the suggestion — the one expressive gap a
-lone button would otherwise leave. *(Open: whether the secondary button earns its
-place on single-action cards, or if "just type in the composer, the suggestion is
-right above" is enough. Leaning keep-it for consistency.)*
+The two-button split is what resolves the single-action expressiveness gap. For a
+lone action there's nothing to *select*, so: **Do it** = unqualified agreement;
+**Add comment…** = seed the composer with that one action so the user can qualify
+("yes, but name the PR …") or redirect ("hold off — do X first"). The agent reads
+the natural language to tell agreement from redirection. The single action is
+listed the same way in the snapshot, so single and multi differ only in count, not
+in behavior.
 
 ## Persistence & lifecycle (mandatory — this is a transcript card)
 
