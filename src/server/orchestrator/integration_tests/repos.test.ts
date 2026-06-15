@@ -206,6 +206,35 @@ describe("DELETE /api/repos/:url", () => {
     });
     expect(res.statusCode).toBe(404);
   });
+
+  it("archives the repo's sessions so they leave the sidebar but stay in the DB", async () => {
+    const repoUrl = "https://github.com/owner/repo.git";
+    repoStore.add(repoUrl);
+
+    // Two real sessions backed by this repo, plus an unrelated one.
+    sessionManager.track("sess-a", "A");
+    sessionManager.setRemoteUrl("sess-a", repoUrl);
+    sessionManager.track("sess-b", "B");
+    sessionManager.setRemoteUrl("sess-b", repoUrl);
+    sessionManager.track("sess-other", "Other");
+    sessionManager.setRemoteUrl("sess-other", "https://github.com/owner/different.git");
+
+    expect(sessionManager.list().map((s) => s.id).sort()).toEqual(["sess-a", "sess-b", "sess-other"]);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/repos/${encodeURIComponent(repoUrl)}`,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // The repo's sessions are gone from the sidebar list…
+    expect(sessionManager.list().map((s) => s.id)).toEqual(["sess-other"]);
+    // …but still present in the DB, flagged archived (history preserved).
+    expect(sessionManager.get("sess-a")?.userArchived).toBe(true);
+    expect(sessionManager.get("sess-b")?.userArchived).toBe(true);
+    // The unrelated session is untouched.
+    expect(sessionManager.get("sess-other")?.userArchived).toBeUndefined();
+  });
 });
 
 describe("Bootstrap includes repos", () => {
