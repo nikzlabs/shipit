@@ -16,15 +16,22 @@ This is **not** a question (exclusive pick-one), and **not** a permission gate
 (allow/deny on one specific pending call). It is a *menu of optional
 follow-ups*, batch-resolved:
 
-- **One proposed action** → the card is a single button ("Do it") plus dismiss.
+- **One proposed action** → the card is a single button ("Do it").
 - **Two or more** → the card is a **checklist** (independent checkboxes) plus a
-  single "Proceed" button. The user ticks the subset they want and submits once.
+  single "Submit" button. The user ticks the subset they want and submits once.
 
 The motivating moment: the agent finishes a turn and ends with *"I could also do
 X, Y, or Z — want any of those?"* Today the user has to **type** which ones.
 With this card they **tick and click**. (This very conversation is the example:
 "want me to draft the doc?" should have been a button, not a sentence the user
 had to answer in prose.)
+
+Crucially, the card is **just a helper to send a user message** — it has no
+connection to the agent or session state. It persists in the conversation
+history like any other card and is **reusable forever**: the user can return to
+it a week later, tick a (possibly different) subset, and submit again. Think of
+it as a saved, pre-filled message the user can fire any number of times — not a
+one-shot prompt that resolves and dies.
 
 ## Why a new primitive (and not `AskUserQuestion`)
 
@@ -63,12 +70,15 @@ actions with a Go button" superficially looks **exactly** like that. The feature
 is only legitimate because it preserves two properties, and the implementation
 must protect both:
 
-1. **Transient and agent-authored per context.** The card exists because the
-   agent *just proposed it* in this turn, anchored to this point in the
-   transcript. It is **not** a standing palette of recommended-action buttons. If
-   it ever drifts toward a persistent "things you can click to run" toolbar, it
-   becomes a §5 violation. There is no global/recurring action menu — only
-   in-line, agent-emitted, one-shot cards.
+1. **Agent-authored and anchored in the transcript** — not a standing palette.
+   The card persists forever in chat history (like any message does) and is
+   re-clickable later, but that is **not** the same as a global "things you can
+   click to run" toolbar. The distinction that keeps it legal: every card is
+   *emitted by the agent, in line, at a specific point in the conversation,
+   because the agent proposed those specific actions in that context.* There is
+   no persistent, always-present, context-free action menu. If the feature ever
+   grew a global recommended-actions toolbar, *that* would be the §5 violation —
+   the in-line historical card is not.
 2. **Resolves through the agent.** Ticking boxes **declares intent**; the agent
    is still the actor that does the work. No checkbox executes a shell command
    directly. The submit produces a normal user turn; the agent reads it and acts.
@@ -105,23 +115,35 @@ Key points:
 - The agent does **not** declare single-vs-multi; the card derives it from
   `actions.length` (1 → button, 2+ → checklist).
 - Each action's **`payload` is self-contained** — the full instruction the agent
-  should act on if the action is selected. This is what makes resolution survive
-  a cold container (idle destroy → re-clone): the submitted message is
-  reconstructed from the ticked `payload`s, not from warm conversation context.
+  should act on if the action is selected. This is what lets a click work no
+  matter how much time has passed (the card outlives the turn, the agent, even a
+  destroyed-and-re-cloned container): the submitted message is reconstructed from
+  the ticked `payload`s, not from warm conversation context.
 - The tool is **non-blocking**: unlike `AskUserQuestion`, it does **not**
-  interrupt the turn. The agent emits the card and the turn ends; the card waits
-  in the transcript until the user resolves it (or never does).
+  interrupt the turn. The agent emits the card and the turn ends.
 
-### Resolution
+### Resolution — the card is a reusable message composer, not a one-shot gate
+
+This is the defining property of the feature, and it's what separates it from
+every other card in ShipIt: **the card has no terminal state and no connection to
+the agent or session state at click-time.** It is a persistent helper for
+composing and sending a user message. Concretely:
 
 - User ticks 0..N boxes (or, for a single action, clicks the one button).
-- On **Proceed**, the selected actions' `payload`s are concatenated into **one**
-  user message and sent as a normal turn (queued if the agent is mid-turn, via
-  the existing message queue).
-- **Dismiss** / submitting with nothing checked → no actions taken; card records
-  a "dismissed" terminal state.
-- The card **locks** on resolution: chosen boxes shown checked, all controls
-  disabled, a compact "you chose: …" receipt. One-shot.
+- On **Submit**, the selected actions' `payload`s are concatenated into **one**
+  user message and sent exactly as if the user had typed it: starts a turn if the
+  agent is idle, queues via the existing message queue if it's mid-turn.
+- The card **does not lock**. After a submit it stays fully interactive. The user
+  can come back a minute — or a week — later, tick a different subset, and submit
+  again. Submitting twice with different subsets is a normal, supported flow.
+- There is **no "dismiss" / "resolved" / "stale" state.** A card the user never
+  touches just sits in the transcript, inert and reusable, forever. Ignoring it
+  is not a state transition; it's the absence of a click.
+
+The card's persisted content (its action list) is **immutable**; the checkbox
+selection is **ephemeral client state** recomputed each time the user opens the
+card. There is nothing to patch server-side on submit — the submit is just a
+normal user message.
 
 ### Free-text escape
 
@@ -138,38 +160,52 @@ established side-channel-card pattern, **not** bare `emitMessage`:
 1. Emit via `emitChatCard` (`chat-card-persistence.ts`) so it is persisted
    in-band with the turn the instant it fires.
 2. Add a typed field (working name `actionChecklist`) to `PersistedMessage`,
-   plus the column + `toRow`/`fromRow` and a `database.ts` migration. The
-   resolution (which `id`s were chosen, terminal state) patches the record in
-   place.
+   plus the column + `toRow`/`fromRow` and a `database.ts` migration. The field
+   holds the **immutable** action list — there is no mutable resolution state, so
+   the record is written once on emit and never patched.
 3. Rehydrate on the client in `loadSessionHistory`; make the live append + any
    store upsert **idempotent by card id** so reconnect-replay and reload-replay
-   never double-render or clobber the locked state.
+   never double-render. (No terminal state to clobber — the card is always
+   interactive.)
 4. Register `actionChecklist` in `CARD_MESSAGE_FIELDS`
    (`client/components/visual-elements.ts`) — it renders on an empty-text
    message.
 5. Add the history round-trip test + no-duplicate-on-replay test, and add the
    field's payload to `EVERY_OPTIONAL_FIELD_MESSAGE` in `chat-history.test.ts`.
 
-States: `pending → resolved(selectedIds) | dismissed`. (A possible later
-addition: `stale` — see open questions.)
+Because the card carries no lifecycle, the persistence story is markedly simpler
+than `bugReport` / `issueWrite` (no `update*Card` patch path). It persists like a
+piece of static content that happens to have buttons.
 
-## Open questions
+## Resolved design decisions
 
-- **Staleness.** A `pending` card whose `payload`s reference a branch that has
-  since merged is misleading. Options: leave it clickable and trust the
-  self-contained payload; or soft-mark it `stale` after some signal (turn count,
-  branch change) with a visual cue but still clickable. Leaning
-  stale-but-clickable.
-- **Re-proposal.** After a partial submit, are the un-ticked actions gone, or can
-  the agent re-surface them? Simplest: one-shot; the agent re-proposes if still
-  relevant.
-- **Overuse / nagging.** The product default is *be action-oriented — act, don't
-  ask.* A cheap "here are 5 things I could do" checklist risks inverting that.
-  The prompt guidance must hold the bar where `AskUserQuestion`'s is: only for
-  genuinely **optional, user-owned** follow-ups, never as a substitute for doing
-  the obvious work. This is a prompt-tuning problem as much as a UI one.
+These were open questions; the following are the settled answers.
+
+- **No staleness concept.** A pending card is never marked stale, expired, or
+  disabled, and never auto-locks — not even if the branch it references has since
+  merged. Merged sessions can be resumed, and continuing on the same branch (e.g.
+  to open follow-up PRs) is a legitimate, common flow. The card never asserts an
+  action is still *valid*; it only offers to *send a message*. Validity is the
+  agent's concern at click-time, in fresh context — not the card's.
+- **Reusable forever, no re-proposal needed.** A partial submit leaves every
+  action tickable. The agent does not need to "re-propose" un-ticked actions
+  because they never went away — the card is a permanent fixture of the
+  transcript the user can return to indefinitely.
+- **Frequency is governed by *existing* prompts, not by this tool.** The agent
+  already decides when to suggest a next action (system prompt, repo prompt,
+  etc.). This card does **not** introduce a new bar for *whether* to suggest —
+  it changes the **form** of an existing suggestion from "type your answer" to
+  "click a button." So the tool's own instructions cover *form* only: *when you
+  would suggest one or more concrete, optional actions the user can accept or
+  decline, render them as this card instead of asking in prose.* When a choice
+  needs real discussion, that's still a question (or plain prose), not a card.
+  The aggressiveness of suggesting at all stays exactly where it is today.
+
+## Still open
+
 - **Codex parity.** Like `ask` (docs/147), the tool should be shaped identically
-  for Codex so both backends emit the same card.
+  for Codex so both backends emit the same card. (Direction is clear; flagged as
+  a build item, not a design question.)
 
 ## Key files (anticipated)
 
