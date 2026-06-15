@@ -766,7 +766,13 @@ function materializeLeakedSubtreeSymlinks(
     }
 
     if (isSymlinkLeak) {
-      fs.rmSync(dst, { force: true });
+      // `recursive: true` is required: Node.js 24.13.0 (the version currently
+      // in the GitHub Actions toolcache) throws ERR_FS_EISDIR when fs.rmSync
+      // targets a symlink whose target is a directory, even though POSIX
+      // unlink would remove the symlink itself. With `recursive: true`, the
+      // symlink is removed and the target dir is left untouched (same end
+      // state, just doesn't trip the Node 24.13.0 bug).
+      fs.rmSync(dst, { force: true, recursive: true });
       const src = path.join(sourceRoot, rel);
       if (fs.existsSync(src)) {
         fs.cpSync(src, dst, { recursive: true, force: true, dereference: true });
