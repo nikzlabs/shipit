@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nikzlabs — logo concepts</title>
+<style>
+  :root {
+    --bg: #0a0b0f;
+    --panel: #12141b;
+    --panel2: #0e1016;
+    --border: #232734;
+    --ink: #e8eaf0;
+    --muted: #8a90a2;
+    --accent: #3ee6a0;
+    --accent2: #6ea8fe;
+    --violet: #a855f7;
+    --indigo: #6366f1;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #15181f 0%, var(--bg) 60%);
+    color: var(--ink);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 48px 32px 80px;
+  }
+  header { max-width: 1080px; margin: 0 auto 40px; }
+  h1 { font-size: 26px; font-weight: 800; letter-spacing: -0.5px; margin: 0 0 6px; }
+  header p { color: var(--muted); margin: 0; font-size: 14px; line-height: 1.5; }
+  .grid {
+    max-width: 1080px; margin: 0 auto;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px;
+  }
+  .card {
+    background: linear-gradient(180deg, var(--panel) 0%, var(--panel2) 100%);
+    border: 1px solid var(--border); border-radius: 18px;
+    padding: 28px 22px 18px; display: flex; flex-direction: column; align-items: center;
+  }
+  .stage { height: 132px; display: flex; align-items: center; justify-content: center; }
+  .meta { margin-top: 14px; text-align: center; }
+  .meta .name { font-size: 13px; font-weight: 700; letter-spacing: 0.2px; }
+  .meta .desc { font-size: 12px; color: var(--muted); margin-top: 3px; line-height: 1.4; }
+  .tag { font-size: 10px; color: var(--accent); text-transform: uppercase; letter-spacing: 1.2px; font-weight: 700; }
+  .section-title { max-width: 1080px; margin: 46px auto 16px; font-size: 13px; text-transform: uppercase; letter-spacing: 2px; color: var(--muted); font-weight: 700; }
+  .wordmarks { max-width: 1080px; margin: 0 auto; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+  .wm { background: var(--panel2); border: 1px solid var(--border); border-radius: 18px; padding: 34px 30px; display: flex; align-items: center; justify-content: center; min-height: 110px; }
+  .wm.light { background: #f4f5f8; }
+  .palette { max-width: 1080px; margin: 30px auto 0; display: flex; gap: 10px; flex-wrap: wrap; }
+  .sw { width: 92px; border-radius: 12px; overflow: hidden; border: 1px solid var(--border); font-size: 10px; }
+  .sw .chip { height: 46px; }
+  .sw .lbl { padding: 6px 8px; color: var(--muted); }
+  text { font-family: Inter, system-ui, sans-serif; }
+</style>
+</head>
+<body>
+<header>
+  <h1>nikzlabs — logo directions</h1>
+  <p>Six icon marks plus wordmark treatments. The <strong>z</strong> is the distinctive letter in <em>nikz</em>, and “labs” invites an experimentation motif. Pick a direction (or mix — e.g. mark&nbsp;B with wordmark&nbsp;2) and I'll refine it into final SVGs + favicon/app-icon sizes.</p>
+</header>
+
+<div class="grid">
+
+  <!-- A: nz monogram app icon -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="nz monogram">
+        <defs><linearGradient id="gA" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#6366f1"/><stop offset="1" stop-color="#a855f7"/>
+        </linearGradient></defs>
+        <rect x="6" y="6" width="108" height="108" rx="28" fill="url(#gA)"/>
+        <text x="61" y="64" text-anchor="middle" dominant-baseline="central" font-weight="800" font-size="54" fill="#fff" letter-spacing="-3">nz</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark A</div>
+      <div class="name">nz monogram</div>
+      <div class="desc">Gradient app-icon. Safe, modern, scales tiny.</div>
+    </div>
+  </div>
+
+  <!-- B: Z-bolt in ring -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="z bolt">
+        <defs><linearGradient id="gB" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#3ee6a0"/><stop offset="1" stop-color="#6ea8fe"/>
+        </linearGradient></defs>
+        <circle cx="60" cy="60" r="52" fill="none" stroke="#232734" stroke-width="6"/>
+        <circle cx="60" cy="60" r="52" fill="none" stroke="url(#gB)" stroke-width="6" stroke-linecap="round" stroke-dasharray="250 120" transform="rotate(-90 60 60)"/>
+        <path d="M44 34 H82 L58 60 H80 L40 92 L56 64 H38 Z" fill="url(#gB)"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark B</div>
+      <div class="name">z-bolt</div>
+      <div class="desc">The z as a lightning bolt — energy + speed. My pick.</div>
+    </div>
+  </div>
+
+  <!-- C: Flask / lab -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="lab flask">
+        <defs>
+          <linearGradient id="gC" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stop-color="#3ee6a0"/><stop offset="1" stop-color="#21a5b8"/>
+          </linearGradient>
+          <clipPath id="flaskClip"><path d="M52 26 H68 V52 L88 92 Q92 102 81 102 H39 Q28 102 32 92 L52 52 Z"/></clipPath>
+        </defs>
+        <path d="M52 26 H68 V52 L88 92 Q92 102 81 102 H39 Q28 102 32 92 L52 52 Z" fill="none" stroke="#e8eaf0" stroke-width="5" stroke-linejoin="round"/>
+        <g clip-path="url(#flaskClip)"><rect x="20" y="74" width="80" height="40" fill="url(#gC)"/></g>
+        <path d="M58 60 H70 L60 72 H72 L52 88 L62 76 H54 Z" fill="#0a0b0f" opacity="0.85"/>
+        <line x1="46" y1="26" x2="74" y2="26" stroke="#e8eaf0" stroke-width="5" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark C</div>
+      <div class="name">flask + bolt</div>
+      <div class="desc">Literal “labs”. Bolt bubbling inside ties to B.</div>
+    </div>
+  </div>
+
+  <!-- D: Hexagon n (package/module) -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="hex n">
+        <defs><linearGradient id="gD" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="#6ea8fe"/><stop offset="1" stop-color="#a855f7"/>
+        </linearGradient></defs>
+        <path d="M60 8 L104 34 V86 L60 112 L16 86 V34 Z" fill="none" stroke="url(#gD)" stroke-width="6" stroke-linejoin="round"/>
+        <text x="60" y="64" text-anchor="middle" dominant-baseline="central" font-weight="800" font-size="50" fill="#e8eaf0">n</text>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark D</div>
+      <div class="name">hex module</div>
+      <div class="desc">Package / npm / Docker vibe. Reads as a unit.</div>
+    </div>
+  </div>
+
+  <!-- E: Atom orbit -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="atom">
+        <g stroke="#3ee6a0" stroke-width="4" fill="none">
+          <ellipse cx="60" cy="60" rx="50" ry="20"/>
+          <ellipse cx="60" cy="60" rx="50" ry="20" transform="rotate(60 60 60)"/>
+          <ellipse cx="60" cy="60" rx="50" ry="20" transform="rotate(120 60 60)"/>
+        </g>
+        <circle cx="60" cy="60" r="10" fill="#6ea8fe"/>
+        <circle cx="106" cy="60" r="5" fill="#3ee6a0"/>
+        <circle cx="37" cy="100" r="5" fill="#3ee6a0"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark E</div>
+      <div class="name">atom orbit</div>
+      <div class="desc">Classic “labs / research” signal. Animatable.</div>
+    </div>
+  </div>
+
+  <!-- F: Terminal glyph -->
+  <div class="card">
+    <div class="stage">
+      <svg width="108" height="108" viewBox="0 0 120 120" role="img" aria-label="terminal">
+        <rect x="10" y="22" width="100" height="76" rx="14" fill="#0e1016" stroke="#232734" stroke-width="4"/>
+        <path d="M30 50 L46 62 L30 74" fill="none" stroke="#3ee6a0" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        <rect x="56" y="68" width="26" height="8" rx="2" fill="#3ee6a0"/>
+      </svg>
+    </div>
+    <div class="meta">
+      <div class="tag">Mark F</div>
+      <div class="name">prompt</div>
+      <div class="desc">Dev-tools native. The <code>&gt;_</code> cursor.</div>
+    </div>
+  </div>
+
+</div>
+
+<div class="section-title">Wordmarks</div>
+<div class="wordmarks">
+  <div class="wm">
+    <svg width="300" height="56" viewBox="0 0 300 56" role="img" aria-label="nikzlabs wordmark">
+      <defs><linearGradient id="wz" x1="0" y1="0" x2="1" y2="1">
+        <stop offset="0" stop-color="#3ee6a0"/><stop offset="1" stop-color="#6ea8fe"/>
+      </linearGradient></defs>
+      <text x="0" y="40" font-weight="800" font-size="40" letter-spacing="-1.5" fill="#e8eaf0">nik<tspan fill="url(#wz)">z</tspan>labs</text>
+    </svg>
+  </div>
+  <div class="wm">
+    <svg width="320" height="56" viewBox="0 0 320 56" role="img" aria-label="nikzlabs mono wordmark">
+      <text x="0" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="700" font-size="30" fill="#8a90a2">~/</text>
+      <text x="36" y="38" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-weight="700" font-size="30" fill="#e8eaf0">nikzlabs</text>
+      <rect x="208" y="16" width="16" height="26" fill="#3ee6a0"/>
+    </svg>
+  </div>
+</div>
+
+<div class="section-title">Palette starting point</div>
+<div class="palette">
+  <div class="sw"><div class="chip" style="background:#0a0b0f"></div><div class="lbl">ink #0a0b0f</div></div>
+  <div class="sw"><div class="chip" style="background:#3ee6a0"></div><div class="lbl">lab green #3ee6a0</div></div>
+  <div class="sw"><div class="chip" style="background:#6ea8fe"></div><div class="lbl">signal blue #6ea8fe</div></div>
+  <div class="sw"><div class="chip" style="background:#6366f1"></div><div class="lbl">indigo #6366f1</div></div>
+  <div class="sw"><div class="chip" style="background:#a855f7"></div><div class="lbl">violet #a855f7</div></div>
+  <div class="sw"><div class="chip" style="background:#e8eaf0"></div><div class="lbl" style="color:#444">paper #e8eaf0</div></div>
+</div>
+
+</body>
+</html>

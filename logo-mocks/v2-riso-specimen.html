@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nikzlabs — specimen sheet vol.02</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --paper: #f1ece1;
+    --paper2: #e9e2d3;
+    --ink:   #16182a;
+    --coral: #ff5640;
+    --blue:  #2740ff;
+    --gold:  #e7a92b;
+    --line:  rgba(22,24,42,0.16);
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; }
+  body {
+    margin: 0; color: var(--ink);
+    background: var(--paper);
+    /* faint engineering grid */
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 26px 26px, 26px 26px;
+    font-family: "Space Mono", ui-monospace, monospace;
+    padding: 54px 40px 90px;
+    position: relative;
+  }
+  /* grain overlay */
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+    opacity: 0.06; mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  header { max-width: 1120px; margin: 0 auto 30px; position: relative; }
+  .kicker {
+    font-size: 11px; letter-spacing: 3px; text-transform: uppercase;
+    color: var(--blue); font-weight: 700; margin: 0 0 8px;
+  }
+  h1 {
+    font-family: "Fraunces", Georgia, serif; font-weight: 900;
+    font-size: clamp(48px, 9vw, 104px); line-height: 0.86; margin: 0;
+    letter-spacing: -2px; position: relative; display: inline-block;
+  }
+  h1 .z { color: var(--coral); position: relative; }
+  /* misregistration ghost on the z */
+  h1 .z::after {
+    content: "z"; position: absolute; left: 2px; top: 2px; color: var(--blue);
+    mix-blend-mode: multiply; z-index: -1;
+  }
+  .sub { display: flex; gap: 18px; align-items: baseline; margin-top: 14px; flex-wrap: wrap; }
+  .sub p { margin: 0; font-size: 13px; max-width: 560px; line-height: 1.55; color: #3a3c4e; }
+  .rule { height: 3px; background: var(--ink); max-width: 1120px; margin: 22px auto 30px;
+          position: relative; }
+  .rule::before { content: ""; position: absolute; right: 0; top: -4px; width: 11px; height: 11px;
+          background: var(--coral); border-radius: 50%; }
+
+  .grid { max-width: 1120px; margin: 0 auto;
+          display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+          border: 2px solid var(--ink); }
+  .cell { border: 1px solid var(--ink); padding: 22px 20px 16px; position: relative;
+          background: var(--paper); display: flex; flex-direction: column;
+          opacity: 0; transform: translateY(12px); animation: rise .5s cubic-bezier(.2,.7,.3,1) forwards; }
+  .cell:nth-child(1){animation-delay:.05s}.cell:nth-child(2){animation-delay:.12s}
+  .cell:nth-child(3){animation-delay:.19s}.cell:nth-child(4){animation-delay:.26s}
+  .cell:nth-child(5){animation-delay:.33s}.cell:nth-child(6){animation-delay:.40s}
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  .fig { display: flex; justify-content: space-between; align-items: center;
+         font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; }
+  .fig .no { font-weight: 700; }
+  .fig .ph { color: var(--blue); }
+  .stage { height: 150px; display: flex; align-items: center; justify-content: center;
+           margin: 6px 0 14px; position: relative; }
+  /* corner ticks */
+  .stage::before, .stage::after { content:""; position:absolute; width:12px; height:12px;
+           border:2px solid var(--ink); opacity:.35; }
+  .stage::before { left:8px; top:8px; border-right:0; border-bottom:0; }
+  .stage::after { right:8px; bottom:8px; border-left:0; border-top:0; }
+  .name { font-family:"Fraunces",serif; font-weight:600; font-size:19px; letter-spacing:-.3px; }
+  .note { font-size:11.5px; color:#4a4c5e; line-height:1.5; margin-top:4px; }
+  .concept { display:inline-block; margin-top:10px; font-size:9.5px; letter-spacing:1.5px;
+             text-transform:uppercase; font-weight:700; color:var(--paper);
+             background:var(--ink); padding:3px 8px; }
+  .concept.c { background: var(--coral); }
+  .concept.b { background: var(--blue); }
+
+  .section { max-width:1120px; margin:46px auto 14px; font-size:11px; letter-spacing:3px;
+             text-transform:uppercase; font-weight:700; }
+  .section span { color: var(--coral); }
+  .wm { max-width:1120px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:0;
+        border:2px solid var(--ink); }
+  .wm > div { border:1px solid var(--ink); min-height:150px; display:flex; align-items:center;
+        justify-content:center; padding:26px; }
+  .wm .dark { background: var(--ink); }
+
+  .pal { max-width:1120px; margin:26px auto 0; display:flex; gap:0; border:2px solid var(--ink); }
+  .pal div { flex:1; padding:14px 12px; font-size:10px; letter-spacing:1px; border-right:1px solid var(--ink); }
+  .pal div:last-child { border-right:0; }
+  .pal .name2 { font-weight:700; }
+  .pal .hex { opacity:.7; }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="kicker">nikzlabs — field notebook · logo specimens · vol.02</p>
+  <h1>nik<span class="z">z</span>labs</h1>
+  <div class="sub">
+    <p>Round two — concept-first marks, not decorated letters. Risograph two-ink language: warm stock, deliberate misregistration, halftone grain. Each specimen owns an <em>idea</em> about a lab that ships software.</p>
+  </div>
+</header>
+<div class="rule"></div>
+
+<div class="grid">
+
+  <!-- 01 chop seal -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 01</span><span class="ph">⌗ stamp</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="maker's chop seal">
+        <defs>
+          <filter id="rough01" x="-20%" y="-20%" width="140%" height="140%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.045 0.06" numOctaves="3" seed="7" result="t"/>
+            <feDisplacementMap in="SourceGraphic" in2="t" scale="3.5"/>
+          </filter>
+        </defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#rough01)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M41 41 H79 V51 L54 71 H79 V80 H41 V70 L66 50 H41 Z" fill="#f1ece1"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Maker's chop</div>
+    <div class="note">A hand-carved seal — like a craftsman's hanko. The lab “stamps” its work; misregistration makes it feel printed, not vectored.</div>
+    <span class="concept c">most ownable</span>
+  </div>
+
+  <!-- 02 signal z -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 02</span><span class="ph">∿ signal</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="oscilloscope signal z">
+        <g stroke="#16182a" stroke-width="0.7" opacity="0.16">
+          <line x1="22" y1="34" x2="98" y2="34"/><line x1="22" y1="60" x2="98" y2="60"/><line x1="22" y1="86" x2="98" y2="86"/>
+          <line x1="40" y1="22" x2="40" y2="98"/><line x1="60" y1="22" x2="60" y2="98"/><line x1="80" y1="22" x2="80" y2="98"/>
+        </g>
+        <line x1="22" y1="60" x2="98" y2="60" stroke="#16182a" stroke-width="0.8" stroke-dasharray="2 4" opacity="0.5"/>
+        <path d="M28 38 H84 C62 52 64 70 36 84 H92" fill="none" stroke="#ff5640" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="28" cy="38" r="5" fill="#2740ff"/>
+        <circle cx="92" cy="84" r="5" fill="#16182a"/>
+      </svg>
+    </div>
+    <div class="name">Signal trace</div>
+    <div class="note">The z drawn as an oscilloscope sweep on graph paper — measurement, experiment, a waveform you read left-to-right.</div>
+    <span class="concept b">lab / precision</span>
+  </div>
+
+  <!-- 03 riso misreg -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 03</span><span class="ph">◳ print</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="risograph misregistered z">
+        <g style="mix-blend-mode:multiply">
+          <path d="M30 30 H86 V47 L55 73 H86 V90 H30 V73 L61 47 H30 Z" fill="#ff5640" transform="translate(-4.5,-3)"/>
+          <path d="M30 30 H86 V47 L55 73 H86 V90 H30 V73 L61 47 H30 Z" fill="#2740ff" transform="translate(4.5,3)"/>
+          <path d="M30 30 H86 V47 L55 73 H86 V90 H30 V73 L61 47 H30 Z" fill="#e7a92b"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Off-register</div>
+    <div class="note">Three ink passes that don't quite line up — print-shop “mistake” weaponized into identity. Overlaps darken like real riso.</div>
+    <span class="concept">craft / print</span>
+  </div>
+
+  <!-- 04 switchback -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 04</span><span class="ph">⛰ contour</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="topographic switchback z">
+        <g fill="none" stroke="#16182a" opacity="0.2" stroke-width="1.4">
+          <path d="M60 26 C90 26 100 50 96 64 C92 82 72 96 56 94 C34 92 20 74 24 56 C28 38 42 26 60 26Z"/>
+          <path d="M60 36 C82 36 90 52 87 64 C84 78 70 88 57 86 C40 84 30 70 33 56 C36 44 46 36 60 36Z"/>
+          <path d="M60 46 C74 46 80 56 78 64 C76 74 66 80 57 78 C46 76 40 66 43 57 C46 50 52 46 60 46Z"/>
+        </g>
+        <path d="M32 40 H78 L44 60 H82 L34 82" fill="none" stroke="#ff5640" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"/>
+        <circle cx="32" cy="40" r="4" fill="#2740ff"/><circle cx="78" cy="40" r="4" fill="#16182a"/>
+        <circle cx="82" cy="60" r="4" fill="#16182a"/><circle cx="34" cy="82" r="4" fill="#2740ff"/>
+      </svg>
+    </div>
+    <div class="name">Switchback</div>
+    <div class="note">A trail zig-zagging up a contour map — the long, iterative climb of building. The z is the path, not the letter.</div>
+    <span class="concept">journey / iterate</span>
+  </div>
+
+  <!-- 05 iso crystal -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 05</span><span class="ph">◆ grown</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="isometric crystal staircase">
+        <!-- back cube -->
+        <g>
+          <polygon points="46,18 66,28 46,38 26,28" fill="#ffb09f"/>
+          <polygon points="26,28 46,38 46,58 26,48" fill="#ff5640"/>
+          <polygon points="66,28 46,38 46,58 66,48" fill="#c5371f"/>
+        </g>
+        <!-- mid cube -->
+        <g>
+          <polygon points="66,46 86,56 66,66 46,56" fill="#ffb09f"/>
+          <polygon points="46,56 66,66 66,86 46,76" fill="#ff5640"/>
+          <polygon points="86,56 66,66 66,86 86,76" fill="#c5371f"/>
+        </g>
+        <!-- front cube -->
+        <g>
+          <polygon points="86,74 106,84 86,94 66,84" fill="#ffb09f"/>
+          <polygon points="66,84 86,94 86,114 66,104" fill="#ff5640"/>
+          <polygon points="106,84 86,94 86,114 106,104" fill="#c5371f"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Hopper crystal</div>
+    <div class="note">An isometric stepped crystal (think bismuth) descending like a staircase. Labs grow structures; this one assembles itself.</div>
+    <span class="concept c">structural</span>
+  </div>
+
+  <!-- 06 constructivist -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 06</span><span class="ph">▤ bauhaus</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="constructivist z composition">
+        <circle cx="74" cy="46" r="27" fill="none" stroke="#2740ff" stroke-width="4"/>
+        <rect x="28" y="86" width="16" height="16" fill="#e7a92b" transform="rotate(12 36 94)"/>
+        <line x1="20" y1="30" x2="100" y2="98" stroke="#16182a" stroke-width="1.5" opacity="0.5"/>
+        <path d="M30 30 H86 L42 86 H94" fill="none" stroke="#ff5640" stroke-width="11" stroke-linecap="square" stroke-linejoin="miter"/>
+      </svg>
+    </div>
+    <div class="name">Red wedge</div>
+    <div class="note">El Lissitzky constructivism — a bold diagonal z slashing past a circle and a square. Asymmetric, kinetic, unmistakably designed.</div>
+    <span class="concept b">editorial / bold</span>
+  </div>
+
+</div>
+
+<div class="section">Wordmark <span>treatments</span></div>
+<div class="wm">
+  <div>
+    <svg width="340" height="86" viewBox="0 0 340 86" role="img" aria-label="nikzlabs serif wordmark">
+      <text x="0" y="56" font-family="Fraunces, serif" font-weight="900" font-size="56" letter-spacing="-2" fill="#16182a">nik<tspan fill="#ff5640">z</tspan>labs</text>
+      <text x="2" y="74" font-family="Space Mono, monospace" font-size="11" letter-spacing="4" fill="#2740ff">EST. MMXXVI — EXPERIMENTAL</text>
+    </svg>
+  </div>
+  <div class="dark">
+    <svg width="320" height="70" viewBox="0 0 320 70" role="img" aria-label="nikzlabs stamp wordmark">
+      <defs><filter id="r2"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed="3" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.5"/></filter></defs>
+      <g filter="url(#r2)" transform="rotate(-2 160 35)">
+        <rect x="14" y="14" width="292" height="42" fill="none" stroke="#ff5640" stroke-width="3"/>
+        <text x="160" y="42" text-anchor="middle" font-family="Space Mono, monospace" font-weight="700" font-size="26" letter-spacing="6" fill="#ff5640">NIKZLABS</text>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<div class="section">Ink <span>palette</span></div>
+<div class="pal">
+  <div style="background:#16182a;color:#f1ece1"><div class="name2">ink</div><div class="hex">#16182A</div></div>
+  <div style="background:#ff5640;color:#fff"><div class="name2">riso coral</div><div class="hex">#FF5640</div></div>
+  <div style="background:#2740ff;color:#fff"><div class="name2">flash blue</div><div class="hex">#2740FF</div></div>
+  <div style="background:#e7a92b;color:#16182a"><div class="name2">amber</div><div class="hex">#E7A92B</div></div>
+  <div style="background:#f1ece1;color:#16182a"><div class="name2">newsprint</div><div class="hex">#F1ECE1</div></div>
+</div>
+
+</body>
+</html>

@@ -1,0 +1,287 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nikzlabs — specimen sheet vol.04</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600;9..144,900&family=Space+Mono:wght@400;700&display=swap');
+
+  :root {
+    --paper: #f1ece1;
+    --ink:   #16182a;
+    --coral: #ff5640;
+    --blue:  #2740ff;
+    --gold:  #e7a92b;
+    --line:  rgba(22,24,42,0.16);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: var(--paper);
+    background-image:
+      linear-gradient(var(--line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--line) 1px, transparent 1px);
+    background-size: 26px 26px, 26px 26px;
+    font-family: "Space Mono", ui-monospace, monospace;
+    padding: 54px 40px 90px; position: relative;
+  }
+  body::after {
+    content: ""; position: fixed; inset: 0; pointer-events: none; z-index: 9;
+    opacity: 0.06; mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  header { max-width: 1120px; margin: 0 auto 30px; }
+  .kicker { font-size: 11px; letter-spacing: 3px; text-transform: uppercase; color: var(--blue); font-weight: 700; margin: 0 0 8px; }
+  h1 { font-family: "Fraunces", Georgia, serif; font-weight: 900; font-size: clamp(48px, 9vw, 104px);
+       line-height: 0.86; margin: 0; letter-spacing: -2px; position: relative; display: inline-block; }
+  h1::after { content: "nikzlabs"; position: absolute; left: 3px; top: 3px; color: var(--blue);
+       mix-blend-mode: multiply; z-index: -1; }
+  .sub { display: flex; gap: 18px; align-items: baseline; margin-top: 14px; flex-wrap: wrap; }
+  .sub p { margin: 0; font-size: 13px; max-width: 600px; line-height: 1.55; color: #3a3c4e; }
+  .sub em { color: var(--coral); font-style: normal; font-weight: 700; }
+  .rule { height: 3px; background: var(--ink); max-width: 1120px; margin: 22px auto 30px; position: relative; }
+  .rule::before { content: ""; position: absolute; right: 0; top: -4px; width: 11px; height: 11px; background: var(--coral); border-radius: 50%; }
+
+  .grid { max-width: 1120px; margin: 0 auto; display: grid; grid-template-columns: repeat(3, 1fr); gap: 0; border: 2px solid var(--ink); }
+  .cell { border: 1px solid var(--ink); padding: 22px 20px 16px; position: relative; background: var(--paper);
+          display: flex; flex-direction: column; opacity: 0; transform: translateY(12px);
+          animation: rise .5s cubic-bezier(.2,.7,.3,1) forwards; }
+  .cell:nth-child(1){animation-delay:.05s}.cell:nth-child(2){animation-delay:.12s}.cell:nth-child(3){animation-delay:.19s}
+  .cell:nth-child(4){animation-delay:.26s}.cell:nth-child(5){animation-delay:.33s}.cell:nth-child(6){animation-delay:.40s}
+  @keyframes rise { to { opacity: 1; transform: none; } }
+
+  .fig { display: flex; justify-content: space-between; align-items: center; font-size: 10px; letter-spacing: 1.5px; text-transform: uppercase; }
+  .fig .no { font-weight: 700; }
+  .fig .ph { color: var(--blue); }
+  .stage { height: 152px; display: flex; align-items: center; justify-content: center; margin: 6px 0 14px; position: relative; }
+  .stage::before, .stage::after { content:""; position:absolute; width:12px; height:12px; border:2px solid var(--ink); opacity:.35; }
+  .stage::before { left:8px; top:8px; border-right:0; border-bottom:0; }
+  .stage::after { right:8px; bottom:8px; border-left:0; border-top:0; }
+  .name { font-family:"Fraunces",serif; font-weight:600; font-size:19px; letter-spacing:-.3px; }
+  .note { font-size:11.5px; color:#4a4c5e; line-height:1.5; margin-top:4px; }
+  .concept { display:inline-block; margin-top:10px; font-size:9.5px; letter-spacing:1.5px; text-transform:uppercase;
+             font-weight:700; color:var(--paper); background:var(--ink); padding:3px 8px; }
+  .concept.c { background: var(--coral); }
+  .concept.b { background: var(--blue); }
+
+  .section { max-width:1120px; margin:46px auto 14px; font-size:11px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
+  .section span { color: var(--coral); }
+  .wm { max-width:1120px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:0; border:2px solid var(--ink); }
+  .wm > div { border:1px solid var(--ink); min-height:150px; display:flex; align-items:center; justify-content:center; padding:26px; }
+  .wm .dark { background: var(--ink); }
+
+  .scale { max-width:1120px; margin:0 auto; display:flex; align-items:center; gap:30px; border:2px solid var(--ink); padding:22px 28px; }
+  .scale .lab { font-size:11px; letter-spacing:1px; color:#5a5c6e; }
+
+  .pal { max-width:1120px; margin:26px auto 0; display:flex; gap:0; border:2px solid var(--ink); }
+  .pal div { flex:1; padding:14px 12px; font-size:10px; letter-spacing:1px; border-right:1px solid var(--ink); }
+  .pal div:last-child { border-right:0; }
+  .pal .name2 { font-weight:700; }
+  .pal .hex { opacity:.7; }
+</style>
+</head>
+<body>
+
+<header>
+  <p class="kicker">nikzlabs — field notebook · logo specimens · vol.04</p>
+  <h1>nikzlabs</h1>
+  <div class="sub">
+    <p>Same risograph language you liked — warm stock, deliberate misregistration, halftone grain — now with concepts built from the <em>lab</em> and the “n”, <em>not</em> the letter z.</p>
+  </div>
+</header>
+<div class="rule"></div>
+
+<div class="grid">
+
+  <!-- 01 chop — carved arch -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 01</span><span class="ph">⌗ stamp</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="chop seal with carved arch">
+        <defs><filter id="ro1" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.045 0.06" numOctaves="3" seed="7" result="t"/>
+          <feDisplacementMap in="SourceGraphic" in2="t" scale="3.5"/></filter></defs>
+        <rect x="22" y="22" width="74" height="74" rx="9" fill="#2740ff" transform="translate(-3.5,3.5)" opacity="0.9"/>
+        <g filter="url(#ro1)">
+          <rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/>
+          <path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/>
+          <line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/>
+        </g>
+      </svg>
+    </div>
+    <div class="name">Maker's chop</div>
+    <div class="note">The seal you liked — now carving an arched doorway (the “n” / a way in) instead of a letter. The lab stamps its work.</div>
+    <span class="concept c">most ownable</span>
+  </div>
+
+  <!-- 02 culture -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 02</span><span class="ph">◌ culture</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="petri culture, two-ink">
+        <circle cx="60" cy="60" r="44" fill="none" stroke="#16182a" stroke-width="3"/>
+        <circle cx="60" cy="60" r="40" fill="none" stroke="#16182a" stroke-width="1" opacity="0.4"/>
+        <g style="mix-blend-mode:multiply">
+          <g fill="#ff5640" transform="translate(-2.6,-1.6)">
+            <circle cx="48" cy="66" r="9"/><circle cx="70" cy="70" r="7"/><circle cx="54" cy="50" r="4.5"/>
+            <circle cx="74" cy="55" r="3"/><circle cx="46" cy="78" r="3"/><circle cx="60" cy="60" r="5.5"/>
+          </g>
+          <g fill="#2740ff" transform="translate(2.6,1.6)">
+            <circle cx="48" cy="66" r="9"/><circle cx="70" cy="70" r="7"/><circle cx="54" cy="50" r="4.5"/>
+            <circle cx="74" cy="55" r="3"/><circle cx="46" cy="78" r="3"/><circle cx="60" cy="60" r="5.5"/>
+          </g>
+        </g>
+        <circle cx="40" cy="56" r="3" fill="#e7a92b"/><circle cx="78" cy="64" r="2.4" fill="#e7a92b"/>
+      </svg>
+    </div>
+    <div class="name">Culture</div>
+    <div class="note">A petri dish mid-bloom — and the off-register inks <em>are</em> the riso look. Generative: the colony can differ every time.</div>
+    <span class="concept b">organic</span>
+  </div>
+
+  <!-- 03 assay -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 03</span><span class="ph">⊓ assay</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="test tube assay, riso">
+        <!-- misregistration ghost of fills -->
+        <g transform="translate(-3,2)" opacity="0.85" style="mix-blend-mode:multiply">
+          <path d="M34.2 56 V86 a5.8 5.8 0 0 0 11.6 0 V56 Z" fill="#2740ff"/>
+          <path d="M54.2 44 V86 a5.8 5.8 0 0 0 11.6 0 V44 Z" fill="#2740ff"/>
+          <path d="M74.2 66 V86 a5.8 5.8 0 0 0 11.6 0 V66 Z" fill="#2740ff"/>
+        </g>
+        <path d="M34.2 56 V86 a5.8 5.8 0 0 0 11.6 0 V56 Z" fill="#ff5640"/>
+        <path d="M54.2 44 V86 a5.8 5.8 0 0 0 11.6 0 V44 Z" fill="#ff5640"/>
+        <path d="M74.2 66 V86 a5.8 5.8 0 0 0 11.6 0 V66 Z" fill="#e7a92b"/>
+        <g stroke="#16182a" stroke-width="3" fill="none">
+          <path d="M33 30 V86 a7 7 0 0 0 14 0 V30"/>
+          <path d="M53 30 V86 a7 7 0 0 0 14 0 V30"/>
+          <path d="M73 30 V86 a7 7 0 0 0 14 0 V30"/>
+        </g>
+        <g fill="#16182a"><ellipse cx="40" cy="30" rx="7.5" ry="2.4"/><ellipse cx="60" cy="30" rx="7.5" ry="2.4"/><ellipse cx="80" cy="30" rx="7.5" ry="2.4"/></g>
+      </svg>
+    </div>
+    <div class="name">Assay</div>
+    <div class="note">Three tubes, three brand inks at three levels — an equalizer of experiments. Reads “lab” at any size.</div>
+    <span class="concept">literal · lab</span>
+  </div>
+
+  <!-- 04 aperture -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 04</span><span class="ph">◉ observe</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="aperture, two-ink">
+        <g transform="translate(-3.5,2.5)" style="mix-blend-mode:multiply" opacity="0.9">
+          <polygon points="104,60 82,98 60,79 76,69" fill="#2740ff"/>
+          <polygon points="82,98 38,98 44,69 60,79" fill="#2740ff"/>
+          <polygon points="38,98 16,60 44,50 44,69" fill="#2740ff"/>
+          <polygon points="16,60 38,22 60,41 44,50" fill="#2740ff"/>
+          <polygon points="38,22 82,22 76,50 60,41" fill="#2740ff"/>
+          <polygon points="82,22 104,60 76,69 76,50" fill="#2740ff"/>
+        </g>
+        <polygon points="104,60 82,98 60,79 76,69" fill="#16182a"/>
+        <polygon points="82,98 38,98 44,69 60,79" fill="#ff5640"/>
+        <polygon points="38,98 16,60 44,50 44,69" fill="#16182a" opacity="0.85"/>
+        <polygon points="16,60 38,22 60,41 44,50" fill="#16182a"/>
+        <polygon points="38,22 82,22 76,50 60,41" fill="#16182a" opacity="0.85"/>
+        <polygon points="82,22 104,60 76,69 76,50" fill="#16182a"/>
+      </svg>
+    </div>
+    <div class="name">Aperture</div>
+    <div class="note">A diaphragm stopped to a hexagon — focus and close looking, with one coral blade and a blue print-shift.</div>
+    <span class="concept">precision</span>
+  </div>
+
+  <!-- 05 specimen -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 05</span><span class="ph">☻ specimen</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="specimen blob, riso">
+        <defs><filter id="ro5" x="-20%" y="-20%" width="140%" height="140%">
+          <feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed="4" result="t"/>
+          <feDisplacementMap in="SourceGraphic" in2="t" scale="2.5"/></filter></defs>
+        <ellipse cx="60" cy="100" rx="38" ry="5.5" fill="#16182a" opacity="0.12"/>
+        <path d="M26 90 C22 64 38 46 60 46 C82 46 98 64 94 90 C92.5 96 88 98 82 98 L38 98 C32 98 27.5 96 26 90 Z"
+              fill="#2740ff" transform="translate(3,3)" opacity="0.9" style="mix-blend-mode:multiply"/>
+        <g filter="url(#ro5)">
+          <path d="M26 90 C22 64 38 46 60 46 C82 46 98 64 94 90 C92.5 96 88 98 82 98 L38 98 C32 98 27.5 96 26 90 Z" fill="#ff5640"/>
+          <path d="M44 52 C46 42 54 42 56 50" fill="none" stroke="#ff5640" stroke-width="6" stroke-linecap="round"/>
+        </g>
+        <circle cx="44" cy="48" r="4" fill="#e7a92b"/>
+        <circle cx="51" cy="74" r="9" fill="#f1ece1"/><circle cx="71" cy="74" r="9" fill="#f1ece1"/>
+        <circle cx="53" cy="75" r="3.4" fill="#16182a"/><circle cx="73" cy="75" r="3.4" fill="#16182a"/>
+        <path d="M55 86 Q61 91 67 86" fill="none" stroke="#16182a" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="name">Specimen #1</div>
+    <div class="note">A friendly experiment that got loose — the riso treatment makes it feel hand-printed. Built for stickers and a 404.</div>
+    <span class="concept c">playful</span>
+  </div>
+
+  <!-- 06 trajectory -->
+  <div class="cell">
+    <div class="fig"><span class="no">fig. 06</span><span class="ph">↝ track</span></div>
+    <div class="stage">
+      <svg width="120" height="120" viewBox="0 0 120 120" role="img" aria-label="particle track, riso">
+        <g stroke="#16182a" stroke-width="0.7" opacity="0.16">
+          <line x1="22" y1="40" x2="98" y2="40"/><line x1="22" y1="66" x2="98" y2="66"/>
+          <line x1="44" y1="22" x2="44" y2="98"/><line x1="74" y1="22" x2="74" y2="98"/>
+        </g>
+        <path d="M18 98 C46 94 64 76 66 54 C67 42 60 34 49 36 C40 37.5 38 47 46 51"
+              fill="none" stroke="#2740ff" stroke-width="5" stroke-linecap="round" transform="translate(3,2.5)" opacity="0.85" style="mix-blend-mode:multiply"/>
+        <path d="M18 98 C46 94 64 76 66 54 C67 42 60 34 49 36 C40 37.5 38 47 46 51"
+              fill="none" stroke="#ff5640" stroke-width="5" stroke-linecap="round"/>
+        <path d="M64 60 L86 49" fill="none" stroke="#16182a" stroke-width="3" stroke-linecap="round"/>
+        <path d="M55 73 L74 84" fill="none" stroke="#16182a" stroke-width="2.4" stroke-linecap="round"/>
+        <circle cx="18" cy="98" r="4.5" fill="#2740ff"/><circle cx="86" cy="49" r="3" fill="#16182a"/>
+      </svg>
+    </div>
+    <div class="name">Trajectory</div>
+    <div class="note">A charged particle curling in a field, with a decay fork — a cloud-chamber trace, doubled into a coral/blue print.</div>
+    <span class="concept">abstract</span>
+  </div>
+
+</div>
+
+<div class="section">Wordmark <span>treatments</span></div>
+<div class="wm">
+  <div>
+    <svg width="360" height="92" viewBox="0 0 360 92" role="img" aria-label="arch lockup wordmark">
+      <line x1="14" y1="68" x2="70" y2="68" stroke="#16182a" stroke-width="2.6"/>
+      <path d="M20 68 V42 a18 18 0 0 1 36 0 V68" fill="none" stroke="#16182a" stroke-width="10"/>
+      <circle cx="38" cy="40" r="4.5" fill="#ff5640"/>
+      <text x="86" y="56" font-family="Fraunces, serif" font-weight="900" font-size="50" letter-spacing="-2" fill="#16182a">nikzlabs</text>
+      <text x="88" y="74" font-family="Space Mono, monospace" font-size="10.5" letter-spacing="4" fill="#2740ff">RESEARCH &amp; SHIPPING</text>
+    </svg>
+  </div>
+  <div class="dark">
+    <svg width="320" height="70" viewBox="0 0 320 70" role="img" aria-label="nikzlabs stamp wordmark">
+      <defs><filter id="r2"><feTurbulence type="fractalNoise" baseFrequency="0.05" numOctaves="2" seed="3" result="t"/><feDisplacementMap in="SourceGraphic" in2="t" scale="2.5"/></filter></defs>
+      <g filter="url(#r2)" transform="rotate(-2 160 35)">
+        <rect x="14" y="14" width="292" height="42" fill="none" stroke="#ff5640" stroke-width="3"/>
+        <text x="160" y="42" text-anchor="middle" font-family="Space Mono, monospace" font-weight="700" font-size="26" letter-spacing="6" fill="#ff5640">NIKZLABS</text>
+      </g>
+    </svg>
+  </div>
+</div>
+
+<div class="section">Favicon <span>scale test — the chop</span></div>
+<div class="scale">
+  <svg width="52" height="52" viewBox="0 0 120 120" aria-label="chop 52"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+  <svg width="32" height="32" viewBox="0 0 120 120" aria-label="chop 32"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+  <svg width="16" height="16" viewBox="0 0 120 120" aria-label="chop 16"><rect x="22" y="22" width="74" height="74" rx="9" fill="#ff5640"/><path d="M40 81 V60 a20 20 0 0 1 40 0 V81" fill="none" stroke="#f1ece1" stroke-width="11"/><line x1="34" y1="81" x2="86" y2="81" stroke="#f1ece1" stroke-width="5"/></svg>
+  <span class="lab">52 / 32 / 16&nbsp;px — the carved arch holds down to a favicon</span>
+</div>
+
+<div class="section">Ink <span>palette</span></div>
+<div class="pal">
+  <div style="background:#16182a;color:#f1ece1"><div class="name2">ink</div><div class="hex">#16182A</div></div>
+  <div style="background:#ff5640;color:#fff"><div class="name2">riso coral</div><div class="hex">#FF5640</div></div>
+  <div style="background:#2740ff;color:#fff"><div class="name2">flash blue</div><div class="hex">#2740FF</div></div>
+  <div style="background:#e7a92b;color:#16182a"><div class="name2">amber</div><div class="hex">#E7A92B</div></div>
+  <div style="background:#f1ece1;color:#16182a"><div class="name2">newsprint</div><div class="hex">#F1ECE1</div></div>
+</div>
+
+</body>
+</html>

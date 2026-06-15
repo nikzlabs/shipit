@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nikzlabs — catalogue vol.03</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,400;12..96,600;12..96,800&family=Newsreader:ital,opsz,wght@0,6..72,400;1,6..72,400;1,6..72,500&family=JetBrains+Mono:wght@400;700&display=swap');
+
+  :root {
+    --bone:  #f6f3ec;
+    --bone2: #eee9dd;
+    --ink:   #15140f;
+    --cobalt:#1736ff;
+    --mint:  #14b39a;
+    --amber: #f0a92b;
+    --hair:  rgba(21,20,15,0.14);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; color: var(--ink); background: var(--bone);
+    font-family: "JetBrains Mono", ui-monospace, monospace;
+    -webkit-font-smoothing: antialiased;
+    padding: 60px 46px 96px; position: relative;
+  }
+  body::after { /* faint grain */
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:9; opacity:.04; mix-blend-mode:multiply;
+    background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+
+  header { max-width:1140px; margin:0 auto 8px; }
+  .top { display:flex; justify-content:space-between; align-items:flex-start; font-size:11px; letter-spacing:2px; text-transform:uppercase; color:#6b6960; }
+  .top .dot { color: var(--cobalt); }
+  h1 { font-family:"Bricolage Grotesque", sans-serif; font-weight:800; font-size:clamp(52px,10vw,120px);
+       line-height:.9; letter-spacing:-3px; margin:18px 0 0; }
+  .lede { font-family:"Newsreader", Georgia, serif; font-style:italic; font-size:19px; line-height:1.5;
+          max-width:620px; margin:18px 0 0; color:#3b3a33; }
+  .lede b { font-style:normal; font-weight:500; color: var(--ink); }
+  .hr { max-width:1140px; margin:30px auto 26px; border-top:2px solid var(--ink); }
+
+  .grid { max-width:1140px; margin:0 auto; display:grid; grid-template-columns:repeat(3,1fr); gap:24px; }
+  .card { background:var(--bone); border:1px solid var(--hair); border-radius:4px; padding:24px 22px 20px;
+          position:relative; display:flex; flex-direction:column;
+          opacity:0; transform:translateY(14px); animation:rise .55s cubic-bezier(.2,.7,.3,1) forwards; }
+  .card:nth-child(1){animation-delay:.04s}.card:nth-child(2){animation-delay:.11s}.card:nth-child(3){animation-delay:.18s}
+  .card:nth-child(4){animation-delay:.25s}.card:nth-child(5){animation-delay:.32s}.card:nth-child(6){animation-delay:.39s}
+  @keyframes rise{to{opacity:1;transform:none}}
+  .idx { display:flex; justify-content:space-between; font-size:11px; letter-spacing:1px; color:#8a887d; }
+  .idx b { color:var(--ink); font-weight:700; }
+  .stage { height:168px; display:flex; align-items:center; justify-content:center; margin:8px 0 16px; }
+  .nm { font-family:"Bricolage Grotesque",sans-serif; font-weight:700; font-size:21px; letter-spacing:-.4px; }
+  .ds { font-family:"Newsreader",serif; font-size:14.5px; line-height:1.5; color:#46443c; margin-top:5px; font-style:italic; }
+  .pill { align-self:flex-start; margin-top:12px; font-size:10px; letter-spacing:1.5px; text-transform:uppercase;
+          font-weight:700; padding:4px 9px; border-radius:999px; border:1.5px solid var(--ink); }
+  .pill.k { background:var(--cobalt); color:#fff; border-color:var(--cobalt); }
+  .pill.m { background:var(--mint); color:#06231e; border-color:var(--mint); }
+
+  .sec { max-width:1140px; margin:50px auto 16px; font-size:11px; letter-spacing:3px; text-transform:uppercase; font-weight:700; }
+  .sec i { color:var(--cobalt); font-style:normal; }
+  .row2 { max-width:1140px; margin:0 auto; display:grid; grid-template-columns:1fr 1fr; gap:24px; }
+  .panel { border:1px solid var(--hair); border-radius:4px; min-height:150px; display:flex; align-items:center; justify-content:center; padding:28px; }
+  .panel.dark { background:var(--ink); }
+
+  .scale { max-width:1140px; margin:0 auto; display:flex; align-items:center; gap:34px; border:1px solid var(--hair); border-radius:4px; padding:26px 30px; }
+  .scale .lab { font-size:11px; letter-spacing:1px; color:#8a887d; }
+
+  .pal { max-width:1140px; margin:24px auto 0; display:flex; border:1px solid var(--ink); border-radius:4px; overflow:hidden; }
+  .pal div { flex:1; padding:16px 14px; font-size:10.5px; letter-spacing:.5px; border-right:1px solid rgba(0,0,0,.15); }
+  .pal div:last-child{border-right:0}
+  .pal b{font-weight:700; display:block; margin-bottom:2px;}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="top"><span>nikzlabs — design catalogue</span><span class="dot">vol.03 · no-z edition</span></div>
+  <h1>nikzlabs</h1>
+  <p class="lede">Six marks built from everything <b>except</b> the letter z — the “n,” the idea of a <b>lab</b>, and pure concept. Cooler, cleaner studio language: bone stock, charcoal, one electric accent.</p>
+</header>
+<div class="hr"></div>
+
+<div class="grid">
+
+  <!-- 01 arch / portal n -->
+  <div class="card">
+    <div class="idx"><b>01</b><span>portal</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="arch portal n">
+        <line x1="22" y1="100" x2="98" y2="100" stroke="#15140f" stroke-width="3"/>
+        <path d="M32 100 V56 a28 28 0 0 1 56 0 V100" fill="none" stroke="#15140f" stroke-width="14" stroke-linecap="butt"/>
+        <circle cx="60" cy="54" r="7" fill="#1736ff"/>
+      </svg>
+    </div>
+    <div class="nm">The arch</div>
+    <div class="ds">The “n” as an architectural doorway — a way in. The cobalt light is the experiment glowing inside.</div>
+    <span class="pill k">recommended</span>
+  </div>
+
+  <!-- 02 petri culture -->
+  <div class="card">
+    <div class="idx"><b>02</b><span>culture</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="petri dish culture">
+        <circle cx="60" cy="60" r="46" fill="none" stroke="#15140f" stroke-width="3"/>
+        <circle cx="60" cy="60" r="42" fill="none" stroke="#15140f" stroke-width="1" opacity="0.4"/>
+        <g>
+          <circle cx="48" cy="66" r="9" fill="#1736ff"/>
+          <circle cx="62" cy="56" r="6" fill="#15140f"/>
+          <circle cx="70" cy="70" r="7" fill="#14b39a"/>
+          <circle cx="54" cy="50" r="4" fill="#15140f"/>
+          <circle cx="40" cy="54" r="3.5" fill="#14b39a"/>
+          <circle cx="74" cy="56" r="3" fill="#1736ff"/>
+          <circle cx="58" cy="74" r="4" fill="#15140f"/>
+          <circle cx="46" cy="78" r="2.5" fill="#1736ff"/>
+          <circle cx="68" cy="46" r="2.5" fill="#15140f"/>
+          <circle cx="80" cy="64" r="2" fill="#15140f"/>
+        </g>
+      </svg>
+    </div>
+    <div class="nm">Culture</div>
+    <div class="ds">A petri dish mid-experiment — colonies blooming asymmetrically. Living, generative, never the same twice.</div>
+    <span class="pill m">organic</span>
+  </div>
+
+  <!-- 03 vial rack -->
+  <div class="card">
+    <div class="idx"><b>03</b><span>assay</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="row of test tubes">
+        <g stroke="#15140f" stroke-width="3" fill="none">
+          <path d="M33 30 V86 a7 7 0 0 0 14 0 V30"/>
+          <path d="M53 30 V86 a7 7 0 0 0 14 0 V30"/>
+          <path d="M73 30 V86 a7 7 0 0 0 14 0 V30"/>
+        </g>
+        <path d="M34.2 56 V86 a5.8 5.8 0 0 0 11.6 0 V56 Z" fill="#1736ff"/>
+        <path d="M54.2 44 V86 a5.8 5.8 0 0 0 11.6 0 V44 Z" fill="#14b39a"/>
+        <path d="M74.2 66 V86 a5.8 5.8 0 0 0 11.6 0 V66 Z" fill="#f0a92b"/>
+        <g fill="#15140f"><ellipse cx="40" cy="30" rx="7.5" ry="2.4"/><ellipse cx="60" cy="30" rx="7.5" ry="2.4"/><ellipse cx="80" cy="30" rx="7.5" ry="2.4"/></g>
+        <circle cx="62" cy="60" r="1.6" fill="#fff" opacity="0.8"/><circle cx="58" cy="72" r="1.2" fill="#fff" opacity="0.8"/>
+      </svg>
+    </div>
+    <div class="nm">Assay</div>
+    <div class="ds">Three tubes at different levels — a little equalizer of experiments. Reads “lab” at a glance; the fills carry the brand colors.</div>
+    <span class="pill">literal · lab</span>
+  </div>
+
+  <!-- 04 aperture -->
+  <div class="card">
+    <div class="idx"><b>04</b><span>observe</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="aperture diaphragm">
+        <circle cx="60" cy="60" r="47" fill="none" stroke="#15140f" stroke-width="2"/>
+        <polygon points="106,60 83,99.8 60,80 77.3,70" fill="#15140f"/>
+        <polygon points="83,99.8 37,99.8 42.7,70 60,80" fill="#1736ff"/>
+        <polygon points="37,99.8 14,60 42.7,50 42.7,70" fill="#15140f" opacity="0.82"/>
+        <polygon points="14,60 37,20.2 60,40 42.7,50" fill="#15140f"/>
+        <polygon points="37,20.2 83,20.2 77.3,50 60,40" fill="#15140f" opacity="0.82"/>
+        <polygon points="83,20.2 106,60 77.3,70 77.3,50" fill="#15140f"/>
+      </svg>
+    </div>
+    <div class="nm">Aperture</div>
+    <div class="ds">A camera diaphragm stopped down to a hexagon — focus, observation, looking closely. One blade lit cobalt.</div>
+    <span class="pill">precision</span>
+  </div>
+
+  <!-- 05 specimen mascot -->
+  <div class="card">
+    <div class="idx"><b>05</b><span>specimen</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="specimen blob mascot">
+        <ellipse cx="60" cy="98" rx="40" ry="6" fill="#15140f" opacity="0.12"/>
+        <path d="M26 88 C22 62 38 44 60 44 C82 44 98 62 94 88 C92.5 94 88 96 82 96 L38 96 C32 96 27.5 94 26 88 Z" fill="#1736ff"/>
+        <path d="M44 50 C46 40 54 40 56 48" fill="none" stroke="#1736ff" stroke-width="6" stroke-linecap="round"/>
+        <circle cx="44" cy="46" r="4" fill="#14b39a"/>
+        <circle cx="51" cy="72" r="9" fill="#fff"/><circle cx="71" cy="72" r="9" fill="#fff"/>
+        <circle cx="53" cy="73" r="3.4" fill="#15140f"/><circle cx="73" cy="73" r="3.4" fill="#15140f"/>
+        <path d="M55 84 Q61 89 67 84" fill="none" stroke="#15140f" stroke-width="2.4" stroke-linecap="round"/>
+      </svg>
+    </div>
+    <div class="nm">Specimen #1</div>
+    <div class="ds">A friendly little experiment that got loose. Toy-like, unforgettable, made for stickers and a 404 page.</div>
+    <span class="pill m">playful</span>
+  </div>
+
+  <!-- 06 particle track -->
+  <div class="card">
+    <div class="idx"><b>06</b><span>trajectory</span></div>
+    <div class="stage">
+      <svg width="128" height="128" viewBox="0 0 120 120" role="img" aria-label="particle track">
+        <path d="M18 98 C46 94 64 76 66 54 C67 42 60 34 49 36 C40 37.5 38 47 46 51" fill="none" stroke="#15140f" stroke-width="4.5" stroke-linecap="round"/>
+        <path d="M64 60 L86 49" fill="none" stroke="#1736ff" stroke-width="3.2" stroke-linecap="round"/>
+        <path d="M55 73 L74 84" fill="none" stroke="#15140f" stroke-width="2.6" stroke-linecap="round"/>
+        <circle cx="18" cy="98" r="4.5" fill="#1736ff"/>
+        <circle cx="86" cy="49" r="3" fill="#15140f"/>
+        <circle cx="46.5" cy="49" r="2.6" fill="#15140f"/>
+      </svg>
+    </div>
+    <div class="nm">Trajectory</div>
+    <div class="ds">A charged particle curling in a field, with decay forks — a cloud-chamber trace. Minimal, scientific, all line.</div>
+    <span class="pill">abstract</span>
+  </div>
+
+</div>
+
+<div class="sec">Wordmark <i>+ lockup</i></div>
+<div class="row2">
+  <div class="panel">
+    <svg width="360" height="92" viewBox="0 0 360 92" role="img" aria-label="arch lockup wordmark">
+      <line x1="14" y1="70" x2="74" y2="70" stroke="#15140f" stroke-width="2.6"/>
+      <path d="M22 70 V40 a20 20 0 0 1 40 0 V70" fill="none" stroke="#15140f" stroke-width="10"/>
+      <circle cx="42" cy="38" r="5" fill="#1736ff"/>
+      <text x="92" y="58" font-family="Bricolage Grotesque, sans-serif" font-weight="800" font-size="44" letter-spacing="-2" fill="#15140f">nikzlabs</text>
+      <text x="94" y="76" font-family="JetBrains Mono, monospace" font-size="10.5" letter-spacing="3" fill="#1736ff">RESEARCH &amp; SHIPPING</text>
+    </svg>
+  </div>
+  <div class="panel dark">
+    <svg width="240" height="110" viewBox="0 0 240 110" role="img" aria-label="stacked wordmark">
+      <text x="120" y="50" text-anchor="middle" font-family="Bricolage Grotesque, sans-serif" font-weight="800" font-size="46" letter-spacing="-1" fill="#f6f3ec">nikz</text>
+      <line x1="64" y1="62" x2="176" y2="62" stroke="#1736ff" stroke-width="2.5"/>
+      <text x="120" y="92" text-anchor="middle" font-family="JetBrains Mono, monospace" font-weight="700" font-size="22" letter-spacing="14" fill="#14b39a">LABS</text>
+    </svg>
+  </div>
+</div>
+
+<div class="sec">Favicon <i>scale test — the arch</i></div>
+<div class="scale">
+  <svg width="56" height="56" viewBox="0 0 120 120" aria-label="arch 56"><path d="M32 100 V56 a28 28 0 0 1 56 0 V100" fill="none" stroke="#15140f" stroke-width="14"/><circle cx="60" cy="54" r="7" fill="#1736ff"/></svg>
+  <svg width="32" height="32" viewBox="0 0 120 120" aria-label="arch 32"><path d="M32 100 V56 a28 28 0 0 1 56 0 V100" fill="none" stroke="#15140f" stroke-width="14"/><circle cx="60" cy="54" r="7" fill="#1736ff"/></svg>
+  <svg width="16" height="16" viewBox="0 0 120 120" aria-label="arch 16"><path d="M32 100 V56 a28 28 0 0 1 56 0 V100" fill="none" stroke="#15140f" stroke-width="14"/><circle cx="60" cy="54" r="7" fill="#1736ff"/></svg>
+  <span class="lab">56 / 32 / 16&nbsp;px — the silhouette survives all the way down</span>
+</div>
+
+<div class="sec">Studio <i>palette</i></div>
+<div class="pal">
+  <div style="background:#15140f;color:#f6f3ec"><b>ink</b>#15140F</div>
+  <div style="background:#1736ff;color:#fff"><b>cobalt</b>#1736FF</div>
+  <div style="background:#14b39a;color:#06231e"><b>culture mint</b>#14B39A</div>
+  <div style="background:#f0a92b;color:#2a1c00"><b>reagent amber</b>#F0A92B</div>
+  <div style="background:#f6f3ec;color:#15140f"><b>bone</b>#F6F3EC</div>
+</div>
+
+</body>
+</html>
