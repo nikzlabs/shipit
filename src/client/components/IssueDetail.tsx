@@ -176,14 +176,14 @@ export function IssueDetail({
           variant="ghost"
           size="md"
           onClick={onBack}
-          className="shrink-0 -ml-1"
+          className="shrink-0 -ml-1 leading-none"
           title="Back to issues"
         >
           <CaretLeftIcon size={ICON_SIZE.SM} />
           Issues
         </Button>
 
-        <span className="font-mono text-xs text-(--color-text-tertiary) truncate">
+        <span className="font-mono text-xs leading-none text-(--color-text-tertiary) truncate">
           {selection.identifier}
         </span>
 
