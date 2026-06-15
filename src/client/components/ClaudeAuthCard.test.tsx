@@ -185,3 +185,40 @@ describe("ClaudeAuthCard / signed-in state", () => {
     expect(screen.queryByTestId("claude-sign-out")).not.toBeInTheDocument();
   });
 });
+
+describe("ClaudeAuthCard / clear stale credentials (not authenticated)", () => {
+  it("does not show the reset hatch on a pristine card (no stored credentials)", () => {
+    // Default unauthed agent, hasStoredCredentials defaults to false.
+    renderCard({ onClearApiKey: vi.fn() });
+    expect(screen.queryByTestId("claude-clear-credentials")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("claude-stale-credentials")).not.toBeInTheDocument();
+  });
+
+  it("shows the reset hatch when unauthenticated but credentials are stored", () => {
+    renderCard({ onClearApiKey: vi.fn(), hasStoredCredentials: true });
+    expect(screen.getByTestId("claude-clear-credentials")).toHaveTextContent("Clear saved credentials");
+  });
+
+  it("does not show the reset hatch without onClearApiKey", () => {
+    renderCard({ hasStoredCredentials: true });
+    expect(screen.queryByTestId("claude-clear-credentials")).not.toBeInTheDocument();
+  });
+
+  it("does not show the reset hatch when already authenticated", () => {
+    // authConfigured hides the whole sign-in panel; the top-right Sign out covers this case.
+    renderCard({ agent: authedAgent, onClearApiKey: vi.fn(), hasStoredCredentials: true });
+    expect(screen.queryByTestId("claude-clear-credentials")).not.toBeInTheDocument();
+  });
+
+  it("does not show the reset hatch mid OAuth flow (authUrl set)", () => {
+    renderCard({ onClearApiKey: vi.fn(), hasStoredCredentials: true, authUrl: "https://auth.example.com" });
+    expect(screen.queryByTestId("claude-clear-credentials")).not.toBeInTheDocument();
+  });
+
+  it("calls onClearApiKey when the reset hatch is clicked", async () => {
+    const onClearApiKey = vi.fn().mockResolvedValue(undefined);
+    renderCard({ onClearApiKey, hasStoredCredentials: true });
+    fireEvent.click(screen.getByTestId("claude-clear-credentials"));
+    await waitFor(() => expect(onClearApiKey).toHaveBeenCalled());
+  });
+});

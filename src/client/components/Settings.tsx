@@ -1265,6 +1265,12 @@ export function Settings({
 
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
+  // A stored Claude account row means there are credentials/state to clear even
+  // when the agent reads as unauthenticated (stale/unverifiable token). Surfaces
+  // the "Clear saved credentials" reset in ClaudeAuthCard's not-authed panel.
+  const claudeHasStoredCredentials = useSettingsStore((s) =>
+    s.providerAccounts.some((a) => a.provider === "claude"),
+  );
 
   const generalTabs = ["integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
@@ -1352,6 +1358,7 @@ export function Settings({
                 onApiKeySubmit={async (key) => { onApiKey(key); return undefined; }}
                 onPasteAuthCode={onPasteCode}
                 onClearApiKey={onClearApiKey}
+                hasStoredCredentials={claudeHasStoredCredentials}
               />
               <ProviderAccountSection provider="claude" />
             </div>
