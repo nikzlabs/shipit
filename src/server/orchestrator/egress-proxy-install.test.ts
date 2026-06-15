@@ -102,4 +102,31 @@ describe("launchEgressProxy", () => {
     const cfg = calls.create as { Env: string[] };
     expect(cfg.Env).toContain("EGRESS_PROXY_DECISION_URL=http://shipit:3000/api/egress/decision");
   });
+
+  it("passes EGRESS_PROXY_IDENTITY_RULES when Phase-2 identity rules are wired", async () => {
+    const { docker, calls } = fakeDocker();
+    const rules = JSON.stringify([{ host: ".s3.amazonaws.com", identities: ["my-bucket"] }]);
+    await launchEgressProxy(docker, {
+      agentContainerId: "agent123",
+      sidecarImage: "egress:1",
+      allowed: "github.com",
+      sessionId: "s1",
+      identityRules: rules,
+    });
+    const cfg = calls.create as { Env: string[] };
+    expect(cfg.Env).toContain(`EGRESS_PROXY_IDENTITY_RULES=${rules}`);
+  });
+
+  it("omits EGRESS_PROXY_IDENTITY_RULES when there are no identity rules (no scoping)", async () => {
+    const { docker, calls } = fakeDocker();
+    await launchEgressProxy(docker, {
+      agentContainerId: "agent123",
+      sidecarImage: "egress:1",
+      allowed: "github.com",
+      sessionId: "s1",
+      identityRules: "", // composeEgressIdentityRules returns "" when none
+    });
+    const cfg = calls.create as { Env: string[] };
+    expect(cfg.Env.some((e) => e.startsWith("EGRESS_PROXY_IDENTITY_RULES="))).toBe(false);
+  });
 });

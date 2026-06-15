@@ -84,6 +84,12 @@ export interface LaunchProxyOpts {
    * in the static allowlist. Unset → an unknown SNI is denied-fast (safe default).
    */
   decisionUrl?: string;
+  /**
+   * docs/172 Phase 2 (SHI-90) — SNI-scoped tenant identity rules as the proxy's
+   * `EGRESS_PROXY_IDENTITY_RULES` JSON (from `composeEgressIdentityRules`). ""/
+   * unset → no identity scoping; the static host allowlist still applies.
+   */
+  identityRules?: string;
   labels?: Record<string, string>;
 }
 
@@ -101,6 +107,7 @@ export async function launchEgressProxy(docker: Docker, opts: LaunchProxyOpts): 
     `EGRESS_PROXY_SESSION_ID=${opts.sessionId}`,
   ];
   if (opts.decisionUrl) env.push(`EGRESS_PROXY_DECISION_URL=${opts.decisionUrl}`);
+  if (opts.identityRules) env.push(`EGRESS_PROXY_IDENTITY_RULES=${opts.identityRules}`);
 
   const container = await docker.createContainer({
     Image: opts.sidecarImage,

@@ -272,6 +272,120 @@ export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): strin
 }
 
 // ---------------------------------------------------------------------------
+// Identity rules (Phase 2) — SNI-scoped tenant identity for multi-tenant hosts
+// ---------------------------------------------------------------------------
+
+/**
+ * A multi-tenant identity rule: on the base `host`, only requests whose SNI
+ * carries one of these tenant `identities` are permitted. Mirrors the proxy's
+ * `EGRESS_PROXY_IDENTITY_RULES` JSON shape (docker/egress-sidecar/sni-proxy).
+ */
+export interface EgressIdentityRule {
+  host: string;
+  identities: string[];
+}
+
+export interface ComposeIdentityRulesOpts {
+  /** Env to read `SESSION_EGRESS_IDENTITY_RULES` from (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /**
+   * Per-session durable identity rules (future: a Settings editor / per-session
+   * source). Merged AFTER the operator env rules — a later rule for the same host
+   * wins. Passed in already-resolved so this module stays store-free; no source
+   * feeds it yet, so today identity rules come from the operator env only.
+   */
+  durableRules?: Iterable<EgressIdentityRule>;
+}
+
+/** Parse the `SESSION_EGRESS_IDENTITY_RULES` JSON env; `[]` on empty/invalid. */
+function parseIdentityRulesEnv(value: string | undefined): EgressIdentityRule[] {
+  if (!value?.trim()) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch (err) {
+    console.warn(
+      `[egress] SESSION_EGRESS_IDENTITY_RULES is not valid JSON ` +
+        `(${err instanceof Error ? err.message : String(err)}); ignoring`,
+    );
+    return [];
+  }
+  if (!Array.isArray(parsed)) {
+    console.warn("[egress] SESSION_EGRESS_IDENTITY_RULES must be a JSON array; ignoring");
+    return [];
+  }
+  const rules: EgressIdentityRule[] = [];
+  for (const item of parsed) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    if (typeof rec.host !== "string") continue;
+    const identities = Array.isArray(rec.identities)
+      ? rec.identities.filter((x): x is string => typeof x === "string")
+      : [];
+    rules.push({ host: rec.host, identities });
+  }
+  return rules;
+}
+
+/**
+ * Compose the Phase-2 SNI-scoped identity rules into the canonical JSON the
+ * Tier C proxy consumes via `EGRESS_PROXY_IDENTITY_RULES`:
+ *
+ *   [{"host":".s3.amazonaws.com","identities":["my-bucket"]}]
+ *
+ * Mirrors {@link composeEgressExtraHosts} (operator env + a future per-session
+ * durable source) but for the identity hook rather than the host allowlist.
+ * Hosts are normalized and de-duplicated (last rule per host wins); rules with
+ * no host or no identities are dropped. Malformed env is dropped with a warning
+ * — identity scoping is **additive** hardening over the host allowlist, never the
+ * floor, so failing open to "no scoping" is the documented Phase-2 default.
+ * Returns "" when there are no rules so the caller simply omits the env var.
+ */
+export function composeEgressIdentityRules(opts: ComposeIdentityRulesOpts = {}): string {
+  const env = opts.env ?? process.env;
+  const byHost = new Map<string, EgressIdentityRule>();
+  const ingest = (rules: Iterable<EgressIdentityRule>) => {
+    for (const r of rules) {
+      const host = normalizeHost(r.host ?? "");
+      const identities = Array.isArray(r.identities)
+        ? [...new Set(r.identities.map((i) => i.trim()).filter(Boolean))]
+        : [];
+      if (!host || identities.length === 0) continue;
+      byHost.set(host, { host, identities });
+    }
+  };
+  ingest(parseIdentityRulesEnv(env.SESSION_EGRESS_IDENTITY_RULES));
+  if (opts.durableRules) ingest(opts.durableRules);
+  const out = [...byHost.values()];
+  return out.length ? JSON.stringify(out) : "";
+}
+
+// ---------------------------------------------------------------------------
+// Resolved per-session egress config (the wiring shape)
+// ---------------------------------------------------------------------------
+
+/**
+ * Per-session egress runtime config, resolved at container start
+ * (`index.ts` `resolveEgressConfig`) and threaded through the container
+ * lifecycle into the Tier B resolver + Tier C proxy. A single shared shape so
+ * the wiring sites (lifecycle deps, container manager, reload) can't drift.
+ */
+export interface ResolvedEgressConfig {
+  /** Whether THIS session is contained (global toggle / per-session override). */
+  contained: boolean;
+  /** Composed extra allowlist hosts (operator env + MCP + durable user list). */
+  extraHosts: string[];
+  /** Built-in base minus any user-removed defaults. Omitted → full default base. */
+  base?: string[];
+  /**
+   * docs/172 Phase 2 — SNI-scoped tenant identity rules as the proxy's
+   * `EGRESS_PROXY_IDENTITY_RULES` JSON (from {@link composeEgressIdentityRules}).
+   * "" / unset → no identity scoping (the host allowlist still applies).
+   */
+  identityRules?: string;
+}
+
+// ---------------------------------------------------------------------------
 // Effective allowlist with provenance (the Settings editor view)
 // ---------------------------------------------------------------------------
 

@@ -35,7 +35,8 @@ import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
 import type { ServiceManager } from "./service-manager.js";
 import { registerApiRoutes } from "./api-routes.js";
-import { composeEgressExtraHosts } from "./egress-allowlist.js";
+import { composeEgressExtraHosts, composeEgressIdentityRules } from "./egress-allowlist.js";
+import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import type { GitManager } from "../shared/git.js";
 
@@ -170,7 +171,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // override) and the composed extra-host allowlist fed into BOTH the Tier B
   // resolver config and the Tier C SNI proxy. Also injected into `egress-policy`
   // so the Tier C decision endpoint honors durable allows without re-carding.
-  const resolveEgressConfig = (sessionId: string): { contained: boolean; extraHosts: string[]; base?: string[] } => ({
+  const resolveEgressConfig = (sessionId: string): ResolvedEgressConfig => ({
     contained: egressAllowlistStore.resolveContained(sessionId),
     extraHosts: composeEgressExtraHosts({
       credentialStore,
@@ -179,6 +180,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     // The built-in base minus any defaults the user removed in Settings — so a
     // removed default is actually closed at the resolver + proxy.
     base: egressAllowlistStore.effectiveBase(),
+    // docs/172 Phase 2 — SNI-scoped tenant identity rules for multi-tenant hosts,
+    // from the operator env (SESSION_EGRESS_IDENTITY_RULES). "" when none → the
+    // proxy launch omits EGRESS_PROXY_IDENTITY_RULES (no identity scoping).
+    identityRules: composeEgressIdentityRules(),
   });
   setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
 

@@ -55,6 +55,11 @@ export interface ReloadEgressOpts {
   reloadResolver: boolean;
   /** Reload the Tier C proxy (only when proxy enforcement is on). */
   reloadProxy: boolean;
+  /**
+   * docs/172 Phase 2 — SNI-scoped identity rules JSON, carried through so a
+   * live allowlist reload doesn't drop the relaunched proxy's identity scoping.
+   */
+  identityRules?: string;
   /** Orchestrator port for the proxy's decision endpoint. */
   orchPort?: string;
 }
@@ -109,6 +114,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
       allowed: buildProxyAllowed({ extraHosts, ...(base ? { base } : {}) }),
       sessionId,
       decisionUrl,
+      ...(opts.identityRules ? { identityRules: opts.identityRules } : {}),
       labels: { ...labels, [EGRESS_PROXY_LABEL]: sessionId },
     });
   }

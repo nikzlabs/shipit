@@ -13,6 +13,7 @@ import {
   mcpHostsFromCredentialStore,
   buildEgressAllowlist,
   composeEgressExtraHosts,
+  composeEgressIdentityRules,
   buildEffectiveAllowlist,
   isBuiltinDefault,
 } from "./egress-allowlist.js";
@@ -266,5 +267,56 @@ describe("isBuiltinDefault", () => {
     expect(isBuiltinDefault(".GitHub.com.")).toBe(true); // case + trailing dot
     expect(isBuiltinDefault("attacker.com")).toBe(false);
     expect(isBuiltinDefault("api.github.com")).toBe(false); // not the exact default entry
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeEgressIdentityRules (Phase 2 — SNI-scoped tenant identity)
+// ---------------------------------------------------------------------------
+
+describe("composeEgressIdentityRules", () => {
+  const env = (v?: string): NodeJS.ProcessEnv => ({ SESSION_EGRESS_IDENTITY_RULES: v } as NodeJS.ProcessEnv);
+
+  it("returns '' when no rules are configured (env unset → proxy omits the var)", () => {
+    expect(composeEgressIdentityRules({ env: {} as NodeJS.ProcessEnv })).toBe("");
+    expect(composeEgressIdentityRules({ env: env("") })).toBe("");
+    expect(composeEgressIdentityRules({ env: env("   ") })).toBe("");
+  });
+
+  it("parses the operator env into the proxy's canonical JSON shape", () => {
+    const out = composeEgressIdentityRules({
+      env: env('[{"host":".s3.amazonaws.com","identities":["my-bucket"]}]'),
+    });
+    expect(JSON.parse(out)).toEqual([{ host: ".s3.amazonaws.com", identities: ["my-bucket"] }]);
+  });
+
+  it("normalizes hosts and de-dupes identities; last rule per host wins", () => {
+    const out = composeEgressIdentityRules({
+      env: env(
+        '[{"host":".S3.Amazonaws.com.","identities":["a","a","b"]},' +
+          '{"host":".s3.amazonaws.com","identities":["c"]}]',
+      ),
+    });
+    expect(JSON.parse(out)).toEqual([{ host: ".s3.amazonaws.com", identities: ["c"] }]);
+  });
+
+  it("drops entries with no host or no identities (additive hardening, fail-open)", () => {
+    const out = composeEgressIdentityRules({
+      env: env('[{"host":"","identities":["x"]},{"host":".s3.amazonaws.com","identities":[]}]'),
+    });
+    expect(out).toBe("");
+  });
+
+  it("fails open to '' on invalid JSON or a non-array, without throwing", () => {
+    expect(composeEgressIdentityRules({ env: env("not json") })).toBe("");
+    expect(composeEgressIdentityRules({ env: env('{"host":".s3.amazonaws.com"}') })).toBe("");
+  });
+
+  it("merges per-session durable rules after env rules (durable wins on host clash)", () => {
+    const out = composeEgressIdentityRules({
+      env: env('[{"host":".s3.amazonaws.com","identities":["env-bucket"]}]'),
+      durableRules: [{ host: ".s3.amazonaws.com", identities: ["session-bucket"] }],
+    });
+    expect(JSON.parse(out)).toEqual([{ host: ".s3.amazonaws.com", identities: ["session-bucket"] }]);
   });
 });
