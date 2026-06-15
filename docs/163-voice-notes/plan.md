@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-149
 description: One voice-summary primitive the agent emits when it needs the user, with a ShipIt delivery setting (native inline / external webhook / both) — not two separate tools.
 ---
 
@@ -169,6 +170,32 @@ actually being recorded, so plain tool events don't trigger a needless rewrite.
 Covered by two cases in `agent-listeners.test.ts` (persists eagerly on a card;
 does not persist on a plain `Read`). Key file: `agent-listeners.ts` (eager
 `persistTurnInProgress` after the voice-note delivery blocks).
+
+### Refinement — a question's headline must carry the choice
+
+The original guidance told the agent the `summary` is a headline, not the body,
+and that "the screen still holds the options — don't read those aloud." In
+practice that over-corrected: `needsAttention: true` notes for questions came
+out as uninformative stubs like *"I have a question about X, options are on
+screen."* A hands-free user — the exact person voice notes exist for — can't see
+that screen, so the note told them nothing actionable.
+
+Refined the agent-facing guidance so a **question's** headline voices the actual
+question plus a **brief gist of the options** — a compressed version answerable
+by ear (*"Postgres or SQLite here? Postgres is sturdier, SQLite is
+zero-setup."*), while the **full** on-screen detail (plan text, diff, long-form
+option descriptions) still stays on the screen and out of the spoken note. This
+is guidance-only — no schema or delivery change. Updated in lockstep across the
+three agent-facing surfaces that carry this contract:
+
+- `src/server/orchestrator/agent-instructions.ts` — the "Voice notes" system-
+  prompt section (the `summary` HEADLINE bullet + the "author the headline first"
+  bullet).
+- `src/server/session/mcp-tools/voice.ts` — the `voice_note` tool description and
+  the `summary` parameter description.
+- `src/server/shipit-docs/voice-notes.md` — the `summary` contract bullet, the
+  "Before AskUserQuestion/ExitPlanMode" bullet, and the "Don't speak the body"
+  rule (now "Don't speak the *full* body").
 
 ## Problem
 

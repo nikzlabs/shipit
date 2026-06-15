@@ -17,8 +17,14 @@ voice_note({
 - `summary` (required) — a one-or-two-sentence **headline**, written for the
   ear. No markdown, no code, no file paths, no commit hashes, no PR numbers.
   It grabs attention and orients the user on *what it's about and what they
-  need to do*. It is **not** the body — the screen still holds the options,
-  the plan, the diff. Don't read those aloud.
+  need to do*. It is **not** the body — the full on-screen detail (plan text,
+  diff, long-form option descriptions) stays on the screen; don't read that
+  aloud. **But when you're asking a question, the headline must carry the
+  question itself and a quick gist of the options** — a hands-free user can't
+  see the screen, so "I have a question, options are on screen" tells them
+  nothing. Voice a compressed version they can answer by ear: *"Postgres or
+  SQLite here? Postgres is sturdier, SQLite is zero-setup."* not *"I have a
+  database question, options are on screen."*
 - `needsAttention` (required) — the gate:
   - `true` → you need the user (a question, a decision, plan approval, blocking
     ambiguity, an error needing input, or a **failed/abandoned turn**). Spoken
@@ -41,15 +47,19 @@ voice_note({
 - **Sparingly mid-task** for an occasional heads-up on a long job.
 - **Before `AskUserQuestion` or `ExitPlanMode`**, author the headline with
   `voice_note` first, in the same turn, so the spoken note is a real script
-  rather than a terse menu chip. If you skip it, ShipIt derives a rougher
-  headline from the interrupt so the user is never left silent — but the
-  authored one is better. Author first.
+  rather than a terse menu chip. For a question, fold the choice into that
+  script — name what you're asking and a quick gist of the options the user is
+  about to see — so they can answer by ear without looking. If you skip the
+  authored note, ShipIt derives a rougher headline from the interrupt so the
+  user is never left silent — but the authored one is better. Author first.
 
 ## What you must NOT do
 
 - **Don't reason about delivery.** Whether the note plays inline, goes to an
   external webhook, or both is the **user's setting** — not your decision.
   Always call the same tool; ShipIt routes it.
-- **Don't speak the body.** No option lists, no plan text, no diffs, no URLs.
+- **Don't speak the full body.** No verbatim option lists, no plan text, no
+  diffs, no URLs. A *brief gist* of a question's options belongs in the headline
+  (see above) — the full on-screen detail does not.
 - **Don't force audio.** There's no override flag; the user's hands-free mode
   decides whether a note plays automatically.
