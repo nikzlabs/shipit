@@ -437,30 +437,45 @@ actually been pushed (checked via the local remote-tracking ref, no network),
 so un-pushed / no-PR sessions add zero GitHub calls; once a PR is known, the
 early `getStatus` return short-circuits before this runs.
 
-**Repo-transfer self-heal.** A GitHub repo transfer or rename (e.g.
-`nicolasalt/shipit` → `nikzlabs/shipit`) leaves the cached owner stale at three
-layers: the workspace git remote, the persisted `remoteUrl` column, and the
-poller's in-memory `sessionRepos` map (none update on a transfer — GitHub's
-redirect keeps `git push`/`fetch` working under the old URL). The *live open-PR*
-view survives because the bulk GraphQL `repository(owner, name)` follows GitHub's
-redirect records and the poller matches PRs by `headRefName` (branch only). But
-merge detection routes through `verifyMissingPr` → `findPullRequestAnyState`,
-whose REST query filters `head=<owner>:<branch>` — after a transfer the head
-label carries the *new* owner, so the stale-owner filter matches nothing, returns
-`null`, and the merge is **never promoted** (the exact "PRs work but merges aren't
-detected" symptom). Fix: the bulk query now also selects `nameWithOwner` (the
-canonical key GitHub resolves to). On each poll, `reconcileCanonicalRepo` diffs it
-against the key the poll was issued under; on a mismatch it remaps every session's
-`sessionRepos` entry to the new key, persists a corrected `remoteUrl` (via
-`rewriteGitHubRemoteOwnerRepo`, preserving scheme + `.git` suffix — so a restart
-tracks the canonical owner directly), and moves the cadence timestamp. The *same*
-poll then continues with the new owner, so the REST verify targets the right repo
-and the merge is detected within one cycle. The workspace git remote is left as-is
-(GitHub's redirect keeps it functional); only the identity ShipIt uses for API
-calls is corrected. No-op when `nameWithOwner` is absent or already matches, so the
-steady-state path is unchanged. Key files: `pr-status-parser.ts` (query +
-`GraphQLResponse.nameWithOwner`), `pr-status-poller.ts` (`reconcileCanonicalRepo`),
-`git-utils.ts` (`rewriteGitHubRemoteOwnerRepo`).
+**Repo-transfer merge detection.** A GitHub repo transfer or rename (e.g.
+`nicolasalt/shipit` → `nikzlabs/shipit`) leaves the cached owner stale: the
+workspace git remote, the persisted `remoteUrl` column, the `repos` record, and
+the poller's in-memory `sessionRepos` map all still carry the old owner (none
+update on a transfer — GitHub's redirect keeps `git push`/`fetch` working under
+the old URL). The *live open-PR* view survives because the bulk GraphQL
+`repository(owner, name)` follows GitHub's redirect records and the poller matches
+PRs by `headRefName` (branch only). But merge detection routes through
+`verifyMissingPr` → `findPullRequestAnyState`, whose REST query filters
+`head=<owner>:<branch>` — after a transfer the head label carries the *new* owner,
+so the stale-owner filter matches nothing, returns `null`, and the merge is
+**never promoted** (the exact "PRs work but merges aren't detected" symptom).
+
+Fix: the bulk query also selects `nameWithOwner` (the canonical key GitHub
+resolves to). Each poll, `canonicalApiTarget` diffs it against the key the poll
+was issued under; on a mismatch it returns the canonical owner/repo, and `pollRepo`
+uses that **only** for this poll's REST calls (merge verify, auto-fix, auto-merge),
+re-derived statelessly every poll.
+
+Critically, it mutates **no persisted or in-memory identity** — not the session
+`remoteUrl`, not `sessionRepos`, not the `repos` record, not the bare-cache hash.
+A repo's identity is keyed by URL in all of those, and the client groups sessions
+under a repo by **exact-URL match** (`SessionSidebar.tsx` orphan detection: a
+session whose `remoteUrl` isn't in the known repo URLs renders as detached). An
+earlier version of this fix rewrote the session `remoteUrl` rows to the new owner
+while leaving the `repos` record on the old URL — that disagreement orphaned every
+session from its repo (and disabled new-session creation, which reads the repo
+record). Leaving the cached URL identical everywhere keeps git working via GitHub's
+redirect and keeps the sidebar grouping intact; only the owner used for the
+owner-qualified REST `head` filter is corrected. No-op when `nameWithOwner` is
+absent or already matches, so the steady-state path is unchanged. Key files:
+`pr-status-parser.ts` (query + `GraphQLResponse.nameWithOwner`),
+`pr-status-poller.ts` (`canonicalApiTarget`).
+
+(If ShipIt ever wants the *repo record itself* to follow a transfer — so the
+sidebar shows the new owner — that is a separate, deliberate migration of all
+three identity layers together: `repos` row, every session `remoteUrl`, and the
+bare-cache directory, atomically. It is intentionally **not** done here; this
+change's sole job is to keep merge detection working without disturbing identity.)
 
 ## Implementation Order
 

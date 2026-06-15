@@ -964,10 +964,11 @@ describe("PrStatusPoller", () => {
   // A GitHub repo transfer/rename (e.g. nicolasalt/shipit → nikzlabs/shipit)
   // leaves the cached owner stale. The live open-PR view still resolves via
   // GitHub's redirect, but the REST merge probe filters head=<owner>:<branch>
-  // and silently stops detecting merges. The poller self-heals off the
-  // canonical `nameWithOwner` in the GraphQL response.
-  describe("repo transfer self-heal", () => {
-    it("remaps the cached owner and detects the merge after a transfer", async () => {
+  // and silently stops detecting merges. The poller targets the REST calls at
+  // the canonical `nameWithOwner` WITHOUT mutating any persisted identity — so
+  // sessions never get orphaned from their repo record.
+  describe("repo transfer canonical-owner targeting", () => {
+    it("uses the canonical owner for the REST merge probe and detects the merge", async () => {
       // The repo was transferred to `nikzlabs`. GitHub resolves the old owner
       // through its redirect and reports the canonical nameWithOwner. The PR is
       // no longer in the OPEN bulk view (it merged), so the session routes to the
@@ -1000,8 +1001,8 @@ describe("PrStatusPoller", () => {
       poller.trackSession("s1", "https://github.com/nicolasalt/shipit.git");
       await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
 
-      // The REST merge probe used the NEW owner — without the remap it would
-      // have queried `nicolasalt` and matched nothing.
+      // The REST merge probe used the NEW owner — without the canonical retarget
+      // it would have queried `nicolasalt` and matched nothing.
       expect(githubAuth.findPullRequestAnyState).toHaveBeenCalledWith(
         "nikzlabs",
         "shipit",
@@ -1009,11 +1010,10 @@ describe("PrStatusPoller", () => {
       );
       // The merge was detected and promoted.
       expect(poller.getStatus("s1")?.prState).toBe("merged");
-      // The corrected remote URL was persisted (scheme + .git suffix preserved).
-      expect(sessionManager.setRemoteUrl).toHaveBeenCalledWith(
-        "s1",
-        "https://github.com/nikzlabs/shipit.git",
-      );
+      // CRITICAL: no persisted identity was mutated — the session keeps its
+      // original remoteUrl so the client still groups it under its repo record.
+      // (Rewriting it here is what previously orphaned every session.)
+      expect(sessionManager.setRemoteUrl).not.toHaveBeenCalled();
     });
 
     it("is a no-op when nameWithOwner matches the polled key", async () => {
