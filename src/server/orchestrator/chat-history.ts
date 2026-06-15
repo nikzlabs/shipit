@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
-import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard } from "../shared/types.js";
+import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard } from "../shared/types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -223,6 +223,18 @@ export interface PersistedMessage {
    */
   subAgentConsult?: SubAgentConsultCard;
   /**
+   * docs/207 / SHI-153 — when set, this message renders an inline
+   * `ActionChecklistCard` (a button for one proposed action, a checklist for
+   * 2+). The `propose_actions` tool fires an HTTP relay off the agent-event
+   * stream, so `buildTurnMessages` doesn't capture it; the card is recorded
+   * in-band with the proposing turn via `emitChatCard` and persisted here so it
+   * survives a reconnect / switch / reload. The card is an IMMUTABLE, reusable
+   * message composer — no lifecycle, no terminal state — so the record is
+   * written once on emit and never patched (the only post-submit visual change,
+   * the transient "Submitted · N sent" ack, is client-only and never persisted).
+   */
+  actionChecklist?: ActionChecklistCard;
+  /**
    * docs/196 — when set, this message renders an inline "Child PR merged /
    * closed" card in the PARENT session's transcript. Surfaced from a PR-poller
    * event (a watched child's PR reached a terminal state) — outside any turn, so
@@ -333,6 +345,7 @@ interface MessageRow {
   issue_ref: string | null;
   compaction: string | null;
   sub_agent_consult: string | null;
+  action_checklist: string | null;
   child_merged: string | null;
   spawned_session: string | null;
   spawn_failed: string | null;
@@ -356,8 +369,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -366,7 +379,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, child_merged=@child_merged,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, child_merged=@child_merged,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
@@ -432,6 +445,7 @@ export class ChatHistoryManager {
       issue_ref: msg.issueRef ? JSON.stringify(msg.issueRef) : null,
       compaction: msg.compaction ? JSON.stringify(msg.compaction) : null,
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
+      action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
       spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
@@ -473,6 +487,7 @@ export class ChatHistoryManager {
     if (row.issue_ref) msg.issueRef = JSON.parse(row.issue_ref) as IssueRefCard;
     if (row.compaction) msg.compaction = JSON.parse(row.compaction) as CompactionCard;
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+    if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
     if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];

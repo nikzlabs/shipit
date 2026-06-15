@@ -749,6 +749,62 @@ export interface SubAgentConsultCard {
 }
 
 /**
+ * docs/207 / SHI-153 — one optional action the agent proposes via the
+ * `propose_actions` tool. The card renders these as a button (one action) or a
+ * checklist (2+); ticking declares intent and the agent does the work, so no
+ * field here ever executes anything directly.
+ */
+export interface ActionChecklistItem {
+  /** Stable id for this action within the card (used as the React key + selection key). */
+  id: string;
+  /** Short button / checkbox text. */
+  label: string;
+  /** Optional one-line explanation under the label. */
+  description?: string;
+  /** The agent's recommendation — pre-ticks the box. The user still decides. */
+  defaultChecked?: boolean;
+  /**
+   * The self-contained instruction the agent receives if this action is chosen.
+   * Self-contained on purpose: the card outlives the turn, the agent, even a
+   * destroyed-and-re-cloned container, so the submitted message is rebuilt from
+   * the ticked `payload`s — never from warm conversation context.
+   */
+  payload: string;
+}
+
+/**
+ * docs/207 / SHI-153 — a persisted "action checklist" transcript card. The agent
+ * proposes one or more INDEPENDENT optional follow-ups; the user resolves the
+ * subset they want with a SINGLE batched submit (one message → one turn, never N
+ * racing clicks). The card is an immutable, reusable message composer: it has no
+ * terminal state, never locks, and can be re-submitted with a different subset
+ * indefinitely. Shared verbatim by the live WS payload (`WsActionChecklistCard`),
+ * the persisted chat-history row (`PersistedMessage.actionChecklist`), and the
+ * client card so the three can't drift — same pattern as the issue-ref / sub-
+ * agent-consult cards (static payload, no client store, no in-place patch path).
+ *
+ * Provenance (`branch`, `headSha`, `createdAt`) is captured at emit time and is
+ * immutable. It travels into the message the card sends so the agent can inspect
+ * current state and adapt/decline if an action is now obsolete (branch merged, PR
+ * already exists, files moved) — the "honest at click-time" guarantee without a
+ * stale *state* or a lock.
+ */
+export interface ActionChecklistCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** Optional heading, e.g. "Optional follow-ups". */
+  title?: string;
+  /** 1..N proposed actions. One → button card; two or more → checklist card. */
+  actions: ActionChecklistItem[];
+  /** Branch the actions were proposed against (provenance, immutable). */
+  branch?: string;
+  /** Short HEAD SHA the actions were proposed against (provenance, immutable). */
+  headSha?: string;
+  /** Emit time — doubles as the "proposed <date>" provenance stamp. */
+  createdAt: string;
+}
+
+/**
  * Per-tracker metadata + configuration state. Drives the sub-tab switcher and
  * the "Connect Linear" empty state. `configured` is false until the user has
  * supplied both an API token and a team binding.

@@ -101,6 +101,16 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/bug-report", request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/propose-actions — action checklist card (docs/207 / SHI-153).
+  // The consolidated `shipit` bridge forwards `propose_actions` here; the worker
+  // relays to the orchestrator with the trusted SESSION_ID injected. The
+  // orchestrator validates, stamps provenance, and posts a reusable
+  // batch-resolve card — nothing acts until the user submits a normal turn.
+  app.post<{ Body: { title?: string; actions?: unknown } }>(
+    "/agent-ops/propose-actions",
+    async (request, reply) => relay("POST", "/propose-actions", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/pr/create — agent-driven PR create
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;

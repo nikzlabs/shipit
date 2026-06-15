@@ -13,9 +13,10 @@
  * Each tool is a {@link ToolDescriptor} in `mcp-tools/`. The enabled SUBSET is
  * selected per agent via the `SHIPIT_MCP_TOOLS` env (comma-separated tool ids),
  * because the agents want different sets: Claude gets
- * `review,present,voice,bug,permission` (it has a native AskUserQuestion); Codex
- * gets `review,present,voice,ask,bug` (it uses native approval, not the
- * permission-prompt tool). An unknown/empty env exposes nothing rather than
+ * `review,present,voice,bug,permission,propose_actions` (it has a native
+ * AskUserQuestion); Codex gets `review,present,voice,ask,bug,propose_actions` (it
+ * uses native approval, not the permission-prompt tool). `propose_actions`
+ * (docs/207) ships to both. An unknown/empty env exposes nothing rather than
  * failing — agent start never breaks on it.
  */
 
@@ -33,6 +34,7 @@ import { voiceTool } from "./mcp-tools/voice.js";
 import { bugTool } from "./mcp-tools/bug.js";
 import { permissionTool } from "./mcp-tools/permission.js";
 import { askTool } from "./mcp-tools/ask.js";
+import { proposeActionsTool } from "./mcp-tools/propose-actions.js";
 import type { ToolDeps, ToolDescriptor } from "./mcp-tools/types.js";
 
 /** Every internal tool, keyed by its `SHIPIT_MCP_TOOLS` id. */
@@ -43,6 +45,7 @@ export const TOOL_REGISTRY: Record<string, ToolDescriptor> = {
   [bugTool.id]: bugTool,
   [permissionTool.id]: permissionTool,
   [askTool.id]: askTool,
+  [proposeActionsTool.id]: proposeActionsTool,
 };
 
 const realSleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));

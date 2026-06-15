@@ -61,9 +61,9 @@ describe("selectTools", () => {
     expect(selectTools("")).toEqual([]);
   });
 
-  it("registers all six internal tools", () => {
+  it("registers all internal tools", () => {
     expect(Object.keys(TOOL_REGISTRY).sort()).toEqual(
-      ["ask", "bug", "permission", "present", "review", "voice"],
+      ["ask", "bug", "permission", "present", "propose_actions", "review", "voice"],
     );
   });
 });
@@ -76,19 +76,20 @@ describe("createShipitBridgeServer — ListTools", () => {
   });
 
   it("advertises exactly the selected tools under their MCP names", async () => {
-    bridge = await connect(selectTools("review,present,voice,bug,permission"));
+    bridge = await connect(selectTools("review,present,voice,bug,permission,propose_actions"));
     const { tools } = await bridge.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["permission_prompt", "present", "report_shipit_bug", "submit_review", "voice_note"],
+      ["permission_prompt", "present", "propose_actions", "report_shipit_bug", "submit_review", "voice_note"],
     );
     // ask was not selected.
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
   });
 
   it("exposes a different subset for Codex (ask, no permission)", async () => {
-    bridge = await connect(selectTools("review,present,voice,ask,bug"));
+    bridge = await connect(selectTools("review,present,voice,ask,bug,propose_actions"));
     const names = (await bridge.client.listTools()).tools.map((t) => t.name);
     expect(names).toContain("AskUserQuestion");
+    expect(names).toContain("propose_actions");
     expect(names).not.toContain("permission_prompt");
   });
 });
@@ -123,6 +124,52 @@ describe("createShipitBridgeServer — CallTool dispatch", () => {
       arguments: { summary: "Done.", needsAttention: false },
     });
     expect(JSON.parse(firstText(result))).toEqual({ status: "not_delivered", delivered: false });
+  });
+
+  it("forwards `propose_actions` to the worker and confirms the posted count", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(200, { ok: true, cardId: "action-card-1", count: 2 }));
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({
+      name: "propose_actions",
+      arguments: {
+        title: "Optional follow-ups",
+        actions: [
+          { id: "a1", label: "Open a PR", payload: "Open a PR for this change." },
+          { id: "a2", label: "File issue", payload: "File a follow-up issue." },
+        ],
+      },
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      `${WORKER}/agent-ops/propose-actions`,
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect((result as { isError?: boolean }).isError).toBeFalsy();
+    expect(firstText(result)).toContain("2 actions");
+  });
+
+  it("fails `propose_actions` fast on an empty actions array without hitting the worker", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({ name: "propose_actions", arguments: { actions: [] } });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("surfaces the orchestrator's validation error to the model", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse(400, { error: "Duplicate action id \"dup\"" })));
+    bridge = await connect(selectTools("propose_actions"));
+
+    const result = await bridge.client.callTool({
+      name: "propose_actions",
+      arguments: { actions: [{ id: "dup", label: "L", payload: "P" }] },
+    });
+    expect((result as { isError?: boolean }).isError).toBe(true);
+    expect(firstText(result)).toContain("Duplicate action id");
   });
 
   it("returns an unknown-tool error for a name the selected subset doesn't include", async () => {
