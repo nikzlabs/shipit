@@ -17,7 +17,13 @@ import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
 import { ensureBareCache } from "../repo-git.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
-import type { SessionInfo } from "../../shared/types.js";
+import type {
+  SessionInfo,
+  SessionRepoAttachment,
+  SessionRepoAttachmentKind,
+  SessionRepoAttachmentPermission,
+  SessionRepoAttachmentTrust,
+} from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
@@ -124,6 +130,68 @@ export function listAllSessions(
   sessionManager: SessionManager,
 ): SessionInfo[] {
   return sessionManager.listAll();
+}
+
+export function attachRepoToSession(
+  sessionManager: SessionManager,
+  sessionId: string,
+  input: {
+    repoUrl?: string;
+    kind?: SessionRepoAttachmentKind;
+    prNumber?: number;
+    permission?: SessionRepoAttachmentPermission;
+    trust?: SessionRepoAttachmentTrust;
+  },
+): { attachment: SessionRepoAttachment; session: SessionInfo; sessions: SessionInfo[] } {
+  if (!sessionManager.get(sessionId)) throw new ServiceError(404, "Session not found");
+  const repoUrl = input.repoUrl?.trim();
+  if (!repoUrl) throw new ServiceError(400, "repoUrl is required");
+  if (input.kind !== undefined && input.kind !== "repo" && input.kind !== "pull_request") {
+    throw new ServiceError(400, "kind must be repo or pull_request");
+  }
+  if (input.permission !== undefined && input.permission !== "read" && input.permission !== "write") {
+    throw new ServiceError(400, "permission must be read or write");
+  }
+  if (input.trust !== undefined && input.trust !== "trusted" && input.trust !== "untrusted") {
+    throw new ServiceError(400, "trust must be trusted or untrusted");
+  }
+  if (input.prNumber !== undefined && (!Number.isInteger(input.prNumber) || input.prNumber <= 0)) {
+    throw new ServiceError(400, "prNumber must be a positive integer");
+  }
+  const kind = input.kind ?? (input.prNumber === undefined ? "repo" : "pull_request");
+  if (kind === "repo" && input.prNumber !== undefined) {
+    throw new ServiceError(400, "repo attachments cannot include prNumber");
+  }
+  if (kind === "pull_request" && input.prNumber === undefined) {
+    throw new ServiceError(400, "pull_request attachments require prNumber");
+  }
+  const attachment = sessionManager.attachRepo(sessionId, {
+    repoUrl,
+    kind,
+    ...(input.prNumber !== undefined ? { prNumber: input.prNumber } : {}),
+    permission: input.permission ?? "read",
+    trust: input.trust ?? "untrusted",
+  });
+  const session = sessionManager.get(sessionId);
+  if (!attachment || !session) throw new ServiceError(404, "Session not found");
+  return { attachment, session, sessions: sessionManager.list() };
+}
+
+export function detachRepoFromSession(
+  sessionManager: SessionManager,
+  sessionId: string,
+  input: { repoUrl?: string; prNumber?: number },
+): { session: SessionInfo; sessions: SessionInfo[] } {
+  if (!sessionManager.get(sessionId)) throw new ServiceError(404, "Session not found");
+  const repoUrl = input.repoUrl?.trim();
+  if (!repoUrl) throw new ServiceError(400, "repoUrl is required");
+  if (input.prNumber !== undefined && (!Number.isInteger(input.prNumber) || input.prNumber <= 0)) {
+    throw new ServiceError(400, "prNumber must be a positive integer");
+  }
+  sessionManager.detachRepo(sessionId, repoUrl, input.prNumber);
+  const session = sessionManager.get(sessionId);
+  if (!session) throw new ServiceError(404, "Session not found");
+  return { session, sessions: sessionManager.list() };
 }
 
 /** Unarchive (restore) a session, recreating clone if needed. */

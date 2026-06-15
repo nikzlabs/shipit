@@ -683,6 +683,32 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN action_checklist TEXT");
   },
+  // SHI-161 — explicit repo / PR attachments for repo-less and multi-repo
+  // sessions. `sessions.remote_url` remains the compatibility primary repo; this
+  // table records every repo/PR the session is allowed to reason about, with
+  // per-attachment permission and trust state instead of inheriting those from a
+  // single primary repo.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_repo_attachments (
+        id TEXT PRIMARY KEY,
+        session_id TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        repo_url TEXT NOT NULL,
+        pr_number INTEGER,
+        permission TEXT NOT NULL DEFAULT 'read',
+        trust TEXT NOT NULL DEFAULT 'untrusted',
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        UNIQUE(session_id, repo_url, pr_number),
+        FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_repo_attachments_session
+        ON session_repo_attachments(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_repo_attachments_repo
+        ON session_repo_attachments(repo_url);
+    `);
+  },
 ];
 
 export class DatabaseManager {
@@ -729,6 +755,7 @@ export class DatabaseManager {
       this.db.prepare("DELETE FROM egress_allowlist").run();
       this.db.prepare("DELETE FROM egress_settings").run();
       this.db.prepare("DELETE FROM presentations").run();
+      this.db.prepare("DELETE FROM session_repo_attachments").run();
     })();
   }
 

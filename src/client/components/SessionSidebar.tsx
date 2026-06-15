@@ -66,6 +66,22 @@ function isRecentlyResolved(s: SessionInfo): boolean {
   return !!resolvedAt(s) && !reopenedAfterResolve(s);
 }
 
+function visibleRepoAttachments(session: SessionInfo): string[] {
+  const primary = session.remoteUrl || undefined;
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const attachment of session.repoAttachments ?? []) {
+    if (attachment.repoUrl === primary && attachment.prNumber === undefined) continue;
+    const label = attachment.prNumber === undefined
+      ? parseRepoName(attachment.repoUrl)
+      : `${parseRepoName(attachment.repoUrl)}#${attachment.prNumber}`;
+    if (seen.has(label)) continue;
+    seen.add(label);
+    labels.push(label);
+  }
+  return labels;
+}
+
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 400;
 const SIDEBAR_DEFAULT = 240;
@@ -359,6 +375,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const hasCurrentSessionActions = isCurrent;
   const canInvestigateInOps = session.kind !== "ops";
   const hasSeparatedActions = hasCurrentSessionActions || canInvestigateInOps;
+  const repoAttachmentLabels = visibleRepoAttachments(session);
 
   // docs/187 — "rail + trail": a needs-attention session is marked on the row's
   // open RIGHT edge (clear of the PR icon and the panel's left border, where a
@@ -456,6 +473,23 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             )}
             {repoLabel && (
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
+            )}
+            {repoAttachmentLabels.slice(0, 2).map((label) => (
+              <span
+                key={label}
+                className="max-w-20 truncate text-[9px] font-medium text-(--color-text-tertiary) border border-(--color-border-secondary) rounded px-1 leading-tight shrink"
+                title={`Attached repository ${label}`}
+              >
+                {label}
+              </span>
+            ))}
+            {repoAttachmentLabels.length > 2 && (
+              <span
+                className="text-[9px] text-(--color-text-tertiary) shrink-0"
+                title={`${repoAttachmentLabels.length - 2} more attached repositories`}
+              >
+                +{repoAttachmentLabels.length - 2}
+              </span>
             )}
             {isArchived && <PhArchiveIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary) shrink-0" />}
             {!isArchived && <DiskTierBadge session={session} />}
@@ -1153,7 +1187,7 @@ export function SessionSidebar({
       .map(([url, group]) => {
         let label: string;
         if (url === "") {
-          label = "Local sessions";
+          label = "Repo-less sessions";
         } else {
           try {
             label = new URL(url).host || url;

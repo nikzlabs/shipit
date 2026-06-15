@@ -124,6 +124,22 @@ export interface GitCommitInfo {
 
 // ---- Session types ----
 
+export type SessionRepoAttachmentKind = "repo" | "pull_request";
+export type SessionRepoAttachmentPermission = "read" | "write";
+export type SessionRepoAttachmentTrust = "trusted" | "untrusted";
+
+export interface SessionRepoAttachment {
+  id: string;
+  sessionId: string;
+  kind: SessionRepoAttachmentKind;
+  repoUrl: string;
+  prNumber?: number;
+  permission: SessionRepoAttachmentPermission;
+  trust: SessionRepoAttachmentTrust;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface SessionInfo {
   id: string;
   /** Agent's conversation ID (e.g. Claude CLI session_id for --resume). */
@@ -145,6 +161,13 @@ export interface SessionInfo {
   workspaceDir?: string;
   /** Cached origin remote URL (e.g. "https://github.com/owner/repo.git"). */
   remoteUrl: string;
+  /**
+   * SHI-161 — explicit repositories / pull requests associated with this
+   * session. `remoteUrl` remains the back-compat primary repo field; repo-less
+   * and multi-repo sessions use this list so session identity no longer has to
+   * be inferred from cwd/origin.
+   */
+  repoAttachments?: SessionRepoAttachment[];
   /**
    * Back-compat alias for `userArchived` (docs/161): true when the user
    * explicitly hid the session from the sidebar. Derived, read-only — the

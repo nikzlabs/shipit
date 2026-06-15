@@ -19,6 +19,8 @@ import {
   listWorktrees,
   getChatHistory,
   listAllSessions,
+  attachRepoToSession,
+  detachRepoFromSession,
   unarchiveSession,
   renameSession,
   setSessionPinned,
@@ -242,9 +244,74 @@ export async function registerSessionRoutes(
 
   // ---- Session mutations ----
 
+  // POST /api/sessions — create a repo-less session. This restores the public
+  // standalone session path for SHI-161 while keeping repo-bound sessions on the
+  // existing claim-session flow. The session owns its chat/log/artifact identity
+  // before any repository is attached.
+  app.post<{ Body: { title?: string } }>("/api/sessions", async (request, reply) => {
+    try {
+      const title = request.body?.title?.trim() || "Repo-less session";
+      const { appSessionId, sessionDir, workspaceDir } = await deps.createSessionDir(title);
+      await createGitManager(workspaceDir).init();
+      const session = sessionManager.get(appSessionId);
+      const sessions = sessionManager.list();
+      deps.sseBroadcast("session_list", { sessions });
+      return { sessionId: appSessionId, sessionDir, workspaceDir, session };
+    } catch (err) {
+      reply.code(500).send({ error: `Failed to create session: ${getErrorMessage(err)}` });
+    }
+  });
+
   // GET /api/sessions/all — list all sessions (active + archived)
   app.get("/api/sessions/all", async () => {
     return { sessions: listAllSessions(sessionManager) };
+  });
+
+  // POST /api/sessions/:id/repo-attachments — attach repo/PR metadata to a
+  // session without changing the legacy primary remote. This is the SHI-161
+  // model layer for repo-less and multi-repo sessions; actual workspace mounts
+  // stay explicit follow-on work.
+  app.post<{
+    Params: { id: string };
+    Body: {
+      repoUrl?: string;
+      kind?: "repo" | "pull_request";
+      prNumber?: number;
+      permission?: "read" | "write";
+      trust?: "trusted" | "untrusted";
+    };
+  }>("/api/sessions/:id/repo-attachments", async (request, reply) => {
+    try {
+      const result = attachRepoToSession(sessionManager, request.params.id, request.body ?? {});
+      deps.sseBroadcast("session_list", { sessions: result.sessions });
+      return result;
+    } catch (err) {
+      if (err instanceof ServiceError) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
+      reply.code(500).send({ error: `Failed to attach repository: ${getErrorMessage(err)}` });
+    }
+  });
+
+  // DELETE /api/sessions/:id/repo-attachments — detach repo/PR metadata. The
+  // encoded repo URL lives in the JSON body so GitHub URLs with slashes do not
+  // fight path decoding.
+  app.delete<{
+    Params: { id: string };
+    Body: { repoUrl?: string; prNumber?: number };
+  }>("/api/sessions/:id/repo-attachments", async (request, reply) => {
+    try {
+      const result = detachRepoFromSession(sessionManager, request.params.id, request.body ?? {});
+      deps.sseBroadcast("session_list", { sessions: result.sessions });
+      return result;
+    } catch (err) {
+      if (err instanceof ServiceError) {
+        reply.code(err.statusCode).send({ error: err.message });
+        return;
+      }
+      reply.code(500).send({ error: `Failed to detach repository: ${getErrorMessage(err)}` });
+    }
   });
 
   // POST /api/sessions/:id/unarchive — restore an archived session

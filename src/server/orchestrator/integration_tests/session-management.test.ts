@@ -59,9 +59,16 @@ describe("Integration: Session management", () => {
     expect(res.json().sessions).toEqual([]);
   });
 
-  it("POST /api/sessions is removed (standalone sessions no longer supported)", async () => {
-    const res = await app.inject({ method: "POST", url: "/api/sessions", payload: { title: "Test" } });
-    expect(res.statusCode).toBe(404);
+  it("POST /api/sessions creates a repo-less session", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/sessions", payload: { title: "Cross-repo work" } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { sessionId: string; workspaceDir: string; session: { title: string; remoteUrl: string; repoAttachments: unknown[] } };
+    expect(body.sessionId).toBeTruthy();
+    expect(body.workspaceDir).toBeTruthy();
+    expect(body.session.title).toBe("Cross-repo work");
+    expect(body.session.remoteUrl).toBe("");
+    expect(body.session.repoAttachments).toEqual([]);
+    expect(fs.existsSync(path.join(body.workspaceDir, ".git"))).toBe(true);
   });
 
 });
@@ -106,9 +113,53 @@ describe("Integration: bootstrap sessions remoteUrl caching", () => {
 
     const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
     expect(res.statusCode).toBe(200);
-    const sessions = res.json().sessions as { id: string; remoteUrl: string }[];
+    const sessions = res.json().sessions as {
+      id: string;
+      remoteUrl: string;
+      repoAttachments?: { repoUrl: string; permission: string; trust: string }[];
+    }[];
     const session = sessions.find((s) => s.id === "sess-remote");
     expect(session?.remoteUrl).toBe("https://github.com/owner/repo.git");
+    expect(session?.repoAttachments).toMatchObject([
+      { repoUrl: "https://github.com/owner/repo.git", permission: "write", trust: "trusted" },
+    ]);
+  });
+
+  it("attaches multiple repos and PRs to a repo-less session", async () => {
+    sessionManager.track("sess-multi", "Cross-repo", path.join(tmpDir, "sess-multi"));
+
+    const repoRes = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess-multi/repo-attachments",
+      payload: { repoUrl: "https://github.com/acme/api.git", permission: "read", trust: "untrusted" },
+    });
+    expect(repoRes.statusCode).toBe(200);
+
+    const prRes = await app.inject({
+      method: "POST",
+      url: "/api/sessions/sess-multi/repo-attachments",
+      payload: {
+        repoUrl: "https://github.com/acme/web.git",
+        kind: "pull_request",
+        prNumber: 42,
+        permission: "write",
+        trust: "trusted",
+      },
+    });
+    expect(prRes.statusCode).toBe(200);
+
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+    const sessions = res.json().sessions as {
+      id: string;
+      remoteUrl: string;
+      repoAttachments?: { repoUrl: string; prNumber?: number; permission: string; trust: string }[];
+    }[];
+    const session = sessions.find((s) => s.id === "sess-multi");
+    expect(session?.remoteUrl).toBe("");
+    expect(session?.repoAttachments).toMatchObject([
+      { repoUrl: "https://github.com/acme/api.git", permission: "read", trust: "untrusted" },
+      { repoUrl: "https://github.com/acme/web.git", prNumber: 42, permission: "write", trust: "trusted" },
+    ]);
   });
 
   it("bootstrap lazy-populates remoteUrl from git config", async () => {

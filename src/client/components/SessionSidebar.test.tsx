@@ -1129,4 +1129,42 @@ describe("SessionSidebar", () => {
     expect(screen.getByText("Frontend fix")).toBeTruthy();
     expect(screen.getByText("API migration")).toBeTruthy();
   });
+
+  it("labels repo-less sessions and shows attached repos", () => {
+    const sessions = [
+      baseSession({
+        id: "s1",
+        title: "Coordinate release",
+        remoteUrl: "",
+        repoAttachments: [
+          {
+            id: "a1",
+            sessionId: "s1",
+            kind: "repo",
+            repoUrl: repoA.url,
+            permission: "read",
+            trust: "untrusted",
+            createdAt: now,
+            updatedAt: now,
+          },
+          {
+            id: "a2",
+            sessionId: "s1",
+            kind: "pull_request",
+            repoUrl: repoB.url,
+            prNumber: 42,
+            permission: "write",
+            trust: "trusted",
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+      }),
+    ];
+    render(<SessionSidebar {...defaultProps} repos={[]} sessions={sessions} />);
+    expect(screen.getByText("Repo-less sessions")).toBeTruthy();
+    expect(screen.getByText("Coordinate release")).toBeTruthy();
+    expect(screen.getByText("repo")).toBeTruthy();
+    expect(screen.getByText("thing#42")).toBeTruthy();
+  });
 });

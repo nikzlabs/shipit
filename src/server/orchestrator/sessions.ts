@@ -1,4 +1,14 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import { randomUUID } from "node:crypto";
+import type {
+  PreviousMergedPr,
+  ProviderRouteKind,
+  SessionInfo,
+  SessionMergeWatch,
+  SessionRepoAttachment,
+  SessionRepoAttachmentKind,
+  SessionRepoAttachmentPermission,
+  SessionRepoAttachmentTrust,
+} from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -53,6 +63,18 @@ interface SessionRow {
   merge_issue_effects: string | null;
   /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
   previous_merged_pr: string | null;
+}
+
+interface SessionRepoAttachmentRow {
+  id: string;
+  session_id: string;
+  kind: string;
+  repo_url: string;
+  pr_number: number | null;
+  permission: string;
+  trust: string;
+  created_at: string;
+  updated_at: string;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -210,6 +232,50 @@ export class SessionManager {
     this.db = dbManager.db;
   }
 
+  private fromAttachmentRow(row: SessionRepoAttachmentRow): SessionRepoAttachment | undefined {
+    if (row.kind !== "repo" && row.kind !== "pull_request") return undefined;
+    if (row.permission !== "read" && row.permission !== "write") return undefined;
+    if (row.trust !== "trusted" && row.trust !== "untrusted") return undefined;
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      kind: row.kind,
+      repoUrl: row.repo_url,
+      ...(row.pr_number !== null ? { prNumber: row.pr_number } : {}),
+      permission: row.permission,
+      trust: row.trust,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private listAttachmentsForSession(sessionId: string, primaryRemoteUrl?: string): SessionRepoAttachment[] {
+    const rows = this.db.prepare(
+      "SELECT * FROM session_repo_attachments WHERE session_id = ? ORDER BY created_at ASC, rowid ASC",
+    ).all(sessionId) as SessionRepoAttachmentRow[];
+    const attachments = rows
+      .map((row) => this.fromAttachmentRow(row))
+      .filter((a): a is SessionRepoAttachment => !!a);
+    if (!primaryRemoteUrl) return attachments;
+    if (attachments.some((a) => a.repoUrl === primaryRemoteUrl && a.prNumber === undefined)) {
+      return attachments;
+    }
+    const now = new Date().toISOString();
+    return [
+      {
+        id: `${sessionId}:primary:${primaryRemoteUrl}`,
+        sessionId,
+        kind: "repo",
+        repoUrl: primaryRemoteUrl,
+        permission: "write",
+        trust: "trusted",
+        createdAt: now,
+        updatedAt: now,
+      },
+      ...attachments,
+    ];
+  }
+
   private fromRow(row: SessionRow): SessionInfo {
     const info: SessionInfo = {
       id: row.id,
@@ -217,6 +283,7 @@ export class SessionManager {
       createdAt: row.created_at,
       lastUsedAt: row.last_used_at,
       remoteUrl: row.remote_url ?? "",
+      repoAttachments: this.listAttachmentsForSession(row.id, row.remote_url ?? undefined),
     };
     if (row.agent_session_id) info.agentSessionId = row.agent_session_id;
     if (row.workspace_dir) info.workspaceDir = row.workspace_dir;
@@ -379,6 +446,63 @@ export class SessionManager {
   /** Cache the origin remote URL for a session. */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
+  }
+
+  attachRepo(
+    sessionId: string,
+    input: {
+      repoUrl: string;
+      kind?: SessionRepoAttachmentKind;
+      prNumber?: number;
+      permission?: SessionRepoAttachmentPermission;
+      trust?: SessionRepoAttachmentTrust;
+    },
+  ): SessionRepoAttachment | undefined {
+    const session = this.get(sessionId);
+    if (!session) return undefined;
+    const repoUrl = input.repoUrl.trim();
+    if (!repoUrl) return undefined;
+    const kind = input.kind ?? (input.prNumber === undefined ? "repo" : "pull_request");
+    const permission = input.permission ?? "read";
+    const trust = input.trust ?? "untrusted";
+    const prNumber = input.prNumber ?? null;
+    const now = new Date().toISOString();
+    const existing = prNumber === null
+      ? this.db.prepare(
+        "SELECT id FROM session_repo_attachments WHERE session_id = ? AND repo_url = ? AND pr_number IS NULL",
+      ).get(sessionId, repoUrl) as { id: string } | undefined
+      : this.db.prepare(
+        "SELECT id FROM session_repo_attachments WHERE session_id = ? AND repo_url = ? AND pr_number = ?",
+      ).get(sessionId, repoUrl, prNumber) as { id: string } | undefined;
+    if (existing) {
+      this.db.prepare(`
+        UPDATE session_repo_attachments
+        SET kind = ?, permission = ?, trust = ?, updated_at = ?
+        WHERE id = ?
+      `).run(kind, permission, trust, now, existing.id);
+    } else {
+      this.db.prepare(`
+        INSERT INTO session_repo_attachments
+          (id, session_id, kind, repo_url, pr_number, permission, trust, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(randomUUID(), sessionId, kind, repoUrl, prNumber, permission, trust, now, now);
+    }
+    return this.listAttachmentsForSession(sessionId).find((a) =>
+      a.repoUrl === repoUrl && (a.prNumber ?? null) === prNumber
+    );
+  }
+
+  detachRepo(sessionId: string, repoUrl: string, prNumber?: number): boolean {
+    const trimmed = repoUrl.trim();
+    if (!trimmed) return false;
+    const result = prNumber === undefined
+      ? this.db.prepare(
+        "DELETE FROM session_repo_attachments WHERE session_id = ? AND repo_url = ? AND pr_number IS NULL",
+      ).run(sessionId, trimmed)
+      : this.db.prepare(
+        "DELETE FROM session_repo_attachments WHERE session_id = ? AND repo_url = ? AND pr_number = ?",
+      ).run(sessionId, trimmed, prNumber);
+    return result.changes > 0;
   }
 
   /** Rename a session. Returns the updated session, or null if not found. */

@@ -1,0 +1,8 @@
+- [x] Add shared session attachment types.
+- [x] Persist explicit repo and PR attachments.
+- [x] Reintroduce public repo-less session creation.
+- [x] Expose attachment metadata through session reads and bootstrap.
+- [x] Render repo-less sessions and attached repo/PR chips in the sidebar.
+- [ ] Mount multiple attached repos into the session workspace.
+- [ ] Expose attached repo/PR inventory to agent tools.
+- [ ] Add explicit user-facing trust prompts for attachment changes.
