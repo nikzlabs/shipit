@@ -14,7 +14,7 @@
 ## App code
 - [x] `Prefs.kt` — `EncryptedSharedPreferences` with single `shipit_url` key.
 - [x] `SettingsActivity.kt` — single-field URL form, validates `https://` (allows `http://` only when `BuildConfig.DEBUG`), normalizes (defaults missing scheme to `https://`, strips trailing slashes), saves via `Prefs`, finishes.
-- [x] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launches `SettingsActivity`; otherwise loads the URL. Wires `WebViewClient.shouldOverrideUrlLoading` to send same-host URLs to the WebView and external URLs to the system browser. Wires `WebChromeClient.onShowFileChooser` for attachments via `ActivityResultContracts.GetMultipleContents`. Hardware back via `OnBackPressedDispatcher`. Toolbar overflow → "Open settings" + "Reload".
+- [x] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launches `SettingsActivity`; otherwise loads the URL. Wires `WebViewClient.shouldOverrideUrlLoading` to send same-host URLs to the WebView, keep Cloudflare Access authentication inside the WebView so `CF_Authorization` reaches the app cookie jar, and send other external URLs to the system browser. Wires `WebChromeClient.onShowFileChooser` for attachments via `ActivityResultContracts.GetMultipleContents`. Hardware back via `OnBackPressedDispatcher`. Toolbar overflow → "Open settings" + "Reload".
 - [ ] ~~`OAuthRedirectActivity.kt`.~~ **Skipped for v1.** OAuth callbacks already land on the user's ShipIt origin via the WebView; user back-gestures into the app to continue. Documented as v1.1 polish in `plan.md` and in `android/README.md` under "Known limitations."
 
 ## Resources
@@ -52,6 +52,7 @@
 - [x] `npm run build` — Vite build succeeds; `dist/client/manifest.webmanifest` ships, `.well-known/` correctly absent.
 - [ ] **Manual: trigger the workflow with `release: false`, confirm the debug APK is produced.** *(Operator step — can't run from this container.)*
 - [ ] **Manual: sideload the debug APK on a real Android device, verify the end-to-end flow** (settings → URL persists → WebView loads → login → message → file attach). *(Operator step.)*
+- [ ] **Manual: verify Cloudflare Access on a real Android device** (enter a Cloudflare-protected ShipIt URL → complete Access in the WebView → confirm ShipIt loads without returning to Chrome). *(Operator step.)*
 
 ## Wrap-up
 - [x] `status: in-progress` set in `docs/116-android-webview-app/plan.md`.
