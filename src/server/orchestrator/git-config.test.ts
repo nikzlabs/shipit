@@ -285,3 +285,76 @@ describe("git-config: safe.directory gating (SHI-31)", () => {
     expect(readSafeDirs().filter((d) => d === "*")).toHaveLength(1);
   });
 });
+
+// docs/200 — the orchestrator container has no SSH key / known_hosts, so a git op
+// over an SSH github.com remote dies with "Host key verification failed" before
+// auth. initGlobalGitConfig installs a global url.insteadOf so every orchestrator
+// git op transparently uses HTTPS (and thus the credential-helper token) even
+// when the remote is written as SSH. This is what keeps the self-update fetch
+// working after /opt/shipit's origin is re-pointed at an SSH URL.
+describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-insteadof-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const readInsteadOf = (): string[] => {
+    try {
+      return execSync('git config --global --get-all "url.https://github.com/.insteadOf"', {
+        encoding: "utf-8",
+      })
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+    } catch {
+      return []; // key absent → git exits non-zero
+    }
+  };
+
+  it("rewrites both SCP-style and ssh:// github.com URLs to HTTPS", () => {
+    initGlobalGitConfig(tmpDir);
+    const vals = readInsteadOf();
+    expect(vals).toContain("git@github.com:");
+    expect(vals).toContain("ssh://git@github.com/");
+  });
+
+  it("applies regardless of SHIPIT_SESSION_WORKER_UID (unconditional)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    initGlobalGitConfig(tmpDir);
+    expect(readInsteadOf()).toContain("git@github.com:");
+  });
+
+  it("is idempotent — repeated init does not duplicate entries", () => {
+    initGlobalGitConfig(tmpDir);
+    initGlobalGitConfig(tmpDir);
+    const vals = readInsteadOf();
+    expect(vals.filter((v) => v === "git@github.com:")).toHaveLength(1);
+    expect(vals.filter((v) => v === "ssh://git@github.com/")).toHaveLength(1);
+  });
+
+  it("functionally rewrites an SSH remote to HTTPS at git-resolution time", () => {
+    initGlobalGitConfig(tmpDir);
+    // Prove git actually applies the rewrite: with the global insteadOf in place,
+    // git resolves an SCP-style remote to its HTTPS form. `ls-remote --get-url`
+    // reports the URL git WOULD use for transport (post-insteadOf) without any
+    // network access.
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-insteadof-repo-"));
+    try {
+      execSync("git init -q", { cwd: repo });
+      execSync("git remote add origin git@github.com:nicolasalt/shipit.git", { cwd: repo });
+      const resolved = execSync("git ls-remote --get-url origin", { cwd: repo, encoding: "utf-8" }).trim();
+      expect(resolved).toBe("https://github.com/nicolasalt/shipit.git");
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
+  });
+});
