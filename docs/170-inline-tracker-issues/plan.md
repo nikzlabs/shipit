@@ -316,14 +316,16 @@ rather than a flat text table:
   (`--color-border-primary`) dividers, and avatar rings (with a circular fallback
   for unassigned/avatarless users).
 - **Container-query responsive layout.** The row grid now reflows to the **panel**
-  width via container queries (`@container` on the scroll area + `@sm:` variants),
+  width via container queries (`@container` on the scroll area + `@md:` variants),
   not the viewport. The Issues tab lives in a resizable side panel far narrower
   than the viewport, so the old viewport breakpoints (`md:`/`lg:`) mis-fired — a
   wide viewport picked the widest table even in a ~520px panel, overflowing it
   (columns overlapped into "TIPRIORITY", the action button clipped off-screen).
   Two layouts only — **no column silently drops at mid widths** (the old
-  assignee-dropping tier is gone): a stacked **card** below `@sm`, and the **full
-  table** (Assignee included) at `@sm+`. The title track is `minmax(96px,1fr)`, so
+  assignee-dropping tier is gone): a stacked **card** below `@md`, and the **full
+  table** (Assignee included) at `@md+`. `@sm` (384px) let common 390px/430px
+  phones fall into the table layout; `@md` (448px) keeps handheld widths on the
+  mobile cards. The title track is `minmax(96px,1fr)`, so
   the table has an intrinsic min-width; when the panel is narrower the scroll area
   (`overflow-auto`) shows a **horizontal scrollbar** instead of crushing or
   dropping columns. Verified live in the dogfood inner app at a 520px panel:

@@ -183,15 +183,15 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
  * `@`-prefixed variants resolve against the nearest `@container` (the scroll
  * area) instead. A single DOM row whose cells are placed by `grid-area`, with
  * just two layouts — no column silently vanishes at mid widths:
- *   - very narrow (< @sm): stacked card — id+priority, title, status·assignee
+ *   - narrow (< @md): stacked card — id+priority, title, status·assignee
  *     meta, full-width action.
- *   - @sm+: the full table (every column, Assignee included).
+ *   - @md+: the full table (every column, Assignee included).
  *
  * The title track is `minmax(<min>,1fr)`, so the table grid has an intrinsic
  * min-width (fixed cols + title min). When the panel is narrower than that, the
  * scroll container (`overflow-auto`) shows a HORIZONTAL scrollbar rather than
- * dropping a column or crushing the rest; the card layout (below @sm) has no
- * never scrolls horizontally. The action track is a FIXED width (not `auto`) so
+ * dropping a column or crushing the rest; the card layout (below @md) never
+ * scrolls horizontally. The action track is a FIXED width (not `auto`) so
  * the independent header and row grids resolve to identical column tracks (with
  * `auto`, the header sized it to "Action" while rows sized it to the wider
  * button, and the `1fr` title absorbed the difference — misaligning the two).
@@ -199,8 +199,8 @@ function IssueLabels({ labels }: { labels?: IssueLabel[] }) {
 const ROW_GRID =
   "grid grid-cols-[auto_1fr] gap-x-2 gap-y-1 " +
   "[grid-template-areas:'id_pri'_'title_title'_'meta_meta'_'nested_nested'_'action_action'] " +
-  "@sm:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @sm:gap-x-2.5 @sm:items-start " +
-  "@sm:[grid-template-areas:'id_title_pri_status_assignee_action']";
+  "@md:grid-cols-[56px_minmax(96px,1fr)_84px_96px_92px_134px] @md:gap-x-2.5 @md:items-start " +
+  "@md:[grid-template-areas:'id_title_pri_status_assignee_action']";
 
 // Every cell's FIRST line shares one fixed-height band, vertically centered, so
 // the row's leading line (id · title · priority · status · assignee · action)
@@ -212,9 +212,11 @@ const ROW_GRID =
 // two-line title can still grow downward; its description + labels flow below.
 const FIRST_LINE = "flex items-center h-6";
 
-/** The `@sm` container-query breakpoint (24rem) in px — below it the row grid
- *  folds to the card layout, and the panel switches to mobile collapse behavior. */
-const CARD_BREAKPOINT_PX = 384;
+/** The `@md` container-query breakpoint (28rem) in px — below it the row grid
+ *  folds to the card layout, and the panel switches to mobile collapse behavior.
+ *  `@sm` is only 384px, which puts common phones (390px/430px CSS width) into
+ *  the table layout; `@md` keeps handheld widths on the card layout. */
+const CARD_BREAKPOINT_PX = 448;
 
 /** Desktop indent per nesting level (px), capped so a deep tree can't crush the
  *  title column on a narrow panel. Mobile uses its own smaller, lower cap. */
@@ -250,7 +252,7 @@ function IssueRow({
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
   // Mobile (card layout) gets a faint whole-card indent + a "N nested issues"
   // toggle (docs/206); desktop indents the title cell + shows the disclosure
-  // caret. The CSS var feeds the row's left padding below @sm only.
+  // caret. The CSS var feeds the row's left padding below @md only.
   const mobileIndent = Math.min(depth, MOBILE_INDENT_MAX_DEPTH) * MOBILE_INDENT_STEP;
   const desktopIndent = Math.min(depth, DESKTOP_INDENT_MAX_DEPTH) * DESKTOP_INDENT_STEP;
   const toggle = () => onSetCollapsed(issue.id, !collapsed);
@@ -269,11 +271,11 @@ function IssueRow({
           onOpenIssue(issue);
         }
       }}
-      // `--mind` feeds the mobile-only card indent. Below @sm the left padding is
-      // `0.75rem + indent`; at @sm it resets to `pl-3` (desktop indents the title
+      // `--mind` feeds the mobile-only card indent. Below @md the left padding is
+      // `0.75rem + indent`; at @md it resets to `pl-3` (desktop indents the title
       // cell instead, keeping the table columns aligned).
       style={{ "--mind": `${mobileIndent}px` } as CSSProperties}
-      className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @sm:pl-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
+      className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @md:pl-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
       {/* Issue identifier — plain label; the row click (not this) opens detail. */}
       <span className={`[grid-area:id] ${FIRST_LINE} text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors min-w-0`}>
@@ -284,13 +286,13 @@ function IssueRow({
           row is clickable as a whole (hover bg + accent left-bar already signal
           that), so there's no hover caret to misalign against a wrapped title.
           Desktop nesting (docs/206): a depth-indent spacer + disclosure live at
-          the START of the title cell (@sm only) so the table columns stay aligned
+          the START of the title cell (@md only) so the table columns stay aligned
           — only the title content shifts. Mobile gets none of this; its whole
           card is indented via the row's left padding instead. */}
       <div className="[grid-area:title] min-w-0">
         <div className="flex items-center min-h-6 text-sm font-medium text-(--color-text-primary)">
           <span
-            className="hidden @sm:flex items-center shrink-0 self-start h-6"
+            className="hidden @md:flex items-center shrink-0 self-start h-6"
             style={{ paddingLeft: `${desktopIndent}px` }}
           >
             {hasChildren ? (
@@ -320,7 +322,7 @@ function IssueRow({
           <span className="line-clamp-2">{issue.title}</span>
           {hasChildren && (
             <span
-              className="hidden @sm:inline-flex shrink-0 ml-1.5 items-center rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-1.5 text-[10px] font-semibold leading-[15px] text-(--color-text-tertiary)"
+              className="hidden @md:inline-flex shrink-0 ml-1.5 items-center rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-1.5 text-[10px] font-semibold leading-[15px] text-(--color-text-tertiary)"
               title={`${childCount} sub-issue${childCount !== 1 ? "s" : ""}`}
             >
               {childCount}
@@ -342,7 +344,7 @@ function IssueRow({
 
       {/* Priority — right-aligned on mobile, column-aligned on desktop. Inline-
           editable for Linear (docs/191); read-only badge for GitHub. */}
-      <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end @sm:justify-self-start`}>
+      <div className={`[grid-area:pri] ${FIRST_LINE} justify-self-end @md:justify-self-start`}>
         {canEditPriority ? (
           <IssuePriorityEditor
             current={issue.priority.level}
@@ -358,7 +360,7 @@ function IssueRow({
 
       {/* Status — its own column on desktop; folded into the meta line on mobile.
           Inline-editable (docs/191). */}
-      <div className="hidden @sm:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
+      <div className="hidden @md:flex items-center h-6 [grid-area:status] text-xs text-(--color-text-secondary) min-w-0">
         {issue.status && (
           <IssueStatusEditor
             current={issue.status}
@@ -379,13 +381,13 @@ function IssueRow({
         )}
       </div>
 
-      {/* Assignee — its own column in the table (@sm+); folded into the card meta line below @sm. */}
-      <div className="hidden @sm:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
+      {/* Assignee — its own column in the table (@md+); folded into the card meta line below @md. */}
+      <div className="hidden @md:flex items-center h-6 [grid-area:assignee] text-xs text-(--color-text-secondary) min-w-0">
         {issue.assignee && <AssigneeLabel assignee={issue.assignee} />}
       </div>
 
       {/* Card-only meta line: status · assignee (shown when the table columns fold). */}
-      <div className="@sm:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
+      <div className="@md:hidden [grid-area:meta] flex items-center gap-1.5 text-[11px] text-(--color-text-tertiary) min-w-0">
         {issue.status && (
           <span className="inline-flex items-center gap-1.5 min-w-0">
             <span
@@ -418,7 +420,7 @@ function IssueRow({
             toggle();
           }}
           onKeyDown={(e) => e.stopPropagation()}
-          className="@sm:hidden [grid-area:nested] mt-0.5 inline-flex w-fit items-center gap-1 rounded text-[11px] font-medium text-(--color-text-secondary) hover:text-(--color-text-primary) cursor-pointer"
+          className="@md:hidden [grid-area:nested] mt-0.5 inline-flex w-fit items-center gap-1 rounded text-[11px] font-medium text-(--color-text-secondary) hover:text-(--color-text-primary) cursor-pointer"
         >
           <CaretRightIcon
             size={ICON_SIZE.XS}
@@ -442,7 +444,7 @@ function IssueRow({
             e.stopPropagation();
             onStartSession(issue);
           }}
-          className="w-full @sm:w-auto"
+          className="w-full @md:w-auto"
         />
       </div>
     </div>
@@ -453,7 +455,7 @@ function IssueRow({
 function TableHeader() {
   return (
     <div
-      className={`${ROW_GRID} hidden @sm:grid sticky top-0 z-10 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-[10px] uppercase tracking-wide font-semibold text-(--color-text-tertiary)`}
+      className={`${ROW_GRID} hidden @md:grid sticky top-0 z-10 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-[10px] uppercase tracking-wide font-semibold text-(--color-text-tertiary)`}
     >
       <div className="[grid-area:id]">Issue</div>
       <div className="[grid-area:title]">Title</div>
@@ -513,8 +515,8 @@ export function IssuesViewer({
   const rowSurfaceLum = useSurfaceLuminance("--color-bg-primary");
   const [sortOpen, setSortOpen] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
-  // Tie collapse behavior to the SAME width that flips the row layout (the `@sm`
-  // container breakpoint, 24rem). When the panel is card-width, render the
+  // Tie collapse behavior to the SAME width that flips the row layout (the `@md`
+  // container breakpoint, 28rem). When the panel is card-width, render the
   // narrow sections (parents collapsed by default + "N nested issues" toggle);
   // when table-width, the desktop sections (expanded + disclosure). Measured on
   // the scroll container (the `@container`) so the two always agree. (docs/206)
