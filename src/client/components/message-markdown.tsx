@@ -32,7 +32,7 @@ function openIssueInPanel(ref: OpenIssueRef): void {
 }
 
 /**
- * An inline Linear-issue badge for a bare key (`SHI-43`) the agent mentioned in
+ * An inline Linear-issue badge for a bare key (`TRACKER-43`) the agent mentioned in
  * prose, produced by `remarkLinkifyIssues` (which wraps the key in a sentinel
  * `shipit-issue:KEY` link). Clicking opens the issue in the inline Issues viewer
  * via {@link openIssueInPanel}.
@@ -40,7 +40,7 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  * The team-key gate lives here, not in the parse: a bare `[A-Z]+-\d+` token
  * collides with everyday strings (`GPT-4`, `UTF-8`), so we only paint a badge
  * when Linear is connected AND the token's team prefix matches the bound team
- * key (`binding.key`, e.g. `SHI`). Anything else renders as the raw text — no
+ * key (`binding.key`, e.g. `TRACKER`). Anything else renders as the raw text — no
  * badge, no dead click. This is the one render-time store read in this module
  * (the link branches read in their click handlers instead); it's a scoped leaf
  * subscription that only re-renders this badge when the tracker set changes, so

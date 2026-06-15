@@ -39,31 +39,31 @@ const ISSUE = (key: string) => ({ url: `${ISSUE_LINK_SCHEME}${key}`, text: key }
 
 describe("remarkLinkifyIssues", () => {
   it("wraps a bare Linear key in prose (the motivating case)", () => {
-    expect(links(run("This is tracked in SHI-43 now"))).toEqual([ISSUE("SHI-43")]);
+    expect(links(run("This is tracked in TRACKER-43 now"))).toEqual([ISSUE("TRACKER-43")]);
   });
 
   it("wraps multiple keys in one paragraph", () => {
-    expect(links(run("blocked on SHI-79, see SHI-90"))).toEqual([ISSUE("SHI-79"), ISSUE("SHI-90")]);
+    expect(links(run("blocked on TRACKER-79, see TRACKER-90"))).toEqual([ISSUE("TRACKER-79"), ISSUE("TRACKER-90")]);
   });
 
   it("wraps a key inside an inline-code span", () => {
-    expect(links(run("ref `SHI-1` here"))).toEqual([ISSUE("SHI-1")]);
+    expect(links(run("ref `TRACKER-1` here"))).toEqual([ISSUE("TRACKER-1")]);
   });
 
   it("does NOT wrap keys inside fenced code blocks", () => {
-    expect(links(run("```\nSHI-43\n```"))).toEqual([]);
+    expect(links(run("```\nTRACKER-43\n```"))).toEqual([]);
   });
 
   it("does not touch a key inside an existing markdown link", () => {
     // The path/URL already owns the link; we must not double-wrap its text.
-    const found = links(run("[SHI-43](https://linear.app/acme/issue/SHI-43)"));
-    expect(found).toEqual([{ url: "https://linear.app/acme/issue/SHI-43", text: "SHI-43" }]);
+    const found = links(run("[TRACKER-43](https://linear.app/acme/issue/TRACKER-43)"));
+    expect(found).toEqual([{ url: "https://linear.app/acme/issue/TRACKER-43", text: "TRACKER-43" }]);
   });
 
   it("does not re-wrap a key inside a GFM-autolinked Linear URL", () => {
-    const found = links(run("https://linear.app/acme/issue/SHI-43"));
+    const found = links(run("https://linear.app/acme/issue/TRACKER-43"));
     expect(found).toHaveLength(1);
-    expect(found[0].url).toBe("https://linear.app/acme/issue/SHI-43");
+    expect(found[0].url).toBe("https://linear.app/acme/issue/TRACKER-43");
   });
 
   it("ignores lowercase tokens (real Linear keys are uppercase)", () => {
@@ -71,7 +71,7 @@ describe("remarkLinkifyIssues", () => {
   });
 
   it("does not match mid-token (inside a longer hyphenated identifier)", () => {
-    expect(links(run("build X-SHI-43-Y artifact"))).toEqual([]);
+    expect(links(run("build X-TRACKER-43-Y artifact"))).toEqual([]);
   });
 
   it("matches key-shaped noise too (the team-key gate at render filters these)", () => {

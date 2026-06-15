@@ -3,7 +3,7 @@
  * badges.
  *
  * The agent (and humans) routinely mention Linear issues inline as a bare key —
- * "tracked in SHI-43", "blocked on SHI-79". A full Linear *URL* is already
+ * "tracked in TRACKER-43", "blocked on TRACKER-79". A full Linear *URL* is already
  * intercepted by `parseTrackerIssueLink` → opens the in-app Issues viewer; a
  * bare key stayed plain text because no absolute URL is derivable from it
  * without the workspace slug. But the in-app viewer doesn't need a URL — the
@@ -24,8 +24,9 @@
  * - **Uppercase only.** Real Linear keys are uppercase; restricting to uppercase
  *   drops a whole class of lowercase prose false positives before the gate.
  * - **Runs after `remark-gfm` and `remarkLinkifyPaths`.** We never descend into
- *   existing `link` nodes, so a `SHI-43` inside a `linear.app/.../issue/SHI-43`
- *   URL (already an autolinked `link`) is left alone — that URL is handled by
+ *   existing `link` nodes, so a `TRACKER-43` inside a
+ *   `linear.app/.../issue/TRACKER-43` URL (already an autolinked `link`) is left
+ *   alone — that URL is handled by
  *   the tracker-URL branch instead.
  * - **Text *and inline code*.** A key is wrapped whether it sits in prose or in
  *   a backtick span, mirroring the path plugin. Fenced `code` blocks stay
@@ -40,7 +41,7 @@ export const ISSUE_LINK_SCHEME = "shipit-issue:";
 /**
  * A Linear-key-shaped token: an uppercase team prefix, a dash, and digits. The
  * surrounding `[\w-]` guards keep it from biting mid-token (inside a longer
- * identifier like `X-SHI-43-Y` or a word). The team-key gate at render time is
+ * identifier like `X-TRACKER-43-Y` or a word). The team-key gate at render time is
  * what actually decides this is an issue vs. noise like `GPT-4`.
  */
 const ISSUE_KEY_RE = /(?<![\w-])[A-Z][A-Z0-9]*-\d+(?![\w-])/g;

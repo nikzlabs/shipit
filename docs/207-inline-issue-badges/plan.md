@@ -1,6 +1,6 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-152
-description: Bare Linear issue keys in chat/markdown prose (e.g. SHI-43) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
+description: Bare Linear issue keys in chat/markdown prose (e.g. TRACKER-43) render as inline badges that open the in-app Issues viewer; on mobile the click also switches to the workspace panel.
 ---
 
 # Inline issue badges for bare Linear keys
@@ -16,7 +16,7 @@ ShipIt already does two related things:
   instead of bouncing to linear.app — "inline beats link-out" (CLAUDE.md §1/§2).
 
 The gap: the agent (and humans) usually mention a Linear issue as a **bare key**
-— "tracked in SHI-43", "blocked on SHI-79" — not as a full URL. A bare key was
+— "tracked in TRACKER-43", "blocked on TRACKER-79" — not as a full URL. A bare key was
 left as plain text because `parseTrackerIssueLink` deliberately won't intercept
 it (no absolute URL is derivable from a bare key without the workspace slug).
 But the inline viewer doesn't need a URL — the key alone is the tracker-native
@@ -25,7 +25,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
 
 ## What it does
 
-- **Bare Linear keys become inline badges.** A key-shaped token (`SHI-43`) in
+- **Bare Linear keys become inline badges.** A key-shaped token (`TRACKER-43`) in
   chat / docs / PR-body / tooltip markdown renders as a small monospace pill in
   the accent color. Clicking it opens the issue in the inline Issues viewer.
 - **The badge does not grow the line height.** It renders at `text-[0.85em]`
@@ -41,7 +41,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
   collides with everyday strings (`GPT-4`, `UTF-8`, `COVID-19`). The remark
   plugin is intentionally liberal, but the badge only paints when Linear is
   **connected** AND the token's team prefix matches the **bound team key**
-  (`TrackerInfo.binding.key`, e.g. `SHI`). Everything else renders as plain text.
+  (`TrackerInfo.binding.key`, e.g. `TRACKER`). Everything else renders as plain text.
 
 ## How it works
 
@@ -50,7 +50,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
    **after** `remark-gfm` and `remarkLinkifyPaths`. It walks the mdast, and for
    each key-shaped token in a `text`/`inlineCode` node splits out a `link` node
    whose `url` is a sentinel `shipit-issue:KEY`. It never descends into existing
-   `link` nodes, so a key inside an autolinked `linear.app/.../issue/SHI-43` URL
+   `link` nodes, so a key inside an autolinked `linear.app/.../issue/TRACKER-43` URL
    is left for the tracker-URL branch. Fenced `code` blocks stay verbatim.
 2. `react-markdown`'s default `urlTransform` would strip the unknown
    `shipit-issue:` scheme to `""`, losing the key — so `message-markdown.tsx`
@@ -79,8 +79,8 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
 ## Verification
 
 - `npx vitest run src/client/utils/linkify-issues.test.ts`
-- In the app (Linear connected, team `SHI` bound): have the agent mention
-  `SHI-43` in chat; confirm it renders as a pill and clicking opens the inline
+- In the app (Linear connected, team `TRACKER` bound): have the agent mention
+  `TRACKER-43` in chat; confirm it renders as a pill and clicking opens the inline
   Issues viewer. On a narrow viewport, confirm the click also switches from the
   chat column to the workspace column.
 - Confirm `GPT-4` / `UTF-8` stay plain text, and a full `linear.app/.../issue/…`
