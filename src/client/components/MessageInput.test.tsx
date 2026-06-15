@@ -287,16 +287,20 @@ describe("MessageInput", () => {
       expect(document.activeElement).toBe(document.body);
     });
 
-    it("DOES reclaim focus when blur leaves activeElement=iframe (focus theft)", async () => {
+    it("DOES reclaim focus when an iframe load steals focus mid-typing", async () => {
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
       focusSpy.mockClear();
 
-      // Inject an iframe and move focus into it to simulate cross-origin focus theft.
+      // Inject an iframe and fire its load event — the involuntary focus steal we
+      // DO defend against (e.g. the preview reloading after an edit). The
+      // capture-phase load listener records the timestamp.
       const iframe = document.createElement("iframe");
       document.body.appendChild(iframe);
+      iframe.dispatchEvent(new Event("load"));
+
       iframe.focus();
       // Some test DOMs don't actually shift activeElement on iframe.focus(); coerce
       // it via Object.defineProperty so the assertion under test runs against the
@@ -307,44 +311,40 @@ describe("MessageInput", () => {
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
-      // The handler should have called textarea.focus() to reclaim focus from
-      // the iframe (no user click on the iframe preceded the focus loss).
+      // The handler should have called textarea.focus() to reclaim focus from the
+      // iframe, because the steal immediately followed a load event.
       expect(focusSpy).toHaveBeenCalled();
       // (Reset the property override so other tests aren't affected.)
       delete (document as unknown as Record<string, unknown>).activeElement;
       iframe.remove();
     });
 
-    it("does NOT reclaim focus when the user clicked the iframe (canvas/WebGL games)", async () => {
-      // Regression: when the user clicks the preview iframe — e.g. to play a
-      // WebGL/Canvas game where the canvas does not natively grab focus — the
-      // browser focuses the iframe element and blurs the textarea. The old
-      // reclaim logic yanked focus back to the textarea, so subsequent keystrokes
-      // typed into the chat input instead of reaching the game. The fix uses a
-      // capture-phase pointerdown listener to detect intentional iframe clicks
-      // and skip the reclaim in that case.
+    it("does NOT reclaim focus when the user moves into an iframe (no recent load)", async () => {
+      // Regression: when the user deliberately moves focus into an iframe — clicking
+      // the preview (canvas/WebGL games), switching to the Present tab, interacting
+      // with a doc — the browser focuses the iframe and blurs the textarea. The old
+      // reclaim logic yanked focus back to the textarea, fighting the user for the
+      // cursor while they worked on the right side. The fix gates the reclaim on a
+      // recent iframe LOAD event; with no load, the move is intentional and we leave
+      // focus alone.
       render(<MessageInput onSend={vi.fn()} disabled={false} />);
       const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)") as HTMLTextAreaElement;
       const focusSpy = vi.spyOn(textarea, "focus");
       textarea.focus();
       focusSpy.mockClear();
 
-      // Simulate the user clicking on a preview iframe.
+      // No load event — the user simply moved focus into the iframe. Keep the
+      // iframe DETACHED: appending a connected iframe makes jsdom fire its own
+      // async load event, which would defeat the "no recent load" precondition.
       const iframe = document.createElement("iframe");
-      document.body.appendChild(iframe);
-      iframe.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
-
-      // ...which then steals focus from the textarea (same DOM path as the
-      // focus-theft test above).
-      iframe.focus();
       Object.defineProperty(document, "activeElement", { configurable: true, get: () => iframe });
       fireEvent.blur(textarea, { relatedTarget: null });
 
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
       await new Promise((r) => requestAnimationFrame(() => r(undefined)));
 
-      // Reclaim must NOT fire — focus stays in the iframe so the game receives
-      // subsequent keystrokes.
+      // Reclaim must NOT fire — focus stays in the iframe so the right-side surface
+      // (preview, Present tab, doc) keeps the cursor.
       expect(focusSpy).not.toHaveBeenCalled();
 
       delete (document as unknown as Record<string, unknown>).activeElement;
