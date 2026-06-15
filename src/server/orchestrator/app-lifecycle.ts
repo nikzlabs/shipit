@@ -2,6 +2,7 @@ import path from "node:path";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
+import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { SessionRunnerFactory, SessionRunnerRegistry } from "./session-runner.js";
 import { cleanupOrphanComposeResources } from "./container-discovery.js";
@@ -111,7 +112,7 @@ export interface ContainerSetupDeps {
    * resolver, passed straight into the production `SessionContainerManager`.
    * Optional: a custom-injected container manager (tests) supplies its own.
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
+  resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
 }
 
 /** Result of container setup. */

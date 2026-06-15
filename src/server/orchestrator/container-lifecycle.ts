@@ -44,6 +44,7 @@ import {
   EGRESS_PROXY_PORT,
   EGRESS_PROXY_LABEL,
 } from "./egress-proxy-install.js";
+import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -113,7 +114,7 @@ export interface LifecycleDeps {
    * Tier C proxy allowlist. Omitted in tests / no-store runtimes → defaults to
    * `{ contained: true, extraHosts: [] }` (byte-for-byte the env-only behavior).
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
+  resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -793,6 +794,7 @@ export async function createContainer(
           allowed: buildProxyAllowed({ extraHosts: egressCfg.extraHosts, ...(egressCfg.base ? { base: egressCfg.base } : {}) }),
           sessionId: config.sessionId,
           decisionUrl,
+          ...(egressCfg.identityRules ? { identityRules: egressCfg.identityRules } : {}),
           labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },
         });
       }

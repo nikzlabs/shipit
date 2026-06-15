@@ -260,15 +260,28 @@ governs, so a tight regional rule isn't loosened by a broad parent rule. Because
 the SNI, `validateIdentity` no longer takes the upstream connection (we don't, and can't,
 inspect the request body).
 
-### Env-var contract & follow-up (orchestrator wiring is NOT in this change)
+### Env-var contract & orchestrator wiring (now wired)
 
-This change is **entirely inside `docker/egress-sidecar/`**. It defines and consumes
-`EGRESS_PROXY_IDENTITY_RULES` but does **not** wire it from the orchestrator — that belongs to
-the track that owns the allowlist + launch plumbing (`egress-proxy-install.ts`,
-`container-lifecycle.ts`). **Follow-up (not done here):** compose the per-session identity
-rules (the session's own bucket/account on each configured multi-tenant host, derived from the
-browser-managed config / credential store) and pass them as `EGRESS_PROXY_IDENTITY_RULES` on
-`launchEgressProxy`, mirroring how `EGRESS_PROXY_ALLOWED` is composed today.
+The proxy-side enforcement (`docker/egress-sidecar/`) defines and consumes
+`EGRESS_PROXY_IDENTITY_RULES`. The orchestrator wiring is now in place:
+
+- **`composeEgressIdentityRules`** (`egress-allowlist.ts`) parses + validates the operator
+  env **`SESSION_EGRESS_IDENTITY_RULES`** (same JSON shape) into the canonical rules string,
+  mirroring `composeEgressExtraHosts`. It also accepts an optional per-session `durableRules`
+  hook (for a future per-session editor) and **fails open to `""`** on malformed input —
+  identity scoping is additive hardening over the host allowlist, never the floor.
+- It flows through **`resolveEgressConfig`** → `ResolvedEgressConfig.identityRules` (a shared
+  type that now backs the ~5 wiring sites) → **`launchEgressProxy`** as
+  `EGRESS_PROXY_IDENTITY_RULES`, mirroring `EGRESS_PROXY_ALLOWED`; and through
+  **`reloadEgressSidecars`** so a live "add to allowlist" reload doesn't drop identity scoping.
+
+**Operator contract:** set `SESSION_EGRESS_IDENTITY_RULES` (JSON array, same shape as the
+proxy's var) on the orchestrator deployment to scope multi-tenant hosts. Unset → `""` → the
+proxy launch omits the var → no identity scoping (Tier C host-allowlist behavior unchanged).
+
+**Follow-up (still open):** there is no per-session identity *source* yet — only the
+operator-global env, so every contained session currently gets the same rules. A per-session
+Settings editor would feed `durableRules` (the seam is in place).
 
 ## Settings & UX (browser-only, SHI-129-protected)
 

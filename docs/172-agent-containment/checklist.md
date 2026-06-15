@@ -18,12 +18,12 @@ tracker as separate issues. None implemented yet.
       credentials, that github.com still resolves via the global helper (push/pull
       unaffected), and that no plaintext token lands in `.git/config`; host scoping is
       covered by `services/github-credential.test.ts` and `agent-shim/git-credential.test.ts`.
-      (TRACKER-72)
-- [ ] **Gap 2-R — credential broker is caller-blind (residual after TRACKER-72).** Verified
+      (SHI-72)
+- [ ] **Gap 2-R — credential broker is caller-blind (residual after SHI-72). [SHI-79]** Verified
       live 2026-06-03: `git credential fill` for `github.com` (or invoking
       `/usr/local/bin/shipit-git-credential get` directly) still returns the full `ghp_…`
       PAT to any code running in the session. The broker authorizes by host, not by caller,
-      and the agent is indistinguishable from `git`. TRACKER-72 closed plaintext-at-rest and
+      and the agent is indistinguishable from `git`. SHI-72 closed plaintext-at-rest and
       host-blindness but not on-demand extraction. Fix is defense-in-depth: short-lived
       repo-scoped tokens (GitHub App installation tokens, minutes-long TTL, minted
       per-turn) and/or out-of-process git (push/pull from the orchestrator host so the
@@ -216,11 +216,19 @@ tracker as separate issues. None implemented yet.
           decryption — header/path identity is explicitly out of scope (documented in
           egress-control.md "Phase 2"). Unit-tested in `sni-proxy/main_test.go`
           (`go test`/`gofmt`/`go vet` green; binary builds via the sidecar Dockerfile).
-    - [ ] **Orchestrator wiring (other track — NOT done here).** Compose per-session identity
-          rules (the session's own bucket/account on each configured multi-tenant host) and
-          thread them to `launchEgressProxy` as `EGRESS_PROXY_IDENTITY_RULES`, mirroring
-          `EGRESS_PROXY_ALLOWED`. Owned by the allowlist + launch-wiring track
-          (`egress-proxy-install.ts`, `container-lifecycle.ts`).
+    - [x] **Orchestrator wiring.** `composeEgressIdentityRules` (`egress-allowlist.ts`)
+          parses/validates the operator `SESSION_EGRESS_IDENTITY_RULES` (+ a per-session
+          `durableRules` hook for a future editor) into the proxy's canonical JSON; threaded
+          through `resolveEgressConfig` → `ResolvedEgressConfig.identityRules` →
+          `launchEgressProxy` as `EGRESS_PROXY_IDENTITY_RULES` (mirroring `EGRESS_PROXY_ALLOWED`),
+          and carried through `reloadEgressSidecars` so a live allowlist reload doesn't drop
+          identity scoping. Fail-open ("" → no scoping) since identity rules are additive over
+          the host allowlist. A shared `ResolvedEgressConfig` type now backs the ~5 wiring sites
+          (was a duplicated literal). Unit-tested in `egress-allowlist.test.ts` (compose/parse/
+          normalize/dedup/fail-open/durable-merge) + `egress-proxy-install.test.ts` (env passed
+          when set, omitted when ""). **Follow-up:** no per-session identity SOURCE is wired yet
+          (only the operator-global env), so today every contained session gets the same rules;
+          a per-session editor would feed `durableRules`.
     - [ ] **Verify on a live host** once wired: a non-approved tenant SNI on an allowlisted
           multi-tenant host (e.g. `attacker.s3.amazonaws.com`) is rejected while the session's
           own bucket splices through; path-style apex denied unless opted in.

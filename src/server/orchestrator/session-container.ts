@@ -55,6 +55,7 @@ import { egressEnforceEnabled } from "./egress-firewall-install.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import { reloadEgressSidecars } from "./egress-reload.js";
+import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -282,7 +283,7 @@ export interface SessionContainerManagerOpts {
    * passed straight through to `LifecycleDeps.resolveEgressConfig`. Omitted in
    * tests / no-store runtimes → containment defaults on, env-only allowlist.
    */
-  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
+  resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
 }
 
 // ---------------------------------------------------------------------------
@@ -545,7 +546,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerImageName?: string;
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
-  private resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
+  private resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
   /**
    * docs/183 — cached Docker image ID of the session-worker base image, the
    * ABI fingerprint the overlay dep store keys its rolling base scope on
@@ -619,6 +620,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       sidecarImage,
       extraHosts: cfg.extraHosts,
       ...(cfg.base ? { base: cfg.base } : {}),
+      ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
       baseLabels: this.baseLabels(),
       reloadResolver,
       reloadProxy,
