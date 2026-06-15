@@ -23,12 +23,14 @@ const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 type DropdownMenuContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content> & {
   /** Render through Radix Portal by default; disable inside modal dialogs. */
   portaled?: boolean;
+  /** Optional portal container for menus nested inside another focus scope. */
+  portalContainer?: HTMLElement | null;
 };
 
 const DropdownMenuContent = forwardRef<
   ComponentRef<typeof DropdownMenuPrimitive.Content>,
   DropdownMenuContentProps
->(({ className, sideOffset = 4, portaled = true, ...props }, ref) => {
+>(({ className, sideOffset = 4, portaled = true, portalContainer, ...props }, ref) => {
   const content: ReactNode = (
     <DropdownMenuPrimitive.Content
       ref={ref}
@@ -43,7 +45,11 @@ const DropdownMenuContent = forwardRef<
       {...props}
     />
   );
-  return portaled ? <DropdownMenuPrimitive.Portal>{content}</DropdownMenuPrimitive.Portal> : content;
+  return portaled ? (
+    <DropdownMenuPrimitive.Portal container={portalContainer ?? undefined}>
+      {content}
+    </DropdownMenuPrimitive.Portal>
+  ) : content;
 });
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName;
 

@@ -22,6 +22,8 @@ interface OverflowMenuProps {
   triggerClassName?: string;
   /** Render menu content through a portal; disable when nested inside modal dialogs. */
   portaled?: boolean;
+  /** Optional portal container for menus nested inside another focus scope. */
+  portalContainer?: HTMLElement | null;
   /** Called whenever the menu opens or closes. */
   onOpenChange?: (open: boolean) => void;
 }
@@ -34,6 +36,7 @@ export function OverflowMenu({
   contentClassName,
   triggerClassName,
   portaled = true,
+  portalContainer,
   onOpenChange,
 }: OverflowMenuProps) {
   return (
@@ -50,7 +53,13 @@ export function OverflowMenu({
           <DotsThreeVerticalIcon size={ICON_SIZE.SM} weight="bold" />
         </button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align={align} side={side} className={contentClassName} portaled={portaled}>
+      <DropdownMenuContent
+        align={align}
+        side={side}
+        className={contentClassName}
+        portaled={portaled}
+        portalContainer={portalContainer}
+      >
         {children}
       </DropdownMenuContent>
     </DropdownMenu>

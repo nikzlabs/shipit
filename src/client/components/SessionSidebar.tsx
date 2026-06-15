@@ -191,11 +191,7 @@ interface SessionItemProps {
    * on desktop it hover-reveals on inactive rows.
    */
   isTouch?: boolean;
-  /**
-   * Render the overflow menu through a portal by default. Dialog-contained rows
-   * disable this so Radix Dialog's modal focus/aria scope owns the menu too.
-   */
-  overflowMenuPortaled?: boolean;
+  menuPortalContainer?: HTMLElement | null;
 }
 
 /** Consolidated status dot replacing separate AgentDot + CiDot. */
@@ -282,7 +278,7 @@ function DiskTierBadge({ session }: { session: SessionInfo }) {
   return null;
 }
 
-export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, overflowMenuPortaled = true }: SessionItemProps) {
+export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onArchive, onRestore, repoLabel, disabled, indented, childCount, isChildrenCollapsed, onToggleChildren, isTouch, menuPortalContainer }: SessionItemProps) {
   const isArchived = session.archived === true;
 
   const attentionReason = useAttentionInfo(session.id);
@@ -509,7 +505,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
           <OverflowMenu
             label="Session actions"
             triggerClassName="h-7 w-7"
-            portaled={overflowMenuPortaled}
+            portalContainer={menuPortalContainer}
             onOpenChange={setMenuOpen}
           >
             {!isArchived && (
@@ -1107,6 +1103,14 @@ export function SessionSidebar({
   // display name, and the count of sessions that will be archived so the dialog
   // can spell out the consequences before the destructive action runs.
   const [removeRepoTarget, setRemoveRepoTarget] = useState<{ url: string; name: string; sessionCount: number } | null>(null);
+  const removeRepoDialogTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // eslint-disable-next-line no-restricted-syntax -- cleanup for deferred dialog opening
+  useEffect(() => () => {
+    if (removeRepoDialogTimerRef.current) {
+      clearTimeout(removeRepoDialogTimerRef.current);
+    }
+  }, []);
 
   // Group sessions by repo URL with a STABLE sort within each group.
   // Sessions are intentionally NOT sorted by `lastUsedAt`: that field updates on every
@@ -1232,7 +1236,13 @@ export function SessionSidebar({
     const count = sessions.filter(
       (s) => s.remoteUrl === repoUrl && !s.userArchived && !s.warm,
     ).length;
-    setRemoveRepoTarget({ url: repoUrl, name: parseRepoName(repoUrl), sessionCount: count });
+    if (removeRepoDialogTimerRef.current) {
+      clearTimeout(removeRepoDialogTimerRef.current);
+    }
+    removeRepoDialogTimerRef.current = setTimeout(() => {
+      removeRepoDialogTimerRef.current = null;
+      setRemoveRepoTarget({ url: repoUrl, name: parseRepoName(repoUrl), sessionCount: count });
+    }, 0);
   }, [sessions]);
 
   // Single repo mode: check if we only have one repo

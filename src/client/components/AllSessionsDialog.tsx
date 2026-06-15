@@ -1,4 +1,5 @@
-import { useState, useRef, useMemo } from "react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: reset/fetch session list on dialog open transition
+import { useEffect, useState, useRef, useMemo } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
@@ -35,7 +36,7 @@ export function AllSessionsDialog({
   const [query, setQuery] = useState("");
   const [selectedRepo, setSelectedRepo] = useState<string>(ALL_REPOS);
   const [actioningId, setActioningId] = useState<string | null>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
 
   // Build unique repo URLs from all sessions + repos list
   const repoOptions = useMemo(() => {
@@ -51,18 +52,22 @@ export function AllSessionsDialog({
     );
   }, [sessions, repos]);
 
-  // Reset state when dialog opens (inline state reset during render)
   const prevOpenRef = useRef(false);
-  if (open && !prevOpenRef.current) {
+
+  // Reset state when the dialog opens. Keep this out of render: render-phase
+  // state updates can re-enter before refs settle, which is especially brittle
+  // around Radix focus management in jsdom tests.
+  // eslint-disable-next-line no-restricted-syntax -- opening the dialog has an imperative focus side effect
+  useEffect(() => {
+    const wasOpen = prevOpenRef.current;
+    prevOpenRef.current = open;
+    if (!open || wasOpen) return;
+
     setQuery("");
     setSelectedRepo(currentRepoUrl ?? ALL_REPOS);
     setActioningId(null);
-    queueMicrotask(() => {
-      onFetch();
-      inputRef.current?.focus();
-    });
-  }
-  prevOpenRef.current = open;
+    onFetch();
+  }, [currentRepoUrl, onFetch, open]);
 
   if (!open) return null;
 
@@ -113,7 +118,7 @@ export function AllSessionsDialog({
 
   return (
     <Dialog open={open} onOpenChange={(isOpen) => { if (!isOpen) onClose(); }}>
-      <DialogContent className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
+      <DialogContent ref={setContentEl} className="w-full max-md:flex max-md:flex-col md:max-w-lg rounded-lg border-(--color-border-secondary)">
         {/* Header */}
         <div className="flex items-center justify-between border-b border-(--color-border-secondary) px-4 py-3">
           <DialogTitle className="text-sm font-medium text-(--color-text-primary)">
@@ -133,7 +138,6 @@ export function AllSessionsDialog({
         {/* Filter bar */}
         <div className="px-4 pt-3 pb-2 flex gap-2">
           <input
-            ref={inputRef}
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -177,7 +181,7 @@ export function AllSessionsDialog({
                   onRestore={handleUnarchive}
                   repoLabel={selectedRepo === ALL_REPOS && session.remoteUrl ? parseRepoLabel(session.remoteUrl) : undefined}
                   disabled={actioningId === session.id}
-                  overflowMenuPortaled={false}
+                  menuPortalContainer={contentEl}
                 />
               ))
             )}
