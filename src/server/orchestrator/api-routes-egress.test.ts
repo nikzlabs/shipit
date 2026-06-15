@@ -1,0 +1,202 @@
+/**
+ * Tests for the browser-only egress settings routes (docs/172, SHI-90).
+ *
+ * These routes back the Settings → Network egress section. They are NOT
+ * `containerAccessible` (verified by the golden route-table test in
+ * `api-container-guard.test.ts`); here we cover the read/write behavior over a
+ * real `EgressAllowlistStore` + in-memory DB.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import Fastify, { type FastifyInstance } from "fastify";
+import { DatabaseManager } from "../shared/database.js";
+import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
+import { registerEgressRoutes } from "./api-routes-egress.js";
+import type { ApiDeps } from "./api-routes.js";
+import type { CredentialStore } from "./credential-store.js";
+import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
+
+const stubCredentialStore = {
+  getAllMcpServers: () => ({}),
+  getAllMcpOAuthTokens: () => ({}),
+} as unknown as CredentialStore;
+
+describe("egress settings routes", () => {
+  let app: FastifyInstance;
+  let db: DatabaseManager;
+  let store: EgressAllowlistStore;
+  let reloadEgress: ReturnType<typeof vi.fn>;
+  let broadcasts: { event: string; data: unknown }[];
+
+  beforeEach(async () => {
+    db = new DatabaseManager(":memory:");
+    store = new EgressAllowlistStore(db);
+    reloadEgress = vi.fn(async () => true);
+    broadcasts = [];
+    app = Fastify();
+    const deps = {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
+      containerManager: { reloadEgress } as unknown,
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: {},
+    } as unknown as ApiDeps;
+    await registerEgressRoutes(app, deps);
+    await app.ready();
+  });
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it("GET /api/egress/allowlist returns the effective list with provenance (built-in + user)", async () => {
+    store.addHost(EGRESS_GLOBAL_SCOPE, "user.example.com");
+    const res = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    expect(res.statusCode).toBe(200);
+    const view = res.json<EgressAllowlistView>();
+    expect(view.session).toBeNull();
+    // Built-ins are present + removable (overridable defaults); the user host too.
+    const builtin = view.entries.find((e) => e.host === ".github.com");
+    expect(builtin).toMatchObject({ source: "builtin", removable: true });
+    expect(view.entries.find((e) => e.host === "user.example.com")).toMatchObject({
+      source: "user-global",
+      removable: true,
+    });
+  });
+
+  it("GET /api/egress/allowlist?session=<id> folds in per-session hosts + session view", async () => {
+    store.addHost("session-1", "session.example.com");
+    const res = await app.inject({ method: "GET", url: "/api/egress/allowlist?session=session-1" });
+    const view = res.json<EgressAllowlistView>();
+    expect(view.session?.sessionId).toBe("session-1");
+    expect(view.entries.find((e) => e.host === "session.example.com")).toMatchObject({
+      source: "user-session",
+      removable: true,
+    });
+  });
+
+  it("GET /api/egress/settings returns the default-on toggle + empty allowlist", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/egress/settings" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSettings>()).toEqual({ globalEnabled: true, globalHosts: [] });
+  });
+
+  it("PUT /api/egress/settings flips the global toggle + broadcasts", async () => {
+    const res = await app.inject({
+      method: "PUT",
+      url: "/api/egress/settings",
+      payload: { globalEnabled: false },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSettings>().globalEnabled).toBe(false);
+    expect(store.getGlobalEnabled()).toBe(false);
+    expect(broadcasts).toContainEqual({ event: "egress_settings", data: { globalEnabled: false, globalHosts: [] } });
+  });
+
+  it("POST /api/egress/hosts adds a global host (applies on next start, no reload)", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      payload: { host: "api.example.com" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSettings>().globalHosts).toEqual(["api.example.com"]);
+    expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["api.example.com"]);
+    // A global add does not live-reload running sessions.
+    expect(reloadEgress).not.toHaveBeenCalled();
+  });
+
+  it("POST /api/egress/hosts with a session scope reloads that session live", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      payload: { host: "api.example.com", scope: "session-1" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSessionSettings>().hosts).toEqual(["api.example.com"]);
+    expect(reloadEgress).toHaveBeenCalledWith("session-1");
+  });
+
+  it("POST /api/egress/hosts 400s on a blank host", async () => {
+    const res = await app.inject({ method: "POST", url: "/api/egress/hosts", payload: { host: "  " } });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it("DELETE on a built-in default suppresses it (overridable) and marks defaults customized", async () => {
+    const before = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    const aDefault = before.json<EgressAllowlistView>().entries.find((e) => e.source === "builtin")!.host;
+
+    const res = await app.inject({ method: "DELETE", url: "/api/egress/hosts", payload: { host: aDefault } });
+    expect(res.statusCode).toBe(200);
+    expect(store.isDefaultSuppressed(aDefault)).toBe(true);
+
+    const after = await app.inject({ method: "GET", url: "/api/egress/allowlist" });
+    const view = after.json<EgressAllowlistView>();
+    expect(view.entries.some((e) => e.host === aDefault)).toBe(false);
+    expect(view.defaultsCustomized).toBe(true);
+  });
+
+  it("POST /api/egress/defaults/restore un-suppresses every removed default", async () => {
+    const aDefault = store.effectiveBase()[0];
+    store.suppressDefault(aDefault);
+    expect(store.hasSuppressedDefaults()).toBe(true);
+
+    const res = await app.inject({ method: "POST", url: "/api/egress/defaults/restore" });
+    expect(res.statusCode).toBe(200);
+    expect(store.hasSuppressedDefaults()).toBe(false);
+    expect(res.json<EgressAllowlistView>().entries.some((e) => e.host === aDefault)).toBe(true);
+  });
+
+  it("re-adding a removed built-in default un-suppresses it (not a redundant user row)", async () => {
+    const aDefault = store.effectiveBase()[0];
+    store.suppressDefault(aDefault);
+    await app.inject({ method: "POST", url: "/api/egress/hosts", payload: { host: aDefault } });
+    expect(store.isDefaultSuppressed(aDefault)).toBe(false);
+    expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).not.toContain(aDefault);
+  });
+
+  it("DELETE /api/egress/hosts removes a global host", async () => {
+    store.addHost(EGRESS_GLOBAL_SCOPE, "api.example.com");
+    const res = await app.inject({
+      method: "DELETE",
+      url: "/api/egress/hosts",
+      payload: { host: "api.example.com" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSettings>().globalHosts).toEqual([]);
+  });
+
+  it("GET /api/egress/session/:id reports inherited containment + per-session hosts", async () => {
+    store.addHost("session-1", "session.example.com");
+    const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<EgressSessionSettings>()).toEqual({
+      sessionId: "session-1",
+      override: null,
+      hosts: ["session.example.com"],
+      effectiveContained: true,
+      globalEnabled: true,
+    });
+  });
+
+  it("PUT /api/egress/session/:id sets and clears a containment override", async () => {
+    store.setGlobalEnabled(true); // global Contained
+    let res = await app.inject({
+      method: "PUT",
+      url: "/api/egress/session/session-1",
+      payload: { override: false }, // force Open
+    });
+    expect(res.json<EgressSessionSettings>().effectiveContained).toBe(false);
+    expect(store.getSessionOverride("session-1")).toBe(false);
+
+    res = await app.inject({
+      method: "PUT",
+      url: "/api/egress/session/session-1",
+      payload: { override: null }, // back to inherit
+    });
+    expect(res.json<EgressSessionSettings>().override).toBeNull();
+    expect(res.json<EgressSessionSettings>().effectiveContained).toBe(true);
+  });
+});

@@ -24,6 +24,7 @@
  */
 
 import type { CredentialStore } from "./credential-store.js";
+import type { EgressAllowlistEntry, EgressAllowlistSource } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -219,4 +220,123 @@ export function buildEgressAllowlist(opts: BuildAllowlistOpts = {}): EgressAllow
       return mcpHostsFromCredentialStore(store).some((e) => hostMatchesEntry(host, e));
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Extra-host composition (the single seam fed into BOTH the Tier B resolver
+// config and the Tier C proxy allowlist)
+// ---------------------------------------------------------------------------
+
+export interface ComposeExtraHostsOpts {
+  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Live MCP hosts source (configured HTTP servers + OAuth providers). */
+  credentialStore?: CredentialStore;
+  /**
+   * Durable user allowlist hosts for this session — global + per-session, from
+   * `EgressAllowlistStore.effectiveHosts(sessionId)`. Passed in (already
+   * resolved) so this module stays free of a store dependency.
+   */
+  durableHosts?: Iterable<string>;
+}
+
+/**
+ * Compose the **extra** allowlist hosts (everything ON TOP of the built-in base
+ * list) that BOTH the Tier B resolver and the Tier C SNI proxy must honor:
+ * operator extras (`SESSION_EGRESS_ALLOWLIST`), live MCP server hosts, and the
+ * durable user allowlist (global + per-session).
+ *
+ * This is the one place the three dynamic sources are merged, so the resolver's
+ * `server=`/`ipset=` domain set and the proxy's SNI allowlist can never drift —
+ * a host the resolver resolves-and-pins is also one the proxy splices.
+ * De-duplicated and normalized; the base list is added separately by each
+ * consumer (`buildResolverConfigB64` / `buildProxyAllowed`).
+ */
+export function composeEgressExtraHosts(opts: ComposeExtraHostsOpts = {}): string[] {
+  const env = opts.env ?? process.env;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  const add = (raw: string) => {
+    const n = normalizeHost(raw);
+    if (n && !seen.has(n)) {
+      seen.add(n);
+      out.push(n);
+    }
+  };
+  for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) add(h);
+  if (opts.credentialStore) {
+    for (const h of mcpHostsFromCredentialStore(opts.credentialStore)) add(h);
+  }
+  for (const h of opts.durableHosts ?? []) add(h);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Effective allowlist with provenance (the Settings editor view)
+// ---------------------------------------------------------------------------
+
+/** Is `host` one of the built-in defaults (exact, normalized match)? */
+export function isBuiltinDefault(host: string): boolean {
+  const h = normalizeHost(host);
+  return EGRESS_DEFAULT_ALLOWLIST.some((e) => normalizeHost(e) === h);
+}
+
+export interface EffectiveAllowlistOpts {
+  /** Env to read `SESSION_EGRESS_ALLOWLIST` from (defaults to `process.env`). */
+  env?: NodeJS.ProcessEnv;
+  /** Override the base list (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). */
+  base?: readonly string[];
+  /** Live MCP hosts source. */
+  credentialStore?: CredentialStore;
+  /** Durable user-added global allowlist hosts. */
+  globalHosts?: Iterable<string>;
+  /** Durable user-added per-session allowlist hosts. */
+  sessionHosts?: Iterable<string>;
+  /**
+   * Built-in defaults the user has removed (suppressed) — skipped from the view.
+   * "Restore defaults" clears these so they reappear.
+   */
+  suppressedDefaults?: Iterable<string>;
+}
+
+/**
+ * Compose the **effective** allowlist as an ordered, de-duplicated list of
+ * entries tagged with provenance — exactly what the session can reach and *why*.
+ * Powers the Settings allowlist editor.
+ *
+ * Built-in defaults are **removable** (the base list is a default the user can
+ * override, not a hard floor); a removed default is passed in `suppressedDefaults`
+ * and skipped here. Operator (`SESSION_EGRESS_ALLOWLIST`) and MCP hosts are
+ * **read-only** — they're derived live from the deployment env / connected MCP
+ * servers, not user defaults. User-added entries are removable/editable.
+ *
+ * Precedence on collision (a host in more than one source keeps its first, most-
+ * fundamental classification): builtin → operator → mcp → user-global →
+ * user-session. Hosts are normalized; a leading "." (suffix match) is preserved.
+ */
+export function buildEffectiveAllowlist(opts: EffectiveAllowlistOpts = {}): EgressAllowlistEntry[] {
+  const env = opts.env ?? process.env;
+  const base = opts.base ?? EGRESS_DEFAULT_ALLOWLIST;
+  const suppressed = new Set<string>();
+  for (const h of opts.suppressedDefaults ?? []) suppressed.add(normalizeHost(h));
+  const seen = new Set<string>();
+  const entries: EgressAllowlistEntry[] = [];
+  const push = (raw: string, source: EgressAllowlistSource, removable: boolean) => {
+    const host = normalizeHost(raw);
+    if (!host || seen.has(host)) return;
+    seen.add(host);
+    entries.push({ host, source, removable });
+  };
+
+  for (const h of base) {
+    if (suppressed.has(normalizeHost(h))) continue; // user-removed default
+    push(h, "builtin", true); // defaults are overridable
+  }
+  for (const h of parseAllowlistEnv(env.SESSION_EGRESS_ALLOWLIST)) push(h, "operator", false);
+  if (opts.credentialStore) {
+    for (const h of mcpHostsFromCredentialStore(opts.credentialStore)) push(h, "mcp", false);
+  }
+  for (const h of opts.globalHosts ?? []) push(h, "user-global", true);
+  for (const h of opts.sessionHosts ?? []) push(h, "user-session", true);
+  return entries;
 }

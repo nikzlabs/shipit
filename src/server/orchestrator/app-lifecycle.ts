@@ -106,6 +106,12 @@ export interface ContainerSetupDeps {
    * === 'local'" hardening note for why these two flags must not be conflated.
    */
   runtimeMode: RuntimeMode;
+  /**
+   * docs/172 (SHI-90) — per-session egress containment + composed allowlist
+   * resolver, passed straight into the production `SessionContainerManager`.
+   * Optional: a custom-injected container manager (tests) supplies its own.
+   */
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
 }
 
 /** Result of container setup. */
@@ -143,6 +149,7 @@ export async function setupContainerManager(
       stateDir: setupDeps.stateDir,
       credentialsVolume: process.env.CREDENTIALS_VOLUME,
       stackName: process.env.DOCKER_STACK,
+      ...(setupDeps.resolveEgressConfig ? { resolveEgressConfig: setupDeps.resolveEgressConfig } : {}),
     });
     const dockerAvailable = await containerManager.isAvailable();
     if (dockerAvailable) {

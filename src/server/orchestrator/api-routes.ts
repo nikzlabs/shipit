@@ -58,6 +58,7 @@ import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import type { SecretStore } from "./secret-store.js";
+import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 
@@ -176,6 +177,12 @@ export interface ApiDeps {
   databaseManager?: DatabaseManager;
   /** Secret store — per-repo env var secrets for preview containers. */
   secretStore?: SecretStore;
+  /**
+   * docs/172 (SHI-90) — durable egress allowlist + containment toggle store.
+   * Backs the browser-only egress Settings routes. Omitted in test setups that
+   * don't exercise egress settings.
+   */
+  egressAllowlistStore?: EgressAllowlistStore;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
   /**

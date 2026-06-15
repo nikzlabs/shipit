@@ -12,6 +12,9 @@ import {
   hostFromUrl,
   mcpHostsFromCredentialStore,
   buildEgressAllowlist,
+  composeEgressExtraHosts,
+  buildEffectiveAllowlist,
+  isBuiltinDefault,
 } from "./egress-allowlist.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
@@ -180,5 +183,88 @@ describe("buildEgressAllowlist", () => {
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
       expect(normalizeHost(e)).toBe(e); // already normalized in source
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composeEgressExtraHosts — the shared resolver/proxy extra-host seam
+// ---------------------------------------------------------------------------
+
+describe("composeEgressExtraHosts", () => {
+  it("returns [] for an empty env + no sources", () => {
+    expect(composeEgressExtraHosts({ env: {} })).toEqual([]);
+  });
+
+  it("reads operator extras from SESSION_EGRESS_ALLOWLIST", () => {
+    const hosts = composeEgressExtraHosts({ env: { SESSION_EGRESS_ALLOWLIST: "a.corp, .b.corp" } });
+    expect(hosts).toEqual(["a.corp", ".b.corp"]);
+  });
+
+  it("merges env extras + live MCP hosts + durable hosts, de-duped + normalized", () => {
+    const store = stubStore({
+      servers: { acme: { name: "acme", type: "http", url: "https://mcp.acme.dev/sse", enabled: true } },
+    });
+    const hosts = composeEgressExtraHosts({
+      env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" },
+      credentialStore: store,
+      durableHosts: ["Durable.Example.com.", "ops.corp"], // dup + needs-normalize
+    });
+    expect(hosts).toEqual(["ops.corp", "mcp.acme.dev", "durable.example.com"]);
+  });
+
+  it("includes durable hosts even with no env or MCP source", () => {
+    expect(composeEgressExtraHosts({ env: {}, durableHosts: [".user.example.com"] })).toEqual([".user.example.com"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildEffectiveAllowlist — provenance view for the Settings editor
+// ---------------------------------------------------------------------------
+
+describe("buildEffectiveAllowlist", () => {
+  it("tags built-in defaults AND user hosts as removable (overridable defaults)", () => {
+    const entries = buildEffectiveAllowlist({
+      env: {},
+      globalHosts: ["userg.example.com"],
+      sessionHosts: ["users.example.com"],
+    });
+    const byHost = new Map(entries.map((e) => [e.host, e]));
+    expect(byHost.get(".github.com")).toMatchObject({ source: "builtin", removable: true });
+    expect(byHost.get("userg.example.com")).toMatchObject({ source: "user-global", removable: true });
+    expect(byHost.get("users.example.com")).toMatchObject({ source: "user-session", removable: true });
+  });
+
+  it("skips a suppressed (user-removed) built-in default", () => {
+    const all = buildEffectiveAllowlist({ env: {} });
+    expect(all.some((e) => e.host === ".github.com")).toBe(true);
+    const withSuppressed = buildEffectiveAllowlist({ env: {}, suppressedDefaults: [".github.com"] });
+    expect(withSuppressed.some((e) => e.host === ".github.com")).toBe(false);
+    // other defaults remain
+    expect(withSuppressed.some((e) => e.host === ".anthropic.com")).toBe(true);
+  });
+
+  it("tags operator extras + MCP hosts read-only", () => {
+    const store = stubStore({
+      servers: { acme: { name: "acme", type: "http", url: "https://mcp.acme.dev/sse", enabled: true } },
+    });
+    const entries = buildEffectiveAllowlist({ env: { SESSION_EGRESS_ALLOWLIST: "ops.corp" }, credentialStore: store });
+    expect(entries.find((e) => e.host === "ops.corp")).toMatchObject({ source: "operator", removable: false });
+    expect(entries.find((e) => e.host === "mcp.acme.dev")).toMatchObject({ source: "mcp", removable: false });
+  });
+
+  it("keeps the most-fundamental classification on a collision (builtin wins over a user re-add)", () => {
+    const entries = buildEffectiveAllowlist({ env: {}, globalHosts: [".github.com"] });
+    const gh = entries.filter((e) => e.host === ".github.com");
+    expect(gh).toHaveLength(1);
+    expect(gh[0]).toMatchObject({ source: "builtin", removable: true });
+  });
+});
+
+describe("isBuiltinDefault", () => {
+  it("recognizes a built-in default (normalized), rejects others", () => {
+    expect(isBuiltinDefault(".github.com")).toBe(true);
+    expect(isBuiltinDefault(".GitHub.com.")).toBe(true); // case + trailing dot
+    expect(isBuiltinDefault("attacker.com")).toBe(false);
+    expect(isBuiltinDefault("api.github.com")).toBe(false); // not the exact default entry
   });
 });

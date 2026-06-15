@@ -10,6 +10,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { ClaudeAuthCard } from "./ClaudeAuthCard.js";
 import { CodexAuthCard, type CodexDeviceAuthState } from "./CodexAuthCard.js";
 import { SettingsIntegrations } from "./SettingsIntegrations.js";
+import { SettingsEgress } from "./SettingsEgress.js";
 import { SkillsTab } from "./SkillsTab.js";
 import { KeybindingSettings } from "./KeybindingSettings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -33,7 +34,7 @@ const MAX_LENGTH = 50_000;
 // so it reads as a tab bar rather than a stretched menu row.
 const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md max-md:px-3 max-md:py-1.5 max-md:text-xs";
 
-type Tab = "agent-claude" | "agent-codex" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "advanced";
+type Tab = "agent-claude" | "agent-codex" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
 
 /** Shape of the /api/updates/check and /api/updates/channel responses. */
 interface UpdateStatusResult {
@@ -1265,7 +1266,7 @@ export function Settings({
   const claudeAgent = agentList.find((a) => a.id === "claude");
   const codexAgent = agentList.find((a) => a.id === "codex");
 
-  const generalTabs = ["integrations", "git", "instructions", "skills", "keyboard", "voice", "advanced"] as const;
+  const generalTabs = ["integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "agent-claude": return "Claude";
@@ -1276,6 +1277,7 @@ export function Settings({
       case "skills": return "Skills";
       case "keyboard": return "Keyboard";
       case "voice": return "Voice";
+      case "network": return "Network";
       case "advanced": return "Advanced";
     }
   };
@@ -1535,6 +1537,12 @@ export function Settings({
                   {gitSaved ? "Saved" : "Save"}
                 </Button>
               </div>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="network">
+            <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full">
+              <SettingsEgress />
             </div>
           </TabsContent>
 

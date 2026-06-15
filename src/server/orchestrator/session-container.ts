@@ -54,6 +54,7 @@ import { readBasePointerByHash } from "./overlay-base.js";
 import { egressEnforceEnabled } from "./egress-firewall-install.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
+import { reloadEgressSidecars } from "./egress-reload.js";
 import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
@@ -274,6 +275,14 @@ export interface SessionContainerManagerOpts {
   dockerProxyHost?: string;
   /** Docker API proxy port. Required for Docker-enabled sessions. */
   dockerProxyPort?: number;
+  /**
+   * docs/172 (SHI-90) — resolve a session's egress containment + composed
+   * extra-host allowlist at container start. Built in `app-di` where the durable
+   * `EgressAllowlistStore` + the live MCP `CredentialStore` are in scope, and
+   * passed straight through to `LifecycleDeps.resolveEgressConfig`. Omitted in
+   * tests / no-store runtimes → containment defaults on, env-only allowlist.
+   */
+  resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
 }
 
 // ---------------------------------------------------------------------------
@@ -536,6 +545,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private dockerImageName?: string;
   private dockerProxyHost?: string;
   private dockerProxyPort?: number;
+  private resolveEgressConfig?: (sessionId: string) => { contained: boolean; extraHosts: string[]; base?: string[] };
   /**
    * docs/183 — cached Docker image ID of the session-worker base image, the
    * ABI fingerprint the overlay dep store keys its rolling base scope on
@@ -578,6 +588,42 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     this.dockerImageName = opts.dockerImageName;
     this.dockerProxyHost = opts.dockerProxyHost;
     this.dockerProxyPort = opts.dockerProxyPort;
+    this.resolveEgressConfig = opts.resolveEgressConfig;
+  }
+
+  /**
+   * docs/172 (SHI-90) — apply a newly-added durable allowlist host to a RUNNING,
+   * contained session by relaunching the Tier B resolver + Tier C proxy with the
+   * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI
+   * is permitted without waiting for the next container start. Best-effort and
+   * fail-safe: a no-op when egress isn't enforced, the session has no running
+   * container, or the session is in Open mode. Errors are swallowed by the reload
+   * module — the durable add already persisted, so the worst case is "applies on
+   * next restart." Returns true if a reload was attempted.
+   */
+  async reloadEgress(sessionId: string): Promise<boolean> {
+    if (!egressEnforceEnabled()) return false;
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    if (!sidecarImage) return false;
+    const sc = this.containers.get(sessionId);
+    if (sc?.status !== "running" || !sc.id) return false;
+    const cfg = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
+    if (!cfg.contained) return false;
+    const reloadResolver = egressDnsEnabled();
+    const reloadProxy = egressProxyEnabled();
+    if (!reloadResolver && !reloadProxy) return false;
+    await reloadEgressSidecars({
+      docker: this.docker,
+      agentContainerId: sc.id,
+      sessionId,
+      sidecarImage,
+      extraHosts: cfg.extraHosts,
+      ...(cfg.base ? { base: cfg.base } : {}),
+      baseLabels: this.baseLabels(),
+      reloadResolver,
+      reloadProxy,
+    });
+    return true;
   }
 
   /** Build the base label set for containers and networks. */
@@ -626,6 +672,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       egressSidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
       egressDns: egressDnsEnabled(),
       egressProxy: egressProxyEnabled(),
+      ...(this.resolveEgressConfig ? { resolveEgressConfig: this.resolveEgressConfig } : {}),
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),

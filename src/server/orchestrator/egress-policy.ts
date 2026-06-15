@@ -29,6 +29,21 @@ interface SessionPolicy {
 
 const policies = new Map<string, SessionPolicy>();
 
+/**
+ * Durable allowlist source (injected once at startup from the
+ * `EgressAllowlistStore`). Reconciles the in-memory allow-once policy with the
+ * durable user allowlist: a host the user "Add"-ed in a *previous* session (or
+ * via the Settings editor) is allowed here too, without re-carding. Returns the
+ * effective global + per-session durable hosts for a session. Null in test /
+ * no-store runtimes — the policy is then in-memory only (the legacy behavior).
+ */
+let durableSource: ((sessionId: string) => string[]) | null = null;
+
+/** Inject (or clear with `null`) the durable allowlist source. */
+export function setEgressDurableSource(fn: ((sessionId: string) => string[]) | null): void {
+  durableSource = fn;
+}
+
 function get(sessionId: string): SessionPolicy {
   let p = policies.get(sessionId);
   if (!p) {
@@ -40,11 +55,19 @@ function get(sessionId: string): SessionPolicy {
 
 /** Has the user allowed this host for the session (matches suffix entries too)? */
 export function isEgressHostAllowed(sessionId: string, host: string): boolean {
-  const p = policies.get(sessionId);
-  if (!p) return false;
   const h = normalizeHost(host);
-  for (const entry of p.allowed) {
-    if (hostMatchesEntry(h, entry)) return true;
+  const p = policies.get(sessionId);
+  if (p) {
+    for (const entry of p.allowed) {
+      if (hostMatchesEntry(h, entry)) return true;
+    }
+  }
+  // Reconcile with the durable allowlist (global + per-session). A host the
+  // user added durably is allowed even if this runner never carded it.
+  if (durableSource) {
+    for (const entry of durableSource(sessionId)) {
+      if (hostMatchesEntry(h, entry)) return true;
+    }
   }
   return false;
 }

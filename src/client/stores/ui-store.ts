@@ -38,6 +38,7 @@ type SettingsTab =
   | "skills"
   | "keyboard"
   | "voice"
+  | "network"
   | "advanced"
   | undefined;
 

@@ -140,8 +140,10 @@ tracker as separate issues. None implemented yet.
           proxy's next query (short negative cache) returns allow → the agent's retry
           succeeds. Card dedup per (session, host); resolutions persist + rehydrate.
           Phase-2 `validateIdentity` seam already in the proxy. **Scope note:** the allow
-          decision is per-session in-memory (durable cross-restart persistence + an editor
-          is the Settings-UI item below); the card record itself persists. Under Tier B a
+          decision was per-session in-memory; durable cross-restart persistence + an editor
+          now ship (the Settings-UI item below — `add` writes through to the durable global
+          allowlist and `egress-policy` reconciles against it via an injected durable source);
+          the card record itself persists. Under Tier B a
           brand-new host is blocked at DNS first, so the card primarily covers the CDN/IP-
           reuse case — a proactive DNS-layer trigger for brand-new hosts is a follow-up.
     - [x] **Verify on a live host** (rebuild the sidecar with the Go binary, all three
@@ -171,14 +173,38 @@ tracker as separate issues. None implemented yet.
                carries the session as `?session=`, but §3 read it from the path → `null` →
                403 (card never emitted). §3 now falls back to the `?session=` query param
                (still the caller's own session). Test gap closed in `api-container-guard.test.ts`.
-    - [ ] **MCP-hosts + operator-extras plumbing** (shared with Tier B): thread
-          `credentialStore` + `SESSION_EGRESS_ALLOWLIST` into both the resolver config and
-          the proxy allowlist so connected MCP servers / operator hosts are honored.
-  - [ ] **Settings UI** — default-on global toggle (fail-secure, applies on container
-        restart) + per-session override + allowlist editor. Browser-only routes are
-        protected by SHI-129's per-route default-deny (just don't set
-        `containerAccessible`); optionally add high-value ones to `HARD_DENY_PREFIXES`
-        (`isHardDeniedGlobal`) as a backstop; update the golden route-table test.
+    - [x] **MCP-hosts + operator-extras plumbing** (shared with Tier B): one composition
+          seam (`composeEgressExtraHosts` in `egress-allowlist.ts`) merges
+          `SESSION_EGRESS_ALLOWLIST` + live MCP hosts (`credentialStore`) + the durable user
+          allowlist, threaded via `resolveEgressConfig` (built in `index.ts`/`app-di`) into
+          BOTH `buildResolverConfigB64` (Tier B `extraDomains`) and `buildProxyAllowed`
+          (Tier C `extraHosts`) at container start — so the resolver's pinned set and the
+          proxy's SNI allowlist can never drift. Unit-tested in `egress-allowlist.test.ts`.
+  - [x] **Settings UI** (its own Settings → **Network** tab) — default-on global containment
+        toggle (fail-secure: a missing global setting resolves to Contained), per-session
+        containment override (Inherit / Contained / Open), and a **first-class allowlist
+        editor**: it renders the full **effective** allowlist with **provenance** (built-in /
+        operator / MCP / user-added, via `GET /api/egress/allowlist` + `buildEffectiveAllowlist`).
+        **Built-in defaults are overridable** — removable/editable, with a **"Restore defaults"**
+        action (`POST /api/egress/defaults/restore`); a removed default is recorded in the
+        reserved `__suppressed_defaults__` scope and filtered out of the resolver/proxy `base`
+        so it's actually closed. Only **operator** + **MCP** rows stay read-only ("Also allowed").
+        User entries are add/remove/edit-able at global OR per-session scope. Durable store
+        (`EgressAllowlistStore` — `egress_allowlist` + `egress_settings` tables, DB
+        migration) feeds the per-session containment gate + the composition seam at
+        container start; the global toggle / per-session override govern whether a session
+        is contained (Open mode skips the firewall install). "Add to allowlist" (the Tier C
+        card's `add`) now persists to the durable global allowlist AND live-reloads the
+        running session's resolver + proxy (`egress-reload.ts` → `containerManager.reloadEgress`)
+        so a brand-new host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted
+        without a container restart. Browser-only routes (`api-routes-egress.ts`:
+        `GET/PUT /api/egress/settings`, `POST/DELETE /api/egress/hosts`,
+        `GET/PUT /api/egress/session/:id`) carry NO `containerAccessible` flag, so SHI-129's
+        default-deny protects them (golden route-table unchanged — no new container route).
+        Client: `egress-store.ts` (Zustand) + `SettingsEgress.tsx` (Advanced tab) +
+        `egress_settings` SSE sync. Tests: store, routes, reload seam, WS write-through,
+        client store + component. **Live-host verification of the reload swap is pending**
+        (egress enforcement is env-gated OFF by default and not exercisable in the sandbox).
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.

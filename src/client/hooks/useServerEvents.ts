@@ -6,9 +6,10 @@ import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useReleaseStore } from "../stores/release-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -296,6 +297,19 @@ export function useServerEvents(): void {
     es.addEventListener("provider_accounts", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as { accounts: ProviderAccount[] };
       useSettingsStore.getState().setProviderAccounts(data.accounts);
+    });
+
+    // docs/172 / SHI-90 — egress containment settings changed in another tab.
+    // Refresh the effective allowlist view so the Settings → Network egress
+    // editor stays in sync. Only when already loaded (the panel was opened),
+    // so a background tab that never opened Settings doesn't fetch.
+    es.addEventListener("egress_settings", (e: MessageEvent) => {
+      const data = JSON.parse(e.data as string) as EgressSettings;
+      const store = useEgressStore.getState();
+      if (!store.loaded) return;
+      // Reflect the toggle immediately, then re-fetch the full provenance view.
+      useEgressStore.setState({ globalEnabled: data.globalEnabled });
+      void store.refresh().catch(() => {});
     });
 
     es.addEventListener("pr_status", (e: MessageEvent) => {
