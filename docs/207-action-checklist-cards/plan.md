@@ -34,7 +34,8 @@ it as a saved, pre-filled message the user can fire any number of times — not 
 one-shot prompt that resolves and dies.
 
 **Visual reference:** [`mockup.html`](./mockup.html) — a static prototype of every
-state (single-action, multi fresh / recommended / partial, after-submit receipt).
+state (single-action, multi fresh / recommended / partial, the "Add comment…"
+composer hand-off, and the deliberate non-state after submit).
 
 ## Why a new primitive (and not `AskUserQuestion`)
 
@@ -162,7 +163,11 @@ own" path **routes through the existing composer** (which already has voice):
 2. **Add comment…** *(secondary — the "I agree, but…" / "actually…" path)*.
    Instead of sending, this seeds the **main input box** with a **snapshot of the
    whole card** — *every* action listed with a checkbox marker reflecting its
-   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. The
+   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. Each
+   seeded line is the action's **`payload`** (the self-contained instruction),
+   **not** just its short display label, so the "Add comment…" path is
+   cold-context-safe in exactly the same way Submit is. *(Codex design review:
+   seeding labels would have left only the Submit path self-contained.)* The
    **literal `[x]`/`[ ]` text is the chosen format** (decided): it parses cleanly
    for the agent and reads clearly for a human, and the user can freely edit the
    lines before sending. The user then appends their own words (typed **or
@@ -236,6 +241,36 @@ These were open questions; the following are the settled answers.
   decline, render them as this card instead of asking in prose.* When a choice
   needs real discussion, that's still a question (or plain prose), not a card.
   The aggressiveness of suggesting at all stays exactly where it is today.
+
+  **Scope guardrails on the tool instructions** *(Codex design review — keeps the
+  card on the right side of §5).* The card is for **contextual follow-ups the
+  agent just identified in this turn**, not for routine recurring commands or a
+  standing workflow menu. Concretely the instructions must say: don't surface
+  "run the tests / lint / typecheck" as a card by itself (that's the click-to-run
+  command shortcut §5 forbids); don't emit a card every turn; don't emit a card
+  *and* repeat the same suggestion in prose; prefer plain text when the action is
+  vague; cap a card at ~3–5 actions and emit at most one card per turn. Good
+  example actions are this-moment-specific: "open a PR for this change", "file a
+  follow-up issue for the rate-limit edge case", "update the API docs for the new
+  route" — not "run lint".
+
+- **Provenance travels in the submitted message, not in card state** *(Codex
+  design review)*. "No staleness" does **not** mean pretending nothing changed
+  since the card was emitted. The card stays a pure message-sender, but the
+  message it sends is **stamped with provenance** — when the actions were
+  proposed, and the branch/HEAD they were proposed against — and framed so the
+  agent **inspects current state and adapts or declines if the action is now
+  obsolete** (branch merged, PR already exists, files moved). This keeps the
+  honest-at-click-time guarantee without reintroducing a stale *state*, a lock, or
+  a patch path. A subtle "proposed <date>" line may appear on older cards; that is
+  static emit-time data, still immutable.
+
+- **No "sent" receipt — by design.** An earlier mockup showed a "Sent … 2 days
+  ago" receipt; it was **removed**. A persisted receipt is *mutable lifecycle
+  state*, which directly contradicts the immutable-card / no-patch-path model
+  above (Codex design review caught the contradiction). The durable record of a
+  submit is simply **the user message that now sits in the transcript** below the
+  card. After a submit the card looks **identical** to its pre-submit state.
 
 ## Still open
 
