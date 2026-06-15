@@ -46,6 +46,26 @@ describe("buildAgentSystemInstructions", () => {
     );
   });
 
+  it("renders every variant with the .md fragments loaded and no unresolved tokens", () => {
+    // Prompt text lives in `prompts/*.md` loaded at module init (see CLAUDE.md ›
+    // "Prompts"). This guards the load + token-fill: a missing/renamed fragment
+    // or an un-mapped `{{TOKEN}}` must fail here, not ship a literal placeholder
+    // to the model. Covers all axes.
+    const variants: AgentSystemInstructionOptions[] = [
+      {},
+      { agentId: "claude" },
+      { agentId: "codex" },
+      { isOps: true },
+      { agentId: "claude", isOps: true },
+      { agentId: "codex", isOps: true },
+    ];
+    for (const opts of variants) {
+      const out = buildAgentSystemInstructions(opts);
+      expect(out.length).toBeGreaterThan(1000);
+      expect(out).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
+    }
+  });
+
   // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
   // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
 

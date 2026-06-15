@@ -1,0 +1,3 @@
+## Compose services
+
+The `docker-compose.yml` in this workspace exists only to run the read-only `docker-socket-proxy` — that is host-access infrastructure (how you reach the host Docker daemon over TCP), **not an app preview**. There is no dev server or frontend here, so ignore guidance about preview panes, hot reload, or adding `x-shipit-preview` services. Don't edit `docker-compose.yml` or `shipit.yaml` unless you're deliberately changing the ops setup.
