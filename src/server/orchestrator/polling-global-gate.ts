@@ -1,0 +1,135 @@
+/**
+ * PollingGlobalGate — the viewer + in-flight-action gate for the PR poller.
+ *
+ * Split out of `pr-status-poller.ts` (docs/201 Phase P9). The supervisor only
+ * runs while this gate is open; when it closes, zero GraphQL polls fire until
+ * a viewer comes back or an autonomous flow kicks in.
+ *
+ * The gate is open when ANY of these is true:
+ *   - a browser viewer is attached to any runner;
+ *   - we're inside the disconnect grace window after the last viewer left;
+ *   - an autonomous action is in flight on any tracked session (auto-fix
+ *     running, ShipIt-managed auto-merge enabled, or a viewerless runner
+ *     that's mid-turn — the headless flow).
+ * When all three are false, the supervisor is stopped.
+ *
+ * This decision is intentionally distinct from the per-repo cadence decision
+ * (which lives in the supervisor): the gate decides whether polling runs at
+ * all; the cadence decides how often. See docs/064-pr-lifecycle-flow/plan.md
+ * "Polling budget."
+ */
+
+import type { SessionRunnerRegistry } from "./session-runner.js";
+import type { AutoFixManager } from "./auto-fix-manager.js";
+import type { AutoMergeManager } from "./auto-merge-manager.js";
+import type { PrSessionTracker } from "./pr-session-tracker.js";
+
+/**
+ * After the last viewer detaches, keep polling for this long before pausing.
+ * Tolerates page reloads and short network blips so a quick reconnect doesn't
+ * pay the cost of a re-burn. Aligned with the idle-enforcer's grace window
+ * (see `idle-enforcer.ts:IDLE_GRACE_PERIOD_MS`) so both timers fire on the
+ * same schedule from the user's perspective.
+ */
+const VIEWER_DETACH_GRACE_MS = 60_000;
+
+export class PollingGlobalGate {
+  private readonly runnerRegistry?: SessionRunnerRegistry;
+  private readonly tracker: PrSessionTracker;
+  private readonly autoFix: AutoFixManager;
+  private readonly autoMerge: AutoMergeManager;
+
+  /**
+   * Timestamp when the last viewer detached. `0` means "currently has viewers
+   * attached, or no viewer has ever been seen." Used to keep the supervisor
+   * running through brief reconnects (within VIEWER_DETACH_GRACE_MS).
+   */
+  private lastViewerDetachAt = 0;
+
+  constructor(opts: {
+    runnerRegistry?: SessionRunnerRegistry;
+    tracker: PrSessionTracker;
+    autoFix: AutoFixManager;
+    autoMerge: AutoMergeManager;
+  }) {
+    this.runnerRegistry = opts.runnerRegistry;
+    this.tracker = opts.tracker;
+    this.autoFix = opts.autoFix;
+    this.autoMerge = opts.autoMerge;
+  }
+
+  /**
+   * True when at least one runner in the registry has a viewer attached.
+   *
+   * When no registry is wired (legacy callers, lightweight tests that don't
+   * exercise the gate) treat the gate as always open so behavior matches the
+   * pre-viewer-gating era. Production always wires the registry.
+   */
+  private anyViewersConnected(): boolean {
+    const registry = this.runnerRegistry;
+    if (!registry) return true;
+    for (const id of registry.ids()) {
+      const r = registry.get(id);
+      if (r && r.viewerCount > 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when an autonomous action that depends on PR/CI status updates is in
+   * flight: an auto-fix loop, a managed auto-merge, or a headless agent turn
+   * (running runner with no viewer — e.g. a child session spawned from chat).
+   */
+  private anyAutonomousActionInFlight(): boolean {
+    for (const sessionId of this.tracker.sessionRepos.keys()) {
+      if (this.tracker.mergedSessions.has(sessionId)) continue;
+
+      const fix = this.autoFix.get(sessionId);
+      if (fix?.status === "running") return true;
+
+      const merge = this.autoMerge.get(sessionId);
+      // ShipIt-managed auto-merge needs the poller to detect CI-success → merge.
+      // Native auto-merge runs on GitHub's side and doesn't need our polling.
+      if (merge?.enabled && merge.managed) return true;
+
+      const runner = this.runnerRegistry?.get(sessionId);
+      if (runner?.running && runner.viewerCount === 0) return true;
+    }
+    return false;
+  }
+
+  /**
+   * The global gate. True when the supervisor should keep running.
+   */
+  isOpen(): boolean {
+    if (this.anyViewersConnected()) return true;
+    if (this.anyAutonomousActionInFlight()) return true;
+    // No viewers, no autonomous action — but maybe we're inside the
+    // disconnect grace window (a viewer just left and may reconnect).
+    if (
+      this.lastViewerDetachAt > 0
+      && Date.now() - this.lastViewerDetachAt < VIEWER_DETACH_GRACE_MS
+    ) {
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * A viewer attached (or a strong user-activity signal landed): clear the
+   * disconnect grace timer so the supervisor stays running.
+   */
+  clearDetachGrace(): void {
+    this.lastViewerDetachAt = 0;
+  }
+
+  /**
+   * The last viewer detached. If no autonomous action is keeping the gate
+   * open, arm the grace timer; the supervisor pauses itself on the next tick
+   * after VIEWER_DETACH_GRACE_MS elapses without a reconnect.
+   */
+  armDetachGrace(): void {
+    if (this.anyViewersConnected()) return;
+    if (this.lastViewerDetachAt === 0) this.lastViewerDetachAt = Date.now();
+  }
+}
