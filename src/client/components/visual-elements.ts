@@ -1,10 +1,25 @@
 import type { ChatMessage, ToolUseBlock, ToolResultBlock } from "./MessageList.js";
+import { isPresentTool } from "./tool-names.js";
 
 // Tools that render as standalone items outside the grouped container
 export const STANDALONE_TOOLS = new Set(["AskUserQuestion", "TodoWrite", "EnterPlanMode", "ExitPlanMode"]);
 
 // Tools extracted into their own top-level visual elements (not grouped, not inside message bubbles)
 export const SUBAGENT_TOOLS = new Set(["Task", "Skill", "Agent"]);
+
+/**
+ * A tool that must NOT be folded into the clipped `ToolCallGroup` container
+ * (`max-h-30 overflow-y-hidden`) — it renders as its own standalone element so
+ * it can't be scrolled/hidden behind a stack of Read/Edit/Bash lines.
+ *
+ * `STANDALONE_TOOLS` is matched by exact name, but the `present` card's tool
+ * name is MCP-prefixed and varies (`mcp__shipit__present`, the legacy
+ * `mcp__shipit-present__present`, or the bare `present`), so it needs the
+ * `isPresentTool` predicate rather than set membership.
+ */
+function isStandaloneTool(name: string): boolean {
+  return STANDALONE_TOOLS.has(name) || isPresentTool(name);
+}
 
 /**
  * docs/188 — single source of truth for inline-card message fields that ride on
@@ -77,7 +92,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     // Separate subagent tools (Task/Skill) — they get their own top-level elements
     const subagentTools = msg.toolUse?.filter((t) => SUBAGENT_TOOLS.has(t.name)) ?? [];
     const nonSubagentTools = msg.toolUse?.filter((t) => !SUBAGENT_TOOLS.has(t.name)) ?? [];
-    const groupableTools = nonSubagentTools.filter((t) => !STANDALONE_TOOLS.has(t.name));
+    const groupableTools = nonSubagentTools.filter((t) => !isStandaloneTool(t.name));
     const canGroupTools = msg.role === "assistant" && groupableTools.length > 0;
     // Inline cards ride on a message whose `text` is empty and which carries no
     // tools — the card field IS the content. Such a message must still emit a
@@ -109,7 +124,7 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // tools would change the rendering from tool-group → message bubble, causing
       // the tool-group to disappear and the dialog to jump.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => STANDALONE_TOOLS.has(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
       );
       if (extractableStandalone.length > 0) {
         flushTools();
@@ -127,11 +142,11 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
       // ExitPlanMode was persisted in a separate message group from the plan text.
       // Exclude TodoWrite-only messages — those render via lastTodoWriteId in the bubble.
       const extractableStandalone = nonSubagentTools.filter(
-        (t) => STANDALONE_TOOLS.has(t.name) && t.name !== "TodoWrite",
+        (t) => isStandaloneTool(t.name) && t.name !== "TodoWrite",
       );
       const standaloneOnly = msg.role === "assistant" && !hasVisibleContent
         && extractableStandalone.length > 0
-        && nonSubagentTools.every((t) => STANDALONE_TOOLS.has(t.name));
+        && nonSubagentTools.every((t) => isStandaloneTool(t.name));
       if (standaloneOnly) {
         for (const tool of extractableStandalone) {
           const result = msg.toolResults?.find((r) => r.toolUseId === tool.id);
