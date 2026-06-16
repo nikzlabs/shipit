@@ -14,6 +14,7 @@ platform capabilities.
 | [github.md](github.md) | Branches, PRs, auto-push, CI |
 | [issues.md](issues.md) | Read issues (GitHub + Linear) via the tracker-neutral `shipit issue view`/`list` |
 | [sessions.md](sessions.md) | Agent-spawned sibling sessions — `shipit session create`, when to use it |
+| [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
 | [issues.md](issues.md) | Tracker-neutral issue access — `shipit issue view/list/comment/edit/status/assign` (GitHub + Linear), do-then-surface writes with Undo |
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |

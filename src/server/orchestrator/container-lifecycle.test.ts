@@ -439,6 +439,19 @@ describe("buildEnv", () => {
     expect(env.some((e) => e.startsWith("COMPOSE_PROJECT_NAME="))).toBe(false);
   });
 
+  // docs/211 — a sandbox session with Docker granted reaches Docker through the
+  // SAME session-scoped proxy as any ordinary docker-access session — NEVER the
+  // ops read-only host socket proxy. (`opsSession` is false for a sandbox; this
+  // asserts buildEnv routes it to the write-capable session proxy + a session
+  // compose project, with no `OPS_DOCKER_HOST` leak.)
+  it("docs/211: a sandbox (dockerAccess on, opsSession off) uses the session proxy, not OPS_DOCKER_HOST", () => {
+    const config = baseConfig({ dockerAccess: true, opsSession: false });
+    const env = buildEnv(config, "/workspace", 9100, "docker-proxy", 2375);
+    expect(env).toContain("DOCKER_HOST=tcp://docker-proxy:2375");
+    expect(env).not.toContain(`DOCKER_HOST=${OPS_DOCKER_HOST}`);
+    expect(env.some((e) => e.startsWith("COMPOSE_PROJECT_NAME="))).toBe(true);
+  });
+
   it("passes through a stable orchestrator host override for worker callbacks", async () => {
     const oldHost = process.env.SHIPIT_ORCHESTRATOR_HOST;
     const oldFallbacks = process.env.SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS;

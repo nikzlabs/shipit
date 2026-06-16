@@ -1247,3 +1247,52 @@ describe("readAgentConfig (W4a)", () => {
     expect(config.agent).toMatchObject({ memory: 3072, cpu: 2, pids: 2048 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// docs/211 — sandbox Docker capability threads through buildConfigForWorkspace
+// ---------------------------------------------------------------------------
+describe("buildConfigForWorkspace — sandbox Docker capability (docs/211)", () => {
+  let mgr: SessionContainerManager;
+  let tmpDir: string;
+
+  beforeEach(() => {
+    mgr = new SessionContainerManager({
+      docker: createMockDocker() as any,
+      imageName: "shipit-session-worker:test",
+      networkName: "shipit-test",
+      skipHealthCheck: true,
+    });
+    // An empty sandbox workspace has NO shipit.yaml, so the workspace-derived
+    // dockerAccess is always false — the capability grant is the only source.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sandbox-docker-"));
+  });
+  afterEach(async () => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    await mgr.dispose();
+  });
+
+  const base = (dockerAccess?: boolean): ContainerConfig =>
+    mgr.buildConfigForWorkspace({
+      sessionId: "sbx123456789",
+      sessionDir: tmpDir,
+      workspaceDir: tmpDir,
+      credentialsDir: "/credentials",
+      ...(dockerAccess !== undefined ? { dockerAccess } : {}),
+    });
+
+  it("grants session-scoped dockerAccess when capabilities.docker is on (override wins over the absent shipit.yaml)", () => {
+    const config = base(true);
+    expect(config.dockerAccess).toBe(true);
+    // A sandbox is NEVER an ops session: no host socket, no journal/host mounts.
+    expect(config.opsSession).toBeFalsy();
+    expect(config.hostMounts).toBeUndefined();
+  });
+
+  it("leaves dockerAccess off when capabilities.docker is off (explicit false still wins)", () => {
+    expect(base(false).dockerAccess).toBe(false);
+  });
+
+  it("falls back to the workspace-derived value (false here) when no override is passed (non-sandbox path)", () => {
+    expect(base(undefined).dockerAccess).toBe(false);
+  });
+});

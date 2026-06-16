@@ -24,7 +24,7 @@
  */
 
 import type { CredentialStore } from "./credential-store.js";
-import type { EgressAllowlistEntry, EgressAllowlistSource } from "../shared/types.js";
+import type { EgressAllowlistEntry, EgressAllowlistSource, SessionInfo } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -435,6 +435,32 @@ export interface ResolvedEgressConfig {
    * "" / unset → no identity scoping (the host allowlist still applies).
    */
   identityRules?: string;
+}
+
+/**
+ * docs/211 — the per-session egress config for a **sandbox with `network` OFF**,
+ * or `null` for any other session (the caller then takes the normal store-driven
+ * path). Network-off drops egress to **lifeline-only**: an empty session
+ * allowlist (no user/MCP/operator extras, no full default base) with the base
+ * narrowed to the LLM-API lifeline (+ github.com when `git` is granted), and
+ * containment forced on — "off" only ever tightens, never loosens. The
+ * orchestrator/worker lifeline is added separately by the resolver/proxy
+ * (`orchestratorInternalNames`), so it is always reachable and not listed here.
+ *
+ * Inert where egress enforcement isn't deployed: the firewall install is gated
+ * on `egressEnforce && contained`, so this config is simply not consumed there.
+ */
+export function sandboxLifelineEgressConfig(
+  session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
+  identityRules: string,
+): ResolvedEgressConfig | null {
+  if (session?.kind !== "sandbox" || session.capabilities?.network !== false) return null;
+  return {
+    contained: true,
+    extraHosts: [],
+    base: sandboxLifelineBase({ git: session.capabilities.git }),
+    ...(identityRules ? { identityRules } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

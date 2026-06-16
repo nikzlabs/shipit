@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineBase } from "./egress-allowlist.js";
+import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgressConfig } from "./egress-allowlist.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
@@ -115,25 +115,16 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // so the Tier C decision endpoint honors durable allows without re-carding.
   const resolveEgressConfig = (sessionId: string): ResolvedEgressConfig => {
     // docs/211 — a sandbox session with the `network` capability OFF is dropped
-    // to **lifeline-only** egress: the LLM API (the agent's irreducible API) plus
-    // the ShipIt orchestrator/worker (added by the resolver/proxy via
-    // orchestratorInternalNames), plus github.com WHEN the `git` capability is
-    // also granted (so push/PR still work). We empty the per-session allowlist
-    // (no user/MCP/operator extras, no full default base) down to that lifeline
-    // base and force containment on — "off" only ever tightens, never loosens.
-    // Inert where egress enforcement isn't deployed: the firewall install is
-    // gated on `egressEnforce && contained`, so this config is simply not
-    // consumed there (never a silent partial state). `network` ON (the default)
-    // is the standard path below — parity with any normal session.
-    const session = sessionManager.get(sessionId);
-    if (session?.kind === "sandbox" && session.capabilities?.network === false) {
-      return {
-        contained: true,
-        extraHosts: [],
-        base: sandboxLifelineBase({ git: !!session.capabilities.git }),
-        identityRules: composeEgressIdentityRules(),
-      };
-    }
+    // to **lifeline-only** egress (LLM API + orchestrator/worker, + github.com
+    // when `git` is granted). `sandboxLifelineEgressConfig` returns null for
+    // every other session, falling through to the normal store-driven path
+    // below (parity with any session — `network` ON is the default). Inert where
+    // egress enforcement isn't deployed.
+    const lifeline = sandboxLifelineEgressConfig(
+      sessionManager.get(sessionId),
+      composeEgressIdentityRules(),
+    );
+    if (lifeline) return lifeline;
     return {
       contained: egressAllowlistStore.resolveContained(sessionId),
       extraHosts: composeEgressExtraHosts({
