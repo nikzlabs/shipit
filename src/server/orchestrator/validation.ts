@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
+import { wrapUntrustedContent } from "./untrusted-input.js";
 
 // Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";
@@ -66,16 +67,34 @@ const MAX_TOTAL_FILE_SIZE_BYTES = 500 * 1024; // 500 KB total
 const MAX_FILES_PER_MESSAGE = 10;
 
 /**
- * Format file attachments as <file> tags for Claude's prompt context.
+ * Defang the `<file …>` / `</file>` delimiter inside attacker-influenced file
+ * content so a malicious attached file can't fake a tag and break out of its
+ * `<file>` element. Only the literal delimiter token is rewritten; everything
+ * else is left byte-for-byte intact. Pairs with the envelope-marker defang in
+ * `wrapUntrustedContent` (SHI-98) for the same breakout class one level up.
+ */
+function neutralizeFileTag(content: string): string {
+  return content.replace(/<(\/?\s*file)\b/gi, "&lt;$1");
+}
+
+/**
+ * Format file attachments for the agent's prompt context. Each file is a
+ * `<file path="…">` element carrying its path/line metadata, and the whole
+ * block is wrapped in the untrusted-input provenance envelope (SHI-98 — Gap 4
+ * of docs/172) so the agent treats attached file content (uploads and
+ * cloned-repo files alike) as DATA, not instructions. See
+ * `untrusted-input.ts` for the lens and its (deliberate) limits.
  */
 export function formatFileContext(files: FileAttachment[]): string {
-  return files.map(f => {
+  if (files.length === 0) return "";
+  const inner = files.map(f => {
     const lineRange = f.startLine && f.endLine
       ? ` lines="${f.startLine}-${f.endLine}"`
       : "";
     const header = `<file path="${f.path}"${lineRange}>`;
-    return `${header}\n${f.content}\n</file>`;
+    return `${header}\n${neutralizeFileTag(f.content)}\n</file>`;
   }).join("\n\n");
+  return wrapUntrustedContent({ source: "file", content: inner });
 }
 
 /**

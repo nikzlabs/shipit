@@ -66,6 +66,19 @@ describe("buildAgentSystemInstructions", () => {
     }
   });
 
+  // SHI-98 (docs/172 Gap 4) — untrusted-input lens. Structural anchors only
+  // (## header, envelope-marker tokens, doc pointer), per this file's
+  // convention of not asserting churny prose phrases.
+  it("documents the untrusted-input lens and the provenance envelope", () => {
+    const out = buildAgentSystemInstructions();
+    expect(out).toContain("## Untrusted input");
+    // The provenance envelope markers the agent must honour.
+    expect(out).toContain("<<UNTRUSTED");
+    expect(out).toContain("<<END UNTRUSTED");
+    // Pointer to the platform doc.
+    expect(out).toContain("/shipit-docs/untrusted-input.md");
+  });
+
   // docs/117 Phase 2 — per-agent "Parallel sessions" guidance is composed in
   // only when an `agentId` is supplied, and the Claude/Codex fragments differ.
 
