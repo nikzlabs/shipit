@@ -79,6 +79,61 @@ describe("computeNotableFiles — classification", () => {
     ]);
   });
 
+  it("collapses same-feature docs that resolve to one title, keeping the canonical plan.md", async () => {
+    // plan.md + checklist.md in the same dir both derive their title from the
+    // directory name → previously two identical chips. Collapse to one,
+    // pointing at plan.md, in first-seen position.
+    const dir = "docs/210-agent-spawned-sessions";
+    fs.mkdirSync(path.join(tmpDir, dir), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, dir, "plan.md"), "# no frontmatter\n");
+    fs.writeFileSync(path.join(tmpDir, dir, "checklist.md"), "# no frontmatter\n");
+
+    const result = await computeNotableFiles(tmpDir, [
+      { status: "M", path: `${dir}/checklist.md` },
+      { status: "M", path: `${dir}/plan.md` },
+    ]);
+    expect(result).toEqual([
+      { path: `${dir}/plan.md`, title: "Agent Spawned Sessions", kind: "doc", status: "M" },
+    ]);
+  });
+
+  it("keeps the first when colliding-title docs have equal filename rank", async () => {
+    // Two different dirs whose plan.md share a frontmatter title — equal rank,
+    // so first-seen wins and the chip stays at its original position.
+    fs.mkdirSync(path.join(tmpDir, "docs/a"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "docs/b"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "docs/a/plan.md"), "---\ntitle: Shared Title\n---\n");
+    fs.writeFileSync(path.join(tmpDir, "docs/b/plan.md"), "---\ntitle: Shared Title\n---\n");
+
+    const result = await computeNotableFiles(tmpDir, [
+      { status: "M", path: "docs/a/plan.md" },
+      { status: "A", path: "docs/b/plan.md" },
+    ]);
+    expect(result).toEqual([
+      { path: "docs/a/plan.md", title: "Shared Title", kind: "doc", status: "M" },
+    ]);
+  });
+
+  it("keeps docs with distinct titles and never collapses config files sharing a basename", async () => {
+    fs.mkdirSync(path.join(tmpDir, "docs/a"), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "docs/b"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "docs/a/plan.md"), "---\ntitle: Alpha\n---\n");
+    fs.writeFileSync(path.join(tmpDir, "docs/b/plan.md"), "---\ntitle: Beta\n---\n");
+
+    const result = await computeNotableFiles(tmpDir, [
+      { status: "M", path: "docs/a/plan.md" },
+      { status: "M", path: "docs/b/plan.md" },
+      { status: "M", path: "package.json" },
+      { status: "M", path: "services/api/package.json" },
+    ]);
+    expect(result.map((f) => [f.path, f.title])).toEqual([
+      ["docs/a/plan.md", "Alpha"],
+      ["docs/b/plan.md", "Beta"],
+      ["package.json", "package.json"],
+      ["services/api/package.json", "package.json"],
+    ]);
+  });
+
   it("skips non-notable files (code, lockfiles, assets)", async () => {
     const result = await computeNotableFiles(tmpDir, [
       { status: "M", path: "src/client/App.tsx" },

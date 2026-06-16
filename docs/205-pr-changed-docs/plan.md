@@ -141,6 +141,15 @@ new `markdown.resolveDocTitle` (frontmatter `title`, else path-derived — a
 deleted doc still gets a sensible name). Statuses normalize to M/A/D
 (renames/copies → M).
 
+Docs that resolve to the **same title** are collapsed to one chip
+(`dedupeNotableDocs`): a feature dir's `plan.md` + `checklist.md` both derive
+their title from the directory name (`titleFromPath`), which previously
+surfaced one logical document as two identical chips. The kept chip prefers the
+canonical file (`plan.md` > `index` > `readme` > rest) so the click opens the
+doc's main page, and stays in first-seen position. Config files are **not**
+deduped — a monorepo's multiple `package.json` / `docker-compose.yml` are
+genuinely distinct.
+
 Key files added: `src/server/orchestrator/services/notable-files.ts`,
 `src/client/components/ChangedDocsStrip.tsx`, and the
 `getSavedChangedDocsExpanded` / `saveChangedDocsExpanded` helpers in

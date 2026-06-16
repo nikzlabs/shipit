@@ -62,8 +62,53 @@ function normalizeStatus(raw: string): "M" | "A" | "D" | null {
 }
 
 /**
+ * Preference rank for collapsing doc chips that share a title — lower wins.
+ * A feature directory is one logical document split across generic files
+ * (`plan.md`, `checklist.md`, …); when several change together we keep a
+ * single chip pointing at the canonical file so it opens the doc's main page.
+ */
+const DOC_FILENAME_RANK: Record<string, number> = { plan: 0, index: 1, readme: 2 };
+function docFilenameRank(p: string): number {
+  return DOC_FILENAME_RANK[path.basename(p, ".md").toLowerCase()] ?? 3;
+}
+
+/**
+ * Collapse design-doc chips that resolve to the same title into one. A feature
+ * dir's `plan.md` + `checklist.md` both derive their title from the directory
+ * name ({@link resolveDocTitle} → `titleFromPath`), which previously surfaced
+ * the same document as two identical chips on the PR card. We keep one chip per
+ * title, preferring the canonical file (`plan.md`) so the click opens the doc's
+ * main page, and preserving first-seen order.
+ *
+ * Config files are NOT deduped: two same-named configs in different directories
+ * (a monorepo's multiple `package.json` / `docker-compose.yml`) are genuinely
+ * distinct files the user needs to see separately.
+ */
+function dedupeNotableDocs(files: NotableFileChange[]): NotableFileChange[] {
+  const docIndexByTitle = new Map<string, number>();
+  const out: NotableFileChange[] = [];
+  for (const file of files) {
+    if (file.kind !== "doc") {
+      out.push(file);
+      continue;
+    }
+    const existingIdx = docIndexByTitle.get(file.title);
+    if (existingIdx === undefined) {
+      docIndexByTitle.set(file.title, out.length);
+      out.push(file);
+    } else if (docFilenameRank(file.path) < docFilenameRank(out[existingIdx].path)) {
+      // A more canonical file collides — replace in place, keeping position.
+      out[existingIdx] = file;
+    }
+  }
+  return out;
+}
+
+/**
  * Classify a changed-file list into the notable subset (docs + config),
- * resolving the frontmatter `title` for docs against `workspaceDir`.
+ * resolving the frontmatter `title` for docs against `workspaceDir`. Docs that
+ * resolve to the same title are collapsed to a single chip (see
+ * {@link dedupeNotableDocs}).
  */
 export async function computeNotableFiles(
   workspaceDir: string,
@@ -82,7 +127,7 @@ export async function computeNotableFiles(
       out.push({ path: change.path, title, kind: "doc", status });
     }
   }
-  return out;
+  return dedupeNotableDocs(out);
 }
 
 /**
