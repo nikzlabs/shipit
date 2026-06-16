@@ -1,8 +1,14 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!-- Full-bleed WebView. The old toolbar (an ~actionBarSize black bar that only
-     hosted an overflow menu) is gone; reload is pull-to-refresh and Settings is
-     a small translucent cog floating at top-center, away from the corners where
-     ShipIt's own web UI keeps its controls. -->
+     hosted an overflow menu) is gone; reload is long-press on the cog and
+     Settings is a small translucent cog floating at top-center, away from the
+     corners where ShipIt's own web UI keeps its controls.
+
+     Pull-to-refresh (SwipeRefreshLayout) was removed: ShipIt's web UI scrolls
+     inside inner containers, so the WebView document sits at scrollY == 0 and
+     SwipeRefreshLayout.canChildScrollUp() reported "at top" for every downward
+     swipe, stealing the gesture and making chat history unscrollable. The cog's
+     long-press → reload is the Reload action (see docs/116 plan.md:40). -->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
@@ -11,17 +17,11 @@
     android:background="@color/shipit_bg"
     android:fitsSystemWindows="true">
 
-    <androidx.swiperefreshlayout.widget.SwipeRefreshLayout
-        android:id="@+id/swipe_refresh"
+    <WebView
+        android:id="@+id/web_view"
         android:layout_width="match_parent"
-        android:layout_height="match_parent">
-
-        <WebView
-            android:id="@+id/web_view"
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:background="@color/shipit_bg" />
-    </androidx.swiperefreshlayout.widget.SwipeRefreshLayout>
+        android:layout_height="match_parent"
+        android:background="@color/shipit_bg" />
 
     <ImageButton
         android:id="@+id/settings_button"
