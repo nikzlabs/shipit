@@ -33,6 +33,7 @@ import { overlayScopeHash, overlayVolumeName, overlayBaseGenDir, type OverlaySpe
 import { readBasePointerByHash, type BasePointer, type OverlayScope } from "./overlay-base.js";
 import { makeMarker, serializeMarker } from "../shared/install-marker.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
 // Feature flag + eligibility
@@ -457,10 +458,20 @@ export async function preStampInstallMarker(args: {
   specs: DepDirOverlaySpec[];
   /** Pointer reader — injected for tests; defaults to the real by-hash read. */
   readPointer?: (stateDir: string, scopeHash: string) => BasePointer | null;
+  /**
+   * Hand a node back to the worker uid — injected for tests; defaults to
+   * `chownToSessionWorker` (a no-op when `SHIPIT_SESSION_WORKER_UID` is unset).
+   * The marker dir + file are created by the **root** orchestrator here, so
+   * without this handoff `.shipit/` is left `root:root` — and the worker's
+   * uid-1000 `writeMarker` then EACCESes when a later HEAD change invalidates
+   * this marker and a real install tries to re-stamp it.
+   */
+  chown?: (targetPath: string) => void;
 }): Promise<boolean> {
   const { stateDir, workspaceDir, specs } = args;
   if (specs.length === 0) return false;
   const readPointer = args.readPointer ?? readBasePointerByHash;
+  const chown = args.chown ?? chownToSessionWorker;
 
   const markerFile = path.join(workspaceDir, ".shipit", ".install-done");
   if (fs.existsSync(markerFile)) return false;
@@ -525,7 +536,13 @@ export async function preStampInstallMarker(args: {
     { sourceCommit: head, runtimeKey, installCommands, depsHash },
     new Date().toISOString(),
   );
-  fs.mkdirSync(path.dirname(markerFile), { recursive: true });
+  const markerDir = path.dirname(markerFile);
+  fs.mkdirSync(markerDir, { recursive: true });
   fs.writeFileSync(markerFile, serializeMarker(marker));
+  // Hand the just-written `.shipit/` dir + marker back to the worker uid so the
+  // non-root agent can later overwrite the marker (worker `writeMarker`) when a
+  // HEAD change invalidates it. No-op in legacy root runtime.
+  chown(markerDir);
+  chown(markerFile);
   return true;
 }

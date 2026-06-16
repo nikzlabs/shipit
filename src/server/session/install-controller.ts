@@ -29,6 +29,7 @@ import {
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
 import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
+import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./install-failure.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { createDepSnapshotTar, safeDepDirRelpath } from "./dep-snapshot.js";
@@ -375,9 +376,9 @@ export class InstallController {
     try {
       for (const rawCmd of commands) {
         const cmd = tuneNpmInstall(rawCmd);
-        const exitCode = await this.runSingleInstallCommand(cmd);
+        const { code: exitCode, stderrTail } = await this.runSingleInstallCommand(cmd);
         if (exitCode !== 0) {
-          const message = `Command "${cmd}" exited with code ${exitCode}`;
+          const message = formatInstallFailureMessage(cmd, exitCode, stderrTail);
           this._lastInstallResult = { ok: false, command: cmd, message };
           // Update terminal state BEFORE broadcasting so an orchestrator that
           // races to query `/install/status` after the SSE event sees a
@@ -493,7 +494,7 @@ export class InstallController {
    * still override by prefixing their install command (e.g. `NODE_ENV=production
    * npm install --omit=dev`); shell prefixes win over the spawned env.
    */
-  private runSingleInstallCommand(command: string): Promise<number> {
+  private runSingleInstallCommand(command: string): Promise<{ code: number; stderrTail: string }> {
     return new Promise((resolve, reject) => {
       const proc = spawn(command, {
         shell: true,
@@ -503,6 +504,12 @@ export class InstallController {
       });
       this._installProcess = proc;
 
+      // Retain a bounded tail of stderr so a non-zero exit can report WHY it
+      // failed (e.g. the EACCES line from a root-owned workspace), not just the
+      // exit code. Streamed live to SSE as before; the tail is the keep-the-end
+      // accumulation `formatInstallFailureMessage` consumes on failure.
+      let stderrTail = "";
+
       proc.stdout?.on("data", (chunk: Buffer) => {
         this.broadcastSSE({
           type: "install_log",
@@ -511,10 +518,12 @@ export class InstallController {
       });
 
       proc.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString();
         this.broadcastSSE({
           type: "install_log",
-          data: { text: chunk.toString(), stream: "stderr" },
+          data: { text, stream: "stderr" },
         });
+        stderrTail = (stderrTail + text).slice(-INSTALL_STDERR_TAIL_BYTES);
       });
 
       proc.on("error", (err) => {
@@ -524,7 +533,7 @@ export class InstallController {
 
       proc.on("close", (code) => {
         this._installProcess = null;
-        resolve(code ?? 1);
+        resolve({ code: code ?? 1, stderrTail });
       });
     });
   }

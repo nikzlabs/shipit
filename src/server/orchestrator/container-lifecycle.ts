@@ -27,7 +27,7 @@ import {
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
 import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
-import { chownToSessionWorker } from "./session-worker-uid.js";
+import { chownToSessionWorker, handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
   buildResolverConfigB64,
@@ -514,6 +514,57 @@ export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void
   }
 }
 
+/**
+ * Self-heal worker ownership of a session's workspace on every container
+ * (re)create (SHI — recreate-after-idle root-owned-tree wedge).
+ *
+ * The non-root entrypoint's boot-time `chown -R /workspace` runs ONCE per
+ * workspace: it is skipped on every later boot because the UID-stamped sentinel
+ * `/workspace/.shipit-uid-<uid>` already exists from the first boot (the
+ * deliberate warm-reuse optimization — re-walking a populated tree every boot is
+ * expensive). The orchestrator's per-git-op handbacks
+ * (`handWorkspaceBackToWorker` on claim / rebase / fork-merge, `.git`-only on
+ * post-turn commit) are what keep the tree worker-owned thereafter — but the
+ * container-recreate-after-idle path runs NONE of them. It simply boots a fresh
+ * container against the persisted clone and relies on the tree already being
+ * worker-owned.
+ *
+ * That assumption breaks for any root-owned node that slipped into the worktree
+ * during the session's life and was never handed back (an interrupted handback,
+ * an orchestrator-root write the narrow `.git`-only post-turn handback didn't
+ * cover, the root-written pre-stamp marker). On recreate it persists, and the
+ * non-root agent (uid 1000) then EACCESes: `npm install` fails fast writing into
+ * the root-owned cwd (its temp / lockfile), and the agent can't edit tracked
+ * files or rebase — the "wedged, root-owned workspace" symptom.
+ *
+ * Re-asserting worker ownership here, at the single choke point every boot
+ * passes through, makes the next resume self-heal. The walk is bounded — it
+ * excludes `.git` object data files and the declared dep dirs (the large
+ * `node_modules` overlay) — and idempotent (an already-worker-owned tree costs a
+ * no-op `lchown` per node), so the steady-state cost is negligible.
+ *
+ * Gated twice:
+ *  - `handWorkspaceBackToWorker` is a no-op when `SHIPIT_SESSION_WORKER_UID` is
+ *    unset (legacy root runtime — byte-for-byte unchanged); and
+ *  - we skip entirely in dev/dogfood bind-mount mode (no `workspaceVolume`),
+ *    where `/workspace` is the developer's host source tree and a recursive
+ *    chown would rewrite host ownership (docs/150 §2/§9, mirrors the entrypoint's
+ *    `SHIPIT_SKIP_WORKSPACE_CHOWN`).
+ *
+ * Exported + the chown injectable so the gating is unit-testable without root.
+ */
+export function selfHealWorkspaceOwnership(
+  config: Pick<ContainerConfig, "workspaceDir">,
+  workspaceVolume: string | undefined,
+  handBack: (workspaceDir: string) => void = handWorkspaceBackToWorker,
+): void {
+  // Dev/dogfood bind mount — never chown the host source tree.
+  if (!workspaceVolume) return;
+  const workspaceDir = config.workspaceDir;
+  if (!workspaceDir) return;
+  handBack(workspaceDir);
+}
+
 // ---------------------------------------------------------------------------
 // Create
 // ---------------------------------------------------------------------------
@@ -669,6 +720,13 @@ export async function createContainer(
   const shortId = config.sessionId.slice(0, 12);
 
   try {
+    // Self-heal worker ownership of the persisted workspace BEFORE the worker
+    // boots (and its `agent.install` runs). On a recreate-after-idle nothing
+    // else re-asserts it, so a root-owned node left in the worktree would
+    // otherwise wedge the non-root agent (EACCES) and fail install fast. No-op
+    // in legacy root runtime + dev bind-mount mode. See selfHealWorkspaceOwnership.
+    selfHealWorkspaceOwnership(config, deps.workspaceVolume);
+
     // docs/183 dep-dir design — create each per-session `local` `type=overlay`
     // volume (serialized inside createOverlayVolume to dodge the overlay2 EBUSY
     // hazard) right before the container references them; the daemon performs the

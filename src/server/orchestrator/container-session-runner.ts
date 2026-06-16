@@ -1572,16 +1572,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.signalInstallComplete();
           break;
 
-        case "install_error":
+        case "install_error": {
+          const message = (data.message as string) ?? "Install failed";
+          // Log to the orchestrator stdout (the service-log stream Ops reads),
+          // not only `emitMessage` — a recreate-after-idle install runs with no
+          // viewer attached, so an emit-only failure is effectively swallowed
+          // (the original incident surfaced only as a stale `install_ok=false`).
+          console.error(
+            `[install:${this.sessionId}] failed: ${message}`,
+          );
           this.emitMessage({
             type: "install_status",
             sessionId: this.sessionId,
             status: "error",
             command: data.command as string | undefined,
-            message: (data.message as string) ?? "Install failed",
+            message,
           });
           this.signalInstallComplete(false);
           break;
+        }
 
         // --- MCP server status (docs/088) ---
 
