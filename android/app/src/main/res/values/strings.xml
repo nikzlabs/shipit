@@ -14,5 +14,4 @@
     <string name="settings_error_https_required">URL must use https:// (http:// is allowed only for Tailscale *.ts.net hosts).</string>
 
     <string name="menu_settings">Open settings</string>
-    <string name="menu_reload">Reload</string>
 </resources>

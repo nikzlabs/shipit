@@ -14,14 +14,14 @@
 ## App code
 - [x] `Prefs.kt` — `EncryptedSharedPreferences` with single `shipit_url` key.
 - [x] `SettingsActivity.kt` — single-field URL form, validates `https://` (allows `http://` only when `BuildConfig.DEBUG`), normalizes (defaults missing scheme to `https://`, strips trailing slashes), saves via `Prefs`, finishes.
-- [x] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launches `SettingsActivity`; otherwise loads the URL. Wires `WebViewClient.shouldOverrideUrlLoading` to send same-host URLs to the WebView, keep Cloudflare Access authentication inside the WebView so `CF_Authorization` reaches the app cookie jar, and send other external URLs to the system browser. Wires `WebChromeClient.onShowFileChooser` for attachments via `ActivityResultContracts.GetMultipleContents`. Hardware back via `OnBackPressedDispatcher`. Toolbar overflow → "Open settings" + "Reload".
+- [x] `MainActivity.kt` — full-bleed `WebView`; if `Prefs.shipitUrl` is empty, launches `SettingsActivity`; otherwise loads the URL. Wires `WebViewClient.shouldOverrideUrlLoading` to send same-host URLs to the WebView, keep Cloudflare Access authentication inside the WebView so `CF_Authorization` reaches the app cookie jar, and send other external URLs to the system browser. Wires `WebChromeClient.onShowFileChooser` for attachments via `ActivityResultContracts.GetMultipleContents`. Hardware back via `OnBackPressedDispatcher`. **No toolbar** — full-bleed WebView; Settings via a translucent top-center floating cog (tap → Settings, long-press → reload), Reload primarily via pull-to-refresh (`SwipeRefreshLayout`).
 - [ ] ~~`OAuthRedirectActivity.kt`.~~ **Skipped for v1.** OAuth callbacks already land on the user's ShipIt origin via the WebView; user back-gestures into the app to continue. Documented as v1.1 polish in `plan.md` and in `android/README.md` under "Known limitations."
 
 ## Resources
 - [x] `AndroidManifest.xml` — `INTERNET` + `ACCESS_NETWORK_STATE` permissions, `MainActivity` as `LAUNCHER`, `SettingsActivity` exported=false, network security config + backup rules referenced.
-- [x] `res/layout/activity_main.xml` — CoordinatorLayout + AppBar + WebView, ShipIt-dark background.
+- [x] `res/layout/activity_main.xml` — full-bleed `FrameLayout` → `SwipeRefreshLayout` → `WebView`, plus a top-center floating settings `ImageButton`; ShipIt-dark background. (Was CoordinatorLayout + AppBar + Toolbar — the toolbar/black bar was removed.)
 - [x] `res/layout/activity_settings.xml` — TextInputLayout + MaterialButton, ShipIt-dark theme.
-- [x] `res/menu/main.xml` — overflow menu with Reload + Open settings.
+- [x] `res/drawable/ic_settings.xml` (gear) + `bg_settings_button.xml` (faint translucent circle) for the floating cog. (`res/menu/main.xml` deleted — no toolbar to host it.)
 - [x] `res/values/strings.xml`, `colors.xml` (mirrors web UI palette `#030712` + accent), `themes.xml` (DayNight.NoActionBar with system bars themed).
 - [x] `res/xml/network_security_config.xml` — base disallows cleartext; debug-overrides allow it for local dev.
 - [x] `res/xml/backup_rules.xml`, `data_extraction_rules.xml` — exclude the encrypted prefs from cloud backup / device transfer.

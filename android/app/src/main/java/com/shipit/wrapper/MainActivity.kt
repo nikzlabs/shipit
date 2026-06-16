@@ -6,8 +6,6 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
-import android.view.Menu
-import android.view.MenuItem
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.ValueCallback
@@ -78,10 +76,21 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
-        setSupportActionBar(binding.toolbar)
-        // Toolbar exists for the overflow menu (Open Settings) but is visually
-        // minimal — supportActionBar's title is hidden in the layout.
-        supportActionBar?.setDisplayShowTitleEnabled(false)
+
+        // The old toolbar is gone (it only hosted an overflow menu). Its two
+        // actions now live as chrome-free affordances over the full-bleed
+        // WebView: a translucent settings cog at top-center, and pull-to-refresh
+        // for reload.
+        binding.settingsButton.setOnClickListener {
+            settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
+        }
+        // Long-press the cog = reload. A reliable fallback in case pull-to-refresh
+        // misbehaves against ShipIt's internal scroll containers (see docs/116).
+        binding.settingsButton.setOnLongClickListener {
+            binding.webView.reload()
+            true
+        }
+        binding.swipeRefresh.setOnRefreshListener { binding.webView.reload() }
 
         prefs = Prefs(applicationContext)
 
@@ -139,6 +148,7 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
+                binding.swipeRefresh.isRefreshing = false
             }
         }
 
@@ -224,23 +234,6 @@ class MainActivity : AppCompatActivity() {
     private fun isHttpNavigation(uri: Uri): Boolean {
         val scheme = uri.scheme?.lowercase()
         return scheme == "http" || scheme == "https"
-    }
-
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menuInflater.inflate(R.menu.main, menu)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean = when (item.itemId) {
-        R.id.action_settings -> {
-            settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
-            true
-        }
-        R.id.action_reload -> {
-            binding.webView.reload()
-            true
-        }
-        else -> super.onOptionsItemSelected(item)
     }
 
     override fun onDestroy() {
