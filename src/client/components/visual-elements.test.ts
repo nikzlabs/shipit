@@ -350,6 +350,92 @@ describe("buildVisualElements", () => {
     });
   });
 
+  // A present card must never land in the clipped `ToolCallGroup` container
+  // (`max-h-30 overflow-y-hidden`) where a stack of Read/Edit/Bash lines would
+  // scroll it out of view. It's matched by predicate (not the STANDALONE_TOOLS
+  // set) because its tool name is MCP-prefixed and varies.
+  //
+  // These cases also pin the post-reload / post-restart guarantee: each builds
+  // the message in the exact shape `chat-history.fromRow` rehydrates (toolUse +
+  // toolResults, where the `presentId` rides in the result content). Because the
+  // present card is a normal tool in the agent-event stream — persisted via the
+  // standard `tool_use`/`tool_results` columns, not a side-channel card — it
+  // re-derives the same standalone element after a page reload or server restart.
+  describe("present card extraction", () => {
+    const presentNames = [
+      "present",
+      "mcp__shipit__present",
+      "mcp__shipit-present__present", // legacy per-tool server (pre-SHI-128)
+    ];
+
+    for (const name of presentNames) {
+      it(`extracts a lone "${name}" call into its own standalone element (no clipped group)`, () => {
+        const elements = buildVisualElements([
+          toolMsg([tool("t1", name, { title: "Chart" })], {
+            results: [{ toolUseId: "t1", content: '{"presentId":"pres_abc"}' }],
+          }),
+        ]);
+        expect(elements).toHaveLength(1);
+        expect(elements[0]).toMatchObject({ kind: "standalone-tool" });
+        if (elements[0].kind === "standalone-tool") {
+          expect(elements[0].tool.name).toBe(name);
+        }
+      });
+    }
+
+    it("keeps a present card out of a group of Read/Edit lines from adjacent messages", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Read")]),
+        toolMsg([tool("t2", "Edit")]),
+        toolMsg([tool("t3", "mcp__shipit__present", { title: "Diagram" })], {
+          results: [{ toolUseId: "t3", content: '{"presentId":"pres_xyz"}' }],
+        }),
+      ]);
+      // Read+Edit accumulate into ONE tool-group; the present card breaks out
+      // into its own standalone element instead of being appended to that group.
+      expect(elements).toHaveLength(2);
+      expect(elements[0].kind).toBe("tool-group");
+      if (elements[0].kind === "tool-group") {
+        expect(elements[0].items.map((it) => it.tool.name)).toEqual(["Read", "Edit"]);
+      }
+      expect(elements[1]).toMatchObject({ kind: "standalone-tool" });
+      if (elements[1].kind === "standalone-tool") {
+        expect(elements[1].tool.name).toBe("mcp__shipit__present");
+      }
+    });
+
+    it("splits mixed groupable + present in one message into tool-group + standalone", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "Read"), tool("t2", "mcp__shipit__present", { title: "Mock" })], {
+          results: [{ toolUseId: "t2", content: '{"presentId":"pres_1"}' }],
+        }),
+      ]);
+      expect(elements).toHaveLength(2);
+      expect(elements[0].kind).toBe("tool-group");
+      if (elements[0].kind === "tool-group") {
+        expect(elements[0].items).toHaveLength(1);
+        expect(elements[0].items[0].tool.name).toBe("Read");
+      }
+      expect(elements[1]).toMatchObject({ kind: "standalone-tool" });
+      if (elements[1].kind === "standalone-tool") {
+        expect(elements[1].tool.name).toBe("mcp__shipit__present");
+      }
+    });
+
+    it("renders a present card alongside accompanying text as a single non-clipped bubble", () => {
+      const elements = buildVisualElements([
+        toolMsg([tool("t1", "mcp__shipit__present", { title: "Mock" })], {
+          text: "Here's the mockup.",
+          results: [{ toolUseId: "t1", content: '{"presentId":"pres_2"}' }],
+        }),
+      ]);
+      // Text + present render in the message bubble (full-height, not the clipped
+      // tool-group), so the card stays visible. No tool-group element is emitted.
+      expect(elements).toHaveLength(1);
+      expect(elements[0]).toMatchObject({ kind: "message", index: 0, hideTools: false });
+    });
+  });
+
   describe("message ordering (chronological preservation)", () => {
     it("preserves order: text, tools, text, tools", () => {
       const elements = buildVisualElements([

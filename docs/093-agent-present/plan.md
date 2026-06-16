@@ -380,6 +380,22 @@ Let me know if you'd like any changes.
 
 This connects the conversation to the visual output without rendering the full artifact inline (which is the heavier Option E). The chip is emitted as part of the tool result display — minimal client work.
 
+> **Update (standalone chip placement):** the present chip renders as its **own
+> standalone element** in the transcript, never folded into the grouped
+> `ToolCallGroup` container. That container is clipped (`max-h-30
+> overflow-y-hidden hover:overflow-y-auto`), so a present chip sharing it with a
+> stack of Read/Edit/Bash lines would be scrolled out of view. `buildVisualElements`
+> (`visual-elements.ts`) excludes the present tool from the groupable accumulator
+> via the `isStandaloneTool` predicate — which matches the present tool by name
+> (`isPresentTool` in `tool-names.ts`, handling the MCP-prefixed and legacy forms)
+> rather than the exact-name `STANDALONE_TOOLS` set — and emits it as a
+> `standalone-tool` element (the same path used by `ExitPlanMode` /
+> `AskUserQuestion`). This is pure client-side derivation from the persisted
+> `tool_use`/`tool_results`, so the chip survives a page reload and server
+> restart identically (its `presentId` rides in the persisted result content; the
+> Present-tab entry it re-opens is restored from the durable `presentations`
+> table, docs/093 serve-from-disk).
+
 ---
 
 ## Implementation sketch — Tier 1 (inline artifacts)

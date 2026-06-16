@@ -24,6 +24,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { sessionRelativePath } from "../path-utils.js";
 import { usePresentStore } from "../stores/present-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { parseMcpToolName, isPresentTool } from "./tool-names.js";
 import type { ToolUseBlock, ToolResultBlock } from "./MessageList.js";
 
 /** Scrollable container for consecutive tool calls. Max 5 lines, auto-scrolls during streaming. */
@@ -270,14 +271,6 @@ function patchKindVerb(kind?: string): string {
   }
 }
 
-/** Parses an MCP tool name like "mcp__playwright__browser_take_screenshot" into { server, tool } parts. */
-function parseMcpToolName(name: string): { server: string; tool: string } | null {
-  if (!name.startsWith("mcp__")) return null;
-  const parts = name.split("__");
-  if (parts.length < 3) return null;
-  return { server: parts[1], tool: parts.slice(2).join("__") };
-}
-
 /**
  * Per-tool glyph + short verb for the inline tool line. The icon anchors the
  * eye; the one-word `label` keeps the verb visible (not hover-only) so it reads
@@ -395,16 +388,6 @@ function extractPresentPayload(raw: string): { presentId?: unknown; title?: unkn
     return value;
   }
   return null;
-}
-
-function isPresentTool(name: string): boolean {
-  if (name === "present") return true;
-  const parsed = parseMcpToolName(name);
-  if (parsed?.tool !== "present") return false;
-  // The consolidated `shipit` server (SHI-128) replaced the per-tool
-  // `shipit-present` server; match both so already-persisted present cards in
-  // pre-SHI-128 sessions (whose tool names are stored verbatim) still render.
-  return parsed.server === "shipit" || parsed.server === "shipit-present";
 }
 
 function PresentToolChip({

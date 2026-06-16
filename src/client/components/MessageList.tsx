@@ -771,7 +771,9 @@ export function MessageList({
           );
         }
 
-        // ── Standalone tool: ExitPlanMode or AskUserQuestion extracted from an empty-text message ──
+        // ── Standalone tool: ExitPlanMode, AskUserQuestion, or a present card
+        //    extracted from an empty-text message so it isn't folded into (and
+        //    scrolled away inside) the clipped tool-group container ──
         if (el.kind === "standalone-tool") {
           // AskUserQuestion / ExitPlanMode block the agent waiting for user
           // input, so the surrounding message keeps `streaming`/`isLoading`
