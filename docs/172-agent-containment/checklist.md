@@ -309,8 +309,61 @@ tracker as separate issues. None implemented yet.
             tmpfs HOME (`SHIPIT_READONLY_HOME=1`). Distinct from SHI-45's `:ro` bind mounts.
       - [x] Unit tests (`container-hardening.test.ts` + HostConfig wiring in
             `session-container.test.ts`); regression-guards CapDrop/CapAdd/no-new-privileges.
-      - [ ] **Live-host verification** before enabling any flag in prod (seccomp + ro-rootfs
-            first — no host prereq; gVisor where the host registers `runsc`).
+      - [x] **Live-host verification (2026-06-16, dogfood container-mode orchestrator) —
+            found + fixed one fatal ro-rootfs defect (the predicted fix-cycle); seccomp +
+            ro-rootfs PASS; gVisor not verifiable on this host.** Flags enabled on the dev
+            compose orchestrator (`docker/local/dev/compose.yml` now passes the four
+            `SESSION_*` flags through, default-empty), restarted, fresh session per control,
+            agent container exec'd for the checks.
+          - **Seccomp (`SESSION_SECCOMP=1`) — PASS.** Fresh container's `HostConfig.SecurityOpt`
+            carries the inline `seccomp=<profile>` (the pre-flag container shows only
+            `no-new-privileges`). `/proc/1/status` `Seccomp: 2` (filter mode). Denies bite
+            non-vacuously: a direct `ptrace(PTRACE_TRACEME)` and `process_vm_readv` both →
+            EPERM, while the **same** ptrace probe on the default-profile (flag-unset) container
+            returns 0 — proving our profile is the thing blocking it (strace/gdb aren't in the
+            image, so the syscall was exercised via a `ctypes` probe). Pass-path intact: worker
+            `/health` 200, a real agent turn round-trips (`SECCOMPOK`), and `npm install` /
+            `corepack pnpm add` / a headless **chromium** launch+render / git / ripgrep all
+            work as uid 1000 (an apparent `npm` failure was an unrelated root-exec uid-mismatch
+            on `/dep-cache`, reproduced identically on the baseline container). Fail-closed
+            confirmed: `SESSION_SECCOMP=1` + `SESSION_SECCOMP_PROFILE=/does/not/exist` → the
+            orchestrator throws `seccomp profile is unreadable at /does/not/exist` and **no
+            container starts**.
+          - **ReadonlyRootfs (`SESSION_READONLY_ROOTFS=1`) — found + fixed a fatal entrypoint
+            defect, then PASS (rebuilt the worker image first — load-bearing).** First boot
+            crashed (Exited 1): `ln: failed to create symbolic link '/home/shipit/.claude':
+            Permission denied`. Root cause: the entrypoint re-creates the credential symlinks
+            **as root after** the chown loop hands the `/home/shipit` tmpfs to uid 1000, but the
+            container drops `DAC_OVERRIDE` (docs/150 §10, `CapEff=0xe9`) — so root can no longer
+            write into the now-non-root-owned dir. **Fix (`docker/session-worker/entrypoint.sh`):**
+            create the symlinks + npm dirs **as the target user via `gosu`** (uses
+            CAP_SETUID/SETGID, already in CapAdd; composes with `no-new-privileges`; no
+            DAC_OVERRIDE re-grant — caps unchanged). After the fix the RO container boots
+            healthy: `ReadonlyRootfs=true` + `Tmpfs` `{/tmp,/run,/home/shipit}`; `touch /etc/x`,
+            `/usr/local/bin/x`, `/opt/x` → EROFS while `/tmp`, `~/.cache`, `/workspace`,
+            `/credentials`, `/dep-cache`, `/uploads` writes SUCCEED; `/tmp` + `/home/shipit` are
+            tmpfs **exec** (a script in `/tmp` runs), `/run` `noexec`; the credential symlinks
+            survived the tmpfs shadow (`~/.claude`→`/credentials/.claude`, `.claude.json`,
+            `.codex`) and a real agent turn round-trips (`ROROOTFSOK`) — the actual proof the
+            rehydration ran and auth works; `npm i -g cowsay` lands in `~/.npm-global/bin` and
+            runs. (Observed, pre-existing & orthogonal: a **warm pre-install** `EACCES` on
+            `/workspace/.shipit/.install-done` — `/workspace` is a separate `ext4` volume, not
+            the rootfs, and the dir is created root-owned by the orchestrator; EACCES≠EROFS and
+            it reproduces independently of ro-rootfs, so it is not a Gap 5 regression.)
+          - **Combined (`SESSION_SECCOMP=1` + `SESSION_READONLY_ROOTFS=1`) — PASS.** A container
+            created under both flags carries the seccomp profile AND `ReadonlyRootfs=true`;
+            `Seccomp: 2`, ptrace→EPERM, `/etc` EROFS, credential symlinks rehydrated, worker
+            `/health` 200, `/tmp` write+exec + `npm install` OK, and the active session's agent
+            turn round-trips (`COMBINEDOK`).
+          - **gVisor (`SESSION_RUNTIME=runsc`) — not verifiable on this host (operator opt-in
+            by design).** The host runs Docker Desktop on WSL2 (engine in a managed VM, no
+            native `dockerd`, `runsc` not registered in `docker info` runtimes, no `/dev/kvm`,
+            no passwordless sudo), so the runtime can't be registered from here. Per the
+            runbook this is marked not-verifiable rather than failed; verify on a host with a
+            native `dockerd` where `runsc install` + a daemon restart works.
+          - **No escape-defense regression** across all three: every agent container kept
+            `CapDrop:[ALL]`, `CapAdd:[CHOWN,SETUID,SETGID,FOWNER,KILL]`, and
+            `no-new-privileges`.
 
 ## Cross-cutting
 
