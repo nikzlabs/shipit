@@ -84,6 +84,12 @@ class MainActivity : AppCompatActivity() {
         binding.settingsButton.setOnClickListener {
             settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
         }
+        // Long-press the cog = reload. A reliable fallback in case pull-to-refresh
+        // misbehaves against ShipIt's internal scroll containers (see docs/116).
+        binding.settingsButton.setOnLongClickListener {
+            binding.webView.reload()
+            true
+        }
         binding.swipeRefresh.setOnRefreshListener { binding.webView.reload() }
 
         prefs = Prefs(applicationContext)
