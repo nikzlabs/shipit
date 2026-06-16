@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-165
 description: CLI shim letting agents create and manage sibling ShipIt sessions for parallel branch work, with per-turn quotas and sidebar visibility.
 ---
 
