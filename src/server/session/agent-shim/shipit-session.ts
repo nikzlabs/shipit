@@ -276,6 +276,14 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
     `queue:      ${asString(child.queueLength) || "0"}`,
     `spawned-at: ${asString(child.spawnedAt)}`,
   ];
+  // Surface the resolved backend/model so the agent can confirm which model the
+  // child actually runs on, rather than relying on the child's self-report.
+  if (child.agent) {
+    lines.push(`agent:      ${asString(child.agent)}`);
+  }
+  if (child.model) {
+    lines.push(`model:      ${asString(child.model)}`);
+  }
   if (child.spawnedByTurn) {
     lines.push(`turn:       ${asString(child.spawnedByTurn)}`);
   }

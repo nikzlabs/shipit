@@ -896,6 +896,67 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(cp.lastModel).toBe("claude-opus-4-7");
   });
 
+  it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Bad agent", agent: "gpt" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("Unknown agent 'gpt'");
+  });
+
+  it("POST /spawn rejects a model that belongs to a different backend (400)", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    // gpt-5.5 is a Codex model; pairing it with --agent claude is a mismatch.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Mismatch", agent: "claude", model: "gpt-5.5" },
+    });
+    expect(res.statusCode).toBe(400);
+    const err = (res.json() as { error: string }).error;
+    expect(err).toContain("gpt-5.5");
+    expect(err).toContain("codex");
+  });
+
+  it("POST /spawn derives the agent from the model when --agent is omitted", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    // Parent is Claude; passing only --model gpt-5.5 should route the child to
+    // Codex (model is the source of truth) instead of inheriting Claude.
+    expect(sessionManager.get(parentId)?.agentId ?? "claude").toBe("claude");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Derive agent", model: "gpt-5.5" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    expect(sessionManager.get(childId)?.agentId).toBe("codex");
+    expect(sessionManager.get(childId)?.model).toBe("gpt-5.5");
+  });
+
+  it("GET /children/:childId surfaces the child's resolved agent + model", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    const spawnRes = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "View agent/model", agent: "codex", model: "gpt-5.5" },
+    });
+    expect(spawnRes.statusCode).toBe(200);
+    const childId = (spawnRes.json() as { sessionId: string }).sessionId;
+
+    const viewRes = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${parentId}/children/${childId}`,
+    });
+    expect(viewRes.statusCode).toBe(200);
+    const child = (viewRes.json() as { child: { agent?: string; model?: string } }).child;
+    expect(child.agent).toBe("codex");
+    expect(child.model).toBe("gpt-5.5");
+  });
+
   it("prepareSessionAgentEnvironment is idempotent: provisioning runs once, pin sticks", { timeout: 15_000 }, async () => {
     // Direct unit-style assertion against the env-prep function — verifies
     // the agentPinned flag gates the provisioning block so subsequent calls
