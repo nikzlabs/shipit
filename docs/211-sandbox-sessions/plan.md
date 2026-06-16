@@ -348,17 +348,17 @@ What shipped, and where it diverged from the sketch above:
   derived chrome computed from `kind`/`capabilities`, **not** a chat card — in the
   chat panel's PR-card slot.
 
-Deferred to Phase 2 (a parallel effort builds on the stable
-`kind`/`capabilities`/`POST /api/sessions/sandbox` contract): the orchestrator-side
-git-credential + PR-broker capability gates, repo-aware PR brokering, threading
-`docker`/`network` into `buildContainerConfig`/egress, the sandbox system-prompt
-variant, and the in-container `shipit-docs` page.
+Phase 2 (building on the stable
+`kind`/`capabilities`/`POST /api/sessions/sandbox` contract) shipped as two
+parallel efforts, both now landed: capability *wiring* (docker, network,
+system-prompt, in-container docs — §Phase 2a) and the orchestrator-side
+git-credential gate + repo-aware PR brokering (§Phase 2b).
 
 ### Phase 2a landed (capability wiring: docker, network, prompt, docs)
 
-Building on that contract (and running in parallel with the git-credential +
-repo-aware-PR-broker effort, which owns `agent-shim/gh.ts`,
-`agent-ops-routes.ts`, `api-routes-github.ts`, `services/github*.ts`):
+Building on that contract (in parallel with the git-credential +
+repo-aware-PR-broker effort in §Phase 2b, which owns `agent-shim/gh.ts`,
+`agent-ops-routes.ts`, `api-routes-github.ts`, `pr-target.ts`):
 
 - **Docker → session-scoped proxy.** `buildConfigForWorkspace` gained a
   `dockerAccess?` override (`opts.dockerAccess ?? limits.dockerAccess`); a
@@ -394,3 +394,37 @@ repo-aware-PR-broker effort, which owns `agent-shim/gh.ts`,
 - **In-container docs.** `src/server/shipit-docs/sandbox-session.md` documents the
   empty workspace, the three capabilities, per-repo cloning/PRs, and persistence;
   linked from `README.md` and `sessions.md`.
+
+### Phase 2b landed (credential gate + repo-aware PR brokering)
+
+The credential gate and the repo-aware PR broker shipped alongside §Phase 2a:
+
+- **Target resolution** lives in `orchestrator/pr-target.ts`. `resolvePrTarget`
+  returns `{ gitDir, remoteUrl }` from the request's optional `cwd`/`--repo`
+  overrides:
+  - `--repo OWNER/NAME` → that GitHub repo (synthesized github.com URL), operating
+    on the cwd's clone;
+  - else a repo-bound session (`session.remoteUrl` set) → **UNCHANGED**: the
+    session root + the session remote (the cwd is *ignored* here on purpose — a
+    `--local` clone's origin is a bare-cache path that must not be read);
+  - else (sandbox / no remote) → the cwd's clone, reading its own git origin
+    (`remoteUrl` undefined).
+  `resolveCloneDir` maps the container `/workspace/<name>` cwd onto the host
+  session dir and clamps any path-traversal back to the session root.
+- **Credential gate** is `gitCredentialAllowed` (same file): only a sandbox with
+  `git` off is denied. The `/api/sessions/:id/git/credential` route returns 403
+  in that case (the in-container helper treats non-2xx as "no credential", so git
+  falls back to anonymous rather than hard-failing). Repo-bound / ops sessions
+  are unaffected — defense in depth, not reliance on container env alone.
+- **Plumbing.** The `gh` shim (`agent-shim/gh.ts`) drops the `--repo` reject,
+  accepts `--repo`/`-R`, and forwards the cwd it ran in plus `--repo` on every PR
+  op (body for POST/PATCH, query for GET; the no-PR-number fallback's `pr/status`
+  lookup carries the same target). The worker broker (`agent-ops-routes.ts`)
+  forwards both through to the orchestrator. `api-routes-github.ts` resolves the
+  target on the agent-accessible PR routes and the credential route. UI-driven
+  routes (`pr/quick`, `pr`, `pr/merge`, …) are untouched — they only run for
+  repo-bound sessions. The **no-raw-token** property is preserved: every PR op
+  stays server-side; only *which* repo the broker may act on widens.
+- **Key files:** `orchestrator/pr-target.ts` (+ `.test.ts`),
+  `orchestrator/api-routes-github.ts`, `session/agent-ops-routes.ts`,
+  `session/agent-shim/gh.ts`, `shipit-docs/github.md`.

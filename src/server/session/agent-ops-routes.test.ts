@@ -186,6 +186,55 @@ describe("agent-ops routes", () => {
     expect(res.json()).toMatchObject({ error: "Not authenticated" });
   });
 
+  // ---- Repo-aware PR brokering (docs/211) ----
+
+  it("POST /agent-ops/pr/create forwards cwd/repo in the body", async () => {
+    client.setResponse("POST", "/pr/agent-create", { ok: true, status: 200, body: { url: "u" } });
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/pr/create",
+      payload: { title: "T", cwd: "/workspace/cloned", repo: "octocat/hello" },
+    });
+    expect(client.calls[0].path).toBe("/pr/agent-create");
+    expect(client.calls[0].body).toMatchObject({
+      title: "T",
+      cwd: "/workspace/cloned",
+      repo: "octocat/hello",
+    });
+  });
+
+  it("GET /agent-ops/pr/status forwards cwd/repo as query params", async () => {
+    client.setResponse("GET", "/pr/status", { ok: true, status: 200, body: { pr: null } });
+    await app.inject({
+      method: "GET",
+      url: "/agent-ops/pr/status?cwd=%2Fworkspace%2Fcloned&repo=octocat%2Fhello",
+    });
+    expect(client.calls[0].path).toContain("cwd=%2Fworkspace%2Fcloned");
+    expect(client.calls[0].path).toContain("repo=octocat%2Fhello");
+  });
+
+  it("GET /agent-ops/pr/view forwards number alongside cwd/repo", async () => {
+    client.setResponse("GET", "/pr/view", { ok: true, status: 200, body: { pr: { number: 3 } } });
+    await app.inject({
+      method: "GET",
+      url: "/agent-ops/pr/view?number=3&cwd=%2Fworkspace%2Fclone&repo=octocat%2Fhello",
+    });
+    expect(client.calls[0].path).toContain("number=3");
+    expect(client.calls[0].path).toContain("cwd=%2Fworkspace%2Fclone");
+    expect(client.calls[0].path).toContain("repo=octocat%2Fhello");
+  });
+
+  it("POST /agent-ops/pr/:number/close forwards cwd/repo in the body (was {})", async () => {
+    client.setResponse("POST", "/pr/9/close", { ok: true, status: 200, body: { url: "u" } });
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/pr/9/close",
+      payload: { cwd: "/workspace/clone", repo: "octocat/hello" },
+    });
+    expect(client.calls[0].path).toBe("/pr/9/close");
+    expect(client.calls[0].body).toMatchObject({ cwd: "/workspace/clone", repo: "octocat/hello" });
+  });
+
   // ---- Agent-spawned sessions (docs/117) ----
 
   it("POST /agent-ops/session/create forwards to /spawn with body", async () => {

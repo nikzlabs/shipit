@@ -50,6 +50,9 @@ function makeRunner() {
   async function run(
     argv: string[],
     responses: Record<string, MockResponse> = {},
+    // docs/211 — the cwd `gh` ran in. The shim forwards it so the orchestrator
+    // can resolve the repo-aware target. Fixed here so payloads are deterministic.
+    cwd = "/workspace/myrepo",
   ): Promise<{ stdout: string; stderr: string; exitCode: number | null; calls: RecordedCall[] }> {
     stdout = "";
     stderr = "";
@@ -66,7 +69,7 @@ function makeRunner() {
     };
 
     try {
-      await runShim(argv, io, {}, fakeCall as never);
+      await runShim(argv, io, {}, fakeCall as never, cwd);
     } catch (err) {
       if (err instanceof Error && err.message !== "__shim_exit__") throw err;
     }
@@ -193,15 +196,6 @@ describe("runShim — allowlist", () => {
     const out = await run(["pr", "merge"]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("Unsupported gh pr subcommand");
-  });
-
-  it("rejects --repo on every subcommand", async () => {
-    const { run } = makeRunner();
-    for (const cmd of [["pr", "create"], ["pr", "view"], ["pr", "list"], ["pr", "comment", "-b", "x"]]) {
-      const out = await run([...cmd, "--repo", "other/r"]);
-      expect(out.exitCode).not.toBe(0);
-      expect(out.stderr).toContain("does not support the --repo");
-    }
   });
 
   it("rejects --web on pr create and pr view", async () => {
@@ -535,7 +529,7 @@ describe("gh pr comment", () => {
       ["pr", "comment", "9", "-b", "Hello"],
       { "POST /agent-ops/pr/9/comment": { status: 200, body: { commentUrl: "c" } } },
     );
-    expect(out.calls[0].body).toEqual({ body: "Hello" });
+    expect(out.calls[0].body).toMatchObject({ body: "Hello" });
     expect(out.exitCode).toBe(0);
   });
 
@@ -733,5 +727,103 @@ describe("gh pr status", () => {
     expect(out.exitCode).toBe(0);
     expect(out.stdout).toContain("T #4");
     expect(out.stdout).toContain("https://github.com/x/y/pull/4");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Repo-aware brokering (docs/211) — cwd inference + --repo
+// ---------------------------------------------------------------------------
+
+describe("repo-aware brokering (docs/211)", () => {
+  it("forwards the cwd in the create payload so the broker resolves the clone", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+      "/workspace/cloned-repo",
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ title: "T", cwd: "/workspace/cloned-repo" });
+    // No --repo given, so the payload carries no explicit repo override.
+    expect(out.calls[0].body).not.toHaveProperty("repo");
+  });
+
+  it("accepts --repo on create and forwards it (no longer rejected)", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "--repo", "octocat/hello"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ repo: "octocat/hello", cwd: "/workspace/myrepo" });
+  });
+
+  it("accepts -R as the --repo alias on create", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "create", "-t", "T", "-R", "octocat/hello"],
+      { "POST /agent-ops/pr/create": { status: 200, body: { url: "u" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ repo: "octocat/hello" });
+  });
+
+  it("forwards cwd and repo as query params on read ops (view/list/status)", async () => {
+    const { run } = makeRunner();
+
+    const view = await run(
+      ["pr", "view", "3", "--repo", "octocat/hello"],
+      { "GET /agent-ops/pr/view": { status: 200, body: { pr: { title: "T", number: 3, url: "u", body: "b" } } } },
+      "/workspace/clone-a",
+    );
+    expect(view.calls[0].path).toContain("number=3");
+    expect(view.calls[0].path).toContain("cwd=%2Fworkspace%2Fclone-a");
+    expect(view.calls[0].path).toContain("repo=octocat%2Fhello");
+
+    const list = await run(
+      ["pr", "list", "--state", "closed"],
+      { "GET /agent-ops/pr/list": { status: 200, body: { prs: [] } } },
+      "/workspace/clone-b",
+    );
+    expect(list.calls[0].path).toContain("state=closed");
+    expect(list.calls[0].path).toContain("cwd=%2Fworkspace%2Fclone-b");
+
+    const status = await run(
+      ["pr", "status"],
+      { "GET /agent-ops/pr/status": { status: 200, body: { pr: null } } },
+      "/workspace/clone-c",
+    );
+    expect(status.calls[0].path).toContain("cwd=%2Fworkspace%2Fclone-c");
+  });
+
+  it("forwards cwd/repo on the simple ops (ready/close/reopen) body", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "close", "11", "--repo", "octocat/hello"],
+      { "POST /agent-ops/pr/11/close": { status: 200, body: { url: "u" } } },
+      "/workspace/clone-x",
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ cwd: "/workspace/clone-x", repo: "octocat/hello" });
+  });
+
+  it("repo-aware status fallback when no PR number is given carries cwd/repo", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["pr", "comment", "--repo", "octocat/hello", "-b", "hi"],
+      {
+        "GET /agent-ops/pr/status": { status: 200, body: { pr: { number: 7 } } },
+        "POST /agent-ops/pr/7/comment": { status: 200, body: { commentUrl: "c" } },
+      },
+      "/workspace/clone-y",
+    );
+    expect(out.exitCode).toBe(0);
+    // The status lookup that resolved the PR number forwarded the target...
+    const statusCall = out.calls.find((c) => c.path.startsWith("/agent-ops/pr/status"));
+    expect(statusCall?.path).toContain("cwd=%2Fworkspace%2Fclone-y");
+    expect(statusCall?.path).toContain("repo=octocat%2Fhello");
+    // ...and the comment POST carried the same target in its body.
+    const commentCall = out.calls.find((c) => c.path === "/agent-ops/pr/7/comment");
+    expect(commentCall?.body).toMatchObject({ body: "hi", cwd: "/workspace/clone-y", repo: "octocat/hello" });
   });
 });

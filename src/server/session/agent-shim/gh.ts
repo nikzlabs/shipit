@@ -20,7 +20,15 @@
  * - Errors go to stderr; exit code is non-zero.
  *
  * The agent never sees the GitHub token. The worker injects the session ID;
- * the shim cannot specify a different repo (`--repo` is rejected).
+ * the agent cannot ask for operations against a different *session*.
+ *
+ * Repo targeting (docs/211 — Sandbox sessions): the shim forwards the working
+ * directory it ran in (`cwd`) and an optional `--repo owner/name`, so the
+ * orchestrator can resolve the target repo from the current clone rather than a
+ * fixed session repo. For a normal repo-bound session this is a no-op (the one
+ * repo lives at the workspace root); for a sandbox it lets the agent open PRs
+ * per-clone. The no-raw-token property is unchanged — only *which* repo the
+ * (server-side) broker may act on widens.
  *
  * The shared CLI plumbing (flag parsing, the broker HTTP call, the IO
  * abstraction, body-from-file/stdin reading, the value/JSON-filter helpers)
@@ -66,8 +74,8 @@ Supported subcommands:
   gh pr close    [<number>]
   gh pr reopen   <number>
 
-Operations are scoped to this session's GitHub repo. The --repo flag is not
-supported.
+Operations target the repo of the current working directory's clone. Pass
+--repo OWNER/NAME to target a specific repo explicitly.
 
 This is a ShipIt shim, not the real gh CLI. Subcommands like \`gh api\`, \`gh repo\`,
 \`gh release\`, \`gh workflow\`, \`gh auth\`, and \`gh secret\` are intentionally
@@ -88,6 +96,44 @@ interface RunDeps {
   env: ShimEnv;
   io: ShimIO;
   call: typeof callBroker;
+  /**
+   * The working directory `gh` was invoked in (docs/211). Forwarded to the
+   * broker so the orchestrator resolves the target repo from this clone. The
+   * standalone entry passes `process.cwd()`; tests inject a fixed value.
+   */
+  cwd: string;
+}
+
+/**
+ * Build the `cwd`/`repo` fields a POST/PATCH PR op forwards in its body so the
+ * orchestrator can resolve the repo-aware target (docs/211). Only populated
+ * fields are included.
+ */
+function targetBody(deps: RunDeps, repo: string | undefined): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (deps.cwd) out.cwd = deps.cwd;
+  if (repo) out.repo = repo;
+  return out;
+}
+
+/**
+ * Build the querystring a GET PR op forwards (docs/211): the repo-aware target
+ * (`cwd` + `--repo`) merged with op-specific params (`number`, `state`). Only
+ * defined values are included.
+ */
+function targetQuery(
+  deps: RunDeps,
+  repo: string | undefined,
+  extra: Record<string, string | undefined> = {},
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) params.set(key, value);
+  }
+  if (deps.cwd) params.set("cwd", deps.cwd);
+  if (repo) params.set("repo", repo);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
 }
 
 async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
@@ -109,9 +155,6 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     },
   });
 
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag. Operations are scoped to the session's repo.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr create: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
@@ -128,6 +171,7 @@ async function handlePrCreate(args: string[], deps: RunDeps): Promise<void> {
     draft: parsed.booleans.has("draft"),
     fill: parsed.booleans.has("fill"),
     ...(labels.length > 0 ? { labels } : {}),
+    ...targetBody(deps, parsed.values.repo),
   };
   const res = await deps.call("POST", "/agent-ops/pr/create", payload, deps.env);
   if (res.status >= 200 && res.status < 300) {
@@ -162,13 +206,10 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
       "--remove-label": "removeLabel",
     },
   });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr edit: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const num = await resolvePrNumber(parsed.positional, deps);
+  const num = await resolvePrNumber(parsed.positional, deps, { repo: parsed.values.repo });
   const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr edit");
   const addLabels = normalizeLabels(parsed.arrays.addLabel);
   const removeLabels = normalizeLabels(parsed.arrays.removeLabel);
@@ -178,6 +219,7 @@ async function handlePrEdit(args: string[], deps: RunDeps): Promise<void> {
     body,
     ...(addLabels.length > 0 ? { addLabels } : {}),
     ...(removeLabels.length > 0 ? { removeLabels } : {}),
+    ...targetBody(deps, parsed.values.repo),
   };
   if (
     payload.title === undefined && payload.body === undefined &&
@@ -207,9 +249,6 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
       "-c": "comments", "--comments": "comments",
     },
   });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr view: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
@@ -217,8 +256,7 @@ async function handlePrView(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, "ShipIt's gh shim does not support --web.");
   }
 
-  const numArg = parsed.positional[0];
-  const qs = numArg ? `?number=${encodeURIComponent(numArg)}` : "";
+  const qs = targetQuery(deps, parsed.values.repo, { number: parsed.positional[0] });
   const res = await deps.call("GET", `/agent-ops/pr/view${qs}`, undefined, deps.env);
   if (res.status >= 200 && res.status < 300) {
     const pr = res.body.pr as Record<string, unknown> | null;
@@ -256,15 +294,11 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
       "--repo": "repo", "-R": "repo",
     },
   });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr list: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
 
-  const stateRaw = parsed.values.state;
-  const qs = stateRaw ? `?state=${encodeURIComponent(stateRaw)}` : "";
+  const qs = targetQuery(deps, parsed.values.repo, { state: parsed.values.state });
   const res = await deps.call("GET", `/agent-ops/pr/list${qs}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to list PRs"), 1);
@@ -287,14 +321,11 @@ async function handlePrList(args: string[], deps: RunDeps): Promise<void> {
 }
 
 async function handlePrStatus(args: string[], deps: RunDeps): Promise<void> {
-  const parsed = parseFlags(args, { values: { "--repo": "repo" }, booleans: {} });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
+  const parsed = parseFlags(args, { values: { "--repo": "repo", "-R": "repo" }, booleans: {} });
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr status: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const res = await deps.call("GET", "/agent-ops/pr/status", undefined, deps.env);
+  const res = await deps.call("GET", `/agent-ops/pr/status${targetQuery(deps, parsed.values.repo)}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to fetch PR status"), 1);
   }
@@ -319,16 +350,13 @@ async function handlePrComment(args: string[], deps: RunDeps): Promise<void> {
       "--repo": "repo", "-R": "repo",
     },
   });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr comment: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
   const body = await resolveBody(parsed.values.body, parsed.values.bodyFile, deps, "gh pr comment");
   if (!body) fail(deps.io, "gh pr comment: -b/--body is required.");
-  const num = await resolvePrNumber(parsed.positional, deps);
-  const res = await deps.call("POST", `/agent-ops/pr/${num}/comment`, { body }, deps.env);
+  const num = await resolvePrNumber(parsed.positional, deps, { repo: parsed.values.repo });
+  const res = await deps.call("POST", `/agent-ops/pr/${num}/comment`, { body, ...targetBody(deps, parsed.values.repo) }, deps.env);
   if (res.status >= 200 && res.status < 300) {
     success(deps.io, asString(res.body.commentUrl));
     return;
@@ -340,14 +368,11 @@ async function handlePrSimple(args: string[], deps: RunDeps, op: "ready" | "clos
   const parsed = parseFlags(args, {
     values: { "--repo": "repo", "-R": "repo" },
   });
-  if ("repo" in parsed.values) {
-    fail(deps.io, "ShipIt's gh shim does not support the --repo flag.");
-  }
   if (parsed.unsupported.length > 0) {
     fail(deps.io, `Unsupported flag for gh pr ${op}: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
   }
-  const num = await resolvePrNumber(parsed.positional, deps, { requiredFor: op === "reopen" });
-  const res = await deps.call("POST", `/agent-ops/pr/${num}/${op}`, {}, deps.env);
+  const num = await resolvePrNumber(parsed.positional, deps, { requiredFor: op === "reopen", repo: parsed.values.repo });
+  const res = await deps.call("POST", `/agent-ops/pr/${num}/${op}`, targetBody(deps, parsed.values.repo), deps.env);
   if (res.status >= 200 && res.status < 300) {
     const url = typeof res.body.url === "string" ? res.body.url : "";
     success(deps.io, url || `PR #${num} ${op}d`);
@@ -376,7 +401,7 @@ async function resolveBody(
 async function resolvePrNumber(
   positional: string[],
   deps: RunDeps,
-  opts: { requiredFor?: boolean } = {},
+  opts: { requiredFor?: boolean; repo?: string } = {},
 ): Promise<number> {
   const raw = positional[0];
   if (raw !== undefined) {
@@ -389,8 +414,9 @@ async function resolvePrNumber(
   if (opts.requiredFor) {
     fail(deps.io, "PR number is required.");
   }
-  // Look up via status route
-  const res = await deps.call("GET", "/agent-ops/pr/status", undefined, deps.env);
+  // Look up via status route — repo-aware so the fallback resolves the PR of
+  // the same clone the op targets (docs/211).
+  const res = await deps.call("GET", `/agent-ops/pr/status${targetQuery(deps, opts.repo)}`, undefined, deps.env);
   const pr = res.body.pr as Record<string, unknown> | null;
   if (!pr || typeof pr.number !== "number") {
     fail(deps.io, "No open PR for the current branch — pass a PR number explicitly.");
@@ -451,8 +477,9 @@ export async function runShim(
   io: ShimIO = defaultIO,
   env: ShimEnv = {},
   call: typeof callBroker = callBroker,
+  cwd: string = process.cwd(),
 ): Promise<void> {
-  const deps: RunDeps = { env, io, call };
+  const deps: RunDeps = { env, io, call, cwd };
 
   // Strip "node /path/to/gh.ts" if present (real invocations omit them, but
   // tests often pass full argv). Also handle direct shebang invocation.

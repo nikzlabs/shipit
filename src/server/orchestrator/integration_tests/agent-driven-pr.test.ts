@@ -626,3 +626,163 @@ describe("agent-driven PR creation (Phase 2)", () => {
   );
 
 });
+
+// ---------------------------------------------------------------------------
+// Repo-aware PR brokering + credential gate (docs/211 — Sandbox sessions)
+// ---------------------------------------------------------------------------
+
+describe("repo-aware PR brokering (docs/211)", () => {
+  /** Bring a fresh session into existence on disk (no remoteUrl primed). */
+  async function createBareSession(): Promise<{ sessionId: string; sessionDir: string }> {
+    client.send({ type: "send_message", text: "hello" });
+    const claude = await waitForClaude(() => latestClaude);
+    claude.emit("event", { type: "system", subtype: "init", session_id: "agent-session-1" });
+    claude.finish("agent-session-1");
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try { await client.receive(500); } catch { break; }
+    }
+    const sessionsDir = path.join(tmpDir, "sessions");
+    const sessionId = fs.readdirSync(sessionsDir)[0];
+    const sessionDir = path.join(sessionsDir, sessionId, "workspace");
+    return { sessionId, sessionDir };
+  }
+
+  it(
+    "builds the PR from the cwd's clone for a sandbox session (no session remoteUrl)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+
+      // The agent cloned a repo into /workspace/cloned (host: sessionDir/cloned).
+      const cloneDir = path.join(sessionDir, "cloned");
+      fs.mkdirSync(cloneDir, { recursive: true });
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      execSync("git init -q", { cwd: cloneDir, env: gitEnv });
+      execSync("git branch -m main", { cwd: cloneDir, env: gitEnv });
+      execSync("git remote add origin https://github.com/sand-user/sand-repo.git", { cwd: cloneDir, env: gitEnv });
+      fs.writeFileSync(path.join(cloneDir, "a.txt"), "hi\n");
+      execSync("git add -A && git commit -q -m init", { cwd: cloneDir, env: gitEnv });
+      execSync("git checkout -q -b shipit/sand-feature", { cwd: cloneDir, env: gitEnv });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: { title: "Sandbox PR", body: "## Summary\nFrom the clone.", cwd: "/workspace/cloned" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      // The PR was built from the clone's own origin, not a session repo.
+      expect(githubAuth.createPullRequestCalls).toHaveLength(1);
+      const call = githubAuth.createPullRequestCalls[0];
+      expect(call.owner).toBe("sand-user");
+      expect(call.repo).toBe("sand-repo");
+      expect(call.head).toBe("shipit/sand-feature");
+    },
+  );
+
+  it(
+    "--repo targets an explicit repo from the cwd clone",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId, sessionDir } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+
+      // Clone whose own origin differs from the explicit --repo target.
+      const cloneDir = path.join(sessionDir, "wherever");
+      fs.mkdirSync(cloneDir, { recursive: true });
+      const gitEnv = { ...process.env, HOME: tmpDir };
+      execSync("git init -q", { cwd: cloneDir, env: gitEnv });
+      execSync("git branch -m main", { cwd: cloneDir, env: gitEnv });
+      execSync("git remote add origin https://github.com/other/origin-repo.git", { cwd: cloneDir, env: gitEnv });
+      fs.writeFileSync(path.join(cloneDir, "a.txt"), "hi\n");
+      execSync("git add -A && git commit -q -m init", { cwd: cloneDir, env: gitEnv });
+      execSync("git checkout -q -b shipit/x", { cwd: cloneDir, env: gitEnv });
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        payload: { title: "Explicit", body: "x", cwd: "/workspace/wherever", repo: "explicit/target" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const call = githubAuth.createPullRequestCalls[0];
+      // --repo wins over the clone's own origin.
+      expect(call.owner).toBe("explicit");
+      expect(call.repo).toBe("target");
+    },
+  );
+
+  it(
+    "repo-bound session ignores a cwd override (behavior UNCHANGED)",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      // setupPrimedSession builds a normal repo-bound session at the root.
+      const { sessionId } = await setupPrimedSession();
+
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/pr/agent-create`,
+        // A stray cwd must NOT redirect a repo-bound session away from its repo.
+        payload: { title: "Bound", body: "x", cwd: "/workspace/some-subdir" },
+      });
+
+      expect(res.statusCode).toBe(200);
+      const call = githubAuth.createPullRequestCalls[0];
+      expect(call.owner).toBe("test-user");
+      expect(call.repo).toBe("test-repo");
+      expect(call.head).toBe("shipit/test-feature");
+    },
+  );
+
+  it(
+    "git-credential broker denies a sandbox with GitHub access off, allows it on",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await createBareSession();
+      sessionManager.setKind(sessionId, "sandbox");
+
+      // git off → 403 (defense in depth at the broker).
+      sessionManager.setCapabilities(sessionId, { git: false, docker: false, network: true });
+      const denied = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/git/credential`,
+        payload: { host: "github.com", protocol: "https" },
+      });
+      expect(denied.statusCode).toBe(403);
+
+      // git on → the brokered credential is returned.
+      sessionManager.setCapabilities(sessionId, { git: true, docker: false, network: true });
+      const allowed = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/git/credential`,
+        payload: { host: "github.com", protocol: "https" },
+      });
+      expect(allowed.statusCode).toBe(200);
+      expect(allowed.json()).toMatchObject({ username: "x-access-token", password: "test-token" });
+    },
+  );
+
+  it(
+    "git-credential broker is unaffected for a normal repo-bound session",
+    { timeout: 15_000 },
+    async () => {
+      await githubAuth.setToken("test-token");
+      const { sessionId } = await setupPrimedSession();
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${sessionId}/git/credential`,
+        payload: { host: "github.com", protocol: "https" },
+      });
+      expect(res.statusCode).toBe(200);
+      expect(res.json()).toMatchObject({ username: "x-access-token", password: "test-token" });
+    },
+  );
+});
