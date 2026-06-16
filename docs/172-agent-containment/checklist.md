@@ -19,15 +19,29 @@ tracker as separate issues. None implemented yet.
       unaffected), and that no plaintext token lands in `.git/config`; host scoping is
       covered by `services/github-credential.test.ts` and `agent-shim/git-credential.test.ts`.
       (SHI-72)
-- [ ] **Gap 2-R — credential broker is caller-blind (residual after SHI-72). [SHI-79]** Verified
+- **Gap 2-R — credential broker is caller-blind (residual after SHI-72). [SHI-79]** Verified
       live 2026-06-03: `git credential fill` for `github.com` (or invoking
       `/usr/local/bin/shipit-git-credential get` directly) still returns the full `ghp_…`
       PAT to any code running in the session. The broker authorizes by host, not by caller,
       and the agent is indistinguishable from `git`. SHI-72 closed plaintext-at-rest and
-      host-blindness but not on-demand extraction. Fix is defense-in-depth: short-lived
-      repo-scoped tokens (GitHub App installation tokens, minutes-long TTL, minted
-      per-turn) and/or out-of-process git (push/pull from the orchestrator host so the
-      token never enters the container), with Gap 1 egress as the backstop.
+      host-blindness but not on-demand extraction. Fix is defense-in-depth (SHI-79):
+  - [x] **Short-lived, repo-scoped-token *mechanism* (highest leverage).** `GitHubAppTokenMinter`
+        (`github-app-token.ts`) mints single-repo-scoped GitHub App installation tokens
+        (`contents:write`, `pull_requests:write`, `metadata:read`; cached with a 5-min refresh
+        margin; RS256 JWT via `node:crypto`). The broker prefers it
+        (`getRepoScopedGitCredential` in `services/github.ts`, wired through
+        `GitHubAuthManager.mintRepoScopedToken` and the `/api/sessions/:id/git/credential`
+        route), falling back to the PAT when no App is configured / mint fails / repo unknown.
+        Gated on `GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`; ships dark until an operator opts
+        in. Tests: `github-app-token.test.ts`, `services/github-credential.test.ts`.
+  - [ ] **Operator GitHub App infra** — register the App, install on repos, per-user/-org
+        installation discovery, private-key secret management/rotation. Until then the
+        mechanism is inert (PAT fallback).
+  - [ ] **Per-turn revocation** (`DELETE /installation/token`) to shrink the live window
+        below the 1h TTL floor without breaking the post-turn debounced auto-push.
+  - [ ] **Remove the PAT broker path** once a GitHub App is mandatory.
+  - [ ] **Out-of-process git** — push/pull/fetch from the orchestrator host so the token
+        never enters the container (the other listed mitigation; larger, separate).
 - **Gap 1 — outbound egress control (SHI-90).** Full design in
   [egress-control.md](./egress-control.md). Enforcement is a network-layer gateway
   middlebox (the `HTTP_PROXY` env-var proxy is not a real control — a raw socket bypasses

@@ -224,6 +224,45 @@ improvement; for the *active* adversary in the threat model (injected agent, mal
 - **Gap 1 egress control** as the backstop: even an extracted token can't be shipped out
   if egress is default-deny. None of these fully substitutes for the others; they compose.
 
+**Status (SHI-79, partial — short-lived-token *mechanism* shipped):** the highest-leverage
+mitigation (short-lived, repo-scoped tokens) is now wired into the credential broker, gated
+behind operator-supplied GitHub App credentials:
+
+- `github-app-token.ts` (`GitHubAppTokenMinter`) mints **single-repo-scoped GitHub App
+  installation tokens** with a narrow permission set (`contents:write`,
+  `pull_requests:write`, `metadata:read`) and a bounded TTL (GitHub caps installation
+  tokens at 1h; we mint per-repo and cache with a 5-min refresh margin). The App JWT is
+  RS256-signed with `node:crypto` — no new dependency.
+- The broker prefers the minted token: `getRepoScopedGitCredential` (services/github.ts) →
+  `GitHubAuthManager.mintRepoScopedToken` is consulted first by the
+  `/api/sessions/:id/git/credential` route (which resolves the session's `owner/repo` from
+  `remoteUrl`). Host scoping (github.com only) is still enforced first.
+- **Falls back to the PAT** unchanged when no App is configured (`GITHUB_APP_ID` /
+  `GITHUB_APP_PRIVATE_KEY` unset — the default today), when minting fails, or when the repo
+  can't be identified — so this ships dark with zero behavior change until an operator opts
+  in, and never hard-fails git for lack of an installation token (availability over
+  tightness; the PAT remains the configured credential, the App token is the enhancement).
+
+So the blast radius of an extracted broker credential drops from *account-wide, never
+expiring* to *one repo, a narrow permission set, ≤1h* the moment an operator registers and
+installs a GitHub App and sets the two env vars.
+
+**The rest (still open, intentionally out of this increment):**
+
+- **Operator GitHub App infra.** ShipIt today authenticates with the *user's own*
+  PAT/OAuth token; there is no registered App. Standing one up — registration, per-user/-org
+  installation discovery (the minter currently resolves the installation per repo via
+  `GET /repos/{owner}/{repo}/installation`, which assumes the App is installed on the repo),
+  private-key secret management/rotation — is operator-level work tracked separately.
+- **Per-turn revocation** (`DELETE /installation/token`) to shrink the live window from the
+  1h TTL floor toward the actual turn duration — deferred to avoid breaking the 5s-debounced
+  auto-push that fires just after a turn.
+- **Removing the PAT broker path** entirely once an App is mandatory, so an extracted
+  credential is *always* repo-scoped, never the account-wide PAT.
+- **Out-of-process git** (perform push/pull/fetch from the orchestrator host) — the other
+  listed mitigation; removes the in-container credential channel entirely. Larger; separate.
+- **Gap 1 egress** remains the backstop.
+
 ### Gap 3 — No trust boundary before repo-controlled code runs *(shipped — docs/178)*
 
 **Status: shipped (`docs/178-repo-trust-gate`).** Previously, opening a freshly cloned
@@ -305,6 +344,9 @@ provisioned then remounted read-only).
   env, network mode (Gaps 1, 5, 6).
 - `src/server/orchestrator/session-container.ts` — network creation (Gap 1).
 - `src/server/orchestrator/github-auth.ts:225` — git credential helper (Gap 2).
+- `src/server/orchestrator/github-app-token.ts` — `GitHubAppTokenMinter`: short-lived,
+  repo-scoped GitHub App installation tokens (Gap 2-R / SHI-79). Broker integration in
+  `services/github.ts` (`getRepoScopedGitCredential`) and `api-routes-github.ts`.
 - `src/server/orchestrator/service-manager-setup.ts:306`,
   `src/server/session/session-worker.ts:689` — `agent.install` + compose `command:`/`build:`
   execution, now deferred for untrusted remotes by the docs/178 trust gate (Gap 3, shipped).

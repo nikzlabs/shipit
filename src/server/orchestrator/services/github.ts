@@ -202,6 +202,41 @@ export function getGitCredential(
   return { username: "x-access-token", password: token };
 }
 
+/**
+ * Repo-scoped variant of {@link getGitCredential} (docs/172 Gap 2-R / SHI-79).
+ *
+ * When the orchestrator has a GitHub App configured, this prefers a short-lived,
+ * single-repo-scoped installation token over the long-lived PAT — so the
+ * credential the caller-blind broker hands into the container has a minimal
+ * blast radius (one repo, a narrow permission set, a bounded TTL) if it's
+ * extracted. When App tokens aren't configured, or minting fails, or the
+ * repo can't be identified, it falls back to {@link getGitCredential} (the PAT
+ * path), preserving today's behavior and never hard-failing git for lack of an
+ * installation token.
+ *
+ * Host scoping (github.com only) is enforced first, exactly as in the PAT path —
+ * the token is never handed to an arbitrary remote.
+ */
+export async function getRepoScopedGitCredential(
+  githubAuthManager: GitHubAuthManager,
+  args: { host: string | undefined; owner?: string; repo?: string },
+): Promise<{ username: string; password: string } | null> {
+  const normalizedHost = (args.host ?? "").trim().toLowerCase();
+  if (normalizedHost !== "github.com") return null;
+
+  if (args.owner && args.repo && githubAuthManager.appTokensEnabled()) {
+    const minted = await githubAuthManager.mintRepoScopedToken(args.owner, args.repo);
+    if (minted) return { username: "x-access-token", password: minted };
+    // Mint failed (network, uninstalled repo, …) — fall through to the PAT so
+    // git keeps working. Availability over tightness; the PAT is still the
+    // operator's configured credential, the App token is the enhancement.
+    console.warn(
+      `[github] App-token mint failed for ${args.owner}/${args.repo}; falling back to PAT for the git credential broker`,
+    );
+  }
+  return getGitCredential(githubAuthManager, args.host);
+}
+
 // ---- Mutation operations ----
 
 /** Create a pull request. */

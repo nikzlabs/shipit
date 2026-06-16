@@ -4,6 +4,7 @@ import { existsSync } from "node:fs";
 import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
+import { GitHubAppTokenMinter } from "./github-app-token.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
@@ -133,16 +134,28 @@ export class GitHubAuthManager extends EventEmitter {
   private _avatarUrl: string | null = null;
   private credentialStore: CredentialStore;
   private workspaceDir: string;
+  /**
+   * Mints short-lived, repo-scoped GitHub App installation tokens (docs/172
+   * Gap 2-R / SHI-79). Inert until an operator supplies App credentials, in
+   * which case {@link mintRepoScopedToken} becomes the broker's preferred
+   * credential source over the long-lived PAT.
+   */
+  private appTokenMinter: GitHubAppTokenMinter;
   private _rateLimit: GitHubRateLimitState = {
     limited: false,
     resetAt: null,
     remaining: null,
   };
 
-  constructor(workspaceDir: string, credentialStore: CredentialStore) {
+  constructor(
+    workspaceDir: string,
+    credentialStore: CredentialStore,
+    appTokenMinter: GitHubAppTokenMinter = new GitHubAppTokenMinter(),
+  ) {
     super();
     this.workspaceDir = workspaceDir;
     this.credentialStore = credentialStore;
+    this.appTokenMinter = appTokenMinter;
   }
 
   get authenticated(): boolean {
@@ -274,6 +287,29 @@ export class GitHubAuthManager extends EventEmitter {
    */
   getToken(): string | null {
     return this._token;
+  }
+
+  /**
+   * Whether short-lived, repo-scoped GitHub App installation tokens are
+   * available (docs/172 Gap 2-R / SHI-79). When true the credential broker
+   * prefers a minted installation token over the long-lived PAT, shrinking the
+   * blast radius of an extracted credential to a single repo and a bounded TTL.
+   * False on every deployment that hasn't configured a GitHub App — those fall
+   * back to the PAT broker path unchanged.
+   */
+  appTokensEnabled(): boolean {
+    return this.appTokenMinter.isConfigured();
+  }
+
+  /**
+   * Mint (or return a cached) short-lived installation token scoped to a single
+   * repo, for the credential broker. Returns null when App tokens aren't
+   * configured or minting fails — the broker then falls back to the PAT so git
+   * never hard-fails for lack of an installation token. See
+   * {@link GitHubAppTokenMinter}.
+   */
+  async mintRepoScopedToken(owner: string, repo: string): Promise<string | null> {
+    return this.appTokenMinter.getRepoToken(owner, repo);
   }
 
   /**
