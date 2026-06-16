@@ -135,37 +135,51 @@ export async function getTurnDiff(
 }
 
 /**
- * Repo-relative paths changed in the current session: everything committed on
- * this branch since it diverged from the base branch, plus uncommitted
- * working-tree changes. This is the authoritative "what did the agent touch
- * this session" signal — far more reliable than file mtimes, which git
- * rewrites on every checkout/fetch/reset and thus produce false positives for
- * files the session never modified.
+ * Committed name-status changes for `merge-base(base, HEAD)..HEAD` — i.e.
+ * exactly what this branch changed vs its base (the symmetric three-dot diff,
+ * not a two-dot `base..HEAD` that would pull in files moved on the base since
+ * the branch point). This is the SINGLE source of truth for "what did this
+ * branch change", shared by the Docs panel's changed-in-session flag
+ * ({@link getSessionChangedPaths}) and the PR card's notable-files strip
+ * (`notableFilesForBranch`) so the two surfaces can never drift.
  *
- * Best-effort: returns an empty set when there's no resolvable base branch or
- * no merge-base (e.g. a brand-new local project), so callers degrade to
- * flagging nothing rather than flagging everything.
+ * Committed-only by design: it mirrors the PR's diff (uncommitted working-tree
+ * edits aren't in the PR yet), and the per-turn auto-commit closes the gap
+ * within a turn. Best-effort — returns `[]` when the base or merge-base can't
+ * be resolved (e.g. a brand-new local project), so callers flag nothing rather
+ * than everything.
+ */
+export async function committedChangesVsBase(
+  git: GitManager,
+  baseBranch: string,
+): Promise<{ status: string; path: string; oldPath?: string }[]> {
+  const baseRef = await git.resolveBaseBranchRef(baseBranch);
+  if (!baseRef) return [];
+  const mergeBaseHash = await git.mergeBase(baseRef, "HEAD");
+  if (!mergeBaseHash) return [];
+  return git.diffNameStatus(mergeBaseHash, "HEAD");
+}
+
+/**
+ * Repo-relative paths changed on this branch vs its base — the authoritative
+ * "what did the agent touch this session" signal that drives the Docs panel's
+ * "Modified in this session" group. Far more reliable than file mtimes, which
+ * git rewrites on every checkout/fetch/reset (false positives for untouched
+ * files).
+ *
+ * A thin projection of {@link committedChangesVsBase} (paths only, including a
+ * rename's old path), so it stays byte-for-byte in step with the PR card's
+ * strip — both diff the same merge-base range against the same base branch.
  */
 export async function getSessionChangedPaths(
   git: GitManager,
   baseBranch = "main",
 ): Promise<Set<string>> {
   const paths = new Set<string>();
-
-  const baseRef = await git.resolveBaseBranchRef(baseBranch);
-  if (baseRef) {
-    const mergeBaseHash = await git.mergeBase(baseRef, "HEAD");
-    if (mergeBaseHash) {
-      const committed = await git.diffNameStatus(mergeBaseHash, "HEAD");
-      for (const entry of committed) {
-        paths.add(entry.path);
-        if (entry.oldPath) paths.add(entry.oldPath);
-      }
-    }
+  for (const entry of await committedChangesVsBase(git, baseBranch)) {
+    paths.add(entry.path);
+    if (entry.oldPath) paths.add(entry.oldPath);
   }
-
-  for (const p of await git.uncommittedPaths()) paths.add(p);
-
   return paths;
 }
 

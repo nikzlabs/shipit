@@ -9,10 +9,12 @@ import { getSessionChangedPaths } from "./git.js";
 
 /**
  * `getSessionChangedPaths` is the authoritative "what did the agent touch this
- * session" signal that replaced the unreliable file-mtime heuristic. These
- * tests pin its two inputs: committed changes since branch divergence from the
- * base, and uncommitted working-tree edits. A `git checkout` that merely
- * rewrites mtimes must NOT show up.
+ * session" signal that replaced the unreliable file-mtime heuristic. It is the
+ * committed merge-base diff vs the base branch — the SAME set the PR card's
+ * notable-files strip uses, so the Docs panel and the card show exactly the
+ * same documents. Uncommitted working-tree edits are intentionally NOT included
+ * (they aren't in the PR; the per-turn auto-commit closes the gap). A
+ * `git checkout` that merely rewrites mtimes must NOT show up.
  */
 describe("getSessionChangedPaths", () => {
   let tmpDir: string;
@@ -56,12 +58,20 @@ describe("getSessionChangedPaths", () => {
     }
   });
 
-  it("includes uncommitted working-tree edits", async () => {
+  it("excludes uncommitted working-tree edits (committed PR scope only)", async () => {
     const { work, git } = await makeRepoWithBranch();
     try {
+      // An uncommitted edit isn't in the PR yet, so it must NOT be flagged —
+      // this keeps the Docs panel in lockstep with the PR card's strip. The
+      // per-turn auto-commit then makes it appear in both at once.
       fs.writeFileSync(path.join(work, "scratch.md"), "scratch\n");
       const changed = await getSessionChangedPaths(git);
-      expect(changed.has("scratch.md")).toBe(true);
+      expect(changed.has("scratch.md")).toBe(false);
+
+      // Once committed, it shows up.
+      execSync("git add -A && git commit -m scratch", { cwd: work, stdio: "pipe" });
+      const afterCommit = await getSessionChangedPaths(git);
+      expect(afterCommit.has("scratch.md")).toBe(true);
     } finally {
       fs.rmSync(work, { recursive: true, force: true });
     }
@@ -89,8 +99,8 @@ describe("getSessionChangedPaths", () => {
       execSync("git add -A && git commit -m a", { cwd: work, stdio: "pipe" });
       const git = new GitManager(work);
       const changed = await getSessionChangedPaths(git);
-      // No main/master ref → committed changes can't be scoped; only
-      // uncommitted edits would appear, and there are none.
+      // No main/master ref → the committed change set can't be scoped, so we
+      // degrade to flagging nothing rather than everything.
       expect(changed.size).toBe(0);
     } finally {
       fs.rmSync(work, { recursive: true, force: true });
