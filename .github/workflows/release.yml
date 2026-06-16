@@ -28,7 +28,11 @@ jobs:
   # human-facing version and the tag can never silently drift.
   version-guard:
     name: Tag matches package.json
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Trivial job (one `node -p`): a 2vcpu runner is plenty. Blacksmith free
+    # minutes scale inversely with vcpu (2vcpu costs half the quota per wall-
+    # minute of 4vcpu), and a bigger machine gives no speedup here — so the
+    # near-zero-compute jobs run at 2vcpu to conserve the free tier.
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-node@v5
@@ -78,7 +82,8 @@ jobs:
   promote:
     name: Promote to stable
     needs: [version-guard, check, test]
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Pure git + gh-release I/O, no compute — 2vcpu (see version-guard note).
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
         with:

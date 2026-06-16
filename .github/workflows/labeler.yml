@@ -19,7 +19,9 @@ jobs:
     # pull_request_target workflow never spends write permissions on untrusted
     # contributor branches.
     if: github.event.pull_request.head.repo.full_name == github.repository
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Pure GitHub API calls, no compute — 2vcpu to conserve Blacksmith free
+    # minutes (they scale inversely with vcpu; a bigger machine adds nothing).
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/labeler@v6.1.0
         with:
