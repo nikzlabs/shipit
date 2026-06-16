@@ -7,7 +7,8 @@ import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
 import { SessionManager, IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
-import { escalateDiskTiers, resolveDiskWatermarks, type TierEscalationDeps } from "./disk-janitor.js";
+import { escalateDiskTiers, type TierEscalationDeps } from "./tier-escalation.js";
+import { resolveDiskWatermarks } from "./disk-utils.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 
 // docs/161 Part 2 — disk-tier escalation ladder.

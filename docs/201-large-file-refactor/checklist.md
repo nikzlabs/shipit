@@ -31,7 +31,7 @@ typecheck` + `npm run lint:dev` clean → no behavior change. Open one PR per ph
 ## Group 2 — Orchestrator god-modules (one file each → one PR each)
 
 - [ ] **P4 · `index.ts`** (2118) → `app-assembly.ts` / `bootstrap-managers.ts` / `startup-monitors.ts` / `route-registry.ts`; `index.ts` = ordered entry point.
-- [ ] **P5 · `disk-janitor.ts`** (1850) → `startup-janitor.ts` / `tier-escalation.ts` / `disk-utils.ts`.
+- [x] **P5 · `disk-janitor.ts`** (1850) → `startup-janitor.ts` / `tier-escalation.ts` / `disk-utils.ts`. `disk-janitor.ts` kept as a thin re-export facade so callers (`index.ts`) are unchanged; tests split into `startup-janitor.test.ts` + `disk-tier-escalation.test.ts`.
 - [ ] **P6 · `ws-handlers/agent-listeners.ts`** (1715) → `agent-event-normalizer.ts` / `agent-message-builder.ts` / `agent-voice-handler.ts` / `agent-auth-handler.ts` / `agent-rate-limits.ts`; facade keeps `wireAgentListeners`.
 - [ ] **P7 · `session-credentials.ts`** (1216) → `session-credentials-scaffold.ts` / `session-agent-credentials.ts` / `token-sync-manager.ts` / `repo-memory-manager.ts`.
 - [ ] **P8 · `service-manager.ts`** (1484) → extract `compose-cli.ts` (+ optional `install-gate.ts`); keep reconcile state machine in facade.
