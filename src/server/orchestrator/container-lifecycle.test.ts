@@ -2,7 +2,7 @@
  * Unit tests for container-lifecycle functions (buildMounts, buildEnv, buildContainerConfig).
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import os from "node:os";
@@ -15,6 +15,7 @@ import {
   buildContainerConfig,
   destroyContainer,
   prepareOverlayDirs,
+  selfHealWorkspaceOwnership,
   type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
   PNPM_STORE_CONTAINER_PATH,
@@ -656,5 +657,33 @@ describe("prepareOverlayDirs (SHI-145)", () => {
     const spec = makeSpec(tmpDir, "cccc3333");
     delete spec.orchDirs; // mock/unit configs have no orchestrator state dir
     expect(() => prepareOverlayDirs([spec])).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// selfHealWorkspaceOwnership — recreate-after-idle ownership self-heal
+// ---------------------------------------------------------------------------
+
+describe("selfHealWorkspaceOwnership", () => {
+  const WS_VOLUME = "shipit-workspace";
+  const WS_DIR = "/workspace/sessions/sess-1/workspace";
+
+  it("hands the workspace back to the worker uid on a volume-backed session", () => {
+    const handBack = vi.fn();
+    selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, WS_VOLUME, handBack);
+    expect(handBack).toHaveBeenCalledTimes(1);
+    expect(handBack).toHaveBeenCalledWith(WS_DIR);
+  });
+
+  it("skips entirely in dev bind-mount mode (no workspaceVolume) — never chowns the host source", () => {
+    const handBack = vi.fn();
+    selfHealWorkspaceOwnership({ workspaceDir: WS_DIR }, undefined, handBack);
+    expect(handBack).not.toHaveBeenCalled();
+  });
+
+  it("skips when the session has no workspaceDir", () => {
+    const handBack = vi.fn();
+    selfHealWorkspaceOwnership({ workspaceDir: undefined }, WS_VOLUME, handBack);
+    expect(handBack).not.toHaveBeenCalled();
   });
 });

@@ -9,7 +9,7 @@
  * `overlay-base.test.ts`.
  */
 
-import { describe, expect, it, afterEach } from "vitest";
+import { describe, expect, it, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -441,6 +441,37 @@ describe("preStampInstallMarker (docs/183 base-hit pre-stamp)", () => {
       })).toBe(false);
     }
     expect(fs.existsSync(path.join(dir, ".shipit", ".install-done"))).toBe(false);
+  });
+
+  it("hands the written marker dir + file back to the worker uid (no root-owned .shipit)", async () => {
+    const { dir, head } = await gitWorkspace();
+    const chown = vi.fn();
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer(head, 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+      chown,
+    });
+    expect(ok).toBe(true);
+    // Both the `.shipit` dir and the marker file are chowned to the worker uid,
+    // so the worker can later overwrite the marker when HEAD invalidates it.
+    expect(chown).toHaveBeenCalledWith(path.join(dir, ".shipit"));
+    expect(chown).toHaveBeenCalledWith(path.join(dir, ".shipit", ".install-done"));
+  });
+
+  it("does not chown when no marker is written (declined pre-stamp)", async () => {
+    const { dir } = await gitWorkspace();
+    const chown = vi.fn();
+    const ok = await preStampInstallMarker({
+      stateDir: "/state",
+      workspaceDir: dir,
+      specs: [spec("h1", 3)],
+      readPointer: () => pointer("f".repeat(40), 3, { runtimeKey: WORKER_RT, installCommands: ["npm install"] }),
+      chown,
+    });
+    expect(ok).toBe(false);
+    expect(chown).not.toHaveBeenCalled();
   });
 
   it("never clobbers an existing marker", async () => {

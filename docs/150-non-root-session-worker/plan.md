@@ -510,6 +510,56 @@ walk is ~2 ms and stays flat. (The one-shot whole-tree chowns at *session
 creation* — `cloneFromCache`, fork — keep the simple full `chownTreeToSessionWorker`:
 they pay the cost once, off the hot path, and must also chown the worktree.)
 
+#### 7.2 Addendum — recreate-after-idle has no handback, so a stray root-owned node wedges the resume
+
+The §7 handbacks above all fire at **git-op seams** (claim, rebase, fork-merge,
+post-turn commit). The **container-recreate-after-idle** path runs none of them:
+when an idle container is disposed and later re-created (e.g. to drain a queued
+merge-watch wake-turn), the orchestrator just boots a fresh container against the
+**persisted** clone and relies on the tree already being worker-owned. The
+entrypoint can't backstop this either — its boot-time `chown -R /workspace` is
+skipped on every reboot because the UID-stamped sentinel `/workspace/.shipit-uid-<uid>`
+already exists from the first boot (the deliberate warm-reuse optimization; a
+recursive re-chown of a populated tree — incl. the nested `node_modules` overlay
+and its shared lowerdir — every boot is both expensive and wrong).
+
+So any root-owned node that slipped into the worktree during the session's life
+and was never handed back **persists across the recreate and is never repaired**.
+Observed live (SHI — "container wedged, root-owned workspace") on a long-lived
+parent session that fanned out 20+ children and was idle-disposed mid-fan-out:
+its `npm install` failed fast (~2.6 s) and the agent couldn't edit files or
+rebase. Mechanism (hypothesis **B**): the root-owned worktree is the *cause*, and
+`install_ok=false` is a *downstream symptom* — `npm install` runs as uid 1000,
+resolves deps from the warm `/dep-cache` quickly, then EACCESes writing into the
+root-owned cwd (lockfile / its temp) and exits non-zero (so the overlay publish
+logs `node_modules:skipped-ineligible`). install never chowns the source tree, so
+it can't be what made it root-owned — ruling out hypothesis A as the trigger.
+
+**Fix — self-heal at the single boot choke point.** `createContainer`
+(`container-lifecycle.ts`) now calls `selfHealWorkspaceOwnership(config,
+workspaceVolume)` → `handWorkspaceBackToWorker(workspaceDir)` before the worker
+boots (and its install runs), on **every** create. It is bounded (the same
+`.git`-object-fanout + dep-dir skip as §7.1) and idempotent (an already-1000 tree
+costs a no-op `lchown` per node), so the steady-state cost is negligible while a
+recreated session is always left with a writable worktree. Gated twice: no-op when
+`SHIPIT_SESSION_WORKER_UID` is unset (legacy root), and skipped entirely in dev
+bind-mount mode (no `workspaceVolume`) so it never rewrites the developer's host
+source — mirroring the entrypoint's `SHIPIT_SKIP_WORKSPACE_CHOWN`.
+
+One residual root-write was also closed at its source: `preStampInstallMarker`
+(`overlay-session.ts`) writes `.shipit/.install-done` as the **root** orchestrator
+and now chowns the `.shipit` dir + marker to the worker uid, so the worker's
+uid-1000 `writeMarker` can later overwrite the marker when a HEAD change
+invalidates it (otherwise: EACCES, install fails).
+
+**Observability.** The failure used to surface only as a stale `install_ok=false`
+in the overlay-measure line, the real cause (`EACCES … permission denied`) lost in
+the emit-only `install_log` stream. Now the worker captures a bounded stderr tail
+and folds it into the `install_error` message (`install-failure.ts:formatInstallFailureMessage`),
+and the orchestrator `console.error`s the failure (`container-session-runner.ts`,
+`install_error` SSE case) so a no-viewer recreate-time install failure lands in
+the service-log stream Ops reads instead of being swallowed.
+
 ### 8. Playwright browser cache must be reachable by `shipit`
 
 `docker/Dockerfile.session-worker.{dev,prod}` calls
