@@ -34,7 +34,7 @@ interface Call {
  * echoes the requested `state`; POST comments returns a comment node. Records
  * every call for assertions.
  */
-function makeHarness(initialState: "open" | "closed" = "open") {
+function makeHarness(initialState: "open" | "closed" = "open", archived = false) {
   const calls: Call[] = [];
   const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
     const method = init?.method ?? "GET";
@@ -81,7 +81,7 @@ function makeHarness(initialState: "open" | "closed" = "open") {
     trackerFetchImpl: fetchImpl,
     githubAuthManager: { getToken: () => "ghp_test" } as unknown as GitHubAuthManager,
     sessionManager: {
-      get: () => ({ remoteUrl: REMOTE }),
+      get: () => ({ remoteUrl: REMOTE, archived, userArchived: archived }),
       hasAppliedMergeIssueEffect: (id: string, key: string) => appliedEffects.get(id)?.has(key) ?? false,
       markAppliedMergeIssueEffect: (id: string, key: string) => {
         const set = appliedEffects.get(id) ?? new Set<string>();
@@ -197,6 +197,24 @@ describe("applyMergedPrIssueRefs — completed on merge", () => {
     await applyMergedPrIssueRefs(deps, mergedPr("Closes octocat/hello-world#42"));
     const card = appended.find((m) => m.issueWrite)?.issueWrite;
     expect(card?.cardId).toBe("issue-write-s1-7-42-completed");
+  });
+
+  // Archived-receives-nothing invariant: the outward tracker write (closing the
+  // linked issue on merge) is correct regardless of local session lifecycle, but
+  // the in-session provenance card must NOT be pushed into an archived session's
+  // transcript or broadcast to it.
+  it("performs the tracker write but pushes NO card into an archived session", async () => {
+    const { deps, calls, appended, emitted } = makeHarness("open", true);
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes octocat/hello-world#42"));
+
+    // The issue still closes — lifecycle is independent of archival.
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch?.url).toContain("/issues/42");
+    expect(patch?.body).toMatchObject({ state: "closed" });
+
+    // …but nothing lands in the archived session's transcript or on its socket.
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(0);
+    expect(emitted).toHaveLength(0);
   });
 
   // A transient tracker failure must NOT mark the effect applied — a later

@@ -716,6 +716,20 @@ export async function registerRoutes(
         const s = sessionManager.get(sid);
         activeAppSessionId = sid;
         const dir = s?.workspaceDir ?? null;
+
+        // Never resurrect or re-track an archived session. A stray WS connection
+        // to an archived session id must not `getOrCreate` a runner (which boots
+        // a container) or re-arm the PR poller — either would let an archived
+        // session start receiving updates again, violating the "archived sessions
+        // receive nothing" invariant. The legitimate restore path
+        // (`unarchiveSession`) flips `archived` → false BEFORE the client
+        // activates, so this only short-circuits genuinely-archived ids; the
+        // session's history still loads read-only over HTTP (`GET /history`).
+        if (s?.archived || s?.userArchived) {
+          detachFromRunner();
+          if (dir !== activeSessionDir) activeSessionDir = dir;
+          return;
+        }
         // The session's persisted agent is authoritative. A runner is seeded
         // with the global default agent at creation (warm pool, container
         // recovery), and the real choice is meant to be applied on WS
