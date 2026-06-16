@@ -66,6 +66,18 @@ GitHub access.
     / no push to the user's repos**, *not* a fully network-sealed box. (If a
     truly sealed posture is wanted, that's an egress concern — see Security.)
   - `docker` — **session-scoped** Docker (see below). Off ⇒ no Docker.
+  - `network` (UI label **"Network access"**, default **on**) — full outbound
+    egress, the normal multi-repo coordination posture. When **off**, the session
+    runs under the existing Tier A egress containment (docs/172 / SHI-90):
+    default-deny except the built-in `EGRESS_DEFAULT_ALLOWLIST` (LLM API, GitHub,
+    package registries) plus user-added hosts, with the Tier C "allow this host?"
+    card for anything else. **Not an air-gap** — the LLM API and orchestrator
+    callbacks are always allowed; "off" is default-deny-with-allowlist, good for
+    defense-in-depth, not for running hostile code. Reuses `egressEnforce` +
+    `EgressAllowlistStore` (which already has a per-session scope), so little new
+    work. **Infra-gated**: where the deploy hasn't enabled egress enforcement the
+    toggle is hidden/disabled, never a silent no-op. Composes with GitHub access
+    — GitHub is already allowlisted, so "network off + GitHub on" still pushes.
 - `remoteUrl` stays null.
 
 `kind` and `capabilities` are set **server-authoritatively at creation**, never
@@ -197,7 +209,7 @@ chat-history message and must not be emitted into the transcript stream.
 A **`+` affordance in the row above the session list** opens a small menu to
 create a "complicated" session, with two items today: **Sandbox** and **Ops**.
 Choosing Sandbox opens a capability dialog with **Git access** and **Docker
-access** toggles plus inline docs on what each grants and the session's
+access**, and **Network access** toggles plus inline docs on what each grants and the session's
 limitations (no preview, no PR card). This centralizes the privileged-session
 story in one discoverable place and leaves the normal repo-claim flow untouched.
 
@@ -213,10 +225,12 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
   to the user's whole reachable set. Surfaced explicitly in the creation dialog.
 - **"GitHub access off" ≠ network-sealed.** It removes the GitHub credential
   broker (no token, no push to the user's repos), but the container still has its
-  normal agent API egress and worker/orchestrator callbacks. A truly sealed
-  "run untrusted code" posture is a separate **egress** decision
-  (`container-lifecycle.ts` egress enforcement) — call it out rather than imply
-  the off state is a sandbox jail.
+  normal agent API egress and worker/orchestrator callbacks. The lever for a
+  locked-down posture is the separate **Network access** capability (above):
+  turning it off applies default-deny egress containment. Even then it is not an
+  air-gap (LLM API + orchestrator always allowed), so the Sandbox is positioned
+  for multi-repo coordination + defense-in-depth, **not** as a jail for hostile
+  code. (Decision: default egress is *open*; restriction is opt-in per session.)
 - **Capability gating must live at the orchestrator broker, not only container
   env.** `GIT_CONFIG_GLOBAL` and the `/agent-ops/git/credential` endpoint are
   always wired; the credential endpoint (and the PR broker) must check the

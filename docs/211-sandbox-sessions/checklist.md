@@ -21,6 +21,9 @@
       build GitManager/remote from the resolved clone, not `session.remoteUrl`;
       keep the no-raw-token property
 - [ ] Thread `docker` capability → `dockerAccess` in `buildContainerConfig`
+- [ ] Thread `network` capability (default on) → `egressEnforce` containment;
+      reuse `EgressAllowlistStore` per-session scope; hide/disable the toggle
+      where egress enforcement isn't deployed (no silent no-op)
 - [ ] Sandbox system-prompt variant (agent-instructions.ts + prompts/)
 - [ ] Document Sandbox session in `src/server/shipit-docs/`
 
@@ -33,10 +36,11 @@
 - [ ] Docker lock-down tests: sandbox uses session proxy not `OPS_DOCKER_HOST`;
       no journal/host mounts; child resources reaped on archive
 
-## Open question (raised by review)
-- [ ] Egress posture for "GitHub access off": is a sandbox meant to run untrusted
-      code (⇒ default-deny egress), or just to omit GitHub creds? Decide before
-      Phase 2.
+## Resolved
+- [x] Egress posture: default egress is **open** (multi-repo coordination, not a
+      malware jail). Restriction is an opt-in per-session **Network access**
+      toggle that applies the existing Tier A default-deny containment. Not an
+      air-gap (LLM API + orchestrator always allowed).
 
 ## Mockups
 - [x] `mockup.html` — `+` menu, capability dialog, sandbox session view

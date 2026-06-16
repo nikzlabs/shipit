@@ -192,7 +192,7 @@
             <div class="mi-ic sandbox"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M216 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V56a16 16 0 0 0-16-16zM96 176H56v-40h40zm0-56H56V80h40zm104 56h-88v-40h88zm0-56h-88V80h88z"/></svg></div>
             <div>
               <div class="mt">Sandbox session</div>
-              <div class="md">Empty workspace. Choose Git and/or Docker access. The agent clones what it needs.</div>
+              <div class="md">Empty workspace. Choose GitHub, Docker &amp; network access. The agent clones what it needs.</div>
             </div>
           </div>
           <div class="mitem">
@@ -262,9 +262,9 @@
           <div class="toggle-row">
             <div class="tr-ic"><svg width="17" height="17" viewBox="0 0 256 256" fill="currentColor"><path d="M232 80a40 40 0 1 0-48 39.2v17.8a16 16 0 0 1-16 16h-80a32 32 0 0 0-16 4.3V119.2a40 40 0 1 0-16 0v17.6a40 40 0 1 0 16 0V160a16 16 0 0 0 16 16h80a32 32 0 0 0 32-32v-24.8A40.1 40.1 0 0 0 232 80z"/></svg></div>
             <div class="tr-main">
-              <div class="tr-title">Git access <span class="chip on">recommended</span></div>
+              <div class="tr-title">GitHub access <span class="chip on">recommended</span></div>
               <div class="tr-desc">Credential broker for <code>git</code> &amp; <code>gh</code> — clone and push private repos, open PRs.</div>
-              <div class="tr-note note-warn">⚠ The session can reach any repo your account can. Off = sealed box: public clones only, no push.</div>
+              <div class="tr-note note-warn">⚠ The session can reach any repo your account can. Off = no GitHub token (public clones only, no push) — not a network seal; use Network access for that.</div>
             </div>
             <div class="sw on"><span class="kn"></span></div>
           </div>
@@ -276,6 +276,15 @@
               <div class="tr-note note-ok">✓ Isolated to this session: only its own containers/networks/volumes. No host socket, no <code>--privileged</code>.</div>
             </div>
             <div class="sw"><span class="kn"></span></div>
+          </div>
+          <div class="toggle-row">
+            <div class="tr-ic"><svg width="17" height="17" viewBox="0 0 256 256" fill="currentColor"><path d="M128 24a104 104 0 1 0 104 104A104.2 104.2 0 0 0 128 24zm88 104a87.6 87.6 0 0 1-3.3 24h-46.5a157.4 157.4 0 0 0 0-48h46.5a87.6 87.6 0 0 1 3.3 24zM104.2 168h47.6a115 115 0 0 1-23.8 39.9 115 115 0 0 1-23.8-39.9zM100 152a140.3 140.3 0 0 1 0-48h56a140.3 140.3 0 0 1 0 48zm-60-24a87.6 87.6 0 0 1 3.3-24h46.5a157.4 157.4 0 0 0 0 48H43.3A87.6 87.6 0 0 1 40 128zm64.2-40a115 115 0 0 1 23.8-39.9 115 115 0 0 1 23.8 39.9z"/></svg></div>
+            <div class="tr-main">
+              <div class="tr-title">Network access <span class="chip on">on by default</span></div>
+              <div class="tr-desc">Full outbound network for the agent.</div>
+              <div class="tr-note note-warn">Off = restricted to an allowlist (LLM, GitHub, registries); the agent asks before reaching anything else. Not an air-gap.</div>
+            </div>
+            <div class="sw on"><span class="kn"></span></div>
           </div>
         </div>
         <div class="dlg-foot">
@@ -295,8 +304,9 @@
           <span class="nm">Cross-repo: sync auth libs</span>
           <span class="badge sandbox">sandbox</span>
           <span style="flex:1"></span>
-          <span class="chip on">Git</span>
+          <span class="chip on">GitHub</span>
           <span class="chip off"><s>Docker</s></span>
+          <span class="chip on">Network</span>
         </div>
         <div class="sv-panes">
           <!-- chat panel: banner sits in the PR-card slot -->
@@ -305,7 +315,7 @@
             <div style="padding: 6px 12px 4px;">
               <div class="info-banner">
                 <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="flex:none;color:var(--sandbox)"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm-8 56a12 12 0 1 1-12 12 12 12 0 0 1 12-12zm20 96a8 8 0 0 1-8-8v-32a8 8 0 0 1 0-16h8a8 8 0 0 1 8 8v32a8 8 0 0 1 8 8z"/></svg>
-                <div><span class="ttl">Sandbox session — no repository bound.</span> The agent clones and pushes repos itself, so there’s no live preview or PR card here. Granted: <b>Git</b>.</div>
+                <div><span class="ttl">Sandbox session — no repository bound.</span> The agent clones and pushes repos itself, so there’s no live preview or PR card here. Granted: <b>GitHub · Network</b>.</div>
               </div>
             </div>
             <div class="sv-body" style="padding-top: 6px;">
