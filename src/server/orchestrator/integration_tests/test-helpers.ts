@@ -305,15 +305,29 @@ export class StubGitHubAuthManager extends EventEmitter {
       ? { canWrite: true }
       : { canWrite: false, reason: "the connected account has read-only access" };
   }
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async createRepo(name: string, options: { description?: string; isPrivate?: boolean } = {}) {
+  /** Calls to `createRepo`, in order. Inspect owner routing from tests. */
+  public createRepoCalls: { name: string; options: { description?: string; isPrivate?: boolean; owner?: string } }[] = [];
+
+  async createRepo(name: string, options: { description?: string; isPrivate?: boolean; owner?: string } = {}) {
+    this.createRepoCalls.push({ name, options: { ...options } });
+    const owner = options.owner ?? "test-user";
     return {
       success: true,
       name,
-      fullName: `test-user/${name}`,
-      url: `https://github.com/test-user/${name}`,
-      cloneUrl: `https://github.com/test-user/${name}.git`,
+      fullName: `${owner}/${name}`,
+      url: `https://github.com/${owner}/${name}`,
+      cloneUrl: `https://github.com/${owner}/${name}.git`,
     };
+  }
+
+  /** Orgs returned by `listOrgs`. Override per-test via `setOrgs`. */
+  private _orgs: { login: string; avatarUrl: string }[] = [];
+  setOrgs(orgs: { login: string; avatarUrl: string }[]) {
+    this._orgs = orgs;
+  }
+  async listOrgs() {
+    if (!this._authenticated) return [];
+    return this._orgs;
   }
 
   /** Calls to `createPullRequest`, in order. Inspect from tests. */

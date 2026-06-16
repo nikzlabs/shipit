@@ -12,6 +12,7 @@ import {
   getPrStatus,
   getGitCredential,
   searchGitHubRepos,
+  listGitHubOrgs,
   createPullRequest,
   quickCreatePr,
   agentCreatePr,
@@ -64,6 +65,11 @@ export async function registerGitHubRoutes(
   app.get<{ Querystring: { q?: string } }>("/api/github/repos", async (request) => {
     const query = request.query.q ?? "";
     return { repos: await searchGitHubRepos(deps.githubAuthManager, query) };
+  });
+
+  // GET /api/github/orgs — list the user's organizations (new-repo owner picker)
+  app.get("/api/github/orgs", async () => {
+    return { orgs: await listGitHubOrgs(deps.githubAuthManager) };
   });
 
   // ---- PR mutations ----

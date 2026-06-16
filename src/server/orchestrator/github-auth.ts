@@ -5,7 +5,7 @@ import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
 // Sub-module imports — delegated implementations
-import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl } from "./github-auth-repos.js";
+import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
 import { getReleaseByTag as getReleaseByTagImpl, type ReleaseByTag } from "./github-auth-releases.js";
@@ -423,12 +423,21 @@ export class GitHubAuthManager extends EventEmitter {
    */
   async createRepo(
     name: string,
-    options: { description?: string; isPrivate?: boolean } = {},
+    options: { description?: string; isPrivate?: boolean; owner?: string } = {},
   ): Promise<GitHubRepoResult> {
     if (!this._token) {
       return { success: false, message: "Not authenticated with GitHub" };
     }
     return createRepoImpl(this._token, name, options);
+  }
+
+  /**
+   * List the organizations the authenticated user belongs to (empty when
+   * unauthenticated). Backs the new-repo owner picker.
+   */
+  async listOrgs(): Promise<{ login: string; avatarUrl: string }[]> {
+    if (!this._token) return [];
+    return listOrgsImpl(this._token);
   }
 
   /**
@@ -949,7 +958,7 @@ export class GitHubAuthManager extends EventEmitter {
 }
 
 // Barrel re-exports from sub-modules for backwards compatibility
-export { createRepo, listUserRepos, searchRepos } from "./github-auth-repos.js";
+export { createRepo, listUserRepos, searchRepos, listOrgs } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
 export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";

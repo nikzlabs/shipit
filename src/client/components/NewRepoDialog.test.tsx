@@ -210,7 +210,7 @@ describe("NewRepoDialog", () => {
     fireEvent.click(screen.getByText("Create & Setup"));
 
     expect(onSubmit).toHaveBeenCalledTimes(1);
-    expect(onSubmit).toHaveBeenCalledWith("my-repo", "A cool project", true, "nextjs");
+    expect(onSubmit).toHaveBeenCalledWith("my-repo", "A cool project", true, "nextjs", undefined);
   });
 
   it("trims name and description before submitting", () => {
@@ -222,7 +222,7 @@ describe("NewRepoDialog", () => {
     fireEvent.click(screen.getByText("React"));
     fireEvent.click(screen.getByText("Create & Setup"));
 
-    expect(onSubmit).toHaveBeenCalledWith("my-repo", "desc", true, "react");
+    expect(onSubmit).toHaveBeenCalledWith("my-repo", "desc", true, "react", undefined);
   });
 
   it("submits with isPrivate true when Private is selected", () => {
@@ -234,7 +234,37 @@ describe("NewRepoDialog", () => {
     fireEvent.click(screen.getByText("React"));
     fireEvent.click(screen.getByText("Create & Setup"));
 
-    expect(onSubmit).toHaveBeenCalledWith("my-repo", "", true, "react");
+    expect(onSubmit).toHaveBeenCalledWith("my-repo", "", true, "react", undefined);
+  });
+
+  it("does not render the owner picker when the user has no orgs", () => {
+    render(<NewRepoDialog {...defaultProps} orgs={[]} />);
+    expect(screen.queryByText("Owner")).toBeNull();
+  });
+
+  it("renders the owner picker with personal account plus orgs when orgs are present", () => {
+    render(<NewRepoDialog {...defaultProps} username="alice" orgs={["acme", "globex"]} />);
+    expect(screen.getByText("Owner")).toBeTruthy();
+    expect(screen.getByText("alice (personal)")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "acme" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "globex" })).toBeTruthy();
+  });
+
+  it("passes the selected org as owner, and undefined for the personal account", () => {
+    const onSubmit = vi.fn();
+    render(<NewRepoDialog {...defaultProps} username="alice" orgs={["acme"]} onSubmit={onSubmit} />);
+
+    fireEvent.change(screen.getByPlaceholderText("my-project"), { target: { value: "my-repo" } });
+    fireEvent.click(screen.getByText("React"));
+
+    // Default selection is the personal account → owner is undefined.
+    fireEvent.click(screen.getByText("Create & Setup"));
+    expect(onSubmit).toHaveBeenLastCalledWith("my-repo", "", true, "react", undefined);
+
+    // Selecting an org threads its login through as owner.
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "acme" } });
+    fireEvent.click(screen.getByText("Create & Setup"));
+    expect(onSubmit).toHaveBeenLastCalledWith("my-repo", "", true, "react", "acme");
   });
 
   it("does not call onSubmit when submit button is disabled", () => {

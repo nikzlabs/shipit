@@ -292,6 +292,9 @@ export default function App() {
   const isMobile = useIsMobile();
   const [searchOpen, setSearchOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  // Organizations the user can target in NewRepoDialog's owner picker. Loaded
+  // lazily when the create-repo dialog opens (see onCreateNewRepo handlers).
+  const [githubOrgs, setGithubOrgs] = useState<string[]>([]);
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -1548,6 +1551,8 @@ export default function App() {
           useRepoStore.getState().setAddRepoDialogOpen(false);
           // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
           if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
+          apiGet<{ orgs: { login: string }[] }>("/api/github/orgs").then((d) => setGithubOrgs(d.orgs.map((o) => o.login))).catch(() => {});
           useRepoStore.getState().setNewRepoDialogOpen(true);
         }}
         toast={toast}
@@ -1561,6 +1566,8 @@ export default function App() {
           useRepoStore.getState().setAddRepoDialogOpen(false);
           // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
           if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
+          // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
+          apiGet<{ orgs: { login: string }[] }>("/api/github/orgs").then((d) => setGithubOrgs(d.orgs.map((o) => o.login))).catch(() => {});
           useRepoStore.getState().setNewRepoDialogOpen(true);
         }}
         searchResults={importSearchResults}
@@ -1581,15 +1588,16 @@ export default function App() {
       {newRepoDialogOpen && (
         <NewRepoDialog
           username={githubStatus.username ?? ""}
+          orgs={githubOrgs}
           templates={templates}
           creating={creatingRepo}
           onClose={() => useRepoStore.getState().setNewRepoDialogOpen(false)}
-          onSubmit={async (name, description, isPrivate, templateId) => {
+          onSubmit={async (name, description, isPrivate, templateId, owner) => {
             useSessionStore.getState().setCreatingRepo(true);
             try {
               const res = await apiPost<{ success: boolean; repoUrl?: string; message?: string }>(
                 "/api/repos",
-                { repoName: name, description, isPrivate, templateId },
+                { repoName: name, description, isPrivate, templateId, owner },
               );
               if (res.success && res.repoUrl) {
                 useRepoStore.getState().setNewRepoDialogOpen(false);

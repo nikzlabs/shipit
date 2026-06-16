@@ -1052,7 +1052,7 @@ export async function registerSessionRoutes(
   });
 
   // POST /api/repos — add a repo (existing) or create a new GitHub repo with template
-  app.post<{ Body: { url?: string; repoName?: string; templateId?: string; description?: string; isPrivate?: boolean } }>(
+  app.post<{ Body: { url?: string; repoName?: string; templateId?: string; description?: string; isPrivate?: boolean; owner?: string } }>(
     "/api/repos",
     async (_request, reply) => {
       const body = _request.body;
@@ -1110,7 +1110,7 @@ export async function registerSessionRoutes(
           createRepoGit,
           deps.githubAuthManager, deps.getSharedRepoDir,
           body.repoName, body.templateId,
-          body.description, body.isPrivate,
+          body.description, body.isPrivate, body.owner,
         );
         if (!result.success) {
           reply.code(400).send(result);
