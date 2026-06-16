@@ -237,7 +237,13 @@ export function buildMounts(
     binds.push(`${perSessionCredentialsDir(config.credentialsDir, config.sessionId)}:/credentials:rw`);
   }
 
-  // Mount the uploads directory for user-uploaded files.
+  // Mount the uploads directory for user-uploaded files **read-only**
+  // (docs/172 Gap 6 / SHI-45). The agent has no legitimate write need under
+  // /uploads — uploads are produced by the user from the browser, the agent
+  // only consumes them — so a `:ro` mount removes the ability for a
+  // prompt-injected agent to delete or tamper with the user's uploads. This is
+  // the cheap structural read-only defense the containment threat model calls
+  // for; it is independent of the whole-rootfs ReadonlyRootfs layer (Gap 5).
   if (config.uploadsDir) {
     if (workspaceVolume) {
       const uploadsRelPath = config.uploadsDir.replace(/^\/workspace\//, "");
@@ -245,10 +251,11 @@ export function buildMounts(
         Type: "volume",
         Source: workspaceVolume,
         Target: "/uploads",
+        ReadOnly: true,
         VolumeOptions: { Subpath: uploadsRelPath },
       });
     } else {
-      binds.push(`${config.uploadsDir}:/uploads:rw`);
+      binds.push(`${config.uploadsDir}:/uploads:ro`);
     }
   }
 

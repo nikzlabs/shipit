@@ -11,9 +11,12 @@ mistaken shell command can't modify system paths or read root-only files.
 
 What this means in practice:
 
-- **Writable:** `/workspace`, `/uploads`, `/dep-cache`, `/credentials`, `/tmp`,
+- **Writable:** `/workspace`, `/dep-cache`, `/credentials`, `/tmp`,
   and your home `/home/shipit` (including `~/.claude`, `~/.codex`, the npm
   global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
+- **Read-only data:** `/uploads` is mounted **read-only** (docs/172 Gap 6) —
+  you can read the user's attached files but not modify or delete them. If you
+  need to transform an upload, copy it into `/workspace` or `/tmp` first.
 - **Read-only to you:** `/app` (the worker), `/opt/agent-cli` (the agent CLIs),
   `/usr/local/bin` shims (`gh`, `shipit`, `shipit-git-credential`), and system
   dirs. You can run them, but not modify them. Some deployments additionally run
@@ -31,7 +34,7 @@ What this means in practice:
 | Path | Description |
 |------|-------------|
 | `/workspace` | Project root. This is the git repo. Your working directory. |
-| `/uploads` | User-uploaded files (outside git, never committed). |
+| `/uploads` | User-uploaded files (outside git, never committed). **Read-only** — read attachments here, but copy elsewhere to modify. |
 | `/tmp` | Scratch space — use for temporary files, unpacking archives. |
 | `/credentials` | OAuth tokens (managed by ShipIt). Holds **only the credentials for this session's agent** — a Claude session sees `~/.claude` but not `~/.codex`, and vice versa. The agent is pinned on the first message and can't be changed afterward. Symlinked into your home (`~/.claude`, `~/.claude.json`, `~/.codex` → `/credentials/...`). Write-protected (see below). |
 | `/dep-cache` | Shared npm/yarn/pnpm cache across sessions for the same repo. |

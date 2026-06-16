@@ -289,8 +289,25 @@ tracker as separate issues. None implemented yet.
 
 ## P2
 
-- [ ] **Gap 6 — read-only mounts.** Downgrade `/uploads` (and `/credentials` after
-      first-turn provisioning) to `:ro` where the agent has no legitimate write need.
+- **Gap 6 — read-only mounts (SHI-45).** Downgrade mounted data to `:ro` where the agent
+      has no legitimate write need.
+  - [x] **`/uploads` → `:ro` (SHI-45, shipped).** `buildMounts` mounts `/uploads`
+        read-only in both modes (`:ro` bind / `ReadOnly: true` volume). Safe because the
+        agent only *reads* uploads — they're written orchestrator-side on the host
+        (`services/files.ts`), so a prompt-injected agent can no longer delete/tamper with
+        them. Tests in `container-lifecycle.test.ts`; agent docs updated
+        (`shipit-docs/environment.md`). (`container-lifecycle.ts` `buildMounts`)
+  - [ ] **`/credentials` → `:ro` — blocked on SHI-164.** The agent CLI refreshes its OAuth
+        token **in place inside the mount** (docs/142), so `:ro` would break auth. Prereq
+        scoped in plan.md Gap 6 and tracked as **SHI-164** (relocate the CLI's writable
+        token file out of the `/credentials` mount, re-point the host-side copy-back, then
+        flip `:ro`). Do NOT flip until SHI-164 lands.
+  - [x] **Cross-platform validation (SHI-45).** The `:ro` mount is a standard Docker API
+        field (Binds `:ro` / `ReadOnly: true`), portable by construction across Docker
+        Engine (Linux), Docker Desktop (macOS), and WSL2; unit-tested here. Live
+        in-container enforcement check (`touch /uploads/x` → EROFS) deferred to a real
+        Docker host (no DinD in this session), folded into the 067 live matrix. See plan.md
+        Gap 6 "Cross-platform validation".
 - [x] **Gap 5 — kernel-tier hardening (SHI-97, shipped default-OFF).** Three env-gated
       controls in `container-hardening.ts`, applied in `container-lifecycle.ts`:
       - [x] **gVisor (`runsc`)** — decision **adopt as operator opt-in, default `runc`**
