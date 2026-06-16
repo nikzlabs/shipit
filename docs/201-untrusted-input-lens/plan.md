@@ -33,7 +33,7 @@ phrases" (brittle, false confidence — see `docs/176`).
 
 ### 1. A reusable provenance envelope (orchestrator-brokered surfaces)
 
-`src/server/orchestrator/untrusted-input.ts` exports `wrapUntrustedContent`,
+`src/server/shared/untrusted-input.ts` exports `wrapUntrustedContent`,
 the single mechanism that wraps brokered content in a consistent envelope the
 agent's system prompt is taught to recognise:
 
@@ -76,7 +76,9 @@ the lens is the standing system-prompt rule, which covers all four surfaces so
 
 ## Key files
 
-- `src/server/orchestrator/untrusted-input.ts` — the reusable envelope + boundary defang.
+- `src/server/shared/untrusted-input.ts` — the reusable envelope + boundary defang. (Moved
+  from `orchestrator/` to `shared/` by SHI-85, which made it cross-layer: the session-side
+  `shipit issue` shim wraps issue text with the same envelope.)
 - `src/server/orchestrator/validation.ts` — `formatFileContext` enrolls attached file/upload content.
 - `src/server/orchestrator/agent-instructions.ts` — system-prompt "## Untrusted input" section + docs pointer.
 - `src/server/shipit-docs/untrusted-input.md` — agent-facing reference.

@@ -3,7 +3,7 @@ import { formatFileContext } from "./validation.js";
 import {
   UNTRUSTED_OPEN_MARKER,
   UNTRUSTED_CLOSE_MARKER,
-} from "./untrusted-input.js";
+} from "../shared/untrusted-input.js";
 import type { FileAttachment } from "../shared/types.js";
 
 describe("formatFileContext", () => {

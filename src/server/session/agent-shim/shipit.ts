@@ -24,6 +24,7 @@
 
 import fsp from "node:fs/promises";
 import { parseIssueRef } from "../../shared/issue-ref.js";
+import { wrapUntrustedContent } from "../../shared/untrusted-input.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
 
@@ -1541,8 +1542,8 @@ async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
     deps.io.exit(0);
     return;
   }
-  let text = renderIssue(issue);
-  if (comments) text += `\n\n${renderComments(comments)}`;
+  let text = renderIssue(issue, tracker);
+  if (comments) text += `\n\n${renderComments(comments, tracker, asString(issue.identifier))}`;
   success(deps.io, text);
 }
 
@@ -1585,39 +1586,103 @@ async function handleIssueList(args: string[], deps: RunDeps): Promise<void> {
     success(deps.io, `No issues for ${tracker}.`);
     return;
   }
+  // Issue titles are reporter-authored free-text too (SHI-85 / docs/176), so the
+  // list is wrapped in the same untrusted-input envelope — no issue field reaches
+  // the agent as unframed prose. The leading `identifier`/`priority` columns are
+  // tracker-derived, but they ride inside the block since the row is one line.
   const lines = issues.map((i) =>
     [asString(i.identifier), priorityLabel(i), asString(i.title)].join("\t"),
   );
-  success(deps.io, lines.join("\n"));
+  const { text: capped, truncated } = capText(lines.join("\n"), MAX_ISSUE_FREETEXT_CHARS);
+  success(
+    deps.io,
+    wrapUntrustedContent({
+      source: "issue",
+      content: capped,
+      provenance: `${tracker} issue list`,
+      truncated,
+    }),
+  );
 }
 
-/** Render a single `TrackerIssue` as a stable human-readable block. */
-function renderIssue(issue: Record<string, unknown>): string {
+/**
+ * Caps on the untrusted free-text the shim emits (SHI-85 / docs/176 §4). A giant
+ * issue body or comment thread would flood the agent's context (and is a cheap
+ * context-stuffing vector), so we clamp the enveloped free-text and mark the
+ * envelope `(truncated)`. The metadata lines (identifier/status/url) are tiny and
+ * tracker-derived, so only the reporter-authored prose is bounded.
+ */
+const MAX_ISSUE_FREETEXT_CHARS = 24_000;
+const MAX_ISSUE_COMMENTS_CHARS = 24_000;
+
+/** Clamp `text` to `max` chars, reporting whether it was truncated. */
+function capText(text: string, max: number): { text: string; truncated: boolean } {
+  if (text.length <= max) return { text, truncated: false };
+  return { text: `${text.slice(0, max).trimEnd()}\n…[truncated]`, truncated: true };
+}
+
+/**
+ * Render a single `TrackerIssue` as a stable human-readable block.
+ *
+ * SHI-85 (docs/176): the reporter-authored free-text — the **title and body** —
+ * is attacker-influenceable on a public tracker (anyone with an account can file
+ * an issue), so it is wrapped in the SHI-98 untrusted-input provenance envelope
+ * (`shared/untrusted-input.ts`, `source: "issue"`) and treated as DATA, not
+ * instructions. This is the agent's single text-ingestion point for issue
+ * content; `--json` returns the same fields structurally instead. The framing is
+ * defense-in-depth, never the barrier — the load-bearing controls are the
+ * environment layer (egress allowlist SHI-90, scoped tokens SHI-79).
+ *
+ * The metadata lines (identifier, status, priority, assignee, url, available
+ * statuses) are ShipIt/tracker-derived structured values, not reporter prose, so
+ * they stay outside the envelope as ordinary output. `provenance` carries the
+ * tracker + identifier so a steered action is at least attributable.
+ */
+function renderIssue(issue: Record<string, unknown>, tracker: string): string {
   const status = issue.status as Record<string, unknown> | undefined;
   const assignee = issue.assignee as Record<string, unknown> | undefined;
-  const lines = [
-    `${asString(issue.identifier)}  ${asString(issue.title)}`,
+  const identifier = asString(issue.identifier);
+  const meta = [
+    identifier,
     `status:    ${status ? asString(status.name) : "(unknown)"}`,
     `priority:  ${priorityLabel(issue)}`,
   ];
-  if (assignee && asString(assignee.name)) lines.push(`assignee:  ${asString(assignee.name)}`);
-  if (issue.url) lines.push(`url:       ${asString(issue.url)}`);
+  if (assignee && asString(assignee.name)) meta.push(`assignee:  ${asString(assignee.name)}`);
+  if (issue.url) meta.push(`url:       ${asString(issue.url)}`);
   const available = issue.availableStatuses as { name?: string }[] | undefined;
   if (available && available.length > 0) {
-    lines.push(`statuses:  ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
+    meta.push(`statuses:  ${available.map((s) => s.name).filter(Boolean).join(", ")}`);
   }
+  // Title is reporter-authored free-text too — keep it inside the envelope, not
+  // on a trusted metadata line.
+  const title = asString(issue.title);
   const description = asString(issue.description);
-  if (description.trim()) lines.push("", description);
-  return lines.join("\n");
+  const freeText = [`title: ${title}`, ...(description.trim() ? ["", description] : [])].join("\n");
+  const { text: capped, truncated } = capText(freeText, MAX_ISSUE_FREETEXT_CHARS);
+  const envelope = wrapUntrustedContent({
+    source: "issue",
+    content: capped,
+    provenance: `${tracker}:${identifier}`,
+    truncated,
+  });
+  return [meta.join("\n"), "", envelope].join("\n");
 }
 
 /**
  * Render an issue's comment thread for `shipit issue view --comments` (SHI-137).
  * Oldest-first (the order the orchestrator returns), one block per comment with
- * an author · timestamp header. Comment bodies are attacker-controllable data,
- * same as the issue body — they are printed verbatim, never interpreted.
+ * an author · timestamp header.
+ *
+ * Comment bodies are attacker-controllable data, same as the issue body — and
+ * **strictly lower trust** (docs/176 §3: anyone can comment, no maintainer
+ * gate), so the whole thread is wrapped in the SHI-98 untrusted-input envelope
+ * with a provenance note that says so. Printed verbatim, never interpreted.
  */
-function renderComments(comments: Record<string, unknown>[]): string {
+function renderComments(
+  comments: Record<string, unknown>[],
+  tracker: string,
+  identifier: string,
+): string {
   if (comments.length === 0) return "comments:  (none)";
   const blocks = comments.map((c) => {
     const author = c.author as Record<string, unknown> | undefined;
@@ -1626,7 +1691,14 @@ function renderComments(comments: Record<string, unknown>[]): string {
     const head = when ? `${who} · ${when}` : who;
     return `— ${head}\n${asString(c.body)}`;
   });
-  return [`comments (${comments.length}):`, ...blocks].join("\n\n");
+  const body = [`comments (${comments.length}):`, ...blocks].join("\n\n");
+  const { text: capped, truncated } = capText(body, MAX_ISSUE_COMMENTS_CHARS);
+  return wrapUntrustedContent({
+    source: "issue",
+    content: capped,
+    provenance: `${tracker}:${identifier} comments — lower trust than the body; anyone may post`,
+    truncated,
+  });
 }
 
 /** Pull the display label off an issue's priority object, defaulting gracefully. */

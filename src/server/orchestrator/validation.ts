@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { ImageAttachment, FileAttachment, FileContextRef, UploadRef } from "../shared/types.js";
-import { wrapUntrustedContent } from "./untrusted-input.js";
+import { wrapUntrustedContent } from "../shared/untrusted-input.js";
 
 // Re-exported from shared for backward compatibility — prefer importing from "../shared/utils.js" directly.
 export { getErrorMessage } from "../shared/utils.js";

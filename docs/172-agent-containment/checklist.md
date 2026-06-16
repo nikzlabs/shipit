@@ -315,8 +315,11 @@ tracker as separate issues. None implemented yet.
 ## Cross-cutting
 
 - [x] **Gap 4 — untrusted-input lens.** Treat uploaded files, cloned-repo content, web
-      fetches, and MCP tool returns as untrusted; fold into the egress/trust work and
-      apply to future input surfaces. General mechanism shipped in SHI-98 — a reusable
-      provenance envelope (`untrusted-input.ts`) applied to brokered file/upload content
-      plus a system-prompt rule covering all four surfaces; SHI-85 enrolls issue text.
-      Full design: `docs/201-untrusted-input-lens`.
+      fetches, MCP tool returns, **and issue-tracker text** as untrusted; fold into the
+      egress/trust work and apply to future input surfaces. General mechanism shipped in
+      SHI-98 — a reusable provenance envelope (`shared/untrusted-input.ts`) applied to
+      brokered file/upload content plus a system-prompt rule covering all surfaces. The
+      **issue-text slice is now enrolled (SHI-85, `docs/176`)**: the `shipit issue` shim
+      wraps fetched title/body/comments with the same envelope (`source: "issue"`),
+      comments framed as lower trust than the body. Full designs:
+      `docs/201-untrusted-input-lens`, `docs/176-issue-content-injection-hardening`.
