@@ -847,6 +847,18 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
      */
     opsSession?: boolean;
     /**
+     * docs/211 — explicit Docker-access override for a **sandbox** session. A
+     * sandbox starts from an empty `/workspace` with no root `shipit.yaml`, so
+     * `resolveAgentDockerLimits` would always read `dockerAccess: false`. The
+     * server-authoritative `capabilities.docker` grant is threaded here instead,
+     * and takes precedence over the workspace-derived value (which is moot for a
+     * sandbox). `false`/`true` both win over the shipit.yaml value via `??`;
+     * `undefined` (the non-sandbox path) falls back to the derived limit
+     * unchanged. The ops gate downstream (`buildContainerConfig` forces
+     * `dockerAccess: false` for ops) is unaffected — a sandbox is never ops.
+     */
+    dockerAccess?: boolean;
+    /**
      * docs/183 dep-dir design — per-dep-dir overlay specs from `prepareOverlaySpecs`.
      * Empty/absent for non-overlay sessions (the byte-for-byte-unchanged path).
      */
@@ -865,7 +877,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       memoryLimit: limits.memoryLimit,
       cpuQuota: limits.cpuQuota,
       pidsLimit: limits.pidsLimit,
-      dockerAccess: limits.dockerAccess,
+      // docs/211 — a sandbox's Docker access is the explicit capability grant,
+      // not the (always-false) shipit.yaml-derived value.
+      dockerAccess: opts.dockerAccess ?? limits.dockerAccess,
       opsSession: opts.opsSession,
       hostMounts: opts.opsSession ? cfg.hostMounts : undefined,
       overlaySpecs: opts.overlaySpecs,

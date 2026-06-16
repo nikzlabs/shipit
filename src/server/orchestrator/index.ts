@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { FastifyInstance } from "fastify";
-import { composeEgressExtraHosts, composeEgressIdentityRules } from "./egress-allowlist.js";
+import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineBase } from "./egress-allowlist.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
@@ -113,20 +113,42 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // override) and the composed extra-host allowlist fed into BOTH the Tier B
   // resolver config and the Tier C SNI proxy. Also injected into `egress-policy`
   // so the Tier C decision endpoint honors durable allows without re-carding.
-  const resolveEgressConfig = (sessionId: string): ResolvedEgressConfig => ({
-    contained: egressAllowlistStore.resolveContained(sessionId),
-    extraHosts: composeEgressExtraHosts({
-      credentialStore,
-      durableHosts: egressAllowlistStore.effectiveHosts(sessionId),
-    }),
-    // The built-in base minus any defaults the user removed in Settings — so a
-    // removed default is actually closed at the resolver + proxy.
-    base: egressAllowlistStore.effectiveBase(),
-    // docs/172 Phase 2 — SNI-scoped tenant identity rules for multi-tenant hosts,
-    // from the operator env (SESSION_EGRESS_IDENTITY_RULES). "" when none → the
-    // proxy launch omits EGRESS_PROXY_IDENTITY_RULES (no identity scoping).
-    identityRules: composeEgressIdentityRules(),
-  });
+  const resolveEgressConfig = (sessionId: string): ResolvedEgressConfig => {
+    // docs/211 — a sandbox session with the `network` capability OFF is dropped
+    // to **lifeline-only** egress: the LLM API (the agent's irreducible API) plus
+    // the ShipIt orchestrator/worker (added by the resolver/proxy via
+    // orchestratorInternalNames), plus github.com WHEN the `git` capability is
+    // also granted (so push/PR still work). We empty the per-session allowlist
+    // (no user/MCP/operator extras, no full default base) down to that lifeline
+    // base and force containment on — "off" only ever tightens, never loosens.
+    // Inert where egress enforcement isn't deployed: the firewall install is
+    // gated on `egressEnforce && contained`, so this config is simply not
+    // consumed there (never a silent partial state). `network` ON (the default)
+    // is the standard path below — parity with any normal session.
+    const session = sessionManager.get(sessionId);
+    if (session?.kind === "sandbox" && session.capabilities?.network === false) {
+      return {
+        contained: true,
+        extraHosts: [],
+        base: sandboxLifelineBase({ git: !!session.capabilities.git }),
+        identityRules: composeEgressIdentityRules(),
+      };
+    }
+    return {
+      contained: egressAllowlistStore.resolveContained(sessionId),
+      extraHosts: composeEgressExtraHosts({
+        credentialStore,
+        durableHosts: egressAllowlistStore.effectiveHosts(sessionId),
+      }),
+      // The built-in base minus any defaults the user removed in Settings — so a
+      // removed default is actually closed at the resolver + proxy.
+      base: egressAllowlistStore.effectiveBase(),
+      // docs/172 Phase 2 — SNI-scoped tenant identity rules for multi-tenant hosts,
+      // from the operator env (SESSION_EGRESS_IDENTITY_RULES). "" when none → the
+      // proxy launch omits EGRESS_PROXY_IDENTITY_RULES (no identity scoping).
+      identityRules: composeEgressIdentityRules(),
+    };
+  };
   setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
 
   // docs/150 Rollout — fail-fast on SHIPIT_SESSION_WORKER_UID drift before we

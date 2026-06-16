@@ -64,6 +64,54 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
 ];
 
+/**
+ * docs/211 — the **lifeline** allowlist: the irreducible hosts a contained
+ * agent must reach for the loop to function at all — its inference/auth API.
+ * Used when a sandbox session's `network` capability is OFF: egress is dropped
+ * to this set (plus the ShipIt orchestrator/worker, which the resolver/proxy add
+ * separately via {@link orchestratorInternalNames}, and plus GitHub when the
+ * `git` capability is granted — see {@link EGRESS_GITHUB_LIFELINE_HOSTS}).
+ *
+ * This is the LLM-API slice of {@link EGRESS_DEFAULT_ALLOWLIST} — registries and
+ * the git host are deliberately excluded ("no internet, lifeline only"). Cutting
+ * these hosts would kill the agent, so "off" is lifeline-only, never a literal
+ * air-gap.
+ */
+export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
+  // --- Agent API endpoints (Claude / Anthropic) ---
+  ".anthropic.com",
+  ".claude.ai",
+  // --- Agent API endpoints (Codex / OpenAI) ---
+  ".openai.com",
+  ".chatgpt.com",
+];
+
+/**
+ * docs/211 — GitHub hosts spliced into the lifeline base when a Network-off
+ * sandbox ALSO has the `git` capability, so `git push` / PR brokering keep
+ * working even with the internet otherwise sealed. GitHub access controls the
+ * *token*; Network controls *everything else* — granting git re-opens just this
+ * host. Mirrors the git slice of {@link EGRESS_DEFAULT_ALLOWLIST}.
+ */
+export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [
+  ".github.com",
+  ".githubusercontent.com",
+  ".githubassets.com",
+];
+
+/**
+ * docs/211 — compose the lifeline egress base for a Network-off sandbox: the LLM
+ * API lifeline, plus GitHub when `git` is granted. The orchestrator/worker
+ * internal names are added separately by the resolver/proxy, so they are always
+ * reachable and not listed here. Returns a fresh array (safe to mutate).
+ */
+export function sandboxLifelineBase(opts: { git: boolean }): string[] {
+  return [
+    ...EGRESS_LIFELINE_ALLOWLIST,
+    ...(opts.git ? EGRESS_GITHUB_LIFELINE_HOSTS : []),
+  ];
+}
+
 // ---------------------------------------------------------------------------
 // Host matching
 // ---------------------------------------------------------------------------
