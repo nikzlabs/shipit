@@ -146,6 +146,8 @@
   .info-banner .ttl { font-weight: 650; color: var(--sandbox); }
   .chip { display:inline-flex; align-items:center; gap:5px; font-size:11px; padding:2px 8px; border-radius:999px; background: var(--color-bg-tertiary); color: var(--color-text-secondary); }
   .chip.on { background: var(--sandbox-subtle); color: var(--sandbox); }
+  .chip.off { background: transparent; color: var(--color-text-tertiary); border: 1px dashed var(--color-border-secondary); }
+  .chip.off s { text-decoration: line-through; }
   .term { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; background: #0d1117; border:1px solid var(--color-border-primary); border-radius: 8px; padding: 10px 12px; color: #c9d1d9; }
   .term .p { color: var(--sandbox); }
   .term .c { color: #8b949e; }
@@ -180,7 +182,7 @@
             <div class="mi-ic sandbox"><svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor"><path d="M216 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V56a16 16 0 0 0-16-16zM96 176H56v-40h40zm0-56H56V80h40zm104 56h-88v-40h88zm0-56h-88V80h88z"/></svg></div>
             <div>
               <div class="mt">Sandbox session</div>
-              <div class="md">Empty workspace. Grant Git &amp; Docker. The agent clones what it needs.</div>
+              <div class="md">Empty workspace. Choose Git and/or Docker access. The agent clones what it needs.</div>
             </div>
           </div>
           <div class="mitem">
@@ -263,7 +265,7 @@
               <div class="tr-desc">Build &amp; run containers through a <b>session-scoped</b> proxy.</div>
               <div class="tr-note note-ok">✓ Isolated to this session: only its own containers/networks/volumes. No host socket, no <code>--privileged</code>.</div>
             </div>
-            <div class="sw on"><span class="kn"></span></div>
+            <div class="sw"><span class="kn"></span></div>
           </div>
         </div>
         <div class="dlg-foot">
@@ -284,7 +286,7 @@
           <span class="badge sandbox">sandbox</span>
           <span style="flex:1"></span>
           <span class="chip on">Git</span>
-          <span class="chip on">Docker</span>
+          <span class="chip off"><s>Docker</s></span>
         </div>
         <div class="tabs">
           <div class="tab active"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M168 152a8 8 0 0 1-8 8H96a8 8 0 0 1 0-16h64a8 8 0 0 1 8 8z"/></svg> Chat</div>
@@ -319,7 +321,7 @@
   <p class="legend">
     <b>Notes.</b> Sandbox accent = teal (distinct from PR violet, ops amber, folder yellow).
     The <b>+</b> lives above the session list (not in Settings) so every “advanced” session — Sandbox &amp; Ops — is created from one discoverable place with its capability docs inline.
-    Capability chips (<b>Git</b> / <b>Docker</b>) on the session header reflect what was granted at creation and are immutable.
+    Capabilities are <b>independent, per-session choices</b> — Git and Docker can each be on or off. The header chips reflect what <i>this</i> session was granted at creation (teal = granted, dashed/struck = not granted) and are immutable. This example is Git-only, which is why it clones &amp; opens PRs but uses no Docker.
     Preview &amp; PR tabs are removed (shown struck-through here only to illustrate the diff vs. a normal session).
   </p>
 </body>
