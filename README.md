@@ -272,7 +272,9 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 
 - **Container-isolated agents** — each session runs in its own Docker container on an isolated
   network; sessions can't reach each other. Containers get no Docker socket, only a proxy that
-  enforces an allow-list and rejects privileged/host-namespace escapes.
+  enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every
+  process it spawns run as an unprivileged user (not root), with capabilities trimmed to the
+  minimum, so a prompt-injected command has a smaller blast radius inside the box.
 - **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
   the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
   aren't sitting at rest in the agent's sandbox.
