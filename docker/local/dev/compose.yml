@@ -42,6 +42,12 @@ services:
       # (SHI-90 Tier B host verification). Harmless when egress is off.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
+      # docs/172 Gap 5 (SHI-97) — kernel-tier hardening flags, default-OFF.
+      # Set for live-host verification (SHI-97). Empty unless exported before `up`.
+      - SESSION_SECCOMP=${SESSION_SECCOMP:-}
+      - SESSION_SECCOMP_PROFILE=${SESSION_SECCOMP_PROFILE:-}
+      - SESSION_READONLY_ROOTFS=${SESSION_READONLY_ROOTFS:-}
+      - SESSION_RUNTIME=${SESSION_RUNTIME:-}
     networks:
       - shipit-dev
 

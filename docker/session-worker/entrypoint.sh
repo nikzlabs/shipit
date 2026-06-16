@@ -56,13 +56,20 @@ done
 # them into the tmpfs so the agent CLIs still resolve their creds from the
 # persistent /credentials mount. No-op unless the orchestrator set the flag.
 if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
-  ln -sfn /credentials/.claude      /home/shipit/.claude
-  ln -sfn /credentials/.claude.json /home/shipit/.claude.json
-  ln -sfn /credentials/.codex       /home/shipit/.codex
-  mkdir -p /home/shipit/.npm-global /home/shipit/.npm
-  # `chown -h` the links themselves; the dirs are freshly made in the tmpfs.
-  chown -h "${UID_GID}:${UID_GID}" /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
-  chown "${UID_GID}:${UID_GID}" /home/shipit/.npm-global /home/shipit/.npm
+  # The chown loop above just handed the /home/shipit tmpfs to UID_GID, and the
+  # container drops DAC_OVERRIDE (docs/150 §10 — the worker owns its own files and
+  # no longer bypasses DAC as root). So root can NO LONGER write into the now
+  # non-root-owned dir: creating these symlinks as root fails EPERM. Create them
+  # AS the target user via gosu (uses CAP_SETUID/SETGID, already in CapAdd, and
+  # composes with no-new-privileges) — ownership then lands correct for free and
+  # we never need DAC_OVERRIDE back. Must run after the chown above, not before:
+  # a pre-chown `chown -R` would dereference the .claude symlink into /credentials.
+  gosu "${UID_GID}:${UID_GID}" sh -c '
+    ln -sfn /credentials/.claude      /home/shipit/.claude
+    ln -sfn /credentials/.claude.json /home/shipit/.claude.json
+    ln -sfn /credentials/.codex       /home/shipit/.codex
+    mkdir -p /home/shipit/.npm-global /home/shipit/.npm
+  '
 fi
 
 exec gosu "${UID_GID}:${UID_GID}" "$@"
