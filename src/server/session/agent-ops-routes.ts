@@ -27,6 +27,26 @@ export interface AgentOpsDeps {
 }
 
 /**
+ * docs/211 — build a querystring carrying the repo-aware PR target (`cwd` +
+ * `--repo`) for GET PR ops, merged with any op-specific params (`number`,
+ * `state`). Only defined values are included, so a repo-bound session sends an
+ * empty string and the orchestrator falls back to its session repo.
+ */
+function prTargetQs(
+  target: { cwd?: string; repo?: string },
+  extra: Record<string, string> = {},
+): string {
+  const params = new URLSearchParams();
+  for (const [key, value] of Object.entries(extra)) {
+    if (value) params.set(key, value);
+  }
+  if (target.cwd) params.set("cwd", target.cwd);
+  if (target.repo) params.set("repo", target.repo);
+  const qs = params.toString();
+  return qs ? `?${qs}` : "";
+}
+
+/**
  * Get an OrchestratorClient lazily so missing env (e.g. in tests run outside
  * a container) doesn't crash worker startup — the error surfaces only when
  * the agent actually invokes the shim.
@@ -111,74 +131,78 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/propose-actions", request.body ?? {}, reply),
   );
 
+  // docs/211 — repo-aware PR brokering. Every PR op forwards the cwd `gh` ran
+  // in and an optional `--repo` override so the orchestrator can resolve the
+  // target clone (sandbox sessions clone into `/workspace/<name>` subdirs).
+  // POST/PATCH carry them in the body; GET carries them as query params.
+
   // POST /agent-ops/pr/create — agent-driven PR create
   app.post<{ Body: {
     title?: string; body?: string; base?: string; draft?: boolean; fill?: boolean;
-    labels?: string[];
+    labels?: string[]; cwd?: string; repo?: string;
   } }>(
     "/agent-ops/pr/create",
     async (request, reply) => relay("POST", "/pr/agent-create", request.body ?? {}, reply),
   );
 
   // GET /agent-ops/pr/status — current branch's PR status (read-only)
-  app.get(
+  app.get<{ Querystring: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/status",
-    async (_request, reply) => relay("GET", "/pr/status", undefined, reply),
+    async (request, reply) => relay("GET", `/pr/status${prTargetQs(request.query)}`, undefined, reply),
   );
 
   // GET /agent-ops/pr/view?number=N — view a PR's details
-  app.get<{ Querystring: { number?: string } }>(
+  app.get<{ Querystring: { number?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/view",
     async (request, reply) => {
-      const qs = request.query.number ? `?number=${encodeURIComponent(request.query.number)}` : "";
+      const qs = prTargetQs(request.query, request.query.number ? { number: request.query.number } : {});
       return relay("GET", `/pr/view${qs}`, undefined, reply);
     },
   );
 
   // GET /agent-ops/pr/list?state=open — list PRs for the session's repo
-  app.get<{ Querystring: { state?: string } }>(
+  app.get<{ Querystring: { state?: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/list",
     async (request, reply) => {
-      const state = request.query.state;
-      const qs = state ? `?state=${encodeURIComponent(state)}` : "";
+      const qs = prTargetQs(request.query, request.query.state ? { state: request.query.state } : {});
       return relay("GET", `/pr/list${qs}`, undefined, reply);
     },
   );
 
   // PATCH /agent-ops/pr/:number — edit an existing PR (title/body and/or
   // add/remove labels). The body is forwarded verbatim to the orchestrator.
-  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[] } }>(
+  app.patch<{ Params: { number: string }; Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[]; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number",
     async (request, reply) =>
       relay("PATCH", `/pr/${encodeURIComponent(request.params.number)}`, request.body ?? {}, reply),
   );
 
   // POST /agent-ops/pr/:number/comment — add an issue-style comment
-  app.post<{ Params: { number: string }; Body: { body: string } }>(
+  app.post<{ Params: { number: string }; Body: { body: string; cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/comment",
     async (request, reply) =>
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/comment`, request.body ?? {}, reply),
   );
 
   // POST /agent-ops/pr/:number/ready — mark draft PR as ready for review
-  app.post<{ Params: { number: string } }>(
+  app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/ready",
     async (request, reply) =>
-      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/ready`, {}, reply),
+      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/ready`, request.body ?? {}, reply),
   );
 
   // POST /agent-ops/pr/:number/close — close a PR
-  app.post<{ Params: { number: string } }>(
+  app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/close",
     async (request, reply) =>
-      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/close`, {}, reply),
+      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/close`, request.body ?? {}, reply),
   );
 
   // POST /agent-ops/pr/:number/reopen — reopen a closed PR
-  app.post<{ Params: { number: string } }>(
+  app.post<{ Params: { number: string }; Body: { cwd?: string; repo?: string } }>(
     "/agent-ops/pr/:number/reopen",
     async (request, reply) =>
-      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, {}, reply),
+      relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
   // POST /agent-ops/git/credential — broker a git credential for the

@@ -30,12 +30,18 @@
       banner (`SandboxBanner`, derived chrome) in the chat panel's PR-card slot
 
 ## Phase 2 — capabilities wiring
-- [ ] Gate GitHub credential broker on `capabilities.git` **at the orchestrator
-      endpoint** (not just container env) — defense in depth _(sibling PR)_
-- [ ] **Repo-aware PR brokering** (CRITICAL): `gh` shim resolves target repo from
-      the cwd's clone + allow `--repo`; `/agent-ops/pr/*` + `api-routes-github.ts`
-      build GitManager/remote from the resolved clone, not `session.remoteUrl`;
-      keep the no-raw-token property _(sibling PR)_
+- [x] Gate GitHub credential broker on `capabilities.git` **at the orchestrator
+      endpoint** (not just container env) — defense in depth. `gitCredentialAllowed`
+      (`pr-target.ts`) denies only a sandbox with `git` off; the
+      `/api/sessions/:id/git/credential` route returns 403 (→ git falls back to
+      anonymous). Repo-bound / ops sessions unaffected.
+- [x] **Repo-aware PR brokering** (CRITICAL): `gh` shim allows `--repo` (alias
+      `-R`) and forwards the `cwd` it ran in; the worker broker forwards both
+      (body for POST/PATCH, query for GET); `api-routes-github.ts` resolves
+      `{ gitDir, remoteUrl }` via `resolvePrTarget` (`pr-target.ts`) from the
+      cwd's clone — repo-bound path UNCHANGED (session root + remote), sandbox
+      reads the clone's own origin, `--repo` targets an explicit repo. No-raw-token
+      property preserved (all PR ops stay server-side). `shipit-docs/github.md` updated.
 - [x] Thread `docker` capability → `dockerAccess` in `buildConfigForWorkspace`
       (override param, `?? limits.dockerAccess`) threaded from
       `createContainerForRunner` (`app-lifecycle.ts`) via the session's
@@ -55,7 +61,8 @@
       `pull-requests-sandbox.md`; Git section tokenized to `{{GIT_WORKFLOW}}`).
       Threaded `isSandbox` in `session-agent-run-params.ts`.
 - [x] Document Sandbox session in `src/server/shipit-docs/sandbox-session.md`
-      (+ README + sessions.md cross-links)
+      (+ README + sessions.md cross-links). `shipit-docs/github.md` documents the
+      `--repo`/cwd-scoping for sandbox PR brokering.
 
 ## Phase 3 — polish
 - [x] `+` menu above session list (Sandbox / Ops) — `renderAdvancedSessionMenu`
@@ -70,8 +77,12 @@
       (`useSessionGrouping.test.ts`), run-params sandbox flag
       (`agent-run-params-prep.test.ts`), docker capability override
       (`session-container.test.ts`), egress lifeline (`egress-allowlist.test.ts`),
-      sandbox prompt variant (`agent-instructions.test.ts`). _Remaining (sibling
-      PR):_ capability gating (broker-level), repo-aware PR brokering.
+      sandbox prompt variant (`agent-instructions.test.ts`). Capability gating +
+      repo-aware PR brokering covered by `pr-target.test.ts` (resolver + gate
+      units), `agent-shim/gh.test.ts` (cwd/`--repo` forwarding),
+      `agent-ops-routes.test.ts` (broker forwarding), and
+      `integration_tests/agent-driven-pr.test.ts` (PR built from the resolved
+      clone; repo-bound unchanged; credential 403 gate).
 - [x] Docker lock-down tests: sandbox uses session proxy not `OPS_DOCKER_HOST`
       (`container-lifecycle.test.ts`), no journal/host mounts
       (`session-container.test.ts` asserts `opsSession` falsy + no `hostMounts`).

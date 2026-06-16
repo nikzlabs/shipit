@@ -40,6 +40,7 @@ import {
 } from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import { parseGitHubRemote } from "./git-utils.js";
+import { resolvePrTarget, gitCredentialAllowed } from "./pr-target.js";
 
 export async function registerGitHubRoutes(
   app: FastifyInstance,
@@ -50,13 +51,14 @@ export async function registerGitHubRoutes(
   // ---- GitHub reads ----
 
   // GET /api/sessions/:id/pr/status — PR status
-  app.get<{ Params: { id: string } }>("/api/sessions/:id/pr/status", { config: { containerAccessible: true } }, async (request, reply) => {
+  app.get<{ Params: { id: string }; Querystring: { cwd?: string; repo?: string } }>("/api/sessions/:id/pr/status", { config: { containerAccessible: true } }, async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     try {
-      const git = createGitManager(dir);
       const session = sessionManager.get(request.params.id);
-      return { pr: await getPrStatus(deps.githubAuthManager, git, session?.remoteUrl) };
+      const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+      const git = createGitManager(gitDir);
+      return { pr: await getPrStatus(deps.githubAuthManager, git, remoteUrl) };
     } catch (err) {
       reply.code(500).send({ error: `Failed to get PR status: ${getErrorMessage(err)}` });
     }
@@ -162,6 +164,10 @@ export async function registerGitHubRoutes(
       draft?: boolean;
       fill?: boolean;
       labels?: string[];
+      // docs/211 — repo-aware brokering: the cwd `gh` ran in and an optional
+      // `--repo` override, so a sandbox PR targets the right clone.
+      cwd?: string;
+      repo?: string;
     };
   }>(
     "/api/sessions/:id/pr/agent-create",
@@ -175,7 +181,8 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        const git = createGitManager(dir);
+        const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         const result = await agentCreatePr(git, deps.githubAuthManager, {
           title: request.body?.title,
           body: request.body?.body,
@@ -184,7 +191,7 @@ export async function registerGitHubRoutes(
           fill: request.body?.fill,
           labels: request.body?.labels,
           sessionTitle: session.title,
-          remoteUrl: session.remoteUrl,
+          remoteUrl,
           // Pass session + runner context so the service can flush any
           // pending working-tree changes (commit + cancel pending auto-push)
           // before pushing. The agent calls `gh pr create` mid-turn, before
@@ -231,6 +238,15 @@ export async function registerGitHubRoutes(
         reply.code(404).send({ error: "Session not found" });
         return;
       }
+      // docs/211 — capability gate at the broker (defense in depth). A sandbox
+      // session with GitHub access OFF gets no token, regardless of how the
+      // container's git was wired. Repo-bound / ops sessions are unaffected.
+      // 403 is treated as "no credential" by the helper, so git falls back to
+      // anonymous access rather than hard-failing.
+      if (!gitCredentialAllowed(session)) {
+        reply.code(403).send({ error: "GitHub access is not granted for this sandbox session" });
+        return;
+      }
       // Resolve the session's repo so the broker can prefer a short-lived,
       // single-repo-scoped GitHub App installation token (docs/172 Gap 2-R /
       // SHI-79) over the long-lived PAT, shrinking the blast radius of an
@@ -255,7 +271,7 @@ export async function registerGitHubRoutes(
   // PATCH /api/sessions/:id/pr/:number — edit an existing PR
   app.patch<{
     Params: { id: string; number: string };
-    Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[] };
+    Body: { title?: string; body?: string; addLabels?: string[]; removeLabels?: string[]; cwd?: string; repo?: string };
   }>(
     "/api/sessions/:id/pr/:number",
     { config: { containerAccessible: true } },
@@ -268,15 +284,16 @@ export async function registerGitHubRoutes(
         return;
       }
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         return await editPullRequest(git, deps.githubAuthManager, {
           number: num,
           title: request.body?.title,
           body: request.body?.body,
           addLabels: request.body?.addLabels,
           removeLabels: request.body?.removeLabels,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -289,21 +306,22 @@ export async function registerGitHubRoutes(
   );
 
   // GET /api/sessions/:id/pr/list?state=open — list PRs for the session's repo
-  app.get<{ Params: { id: string }; Querystring: { state?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { state?: string; cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/list",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
         const stateRaw = request.query.state;
         const state: "open" | "closed" | "all" =
           stateRaw === "closed" || stateRaw === "all" ? stateRaw : "open";
         const prs = await listPullRequests(git, deps.githubAuthManager, {
           state,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
         return { prs };
       } catch (err) {
@@ -318,15 +336,16 @@ export async function registerGitHubRoutes(
 
   // GET /api/sessions/:id/pr/view — view PR details (current branch's PR by default)
   // GET /api/sessions/:id/pr/view?number=N — view a specific PR
-  app.get<{ Params: { id: string }; Querystring: { number?: string } }>(
+  app.get<{ Params: { id: string }; Querystring: { number?: string; cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/view",
     { config: { containerAccessible: true } },
     async (request, reply) => {
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.query);
+        const git = createGitManager(gitDir);
         let num: number | undefined;
         if (request.query.number) {
           num = Number(request.query.number);
@@ -337,7 +356,7 @@ export async function registerGitHubRoutes(
         }
         const pr = await viewPullRequest(git, deps.githubAuthManager, {
           number: num,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
         return { pr };
       } catch (err) {
@@ -353,7 +372,7 @@ export async function registerGitHubRoutes(
   // POST /api/sessions/:id/pr/:number/comment — add a comment to a PR
   app.post<{
     Params: { id: string; number: string };
-    Body: { body: string };
+    Body: { body: string; cwd?: string; repo?: string };
   }>(
     "/api/sessions/:id/pr/:number/comment",
     { config: { containerAccessible: true } },
@@ -366,11 +385,12 @@ export async function registerGitHubRoutes(
         return;
       }
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         return await commentOnPullRequest(git, deps.githubAuthManager, request.body?.body ?? "", {
           number: num,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -515,7 +535,7 @@ export async function registerGitHubRoutes(
   );
 
   // POST /api/sessions/:id/pr/:number/ready — mark draft as ready for review
-  app.post<{ Params: { id: string; number: string } }>(
+  app.post<{ Params: { id: string; number: string }; Body: { cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/:number/ready",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -527,11 +547,12 @@ export async function registerGitHubRoutes(
         return;
       }
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         return await markPrReady(git, deps.githubAuthManager, {
           number: num,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -544,7 +565,7 @@ export async function registerGitHubRoutes(
   );
 
   // POST /api/sessions/:id/pr/:number/close — close a PR
-  app.post<{ Params: { id: string; number: string } }>(
+  app.post<{ Params: { id: string; number: string }; Body: { cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/:number/close",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -556,11 +577,12 @@ export async function registerGitHubRoutes(
         return;
       }
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         return await closePullRequest(git, deps.githubAuthManager, {
           number: num,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
       } catch (err) {
         if (err instanceof ServiceError) {
@@ -573,7 +595,7 @@ export async function registerGitHubRoutes(
   );
 
   // POST /api/sessions/:id/pr/:number/reopen — reopen a closed PR
-  app.post<{ Params: { id: string; number: string } }>(
+  app.post<{ Params: { id: string; number: string }; Body: { cwd?: string; repo?: string } }>(
     "/api/sessions/:id/pr/:number/reopen",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -585,11 +607,12 @@ export async function registerGitHubRoutes(
         return;
       }
       try {
-        const git = createGitManager(dir);
         const session = sessionManager.get(request.params.id);
+        const { gitDir, remoteUrl } = resolvePrTarget(session ?? { remoteUrl: "" }, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
         return await reopenPullRequest(git, deps.githubAuthManager, {
           number: num,
-          remoteUrl: session?.remoteUrl,
+          remoteUrl,
         });
       } catch (err) {
         if (err instanceof ServiceError) {

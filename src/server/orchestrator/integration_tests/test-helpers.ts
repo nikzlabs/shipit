@@ -297,6 +297,14 @@ export class StubGitHubAuthManager extends EventEmitter {
   configureGitCredentials() { /* no-op */ }
   async loadUserInfo() { /* no-op */ }
 
+  /**
+   * Mirrors `GitHubAuthManager.appTokensEnabled()` — used by the git-credential
+   * broker to decide whether to mint a repo-scoped App token. Tests run with the
+   * PAT path (no GitHub App), so this is false and `getRepoScopedGitCredential`
+   * falls back to the stub's `getToken()`.
+   */
+  appTokensEnabled(): boolean { return false; }
+
   /** docs/162 — toggle whether `checkRepoWriteAccess` reports write access. */
   private _canWriteRepo = true;
   setRepoWriteAccess(canWrite: boolean) { this._canWriteRepo = canWrite; }

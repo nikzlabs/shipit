@@ -103,7 +103,12 @@ The shim:
     progressed?" check is local-git-only and compares against `origin/<base>`, so
     rebasing onto a stale ref leaves it looking un-rebased: `gh pr create` won't
     open the new PR and the session won't return to the active (gray) state.
-- Always operates on the current session's repo. The `--repo` flag is rejected.
+- Targets the repo of the **current working directory's clone**. In a normal
+  repo-bound session that is always the session repo at `/workspace`, so you
+  don't need to think about it. In a **Sandbox session** (no bound repo — you
+  clone repos yourself into `/workspace/<name>` subdirs), run `gh` from inside
+  the clone you want to act on, or pass `--repo OWNER/NAME` to target one
+  explicitly. The orchestrator resolves the repo from that clone's `origin`.
 - Never sees the GitHub token; the orchestrator authenticates the request.
 
 ### Supported subcommands
@@ -119,6 +124,10 @@ The shim:
 | `gh pr ready [<n>]` | Mark a draft PR as ready for review. |
 | `gh pr close [<n>]` | Close a PR. |
 | `gh pr reopen <n>` | Reopen a closed PR. (PR number is required.) |
+
+Every PR subcommand also accepts `--repo OWNER/NAME` (alias `-R`) to target a
+specific repo — useful in a Sandbox session where you've cloned more than one.
+Without it, the op targets the repo of the directory you ran `gh` in.
 
 ### Subcommands that are intentionally unavailable
 
