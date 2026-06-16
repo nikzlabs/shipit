@@ -16,7 +16,10 @@ What this means in practice:
   global prefix at `~/.npm-global`, and the npm cache at `~/.npm`).
 - **Read-only to you:** `/app` (the worker), `/opt/agent-cli` (the agent CLIs),
   `/usr/local/bin` shims (`gh`, `shipit`, `shipit-git-credential`), and system
-  dirs. You can run them, but not modify them.
+  dirs. You can run them, but not modify them. Some deployments additionally run
+  with a **read-only root filesystem** (docs/172 Gap 5): the writable paths above
+  are unchanged (they're mounts or tmpfs), but writing *elsewhere* on the rootfs
+  fails. Keep scratch under `/tmp` or your home and you'll never notice.
 - **`npm install -g`** works — the global prefix is `~/.npm-global` (on your
   `PATH`), not the root-owned `/usr/local`. Manually-installed CLIs land there.
 - **`sudo` is not available** and there is no passwordless privilege escalation.

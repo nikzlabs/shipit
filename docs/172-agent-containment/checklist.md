@@ -291,8 +291,26 @@ tracker as separate issues. None implemented yet.
 
 - [ ] **Gap 6 — read-only mounts.** Downgrade `/uploads` (and `/credentials` after
       first-turn provisioning) to `:ro` where the agent has no legitimate write need.
-- [ ] **Gap 5 — kernel-tier hardening.** Evaluate gVisor (`runsc`) runtime, a custom
-      seccomp profile, and `ReadonlyRootfs: true` with explicit writable mounts.
+- [x] **Gap 5 — kernel-tier hardening (SHI-97, shipped default-OFF).** Three env-gated
+      controls in `container-hardening.ts`, applied in `container-lifecycle.ts`:
+      - [x] **gVisor (`runsc`)** — decision **adopt as operator opt-in, default `runc`**
+            (host must register the runtime; real cost on the npm/file-watch workload, so
+            it's the operator's call). `SESSION_RUNTIME=runsc` → `HostConfig.Runtime`.
+      - [x] **Custom seccomp profile** — `docker/seccomp/session-worker.json`, default-deny
+            allowlist derived from Docker's default and tightened (denies `ptrace`,
+            `process_vm_*`, `kcmp`, `userfaultfd`, `perf_event_open`, `bpf`; mount/ns/module
+            families stay cap-gated). Applied via `SESSION_SECCOMP=1` (Docker default applies
+            otherwise — never `unconfined`); fail-closed on a bad profile. Allowed set
+            documented in plan.md + the profile header.
+      - [x] **ReadonlyRootfs** — `SESSION_READONLY_ROOTFS=1` → `ReadonlyRootfs: true` + tmpfs
+            for `/tmp` (exec), `/run`, `/home/shipit` (exec). Reuses SHI-31's writable-path
+            enumeration; the persistent mounts (/workspace, /credentials, /uploads,
+            /dep-cache) stay writable. Entrypoint re-creates credential symlinks into the
+            tmpfs HOME (`SHIPIT_READONLY_HOME=1`). Distinct from SHI-45's `:ro` bind mounts.
+      - [x] Unit tests (`container-hardening.test.ts` + HostConfig wiring in
+            `session-container.test.ts`); regression-guards CapDrop/CapAdd/no-new-privileges.
+      - [ ] **Live-host verification** before enabling any flag in prod (seccomp + ro-rootfs
+            first — no host prereq; gVisor where the host registers `runsc`).
 
 ## Cross-cutting
 

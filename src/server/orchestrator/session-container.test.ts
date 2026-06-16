@@ -378,6 +378,68 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  // --- docs/172 Gap 5 (SHI-97) — kernel-tier hardening (env-gated, default-OFF) ---
+
+  describe("kernel-tier hardening", () => {
+    // These hardening flags are read from process.env at create time. Snapshot
+    // the whole env and restore it wholesale (avoids dynamic per-key delete).
+    let savedEnv: NodeJS.ProcessEnv;
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+      process.env.SESSION_RUNTIME = "";
+      process.env.SESSION_SECCOMP = "";
+      process.env.SESSION_READONLY_ROOTFS = "";
+    });
+    afterEach(() => {
+      process.env = savedEnv;
+    });
+
+    it("defaults are byte-for-byte unchanged when no flag is set", async () => {
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Runtime).toBeUndefined();
+      expect(HostConfig.SecurityOpt).toEqual(["no-new-privileges"]);
+      expect(HostConfig.ReadonlyRootfs).toBe(false);
+      expect(HostConfig.Tmpfs).toBeUndefined();
+    });
+
+    it("SESSION_RUNTIME selects an alternate OCI runtime (gVisor opt-in)", async () => {
+      process.env.SESSION_RUNTIME = "runsc";
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.Runtime).toBe("runsc");
+    });
+
+    it("SESSION_SECCOMP=1 appends the custom profile to SecurityOpt", async () => {
+      process.env.SESSION_SECCOMP = "1";
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.SecurityOpt[0]).toBe("no-new-privileges");
+      expect(HostConfig.SecurityOpt[1].startsWith("seccomp=")).toBe(true);
+      const profile = JSON.parse(HostConfig.SecurityOpt[1].slice("seccomp=".length));
+      expect(profile.defaultAction).toBe("SCMP_ACT_ERRNO");
+    });
+
+    it("SESSION_READONLY_ROOTFS=1 sets ReadonlyRootfs + tmpfs + the home-rehydrate env", async () => {
+      process.env.SESSION_READONLY_ROOTFS = "1";
+      await manager.create(buildConfig());
+      const call = mockDocker.createContainer.mock.calls[0][0];
+      expect(call.HostConfig.ReadonlyRootfs).toBe(true);
+      expect(Object.keys(call.HostConfig.Tmpfs).sort()).toEqual(["/home/shipit", "/run", "/tmp"]);
+      expect(call.Env).toContain("SHIPIT_READONLY_HOME=1");
+    });
+
+    it("does not regress CapDrop/CapAdd when hardening is enabled", async () => {
+      process.env.SESSION_RUNTIME = "runsc";
+      process.env.SESSION_SECCOMP = "1";
+      process.env.SESSION_READONLY_ROOTFS = "1";
+      await manager.create(buildConfig());
+      const { HostConfig } = mockDocker.createContainer.mock.calls[0][0];
+      expect(HostConfig.CapDrop).toEqual(["ALL"]);
+      expect(HostConfig.CapAdd).toEqual(["CHOWN", "SETUID", "SETGID", "FOWNER", "KILL"]);
+    });
+  });
+
   // --- docs/183 dep-dir design — overlay sessions (N nested dep-dir mounts) ---
 
   describe("overlay session", () => {

@@ -289,18 +289,80 @@ rigor as external input — because all of them are vectors for the injected-con
 in the threat model. This is less a single fix than a lens to apply to Gaps 1/3 and to
 future input surfaces (web fetch, MCP tool returns).
 
-### Gap 5 — Shared host kernel (no gVisor / seccomp hardening)
+### Gap 5 — Shared host kernel (gVisor / seccomp / read-only rootfs) — *SHI-97, shipped (default-OFF)*
 
-Containers run the default `runc` runtime on the shared host kernel, with no custom
-seccomp/AppArmor profile and `ReadonlyRootfs: false` (`container-lifecycle.ts:418`). The
-article uses gVisor (syscall interception) for ephemeral claude.ai and full VMs for
-Cowork precisely because shared-kernel isolation is the weakest tier. Given the strong
-cap-dropping already in place, this is lower priority than egress, but worth evaluating:
+Containers run the default `runc` runtime on the shared host kernel. The article uses
+gVisor (syscall interception) for ephemeral claude.ai and full VMs for Cowork precisely
+because shared-kernel isolation is the weakest tier. Given the strong cap-dropping already
+in place this is lower priority than egress, but the three controls below are now wired —
+each independently shippable, each **env-gated default-OFF** so merging is inert until an
+operator opts in (the verify-on-a-live-host-first pattern SHI-90 used). Resolved in
+`container-hardening.ts`, applied in `container-lifecycle.ts createContainer` HostConfig.
 
-- Run session containers under **gVisor (`runsc`)** for syscall-level isolation.
-- Add a **custom seccomp profile** tighter than Docker's default.
-- Make the **root filesystem read-only** with explicit writable mounts (workspace, /tmp,
-  caches), shrinking the tamper surface and complementing Gap 6.
+**1. gVisor (`runsc`) — decision: ADOPT as operator opt-in, default `runc`.**
+`SESSION_RUNTIME=<runtime>` sets `HostConfig.Runtime` (e.g. `runsc`); unset → Docker's
+default `runc`, byte-for-byte unchanged. Why opt-in rather than default-on:
+
+- gVisor must be **registered on the Docker host** (a daemon `runtimes` entry +
+  `runsc` installed). It cannot be enabled from orchestrator code alone — it's a host
+  provisioning concern, so forcing it on would break every host that hasn't installed it.
+- It has a **real cost on the IO/syscall-heavy `npm install` / file-watch workload**
+  (gVisor intercepts every syscall in user space). That tradeoff is the operator's to make.
+- Some syscalls/mount features degrade under gVisor; needs per-host validation.
+
+So the mechanism ships now and an operator flips `SESSION_RUNTIME=runsc` on hosts where
+gVisor is installed. This is the strongest tier (a user-space kernel between the agent and
+the host), recommended for untrusted-repo-heavy deployments.
+
+**2. Custom seccomp profile — `SESSION_SECCOMP=1`.** Applies the committed
+`docker/seccomp/session-worker.json`; `SESSION_SECCOMP_PROFILE=<path>` overrides. When off,
+Docker's **default** seccomp profile still applies — we are never `unconfined`. The
+profile is read + JSON-validated by the orchestrator and embedded inline into
+`HostConfig.SecurityOpt` as `seccomp=<json>` (so the Docker host needs no file); enabling
+it with an unreadable/invalid profile **fails closed** (throws, container not started).
+
+The profile is **default-deny** (`SCMP_ACT_ERRNO`) with an explicit allowlist derived from
+Docker's battle-tested default and *tightened*: relative to the default it additionally
+denies (→ EPERM) `ptrace`, `process_vm_readv`/`process_vm_writev` (cross-process memory
+read/write + debugger attach — defeats worker/agent process isolation, a tamper/exfil
+vector), `kcmp`, `userfaultfd`, `perf_event_open`, and `bpf`. The mount / namespace /
+module / reboot / clock-set families that the default already gates on `CAP_SYS_ADMIN`
+remain denied (we `CapDrop: ["ALL"]`), and are simply omitted from the allowlist. The
+allowed set keeps everything node/npm/pnpm/yarn lifecycle scripts, git, ripgrep, gosu's
+setuid drop, and playwright/chromium need (`clone`/`clone3`, `execve`, `arch_prctl`,
+socket/epoll, the file + xattr calls, `setuid`/`setgid`/`setgroups`/`fchownat`, …).
+Structural invariants are asserted in `container-hardening.test.ts` (default-deny, arch
+coverage, essential-allowed, high-risk-denied) — **not** live kernel behavior, which needs
+a real Docker host before enabling in prod.
+
+**3. Read-only root filesystem — `SESSION_READONLY_ROOTFS=1`.** Sets
+`ReadonlyRootfs: true` plus the minimal writable set. This builds directly on SHI-31's
+non-root writable-path enumeration (docs/150) and is distinct from SHI-45's `:ro`
+bind-mount downgrade of `/uploads`+`/credentials` (Gap 6) — this is the **whole-rootfs**
+layer. The writable set splits in two:
+
+- **Persistent writable paths stay writable for free** — `/workspace`, `/credentials`,
+  `/uploads`, `/dep-cache` are already bind/volume mounts, unaffected by a read-only rootfs.
+- **Image-rootfs writable paths come back as tmpfs** (`readonlyRootfsTmpfs()`): `/tmp`
+  (agent scratch + Playwright MCP + npm lifecycle scripts — kept `exec`, `noexec` would
+  break installs), `/run`, and `/home/shipit` (the HOME holds `~/.npm`, `~/.npm-global`,
+  `~/.cache`, `~/.claude.json` — kept `exec` for `~/.npm-global/bin`). All `nosuid,nodev`.
+
+A tmpfs over `/home/shipit` **shadows the image-baked credential symlinks**
+(`.claude`→`/credentials/.claude`, `.claude.json`, `.codex`), so the non-root entrypoint
+re-creates them into the tmpfs when `SHIPIT_READONLY_HOME=1` (forwarded by the
+orchestrator). Auth survives because the symlink targets live in the persistent
+`/credentials` mount; only caches/scratch are ephemeral (as they already are).
+**ReadonlyRootfs requires the non-root runtime** (`SHIPIT_SESSION_WORKER_UID` set, prod
+volume mode) — the entrypoint's prep+symlink branch runs only there; dev bind-mount mode
+leaves it off.
+
+**Enabling order / recommendation.** Seccomp and read-only rootfs are pure
+HostConfig/tmpfs changes with no host prerequisite — enable + live-verify those first.
+gVisor needs host provisioning, so adopt it where the host supports it. None of the three
+loosen the existing escape defenses ("What's already solid"): `CapDrop: ["ALL"]` + the
+minimal `CapAdd`, `no-new-privileges`, the Docker-proxy allowlist, and child sanitization
+are all preserved (regression-guarded in `session-container.test.ts`).
 
 ### Gap 6 — Mounted data is `:rw` where read-only would do
 
@@ -322,7 +384,7 @@ provisioned then remounted read-only).
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | ✅ | Gap 3 — repo trust gate | Stops "open repo == run its code" | Done — per-remote trust gate defers install/compose until the user trusts the remote (`service-manager-setup.ts`, `RepoStore.isTrusted`, `RepoTrustBanner`; `docs/178-repo-trust-gate`) |
 | P2 | Gap 6 — read-only mounts (SHI-45) | Structural, low-risk | Downgrade mounts to `:ro` where possible |
-| P2 | Gap 5 — gVisor / seccomp / ro-rootfs (SHI-97) | Hardens the weakest tier | Evaluate `runsc`, custom seccomp, `ReadonlyRootfs` |
+| ✅ | Gap 5 — gVisor / seccomp / ro-rootfs (SHI-97) | Hardens the weakest tier | Done (default-OFF) — `SESSION_RUNTIME` (gVisor opt-in), `SESSION_SECCOMP` (custom profile), `SESSION_READONLY_ROOTFS` (`container-hardening.ts`) |
 | —  | Gap 4 — untrusted-input lens (SHI-98) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
 
 ## Design principles to preserve
@@ -342,6 +404,11 @@ provisioned then remounted read-only).
   `docker-proxy-auth.ts` — Docker API allowlist + child sanitization (solid).
 - `src/server/orchestrator/container-lifecycle.ts` — container HostConfig, caps, mounts,
   env, network mode (Gaps 1, 5, 6).
+- `src/server/orchestrator/container-hardening.ts` — Gap 5 kernel-tier resolvers
+  (`SESSION_RUNTIME` gVisor opt-in, `SESSION_SECCOMP` profile, `SESSION_READONLY_ROOTFS`
+  + the tmpfs writable set); `docker/seccomp/session-worker.json` is the profile;
+  `docker/session-worker/entrypoint.sh` re-creates the credential symlinks into the tmpfs
+  HOME under `SHIPIT_READONLY_HOME=1` (SHI-97).
 - `src/server/orchestrator/session-container.ts` — network creation (Gap 1).
 - `src/server/orchestrator/github-auth.ts:225` — git credential helper (Gap 2).
 - `src/server/orchestrator/github-app-token.ts` — `GitHubAppTokenMinter`: short-lived,

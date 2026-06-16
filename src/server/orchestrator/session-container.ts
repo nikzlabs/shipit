@@ -54,6 +54,11 @@ import { readBasePointerByHash } from "./overlay-base.js";
 import { egressEnforceEnabled } from "./egress-firewall-install.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
+import {
+  kernelRuntime,
+  resolveSeccompSecurityOpt,
+  readonlyRootfsEnabled,
+} from "./container-hardening.js";
 import { reloadEgressSidecars } from "./egress-reload.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -675,6 +680,13 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       egressDns: egressDnsEnabled(),
       egressProxy: egressProxyEnabled(),
       ...(this.resolveEgressConfig ? { resolveEgressConfig: this.resolveEgressConfig } : {}),
+      // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, env-gated default-OFF.
+      // gVisor via SESSION_RUNTIME; seccomp via SESSION_SECCOMP(_PROFILE);
+      // read-only rootfs via SESSION_READONLY_ROOTFS. resolveSeccompSecurityOpt
+      // reads + validates the profile (throws fail-closed if enabled but bad).
+      kernelRuntime: kernelRuntime(),
+      seccompSecurityOpt: resolveSeccompSecurityOpt(),
+      readonlyRootfs: readonlyRootfsEnabled(),
       stateDir: this.stateDir,
       emitter: this,
       baseLabels: () => this.baseLabels(),
