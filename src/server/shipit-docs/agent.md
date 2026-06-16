@@ -87,7 +87,7 @@ reaches the user through **your** voice; there is no separate card.
 - **No recursion.** A spawned sub-agent cannot itself spawn a sub-agent.
 - **At most 3 spawns per turn.** Enough for "review with both other models" or a
   couple of delegations. A 4th returns an error without spawning.
-- **Bounded run.** Each spawn has a wall-clock cap (~5 min) and an output cap; an
+- **Bounded run.** Each spawn has a wall-clock cap (~30 min) and an output cap; an
   over-limit run is truncated and flagged.
 - **Cancel is symmetric.** If the user cancels your turn while a sub-agent is
   running, the sub-agent is cancelled too.
