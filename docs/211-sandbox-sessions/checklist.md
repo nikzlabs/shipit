@@ -69,7 +69,9 @@
       in `SessionSidebar.tsx` (desktop toolbar + collapsed rail)
 - [x] Capability toggle dialog with inline docs/limitations — `SandboxDialog.tsx`
       (GitHub / Docker / Network toggles, Network on by default)
-- [ ] Warm-pool entry for repo-less sessions
+- [ ] Warm-pool entry for repo-less sessions — **deferred** (out of scope for
+      SHI-161; tracked as follow-up. Sandbox creation works cold; warm-pool
+      pre-warming is a latency optimization, not a correctness requirement.)
 - [x] Tests: creation (`services/sandbox-session.test.ts`,
       `integration_tests/sandbox-sessions.test.ts`), the invariant
       (`ws-handlers/post-turn.test.ts`), branch-op self-gate
