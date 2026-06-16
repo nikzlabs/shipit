@@ -6,7 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       release:
-        description: "Build a signed release APK (requires keystore secrets). When false, builds an unsigned debug APK."
+        description: "Build a signed release APK + AAB (requires keystore secrets). When false, builds an unsigned debug APK."
+        type: boolean
+        default: false
+      publish:
+        description: "Also upload the signed AAB to Google Play (internal track). Requires release=true and the PLAY_SERVICE_ACCOUNT_JSON secret."
         type: boolean
         default: false
 
@@ -95,6 +99,28 @@ jobs:
           name: shipit-release-aab
           path: android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
+
+      - name: Verify Play service-account secret
+        if: ${{ inputs.release == true && inputs.publish == true }}
+        env:
+          PLAY_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$PLAY_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error::PLAY_SERVICE_ACCOUNT_JSON secret is not set — cannot publish to Google Play."
+            exit 1
+          fi
+
+      # working-directory does not apply to `uses:` actions, so releaseFiles is
+      # given relative to the repo root, not android/.
+      - name: Upload AAB to Google Play (internal track)
+        if: ${{ inputs.release == true && inputs.publish == true }}
+        uses: r0adkll/upload-google-play@v1.1.3
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.shipit.wrapper
+          releaseFiles: android/app/build/outputs/bundle/release/app-release.aab
+          track: internal
+          status: completed
 
       - name: Clean up keystore
         if: ${{ always() && inputs.release == true }}
