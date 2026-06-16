@@ -115,6 +115,22 @@ whatever the agent cloned/created between turns. The only reaper is the opt-in
 archived-workspace sweep, which touches *archived* sessions only. This satisfies
 SHI-161's "artifacts and logs remain discoverable even when no repo is attached."
 
+### The session banner is derived chrome, not a chat card
+
+The "Sandbox session — no repository bound" orientation banner is **derived UI
+state**, rendered from the session's durable `kind`/`capabilities` metadata —
+like the PR lifecycle card, the ops Host tab, and the tab gating. It is **not** a
+chat-history message and must not be emitted into the transcript stream.
+
+- Survives page reload / session switch (rehydrated from HTTP bootstrap),
+  server/container restart (read from the `sessions` table), and WS reconnect
+  (it isn't WS-dependent) — because the *metadata* is durable, not because a card
+  was persisted.
+- This deliberately avoids the persist-on-emit chat-card path (CLAUDE.md
+  "transcript content must be persisted"): we don't want a banner copy in the
+  scrollback that could duplicate on replay. The only durable write is the
+  set-once `kind`/`capabilities` columns at creation.
+
 ## Creation UX
 
 A **`+` affordance in the row above the session list** opens a small menu to
