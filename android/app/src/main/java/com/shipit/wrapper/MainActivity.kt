@@ -79,18 +79,18 @@ class MainActivity : AppCompatActivity() {
 
         // The old toolbar is gone (it only hosted an overflow menu). Its two
         // actions now live as chrome-free affordances over the full-bleed
-        // WebView: a translucent settings cog at top-center, and pull-to-refresh
-        // for reload.
+        // WebView: a translucent settings cog at top-center for Settings, and
+        // long-press the cog for reload.
         binding.settingsButton.setOnClickListener {
             settingsLauncher.launch(Intent(this, SettingsActivity::class.java))
         }
-        // Long-press the cog = reload. A reliable fallback in case pull-to-refresh
-        // misbehaves against ShipIt's internal scroll containers (see docs/116).
+        // Long-press the cog = reload. Pull-to-refresh was removed because it
+        // fought ShipIt's internal scroll containers and stole chat scroll
+        // gestures (see docs/116 plan.md:40).
         binding.settingsButton.setOnLongClickListener {
             binding.webView.reload()
             true
         }
-        binding.swipeRefresh.setOnRefreshListener { binding.webView.reload() }
 
         prefs = Prefs(applicationContext)
 
@@ -148,7 +148,6 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
-                binding.swipeRefresh.isRefreshing = false
             }
         }
 
