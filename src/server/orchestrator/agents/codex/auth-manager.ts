@@ -34,15 +34,14 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import path from "node:path";
 import type { ChildProcess } from "node:child_process";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  statSync,
-} from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import {
+  ensureConfigDir,
+  firstEpochMs,
+  pickString,
+  probeNestedString,
+} from "../agent-auth-base.js";
 import type {
   AgentAuthManager,
   AgentAuthStartOptions,
@@ -111,26 +110,6 @@ export const USER_CODE_PATTERN = /\b([A-Z0-9]{4}-[A-Z0-9]{5})\b/;
 
 // ---- Helpers ----
 
-/**
- * Ensure the directory the Codex CLI writes to actually exists. In Docker
- * `/root/.codex` is a symlink to `/credentials/.codex`; `mkdirSync` on a
- * broken symlink errors, so resolve the target first. Mirrors the
- * `ensureOnboardingComplete` dance in `auth.ts`.
- */
-function ensureCodexDir(configDir: string): void {
-  let dir = configDir;
-  try {
-    dir = readlinkSync(configDir);
-  } catch {
-    // Not a symlink or doesn't exist — use the path directly.
-  }
-  try {
-    mkdirSync(dir, { recursive: true });
-  } catch (err) {
-    console.warn("[codex-auth] Failed to create config dir:", err);
-  }
-}
-
 /** True iff the `auth.json` under `configDir` exists and is non-empty. */
 function authFileExistsAt(authFile: string): boolean {
   try {
@@ -149,16 +128,7 @@ function authFileExistsAt(authFile: string): boolean {
  * probe both. Exported for unit tests.
  */
 export function extractCodexAccessToken(obj: Record<string, unknown>): string | null {
-  const direct = pickStringVal(obj, "access_token") ?? pickStringVal(obj, "accessToken");
-  if (direct) return direct;
-  const tokens = obj.tokens;
-  if (tokens && typeof tokens === "object") {
-    const candidate =
-      pickStringVal(tokens as Record<string, unknown>, "access_token") ??
-      pickStringVal(tokens as Record<string, unknown>, "accessToken");
-    if (candidate) return candidate;
-  }
-  return null;
+  return probeNestedString(obj, ["access_token", "accessToken"], "tokens");
 }
 
 /**
@@ -167,23 +137,12 @@ export function extractCodexAccessToken(obj: Record<string, unknown>): string | 
  * unit tests.
  */
 export function extractCodexExpiresAt(obj: Record<string, unknown>): number | null {
-  const candidates: unknown[] = [
+  return firstEpochMs([
     obj.expires_at,
     obj.expiresAt,
     (obj.tokens as Record<string, unknown> | undefined)?.expires_at,
     (obj.tokens as Record<string, unknown> | undefined)?.expiresAt,
-  ];
-  for (const raw of candidates) {
-    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-      return raw < 10_000_000_000 ? raw * 1000 : raw;
-    }
-  }
-  return null;
-}
-
-function pickStringVal(obj: Record<string, unknown>, key: string): string | null {
-  const v = obj[key];
-  return typeof v === "string" && v.length > 0 ? v : null;
+  ]);
 }
 
 /**
@@ -218,7 +177,7 @@ function readAuthClaim(obj: Record<string, unknown>, key: string): unknown {
       ? (obj.tokens as Record<string, unknown>)
       : obj;
   for (const tokKey of ["id_token", "access_token", "idToken", "accessToken"]) {
-    const jwt = pickStringVal(tokens, tokKey) ?? pickStringVal(obj, tokKey);
+    const jwt = pickString(tokens, tokKey) ?? pickString(obj, tokKey);
     if (!jwt) continue;
     const payload = decodeJwtPayload(jwt);
     const auth = payload?.[OPENAI_AUTH_CLAIM];
@@ -484,7 +443,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     // Make sure the dir exists; the CLI creates the file but expects the
     // parent dir to be writable. In Docker this also dereferences the
     // /root/.codex → /credentials/.codex symlink.
-    ensureCodexDir(codexConfigDirFor(this.activeCredentialDir));
+    ensureConfigDir(codexConfigDirFor(this.activeCredentialDir), "[codex-auth]");
 
     let proc: ChildProcess;
     try {

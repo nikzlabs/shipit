@@ -26,7 +26,7 @@ typecheck` + `npm run lint:dev` clean → no behavior change. Open one PR per ph
 
 - [x] **P1 · Split `shared/types/ws-server-messages.ts`** (1402) → `ws-server-messages/{auth,agent,git,service,files,preview,session,repo,rollback,spawn,present,cards,misc}.ts`, re-assemble the union in `index.ts` + keep `ws-server-messages.ts` as a thin barrel re-export. Touches only `shared/types/`.
 - [x] **P2 · Split `shared/types/domain-types.ts`** (1206) → `domain-types/{provider,egress,session,issue,chat,marketplace,git,review,misc}.ts`, keep barrel re-export. Touches only `shared/types/`.
-- [ ] **P3 · Extract `agents/agent-auth-base.ts`** — dedup auth-URL extraction, credential-file lifecycle, event emission out of `claude/auth-manager.ts` + `codex/auth-manager.ts`; each keeps only transport-specific code.
+- [x] **P3 · Extract `agents/agent-auth-base.ts`** — dedup the genuinely-identical, transport-agnostic core out of `claude/auth-manager.ts` + `codex/auth-manager.ts`: credential-file parsing (`probeNestedString` token probe across top-level + nested wrapper, `firstEpochMs` seconds-vs-ms expiry), `pickString`, and the symlink-resolve+mkdir dance (`resolveSymlinkTarget`/`ensureConfigDir`). Each manager keeps its transport-specific code (PTY readline vs device flow) + auth-URL extraction (the regexes genuinely differ per CLI) + event emission (payloads differ: code-paste-url vs device-code). Public export surface unchanged; new `agent-auth-base.test.ts` covers the helpers.
 
 ## Group 2 — Orchestrator god-modules (one file each → one PR each)
 
