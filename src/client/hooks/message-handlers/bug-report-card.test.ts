@@ -49,7 +49,7 @@ describe("handleBugReportCard (docs/164)", () => {
       messages: [{ role: "assistant", text: "", bugReport: { cardId: "bug-card-1", phase: "filed" } }],
     });
     useBugReportStore.getState().seedCards([
-      { ...card(), phase: "filed", issueNumber: 7, issueUrl: "https://github.com/nicolasalt/shipit/issues/7" },
+      { ...card(), phase: "filed", issueNumber: 7, issueUrl: "https://github.com/nikzlabs/shipit/issues/7"},
     ]);
 
     // A buffer replay re-delivers the original draft.

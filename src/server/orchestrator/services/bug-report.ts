@@ -27,7 +27,7 @@ import { redact, type ModelRunner } from "./redaction.js";
  * deliberate code edit, not deploy config). See docs/164 "Credential &
  * destination model".
  */
-export const UPSTREAM_REPO = { owner: "nicolasalt", repo: "shipit" } as const;
+export const UPSTREAM_REPO = { owner: "nikzlabs", repo: "shipit" } as const;
 
 /** Which kind of session produced the report — drives the body marker + label. */
 export type BugReportProducer = "session" | "ops";

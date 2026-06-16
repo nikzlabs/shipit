@@ -350,9 +350,9 @@ describe("git-config: GitHub SSH→HTTPS rewrite (docs/200)", () => {
     const repo = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-insteadof-repo-"));
     try {
       execSync("git init -q", { cwd: repo });
-      execSync("git remote add origin git@github.com:nicolasalt/shipit.git", { cwd: repo });
+      execSync("git remote add origin git@github.com:nikzlabs/shipit.git", { cwd: repo });
       const resolved = execSync("git ls-remote --get-url origin", { cwd: repo, encoding: "utf-8" }).trim();
-      expect(resolved).toBe("https://github.com/nicolasalt/shipit.git");
+      expect(resolved).toBe("https://github.com/nikzlabs/shipit.git");
     } finally {
       fs.rmSync(repo, { recursive: true, force: true });
     }

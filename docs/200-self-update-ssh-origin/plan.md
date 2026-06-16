@@ -34,7 +34,7 @@ failure when the real cause is an unverifiable host key.
 ### How a working install breaks
 
 The updater was written assuming an **HTTPS** origin (the default
-`https://github.com/nicolasalt/shipit.git`), over which the container's existing
+`https://github.com/nikzlabs/shipit.git`), over which the container's existing
 credential helper authenticates fine. The break happens when something re-points
 `/opt/shipit`'s origin to SSH — typically when moving a now-private upstream onto
 an SSH **deploy key**, which makes host-side `git pull` / `update.sh` convenient.

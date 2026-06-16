@@ -256,7 +256,7 @@ detection, issue locking, and the maintainers' ability to block an account.
 
 ### Credential & destination model
 
-- **Destination is fixed:** `UPSTREAM_REPO = "nicolasalt/shipit"`, hard-coded with
+- **Destination is fixed:** `UPSTREAM_REPO = "nikzlabs/shipit"`, hard-coded with
   no env override. Not the user's project repo. (A fork that wants its own target
   changes the constant — a deliberate code edit, not config.)
 - **Labels are markers, not API labels — because GitHub drops them.** GitHub
@@ -267,7 +267,7 @@ detection, issue locking, and the maintainers' ability to block an account.
   **producer marker** (`source:ops` when an ops session produced it, `source:session`
   otherwise) — are encoded **in the issue body** (a visible footer line + a parseable
   HTML comment, e.g. `<!-- shipit-report source=ops build=abc123 -->`), which always
-  survives. A small maintainer-side automation on `nicolasalt/shipit` reads the
+  survives. A small maintainer-side automation on `nikzlabs/shipit` reads the
   marker and applies the real repo labels. When the filer *does* have push access (a
   ShipIt developer), we additionally set the labels directly on the create call.
 - **Credential is the user's own GitHub auth** — the orchestrator already holds it
@@ -326,10 +326,10 @@ All four original open questions are resolved (Stage-2 runs orchestrator-side on
 session's own agent CLI as a one-shot prompt — the `session-namer.ts` pattern — so it
 reuses the session's model/credentials and is provider-agnostic across Claude and
 Codex, degrading to the Stage-1 floor when the CLI call fails; build is the bare
-`SHIPIT_BUILD_ID` SHA; target is hard-coded `nicolasalt/shipit` with body-marker
+`SHIPIT_BUILD_ID` SHA; target is hard-coded `nikzlabs/shipit` with body-marker
 labels). One follow-up emerged, tracked separately:
 
-- **Maintainer-side label automation** on `nicolasalt/shipit` — a small GitHub
+- **Maintainer-side label automation** on `nikzlabs/shipit` — a small GitHub
   Action that reads the `<!-- shipit-report … -->` body marker and applies the real
   `user-reported` / `source:*` labels (needed because the filer's token usually
   can't set labels on a repo it can't push to). Lives in the upstream repo, not this

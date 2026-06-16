@@ -8,7 +8,7 @@
 # under the scenarios ShipIt actually hits.
 set -euo pipefail
 
-REMOTE="https://github.com/nicolasalt/shipit.git"
+REMOTE="https://github.com/nikzlabs/shipit.git"
 ROOT=/tmp/bench
 CACHE="$ROOT/cache.git"
 RESULTS="$ROOT/results.csv"

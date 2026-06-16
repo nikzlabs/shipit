@@ -213,12 +213,12 @@ describe("IssuesViewer", () => {
 
   it("strips the repo path from GitHub identifiers in the ID column", () => {
     const props = defaultProps({
-      issues: [makeIssue({ identifier: "nicolasalt/shipit#1047", title: "Self-updater" })],
+      issues: [makeIssue({ identifier: "nikzlabs/shipit#1047", title: "Self-updater" })],
     });
     render(<IssuesViewer {...props} />);
     // The narrow ID column shows the bare issue number, not the full repo path.
     expect(screen.getByText("1047")).toBeInTheDocument();
-    expect(screen.queryByText("nicolasalt/shipit#1047")).not.toBeInTheDocument();
+    expect(screen.queryByText("nikzlabs/shipit#1047")).not.toBeInTheDocument();
     // The row no longer links out to the tracker (docs/189) — the deep link
     // now lives only inside the inline detail view.
     expect(screen.queryByRole("link")).not.toBeInTheDocument();

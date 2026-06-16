@@ -87,7 +87,7 @@ Use local Docker when you want to run ShipIt on your own machine — Linux, macO
 [WSL2](https://learn.microsoft.com/windows/wsl/install). Use the VPS path for the always-on setup.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/stable/deployment/local/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 ```
 
 This clones ShipIt to `~/.shipit`, builds the orchestrator and session-worker images, and starts
@@ -124,7 +124,7 @@ server), so headroom matters once you have a few sessions open at once.
 
 ```bash
 ssh root@<server-ip>
-bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/stable/deployment/vps/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
 ```
 
 The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
@@ -290,7 +290,7 @@ unrestricted agent network egress) along with their planned mitigations — is i
 ## Contributing
 
 ShipIt isn't accepting pull requests right now — if you have a bug report, idea, or feature request,
-please [open an issue](https://github.com/nicolasalt/shipit/issues). For the architecture, dev loop,
+please [open an issue](https://github.com/nikzlabs/shipit/issues). For the architecture, dev loop,
 and module layout, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Found a security vulnerability? Don't open a public issue — follow [SECURITY.md](SECURITY.md). For

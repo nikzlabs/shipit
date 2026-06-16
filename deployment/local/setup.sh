@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One-line local installer for ShipIt (macOS, Linux, and Windows via WSL2).
 #
-#   bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/stable/deployment/local/setup.sh)
+#   bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 #
 # Clones ShipIt to ~/.shipit (override with SHIPIT_HOME), builds the prod images,
 # and starts ShipIt detached at http://localhost:4123. Unlike the VPS installer
@@ -10,7 +10,7 @@
 # fork? Set SHIPIT_REPO_URL before the command.
 set -euo pipefail
 
-DEFAULT_REPO_URL="https://github.com/nicolasalt/shipit.git"
+DEFAULT_REPO_URL="https://github.com/nikzlabs/shipit.git"
 REPO_URL="${SHIPIT_REPO_URL:-$DEFAULT_REPO_URL}"
 SHIPIT_HOME="${SHIPIT_HOME:-$HOME/.shipit}"
 export SHIPIT_HOME

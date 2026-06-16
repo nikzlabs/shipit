@@ -26,7 +26,7 @@
  *
  * Usage:
  *   GITHUB_TOKEN=ghp_xxx npx tsx scripts/measure-pr-poll-cost.ts \
- *     --owner nicolasalt --repo shipit \
+ *     --owner nikzlabs --repo shipit \
  *     [--out docs/155-pr-poll-query-scoping/cost-measurements.md]
  *
  * Exit non-zero on auth / network failure; rate-limit cost itself is a value,
