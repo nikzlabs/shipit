@@ -1,9 +1,15 @@
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, readlinkSync, statSync, writeFileSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, statSync, writeFileSync, readFileSync, rmSync } from "node:fs";
 import path from "node:path";
 import * as pty from "node-pty";
 import type { IPty } from "node-pty";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
+import {
+  firstEpochMs,
+  pickString,
+  probeNestedString,
+  resolveSymlinkTarget,
+} from "../agent-auth-base.js";
 import type {
   AgentAuthManager,
   AgentAuthStartOptions,
@@ -84,17 +90,7 @@ export function extractUrlFromBuffer(buffer: string): string | null {
  * Exported for unit tests.
  */
 export function extractAccessToken(obj: Record<string, unknown>): string | null {
-  const direct =
-    pickString(obj, "accessToken") ?? pickString(obj, "access_token");
-  if (direct) return direct;
-  const nested = obj.claudeAiOauth;
-  if (nested && typeof nested === "object") {
-    const candidate =
-      pickString(nested as Record<string, unknown>, "accessToken") ??
-      pickString(nested as Record<string, unknown>, "access_token");
-    if (candidate) return candidate;
-  }
-  return null;
+  return probeNestedString(obj, ["accessToken", "access_token"], "claudeAiOauth");
 }
 
 /**
@@ -106,25 +102,12 @@ export function extractAccessToken(obj: Record<string, unknown>): string | null 
  * Exported for unit tests.
  */
 export function extractExpiresAt(obj: Record<string, unknown>): number | null {
-  const candidates: unknown[] = [
+  return firstEpochMs([
     obj.expiresAt,
     obj.expires_at,
     (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expiresAt,
     (obj.claudeAiOauth as Record<string, unknown> | undefined)?.expires_at,
-  ];
-  for (const raw of candidates) {
-    if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
-      // Heuristic: epoch seconds rather than ms if the value looks
-      // too small to be a millisecond timestamp from the last decade.
-      return raw < 10_000_000_000 ? raw * 1000 : raw;
-    }
-  }
-  return null;
-}
-
-function pickString(obj: Record<string, unknown>, key: string): string | null {
-  const v = obj[key];
-  return typeof v === "string" && v.length > 0 ? v : null;
+  ]);
 }
 
 /**
@@ -239,15 +222,8 @@ function ensureOnboardingComplete(userConfig: string, configDir: string): void {
 
     // Ensure the CLI's config directory exists. In Docker, /root/.claude is a
     // symlink to /credentials/.claude — mkdirSync fails on a broken symlink, so
-    // resolve the target and create that instead. (Account-scoped dirs are
-    // real directories, so readlinkSync throws and we use the path directly.)
-    let configDirToCreate = configDir;
-    try {
-      configDirToCreate = readlinkSync(configDir);
-    } catch {
-      // Not a symlink or doesn't exist — use the path directly
-    }
-    mkdirSync(configDirToCreate, { recursive: true });
+    // resolve the target and create that instead (see resolveSymlinkTarget).
+    mkdirSync(resolveSymlinkTarget(configDir), { recursive: true });
 
     if (changed) {
       writeFileSync(userConfig, JSON.stringify(config, null, 2));
