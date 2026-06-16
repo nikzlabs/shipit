@@ -1,4 +1,4 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: bootstrap timer (setTimeout cleanup), URL/route sync (browser navigation is external), session claim (AbortController cleanup)
+// eslint-disable-next-line no-restricted-imports -- useEffect: external-system sync (Issues/tracker fetch-on-open, pr_tab_active WS signal, mobile sidebar route mirror)
 import { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from "react";
 import { Dialog, DialogContent } from "./components/ui/dialog.js";
 import { TooltipProvider } from "./components/ui/tooltip.js";
@@ -11,16 +11,16 @@ import { useIsMobile } from "./hooks/useMediaQuery.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js";
 import { useTheme } from "./hooks/useTheme.js";
-import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts.js";
-import { useQuickCaptureHotkey } from "./hooks/useQuickCaptureHotkey.js";
 import { useKeybinding } from "./keybindings/use-keybinding.js";
-import { useConnectionSync } from "./hooks/useConnectionSync.js";
 import { useAutoFix } from "./hooks/useAutoFix.js";
+import { useAppBootstrap } from "./hooks/useAppBootstrap.js";
+import { useSessionActivation } from "./hooks/useSessionActivation.js";
+import { useAppKeyboardShortcuts } from "./hooks/useAppKeyboardShortcuts.js";
+import { useAppModals } from "./hooks/useAppModals.js";
 import { CircleNotchIcon, EyeIcon, HardDrivesIcon, BookOpenIcon, ListChecksIcon, FilesIcon, TerminalWindowIcon, ClockCounterClockwiseIcon, PresentationChartIcon, GitPullRequestIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Tab } from "./components/ui/tab.js";
 import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
-import { useMessageHandler } from "./hooks/useMessageHandler.js";
 import { useApi } from "./hooks/useApi.js";
 import { formatErrorForMessage } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
@@ -71,7 +71,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount, SessionInfo, TrackerIssue } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, TrackerIssue } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -85,8 +85,8 @@ import { useSettingsStore } from "./stores/settings-store.js";
 import { useUiStore } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import { composeReviewMessage, resolveReviewer } from "./utils/compose-review-body.js";
-import { resumeSessionInternal, handleSessionResume, resetSessionState } from "./stores/actions/session-actions.js";
-import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug, shouldAdoptClaimedSession } from "./utils/repo-label.js";
+import { handleSessionResume } from "./stores/actions/session-actions.js";
+import { parseRepoLabel, repoLabelToNewPath, parseNewSessionSlug } from "./utils/repo-label.js";
 import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel, isPlanPath } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
@@ -112,8 +112,6 @@ export default function App() {
   const wsSessionId = urlSessionId ?? (isNewSessionRoute ? sessionId : undefined);
   const { send, lastMessage, drainMessages, status, reconnectAttempt, reconnect } = useSessionWebSocket(wsSessionId);
   const { get: apiGet, post: apiPost, put: apiPut, del: apiDel } = useApi();
-  const claimAbortRef = useRef<AbortController | null>(null);
-  const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
   const terminalRef = useRef<InteractiveTerminalHandle>(null);
   const messages = useSessionStore((s) => s.messages);
   const rewindPreviews = useSessionStore((s) => s.rewindPreviews);
@@ -290,11 +288,7 @@ export default function App() {
     storageKey: "vibe-panel-split",
   });
   const isMobile = useIsMobile();
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  // Organizations the user can target in NewRepoDialog's owner picker. Loaded
-  // lazily when the create-repo dialog opens (see onCreateNewRepo handlers).
-  const [githubOrgs, setGithubOrgs] = useState<string[]>([]);
+  const { searchOpen, setSearchOpen, shortcutsOpen, setShortcutsOpen, githubOrgs, setGithubOrgs } = useAppModals();
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
     if (!newSessionRepoSlug) return undefined;
@@ -312,111 +306,35 @@ export default function App() {
     status,
   });
 
-  // useKeyboardShortcuts is called after handleNewSessionForRepo is defined
-  // (further down) — the new-session shortcut needs it. See below.
-
-  useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
-    void useFileStore.getState().hydrateUploads(sid);
-    // Load user-invocable skills for the composer's `/` autocomplete (doc 138).
-    void useFileStore.getState().fetchSkills(sid, useUiStore.getState().activeAgentId).catch(() => {});
-    // Re-fetch docs if the docs tab is currently active. loadSessionHistory()
-    // populates the file tree and commit log but not docs, so without this a
-    // session switch leaves the DocsViewer stuck on "No docs found" until the
-    // user clicks Refresh.
-    if (useUiStore.getState().rightTab === "docs") {
-      void useFileStore.getState().fetchDocs(sid).catch(() => {});
-    }
-  } });
-
-  // Delayed spinner for bootstrap loading gate — only show after 1s
-  const [showBootstrapSpinner, setShowBootstrapSpinner] = useState(false);
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (bootstrapLoaded) return;
-    const timer = setTimeout(() => setShowBootstrapSpinner(true), 1000);
-    return () => clearTimeout(timer);
-  }, [bootstrapLoaded]);
-
-  useMessageHandler({
+  // App bootstrap wiring (per-session WS connect handling, delayed bootstrap
+  // spinner, WS message dispatcher, restore-rewind browser-event bridge). The
+  // global SSE (`useServerEvents`) and per-session WS (`useSessionWebSocket`)
+  // stay above so their effects register first and their handles flow through
+  // the rest of App.
+  const { showBootstrapSpinner } = useAppBootstrap({
+    status,
+    send,
     lastMessage,
     drainMessages,
-    send,
     terminalRef,
+    bootstrapLoaded,
   });
 
-  // eslint-disable-next-line no-restricted-syntax -- browser event bridges toast/topbar actions to the active WS sender
-  useEffect(() => {
-    const handleRestore = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string }>).detail;
-      const targetSessionId = detail?.sessionId ?? useSessionStore.getState().sessionId;
-      if (targetSessionId) send({ type: "rewind_restore_request", sessionId: targetSessionId });
-    };
-    window.addEventListener("shipit:restore-rewind", handleRestore);
-    return () => window.removeEventListener("shipit:restore-rewind", handleRestore);
-  }, [send]);
-
-  // Initialize sessionId from URL on mount
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (urlSessionId) {
-      useSessionStore.getState().setSessionId(urlSessionId);
-    }
-    if (!urlSessionId && !isNewSessionRoute) {
-      useUiStore.getState().setShowTemplates(true);
-    }
-  }, []);
-
-  // Sync session state with the URL. Keep `sessionId` in the dependency list:
-  // late async writers (claim-session/history paths) can update the store
-  // after the route is already on a different session, and the URL must win.
-  // WS auto-connects/disconnects via useSessionWebSocket(wsSessionId)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    const newSessionRouteKey = isNewSessionRoute ? newSessionRepoSlug : undefined;
-    if (newSessionRouteKey && previousNewSessionRouteRef.current !== newSessionRouteKey) {
-      previousNewSessionRouteRef.current = newSessionRouteKey;
-      if (sessionId) {
-        useSessionStore.getState().setSessionId(undefined);
-        resetSessionState();
-        disableAutoFix();
-      }
-      return;
-    }
-    if (!newSessionRouteKey) {
-      previousNewSessionRouteRef.current = undefined;
-    }
-
-    if (urlSessionId && urlSessionId !== sessionId) {
-      resumeSessionInternal(urlSessionId);
-      disableAutoFix();
-    } else if (!urlSessionId && !isNewSessionRoute && sessionId) {
-      // Clear stale sessionId — prevents WS from connecting to old session.
-      useSessionStore.getState().setSessionId(undefined);
-      resetSessionState();
-      disableAutoFix();
-      useUiStore.getState().setShowTemplates(true);
-    }
-  }, [urlSessionId, sessionId, isNewSessionRoute, newSessionRepoSlug, disableAutoFix]);
-
-  // Auto-claim session when landing on /{slug}/new (direct URL navigation or page refresh)
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (!isNewSessionRoute || !newSessionRepoUrl || sessionId) return;
-    const ac = new AbortController();
-    void (async () => {
-      const result = await useRepoStore.getState().claimSession(newSessionRepoUrl, ac.signal);
-      if (result && !ac.signal.aborted) useSessionStore.getState().setSessionId(result.sessionId);
-    })();
-    return () => ac.abort();
-  }, [isNewSessionRoute, newSessionRepoUrl, sessionId]);
-
-  // Redirect to home if /{slug}/new doesn't match any known repo
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
-  useEffect(() => {
-    if (isNewSessionRoute && !newSessionRepoUrl && bootstrapLoaded && repos.length > 0) {
-      void navigate("/", { replace: true });
-    }
-  }, [isNewSessionRoute, newSessionRepoUrl, bootstrapLoaded, repos.length, navigate]);
+  // Session resume/claim/routing: the four route-sync effects + the
+  // new-session claim handlers. Effect ordering and dependency arrays are
+  // preserved exactly (race-condition sensitive). `useAppKeyboardShortcuts`
+  // below consumes `handleNewSessionShortcut` returned here.
+  const { handleNewSessionForRepo, handleNewSessionShortcut, handleQuickSessionCreated } = useSessionActivation({
+    urlSessionId,
+    sessionId,
+    isNewSessionRoute,
+    newSessionRepoSlug,
+    newSessionRepoUrl,
+    bootstrapLoaded,
+    reposLength: repos.length,
+    disableAutoFix,
+    navigate,
+  });
 
   // ── Callback helpers ──
   const handleSend = useCallback(
@@ -719,95 +637,16 @@ export default function App() {
     [send],
   );
 
-  const handleNewSessionForRepo = useCallback(
-    async (repoUrl: string) => {
-      // Abort any in-flight claim from a previous "New Session" click
-      claimAbortRef.current?.abort();
-      const ac = new AbortController();
-      claimAbortRef.current = ac;
-
-      // 1. Reset state for a fresh view
-      useSessionStore.getState().setSessionId(undefined);
-      resetSessionState();
-      useUiStore.getState().setShowTemplates(false);
-      // On mobile, a new session must land in the chat panel — otherwise the
-      // session-list drawer (or the Workspace panel) stays in front of the
-      // fresh session. No-op on desktop, where these states are unused.
-      useUiStore.getState().setMobileSidebarOpen(false);
-      useUiStore.getState().setMobilePanel("chat");
-
-      // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
-      void navigate(repoLabelToNewPath(repoUrl));
-
-      // 3. Claim session in background — sets sessionId, triggers WS connect + preview
-      const result = await useRepoStore.getState().claimSession(repoUrl, ac.signal);
-      // Guard against a late-resolving claim clobbering the active session.
-      // `ac` is only aborted by a *subsequent* "New Session" click — NOT by the
-      // user navigating to an existing session (handleSessionResume) while the
-      // claim is in flight. Without the URL check, a claim that resolves after
-      // such a navigation would overwrite the store's sessionId with the
-      // freshly-claimed warm session, and the user's next message would
-      // graduate that warm session into a brand-new session instead of going
-      // to the session they switched to. See shouldAdoptClaimedSession.
-      if (
-        shouldAdoptClaimedSession({
-          claimed: !!result,
-          aborted: ac.signal.aborted,
-          currentPathname: window.location.pathname,
-          repoUrl,
-        })
-      ) {
-        useSessionStore.getState().setSessionId(result!.sessionId);
-      }
-    },
-    [navigate],
-  );
-
-  // Keyboard shortcut: Cmd/Ctrl+Shift+O. Prefers the current session's repo,
-  // then the active repo, then falls back to navigating home.
-  const handleNewSessionShortcut = useCallback(() => {
-    const session = useSessionStore.getState();
-    const currentRepo = session.sessions.find((s) => s.id === session.sessionId)?.remoteUrl;
-    const repo = currentRepo ?? useRepoStore.getState().activeRepoUrl;
-    if (repo) {
-      void handleNewSessionForRepo(repo);
-    } else {
-      void navigate("/");
-    }
-  }, [handleNewSessionForRepo, navigate]);
-
-  // Quick-capture (the lightning / lightning+mic buttons) always spawns a
-  // *background* session and does NOT navigate — docs/145. It leaves your
-  // current `/{slug}/new` draft untouched: the headless claim sets
-  // `skipReuse: true`, so the server always mints a fresh session and never
-  // recycles the ungraduated draft you're typing in (that hijack-the-draft
-  // bug is exactly what `skipReuse` fixes). The returned id therefore never
-  // equals the session we're viewing, so the guard below is a defensive
-  // no-op kept only against a future claim path that could reuse — if one
-  // ever did, we'd graduate the URL to /session/{id} as a normal send does.
-  const handleQuickSessionCreated = useCallback(
-    (session: SessionInfo) => {
-      if (isNewSessionRoute && session.id === useSessionStore.getState().sessionId) {
-        void navigate(`/session/${session.id}`, { replace: true });
-      }
-    },
-    [isNewSessionRoute, navigate],
-  );
-
-  useKeyboardShortcuts({
-    setShortcutsOpen: (updater) => setShortcutsOpen(updater),
-    handleNewSession: handleNewSessionShortcut,
-  });
-
-  useQuickCaptureHotkey(quickCaptureHotkey, () => {
-    useUiStore.getState().setQuickCaptureOpen(true);
-  });
-
-  // docs/144 Mode B — voice hotkey opens the overlay *and* auto-starts mic.
-  // Only active when voice input is enabled; reuses the same conflict-checked
-  // matcher as the text-only quick-capture hotkey.
-  useQuickCaptureHotkey(voiceInputEnabled ? voiceHotkeyModeB : "", () => {
-    useUiStore.getState().setQuickCaptureOpen(true, true);
+  // App-level keyboard wiring (shortcuts overlay + new-session chord, text and
+  // voice quick-capture hotkeys). Lives at this position so its keydown effects
+  // register in the same order as before. The resolved chords stay selected
+  // above so their `useKeybinding` selectors keep their original positions.
+  useAppKeyboardShortcuts({
+    setShortcutsOpen,
+    handleNewSessionShortcut,
+    quickCaptureHotkey,
+    voiceInputEnabled,
+    voiceHotkeyModeB,
   });
 
   const handleTabChange = useCallback(
