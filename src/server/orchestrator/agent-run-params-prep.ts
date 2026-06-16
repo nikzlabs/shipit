@@ -38,6 +38,13 @@ export interface PrepareRunParamsInput {
    * comparable Stop-hook surface ignore this entirely.
    */
   autoCreatePrActive: boolean;
+  /**
+   * docs/211 — `true` iff this is a `kind === "sandbox"` session. Claude's hook
+   * forwards it to the adapter as `sandbox`, which sets `SHIPIT_SANDBOX=1` so the
+   * managed-settings.json branch-block hook self-gates off. Optional (defaults to
+   * `false` at the hook) so existing call sites/tests that omit it still compile.
+   */
+  sandboxActive?: boolean;
 }
 
 /**

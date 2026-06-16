@@ -6,8 +6,8 @@ import { formatUnresolvedConflictNotice } from "../services/conflict-marker-noti
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
-/** Minimal handler context — postTurnCommit only needs git + chat history + auto-push. */
-type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager"> & {
+/** Minimal handler context — postTurnCommit only needs git + chat history + auto-push + the session kind gate. */
+type PostTurnCtx = Pick<ConnectionCtx & AppCtx, "createGitManager" | "chatHistoryManager" | "sessionManager"> & {
   scheduleAutoPush: (git: ReturnType<AppCtx["createGitManager"]>, sessionId?: string) => void;
 };
 
@@ -52,6 +52,16 @@ export async function postTurnCommit(
     runner?: SessionRunnerInterface | null;
   },
 ): Promise<string | null> {
+  // docs/211 — the sandbox invariant: a `kind === "sandbox"` session has NO root
+  // git repo (the agent clones into subdirs), so session-level auto-commit /
+  // auto-push / PR card are skipped *explicitly by kind*, not inferred from
+  // `remoteUrl`. `git.autoCommit()` runs unconditionally below and would error on
+  // the non-repo root otherwise. Returning null also short-circuits the caller's
+  // PR-lifecycle flow (`runCommitAndPr` only runs it when a commit hash comes
+  // back), so no PR card or push fires for a sandbox.
+  if (opts.sessionId && ctx.sessionManager.get(opts.sessionId)?.kind === "sandbox") {
+    return null;
+  }
   return withWorkspaceLock(opts.sessionDir, async () => {
     try {
       return await commitInLock();

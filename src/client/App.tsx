@@ -63,6 +63,7 @@ const EMPTY_TURN_USAGE: TurnUsage[] = [];
 // eslint-disable-next-line no-restricted-syntax -- lazy() named-export pattern
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
+import { SandboxBanner } from "./components/SandboxBanner.js";
 import { ReleaseLifecycleCard } from "./components/ReleaseLifecycleCard.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
@@ -222,9 +223,18 @@ export default function App() {
     () => sessions.find((s) => s.id === wsSessionId)?.kind === "ops",
     [sessions, wsSessionId],
   );
+  // docs/211 — a sandbox session has no app preview and no PR lifecycle, so those
+  // tabs are REMOVED (not just disabled — there is no Host replacement either).
+  // Coerce a persisted preview/pr selection to Files so the panel never lands on
+  // a tab that isn't rendered for this kind of session.
+  const isSandboxSession = useMemo(
+    () => sessions.find((s) => s.id === wsSessionId)?.kind === "sandbox",
+    [sessions, wsSessionId],
+  );
   const rightTab = (() => {
     if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr")) return "host";
     if (!isOpsSession && rightTabRaw === "host") return "files";
+    if (isSandboxSession && (rightTabRaw === "preview" || rightTabRaw === "pr")) return "files";
     if (isLocalMode && (rightTabRaw === "preview" || rightTabRaw === "terminal")) return "files";
     return rightTabRaw;
   })();
@@ -1011,7 +1021,7 @@ export default function App() {
   // icon-only collapse adapts to the actual tab count, not a fixed worst-case
   // width. (See useTabLabelCollapse.)
   const tabBarRef = useTabLabelCollapse(
-    [isLocalMode, isOpsSession, presentations.length > 0, hasPr, rightTab !== "present" && presentUnseenCount > 0].join("|"),
+    [isLocalMode, isOpsSession, isSandboxSession, presentations.length > 0, hasPr, rightTab !== "present" && presentUnseenCount > 0].join("|"),
   );
   const rightPanel = (
     <>
@@ -1022,7 +1032,7 @@ export default function App() {
           right edge. Persistent views sit on the left; transient Present/PR are
           grouped to the right. */}
       <div ref={tabBarRef} className="group/tabs flex h-10.25 min-w-0 overflow-x-auto no-scrollbar border-b border-(--color-border-primary) bg-(--color-bg-secondary)">
-        {!isLocalMode && !isOpsSession && (
+        {!isLocalMode && !isOpsSession && !isSandboxSession && (
           <Tab icon={<EyeIcon size={ICON_SIZE.SM} />} label="Preview" active={rightTab === "preview"} onClick={() => handleTabChange("preview")} />
         )}
         {isOpsSession && (
@@ -1036,7 +1046,7 @@ export default function App() {
         )}
         <Tab icon={<ClockCounterClockwiseIcon size={ICON_SIZE.SM} />} label="History" active={rightTab === "history"} onClick={() => handleTabChange("history")} />
         <span className="flex-1" />
-        {(presentations.length > 0 || (hasPr && !isOpsSession)) && (
+        {(presentations.length > 0 || (hasPr && !isOpsSession && !isSandboxSession)) && (
           <span className="self-center h-[18px] w-px bg-(--color-border-secondary) mx-1" aria-hidden="true" />
         )}
         {presentations.length > 0 && (
@@ -1050,7 +1060,7 @@ export default function App() {
             ) : undefined}
           />
         )}
-        {hasPr && !isOpsSession && (
+        {hasPr && !isOpsSession && !isSandboxSession && (
           <Tab icon={<GitPullRequestIcon size={ICON_SIZE.SM} />} label="PR" tone="pr" active={rightTab === "pr"} onClick={() => handleTabChange("pr")} />
         )}
       </div>
@@ -1102,17 +1112,24 @@ export default function App() {
         the overflow menu have a stable home. The previous `SessionTopBar`
         is gone; rename/archive moved to the sidebar row overflow.
       */}
+      {/* docs/211 — for a sandbox session the PR-card slot holds the orientation
+          banner instead (derived chrome from kind/capabilities — never a chat
+          card). Other sessions keep the PR lifecycle card as their top chrome. */}
       {!showHomeScreen && !showNewSessionView && wsSessionId && (
-        <PrLifecycleCard
-          sessionId={wsSessionId}
-          onOpenDetails={() => {
-            handleTabChange("pr");
-            useUiStore.getState().setMobilePanel("preview");
-          }}
-          onCreatePr={handleCreatePr}
-          canAutoMerge={!!currentSession?.remoteUrl}
-          onSearch={() => setSearchOpen(true)}
-        />
+        isSandboxSession ? (
+          <SandboxBanner capabilities={sessions.find((s) => s.id === wsSessionId)?.capabilities} />
+        ) : (
+          <PrLifecycleCard
+            sessionId={wsSessionId}
+            onOpenDetails={() => {
+              handleTabChange("pr");
+              useUiStore.getState().setMobilePanel("preview");
+            }}
+            onCreatePr={handleCreatePr}
+            canAutoMerge={!!currentSession?.remoteUrl}
+            onSearch={() => setSearchOpen(true)}
+          />
+        )
       )}
       {!showHomeScreen && !showNewSessionView && wsSessionId && (
         <ReleaseLifecycleCard

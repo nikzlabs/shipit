@@ -33,6 +33,11 @@ describe("prepareClaudeRunParams", () => {
     expect(out.settingsPath).toBe("/etc/shipit/managed-settings.json");
   });
 
+  it("docs/211 — forwards sandbox from sandboxActive (defaulting false when omitted)", () => {
+    expect(prepareClaudeRunParams(baseParams, { autoCreatePrActive: false, sandboxActive: true }).sandbox).toBe(true);
+    expect(prepareClaudeRunParams(baseParams, { autoCreatePrActive: false }).sandbox).toBe(false);
+  });
+
   it("does not mutate the input params (pure)", () => {
     const snapshot = JSON.stringify(baseParams);
     prepareClaudeRunParams(baseParams, { autoCreatePrActive: true });

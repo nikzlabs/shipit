@@ -683,6 +683,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN action_checklist TEXT");
   },
+  // docs/211 — sandbox-session capabilities. A `kind = "sandbox"` session starts
+  // from an empty workspace with an explicit, immutable set of granted
+  // capabilities chosen at creation ({git, docker, network} as JSON). Like the
+  // `kind` column (migration 22), it is server-authoritative — set once at
+  // creation, never inferred from workspace files — so an agent can't
+  // self-elevate. NULL on ordinary repo/local and ops sessions.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN capabilities TEXT");
+  },
 ];
 
 export class DatabaseManager {

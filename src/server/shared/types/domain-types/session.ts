@@ -3,21 +3,83 @@ import type { ProviderRouteKind } from "./provider.js";
 
 // ---- Session types ----
 
+/**
+ * docs/211 — the capability set chosen at sandbox-session creation. Each flag is
+ * an independent, immutable per-session grant:
+ *   - `git`     (UI "GitHub access") — the GitHub credential broker: clone/push
+ *               private repos and broker PR ops. Off ⇒ no GitHub token (public
+ *               HTTPS clones may still work; "off" is *not* a network seal).
+ *               Defaults to `false`.
+ *   - `docker`  — session-scoped Docker (docs/128 `dockerAccess`): the agent's
+ *               own containers/networks/volumes only, never the host socket.
+ *               Defaults to `false`.
+ *   - `network` (UI "Network access") — how contained egress is. `true` (default)
+ *               = the standard Tier A allowlist every session runs under; `false`
+ *               = lifeline-only (LLM API + ShipIt, plus github.com when `git` is
+ *               granted). It only ever tightens, never widens. Defaults to `true`.
+ *
+ * Capability *wiring* (threading `docker`/`network`/`git` into the container and
+ * brokers) lands in docs/211 Phase 2; the foundation persists the chosen set.
+ */
+export interface SessionCapabilities {
+  git: boolean;
+  docker: boolean;
+  network: boolean;
+}
+
+/**
+ * docs/211 — the default capability set for a freshly-created sandbox when the
+ * client sends none: network on (parity with a normal session), GitHub and
+ * Docker off (opt-in trust expansions). Normalizers coerce partial input
+ * against this so a missing flag never reads as `undefined`.
+ */
+export const DEFAULT_SANDBOX_CAPABILITIES: SessionCapabilities = {
+  git: false,
+  docker: false,
+  network: true,
+};
+
+/**
+ * docs/211 — coerce arbitrary (possibly partial / untrusted) input into a fully
+ * populated {@link SessionCapabilities}, falling back to
+ * {@link DEFAULT_SANDBOX_CAPABILITIES} for any missing or non-boolean field.
+ * Used at the creation route (client payload) and `fromRow` (persisted JSON).
+ */
+export function normalizeCapabilities(input: unknown): SessionCapabilities {
+  const obj = (input && typeof input === "object" ? input : {}) as Record<string, unknown>;
+  const flag = (key: keyof SessionCapabilities): boolean => {
+    const v = obj[key];
+    return typeof v === "boolean" ? v : DEFAULT_SANDBOX_CAPABILITIES[key];
+  };
+  return { git: flag("git"), docker: flag("docker"), network: flag("network") };
+}
+
 export interface SessionInfo {
   id: string;
   /** Agent's conversation ID (e.g. Claude CLI session_id for --resume). */
   agentSessionId?: string;
   title: string;
   /**
-   * docs/128 — server-authoritative session kind. Undefined means an ordinary
-   * repo/local session. `"ops"` marks a privileged host-debugging session
-   * created from the gated ops template: it gets read-only journal mounts and a
-   * read-only Docker socket proxy. This field is set server-side at creation and
-   * is NOT writable from inside the container, so an ordinary session can never
-   * forge its way into the privileged mount path (the gate keys off `kind`, not
-   * any workspace marker file).
+   * docs/128 / docs/211 — server-authoritative session kind. Undefined means an
+   * ordinary repo/local session. The privileged kinds are:
+   *   - `"ops"` — a host-debugging session created from the gated ops template:
+   *     read-only journal mounts and a read-only Docker socket proxy.
+   *   - `"sandbox"` (docs/211) — a repo-less session that starts from an empty
+   *     `/workspace` with an explicit set of granted {@link capabilities}. The
+   *     agent clones whatever repos it wants; ShipIt runs no clone, no preview,
+   *     no auto-commit/push, and no PR card for it.
+   * This field is set server-side at creation and is NOT writable from inside
+   * the container, so an ordinary session can never forge its way into a
+   * privileged path (the gate keys off `kind`, not any workspace marker file).
    */
-  kind?: "ops";
+  kind?: "ops" | "sandbox";
+  /**
+   * docs/211 — capabilities granted to a `kind === "sandbox"` session at
+   * creation. Like {@link kind}, this is set server-authoritatively once and is
+   * never inferred from workspace files, so an agent cannot self-elevate. Absent
+   * on non-sandbox sessions. See {@link SessionCapabilities} for the defaults.
+   */
+  capabilities?: SessionCapabilities;
   createdAt: string;
   lastUsedAt: string;
   /** Per-session workspace directory, e.g. "/workspace/sessions/abc123". */

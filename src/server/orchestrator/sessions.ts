@@ -1,4 +1,5 @@
-import type { PreviousMergedPr, ProviderRouteKind, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch } from "../shared/types.js";
+import { normalizeCapabilities } from "../shared/types.js";
 import { parseTimestampMs } from "../shared/utils.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -23,8 +24,10 @@ interface SessionRow {
   warm: number;
   branch: string | null;
   session_type: string | null;
-  /** docs/128 — server-authoritative session kind ("ops" or null). */
+  /** docs/128 / docs/211 — server-authoritative session kind ("ops", "sandbox", or null). */
   kind: string | null;
+  /** docs/211 — JSON `SessionCapabilities` for a sandbox session, or NULL. */
+  capabilities: string | null;
   branch_renamed: number;
   merged_at: string | null;
   closed_at: string | null;
@@ -57,6 +60,19 @@ interface SessionRow {
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
 export const MAX_MERGED_SESSIONS_PER_REPO = 3;
+
+/**
+ * docs/211 — parse the persisted `capabilities` JSON, tolerating corrupt/legacy
+ * values (returns `undefined` so the caller falls back to the default set
+ * rather than crashing a session read).
+ */
+function safeParseCapabilities(json: string): unknown {
+  try {
+    return JSON.parse(json);
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * docs/161 — disk-idle ladder thresholds. "Idle age" for the ladder is
@@ -231,6 +247,15 @@ export class SessionManager {
     if (row.warm) info.warm = true;
     if (row.branch) info.branch = row.branch;
     if (row.kind === "ops") info.kind = "ops";
+    if (row.kind === "sandbox") {
+      info.kind = "sandbox";
+      // docs/211 — a sandbox always reports a fully-populated capability set;
+      // `normalizeCapabilities` backfills the defaults for a NULL/partial/corrupt
+      // value so consumers never branch on `undefined`.
+      info.capabilities = normalizeCapabilities(
+        row.capabilities ? safeParseCapabilities(row.capabilities) : undefined,
+      );
+    }
     if (row.branch_renamed) info.branchRenamed = true;
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.closed_at) info.closedAt = row.closed_at;
@@ -607,13 +632,24 @@ export class SessionManager {
   }
 
   /**
-   * docs/128 — set the server-authoritative session kind. Currently only
-   * `"ops"` is meaningful; it is the gate for the privileged journal mounts +
-   * read-only Docker proxy in container creation. Set once at creation by the
-   * gated ops template route; the container cannot flip it.
+   * docs/128 / docs/211 — set the server-authoritative session kind. `"ops"`
+   * gates the privileged journal mounts + read-only Docker proxy; `"sandbox"`
+   * (docs/211) marks a repo-less, capability-scoped session. Set once at creation
+   * by the gated creation route; the container cannot flip it.
    */
-  setKind(id: string, kind: "ops"): void {
+  setKind(id: string, kind: "ops" | "sandbox"): void {
     this.db.prepare("UPDATE sessions SET kind = ? WHERE id = ?").run(kind, id);
+  }
+
+  /**
+   * docs/211 — persist the immutable capability set for a sandbox session. Set
+   * once at creation (alongside `setKind(id, "sandbox")`), never from inside the
+   * container, so an agent cannot self-grant `git`/`docker`/`network`. Stored as
+   * JSON; `fromRow` reads it back through `normalizeCapabilities`.
+   */
+  setCapabilities(id: string, capabilities: SessionCapabilities): void {
+    this.db.prepare("UPDATE sessions SET capabilities = ? WHERE id = ?")
+      .run(JSON.stringify(capabilities), id);
   }
 
   /** Store the selected model for a session. */

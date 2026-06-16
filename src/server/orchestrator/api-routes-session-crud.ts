@@ -17,6 +17,7 @@ import {
   reorderSessionPins,
   archiveSession,
   applyTemplate,
+  createSandboxSession,
   forkSession,
   createHeadlessSession,
   ServiceError,
@@ -229,6 +230,33 @@ export async function registerSessionCrudRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to apply template: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/sandbox — docs/211: create a repo-less, capability-scoped
+  // Sandbox session. `kind` and `capabilities` are stamped server-authoritatively
+  // (the body's capabilities are normalized, never trusted as-is) before any
+  // container boots, mirroring the ops kind gate. No clone, no remoteUrl.
+  app.post<{ Body: { capabilities?: { git?: boolean; docker?: boolean; network?: boolean } } }>(
+    "/api/sessions/sandbox",
+    async (request, reply) => {
+      try {
+        const result = await createSandboxSession(
+          sessionManager,
+          deps.createSessionDir,
+          request.body?.capabilities,
+        );
+        // Other viewers learn about the new session via the session-list SSE;
+        // the creating client also calls refreshSessions() on the response.
+        deps.sseBroadcast("session_list", { sessions: sessionManager.list() });
+        return { session: result.session, capabilities: result.capabilities };
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to create sandbox session: ${getErrorMessage(err)}` });
       }
     },
   );

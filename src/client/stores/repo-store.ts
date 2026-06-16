@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { RepoInfo } from "../../server/shared/types.js";
-import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedOpsCollapsed, saveOpsCollapsed } from "../utils/local-storage.js";
+import { getSavedActiveRepo, saveActiveRepo, getSavedCollapsedRepos, saveCollapsedRepos, getSavedCollapsedParents, saveCollapsedParents, getSavedOpsCollapsed, saveOpsCollapsed, getSavedSandboxCollapsed, saveSandboxCollapsed } from "../utils/local-storage.js";
 
 /** Buffers SSE status updates that arrive before addRepo stores the repo. */
 const pendingStatusUpdates = new Map<string, "cloning" | "ready">();
@@ -19,6 +19,8 @@ interface RepoState {
   collapsedParents: Set<string>;
   /** Whether the "Host / Ops" sidebar group is collapsed. Persisted to localStorage. */
   opsCollapsed: boolean;
+  /** docs/211 — whether the "Sandbox" sidebar group is collapsed. Persisted to localStorage. */
+  sandboxCollapsed: boolean;
 
   // Actions
   setRepos: (repos: RepoInfo[]) => void;
@@ -30,6 +32,7 @@ interface RepoState {
   toggleRepoCollapsed: (url: string) => void;
   toggleParentCollapsed: (parentId: string) => void;
   toggleOpsCollapsed: () => void;
+  toggleSandboxCollapsed: () => void;
   reset: () => void;
 
   // Async actions
@@ -61,6 +64,7 @@ export const useRepoStore = create<RepoState>((set, get) => ({
   collapsedRepos: getSavedCollapsedRepos(),
   collapsedParents: getSavedCollapsedParents(),
   opsCollapsed: getSavedOpsCollapsed(),
+  sandboxCollapsed: getSavedSandboxCollapsed(),
 
   setRepos: (repos) => {
     const { activeRepoUrl } = get();
@@ -124,6 +128,13 @@ export const useRepoStore = create<RepoState>((set, get) => ({
       const next = !state.opsCollapsed;
       saveOpsCollapsed(next);
       return { opsCollapsed: next };
+    }),
+
+  toggleSandboxCollapsed: () =>
+    set((state) => {
+      const next = !state.sandboxCollapsed;
+      saveSandboxCollapsed(next);
+      return { sandboxCollapsed: next };
     }),
 
   reset: () => set({ repos: [], activeRepoUrl: undefined, addRepoDialogOpen: false, newRepoDialogOpen: false }),

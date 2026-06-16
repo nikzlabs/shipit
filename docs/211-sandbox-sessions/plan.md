@@ -312,3 +312,44 @@ the Sandbox session view (no Preview/PR tabs).
 2. **Capabilities wiring** — Git-credential gate + Docker toggle through to
    `buildContainerConfig`; system-prompt variant; in-container docs.
 3. **Polish** — `+` menu + dialog UX, warm-pool entry for repo-less, tests.
+
+### Foundation landed (Phase 1 + the Phase 3 creation UX)
+
+What shipped, and where it diverged from the sketch above:
+
+- **Data model.** `SessionCapabilities {git,docker,network}` plus
+  `DEFAULT_SANDBOX_CAPABILITIES` (network on, git/docker off) and a
+  `normalizeCapabilities()` coercer live in `domain-types/session.ts`. The coercer
+  is applied at both the creation route (untrusted client payload) and `fromRow`
+  (persisted JSON), so a sandbox session always reports a fully-populated set. A
+  `capabilities` TEXT column was added by a new migration; `sessions.ts` parses it
+  in `fromRow`, widens `setKind` to `"ops" | "sandbox"`, and adds `setCapabilities`.
+- **Creation.** `createSandboxSession` (`services/templates.ts`) is modeled on the
+  ops `applyTemplate`/`setKind` path but deliberately does **no** `git init` (the
+  invariant #1: no root repo) and writes no template files. It is exposed as
+  `POST /api/sessions/sandbox` (chosen over a WS message — creation is a one-shot
+  request/response with no streaming, like the ops template route) and a
+  `createSandboxSession(capabilities)` client store action.
+- **Invariant.** The post-turn gate lives in `postTurnCommit`
+  (`ws-handlers/post-turn.ts`): a `kind === "sandbox"` session returns `null`
+  before constructing a `GitManager`, which suppresses auto-commit, auto-push, and
+  (being downstream of a commit hash) the PR card — all keyed on `kind`, not
+  `remoteUrl`. `PostTurnCtx` gained `sessionManager` for the lookup.
+- **Branch-op shim.** Turned off via a `SHIPIT_SANDBOX=1` CLI env the orchestrator
+  sets for sandbox sessions (a `sandbox` flag threaded
+  buildAgentRunParams → Claude run-params-prep → adapter → `ClaudeProcess` spawn
+  env, mirroring `SHIPIT_AUTO_CREATE_PR`); `block-branch-ops.mjs` self-gates off on
+  it. Sandbox also forces `autoCreatePr = false`.
+- **UI.** Teal `--color-sandbox` token (theme-independent, in `index.css`);
+  `SandboxSessionGroup` + a teal `sandbox` badge keyed on `kind`; a `+`
+  advanced-session menu (`renderAdvancedSessionMenu`) above the session list
+  opening `SandboxDialog` (the capability picker) or creating an ops session;
+  Preview/PR tabs **removed** for sandbox in `App.tsx`; and `SandboxBanner` —
+  derived chrome computed from `kind`/`capabilities`, **not** a chat card — in the
+  chat panel's PR-card slot.
+
+Deferred to Phase 2 (a parallel effort builds on the stable
+`kind`/`capabilities`/`POST /api/sessions/sandbox` contract): the orchestrator-side
+git-credential + PR-broker capability gates, repo-aware PR brokering, threading
+`docker`/`network` into `buildContainerConfig`/egress, the sandbox system-prompt
+variant, and the in-container `shipit-docs` page.

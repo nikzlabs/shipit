@@ -16,4 +16,7 @@ export const prepareClaudeRunParams: PrepareRunParamsFn = (params, input) => ({
   ...params,
   settingsPath: "/etc/shipit/managed-settings.json",
   autoCreatePr: input.autoCreatePrActive,
+  // docs/211 — forward the sandbox flag so the adapter sets SHIPIT_SANDBOX=1 and
+  // the PreToolUse branch-block hook self-gates off for a repo-less session.
+  sandbox: input.sandboxActive ?? false,
 });

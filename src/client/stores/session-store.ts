@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { saveDraftMessage } from "../utils/local-storage.js";
 import type { ChatMessage } from "../components/MessageList.js";
 import type { StreamingActivity } from "../components/StreamingIndicator.js";
-import type { SessionInfo, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
+import type { SessionInfo, SessionCapabilities, TurnUsage, RescuePhase, WsRewindPreview, AgentId } from "../../server/shared/types.js";
 
 /**
  * docs/144 — a transient sub-agent spawn spinner ("Asking Codex…"), live only
@@ -240,6 +240,14 @@ interface SessionState {
    * pre-typed. Returns the new session id, or `null` on failure (caller toasts).
    */
   createOpsSession: (targetSessionId?: string) => Promise<string | null>;
+
+  /**
+   * docs/211 — create a repo-less, capability-scoped Sandbox session. The chosen
+   * `capabilities` are sent to the server, which stamps `kind = "sandbox"` and
+   * the (normalized) capability set authoritatively. Returns the new session id,
+   * or `null` on failure (caller toasts).
+   */
+  createSandboxSession: (capabilities: SessionCapabilities) => Promise<string | null>;
 
   /**
    * docs/117 Phase 2 — return all sessions whose `parentSessionId` matches
@@ -618,6 +626,25 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       return id;
     } catch (err) {
       console.error("[session-store] create ops session failed:", err);
+      return null;
+    }
+  },
+
+  createSandboxSession: async (capabilities) => {
+    try {
+      const res = await fetch("/api/sessions/sandbox", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ capabilities }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { session?: { id: string } };
+      const id = data.session?.id;
+      if (!id) return null;
+      await get().refreshSessions();
+      return id;
+    } catch (err) {
+      console.error("[session-store] create sandbox session failed:", err);
       return null;
     }
   },

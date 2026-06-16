@@ -66,6 +66,11 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
   // out before the repo/orphan distribution so they render in their own
   // pinned "Host / Ops" group instead of falling into "Other sessions".
   const opsSessions = sessions.filter((s) => s.kind === "ops");
+  // docs/211 — sandbox sessions are likewise their own kind: repo-less and
+  // keyed on `kind === "sandbox"`, NOT on the `remoteUrl ?? ""` orphan bucket
+  // (which would lump unrelated no-remote sessions in with them). Pulled out
+  // here so they render in their own pinned "Sandbox" group.
+  const sandboxSessions = sessions.filter((s) => s.kind === "sandbox");
 
   // Initialize groups for all known repos
   for (const repo of repos) {
@@ -74,7 +79,7 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
 
   // Distribute sessions into groups
   for (const s of sessions) {
-    if (s.kind === "ops") continue;
+    if (s.kind === "ops" || s.kind === "sandbox") continue;
     const key = s.remoteUrl ?? "";
     if (!grouped.has(key)) grouped.set(key, []);
     grouped.get(key)!.push(s);
@@ -137,11 +142,16 @@ export function computeRepoGroups(repos: RepoInfo[], sessions: SessionInfo[]) {
       return { kind: "orphan" as const, url, label, sessions: group };
     });
 
-  // docs/128 — pin the ops group at the very top when it exists.
+  // docs/211 — pin the sandbox group at the very top, then docs/128's ops group,
+  // when each exists.
+  const sandbox = sandboxSessions.length > 0
+    ? [{ kind: "sandbox" as const, sessions: sandboxSessions }]
+    : [];
   const ops = opsSessions.length > 0
     ? [{ kind: "ops" as const, sessions: opsSessions }]
     : [];
 
-  // Ops first (pinned), then server-provided repo order, then non-empty unmatched groups.
-  return [...ops, ...known, ...orphan];
+  // Sandbox + Ops first (pinned), then server-provided repo order, then non-empty
+  // unmatched groups.
+  return [...sandbox, ...ops, ...known, ...orphan];
 }

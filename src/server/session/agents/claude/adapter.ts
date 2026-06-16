@@ -336,6 +336,8 @@ export class ClaudeAdapter
       model: params.model,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
+      // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.
+      sandbox: params.sandbox,
       // docs/193 — set when writeMcpConfig registered the permission bridge.
       permissionPromptTool: this._permissionPromptTool,
     });
