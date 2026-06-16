@@ -93,6 +93,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private _guardedUnavailable = false;
   readonly awaitingPermissionIds = new Set<string>();
   private _isStreamingActive = false;
+  // docs/146 follow-up — the proxy of the live resident streaming process,
+  // tracked SEPARATELY from `_agent` so it survives a stale/one-shot spawn
+  // momentarily displacing or nulling the single `_agent` slot. The SSE relay
+  // re-adopts it when an `agent_event` arrives with `_agent === null` while
+  // streaming is still active, so a stale spawn's exit can't strand the live
+  // streaming turn's events `(no _agent)`. Set when `isStreamingActive` flips
+  // true (the slot occupant is then the streaming proxy); cleared when it flips
+  // false or on dispose.
+  private _streamingProxy: ProxyAgentProcess | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
   private _activeReviewFilePath: string | null = null;
   private _activeReviewId: string | null = null;
@@ -276,7 +285,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   get guardedUnavailable(): boolean { return this._guardedUnavailable; }
   set guardedUnavailable(v: boolean) { this._guardedUnavailable = v; }
   get isStreamingActive(): boolean { return this._isStreamingActive; }
-  set isStreamingActive(v: boolean) { this._isStreamingActive = v; }
+  set isStreamingActive(v: boolean) {
+    this._isStreamingActive = v;
+    // Capture / release the live streaming proxy. When streaming turns on, the
+    // current slot occupant IS the streaming process; hold a stable reference so
+    // the SSE relay can re-adopt it if a stale spawn nulls `_agent` mid-turn
+    // (the prod sse-drop). When it turns off, the streaming process is exiting —
+    // drop the reference so genuinely-orphaned events stop being re-adopted.
+    this._streamingProxy = v ? this._agent : null;
+  }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
   get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
@@ -1465,12 +1482,24 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "agent_event":
           if (this._agent) {
             this._agent.emit("event", data as unknown as AgentEvent);
+          } else if (this._isStreamingActive && this._streamingProxy) {
+            // docs/146 follow-up — the slot is null but a resident streaming
+            // process is still mid-turn. This is the prod stranding: a stale /
+            // one-shot spawn displaced the streaming proxy and then exited,
+            // nulling `_agent`, while the live streaming process kept emitting.
+            // Re-adopt the tracked streaming proxy so its assistant/tool_result/
+            // result events are routed to the live turn instead of being dropped.
+            // A genuinely-orphaned stream has `isStreamingActive === false` (the
+            // streaming `done` clears it), so this never resurrects a dead turn.
+            this._agent = this._streamingProxy;
+            this._agent.emit("event", data as unknown as AgentEvent);
           } else {
             // docs/140 diag — events arriving with no orchestrator-side agent
-            // ref typically mean a stale streaming process in the worker is
-            // still emitting after the orchestrator already finalized the
-            // turn (setAgent(null) on agent_result). Drop is correct, but the
-            // log lets us correlate with the double-spawn / double-bubble repro.
+            // ref AND no live streaming turn mean a genuinely-orphaned stale
+            // streaming process in the worker is still emitting after the
+            // orchestrator already finalized the turn (setAgent(null) on
+            // agent_result). Drop is correct; the log correlates with the
+            // double-spawn / double-bubble repro.
             const eventType = (data as { type?: string }).type ?? "unknown";
             console.warn(`[sse-drop:${this.sessionId}] agent_event type=${eventType} dropped (no _agent)`);
           }
@@ -1837,6 +1866,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     console.warn(`[container-runner:${this.sessionId}] Detected stuck running=true (worker reports no agent). Resetting.`);
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._streamingProxy = null;
     this._appliedPermissionMode = undefined;
     this._agent = null;
     this.emitMessage({
@@ -1901,6 +1931,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.turn.reset();
     this._isRunning = false;
     this._isStreamingActive = false;
+    this._streamingProxy = null;
     this._appliedPermissionMode = undefined;
     this.termBuf.reset();
     this.emit("disposed");
