@@ -11,7 +11,10 @@ android {
         applicationId = "com.shipit.wrapper"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
+        // versionCode must strictly increase on every Play Store upload. In CI
+        // it's set from the GitHub Actions run number (see android.yml); locally
+        // it falls back to 1 so `gradle assembleRelease` works offline.
+        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 1
         versionName = "0.1.0"
     }
 

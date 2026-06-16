@@ -17,7 +17,19 @@ push or PR. From the GitHub UI: **Actions → Android build → Run workflow**.
 | Mode | What it produces | Where it goes |
 |------|------------------|---------------|
 | `release: false` (default) | Unsigned debug APK | Workflow artifact `shipit-debug-apk` |
-| `release: true` | Signed release APK | Workflow artifact `shipit-release-apk` (attach to a GitHub Release manually) |
+| `release: true` | Signed release APK **and** signed AAB | Artifacts `shipit-release-apk` (sideload / GitHub Release) and `shipit-release-aab` (Play Store upload) |
+
+The **APK** is for sideloading or attaching to a GitHub Release. The **AAB**
+(`app-release.aab`) is for uploading to the Play Store — see "Play Store
+(internal testing)" below.
+
+### versionCode
+
+Google Play rejects an upload whose `versionCode` is not strictly greater than
+the previous one. In CI, `versionCode` is set from the GitHub Actions
+`run_number` (via the `ANDROID_VERSION_CODE` env var), so every release build
+gets a higher code automatically. Local builds fall back to `1`
+(see `app/build.gradle.kts`).
 
 ### Local builds (optional)
 
@@ -73,8 +85,35 @@ update is signed with the same key as the previous install. Treat
 4. Self-hosters download the APK from your Releases page and sideload it on
    their phone (Settings → Apps → "Install unknown apps" → Chrome/Files).
 
-Optional: upload the same APK as an AAB to Play Console for the regular
-"app store install" experience. Out of scope for v1.
+## Play Store (internal testing)
+
+For Play-managed auto-updates — on your own device or a small group of named
+testers — use the **Internal testing** track. It needs no public listing and
+skips the production-track testing requirements.
+
+One-time setup:
+
+1. Create a [Google Play Console](https://play.google.com/console) developer
+   account ($25 one-time, plus identity verification).
+2. Create the app, then enroll in **Play App Signing**. Your `release.keystore`
+   becomes the **upload key**; Google holds the real app-signing key and
+   re-signs each upload. (An upload key can be reset via Play support if lost —
+   unlike a pure sideload key.) The same four GitHub secrets are reused.
+3. Provide store metadata: icon (512×512), ≥2 screenshots, descriptions, a
+   privacy policy URL, content rating, and the Data Safety form.
+
+Each release:
+
+1. Run **Android build** with `release: true` and download the
+   `shipit-release-aab` artifact.
+2. Upload `app-release.aab` to the **Internal testing** track.
+3. Add tester emails, open the opt-in link on the device, and install from the
+   Play Store. Subsequent uploads auto-update.
+
+> Play requires new apps/updates to target a recent API level (API 35 /
+> Android 15 as of 2025). This app currently targets API 34 — bump
+> `compileSdk`/`targetSdk` before your first submission, and verify the
+> full-bleed WebView still handles Android 15's edge-to-edge insets.
 
 ## App behavior
 

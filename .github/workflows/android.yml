@@ -60,7 +60,17 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: gradle :app:assembleRelease --no-daemon --stacktrace
+
+      - name: Build release AAB (signed, for Play Store)
+        if: ${{ inputs.release == true }}
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
+        run: gradle :app:bundleRelease --no-daemon --stacktrace
 
       - name: Upload debug APK artifact
         if: ${{ inputs.release == false }}
@@ -76,6 +86,14 @@ jobs:
         with:
           name: shipit-release-apk
           path: android/app/build/outputs/apk/release/app-release.apk
+          if-no-files-found: error
+
+      - name: Upload release AAB artifact
+        if: ${{ inputs.release == true }}
+        uses: actions/upload-artifact@v6
+        with:
+          name: shipit-release-aab
+          path: android/app/build/outputs/bundle/release/app-release.aab
           if-no-files-found: error
 
       - name: Clean up keystore
