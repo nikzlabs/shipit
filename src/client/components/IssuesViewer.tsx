@@ -250,9 +250,13 @@ function IssueRow({
   onStartSession: (issue: TrackerIssue) => void;
 }) {
   const { issue, depth, hasChildren, childCount, collapsed, orphan } = row;
-  // Mobile (card layout) gets a faint whole-card indent + a "N nested issues"
-  // toggle (docs/206); desktop indents the title cell + shows the disclosure
-  // caret. The CSS var feeds the row's left padding below @md only.
+  // Both layouts indent the whole row by depth via the row's own left padding —
+  // mobile (card) gets a faint indent + a "N nested issues" toggle (docs/206);
+  // desktop additionally shows the disclosure caret at the start of the title.
+  // `--mind`/`--dind` feed the row's left padding (mobile below @md, desktop at
+  // @md) so the entire left cluster (id + title) shifts together, not just the
+  // title text. The right-hand columns stay column-aligned (the 1fr title track
+  // absorbs the indent), giving the standard tree-table look.
   const mobileIndent = Math.min(depth, MOBILE_INDENT_MAX_DEPTH) * MOBILE_INDENT_STEP;
   const desktopIndent = Math.min(depth, DESKTOP_INDENT_MAX_DEPTH) * DESKTOP_INDENT_STEP;
   const toggle = () => onSetCollapsed(issue.id, !collapsed);
@@ -271,11 +275,13 @@ function IssueRow({
           onOpenIssue(issue);
         }
       }}
-      // `--mind` feeds the mobile-only card indent. Below @md the left padding is
-      // `0.75rem + indent`; at @md it resets to `pl-3` (desktop indents the title
-      // cell instead, keeping the table columns aligned).
-      style={{ "--mind": `${mobileIndent}px` } as CSSProperties}
-      className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @md:pl-3 cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
+      // The left padding is `0.75rem + indent` in both layouts: `--mind` (mobile)
+      // below @md, `--dind` (desktop) at @md. Indenting the row — rather than just
+      // the title cell — shifts the id + title together so nested rows read as an
+      // indented block; the right-hand columns stay aligned (the 1fr title track
+      // absorbs the indent).
+      style={{ "--mind": `${mobileIndent}px`, "--dind": `${desktopIndent}px` } as CSSProperties}
+      className={`${ROW_GRID} group relative py-3 pr-3 pl-[calc(0.75rem+var(--mind,0px))] @md:pl-[calc(0.75rem+var(--dind,0))] cursor-pointer transition-colors focus:outline-none hover:bg-(--color-bg-hover) focus-visible:bg-(--color-bg-hover) before:absolute before:inset-y-0 before:left-0 before:w-0.5 before:rounded-r before:bg-(--color-accent) before:opacity-0 before:transition-opacity group-hover:before:opacity-100 focus-visible:before:opacity-100`}
     >
       {/* Issue identifier — plain label; the row click (not this) opens detail. */}
       <span className={`[grid-area:id] ${FIRST_LINE} text-[11px] font-mono text-(--color-text-tertiary) group-hover:text-(--color-text-secondary) transition-colors min-w-0`}>
@@ -285,17 +291,17 @@ function IssueRow({
       {/* Title (+ optional description preview + labels), wraps to two lines. The
           row is clickable as a whole (hover bg + accent left-bar already signal
           that), so there's no hover caret to misalign against a wrapped title.
-          Desktop nesting (docs/206): a depth-indent spacer + disclosure live at
-          the START of the title cell (@md only) so the table columns stay aligned
-          — only the title content shifts. Mobile gets none of this; its whole
-          card is indented via the row's left padding instead. */}
+          Desktop nesting (docs/206): the depth indent lives on the row's left
+          padding (above), so the whole left cluster shifts; the disclosure caret
+          sits at the START of the title cell (@md only). Mobile gets the same
+          row-padding indent plus a "N nested issues" toggle below. */}
       <div className="[grid-area:title] min-w-0">
         <div className="flex items-center min-h-6 text-sm font-medium text-(--color-text-primary)">
-          <span
-            className="hidden @md:flex items-center shrink-0 self-start h-6"
-            style={{ paddingLeft: `${desktopIndent}px` }}
-          >
-            {hasChildren ? (
+          {/* Disclosure caret — only parents get it. Leaves render no spacer, so a
+              leaf's title sits flush at the cell start (no phantom caret-width gap;
+              the depth indent on the row already conveys nesting). */}
+          {hasChildren && (
+            <span className="hidden @md:flex items-center shrink-0 self-start h-6">
               <button
                 type="button"
                 aria-label={collapsed ? `Expand ${issue.identifier}` : `Collapse ${issue.identifier}`}
@@ -313,12 +319,8 @@ function IssueRow({
                   className={`transition-transform ${collapsed ? "" : "rotate-90"}`}
                 />
               </button>
-            ) : (
-              // Leaf spacer keeps a leaf's title aligned with its siblings' titles
-              // (which are pushed right by the disclosure button).
-              <span className="mr-1 inline-block size-4 shrink-0" aria-hidden="true" />
-            )}
-          </span>
+            </span>
+          )}
           <span className="line-clamp-2">{issue.title}</span>
           {hasChildren && (
             <span
