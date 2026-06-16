@@ -11,12 +11,16 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
  * Fake runner that records dispatches + emitted WS messages. Deliberately NOT a
  * `ContainerSessionRunner`, so the deliverer skips the worker-ready wait.
  *
- * Models the real runner's turn-completion contract: a dispatch that carries an
- * `onTurnComplete` callback represents a turn that STARTS NOW (the idle path),
- * so by default the fake fires that callback immediately to simulate the turn
- * running to completion. Set `autoCompleteTurn = false` to hold the callback
- * (`completeTurn()` fires it later) — that models the gap between a turn being
- * dispatched and actually finishing, where a restart would strand it.
+ * Models the real runner's turn-completion contract:
+ *   • IDLE parent (`running === false`) — `dispatch` starts the turn now, so by
+ *     default the fake fires `onTurnComplete` immediately to simulate it running
+ *     to completion. Set `autoCompleteTurn = false` to hold the callback so a
+ *     test can fire it later via `completeTurn()` (models the dispatch→finish
+ *     gap where a restart would strand the watch).
+ *   • BUSY parent (`running === true`) — `dispatch` ENQUEUES; the callback is
+ *     held (it rides the in-memory queue, docs/196 fix) and fires only when the
+ *     current turn finishes and the queue drains, simulated by `completeTurn()`.
+ * In both cases a held callback is flushed by `completeTurn()`.
  */
 class FakeRunner {
   running = false;
@@ -25,20 +29,22 @@ class FakeRunner {
   dispatched: AgentDispatchOptions[] = [];
   emitted: unknown[] = [];
   autoCompleteTurn = true;
-  private pendingComplete: (() => void) | undefined;
+  private pendingComplete: (() => void)[] = [];
   constructor(public sessionDir: string) {}
   dispatch(opts: AgentDispatchOptions): void {
     this.dispatched.push(opts);
     if (!opts.onTurnComplete) return;
     const fire = () => opts.onTurnComplete!({ errored: false });
-    if (this.autoCompleteTurn) fire();
-    else this.pendingComplete = fire;
+    // Busy parent → enqueued, runs (and completes) only on drain. Idle parent →
+    // starts now (unless the test holds it via `autoCompleteTurn = false`).
+    if (this.running || !this.autoCompleteTurn) { this.pendingComplete.push(fire); return; }
+    fire();
   }
-  /** Simulate the held wake-turn finishing (manual-completion mode). */
+  /** Simulate held/queued wake-turns draining to completion. */
   completeTurn(): void {
-    const fire = this.pendingComplete;
-    this.pendingComplete = undefined;
-    fire?.();
+    const pending = this.pendingComplete;
+    this.pendingComplete = [];
+    for (const fire of pending) fire();
   }
   emitMessage(msg: unknown): void { this.emitted.push(msg); }
 }
@@ -209,24 +215,9 @@ describe("MergeWatchManager (docs/196)", () => {
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
   });
 
-  it("busy parent: wake-turn enqueued stays merge-observed; reconcile re-delivers without a second card", async () => {
-    arm(ctx.sessionManager);
-    // Mid-turn parent → dispatch enqueues; there is no completion signal.
-    const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
-    parentRunner.running = true;
-
-    await ctx.manager.handleChildPrTerminal(MERGED);
-
-    // Enqueued + card surfaced, but the queued turn lives only in memory, so the
-    // watch must remain recoverable: NOT delivered.
-    expect(parentRunner.dispatched).toHaveLength(1);
-    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
-    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
-
-    // Simulate the restart: the in-memory queued turn was lost; the parent is
-    // idle again. `reconcilePending` re-derives the terminal PR and re-delivers.
-    parentRunner.running = false;
-    const status: PrStatusSummary = {
+  // Helper: a merged-PR snapshot for `setPrStatusLookup`, keyed by child id.
+  function mergedStatus(): PrStatusSummary {
+    return {
       sessionId: "child",
       prNumber: 7,
       prUrl: "https://github.com/o/r/pull/7",
@@ -242,10 +233,72 @@ describe("MergeWatchManager (docs/196)", () => {
       reviewDecision: "none",
       autoMergeEnabled: false,
     };
-    ctx.manager.setPrStatusLookup((id) => (id === "child" ? status : undefined));
+  }
+
+  it("busy parent: wake-turn enqueued, reaches delivered once it drains (no restart needed)", async () => {
+    arm(ctx.sessionManager);
+    // Mid-turn parent → dispatch enqueues; the completion callback is held by
+    // the in-memory queue and fires only when the queue drains (docs/196 fix).
+    const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+    parentRunner.running = true;
+
+    await ctx.manager.handleChildPrTerminal(MERGED);
+
+    // Enqueued + card surfaced, but the queued turn has not run yet, so the
+    // watch is recoverable: NOT delivered while it sits in the queue.
+    expect(parentRunner.dispatched).toHaveLength(1);
+    expect(parentRunner.dispatched[0].systemTurn).toBe(true);
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+
+    // The parent's current turn finishes and the queued wake-turn drains + runs
+    // — IN-PROCESS, no orchestrator restart. Only NOW is the watch `delivered`.
+    parentRunner.running = false;
+    parentRunner.completeTurn();
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+
+    // The reported bug: a later restart re-derives the still-merged PR and must
+    // NOT re-fire — the watch is now terminal, so reconcile is a no-op.
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
+    await ctx.manager.reconcilePending();
+    expect(parentRunner.dispatched).toHaveLength(1); // no duplicate wake-turn
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+  });
+
+  it("regression: a delivered watch is never re-fired across repeated restarts (no duplicate notifications)", async () => {
+    arm(ctx.sessionManager);
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
+
+    // Several orchestrator restarts in a row, each re-running the startup
+    // reconcile against the persisted (still-merged) PR snapshot.
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
+    await ctx.manager.reconcilePending();
+    await ctx.manager.reconcilePending();
     await ctx.manager.reconcilePending();
 
-    // Re-delivered to completion now — and NO second card surfaced (the
+    // Exactly one wake-turn + one card, ever — `delivered` is fire-once.
+    expect(ctx.runners.get("parent")?.dispatched).toHaveLength(1);
+    expect(ctx.chatHistoryManager.load("parent").filter((m) => m.childMerged)).toHaveLength(1);
+  });
+
+  it("busy parent that never drains before a restart: reconcile re-delivers without a second card", async () => {
+    arm(ctx.sessionManager);
+    // Mid-turn parent → dispatch enqueues; the parent restarts before the queued
+    // turn ever runs, so the in-memory queue (and its held callback) is lost.
+    const parentRunner = ctx.registry.getOrCreate("parent", "/ws/parent", "claude") as unknown as FakeRunner;
+    parentRunner.running = true;
+
+    await ctx.manager.handleChildPrTerminal(MERGED);
+    expect(parentRunner.dispatched).toHaveLength(1);
+    expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("merge-observed");
+
+    // Restart: the queued turn was lost (no `completeTurn()`), parent idle again.
+    parentRunner.running = false;
+    ctx.manager.setPrStatusLookup((id) => (id === "child" ? mergedStatus() : undefined));
+    await ctx.manager.reconcilePending();
+
+    // Re-delivered to completion now — and NO second card (the
     // `armed → merge-observed` card guard holds across the re-entry).
     expect(ctx.sessionManager.getMergeWatch("child")?.state).toBe("delivered");
     expect(parentRunner.dispatched).toHaveLength(2);

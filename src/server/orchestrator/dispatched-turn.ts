@@ -44,6 +44,9 @@ function queuedMessageToDispatchOptions(next: QueuedMessage): AgentDispatchOptio
   if (next.reviewFilePath !== undefined) nextOpts.reviewFilePath = next.reviewFilePath;
   if (next.postTurn !== undefined) nextOpts.postTurn = next.postTurn;
   if (next.systemTurn !== undefined) nextOpts.systemTurn = next.systemTurn;
+  // docs/196 fix — carry the completion callback so an enqueued turn signals
+  // completion when it drains (the merge-watch busy path depends on this).
+  if (next.onTurnComplete !== undefined) nextOpts.onTurnComplete = next.onTurnComplete;
   return nextOpts;
 }
 

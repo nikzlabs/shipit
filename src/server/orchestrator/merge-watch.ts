@@ -135,22 +135,23 @@ export class MergeWatchManager {
       }
       // Deliver the wake-turn, advancing to `delivered` ONLY once the turn has
       // actually RUN to completion — surfaced via the `onTurnComplete`-backed
-      // `markDelivered` callback, NOT the instant the turn is enqueued:
+      // `markDelivered` callback, NOT the instant the turn is enqueued. The
+      // callback now rides the in-memory queue (docs/196 fix), so it fires when
+      // the turn genuinely runs on BOTH paths:
       //   • idle parent → the turn starts now → it completes → `delivered`.
       //   • busy parent → the turn is enqueued (drained post-turn, never
-      //     preempting) → no completion signal → the watch stays
-      //     `merge-observed`.
-      // The watch therefore remains at `merge-observed` for the whole window
-      // between enqueue and execution. A restart anywhere in that window leaves
-      // it at `merge-observed`, which `reconcilePending` re-fires on the next
-      // startup. This closes the bug where the watch was stamped `delivered` the
-      // instant the turn was queued: the queued turn lives only in memory, so an
-      // orchestrator restart lost it while the persisted watch already read
-      // `delivered` and was skipped by reconcile — stranding the parent. A live
-      // re-poll can't recover it (the PR is `alreadyTerminal`), so
-      // reconcile-on-restart is the sole recovery path. `deliverWakeTurn` still
-      // throws on a parent container boot failure — that too leaves the watch at
-      // `merge-observed` for the next poll / reconcile to retry.
+      //     preempting) → it runs when the current turn finishes → `delivered`.
+      // The watch stays at `merge-observed` only for the window between enqueue
+      // and the turn actually running. A restart inside that window drops the
+      // in-memory queued turn, leaving the watch at `merge-observed` for
+      // `reconcilePending` to re-fire on the next startup — the genuine
+      // recovery case. This closes two failure modes: (1) stamping `delivered`
+      // at enqueue stranded the parent when a restart lost the queued turn
+      // before it ran; (2) leaving the busy path's callback unwired left the
+      // watch at `merge-observed` FOREVER, so reconcile re-fired a DUPLICATE
+      // wake-turn on every restart. `deliverWakeTurn` still throws on a parent
+      // container boot failure — that too leaves the watch at `merge-observed`
+      // for the next poll / reconcile to retry.
       await this.deliverWakeTurn(parent, child, info, cardOutcome, () => {
         this.markDelivered(info.sessionId, now);
       });
@@ -269,12 +270,12 @@ export class MergeWatchManager {
    * agents" invariant.
    *
    * `onExecuted` (when supplied) fires only once the turn has actually RUN to
-   * completion — wired through `onTurnComplete`, which `dispatch` honors only on
-   * the idle path where it starts the turn now. When the parent is mid-turn the
-   * turn is enqueued and `onExecuted` is intentionally NOT wired (a queued turn
-   * carries no completion signal, and `onTurnComplete` is dispatch-only — it
-   * does not survive the queue), so the caller leaves the watch recoverable for
-   * the post-restart reconcile rather than prematurely marking it delivered.
+   * completion — wired through `onTurnComplete`, which `dispatch` honors on the
+   * idle path (it starts the turn now) AND, since the docs/196 fix, on the busy
+   * path: the callback rides the in-memory queue and fires when the enqueued
+   * turn later drains and runs. The watch therefore reaches `delivered`
+   * in-process in both cases; it stays `merge-observed` only across a restart
+   * that loses the still-queued turn, which `reconcilePending` re-fires.
    */
   private async deliverWakeTurn(
     parent: SessionInfo,
@@ -333,21 +334,26 @@ export class MergeWatchManager {
     const activity =
       outcome === "merged" ? "Resuming after child PR merged…" : "Reassessing after child PR closed…";
 
-    // Mid-turn parent: `dispatch` enqueues the wake-turn (drained post-turn,
-    // never preempting) and there is no completion signal to await — leave
-    // `onExecuted` unwired so the watch stays `merge-observed`, recoverable by
-    // `reconcilePending` after a restart. Idle parent: `dispatch` starts the
-    // turn now, so wiring `onTurnComplete` lets us mark `delivered` only once it
-    // has genuinely run.
-    if (runner.running) {
-      runner.dispatch({ text, activity, systemTurn: true });
-      return;
-    }
+    // Wire the completion callback on BOTH the busy and idle paths. `dispatch`
+    // enqueues when the parent is mid-turn (drained post-turn, never preempting)
+    // and starts the turn now when idle; `onTurnComplete` now rides the
+    // in-memory queue (docs/196 fix), so it fires when the wake-turn ACTUALLY
+    // runs to completion in either case. `markDelivered` is therefore reached
+    // in-process for a busy parent too — no restart required.
+    //
+    // This closes the duplicate-notification bug: previously the busy path left
+    // `onExecuted` unwired, so a busy-parent watch stayed `merge-observed`
+    // forever (the queue dropped the callback at enqueue), and
+    // `reconcilePending` re-fired the wake-turn on EVERY orchestrator restart.
+    // Now the watch advances to `delivered` once the enqueued turn drains, and
+    // reconcile re-fires ONLY when a restart happened before that turn ran (the
+    // queue is in-memory, so the un-run turn was genuinely lost) — the real
+    // in-flight recovery case the design intended.
     runner.dispatch({
       text,
       activity,
       systemTurn: true,
-      onTurnComplete: () => onExecuted?.(),
+      ...(onExecuted ? { onTurnComplete: () => onExecuted() } : {}),
     });
   }
 }
