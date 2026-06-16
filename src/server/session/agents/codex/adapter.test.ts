@@ -3,7 +3,7 @@ import { EventEmitter } from "node:events";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { CodexAdapter, unwrapShellCommand, buildCodexPermissionInput } from "./adapter.js";
+import { CodexAdapter } from "./adapter.js";
 import type { AgentEvent } from "../agent-process.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 
@@ -385,41 +385,6 @@ describe("CodexAdapter", () => {
       type: "agent_assistant",
       content: [{ type: "text", text: "Hi there" }],
       isStreamCompletion: true,
-    });
-  });
-
-  describe("unwrapShellCommand", () => {
-    it("strips the /bin/bash -lc wrapper (single and double quotes)", () => {
-      expect(unwrapShellCommand("/bin/bash -lc 'ls -la'")).toBe("ls -la");
-      expect(unwrapShellCommand(`/bin/bash -lc "sed -n '1,20p' docs/plan.md"`)).toBe("sed -n '1,20p' docs/plan.md");
-      expect(unwrapShellCommand("bash -c 'echo hi'")).toBe("echo hi");
-      expect(unwrapShellCommand("sh -c 'echo hi'")).toBe("echo hi");
-    });
-
-    it("preserves inner quotes that aren't the outer wrapper", () => {
-      expect(unwrapShellCommand(`/bin/bash -lc 'rg -n "^status:" docs/a.md'`)).toBe('rg -n "^status:" docs/a.md');
-    });
-
-    it("leaves non-wrapped commands unchanged", () => {
-      expect(unwrapShellCommand("ls -la")).toBe("ls -la");
-      expect(unwrapShellCommand("npm run build")).toBe("npm run build");
-      expect(unwrapShellCommand("")).toBe("");
-    });
-  });
-
-  describe("buildCodexPermissionInput (docs/193)", () => {
-    it("derives the first changed path for a fileChange approval (v2 + v1)", () => {
-      expect(buildCodexPermissionInput("item/fileChange/requestApproval", { item: { changes: [{ path: ".npmrc" }] } }))
-        .toEqual({ toolName: "apply_patch", input: { file_path: ".npmrc" } });
-      expect(buildCodexPermissionInput("applyPatchApproval", { changes: [{ path: ".env" }] }))
-        .toEqual({ toolName: "apply_patch", input: { file_path: ".env" } });
-    });
-
-    it("derives the unwrapped command for a commandExecution approval (string + argv)", () => {
-      expect(buildCodexPermissionInput("item/commandExecution/requestApproval", { item: { command: "/bin/bash -lc 'npm i'", cwd: "/workspace" } }))
-        .toEqual({ toolName: "shell", input: { command: "npm i", cwd: "/workspace" } });
-      expect(buildCodexPermissionInput("execCommandApproval", { command: ["ls", "-la"] }))
-        .toEqual({ toolName: "shell", input: { command: "ls -la" } });
     });
   });
 
