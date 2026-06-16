@@ -130,6 +130,19 @@ be hostile.
   `SecurityOpt`, `Sysctls`, `UsernsMode`, `CgroupParent`, `Runtime`, and similar escape
   hatches. Bind mounts must resolve under the session's own workspace dir; named volumes
   must belong to the session. Resource limits (memory, CPU, PID) are enforced.
+- **The session worker and everything it spawns run unprivileged.** Each session-worker
+  container boots a tiny root entrypoint that prepares the writable mounts, then drops to
+  an unprivileged `shipit` user (uid/gid 1000) via `gosu` before launching the worker. The
+  agent CLI, terminal shell, `agent.install`, MCP servers, and the headless browser all run
+  as uid 1000 — so a prompt-injected shell command (or an ordinary agent mistake) can't
+  modify system paths, read root-only files, or leave root-owned droppings on the writable
+  mounts. `no-new-privileges` blocks any later setuid re-elevation, the kernel zeroes the
+  worker's capabilities at the privilege drop, and the container's capability add-backs are
+  trimmed to the minimum the boot path needs (`CHOWN`, `SETUID`, `SETGID`, `FOWNER`, `KILL`)
+  — `DAC_OVERRIDE` and `NET_BIND_SERVICE` were dropped once nothing ran as root. This is
+  defense-in-depth that shrinks in-container blast radius; it does **not** replace
+  credential brokering or egress control (the agent's own credentials are still reachable
+  by the uid-1000 agent — see Known limitations). See `docs/150-non-root-session-worker/`.
 - **Orchestrator ↔ container is HTTP-only.** The orchestrator never uses `docker exec`. It
   talks to a Fastify worker inside each container over HTTP, and events stream back over
   SSE. The control channel is a well-defined API surface, not arbitrary command execution.
@@ -232,9 +245,13 @@ for accepting them today, and where they're headed.
   attacker, a pre-planted symlink, and precise timing; the workspace-path scoping and the
   dropped capabilities limit the blast radius. A `nosymfollow` / inode-based check is the
   intended hardening.
-- **Session worker runs as root inside its container.** A non-root worker runtime is
-  planned but deferred — it's a broad change and the container boundary (not in-container
-  UID) is the primary control today.
+- **Container root filesystem is still writable.** The session worker now runs
+  unprivileged (uid 1000 — see "Agent and container containment"), which closes the old
+  "worker runs as root" gap, but the container's *root filesystem* is not yet mounted
+  read-only. A `ReadonlyRootfs` + seccomp pass (SHI-97) is the planned next step; the exact
+  inventory of paths the non-root worker must still write to is already enumerated in
+  `docs/150-non-root-session-worker/` so that work can flip the rootfs without a
+  write-permission scavenger hunt.
 - **The agent's own CLI credentials are present in its container.** The pinned agent's CLI
   needs its OAuth/subscription token to authenticate, so that token is present on disk inside
   the session (in the per-session credential copy described above). A prompt-injected agent
