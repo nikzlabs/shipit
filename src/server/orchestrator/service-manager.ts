@@ -48,21 +48,24 @@ import {
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
-import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
-import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
+import { ComposeCli, type ComposeRunner, type ComposeQuery } from "./compose-cli.js";
 
 // ---------------------------------------------------------------------------
 // Re-exports — preserve the public surface tests / consumers import from
 // here. `SecretsStatusInternalSnapshot` is consumed by ContainerSessionRunner
 // and the test file via this module; the simpler `SecretsStatusSnapshot`
 // type stays exported for external consumers that only need the public
-// shape (no agent values).
+// shape (no agent values). `ComposeRunner`/`ComposeQuery` now live in
+// `compose-cli.ts` (docs/201 P8) but stay re-exported here — the test file
+// and other consumers import them from this module.
 // ---------------------------------------------------------------------------
 
 export type {
   SecretsStatusSnapshot,
   SecretsStatusInternalSnapshot,
 } from "./service-secrets-resolver.js";
+
+export type { ComposeRunner, ComposeQuery } from "./compose-cli.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -93,12 +96,6 @@ export interface ManagedService {
  */
 export const INSTALL_FAILED_GATE_MESSAGE =
   "agent.install failed — dependent service not started";
-
-/** Runs a docker compose command. Resolves on exit 0, rejects otherwise. */
-export type ComposeRunner = (args: string[], cwd: string) => Promise<void>;
-
-/** Runs a docker compose command and returns stdout. */
-export type ComposeQuery = (args: string[], cwd: string) => Promise<string>;
 
 export interface ServiceManagerOptions {
   /** Session ID. */
@@ -238,8 +235,8 @@ export class ServiceManager extends EventEmitter {
   private logBuffers = new Map<string, string>();
   private readonly logStore?: LogStore;
   private _started = false;
-  private readonly composeRunner: ComposeRunner;
-  private readonly composeQuery: ComposeQuery;
+  /** docs/201 P8 — owns `docker compose` command construction + execution. */
+  private readonly compose: ComposeCli;
   private readonly workspaceVolume?: string;
   private readonly workspaceSubpath?: string;
   /** docs/183 Phase 5 — per-session overlay dep-dir volumes (set lazily; see setOverlayDepDirs). */
@@ -315,8 +312,13 @@ export class ServiceManager extends EventEmitter {
     this.sessionId = opts.sessionId;
     this.workspaceDir = opts.workspaceDir;
     this.composeConfig = opts.composeConfig;
-    this.composeRunner = opts.composeRunner ?? defaultComposeRunner;
-    this.composeQuery = opts.composeQuery ?? defaultComposeQuery;
+    this.compose = new ComposeCli({
+      sessionId: opts.sessionId,
+      workspaceDir: opts.workspaceDir,
+      composeFile: opts.composeConfig.file,
+      ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
+      ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
+    });
     this.workspaceVolume = opts.workspaceVolume;
     this.workspaceSubpath = opts.workspaceSubpath;
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
@@ -351,9 +353,9 @@ export class ServiceManager extends EventEmitter {
     this.poller = new ServicePoller({
       sessionId: opts.sessionId,
       workspaceDir: opts.workspaceDir,
-      composeQuery: this.composeQuery,
+      composeQuery: this.compose.query,
       pollIntervalMs: opts.pollIntervalMs ?? 5_000,
-      composeArgs: (...extra) => this.composeArgs(...extra),
+      composeArgs: (...extra) => this.compose.args(...extra),
       isGated: (name) => this.gatedServices.has(name),
       getService: (name) => this.services.get(name),
       setContainerIp: (name, ip) => {
@@ -612,7 +614,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     const tail = Number.isFinite(lines) && lines > 0 ? String(Math.floor(lines)) : "2000";
-    const args = this.composeArgs("logs", "--no-log-prefix", "--tail", tail, name);
+    const args = this.compose.args("logs", "--no-log-prefix", "--tail", tail, name);
 
     return new Promise<string>((resolve) => {
       let settled = false;
@@ -652,7 +654,7 @@ export class ServiceManager extends EventEmitter {
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
     try {
-      await this.killStaleContainers();
+      await this.compose.killStaleContainers();
     } catch {
       // Best-effort cleanup
     }
@@ -745,7 +747,7 @@ export class ServiceManager extends EventEmitter {
       // `stopped` and gated services stay `starting` until install completes.
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
-        await this.composeUp(autoNames);
+        await this.compose.up(autoNames);
       }
       this._started = true;
 
@@ -802,7 +804,7 @@ export class ServiceManager extends EventEmitter {
     this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.composeUpService(name);
+      await this.compose.upService(name);
       // The first manual-service start is the moment the compose network
       // actually gets created (compose materializes the network on `up`,
       // not just when the file is parsed). If this stack is all-manual,
@@ -830,8 +832,8 @@ export class ServiceManager extends EventEmitter {
     this.retry.resetOomBudget(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.composeStop(name);
-      await this.composeUpService(name);
+      await this.compose.stop(name);
+      await this.compose.upService(name);
       // Defensive: if a previous all-manual `start()` skipped the network
       // join (see startService comment), the first restartService after
       // adoption could be the first time the orchestrator gets attached.
@@ -853,7 +855,7 @@ export class ServiceManager extends EventEmitter {
     if (!svc) throw new Error(`Unknown service: ${name}`);
 
     try {
-      await this.composeStop(name);
+      await this.compose.stop(name);
       this.updateServiceStatus(name, "stopped");
     } catch (err) {
       this.updateServiceStatus(name, "error", (err as Error).message);
@@ -886,7 +888,7 @@ export class ServiceManager extends EventEmitter {
     const seeded = this.logStore?.hasChannel(this.sessionId, channel) ?? false;
     const tail = this.logStore && seeded ? "0" : "1000";
 
-    const args = this.composeArgs("logs", "-f", "--tail", tail, "--no-log-prefix", name);
+    const args = this.compose.args("logs", "-f", "--tail", tail, "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
       stdio: ["ignore", "pipe", "pipe"],
@@ -960,7 +962,7 @@ export class ServiceManager extends EventEmitter {
     }
 
     try {
-      await this.composeDown({ removeVolumes: opts.removeVolumes ?? false });
+      await this.compose.down({ removeVolumes: opts.removeVolumes ?? false });
     } catch {
       // Best-effort cleanup
     }
@@ -1045,7 +1047,7 @@ export class ServiceManager extends EventEmitter {
       .filter(s => s.preview === "auto")
       .map(s => s.name);
     try {
-      await this.composeUp(autoNames);
+      await this.compose.up(autoNames);
       await this.poller.pollOnce();
     } catch (err) {
       console.warn(`[compose:${this.sessionId}] refreshSecrets compose up failed:`, (err as Error).message);
@@ -1062,7 +1064,7 @@ export class ServiceManager extends EventEmitter {
     const svc = this.services.get(name);
     if (!svc) return;
     try {
-      await this.composeUpService(name);
+      await this.compose.upService(name);
       // See `startService` — first manual-service start is the moment
       // the network actually exists, so re-attempt the orchestrator
       // network join here too. Idempotent on subsequent retries.
@@ -1150,7 +1152,7 @@ export class ServiceManager extends EventEmitter {
   private async startGatedBatch(names: string[]): Promise<void> {
     if (this._disposed) return;
     try {
-      await this.composeUp(names);
+      await this.compose.up(names);
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();
@@ -1216,7 +1218,7 @@ export class ServiceManager extends EventEmitter {
     for (const name of names) {
       if (this._disposed) return;
       try {
-        await this.composeStop(name);
+        await this.compose.stop(name);
       } catch (err) {
         console.warn(
           `[compose:${this.sessionId}] failed to stop gated service ${name} for re-install:`,
@@ -1271,211 +1273,11 @@ export class ServiceManager extends EventEmitter {
     }
   }
 
-  /** Build common compose CLI args with the user file and override. */
-  private composeArgs(...extra: string[]): string[] {
-    return [
-      "compose",
-      "-f", this.composeConfig.file,
-      "-f", ".shipit/compose.override.yml",
-      "-p", `shipit-${this.sessionId.slice(0, 12)}`,
-      ...extra,
-    ];
-  }
-
-  /**
-   * Run `docker compose up -d --build`, optionally for specific services only.
-   *
-   * `--build` matters for any service that declares a `build:` section (e.g.
-   * the ShipIt-in-ShipIt dogfood `dev` service). Without it, `docker compose
-   * up` only builds when the named image is *missing* — so a changed
-   * `Dockerfile` or build context on a host that already has the cached image
-   * is silently ignored, and the stale image runs forever. `--build` forces
-   * Compose to re-evaluate the build every `up`; Docker's layer cache makes
-   * the no-change case cheap (all cache hits). For services that only declare
-   * `image:` (the common case — most user repos pull a prebuilt image), there
-   * is nothing to build and `--build` is a harmless no-op.
-   */
-  private composeUp(serviceNames?: string[]): Promise<void> {
-    return this.runComposeUpWithConflictRecovery("up", "-d", "--build", "--remove-orphans", ...(serviceNames ?? []));
-  }
-
-  /** Run `docker compose up -d --build` for a specific manual service. */
-  private composeUpService(name: string): Promise<void> {
-    return this.runComposeUpWithConflictRecovery("up", "-d", "--build", name);
-  }
-
-  /**
-   * Run `docker compose up …` and, on a Docker container-name conflict
-   * (a stale container with the predicted name exists but compose doesn't
-   * adopt it — e.g., labels drifted across orchestrator versions, the prior
-   * teardown was interrupted, or another `up` call raced and left a zombie),
-   * force-remove the conflicting container by ID and retry once.
-   *
-   * Why this lives here, not in `killStaleContainers()`: the broad pre-start
-   * label sweep was over-aggressive — it SIGKILLed healthy preview containers
-   * on every config reconcile (see efa1ec150 / docs/127-restart-agent §"Out
-   * of scope"). This handler is surgical: it only removes the *specific*
-   * container Docker named in the conflict error, so working stacks aren't
-   * disturbed. The conflicting container can't be useful anyway — its name
-   * is blocking the create we're about to issue.
-   */
-  private async runComposeUpWithConflictRecovery(...subArgs: string[]): Promise<void> {
-    try {
-      await this.runCompose(...subArgs);
-    } catch (err) {
-      const conflictId = extractConflictContainerId((err as Error).message);
-      if (!conflictId) throw err;
-      console.warn(
-        `[compose:${this.sessionId}] Container-name conflict; removing ${conflictId.slice(0, 12)} and retrying`,
-      );
-      try {
-        await this.composeQuery(["rm", "-f", conflictId], this.workspaceDir);
-      } catch {
-        // Removal failed — surface the original conflict error so the cause
-        // is clear, rather than masking it with the removal failure.
-        throw err;
-      }
-      await this.runCompose(...subArgs);
-    }
-  }
-
-  /** Run `docker compose stop <service>`. */
-  private composeStop(name: string): Promise<void> {
-    return this.runCompose("stop", name);
-  }
-
-  /** Run `docker compose down --remove-orphans`, optionally dropping volumes. */
-  private composeDown(opts: { removeVolumes: boolean }): Promise<void> {
-    const args = ["down", "--remove-orphans"];
-    if (opts.removeVolumes) args.push("--volumes");
-    return this.runCompose(...args);
-  }
-
-  /**
-   * Kill and remove any containers from a previous compose stack for this
-   * session. Uses the `shipit-parent-session` label so no compose files needed.
-   */
-  private async killStaleContainers(): Promise<void> {
-    const stdout = await this.composeQuery(
-      ["ps", "-aq", "--filter", `label=shipit-parent-session=${this.sessionId}`],
-      this.workspaceDir,
-    );
-    let ids = stdout.split("\n").map(s => s.trim()).filter(Boolean);
-    if (ids.length === 0) return;
-    // The Tier B resolver and Tier C SNI proxy (docs/172, SHI-90) share the agent's
-    // netns and are LONG-LIVED sidecars, not stale compose containers — they carry
-    // shipit-parent-session only so destroy-time cleanup reaps them. Exclude them
-    // from this pre-start sweep, or we'd SIGKILL them ~1s after the agent launches
-    // and leave the session with no resolver / no HTTPS. Docker `--filter` has no
-    // label negation, so subtract a query per keep-label and union the results.
-    const keep = new Set<string>();
-    for (const label of [EGRESS_RESOLVER_LABEL, EGRESS_PROXY_LABEL]) {
-      const out = await this.composeQuery(
-        [
-          "ps", "-aq",
-          "--filter", `label=shipit-parent-session=${this.sessionId}`,
-          "--filter", `label=${label}=${this.sessionId}`,
-        ],
-        this.workspaceDir,
-      );
-      for (const id of out.split("\n").map(s => s.trim()).filter(Boolean)) keep.add(id);
-    }
-    ids = ids.filter(id => !keep.has(id));
-    if (ids.length === 0) return;
-    console.log(`[compose:${this.sessionId}] Removing ${ids.length} stale container(s)`);
-    await this.composeQuery(["rm", "-f", ...ids], this.workspaceDir);
-    // Also remove the old network if it exists
-    try {
-      await this.composeQuery(
-        ["network", "rm", `shipit-session-${this.sessionId}`],
-        this.workspaceDir,
-      );
-    } catch {
-      // Network may not exist or may be in use — that's fine
-    }
-  }
-
-  /** Run a docker compose command and resolve/reject based on exit code. */
-  private runCompose(...subArgs: string[]): Promise<void> {
-    const args = this.composeArgs(...subArgs);
-    return this.composeRunner(args, this.workspaceDir);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Default compose runner
-// ---------------------------------------------------------------------------
-
-function defaultComposeRunner(args: string[], cwd: string): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("docker", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stderr = "";
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-      } else {
-        reject(new Error(`docker compose ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
-      }
-    });
-
-    proc.on("error", reject);
-  });
-}
-
-function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const proc = spawn("docker", args, {
-      cwd,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    proc.stdout?.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    proc.stderr?.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    proc.on("close", (code) => {
-      if (code === 0) {
-        resolve(stdout);
-      } else {
-        reject(new Error(`docker ${args[0]} failed (exit ${code}): ${stderr.trim()}`));
-      }
-    });
-
-    proc.on("error", reject);
-  });
 }
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Parse the conflicting container ID out of a Docker compose-up error.
- *
- * The daemon's name-collision message looks like:
- *   `… The container name "/shipit-…-dev-1" is already in use by container
- *    "6f943f7b45f75e4b321b707752b26f460155c64e6625243b312da9a3acdb0631". …`
- *
- * Returns the 64-hex container ID when present, otherwise `undefined` so the
- * caller can rethrow the original error untouched.
- */
-function extractConflictContainerId(message: string): string | undefined {
-  const m = /already in use by container "([0-9a-f]{12,64})"/.exec(message);
-  return m?.[1];
-}
 
 /**
  * Extract the host port from a port mapping string.
