@@ -85,6 +85,16 @@ function surfaceWriteCard(
   outcome: IssueWriteOutcome,
   cardId?: string,
 ): void {
+  // Never push a card into an archived (or vanished) session's transcript. The
+  // outward tracker write the caller already performed is correct regardless of
+  // local session lifecycle — closing an issue on PR merge should happen whether
+  // or not the ShipIt session was archived — but the in-session provenance card
+  // is an "update to the session" the archived-receives-nothing invariant
+  // forbids. (`fromRow` sets `archived` whenever `userArchived` is set; we check
+  // both for belt-and-suspenders parity with the merge-watch guard.)
+  const session = deps.sessionManager.get(sessionId);
+  if (!session || session.archived || session.userArchived) return;
+
   const card: IssueWriteCard = {
     cardId: cardId ?? `issue-write-${randomUUID()}`,
     tracker: trackerId,

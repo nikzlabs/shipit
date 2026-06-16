@@ -13,7 +13,8 @@ import { EventEmitter } from "node:events";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { SessionRunnerRegistry, type SessionRunnerInterface } from "../session-runner.js";
-import { waitForChildIdle } from "./child-sessions.js";
+import { waitForChildIdle, registerMergeWatch } from "./child-sessions.js";
+import { ServiceError } from "./types.js";
 
 /**
  * Minimal runner stub: only the members `waitForChildIdle` / `buildChildView`
@@ -156,5 +157,51 @@ describe("waitForChildIdle (docs/182)", () => {
     stub.emit("idle");
     const result = await waitPromise;
     expect(result.outcome).toBe("idle");
+  });
+});
+
+describe("registerMergeWatch — arm-time archived guards (docs/196)", () => {
+  let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
+  const PARENT = "parent_1";
+  const CHILD = "child_1";
+
+  beforeEach(() => {
+    dbManager = new DatabaseManager(":memory:");
+    sessionManager = new SessionManager(dbManager);
+    sessionManager.track(PARENT, "Parent", "/tmp/parent");
+    sessionManager.track(CHILD, "Child", "/tmp/child");
+    sessionManager.setParentSession(CHILD, PARENT);
+  });
+
+  it("arms a watch when both parent and child are active", () => {
+    const res = registerMergeWatch(sessionManager, PARENT, CHILD);
+    expect(res).toMatchObject({ childId: CHILD, state: "armed", alreadyArmed: false });
+    expect(sessionManager.getMergeWatch(CHILD)?.state).toBe("armed");
+    expect(sessionManager.getMergeWatch(CHILD)?.parentSessionId).toBe(PARENT);
+  });
+
+  it("refuses to arm a watch whose PARENT is archived (would only ever be dropped on fire)", () => {
+    sessionManager.archive(PARENT);
+    expect(() => registerMergeWatch(sessionManager, PARENT, CHILD)).toThrow(/Parent session is archived/);
+    // No watch was persisted — an archived parent receives nothing, so there is
+    // nothing to deliver.
+    expect(sessionManager.getMergeWatch(CHILD)).toBeUndefined();
+  });
+
+  it("propagates the 400 statusCode for an archived parent", () => {
+    sessionManager.archive(PARENT);
+    try {
+      registerMergeWatch(sessionManager, PARENT, CHILD);
+      throw new Error("expected registerMergeWatch to throw");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ServiceError);
+      expect((err as ServiceError).statusCode).toBe(400);
+    }
+  });
+
+  it("refuses to arm a watch on an archived CHILD (existing guard, still holds)", () => {
+    sessionManager.archive(CHILD);
+    expect(() => registerMergeWatch(sessionManager, PARENT, CHILD)).toThrow(/Child session is archived/);
   });
 });

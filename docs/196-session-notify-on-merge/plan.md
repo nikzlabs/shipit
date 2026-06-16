@@ -123,12 +123,40 @@ of duplicate "Child PR merged" wake-turns on each restart/reconnect. Carrying
 - **Child PR not opened yet** → arm and wait; fires once it appears and resolves.
 - **Child PR closed without merging** → distinct `closed-unmerged` wake-turn +
   card; the parent is told the work did **not** ship.
-- **Parent archived before the merge** → the watch is dropped silently.
+- **Parent archived before the merge** → the watch is dropped silently at
+  delivery (`handleChildPrTerminal` bails on `parent.archived || userArchived`).
+  Now also refused at **arm time**: `registerMergeWatch` rejects (400) when the
+  parent is archived, so a watch that could only ever be dropped is never even
+  persisted. Both ends enforce the same invariant — an archived parent receives
+  nothing.
 - **PR already resolved when the watch is armed** (the poller won't re-observe an
   already-promoted session) → the register route fires a one-shot
   `checkAndFireNow` off the response path.
 - **Only the parent that spawned the child may watch it** — reuses the
   `assertChildOfParent` cross-tenancy guard (404, never "wrong parent").
+
+### Related hardening — archived sessions receive nothing
+
+Notify-on-merge is the headline "updates from a child" channel, but the same
+invariant — **an archived session is frozen and receives no updates from
+children or anything else** — is enforced on the sibling out-of-turn delivery
+paths:
+
+- **Issue-lifecycle merge cards** (`issue-lifecycle.ts` `surfaceWriteCard`) skip
+  the chat-history append + live emit for an archived session. The *outward*
+  tracker write (closing the linked issue on PR merge) still happens — that's
+  correct regardless of local session lifecycle — but no provenance card is
+  pushed into an archived transcript.
+- **WS activation** (`route-registry.ts` `activateSession`) refuses to
+  `getOrCreate` a runner or re-track the PR poller for an archived session, so a
+  stray connection to an archived session id can't boot a container or re-arm
+  polling. The restore path (`unarchiveSession`) flips `archived → false` before
+  the client activates, so the legitimate flow is untouched; history still loads
+  read-only over HTTP.
+
+Most other emit paths are runner-gated (an archived session has no runner) and
+the PR poller only scans Active (`list()`) sessions, so the invariant holds by
+construction elsewhere.
 
 ## Flow
 
@@ -183,6 +211,11 @@ PR poller detects terminal PR state (verifyMissingPr)
   watch is never re-fired across repeated restarts (the duplicate-notification
   regression); a busy watch lost to a restart *before* it drains is re-delivered
   by reconcile without a second card.
+- `services/child-sessions-wait.test.ts` — `registerMergeWatch` arm-time guards:
+  arms when active, rejects (400) an archived parent (no watch persisted) and an
+  archived child.
+- `issue-lifecycle.test.ts` — an archived session still gets the outward tracker
+  write on merge but **no** provenance card appended or emitted.
 - `pr-status-poller.test.ts` — `onPrTerminalState` fires on merged AND closed.
 - `integration_tests/session-notify-on-merge.test.ts` — register (happy /
   cross-tenancy 404) → merge → persisted parent card + dispatched wake-turn →

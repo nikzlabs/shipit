@@ -735,6 +735,16 @@ export function registerMergeWatch(
   if (child.archived) {
     throw new ServiceError(400, "Child session is archived");
   }
+  // Symmetric with the delivery-time guard in `merge-watch.ts`
+  // (`handleChildPrTerminal`): an archived parent receives nothing, so arming a
+  // watch that points at it is pointless — the watch would only ever be dropped
+  // on fire. Refuse at arm time so the invariant is explicit at both ends. (A
+  // parent can't normally be archived while running the turn that arms this —
+  // archive force-disposes its runner — so this is defense-in-depth.)
+  const parent = sessionManager.get(parentSessionId);
+  if (!parent || parent.archived || parent.userArchived) {
+    throw new ServiceError(400, "Parent session is archived");
+  }
   const existing = child.mergeWatch;
   const liveForThisParent =
     existing?.parentSessionId === parentSessionId
