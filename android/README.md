@@ -85,8 +85,9 @@ Optional: upload the same APK as an AAB to Play Console for the regular
 - **Toolbar overflow**: "Open settings" re-launches the settings screen so the
   URL can be changed. "Reload" reloads the current page.
 - **External links**: any URL whose host differs from the configured ShipIt
-  host opens in the system browser (so e.g. "View on GitHub" leaves the app
-  cleanly, and OAuth providers don't try to render inside the WebView).
+  host opens in the system browser, except Cloudflare Access authentication.
+  Cloudflare Access stays inside the WebView because Android does not share
+  Chrome/system-browser cookies back into the WebView cookie jar.
 - **File chooser**: chat attachments work via `WebChromeClient.onShowFileChooser`.
 - **Back button**: WebView history; falls through to default if at the root.
 
@@ -108,9 +109,10 @@ Two things to get right:
 
 ## Known limitations / v1.1 ideas
 
-- No OAuth deep-link interception: when the OAuth flow returns, the user
-  back-gestures into the app manually. Adding a custom-tabs intercept would
-  smooth this out.
+- No OAuth deep-link interception: when a browser-based OAuth flow returns, the
+  user back-gestures into the app manually. Cloudflare Access is handled
+  separately by keeping the auth chain inside the WebView so its cookie reaches
+  the app.
 - Launcher icon mirrors the web favicon: a red gradient background
   (`ic_launcher_background.xml`) with a white rocket foreground
   (`ic_launcher_foreground.xml`), sharing the favicon's path geometry and

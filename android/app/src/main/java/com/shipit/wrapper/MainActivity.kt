@@ -25,11 +25,11 @@ import com.shipit.wrapper.databinding.ActivityMainBinding
  * Full-bleed [WebView] host. Launches [SettingsActivity] on first run when no
  * URL is configured, otherwise loads the saved URL.
  *
- * Navigation policy: URLs on the configured host load inside the WebView;
- * everything else is handed to the system browser via [Intent.ACTION_VIEW].
- * This keeps the user inside the app for ShipIt itself but lets external
- * links (e.g., "View on GitHub") open in real Chrome where they can sign in
- * properly and won't fight WebView's cookie isolation.
+ * Navigation policy: URLs on the configured host load inside the WebView.
+ * Cloudflare Access authentication also stays in the WebView because its
+ * `CF_Authorization` cookie must be written to the WebView cookie jar; Android
+ * does not share Chrome/system-browser cookies back into WebView. Other
+ * external links are handed to the system browser via [Intent.ACTION_VIEW].
  */
 class MainActivity : AppCompatActivity() {
     private lateinit var binding: ActivityMainBinding
@@ -37,6 +37,7 @@ class MainActivity : AppCompatActivity() {
 
     private var configuredHost: String? = null
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+    private var inCloudflareAccessFlow = false
 
     // Voice dictation (docs/144): a WebView getUserMedia() call surfaces as an
     // onPermissionRequest. We can only grant it once the OS-level RECORD_AUDIO
@@ -109,19 +110,35 @@ class MainActivity : AppCompatActivity() {
                 val target = request.url
                 val targetHost = target.host?.lowercase()
                 val ourHost = configuredHost
+                if (ourHost != null && isCloudflareAccessNavigation(target, targetHost, ourHost)) {
+                    inCloudflareAccessFlow = true
+                    return false
+                }
                 return if (ourHost != null && targetHost == ourHost) {
+                    if (!isCloudflareAccessCallback(target)) {
+                        inCloudflareAccessFlow = false
+                    }
                     // Same host as ShipIt — let the WebView handle it.
                     false
                 } else {
+                    if (inCloudflareAccessFlow && isHttpNavigation(target)) {
+                        // Access policies may hand off to an IdP before
+                        // returning to the Cloudflare callback on our host.
+                        // Keep that chain in WebView so the final Access
+                        // cookie lands where ShipIt will read it.
+                        return false
+                    }
                     // External URL — punt to the system browser. Keeps the
-                    // WebView focused on the ShipIt app shell and dodges
-                    // OAuth-providers-block-WebView issues for any future flow
-                    // that does navigate outside ShipIt.
+                    // WebView focused on the ShipIt app shell.
                     runCatching {
                         startActivity(Intent(Intent.ACTION_VIEW, target))
                     }
                     true
                 }
+            }
+
+            override fun onPageFinished(view: WebView, url: String) {
+                CookieManager.getInstance().flush()
             }
         }
 
@@ -188,6 +205,25 @@ class MainActivity : AppCompatActivity() {
         }
         configuredHost = Uri.parse(url).host?.lowercase()
         binding.webView.loadUrl(url)
+    }
+
+    private fun isCloudflareAccessNavigation(uri: Uri, host: String?, configuredHost: String): Boolean {
+        return isCloudflareAccessHost(host) ||
+            (host == configuredHost && isCloudflareAccessCallback(uri))
+    }
+
+    private fun isCloudflareAccessHost(host: String?): Boolean {
+        if (host == null) return false
+        return host == "cloudflareaccess.com" || host.endsWith(".cloudflareaccess.com")
+    }
+
+    private fun isCloudflareAccessCallback(uri: Uri): Boolean {
+        return uri.path?.startsWith("/cdn-cgi/access/") == true
+    }
+
+    private fun isHttpNavigation(uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase()
+        return scheme == "http" || scheme == "https"
     }
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {

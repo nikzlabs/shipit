@@ -25,7 +25,7 @@ TWAs are Chrome's "verified PWA" mode: full-screen, real Chrome under the hood, 
 - Adding more origins means adding more entries to the APK's `twa-manifest.json` *and* hosting `assetlinks.json` on each — neither of which the end user can do.
 - Therefore: TWA is appropriate for a single-instance deploy (one organization, one domain), but not for "any user installs the app and points it at their own ShipIt."
 
-Pivoting to a plain `WebView` activity solves the multi-host problem at the cost of two new concerns: (a) OAuth providers refuse to render inside `WebView`, so OAuth must be punted to **Custom Tabs**, and (b) the developer is responsible for things Chrome handles automatically (cookies, file picker, back button).
+Pivoting to a plain `WebView` activity solves the multi-host problem at the cost of two new concerns: (a) some OAuth providers refuse to render inside `WebView`, so ordinary external OAuth should be punted to the browser, and (b) the developer is responsible for things Chrome handles automatically (cookies, file picker, back button). Cloudflare Access is the important exception: its `CF_Authorization` cookie must land in the WebView cookie jar, so the Access redirect chain has to stay in the WebView rather than in Chrome.
 
 ## Design
 
@@ -53,6 +53,8 @@ WebView loads chat → user clicks "Login with GitHub"
 ```
 
 The simplest version doesn't even need the deep-link intercept: GitHub/Anthropic OAuth callbacks land back on the user's ShipIt origin, ShipIt sets its session cookie, the user manually returns to the app via the system back gesture, and the WebView (which kept its state) reflects the logged-in session on next request. Deep-link interception is a polish improvement, not a blocker for v1.
+
+Cloudflare Access behaves differently from GitHub/Anthropic sign-in. Android WebView cookies are isolated from the system browser, so completing Access in Chrome leaves the WebView unauthenticated. `MainActivity.shouldOverrideUrlLoading` therefore keeps `*.cloudflareaccess.com`, `/cdn-cgi/access/*`, and the in-progress HTTP(S) auth chain inside the WebView until it returns to the configured ShipIt host. Normal off-site links still open in the browser.
 
 ### Settings persistence
 
@@ -141,7 +143,7 @@ Last turn added `src/client/public/.well-known/assetlinks.json` and an explicit 
 - **File chooser for chat attachments.** Needs `WebChromeClient.onShowFileChooser` plumbed to a `registerForActivityResult(ActivityResultContracts.GetMultipleContents())`. Standard pattern, ~30 lines.
 - **Keyboard pushing the chat input.** ShipIt's input is bottom-anchored; soft keyboard behavior depends on `windowSoftInputMode`. Start with `adjustResize` and iterate from real-device testing.
 - **CSRF / cookie scope.** ShipIt uses cookies on the same origin as the WebView is loading, so first-party. Should be fine. Third-party cookies needed only if OAuth callback flows through a third-party origin (it doesn't — the OAuth provider redirects to the user's own ShipIt host).
-- **OAuth providers blocking WebView.** The whole point of punting to Custom Tabs. As long as we never load `accounts.google.com` / `github.com/login` *inside* the WebView, providers stay happy. The `shouldOverrideUrlLoading` check is the enforcement point.
+- **OAuth providers blocking WebView.** Ordinary OAuth should still leave the WebView. Cloudflare Access is cookie-bound to the app's WebView store, so it intentionally stays inside the WebView; if an Access policy delegates to an IdP that blocks WebView, the product needs a deeper handoff than a plain browser launch because browser cookies do not propagate back.
 - **Signing key custody.** The release keystore lives in repo secrets. Lose it → can't ship updates that the user's existing install will accept. Document the backup procedure in `android/README.md`.
 
 ## Out of scope (for this doc)
