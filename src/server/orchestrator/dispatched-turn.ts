@@ -165,20 +165,40 @@ export async function runDispatchedTurn(
   let noResultRetries = 0;
 
   const runOnce = async (attempt: number): Promise<void> => {
-    // docs/140 + docs/163 — when this dispatched turn streams AND a resident
-    // streaming process from a previous turn is still alive, REUSE it (carry the
-    // message in via `sendUserMessage`) exactly as the WS path does, rather than
-    // spawning a fresh agent. Spawning fresh while the worker still holds the old
-    // streaming process would 409 the `/agent/start` and trigger a kill+restart
-    // (SIGTERM 143) — the respawn-noise bug docs/140 fixed for the WS path. Only
-    // the FIRST attempt can reuse; a no-result retry always spawns fresh (the
-    // resident ref was cleared by the `done` handler when the process exited
-    // without a result). A non-streaming or system turn never reuses — `resident`
-    // stays null, so `createAgent` spawns fresh exactly as before.
+    // docs/140 + docs/163 — when a resident streaming process from a previous
+    // turn is still alive, REUSE it (carry the message in via `sendUserMessage`)
+    // exactly as the WS path does, rather than spawning a fresh agent. Spawning
+    // fresh while the worker still holds the old streaming process would 409 the
+    // `/agent/start` and trigger a kill+restart (SIGTERM 143) — the respawn-noise
+    // bug docs/140 fixed for the WS path.
+    //
+    // docs/146 follow-up (prod dispatched-turn race): the reuse decision must
+    // NOT be gated on THIS turn's recomputed `useStreaming`. When a streaming
+    // process is resident (`isStreamingActive`) but this dispatch happens to
+    // compute `useStreaming === false` (live-steering toggled off, or
+    // `steerInputs` momentarily reporting not-capable), the old code spawned a
+    // fresh one-shot `claude -p <prompt>` via `createAgent`. That fresh proxy
+    // DISPLACES the live streaming proxy in the runner's single `_agent` slot
+    // and orphans it; when the one-shot later exits with no result it nulls the
+    // slot, and the still-running streaming process's assistant/tool_result/
+    // result events are then sse-dropped `(no _agent)` — the whole turn vanishes
+    // from the UI. A live streaming process is fed via `sendUserMessage`, never
+    // re-spawned. So reuse whenever one is resident, independent of
+    // `useStreaming`. System turns (rebase / CI-fix) keep their fresh-spawn /
+    // one-shot semantics — they are never steered and must not adopt the
+    // resident process. Only the FIRST attempt can reuse; a no-result retry
+    // always spawns fresh (the resident ref was cleared by the `done` handler
+    // when the process exited without a result).
     const resident =
-      useStreaming && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
+      !opts.systemTurn && attempt === 0 && runner.isStreamingActive ? runner.getAgent() : null;
     const reuse = resident !== null;
     const agent = resident ?? createAgent(agentId);
+    // A reused process IS the resident streaming process, so this turn streams
+    // (and the post-turn handler must key on streaming) even if `useStreaming`
+    // was recomputed false for this dispatch. Otherwise `executeAgentTurn` would
+    // set `isStreamingActive = false` and route the post-turn flow through the
+    // non-streaming branch, clearing the resident flag mid-turn.
+    const turnStreams = useStreaming || reuse;
     // Drop the previous turn's per-turn listeners off a reused process before the
     // executor wires its own, else they fire N times after N turns (mirrors the
     // WS path's `existingAgent.removeAllListeners()`).
@@ -193,7 +213,9 @@ export async function runDispatchedTurn(
       // Only set the key when streaming so a non-steerable dispatch keeps the
       // exact run-params shape it had before (turn-executor leaves `useStreaming`
       // out of the run params when this is undefined — see its spawn branch).
-      ...(useStreaming ? { useStreaming: true } : {}),
+      // `turnStreams` (not `useStreaming`) so a turn that reuses a resident
+      // streaming process is treated as streaming end-to-end.
+      ...(turnStreams ? { useStreaming: true } : {}),
       // Carry the message into the resident streaming process via
       // `sendUserMessage` instead of a fresh `/agent/start` (turn-executor's
       // reuse branch).

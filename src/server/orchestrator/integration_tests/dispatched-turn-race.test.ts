@@ -55,6 +55,7 @@ describe("Integration: dispatched turn vs WS turn race", () => {
   let allClaudes: FakeClaudeProcess[] = [];
   let dbManager: DatabaseManager;
   let stubAuth: StubAuthManager;
+  let credentialStore: ReturnType<typeof createTestCredentialStore>;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -65,9 +66,10 @@ describe("Integration: dispatched turn vs WS turn race", () => {
 
     sessionManager = new SessionManager(dbManager);
     chatHistoryManager = new ChatHistoryManager(dbManager);
+    credentialStore = createTestCredentialStore(tmpDir);
 
     app = await buildApp({
-      credentialStore: createTestCredentialStore(tmpDir),
+      credentialStore,
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       chatHistoryManager,
@@ -284,4 +286,58 @@ describe("Integration: dispatched turn vs WS turn race", () => {
 
     client.close();
   });
+
+  it("a dispatched turn reuses a resident streaming agent instead of spawning a competing one-shot (docs/146 prod race)", async () => {
+    // Root cause of the prod sse-drop flood: a spawned child's first turn opened
+    // a resident streaming process. A follow-up dispatch then recomputed
+    // `useStreaming === false` (live steering toggled off) and spawned a FRESH
+    // one-shot `claude -p <prompt>` that displaced the live streaming proxy in
+    // the runner's single `_agent` slot. When that one-shot exited with no
+    // result it nulled the slot, and the still-running streaming process's
+    // events were sse-dropped `(no _agent)`. The fix reuses the resident
+    // streaming process via sendUserMessage regardless of the recomputed
+    // `useStreaming`, so no second process is ever spawned to compete for — and
+    // then strand — the slot.
+    credentialStore.setLiveSteering(true);
+
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Streaming turn 1 — opens the resident process.
+    client.send({ type: "send_message", text: "first turn" });
+    const streamingAgent = await waitForClaude(() => lastClaude);
+    streamingAgent.initSession("race-resident-session");
+    expect((streamingAgent as any).lastUseStreaming).toBe(true);
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    await waitUntil(() => runner.running && runner.isStreamingActive && runner.getAgent());
+
+    // End turn 1 with a result-only event (no done): the streaming process stays
+    // resident and idle (running=false, isStreamingActive=true).
+    streamingAgent.emit("event", { type: "result", subtype: "success", session_id: "race-resident-session" });
+    await waitUntil(() => !runner.running && runner.isStreamingActive && runner.getAgent());
+
+    // Live steering OFF → the next dispatch recomputes useStreaming=false. Old
+    // code would spawn a competing one-shot here.
+    credentialStore.setLiveSteering(false);
+    runner.dispatch({ text: "second instruction" });
+
+    // The follow-up is delivered into the resident process via sendUserMessage
+    // (the fake records it under stdinData), and NO second agent is spawned.
+    await waitUntil(() => streamingAgent.stdinData.includes("second instruction"));
+    expect(allClaudes.length).toBe(1);
+    expect(lastClaude).toBe(streamingAgent);
+    expect(runner.getAgent()).toBe(streamingAgent);
+
+    client.close();
+  });
 });
+
+async function waitUntil(fn: () => boolean, timeoutMs = 2000): Promise<void> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    if (fn()) return;
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  throw new Error("waitUntil timed out");
+}

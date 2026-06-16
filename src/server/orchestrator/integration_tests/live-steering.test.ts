@@ -918,6 +918,80 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("reuses a RESIDENT streaming process for a follow-up dispatch even when useStreaming recomputes false — never spawns a competing one-shot (docs/146 prod race)", async () => {
+    // Prod dispatched-turn race: a child session's first turn opened a streaming
+    // process (resident across turns). A follow-up dispatch then recomputed
+    // `useStreaming === false` (live-steering toggled off, or steerInputs
+    // momentarily not-capable) and the old code spawned a FRESH one-shot
+    // `claude -p <prompt>` via createAgent. That fresh agent DISPLACED the live
+    // streaming proxy in the runner's single `_agent` slot; when it later exited
+    // with no result it nulled the slot, and the still-running streaming
+    // process's events were sse-dropped `(no _agent)` — the whole turn vanished.
+    //
+    // The fix: a live resident streaming process is ALWAYS reused via
+    // sendUserMessage, independent of the per-turn `useStreaming` recompute. No
+    // second process is ever spawned to compete for the slot.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    // Streaming turn 1 — opens the resident process.
+    client.send({ type: "send_message", text: "First message" });
+    const claude1 = await waitForClaude(() => lastClaude);
+    claude1.initSession("resident-reuse-session");
+    expect(claude1.lastUseStreaming).toBe(true);
+
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (runner.running && runner.isStreamingActive && runner.getAgent()) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("turn 1 never became running+streaming")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // End turn 1 via a result-only event (NO done) so the streaming process
+    // stays resident: running flips false, isStreamingActive stays true.
+    claude1.emit("event", { type: "result", subtype: "success", session_id: "resident-reuse-session" });
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (!runner.running && runner.isStreamingActive && runner.getAgent()) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("turn 1 never settled to resident-idle")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+
+    // Toggle live steering OFF so the next dispatch recomputes useStreaming=false
+    // — the exact precondition that made the old code spawn a one-shot.
+    credentialStore.setLiveSteering(false);
+
+    // Dispatch a fresh turn (e.g. `shipit session message`). It must REUSE the
+    // resident process via sendUserMessage, NOT spawn a second FakeClaudeProcess.
+    runner.dispatch({ text: "Second turn instruction" });
+
+    // Give the dispatch path time to run. The reused process records the prompt
+    // under stdinData (sendUserMessage); no new agent is created.
+    await new Promise<void>((resolve, reject) => {
+      const start = Date.now();
+      const check = (): void => {
+        if (claude1.stdinData.includes("Second turn instruction")) { resolve(); return; }
+        if (Date.now() - start > 2000) { reject(new Error("follow-up was not delivered via sendUserMessage")); return; }
+        setTimeout(check, 10);
+      };
+      check();
+    });
+    // The resident process IS still the active agent — no competing one-shot
+    // displaced it.
+    expect(lastClaude).toBe(claude1);
+    expect(runner.getAgent()).toBe(claude1);
+    expect(runner.queueLength).toBe(0);
+
+    client.close();
+  });
+
   it("delivers a dispatch-queued message at turn end even when the streaming process exits WITHOUT an agent_result (never-delivered fix, docs/162)", async () => {
     // Regression: in streaming mode the post-turn queue drain hung off
     // `agent_result` only — the `done` handler returned early without draining.

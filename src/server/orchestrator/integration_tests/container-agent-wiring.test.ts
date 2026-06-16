@@ -822,6 +822,94 @@ describe("Integration: Container Agent Wiring (createAgent + proxy)", () => {
     runner.dispose({ force: true });
   });
 
+  // docs/146 follow-up (prod sse-drop): a stale / one-shot spawn displaced the
+  // resident streaming proxy in the single `_agent` slot and then exited,
+  // nulling `_agent` while the live streaming process kept emitting. With the
+  // slot null, every assistant/tool_result/result event of the live turn was
+  // sse-dropped `(no _agent)` and the whole turn vanished from the UI. The relay
+  // now tracks the live streaming proxy separately and RE-ADOPTS it when an
+  // agent_event arrives with `_agent === null` while streaming is still active,
+  // so a stale spawn's exit can't strand a live streaming turn.
+  it("re-adopts the live streaming proxy when a stale spawn's exit nulled the slot — events are NOT dropped", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-stream-readopt",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    // 1. The resident STREAMING turn. proxyStream occupies the slot and the
+    //    worker runs agent1 for it. Marking the runner streaming-active makes the
+    //    runner hold a stable reference to the live streaming proxy.
+    const proxyStream = runner.createAgent("claude");
+    proxyStream.run({ prompt: "streaming work", cwd: "/workspace", useStreaming: true });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent1.run()");
+    const agent1 = lastAgent;
+    runner.isStreamingActive = true;
+
+    const streamEvents: string[] = [];
+    proxyStream.on("event", (e: { type?: string }) => { if (e.type) streamEvents.push(e.type); });
+
+    // 2. A stale / one-shot spawn exits and its identity-guarded done handler
+    //    nulls the slot — exactly what strands events in prod. The live streaming
+    //    process (agent1) is still running on the worker, and the runner is still
+    //    streaming-active (the one-shot never owned the streaming turn).
+    runner.setAgent(null);
+    expect(runner.getAgent()).toBeNull();
+
+    // 3. The live streaming process keeps emitting. Old code dropped every event
+    //    `(no _agent)`; the re-adopt guard routes them to the tracked streaming
+    //    proxy instead.
+    agent1.emit("event", { type: "agent_init", agentId: "claude", sessionId: "s-stream", model: "claude-sonnet-4-6", tools: ["Read"] });
+    agent1.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "Working." }] });
+    agent1.emit("event", { type: "agent_result", status: "success", sessionId: "s-stream" });
+    await waitFor(() => streamEvents.includes("agent_result"), 3000, "streaming events re-adopted");
+    expect(streamEvents).toContain("agent_init");
+    expect(streamEvents).toContain("agent_assistant");
+    // The slot was re-adopted, so it points back at the live streaming proxy.
+    expect(runner.getAgent()).toBe(proxyStream);
+
+    runner.dispose({ force: true });
+  });
+
+  // The flip side: a GENUINELY-orphaned stream (turn finalized — no live
+  // streaming turn) must still be dropped, not resurrected. `isStreamingActive`
+  // is the discriminator: the streaming `done` clears it, so re-adoption only
+  // fires while a streaming turn is actually live.
+  it("still drops events from a genuinely-orphaned stream when no streaming turn is live", async () => {
+    const runner = new ContainerSessionRunner({
+      sessionId: "test-orphan-drop",
+      sessionDir: "/tmp/test",
+      defaultAgentId: "claude",
+      workerUrl,
+    });
+    runner.attachViewer();
+    await new Promise((r) => setTimeout(r, 200));
+
+    const proxy = runner.createAgent("claude");
+    proxy.run({ prompt: "one-shot work", cwd: "/workspace" });
+    await waitFor(() => lastAgent?.runCalled, 3000, "agent.run()");
+    const agent1 = lastAgent;
+
+    const events: string[] = [];
+    proxy.on("event", (e: { type?: string }) => { if (e.type) events.push(e.type); });
+
+    // Turn finalized: streaming inactive AND slot nulled (the normal end state).
+    runner.isStreamingActive = false;
+    runner.setAgent(null);
+
+    // A late event from the now-orphaned worker process must be dropped — there
+    // is no live streaming turn to re-adopt into.
+    agent1.emit("event", { type: "agent_assistant", content: [{ type: "text", text: "stale" }] });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(events).toHaveLength(0);
+    expect(runner.getAgent()).toBeNull();
+
+    runner.dispose({ force: true });
+  });
+
   // ---- tryPushAgentSecrets (docs/088 compose-less agent-env path) ----
 
   describe("tryPushAgentSecrets()", () => {

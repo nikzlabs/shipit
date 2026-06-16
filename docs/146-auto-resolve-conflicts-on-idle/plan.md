@@ -594,6 +594,38 @@ against a proxy without one falls back to the existing object-identity guards
 and the `verifyRunningState` safety net, preserving the "missed `agent_done`"
 SSE-drop resilience.
 
+### Follow-up — the dispatched-turn double-spawn variant (prod, spawned child)
+
+A second prod report (session `897d8064`, ~37s of dropped events at one turn
+boundary) surfaced the *inverse* slot-reuse failure that the `runToken` guard
+above does NOT catch. There the stale exit carried a *matching* token (it was
+the current slot occupant), so `isStaleSpawnEvent()` correctly let it through —
+yet it still stranded a live turn:
+
+1. A spawned child session opened a long-lived **streaming** process (`claude
+   --print --input-format stream-json … --replay-user-messages`) doing the real
+   work, fed via `sendUserMessage`.
+2. A **second, one-shot** agent (`claude -p <prompt>`) was spawned alongside it.
+   `runDispatchedTurn` gated its resident-reuse decision on the per-turn
+   recomputed `useStreaming`; when a dispatch recomputed `useStreaming === false`
+   (live-steering toggled off, or `steerInputs` momentarily not-capable) while a
+   streaming process was resident, it spawned a FRESH one-shot via `createAgent`,
+   which displaced the live streaming proxy in the single `_agent` slot.
+3. The one-shot produced non-JSON, exited with no result, and its
+   matching-token `done` nulled `_agent`.
+4. The still-running streaming process's `agent_assistant` / `agent_tool_result`
+   / `agent_result` events then hit the `(no _agent)` drop branch — the whole
+   turn vanished from the UI.
+
+Two-part fix (both orchestrator-side):
+
+| File | Change |
+|---|---|
+| `src/server/orchestrator/dispatched-turn.ts` | Root cause: reuse a resident streaming process for any **non-system** dispatched turn whenever `runner.isStreamingActive` is set — *independent* of the recomputed `useStreaming` — so a one-shot is never spawned to displace (and then strand) the live streaming proxy. A reused turn is treated as streaming end-to-end (`turnStreams = useStreaming \|\| reuse`). System turns keep their fresh-spawn / one-shot semantics. |
+| `src/server/orchestrator/container-session-runner.ts` | Defense in depth: track the live streaming proxy (`_streamingProxy`, maintained by the `isStreamingActive` setter, cleared on `verifyRunningState`/`dispose`). The SSE relay re-adopts it when an `agent_event` arrives with `_agent === null` while `isStreamingActive` is true — so a stale spawn nulling the slot can no longer drop a live streaming turn's events. A genuinely-orphaned stream has `isStreamingActive === false` (the streaming `done` clears it), so the drop is still correct there. |
+| `src/server/orchestrator/integration_tests/{dispatched-turn-race,live-steering}.test.ts` | A dispatched turn reuses a resident streaming agent (via `sendUserMessage`) instead of spawning a competing one-shot when `useStreaming` recomputes false. |
+| `src/server/orchestrator/integration_tests/container-agent-wiring.test.ts` | A stale spawn's exit nulling the slot while a streaming turn is live re-adopts the streaming proxy (events delivered, not dropped); a genuinely-orphaned stream is still dropped. |
+
 ## Tests
 
 ### Unit tests (`auto-conflict-resolve-manager.test.ts`)
