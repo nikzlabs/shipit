@@ -109,6 +109,14 @@ construction.
 - `src/client/components/ChangedDocsStrip.tsx` (new) — chip list, opens `openPreview`.
 - localStorage helper for per-session collapse state (`utils/`).
 
+## Follow-up
+
+[docs/210](../210-pr-card-changed-docs-refresh/plan.md) fixes a staleness bug in
+this design: `notableFiles` was computed only at PR creation and then frozen
+(the poller preserves it), so docs changed in later turns never reached the
+strip. It also switches the list from a two-dot `base..HEAD` diff to the
+merge-base diff so it lines up with the card's diff stat and the Docs panel.
+
 ## Implementation notes (shipped)
 
 Two small divergences from the data-flow sketch above, both keeping the strip a

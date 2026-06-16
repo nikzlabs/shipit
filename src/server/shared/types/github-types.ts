@@ -466,3 +466,27 @@ export interface WsPrLifecycleUpdate {
     baseBranch: string;
   };
 }
+
+/**
+ * docs/210 — a notableFiles-only patch for the PR card's changed-docs strip.
+ *
+ * The strip's list (`WsPrLifecycleUpdate.notableFiles`) is computed only at the
+ * "ready"/"open" lifecycle emits and is then frozen: once a PR exists the
+ * post-turn flow short-circuits (the poller drives the card) and the poller
+ * preserves the last-known list rather than recomputing it. That left the strip
+ * stuck at the PR-creation snapshot — docs changed in later turns showed in the
+ * Docs panel but never on the card.
+ *
+ * This message is emitted after every post-turn commit on a session that
+ * already has a PR. It re-derives the list from the current branch and patches
+ * `notableFiles` in place on the live card WITHOUT replacing the poller-owned
+ * fields (phase, pr, checks, …), so the strip tracks the branch as it evolves.
+ */
+export interface WsPrNotableFiles {
+  type: "pr_notable_files";
+  sessionId: string;
+  /** Stable card ID — matches the live PR card so the patch lands in place. */
+  cardId: string;
+  /** The current, fully-recomputed notable-file list (may be empty). */
+  notableFiles: NotableFileChange[];
+}

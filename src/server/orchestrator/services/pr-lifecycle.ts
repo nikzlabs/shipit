@@ -69,7 +69,29 @@ export async function emitPrLifecycleAfterCommit(args: {
 
   try {
     const prStatus = deps.prStatusPoller.getStatus(sessionId);
-    if (prStatus) return; // poller already drives updates via SSE
+    if (prStatus) {
+      // The poller drives phase/status/CI for an existing PR over SSE, so the
+      // lifecycle-update path stops here. But the changed-docs strip's
+      // notableFiles is git-derived locally and the poller never recomputes it
+      // (it preserves the last-known list) — without this refresh the strip
+      // stays frozen at the PR-creation snapshot and misses docs changed in
+      // later turns (docs/210). Re-derive it from the current branch and emit a
+      // notableFiles-only patch that merges into the live card without touching
+      // the poller-owned fields.
+      try {
+        const git = deps.createGitManager(sessionDir);
+        const notableFiles = await notableFilesForBranch(git, sessionDir, prStatus.baseBranch);
+        emit({
+          type: "pr_notable_files",
+          sessionId,
+          cardId: `pr-card-${sessionId}`,
+          notableFiles,
+        });
+      } catch {
+        // Best-effort — a git error just leaves the last-known strip in place.
+      }
+      return; // poller drives the rest via SSE
+    }
 
     const git = deps.createGitManager(sessionDir);
 

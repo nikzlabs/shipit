@@ -85,21 +85,26 @@ export async function computeNotableFiles(
 }
 
 /**
- * Derive the notable-file list for `HEAD` vs a base branch. Mirrors
- * `diffStatVsBranch`'s ref fallback (origin/<base> first, then local <base>) so
- * the strip lines up with the diff stat shown next to it. Returns `[]` when the
- * base can't be resolved — the toggle then hides entirely.
+ * Derive the notable-file list for a feature branch vs its base. Uses the
+ * MERGE-BASE (`merge-base(base, HEAD)..HEAD`) — the symmetric "what this branch
+ * changed" diff — rather than a two-dot `base..HEAD`, so the strip lines up with
+ * the card's diff stat (`diffStatVsBranch`, three-dot) and the Docs panel's
+ * "Modified in this session" list (`getSessionChangedPaths`, also merge-base).
+ * A two-dot diff additionally pulls in files that moved on `base` since the
+ * branch point, which the branch never touched.
+ *
+ * Returns `[]` when the base or merge-base can't be resolved — the toggle then
+ * hides entirely.
  */
 export async function notableFilesForBranch(
   git: GitManager,
   workspaceDir: string,
   baseBranch: string,
 ): Promise<NotableFileChange[]> {
-  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
-    const changes = await git.diffNameStatus(ref, "HEAD");
-    if (changes.length > 0) {
-      return computeNotableFiles(workspaceDir, changes);
-    }
-  }
-  return [];
+  const baseRef = await git.resolveBaseBranchRef(baseBranch);
+  if (!baseRef) return [];
+  const mergeBaseHash = await git.mergeBase(baseRef, "HEAD");
+  if (!mergeBaseHash) return [];
+  const changes = await git.diffNameStatus(mergeBaseHash, "HEAD");
+  return computeNotableFiles(workspaceDir, changes);
 }

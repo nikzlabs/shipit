@@ -148,6 +148,13 @@ interface PrState {
   applyPrStatusUpdates: (updates: PrStatusSummary[], removals?: string[], isSnapshot?: boolean) => void;
   /** Update inline card from pr_lifecycle_update WS message. */
   updateCard: (sessionId: string, card: PrCardState) => void;
+  /**
+   * docs/210 — patch ONLY the changed-docs strip on an existing card, from a
+   * `pr_notable_files` WS message emitted each post-turn commit. Merges into the
+   * live card so the poller-owned fields (phase/pr/checks) are untouched; the
+   * list is authoritative (an empty array correctly clears the strip).
+   */
+  setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
 
   // CI fix actions
   /** Trigger manual CI fix. Returns error message on failure, null on success. */
@@ -359,6 +366,22 @@ export const usePrStore = create<PrState>((set, get) => ({
             // keep the last-known list so the changed-docs strip stays sticky.
             notableFiles: card.notableFiles ?? existing?.notableFiles,
           },
+        },
+      };
+    });
+  },
+
+  setNotableFiles: (sessionId, _cardId, notableFiles) => {
+    set((state) => {
+      const existing = state.cardBySession[sessionId];
+      // No card to patch yet — the poller hasn't emitted one. Since this message
+      // only fires when a PR already exists, a card is effectively guaranteed;
+      // skip rather than render a strip on a phantom card.
+      if (!existing) return state;
+      return {
+        cardBySession: {
+          ...state.cardBySession,
+          [sessionId]: { ...existing, notableFiles },
         },
       };
     });
