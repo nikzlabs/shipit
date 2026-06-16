@@ -542,9 +542,30 @@ describe("ClaudeProcess", () => {
       expect(tools.split(",")).toContain("mcp__shipit__voice_note");
     });
 
+    // docs/207 / SHI-153: the built-in `propose_actions` tool (action-checklist
+    // cards) must be allowlisted in every mode — it only posts a card and writes
+    // ShipIt's own state, so it's safe under plan mode like the other internal
+    // tools. Without the entry headless `-p` mode hangs on "permission not yet
+    // granted" (the original SHI-153 regression).
+    it.each([
+      ["auto" as const, undefined],
+      ["plan" as const, "plan" as const],
+      ["guarded" as const, "guarded" as const],
+    ])("allowlists mcp__shipit__propose_actions in %s mode", (_label, permissionMode) => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", permissionMode });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const tools = args[args.indexOf("--allowedTools") + 1];
+      expect(tools.split(",")).toContain("mcp__shipit__propose_actions");
+    });
+
     // SHI-128: the consolidated server's `permission_prompt` tool is the CLI's
     // --permission-prompt-tool and is deliberately NOT model-callable, so it must
-    // NOT appear in the allowlist (we list the four model-facing tools by name
+    // NOT appear in the allowlist (we list the five model-facing tools by name
     // rather than a `mcp__shipit__*` glob to keep it out).
     it("does NOT allowlist mcp__shipit__permission_prompt", () => {
       const mockProc = createMockPty();
