@@ -66,18 +66,25 @@ GitHub access.
     / no push to the user's repos**, *not* a fully network-sealed box. (If a
     truly sealed posture is wanted, that's an egress concern — see Security.)
   - `docker` — **session-scoped** Docker (see below). Off ⇒ no Docker.
-  - `network` (UI label **"Network access"**, default **on**) — full outbound
-    egress, the normal multi-repo coordination posture. When **off**, the session
-    runs under the existing Tier A egress containment (docs/172 / SHI-90):
-    default-deny except the built-in `EGRESS_DEFAULT_ALLOWLIST` (LLM API, GitHub,
-    package registries) plus user-added hosts, with the Tier C "allow this host?"
-    card for anything else. **Not an air-gap** — the LLM API and orchestrator
-    callbacks are always allowed; "off" is default-deny-with-allowlist, good for
-    defense-in-depth, not for running hostile code. Reuses `egressEnforce` +
-    `EgressAllowlistStore` (which already has a per-session scope), so little new
-    work. **Infra-gated**: where the deploy hasn't enabled egress enforcement the
-    toggle is hidden/disabled, never a silent no-op. Composes with GitHub access
-    — GitHub is already allowlisted, so "network off + GitHub on" still pushes.
+  - `network` (UI label **"Network access"**, default **on**) — controls *how
+    contained* egress is. It only ever **tightens**, never loosens (a Sandbox is
+    never wider than a normal session):
+    - **On** (default) = the standard Tier A allowlist every session already runs
+      under (docs/172 / SHI-90): default-deny except `EGRESS_DEFAULT_ALLOWLIST`
+      (LLM API, GitHub, package registries) + user-added hosts, with the Tier C
+      "allow this host?" card for anything new. **Not** a wide-open mode — there
+      is no fully-open option; the allowlist *is* the default.
+    - **Off** = **no internet** — locked to the agent's **lifeline only**: the
+      LLM API and the ShipIt orchestrator/worker. These are irreducible (cutting
+      them kills the agent), so "off" is "lifeline-only," not a literal air-gap.
+      No registries, no arbitrary web. **Composition**: granting **GitHub access**
+      adds `github.com` to the lifeline set even when Network is off, so push
+      still works — GitHub access controls the *token*, Network controls
+      *everything else*.
+    Reuses `egressEnforce` + `EgressAllowlistStore` (per-session scope already
+    exists): "off" simply empties the session allowlist down to the
+    identity/lifeline rules (`composeEgressIdentityRules`). **Infra-gated**:
+    hidden/disabled where egress enforcement isn't deployed, never a silent no-op.
 - `remoteUrl` stays null.
 
 `kind` and `capabilities` are set **server-authoritatively at creation**, never
@@ -227,10 +234,11 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
   broker (no token, no push to the user's repos), but the container still has its
   normal agent API egress and worker/orchestrator callbacks. The lever for a
   locked-down posture is the separate **Network access** capability (above):
-  turning it off applies default-deny egress containment. Even then it is not an
-  air-gap (LLM API + orchestrator always allowed), so the Sandbox is positioned
-  for multi-repo coordination + defense-in-depth, **not** as a jail for hostile
-  code. (Decision: default egress is *open*; restriction is opt-in per session.)
+  turning it off drops egress to lifeline-only. Even then it is not an air-gap
+  (LLM API + orchestrator always allowed), so the Sandbox is positioned for
+  multi-repo coordination + defense-in-depth, **not** as a jail for hostile code.
+  (Decision: default egress = the standard allowlist, same as any session — there
+  is no wide-open mode; Network-off only *tightens* to lifeline-only.)
 - **Capability gating must live at the orchestrator broker, not only container
   env.** `GIT_CONFIG_GLOBAL` and the `/agent-ops/git/credential` endpoint are
   always wired; the credential endpoint (and the PR broker) must check the

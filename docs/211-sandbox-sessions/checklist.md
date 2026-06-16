@@ -21,9 +21,10 @@
       build GitManager/remote from the resolved clone, not `session.remoteUrl`;
       keep the no-raw-token property
 - [ ] Thread `docker` capability → `dockerAccess` in `buildContainerConfig`
-- [ ] Thread `network` capability (default on) → `egressEnforce` containment;
-      reuse `EgressAllowlistStore` per-session scope; hide/disable the toggle
-      where egress enforcement isn't deployed (no silent no-op)
+- [ ] Thread `network` capability (default on = standard allowlist; off =
+      lifeline-only) → `egressEnforce` + `EgressAllowlistStore` per-session scope;
+      GitHub access adds github.com to the lifeline when network is off; hide the
+      toggle where egress enforcement isn't deployed (no silent no-op)
 - [ ] Sandbox system-prompt variant (agent-instructions.ts + prompts/)
 - [ ] Document Sandbox session in `src/server/shipit-docs/`
 
@@ -37,10 +38,10 @@
       no journal/host mounts; child resources reaped on archive
 
 ## Resolved
-- [x] Egress posture: default egress is **open** (multi-repo coordination, not a
-      malware jail). Restriction is an opt-in per-session **Network access**
-      toggle that applies the existing Tier A default-deny containment. Not an
-      air-gap (LLM API + orchestrator always allowed).
+- [x] Egress posture: **tighten-only**, two states. On (default) = the standard
+      Tier A allowlist (parity with a normal session; no wide-open mode). Off =
+      lifeline-only (LLM + orchestrator, + github.com if GitHub access granted) —
+      "no internet" but not a literal air-gap (the lifeline is irreducible).
 
 ## Mockups
 - [x] `mockup.html` — `+` menu, capability dialog, sandbox session view
