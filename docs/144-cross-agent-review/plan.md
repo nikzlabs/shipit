@@ -377,10 +377,12 @@ the pinned agent's already-present credentials and provisions nothing).
   sub-agent forges past the best-effort depth guard — decrements the same
   budget. Spam across turns is not a separate concern: bounded by normal turn
   rate and the user's intent.
-- **Cost / wall-clock cap.** Wall-clock cap on each subprocess (initial:
-  5 min); output-token cap via the sub-agent CLI's natural settings (initial:
-  8K). Hitting either truncates, with the result flagged truncated and a note
-  the primary can surface.
+- **Cost / wall-clock cap.** Wall-clock cap on each subprocess (30 min, raised
+  from the initial 5 min because real consults — audits, large-diff reviews,
+  generation — routinely overran it; override via `SHIPIT_SUB_AGENT_TIMEOUT_MS`);
+  output-token cap via the sub-agent CLI's natural settings (initial: 8K).
+  Hitting either truncates, with the result flagged truncated and a note the
+  primary can surface.
 - **Recursion cap.** Depth 1 (§3) — a best-effort guard that stops a
   well-behaved sub-agent from recursing; not forgery-resistant in v0 (the
   per-turn cap above is what bounds an adversarial sub-agent's fan-out).

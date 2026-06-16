@@ -17,8 +17,27 @@
 
 import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./types.js";
 
-/** Default wall-clock cap on a single sub-agent run (§5: initial 5 min). */
-export const DEFAULT_SUB_AGENT_TIMEOUT_MS = 5 * 60_000;
+/**
+ * Default wall-clock cap on a single sub-agent run.
+ *
+ * §5 shipped an initial 5-minute cap, but a real consult — an audit, a review of
+ * a large diff, a generation task — routinely runs past that, and the 5-minute
+ * SIGTERM was killing otherwise-healthy spawns mid-answer. The HTTP transport is
+ * already unbounded (`{ timeoutMs: 0 }` on every leg), so this timer is the only
+ * thing that bounds a spawn; we raise it to 30 minutes. Override with
+ * `SHIPIT_SUB_AGENT_TIMEOUT_MS` (milliseconds) for an even longer cap.
+ */
+export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
+  process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
+  30 * 60_000,
+);
+
+/** Parse a positive-integer ms env override, falling back to `fallback`. */
+function parseTimeoutEnv(raw: string | undefined, fallback: number): number {
+  if (!raw) return fallback;
+  const n = Number.parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : fallback;
+}
 
 /**
  * Default output cap. §5 sets an ~8K output-token cap; we bound the captured
