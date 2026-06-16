@@ -6,6 +6,8 @@ description: Inventory of oversized modules and type barrels with a per-file pla
 
 # Large-file split & architectural tech-debt plan
 
+> **Status: fully implemented.** All 24 phases (P1–P24) have merged to main; this plan is complete. See `checklist.md`.
+
 ## Why this doc exists
 
 ShipIt's production source is ~140k LOC across ~500 files. The structure is mostly healthy — three clean layers (client → orchestrator → session worker), a services layer of small pure functions, and per-domain route files. The debt is concentrated in a **long tail of oversized modules** that each grew to span several responsibilities, plus **two giant type barrels** that every layer imports. None of this is broken; all of it makes the affected areas slow to navigate, risky to change, and expensive to test (several test files are 2–3k lines because their source does too much).
