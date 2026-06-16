@@ -8,7 +8,7 @@ This is meaningfully better UX than any label/comment hack we could build, and i
 
 **Each ShipIt deployment registers its own private Linear app.** A single ShipIt-published app can't serve multiple self-hosted deployments — Linear stores one webhook URL per app registration, so a shared app would only fire events at whichever deployment's URL was registered. See `plan.md` "Per-deployment app registration" for the full reasoning.
 
-The `shipit-linear-app` public repo (under the ShipIt GitHub namespace, separate from `nicolasalt/shipit`) is a **setup guide and config template**, not a published app. It contains: step-by-step instructions for creating the Linear app in the user's own developer console, the exact scopes/permissions to select, the webhook event subscription to enable, and any required icon/branding assets the user uploads to their own app.
+The `shipit-linear-app` public repo (under the ShipIt GitHub namespace, separate from `nikzlabs/shipit`) is a **setup guide and config template**, not a published app. It contains: step-by-step instructions for creating the Linear app in the user's own developer console, the exact scopes/permissions to select, the webhook event subscription to enable, and any required icon/branding assets the user uploads to their own app.
 
 Each user's app configuration:
 

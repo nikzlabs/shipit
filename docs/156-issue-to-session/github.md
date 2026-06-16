@@ -6,7 +6,7 @@ GitHub doesn't have a first-class "agent" surface the way Linear does, so we use
 
 **Each ShipIt deployment registers its own private GitHub App.** A single ShipIt-published GitHub App can't serve multiple self-hosted deployments — GitHub Apps store one webhook URL per registration and require the App's private key for installation auth, neither of which can be safely shared across boxes. See `plan.md` "Per-deployment app registration" for the full reasoning.
 
-The `shipit-github-app` public repo (under the ShipIt GitHub namespace, separate from `nicolasalt/shipit`) contains a **GitHub App manifest** and setup guide. Using GitHub's [App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest), the user clicks one "Create your ShipIt app" link from ShipIt settings and GitHub redirects them through a single-click registration that pre-fills the permissions, events, and (their) webhook URL. GitHub returns the App ID, private key, and webhook secret to ShipIt at the end of the flow.
+The `shipit-github-app` public repo (under the ShipIt GitHub namespace, separate from `nikzlabs/shipit`) contains a **GitHub App manifest** and setup guide. Using GitHub's [App manifest flow](https://docs.github.com/en/apps/sharing-github-apps/registering-a-github-app-from-a-manifest), the user clicks one "Create your ShipIt app" link from ShipIt settings and GitHub redirects them through a single-click registration that pre-fills the permissions, events, and (their) webhook URL. GitHub returns the App ID, private key, and webhook secret to ShipIt at the end of the flow.
 
 The required configuration the manifest applies:
 

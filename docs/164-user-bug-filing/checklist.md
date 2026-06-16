@@ -14,7 +14,7 @@
 - [x] Update `src/server/shipit-docs/ops-session.md` so the ops agent files an issue (instead of a text-only report) when it lacks push access
 
 ## GitHub issue filing (user's own identity)
-- [x] `GitHubAuthManager.createIssue(repo, { title, body })` against the hard-coded `nicolasalt/shipit` (no env override), using the user's existing token
+- [x] `GitHubAuthManager.createIssue(repo, { title, body })` against the hard-coded `nikzlabs/shipit` (no env override), using the user's existing token
 - [x] No scope pre-check — attempt create, surface a GitHub 403/scope error as a "reconnect with a token that can file issues on the ShipIt repo" prompt
 - [x] No service credential, no Linear, no pluggable backend (single fixed destination)
 - [x] Labels via body marker — encode `user-reported` + producer marker (`source:ops` / `source:session`) as a footer line + parseable HTML comment in the body (GitHub drops API labels from non-push filers); pass API labels on the create call too (no-op for non-push filers, applied for developers)
@@ -43,6 +43,6 @@
 - [x] Update `docs/023` (redaction engine now exists) cross-ref
 
 ## Follow-ups (not blockers for the in-product flow)
-- [ ] Maintainer-side GitHub Action on `nicolasalt/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
+- [ ] Maintainer-side GitHub Action on `nikzlabs/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
 - [ ] docs/023 full session export consumes the shared Stage-1 redactor (un-pause that doc when picked up)
 - [x] Persist the card payload + lifecycle to chat history so it survives a session switch / full reload (recorded in-band with the proposing turn via `recordBugReportCard` → `buildTurnMessages`, like voice notes; filed/failed patched in place via `ChatHistoryManager.updateBugReportCard`; `loadSessionHistory` seeds the store; client append + store `upsertCard` are idempotent against the reconnect buffer replay)

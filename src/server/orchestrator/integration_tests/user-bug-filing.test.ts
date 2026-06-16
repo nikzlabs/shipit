@@ -118,11 +118,11 @@ describe("Integration: user bug filing", () => {
 
     const filed = (await client.receiveType("bug_report_filed")) as WsBugReportFiled;
     expect(filed.number).toBe(1234);
-    expect(filed.url).toContain("nicolasalt/shipit/issues/1234");
+    expect(filed.url).toContain("nikzlabs/shipit/issues/1234");
 
     expect(githubAuthManager.createIssueCalls).toHaveLength(1);
     const call = githubAuthManager.createIssueCalls[0];
-    expect(call.owner).toBe("nicolasalt");
+    expect(call.owner).toBe("nikzlabs");
     expect(call.repo).toBe("shipit");
     expect(call.title).toBe("Preview won't reload");
     expect(call.labels).toEqual(["user-reported", "source:session"]);
@@ -220,7 +220,7 @@ describe("Integration: user bug filing", () => {
     expect(cardsAfter).toHaveLength(1);
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueNumber).toBe(1234);
-    expect(cardsAfter[0]?.issueUrl).toContain("nicolasalt/shipit/issues/1234");
+    expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
 
     client.close();
   });

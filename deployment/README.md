@@ -15,7 +15,7 @@ One command clones ShipIt to `~/.shipit`, builds the images, and starts it detac
 `http://localhost:4123`:
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/stable/deployment/local/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 ```
 
 It checks for `git` + Docker (with the Compose v2 plugin) and tells you how to install them if
@@ -78,7 +78,7 @@ Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trus
 
 ```bash
 ssh root@<server-ip>
-bash <(curl -fsSL https://raw.githubusercontent.com/nicolasalt/shipit/stable/deployment/vps/setup.sh)
+bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
 ```
 
 The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:

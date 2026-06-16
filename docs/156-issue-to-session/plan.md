@@ -158,7 +158,7 @@ Adds the GitHub App, the `/shipit` slash command, HMAC verification, and the edi
 
 ## Open questions
 
-- **App listing repo layout.** The Linear app and the GitHub App probably each live in a small public repo under the ShipIt GitHub namespace (separate from `nicolasalt/shipit`), since they each have their own listing metadata, icon, privacy policy. Naming convention TBD (`shipit-linear-app`, `shipit-github-app`?).
+- **App listing repo layout.** The Linear app and the GitHub App probably each live in a small public repo under the ShipIt GitHub namespace (separate from `nikzlabs/shipit`), since they each have their own listing metadata, icon, privacy policy. Naming convention TBD (`shipit-linear-app`, `shipit-github-app`?).
 - **Resume vs new session on re-trigger.** Default is always-new; revisit once we see usage.
 - **Multi-deployment users** (laptop + VPS installing the same App twice). Webhook URL is per-installation so this works naturally, but worth confirming the install UX makes this clear.
 

@@ -19,7 +19,7 @@ fi
 # Precedence: SHIPIT_REPO_URL env (lets a fork override on the one-liner) >
 # saved config from a previous run > the origin of an existing /opt/shipit
 # clone > the public repo default. This keeps the curl|bash install prompt-free.
-DEFAULT_REPO_URL="https://github.com/nicolasalt/shipit.git"
+DEFAULT_REPO_URL="https://github.com/nikzlabs/shipit.git"
 REPO_URL="${SHIPIT_REPO_URL:-$REPO_URL}"
 if [ -z "$REPO_URL" ] && [ -d /opt/shipit/.git ]; then
   REPO_URL=$(git -C /opt/shipit remote get-url origin 2>/dev/null || true)

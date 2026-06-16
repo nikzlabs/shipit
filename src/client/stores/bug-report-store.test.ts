@@ -23,7 +23,7 @@ describe("bug-report-store (docs/164 persistence)", () => {
         ...draft("c1"),
         phase: "filed",
         issueNumber: 1234,
-        issueUrl: "https://github.com/nicolasalt/shipit/issues/1234",
+        issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
       },
     ]);
     const card = useBugReportStore.getState().cards.c1;
@@ -38,7 +38,7 @@ describe("bug-report-store (docs/164 persistence)", () => {
         ...draft("c1"),
         phase: "filed",
         issueNumber: 1234,
-        issueUrl: "https://github.com/nicolasalt/shipit/issues/1234",
+        issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
       },
     ]);
     // A turn-event-buffer replay re-delivers the original draft on reconnect.

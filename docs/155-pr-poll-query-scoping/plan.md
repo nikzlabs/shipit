@@ -40,7 +40,7 @@ Measure before restructuring.
 
 ```bash
 GITHUB_TOKEN=ghp_xxx npm run measure-pr-poll-cost -- \
-  --owner nicolasalt --repo shipit \
+  --owner nikzlabs --repo shipit \
   --out docs/155-pr-poll-query-scoping/cost-measurements.md
 ```
 

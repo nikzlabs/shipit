@@ -74,11 +74,11 @@ describe("BugReportCard", () => {
   });
 
   it("renders the filed terminal state with a View on GitHub link", () => {
-    useBugReportStore.getState().setFiled(CARD_ID, 1234, "https://github.com/nicolasalt/shipit/issues/1234");
+    useBugReportStore.getState().setFiled(CARD_ID, 1234, "https://github.com/nikzlabs/shipit/issues/1234");
     render(<BugReportCard cardId={CARD_ID} />);
     expect(screen.getByText(/#1234/)).toBeInTheDocument();
     const link = screen.getByRole("link", { name: /view on github/i });
-    expect(link).toHaveAttribute("href", "https://github.com/nicolasalt/shipit/issues/1234");
+    expect(link).toHaveAttribute("href", "https://github.com/nikzlabs/shipit/issues/1234");
   });
 
   it("surfaces a scope error and stays editable so the user can retry", () => {

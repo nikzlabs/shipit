@@ -3,7 +3,7 @@
 # Rewind a fresh bare cache to main~M, gc away newer objects, time the fetch that
 # pulls them back. Operate explicitly on `main` (the remote default branch).
 set -euo pipefail
-REMOTE="https://github.com/nicolasalt/shipit.git"
+REMOTE="https://github.com/nikzlabs/shipit.git"
 ROOT=/tmp/bench
 RESULTS="$ROOT/results.csv"
 export GIT_TERMINAL_PROMPT=0

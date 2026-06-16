@@ -62,7 +62,7 @@ exists, so the bootstrap part cannot source `lib.sh`). Mirrors `deployment/vps/s
 - Preflight **check-and-instruct** (do not auto-install): require `git`, `docker`,
   `docker compose`. If Docker is missing, print the Docker Desktop link on macOS / the
   `docker-compose-plugin` hint on Linux and exit non-zero. Stays cross-distro and non-root.
-- Resolve repo URL (`SHIPIT_REPO_URL`, default `https://github.com/nicolasalt/shipit.git`) and home
+- Resolve repo URL (`SHIPIT_REPO_URL`, default `https://github.com/nikzlabs/shipit.git`) and home
   (`SHIPIT_HOME`, default `$HOME/.shipit`) — same precedence pattern as `vps/setup.sh`.
 - Clone into `~/.shipit`, or channel-aware fetch+reset if already present. Fresh installs default to
   the `stable` channel (write `.release-channel`), matching VPS.

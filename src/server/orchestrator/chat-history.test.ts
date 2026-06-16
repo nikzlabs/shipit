@@ -267,7 +267,7 @@ describe("ChatHistoryManager", () => {
       const found = mgr.updateBugReportCard("sess-1", "bug-card-1", {
         phase: "filed",
         issueNumber: 1234,
-        issueUrl: "https://github.com/nicolasalt/shipit/issues/1234",
+        issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
       });
       expect(found).toBe(true);
 

@@ -4,13 +4,13 @@
   "description": "Browser-based AI editor for building, reviewing, and shipping software through chat.",
   "private": false,
   "license": "Apache-2.0",
-  "homepage": "https://github.com/nicolasalt/shipit#readme",
+  "homepage": "https://github.com/nikzlabs/shipit#readme",
   "bugs": {
-    "url": "https://github.com/nicolasalt/shipit/issues"
+    "url": "https://github.com/nikzlabs/shipit/issues"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/nicolasalt/shipit.git"
+    "url": "git+https://github.com/nikzlabs/shipit.git"
   },
   "engines": {
     "node": "24.x"
