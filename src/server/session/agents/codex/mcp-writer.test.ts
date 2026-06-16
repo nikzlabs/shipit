@@ -92,6 +92,15 @@ describe("CodexAdapter.writeMcpConfig (docs/125, docs/155 hair 10, SHI-128)", ()
     expect(runtimeEnv?.SHIPIT_MCP_TOOLS).not.toContain("permission");
   });
 
+  // docs/207 / SHI-153: propose_actions (action-checklist cards) must be in the
+  // Codex tool subset. Codex runs approvalPolicy:"never" so it auto-approves with
+  // no allowlist plumbing — this assertion guards against a silent regression
+  // mirroring the Claude allowlist omission that broke the tool there.
+  it("includes propose_actions (docs/207) in the Codex tool subset", () => {
+    const runtimeEnv = write();
+    expect(runtimeEnv?.SHIPIT_MCP_TOOLS).toContain("propose_actions");
+  });
+
   it("is idempotent — repeat calls do not duplicate the block", () => {
     write();
     write();
