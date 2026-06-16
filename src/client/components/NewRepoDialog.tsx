@@ -39,14 +39,17 @@ const ICON_MAP: Record<string, string> = {
 
 export interface NewRepoDialogProps {
   username: string;
+  /** Organizations the user can create repos in. Empty = personal account only. */
+  orgs?: string[];
   templates: TemplateInfo[];
-  onSubmit: (name: string, description: string, isPrivate: boolean, templateId: string) => void;
+  onSubmit: (name: string, description: string, isPrivate: boolean, templateId: string, owner: string | undefined) => void;
   onClose: () => void;
   creating: boolean;
 }
 
 export function NewRepoDialog({
   username,
+  orgs = [],
   templates,
   onSubmit,
   onClose,
@@ -57,6 +60,10 @@ export function NewRepoDialog({
   const [isPrivate, setIsPrivate] = useState(true);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [filter, setFilter] = useState<TemplateInfo["category"] | "all">("all");
+  // The owner the repo is created under. Defaults to the personal account
+  // (empty string), which maps to POST /user/repos; any other value is an org
+  // login routed to POST /orgs/{owner}/repos by the server.
+  const [owner, setOwner] = useState("");
 
   const trimmedName = name.trim();
   const isValidName = /^[a-zA-Z0-9._-]+$/.test(trimmedName);
@@ -64,7 +71,7 @@ export function NewRepoDialog({
 
   const handleSubmit = () => {
     if (canSubmit && selectedTemplateId) {
-      onSubmit(trimmedName, description.trim(), isPrivate, selectedTemplateId);
+      onSubmit(trimmedName, description.trim(), isPrivate, selectedTemplateId, owner || undefined);
     }
   };
 
@@ -99,12 +106,33 @@ export function NewRepoDialog({
             </Button>
           </div>
           <p className="text-sm text-(--color-text-secondary)">
-            Create a new repository under <span className="text-(--color-text-primary) font-medium">{username}</span> with a project template.
+            Create a new repository under <span className="text-(--color-text-primary) font-medium">{owner || username}</span> with a project template.
           </p>
         </div>
 
         {/* Body */}
         <div className="overflow-y-auto flex-1 px-6 py-4 space-y-5">
+          {/* Owner — only shown when the user belongs to at least one org;
+              personal-account-only users keep the simpler form. */}
+          {orgs.length > 0 && (
+            <div>
+              <label className="block text-sm text-(--color-text-primary) mb-1">
+                Owner
+              </label>
+              <select
+                value={owner}
+                onChange={(e) => setOwner(e.target.value)}
+                disabled={creating}
+                className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm text-(--color-text-primary) focus:outline-none focus:border-(--color-border-focus) disabled:opacity-50"
+              >
+                <option value="">{username} (personal)</option>
+                {orgs.map((org) => (
+                  <option key={org} value={org}>{org}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
           {/* Repo name */}
           <div>
             <label className="block text-sm text-(--color-text-primary) mb-1">

@@ -885,3 +885,100 @@ describe("GitHubAuthManager.graphqlQuery rate-limit handling", () => {
     expect(mgr.getRateLimitState().limited).toBe(true);
   });
 });
+
+describe("GitHubAuthManager.createRepo — owner routing", () => {
+  let tmpDir: string;
+  let mgr: GitHubAuthManager;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-create-repo-"));
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function repoResponse(): Response {
+    return new Response(
+      JSON.stringify({
+        name: "r",
+        full_name: "o/r",
+        html_url: "https://github.com/o/r",
+        clone_url: "https://github.com/o/r.git",
+      }),
+      { status: 201, headers: { "Content-Type": "application/json" } },
+    );
+  }
+
+  it("POSTs to /user/repos when no owner is given (personal account)", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(repoResponse());
+
+    const res = await mgr.createRepo("my-repo", { isPrivate: true });
+
+    expect(res.success).toBe(true);
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://api.github.com/user/repos");
+  });
+
+  it("POSTs to /orgs/{owner}/repos when an owner is given", async () => {
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(repoResponse());
+
+    await mgr.createRepo("my-repo", { owner: "acme" });
+
+    expect(fetchSpy.mock.calls[0][0]).toBe("https://api.github.com/orgs/acme/repos");
+  });
+});
+
+describe("GitHubAuthManager.listOrgs", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-list-orgs-"));
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  function authedManager(): GitHubAuthManager {
+    const store = new CredentialStore(tmpDir);
+    store.setGithubToken("ghp_x");
+    const mgr = new GitHubAuthManager(tmpDir, store);
+    mgr.checkCredentials();
+    return mgr;
+  }
+
+  it("returns [] when unauthenticated", async () => {
+    const mgr = new GitHubAuthManager(tmpDir, new CredentialStore(tmpDir));
+    expect(await mgr.listOrgs()).toEqual([]);
+  });
+
+  it("maps GitHub org logins and avatar URLs", async () => {
+    const mgr = authedManager();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(
+        JSON.stringify([
+          { login: "acme", avatar_url: "https://a/acme.png" },
+          { login: "globex", avatar_url: "https://a/globex.png" },
+        ]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+
+    expect(await mgr.listOrgs()).toEqual([
+      { login: "acme", avatarUrl: "https://a/acme.png" },
+      { login: "globex", avatarUrl: "https://a/globex.png" },
+    ]);
+  });
+
+  it("returns [] on a non-OK response instead of throwing", async () => {
+    const mgr = authedManager();
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("", { status: 403 }));
+    expect(await mgr.listOrgs()).toEqual([]);
+  });
+});

@@ -19,6 +19,7 @@ let app: FastifyInstance;
 let sessionManager: SessionManager;
 let repoStore: RepoStore;
 let dbManager: DatabaseManager;
+let githubStub: StubGitHubAuthManager;
 let origGitTerminalPrompt: string | undefined;
 
 beforeEach(async () => {
@@ -37,11 +38,13 @@ beforeEach(async () => {
 
   const credentialStore = createTestCredentialStore(tmpDir);
 
+  githubStub = new StubGitHubAuthManager();
+
   app = await buildApp({
     sessionManager,
     repoStore,
     authManager: new StubAuthManager() as unknown as AuthManager,
-    githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+    githubAuthManager: githubStub as unknown as GitHubAuthManager,
     credentialStore,
     workspaceDir: tmpDir,
     serveStatic: false,
@@ -254,6 +257,26 @@ describe("DELETE /api/repos/:url", () => {
     expect(sessionManager.get("sess-b")?.userArchived).toBe(true);
     // The unrelated session is untouched.
     expect(sessionManager.get("sess-other")?.userArchived).toBeUndefined();
+  });
+});
+
+describe("GET /api/github/orgs", () => {
+  it("returns [] when not authenticated", async () => {
+    const res = await app.inject({ method: "GET", url: "/api/github/orgs" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().orgs).toEqual([]);
+  });
+
+  it("returns the user's organizations when authenticated", async () => {
+    await githubStub.setToken("ghp_test");
+    githubStub.setOrgs([
+      { login: "acme", avatarUrl: "https://a/acme.png" },
+      { login: "globex", avatarUrl: "https://a/globex.png" },
+    ]);
+
+    const res = await app.inject({ method: "GET", url: "/api/github/orgs" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().orgs.map((o: { login: string }) => o.login)).toEqual(["acme", "globex"]);
   });
 });
 

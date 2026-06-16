@@ -269,4 +269,42 @@ describe("createRepoWithTemplate (service) — bare cache", () => {
     const originLog = execSync("git log --format=%s main", { cwd: originDir }).toString();
     expect(originLog).toContain("Initial setup: Static HTML");
   });
+
+  it("threads a trimmed org owner into createRepo, and omits it for the personal account", async () => {
+    const seen: { opts: { owner?: string } }[] = [];
+    const run = (owner?: string) => {
+      // Each run gets its own bare origin — pushing two fresh scaffolds at the
+      // same remote's main would be rejected non-fast-forward.
+      const idx = seen.length;
+      const originDir = path.join(tmpDir, `origin-${idx}.git`);
+      fs.mkdirSync(originDir, { recursive: true });
+      execSync("git init --bare -b main", { cwd: originDir, stdio: "pipe" });
+      return createRepoWithTemplate(
+        (dir) => new GitManager(dir),
+        (dir) => new RepoGit(dir),
+        {
+          authenticated: true,
+          createRepo: async (_name, opts) => {
+            seen.push({ opts });
+            return { success: true, cloneUrl: originDir };
+          },
+        },
+        () => path.join(tmpDir, "repo-cache", `c${idx}`),
+        "my-site",
+        "static-html",
+        undefined,
+        undefined,
+        owner,
+      );
+    };
+
+    // Whitespace-padded org login is trimmed and routed as `owner`.
+    await run("  acme  ");
+    expect(seen[0].opts.owner).toBe("acme");
+
+    // Personal account (empty owner) must NOT carry an owner key — otherwise it
+    // would hit POST /orgs/{owner}/repos with a username and 404/422.
+    await run("");
+    expect("owner" in seen[1].opts).toBe(false);
+  });
 });

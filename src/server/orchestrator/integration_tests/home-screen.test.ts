@@ -27,6 +27,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
   let app: FastifyInstance;
   let tmpDir: string;
   let dbManager: DatabaseManager;
+  let githubAuthManager: StubGitHubAuthManager;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -34,7 +35,7 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
 
     const sessionManager = new SessionManager(dbManager);
 
-    const githubAuthManager = new StubGitHubAuthManager();
+    githubAuthManager = new StubGitHubAuthManager();
 
     app = await buildApp({
       credentialStore: createTestCredentialStore(tmpDir),
@@ -96,6 +97,41 @@ describe("Integration: home_create_repo_with_template (HTTP)", () => {
     const created = (list.json().repos as { url: string; trusted?: boolean }[])
       .find((r) => r.url === body.repoUrl);
     expect(created?.trusted).toBe(true);
+  });
+
+  it("creates the repo under an organization when owner is supplied", async () => {
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: {
+        repoName: "team-app",
+        templateId: "static-html",
+        isPrivate: true,
+        owner: "acme",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.success).toBe(true);
+    // The clone URL is namespaced under the org, not the personal account.
+    expect(body.repoUrl).toBe("https://github.com/acme/team-app.git");
+    // And the org login was threaded all the way to createRepo's options.
+    expect(githubAuthManager.createRepoCalls).toHaveLength(1);
+    expect(githubAuthManager.createRepoCalls[0].options.owner).toBe("acme");
+  });
+
+  it("omits owner from createRepo when none is supplied (personal account)", async () => {
+    await app.inject({ method: "POST", url: "/api/github/token", payload: { token: "ghp_test" } });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos",
+      payload: { repoName: "solo-app", templateId: "static-html" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(githubAuthManager.createRepoCalls[0].options.owner).toBeUndefined();
   });
 
   it("returns 400 for empty repoName", async () => {

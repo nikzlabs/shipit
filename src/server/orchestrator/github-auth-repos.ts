@@ -14,10 +14,19 @@ import { fetchGitHub, parseGitHubError } from "./github-api.js";
 export async function createRepo(
   token: string,
   name: string,
-  options: { description?: string; isPrivate?: boolean } = {},
+  options: { description?: string; isPrivate?: boolean; owner?: string } = {},
 ): Promise<GitHubRepoResult> {
   try {
-    const res = await fetchGitHub("https://api.github.com/user/repos", token, {
+    // `owner` selects an organization: POST /orgs/{org}/repos creates the repo
+    // inside that org, whereas the bare POST /user/repos endpoint creates it
+    // under the authenticated user's personal account. Callers omit `owner`
+    // (or pass the personal login) for a personal repo. If the user lacks
+    // repo-creation rights in the org, GitHub answers 403 and the message is
+    // surfaced verbatim via parseGitHubError below.
+    const endpoint = options.owner
+      ? `https://api.github.com/orgs/${encodeURIComponent(options.owner)}/repos`
+      : "https://api.github.com/user/repos";
+    const res = await fetchGitHub(endpoint, token, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -83,6 +92,23 @@ export async function listUserRepos(token: string): Promise<{
       defaultBranch: r.default_branch,
       cloneUrl: r.clone_url,
     }));
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * List the organizations the authenticated user belongs to, for the new-repo
+ * owner picker. Returns every membership — including orgs where the user may
+ * lack repo-creation rights; the create call surfaces GitHub's 403 if so.
+ * Never throws (returns `[]` on error) so the dialog degrades to personal-only.
+ */
+export async function listOrgs(token: string): Promise<{ login: string; avatarUrl: string }[]> {
+  try {
+    const res = await fetchGitHub("https://api.github.com/user/orgs?per_page=100", token);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { login: string; avatar_url: string }[];
+    return data.map((o) => ({ login: o.login, avatarUrl: o.avatar_url }));
   } catch {
     return [];
   }

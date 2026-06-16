@@ -19,13 +19,14 @@ export async function createRepoWithTemplate(
   createRepoGit: (dir: string) => RepoGit,
   githubAuthManager: {
     authenticated: boolean;
-    createRepo: (name: string, opts: { description?: string; isPrivate?: boolean }) => Promise<{ success: boolean; cloneUrl?: string; message?: string }>;
+    createRepo: (name: string, opts: { description?: string; isPrivate?: boolean; owner?: string }) => Promise<{ success: boolean; cloneUrl?: string; message?: string }>;
   },
   getSharedRepoDir: (repoUrl: string) => string,
   repoName: string,
   templateId: string,
   description?: string,
   isPrivate?: boolean,
+  owner?: string,
 ): Promise<{ success: boolean; repoUrl?: string; message?: string }> {
   const trimmedName = repoName.trim();
   if (!trimmedName) throw new ServiceError(400, "Repository name is required");
@@ -39,8 +40,15 @@ export async function createRepoWithTemplate(
 
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
-  // 1. Create GitHub repo
-  const repoResult = await githubAuthManager.createRepo(trimmedName, { description, isPrivate });
+  // 1. Create GitHub repo. A truthy `owner` targets that organization
+  //    (POST /orgs/{owner}/repos); omitted/empty falls back to the personal
+  //    account, so a personal repo never accidentally hits the org endpoint.
+  const trimmedOwner = owner?.trim();
+  const repoResult = await githubAuthManager.createRepo(trimmedName, {
+    description,
+    isPrivate,
+    ...(trimmedOwner ? { owner: trimmedOwner } : {}),
+  });
   if (!repoResult.success || !repoResult.cloneUrl) {
     return { success: false, message: repoResult.message || "Failed to create repository" };
   }

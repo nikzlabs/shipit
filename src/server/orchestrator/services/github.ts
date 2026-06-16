@@ -112,6 +112,14 @@ export async function getGitHubRepos(
   return githubAuthManager.listUserRepos();
 }
 
+/** List the user's GitHub organizations (empty array if not authenticated). */
+export async function listGitHubOrgs(
+  githubAuthManager: GitHubAuthManager,
+): Promise<{ login: string; avatarUrl: string }[]> {
+  if (!githubAuthManager.authenticated) return [];
+  return githubAuthManager.listOrgs();
+}
+
 /** Search GitHub repos. Returns user's repos when query is empty. */
 export async function searchGitHubRepos(
   githubAuthManager: GitHubAuthManager,
