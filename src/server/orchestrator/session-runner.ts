@@ -161,6 +161,18 @@ export interface QueuedMessage {
   postTurn?: "commit-push" | "none";
   /** docs/169 — system-turn marker carried through the queue drain (see AgentDispatchOptions). */
   systemTurn?: boolean;
+  /**
+   * docs/196 fix — completion callback carried through the IN-MEMORY queue so a
+   * turn enqueued behind a running turn still signals completion when it later
+   * drains and runs. Without this a merge-watch wake-turn dispatched into a busy
+   * parent never advanced past `merge-observed` (the callback was dropped at
+   * enqueue), so every orchestrator restart re-fired it via `reconcilePending` —
+   * duplicate notify-on-merge notifications. The queue is in-memory only and
+   * never serialized (`getQueueSnapshot` projects to `{text,position}`), so a
+   * function field is safe; a restart drops the queue (and this callback) along
+   * with the un-run turn, which is exactly the in-flight case reconcile recovers.
+   */
+  onTurnComplete?: (outcome: { errored: boolean }) => void;
 }
 
 /**
@@ -206,8 +218,9 @@ export interface AgentDispatchOptions {
    * resolution turn, run its git step, then dispatch the next — the one
    * capability the old hand-rolled `runRebaseResolutionTurn` had that
    * fire-and-forget `dispatch()` lacked. `errored` is true when the turn
-   * ended via an agent process error. Dispatch-only (not carried through the
-   * queue — it is a live callback).
+   * ended via an agent process error. Carried through the in-memory queue
+   * (docs/196 fix), so it also fires for a turn enqueued behind a running turn
+   * once that turn drains and runs — not only on the idle/start-now path.
    */
   onTurnComplete?: (outcome: { errored: boolean }) => void;
 }
@@ -228,6 +241,7 @@ export function toQueuedMessage(opts: AgentDispatchOptions): QueuedMessage {
   if (opts.reviewFilePath !== undefined) queued.reviewFilePath = opts.reviewFilePath;
   if (opts.postTurn !== undefined) queued.postTurn = opts.postTurn;
   if (opts.systemTurn !== undefined) queued.systemTurn = opts.systemTurn;
+  if (opts.onTurnComplete !== undefined) queued.onTurnComplete = opts.onTurnComplete;
   return queued;
 }
 

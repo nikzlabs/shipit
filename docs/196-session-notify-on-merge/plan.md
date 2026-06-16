@@ -73,13 +73,28 @@ runs ("notification visually there, agent didn't start"). The fix advances to
 `delivered` **only from the wake-turn's `onTurnComplete`** (the same
 turn-completion signal the CI auto-fix loop awaits in `app-lifecycle.ts`):
 - **idle parent** → `dispatch` starts the turn now → it completes → `delivered`.
-- **mid-turn parent** → `dispatch` enqueues (never preempting) → no completion
-  signal (`onTurnComplete` is dispatch-only, not carried through the queue) → the
-  watch stays `merge-observed` → `reconcilePending` re-delivers after the next
-  restart.
+- **mid-turn parent** → `dispatch` enqueues (never preempting). `onTurnComplete`
+  rides the **in-memory queue** (carried by `toQueuedMessage` /
+  `queuedMessageToDispatchOptions`), so when the queued turn later drains and
+  runs it advances the watch to `delivered` **in-process** — no restart needed.
+  The watch sits at `merge-observed` only for the window between enqueue and the
+  turn actually running; a restart inside that window drops the queued turn and
+  leaves the watch recoverable for `reconcilePending`.
 
 A restart at any point before the turn completes therefore leaves the watch
 recoverable, and re-delivery never surfaces a second card.
+
+**Duplicate-notification fix (busy-parent path).** The original code left the
+mid-turn path's `onTurnComplete` *unwired* and relied solely on `onTurnComplete`
+being "dispatch-only, not carried through the queue." A busy-parent watch
+therefore never reached `delivered` even after its wake-turn ran — it stayed
+`merge-observed` **forever**, so `reconcilePending` re-fired a fresh wake-turn on
+**every** orchestrator restart. In a long fan-out where the parent is almost
+always mid-turn, nearly every watch hit this path, producing the observed bursts
+of duplicate "Child PR merged" wake-turns on each restart/reconnect. Carrying
+`onTurnComplete` through the in-memory queue lets the busy path reach
+`delivered` once the turn drains, so reconcile re-fires **only** the genuine
+"restart lost the still-queued turn" case.
 
 ## Correctness requirements (and how they're met)
 
@@ -141,6 +156,11 @@ PR poller detects terminal PR state (verifyMissingPr)
   (arms the watch, reuses `assertChildOfParent`).
 - `src/server/orchestrator/sessions.ts` — `merge_watch` column,
   `setMergeWatch` / `getMergeWatch` / `listPendingMergeWatches`.
+- `src/server/orchestrator/session-runner.ts` +
+  `src/server/orchestrator/dispatched-turn.ts` — `onTurnComplete` is carried
+  through the in-memory queue (`QueuedMessage` / `toQueuedMessage` /
+  `queuedMessageToDispatchOptions`) so an enqueued wake-turn signals completion
+  when it drains (the busy-parent `delivered` path / duplicate-fire fix).
 - `src/server/orchestrator/api-routes-session.ts` — register route.
 - `src/server/session/agent-ops-routes.ts` — worker relay.
 - `src/server/session/agent-shim/shipit.ts` — `notify-on-merge` subcommand.
@@ -158,8 +178,11 @@ PR poller detects terminal PR state (verifyMissingPr)
 - `merge-watch.test.ts` — state machine: fire-once, idle/busy parent (never
   preempt), closed-unmerged, parent-archived drop, reconcile, checkAndFireNow,
   and the restart fix — `delivered` is reached only once the wake-turn runs to
-  completion (not when enqueued), and a busy/enqueued watch stays
-  `merge-observed` so reconcile re-delivers without a second card.
+  completion (not when enqueued). Busy parent: the enqueued wake-turn reaches
+  `delivered` once it **drains in-process** (no restart needed), and a delivered
+  watch is never re-fired across repeated restarts (the duplicate-notification
+  regression); a busy watch lost to a restart *before* it drains is re-delivered
+  by reconcile without a second card.
 - `pr-status-poller.test.ts` — `onPrTerminalState` fires on merged AND closed.
 - `integration_tests/session-notify-on-merge.test.ts` — register (happy /
   cross-tenancy 404) → merge → persisted parent card + dispatched wake-turn →
