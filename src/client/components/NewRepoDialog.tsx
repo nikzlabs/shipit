@@ -35,6 +35,7 @@ const ICON_MAP: Record<string, string> = {
   fastapi: "\uD83D\uDE84",
   gradio: "\uD83C\uDF9B\uFE0F",
   dash: "\uD83D\uDCC8",
+  empty: "\uD83D\uDCDD",
 };
 
 export interface NewRepoDialogProps {

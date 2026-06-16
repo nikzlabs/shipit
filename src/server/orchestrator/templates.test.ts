@@ -5,9 +5,9 @@ import path from "node:path";
 import { listTemplates, getTemplate, applyTemplate, generatePackageLock, OPS_TEMPLATE_ID } from "./templates.js";
 
 describe("listTemplates", () => {
-  it("returns all 16 templates", () => {
+  it("returns all 17 templates", () => {
     const templates = listTemplates();
-    expect(templates).toHaveLength(16);
+    expect(templates).toHaveLength(17);
   });
 
   it("returns templates without file contents", () => {
@@ -35,6 +35,26 @@ describe("listTemplates", () => {
     const templates = listTemplates();
     const ids = templates.map((t) => t.id);
     expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+// The empty template is the "start from scratch" option — a blank repo with
+// just a README, no build tooling or preview config.
+describe("empty template", () => {
+  it("is listed in the utility category", () => {
+    const meta = listTemplates().find((t) => t.id === "empty");
+    expect(meta).toBeDefined();
+    expect(meta!.category).toBe("utility");
+  });
+
+  it("ships only a README and nothing else", () => {
+    const t = getTemplate("empty")!;
+    expect(Object.keys(t.files)).toEqual(["README.md"]);
+    expect(t.files["README.md"]).toContain("# My Project");
+    // No build tooling / preview wiring — it really is empty.
+    expect(t.files["package.json"]).toBeUndefined();
+    expect(t.files["shipit.yaml"]).toBeUndefined();
+    expect(t.files["docker-compose.yml"]).toBeUndefined();
   });
 });
 
