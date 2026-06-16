@@ -6,7 +6,7 @@ import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { SessionManager } from "./sessions.js";
 import { RepoStore } from "./repo-store.js";
-import { runDiskJanitor } from "./disk-janitor.js";
+import { runDiskJanitor } from "./startup-janitor.js";
 import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
