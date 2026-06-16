@@ -13,7 +13,7 @@
 import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor, act } from "@testing-library/react";
 import { SessionHealthStrip } from "./SessionHealthStrip.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { useSessionStore } from "../../stores/session-store.js";
 
 const fetchMock = vi.fn();
 
