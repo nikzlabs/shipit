@@ -1,7 +1,8 @@
 # Untrusted-input lens — checklist (SHI-98, Gap 4)
 
-- [x] Reusable provenance-envelope mechanism (`untrusted-input.ts` —
-      `wrapUntrustedContent`, extensible source map, boundary defang).
+- [x] Reusable provenance-envelope mechanism (`shared/untrusted-input.ts` —
+      `wrapUntrustedContent`, extensible source map, boundary defang). (Moved to
+      `shared/` by SHI-85 so the session-side issue shim can reuse it.)
 - [x] Enroll the orchestrator-brokered file/upload ingestion point
       (`formatFileContext` in `validation.ts`) into the envelope.
 - [x] Defang envelope-marker and `<file>`-tag breakout in attacker content.
@@ -16,6 +17,7 @@
 
 ## Deliberately out of scope (owned elsewhere — keep disjoint)
 
-- [ ] Issue-text envelope wiring → SHI-85 / `docs/176` (enrolls via the `issue` source).
+- [x] Issue-text envelope wiring → SHI-85 / `docs/176` (enrolled via the `issue` source;
+      the `shipit issue` shim wraps fetched title/body/comments).
 - [ ] Egress allowlist (the actual exfil barrier) → SHI-90 / Gap 1.
 - [ ] Per-repo code-execution trust gate → SHI-96 / `docs/178`.

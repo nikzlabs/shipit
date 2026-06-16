@@ -26,9 +26,15 @@
  * calls return straight to the CLI without passing through the orchestrator —
  * cannot be enveloped here; for those the lens is the standing system-prompt
  * rule. The `web` / `mcp` sources exist so that guidance and any future
- * brokered path share one vocabulary. The `issue` source is enrolled by SHI-85
- * (`docs/176`) at its own single ingestion point; it is declared here so both
- * slices speak the same envelope.
+ * brokered path share one vocabulary. The `issue` source IS enrolled (SHI-85,
+ * `docs/176`): the `shipit issue` shim wraps fetched issue free-text (title /
+ * body / comments) with this same envelope at the agent's display/ingestion
+ * layer, so both slices speak one vocabulary.
+ *
+ * This module lives in `shared/` (not `orchestrator/`) because both layers now
+ * use it: the orchestrator's `formatFileContext` (`validation.ts`) and the
+ * session-side `shipit` issue shim (`agent-shim/shipit.ts`). It is a pure,
+ * dependency-free leaf, so either layer can import it.
  */
 
 /**

@@ -289,6 +289,13 @@ rigor as external input — because all of them are vectors for the injected-con
 in the threat model. This is less a single fix than a lens to apply to Gaps 1/3 and to
 future input surfaces (web fetch, MCP tool returns).
 
+**Status:** the general lens shipped in SHI-98 (`docs/201`) — a reusable provenance
+envelope (`shared/untrusted-input.ts`) over brokered file/upload content plus a
+system-prompt rule. The **issue-text slice shipped in SHI-85** (`docs/176`): the
+`shipit issue` shim wraps fetched title/body/comments in the same envelope, comments
+framed lower-trust than the body. Both are defense-in-depth — the load-bearing barrier
+stays the environment layer (Gap 1 egress SHI-90, Gap 2-R scoped tokens SHI-79).
+
 ### Gap 5 — Shared host kernel (gVisor / seccomp / read-only rootfs) — *SHI-97, shipped (default-OFF)*
 
 Containers run the default `runc` runtime on the shared host kernel. The article uses
@@ -385,7 +392,7 @@ provisioned then remounted read-only).
 | ✅ | Gap 3 — repo trust gate | Stops "open repo == run its code" | Done — per-remote trust gate defers install/compose until the user trusts the remote (`service-manager-setup.ts`, `RepoStore.isTrusted`, `RepoTrustBanner`; `docs/178-repo-trust-gate`) |
 | P2 | Gap 6 — read-only mounts (SHI-45) | Structural, low-risk | Downgrade mounts to `:ro` where possible |
 | ✅ | Gap 5 — gVisor / seccomp / ro-rootfs (SHI-97) | Hardens the weakest tier | Done (default-OFF) — `SESSION_RUNTIME` (gVisor opt-in), `SESSION_SECCOMP` (custom profile), `SESSION_READONLY_ROOTFS` (`container-hardening.ts`) |
-| —  | Gap 4 — untrusted-input lens (SHI-98) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
+| —  | Gap 4 — untrusted-input lens (SHI-98 + issue slice SHI-85) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
 
 ## Design principles to preserve
 
