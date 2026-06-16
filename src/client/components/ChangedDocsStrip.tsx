@@ -19,6 +19,7 @@ import type { NotableFileChange } from "../../server/shared/types/github-types.j
 import type { IssueChipRef, IssueIntent } from "../utils/pr-card-issue-refs.js";
 import { useFileStore } from "../stores/file-store.js";
 import { useIssuesStore } from "../stores/issues-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import { ICON_SIZE } from "../design-tokens.js";
 
 const STATUS_WORD: Record<NotableFileChange["status"], string> = {
@@ -102,14 +103,19 @@ function PrCardIssueChip({ chip }: { chip: IssueChipRef }) {
       <button
         type="button"
         title={`Open ${chip.identifier} in ShipIt`}
-        onClick={() =>
+        onClick={() => {
+          // Switch the right panel to the Issues tab (and surface it on mobile)
+          // before opening the detail — mirrors handleOpenIssue in App.tsx so a
+          // clicked chip lands the user on the issue inline (CLAUDE.md §1/§2).
+          useUiStore.getState().setRightTab("issues");
+          useUiStore.getState().setMobilePanel("preview");
           void useIssuesStore.getState().openIssue({
             tracker,
             identifier: chip.identifier,
             ...(chip.issueId ? { id: chip.issueId } : {}),
             ...(chip.url ? { url: chip.url } : {}),
-          })
-        }
+          });
+        }}
         className={`${base} cursor-pointer hover:border-(--color-text-tertiary) hover:bg-(--color-bg-hover) transition-colors`}
       >
         {inner}
