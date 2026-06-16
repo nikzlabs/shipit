@@ -1,7 +1,7 @@
 import type { WsServerMessage, ClaudeContentBlockText, ClaudeContentBlockToolUse, TurnUsage, PermissionMode, LogSource } from "../../shared/types.js";
 import type { AgentEvent, AgentProcess } from "../../shared/types.js";
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import type { ChatMessageGroup, ToolResultEntry, SteeredMessage, SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
+import type { SessionRunnerInterface, QueuedMessage } from "../session-runner.js";
 import type { ChatHistoryManager, PersistedPermissionRequest } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
 import type { UsageManager } from "../usage.js";
@@ -9,14 +9,28 @@ import type { AuthManager } from "../agents/claude/auth-manager.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import { getContextWindowForModel, DEFAULT_CONTEXT_WINDOW_TOKENS } from "../../shared/agent-registry.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../../shared/types/voice-note-types.js";
-import {
-  hasAuthoredVoiceNoteThisTurn,
-  sanitizeVoiceContext,
-  VOICE_NOTE_TOOL_NAME,
-} from "../voice/voice-note-router.js";
 import { emitChatCard, emitNoticeInTurn, buildTurnMessages, persistTurnInProgress, updateRecordedCard } from "../chat-card-persistence.js";
 import type { CompactionCard } from "../../shared/types.js";
 import crypto from "node:crypto";
+// Phase P6 (docs/201) — concern modules split out of this file. `wireAgentListeners`
+// keeps the lifecycle wiring and delegates to these.
+import {
+  extractToolResults,
+  stampToolDurations,
+  cliPermissionModeToApplied,
+  isWellFormedAskUserQuestion,
+  createAgentToolTracker,
+} from "./agent-event-normalizer.js";
+import {
+  accumulateAssistantGroups,
+  attachSubagentAssistant,
+  attachSubagentToolResults,
+  attachToolResultsToGroup,
+  requeueUndeliveredSteers,
+} from "./agent-message-builder.js";
+import { observeVoiceNotes } from "./agent-voice-handler.js";
+import { wireAuthRequiredHandler } from "./agent-auth-handler.js";
+import { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
 
 // `buildTurnMessages` / `persistTurnInProgress` now live in
 // `chat-card-persistence.ts` (co-located with `recordChatCard`, which shares
@@ -25,6 +39,14 @@ import crypto from "node:crypto";
 // (send-message, dispatch-steering, agent-execution, tests) keep their
 // `./agent-listeners.js` import path unchanged.
 export { buildTurnMessages, persistTurnInProgress } from "../chat-card-persistence.js";
+
+// Phase P6 (docs/201) — these helpers were extracted into sibling concern
+// modules. Re-exported here so existing importers (send-message,
+// dispatch-steering, agent-execution, tests) keep their `./agent-listeners.js`
+// import path unchanged.
+export { extractToolResults, stampToolDurations } from "./agent-event-normalizer.js";
+export { recordSteeredMessage, requeueUndeliveredSteers } from "./agent-message-builder.js";
+export { normalizeAgentUsageLimitError } from "./agent-rate-limits.js";
 
 /**
  * Context-light dependency set for `wireAgentListeners`. Lifted out of the
@@ -95,290 +117,10 @@ export interface AgentListenerDeps {
 }
 
 /**
- * Find the chat message group that contains the given tool_use id (either in
- * its top-level toolUse list, or — for nested subagents — in a subagentEvent's
- * toolUse list). Used to attach subagent events to the correct group so they
- * render under the parent Task tool. (109 — subagent transparency)
- */
-function findGroupContainingTool(
-  groups: ChatMessageGroup[],
-  toolUseId: string,
-): ChatMessageGroup | undefined {
-  // Iterate newest-first since subagent events typically reference a recent tool.
-  for (let i = groups.length - 1; i >= 0; i--) {
-    const g = groups[i];
-    if (g.toolUse.some((t) => t.id === toolUseId)) return g;
-    // Also handle nested subagents-of-subagents: look inside existing subagentEvents.
-    for (const ev of g.subagentEvents ?? []) {
-      if (ev.kind === "assistant" && ev.toolUse.some((t) => t.id === toolUseId)) return g;
-    }
-  }
-  return undefined;
-}
-
-/**
  * Default context window in tokens. Kept as a re-export for legacy call
  * sites; per-model windows are resolved via `getContextWindowForModel`.
  */
 export const CONTEXT_WINDOW_TOKENS = DEFAULT_CONTEXT_WINDOW_TOKENS;
-
-const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
-  claude: "Claude",
-  codex: "Codex",
-};
-
-/**
- * Upstream agent CLIs can report the generic "org monthly usage limit" even
- * when ShipIt's subscription badge has a fresh exhausted 5h-window snapshot.
- * Correct only that known mismatch; without an exhausted session window, keep
- * the upstream text intact.
- */
-export function normalizeAgentUsageLimitError(
-  agentId: AgentId,
-  message: string,
-  limits: SubscriptionLimitsMap | undefined,
-): string {
-  if (!/monthly usage limit/i.test(message)) return message;
-
-  const sessionLimit = limits?.[agentId]?.session;
-  if (!sessionLimit) return message;
-  // usedPct is null when the provider hasn't reported utilization yet (Claude
-  // CLI 2.1.140 below its warning thresholds — anthropics/claude-code#50518).
-  // Without a number we can't claim the window is exhausted, so leave the
-  // upstream "monthly usage limit" message intact.
-  if (sessionLimit.usedPct === null || sessionLimit.usedPct < 100) return message;
-
-  const reset = new Date(sessionLimit.resetAt);
-  const resetText = Number.isNaN(reset.getTime())
-    ? sessionLimit.resetAt
-    : reset.toISOString();
-  const label = AGENT_LIMIT_LABELS[agentId] ?? agentId;
-  return `You've hit ${label}'s 5h usage limit. It resets at ${resetText}.`;
-}
-
-/** Extract tool result entries from an agent_tool_result event. */
-export function extractToolResults(event: AgentEvent): ToolResultEntry[] {
-  const content = (event as { content?: unknown[] }).content ?? [];
-  return content
-    .filter((b): b is Record<string, unknown> =>
-      typeof b === "object" && b !== null && (b as Record<string, unknown>).type === "tool_result" && !!(b as Record<string, unknown>).tool_use_id)
-    .map((b) => ({
-      toolUseId: b.tool_use_id as string,
-      content: typeof b.content === "string" ? b.content
-        : (b.content === null || b.content === undefined) ? ""
-        : JSON.stringify(b.content),
-      isError: (b.is_error as boolean) ?? false,
-      // Per-tool duration injected by `stampToolDurations` before the event is
-      // emitted/persisted. Reading it here is what carries timing into the
-      // persisted `toolResults` JSON (chat-history) with no extra plumbing.
-      ...(typeof b.duration_ms === "number" ? { durationMs: b.duration_ms } : {}),
-    }));
-}
-
-/**
- * Inject a derived `duration_ms` onto each `tool_result` content block of an
- * agent_tool_result event, computed as `now - startTime` for the matching
- * tool_use id. The CLI gives us no per-tool timing, so we time it ourselves at
- * the parse boundary: tool_use starts are stamped when the block is observed
- * (see `toolUseStartTimes` in `wireAgentListeners`), and this stamps the result
- * when it arrives. Mutating the event content (rather than a side channel) means
- * the single value rides BOTH paths — the live WS event the client reads and the
- * persisted `toolResults` that `extractToolResults` builds — from one source.
- * Returns the event unchanged (same reference) when nothing was stamped, so
- * non-tool-result events and results without a recorded start are zero-cost.
- */
-export function stampToolDurations(
-  event: AgentEvent,
-  startTimes: Map<string, number>,
-  now: number,
-): AgentEvent {
-  const content = (event as { content?: unknown[] }).content;
-  if (!Array.isArray(content)) return event;
-  let changed = false;
-  const stamped = content.map((b) => {
-    if (typeof b !== "object" || b === null) return b;
-    const block = b as Record<string, unknown>;
-    if (block.type !== "tool_result" || typeof block.tool_use_id !== "string") return b;
-    if (typeof block.duration_ms === "number") return b;
-    const start = startTimes.get(block.tool_use_id);
-    if (start === undefined) return b;
-    changed = true;
-    return { ...block, duration_ms: Math.max(0, now - start) };
-  });
-  return changed ? ({ ...event, content: stamped } as AgentEvent) : event;
-}
-
-/**
- * Record a live-steered user message on the runner, anchored after the
- * assistant groups that have produced persistable content so far. The anchor
- * is what `buildTurnMessages` uses to re-interleave the message at its true
- * transcript position on every in-progress rebuild (docs/140).
- */
-export function recordSteeredMessage(
-  runner: { chatMessageGroups: ChatMessageGroup[]; steeredMessages: SteeredMessage[] },
-  text: string,
-  extra?: Pick<SteeredMessage, "images" | "files" | "uploadPaths" | "assembledPrompt">,
-): void {
-  const afterGroupIndex = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
-  runner.steeredMessages = [
-    ...runner.steeredMessages,
-    {
-      afterGroupIndex,
-      text,
-      images: extra?.images,
-      files: extra?.files,
-      uploadPaths: extra?.uploadPaths,
-      // docs/140 — record what the CLI will echo so the delivery ack can match
-      // it. Absent ⇒ not a streaming live-steer ⇒ never a re-queue candidate.
-      assembledPrompt: extra?.assembledPrompt,
-    },
-  ];
-  // docs/140 diag — capture the steered-message inject point. Pairs with the
-  // `[persist-user]` logs to confirm whether the same user text was both
-  // appended (via persistUserMessage) and injected into the in-progress batch
-  // (via this path) during one user-send — the suspected double-bubble cause.
-  console.log(
-    `[steered] recordSteeredMessage afterGroupIndex=${afterGroupIndex} steered.len=${runner.steeredMessages.length} text=${JSON.stringify(text.slice(0, 60))}`,
-  );
-}
-
-/**
- * docs/140 — re-queue live steers the CLI never acknowledged. A steer with
- * `assembledPrompt` set but `delivered` still falsy at turn end fell into the
- * turn-end gap: it was written to the resident streaming process's stdin while
- * `running` was still true, but the model had already finished its output and
- * had no decision point left to apply it at, so the turn ended (`result`)
- * without the agent acting on it AND without the CLI echoing it back
- * (`--replay-user-messages`). Such steers are dropped from the rendered set (so
- * they don't double-render) and enqueued; the post-turn drain then runs each as
- * a fresh turn the agent WILL process — turning a silently-lost message into an
- * automatic resend.
- *
- * Must run on `agent_result` BEFORE the turn's rows are finalized
- * (`buildTurnMessages` → `replaceInProgress` → `finalizeInProgress`), so the
- * removed steers are excluded from the finalized turn and don't double-render
- * against the re-queued turn's own user row. The enqueue also happens before
- * the executor's post-turn `tryDrain`, which then runs the re-queued steer as
- * the next turn. Steers without `assembledPrompt` (non-streaming sends, which
- * are never echoed) are never candidates, so this is a no-op off the live-steer
- * path.
- *
- * A steer counts as DELIVERED — and is left alone — when EITHER signal fired:
- *   1. the CLI echoed it (`delivered`, set by the `agent_user_replay` ack), or
- *   2. the turn produced an assistant group AFTER it was injected (the current
- *      persistable-group count exceeds the steer's `afterGroupIndex` snapshot) —
- *      i.e. the model continued past the steer point and acted on it.
- * Only a steer with NEITHER signal fell into the turn-end gap. Requiring both
- * to be absent is deliberately conservative: it never re-queues (and so never
- * double-processes) a steer the agent demonstrably handled, even if the CLI's
- * echo is missing or didn't match.
- *
- * Returns the number of steers re-queued (for diagnostics / tests).
- */
-export function requeueUndeliveredSteers(
-  runner: SessionRunnerInterface,
-  emit: (msg: WsServerMessage) => void,
-): number {
-  const steers = runner.steeredMessages;
-  const persistableGroups = runner.chatMessageGroups.filter((g) => g.text || g.toolUse.length > 0).length;
-  const isUndelivered = (s: SteeredMessage): boolean =>
-    s.assembledPrompt !== undefined && !s.delivered && persistableGroups <= s.afterGroupIndex;
-  const undelivered = steers.filter(isUndelivered);
-  if (undelivered.length === 0) return 0;
-  // Remove them from the steered set so the imminent finalize excludes them —
-  // the re-queued turn persists its own user row, so leaving them here would
-  // double-render the bubble on reload (same reasoning as steer-rejected).
-  runner.steeredMessages = steers.filter((s) => !isUndelivered(s));
-  for (const s of undelivered) {
-    const queued: QueuedMessage = { text: s.text };
-    if (s.images && s.images.length > 0) queued.images = s.images;
-    if (s.files && s.files.length > 0) queued.files = s.files.map((f) => ({ path: f.path }));
-    const position = runner.enqueue(queued);
-    emit({ type: "message_queued", text: s.text, position });
-    console.log(
-      `[steer-requeue] runner=${runner.sessionId} un-acked steer re-queued at pos=${position} text=${JSON.stringify(s.text.slice(0, 60))}`,
-    );
-  }
-  return undelivered.length;
-}
-
-/**
- * Pattern for MCP tool names: `mcp__<server>__<tool>`. Capture group 1 is the
- * server namespace, used to attribute a failed tool call back to a specific
- * configured MCP server (docs/088 mid-session crash detection). `<server>` is
- * lowercase alphanumeric per the same validation as
- * `services/mcp.ts#NAME_RE`; `<tool>` can include underscores. The outer
- * anchors guarantee a full-name match so an unrelated tool that happens to
- * contain `mcp__` in its arguments doesn't trigger crash attribution.
- */
-const MCP_TOOL_NAME_RE = /^mcp__([a-z][a-z0-9]*)__/;
-
-/**
- * True when an AskUserQuestion tool_use carries a non-empty `questions` array.
- * Used to gate the "interrupt the CLI so it can't auto-resolve the call"
- * behavior: an input without `questions` is rejected by the CLI's own input
- * validator (InputValidationError flows back as a tool_result), and the client
- * can't render the card without it either — so interrupting on a malformed
- * call would just kill the turn before the model can self-correct.
- */
-function isWellFormedAskUserQuestion(t: ClaudeContentBlockToolUse): boolean {
-  if (t.name !== "AskUserQuestion") return false;
-  const questions = (t.input as { questions?: unknown }).questions;
-  return Array.isArray(questions) && questions.length > 0;
-}
-
-/**
- * docs/163 — derive an ear-shaped headline from an observed `AskUserQuestion`
- * input. The fallback floor: used only when the agent didn't author a headline
- * via the built-in `voice_note` tool. We voice the topic (the first question's
- * `header`, or its `question` text) but never the options themselves — those
- * stay on screen.
- */
-function deriveAskHeadline(input: Record<string, unknown>): string {
-  const first: unknown = Array.isArray(input.questions) ? input.questions[0] : undefined;
-  const header = typeof (first as { header?: unknown })?.header === "string"
-    ? (first as { header: string }).header.trim()
-    : "";
-  const question = typeof (first as { question?: unknown })?.question === "string"
-    ? (first as { question: string }).question.trim()
-    : "";
-  const topic = header || question;
-  return topic
-    ? `I've got a question about ${topic} — options are on screen.`
-    : "I've got a question for you — options are on screen.";
-}
-
-/**
- * docs/163 — derive an ear-shaped headline from an observed `ExitPlanMode`
- * input. Voices the plan's title (first non-empty line, heading markers
- * stripped) but never the plan body.
- */
-function derivePlanHeadline(input: Record<string, unknown>): string {
-  const plan = typeof input.plan === "string" ? input.plan : "";
-  const firstLine = plan
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .find(Boolean) ?? "";
-  const title = firstLine.replace(/^#+\s*/, "").slice(0, 80);
-  return title
-    ? `I've drafted a plan — ${title}. Want to review it?`
-    : "I've drafted a plan — want to review it?";
-}
-
-/**
- * Truncate a tool-result error payload for inclusion in the per-server
- * `crashed` reason string. Tool errors can be megabytes (stack traces,
- * dumped JSON), and we forward the reason verbatim to the UI badge —
- * cap it so a single bad tool call can't bloat the WS message or the
- * Settings panel hover state.
- */
-function summarizeCrashReason(content: string): string {
-  const trimmed = content.trim();
-  if (!trimmed) return "tool call failed";
-  const firstLine = trimmed.split(/\r?\n/, 1)[0] ?? trimmed;
-  const MAX = 240;
-  return firstLine.length > MAX ? `${firstLine.slice(0, MAX - 1)}…` : firstLine;
-}
 
 /**
  * Per-turn options accepted by `wireAgentListeners`. Anything that varies
@@ -441,32 +183,6 @@ export interface WireListenersOpts {
    * of letting the user steer their answer in.
    */
   useStreaming?: boolean;
-}
-
-/**
- * Map the CLI's authoritative `init.permissionMode` string back to the ShipIt
- * `appliedPermissionMode` bookkeeping value. The mapping is the inverse of what
- * `ClaudeAdapter.setPermissionMode` / the spawn flags use:
- *   - `"plan"`    → `"plan"`
- *   - `"auto"`    → `"guarded"` (the CLI's classifier-gated mode)
- *   - `"default"` → `undefined` (ShipIt's no-flag "auto")
- * Any other / absent value (adapters that don't surface it, e.g. Codex) returns
- * the `"unrecognized"` sentinel so the caller leaves the bookkeeping untouched
- * — we never want to clobber a known applied mode with a guess.
- */
-function cliPermissionModeToApplied(
-  cliMode: string | undefined,
-): PermissionMode | undefined | "unrecognized" {
-  switch (cliMode) {
-    case "plan":
-      return "plan";
-    case "auto":
-      return "guarded";
-    case "default":
-      return undefined;
-    default:
-      return "unrecognized";
-  }
 }
 
 /**
@@ -571,61 +287,17 @@ export function wireAgentListeners(
   // ExitPlanMode block in the agent_assistant branch below).
   const suppressedToolResultIds = new Set<string>();
 
-  // ---- MCP mid-turn crash detection (docs/088) ----
+  // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
   //
   // The CLI's init event covers cold-start liveness (ClaudeAdapter →
-  // `mcp_status`), but doesn't say anything when a server dies mid-turn.
-  // We can recover that signal from tool-result errors: every MCP tool call
-  // is named `mcp__<server>__<tool>`, so an `is_error: true` result whose
-  // parent `tool_use_id` resolved to an MCP tool means that server failed
-  // *while serving the agent*, which is the user-visible definition of
-  // "crashed". We:
-  //   1. Record `id → name` for every tool_use we see this turn (including
-  //      subagent ones — Task children dispatch MCP tools too).
-  //   2. On `is_error: true` tool_result, look up the name, extract the
-  //      server, dedupe per-turn-per-server, and emit `mcp_server_status`
-  //      with `state: "crashed"` and a short reason derived from the error
-  //      content. Dedupe avoids spamming one badge per failed tool call when
-  //      the agent retries.
-  //
-  // McpStore.applyStatus is last-write-wins, so the next successful init
-  // event from a future turn naturally clears the badge back to `loaded`.
-  const toolUseIdToName = new Map<string, string>();
-  const crashedServersThisTurn = new Set<string>();
-  // Per-tool timing (docs/185): the CLI emits no per-tool duration, only a
-  // turn-level one. We derive it by stamping a start when each tool_use block is
-  // observed and computing the delta when its tool_result arrives
-  // (`stampToolDurations`). Surfaced in the tool-call detail modal.
-  const toolUseStartTimes = new Map<string, number>();
-  const recordToolUses = (
-    blocks: readonly { id: string; name: string }[],
-  ) => {
-    const seenAt = Date.now();
-    for (const block of blocks) {
-      toolUseIdToName.set(block.id, block.name);
-      // First observation wins — never overwrite a start with a later re-record.
-      if (!toolUseStartTimes.has(block.id)) toolUseStartTimes.set(block.id, seenAt);
-    }
-  };
-  const reportMcpCrashesFromResults = (results: ToolResultEntry[]) => {
-    for (const result of results) {
-      if (!result.isError) continue;
-      const toolName = toolUseIdToName.get(result.toolUseId);
-      if (!toolName) continue;
-      const match = MCP_TOOL_NAME_RE.exec(toolName);
-      if (!match) continue;
-      const serverName = match[1];
-      if (crashedServersThisTurn.has(serverName)) continue;
-      crashedServersThisTurn.add(serverName);
-      emitToViewers({
-        type: "mcp_server_status",
-        sessionId: opts.capturedSessionId!,
-        name: serverName,
-        state: "crashed",
-        reason: summarizeCrashReason(result.content),
-      });
-    }
-  };
+  // `mcp_status`), but doesn't say anything when a server dies mid-turn. The
+  // tracker recovers that from tool-result errors (every MCP tool call is named
+  // `mcp__<server>__<tool>`), records `id → name` and a first-observation start
+  // for every tool_use, and emits `mcp_server_status state:"crashed"` (deduped
+  // per-turn-per-server) on a matching `is_error` result. `toolUseStartTimes`
+  // feeds `stampToolDurations`. State is per-wired-agent so it resets per turn.
+  // See `createAgentToolTracker` in `agent-event-normalizer.ts`.
+  const toolTracker = createAgentToolTracker(opts.capturedSessionId, emitToViewers);
 
   agent.on("log", (source: string, text: string) => {
     deps.broadcastLog(source as "stderr" | "stdout" | "server", text);
@@ -924,7 +596,7 @@ export function wireAgentListeners(
     // client and the persisted `toolResults` (built downstream via
     // `extractToolResults`) share one computed value from one source.
     if (event.type === "agent_tool_result") {
-      event = stampToolDurations(event, toolUseStartTimes, Date.now());
+      event = stampToolDurations(event, toolTracker.toolUseStartTimes, Date.now());
     }
 
     const isInternalStreamCompletion =
@@ -1068,24 +740,16 @@ export function wireAgentListeners(
 
       // Record every tool_use this turn — including subagent (Task) ones,
       // since their children dispatch MCP tools whose failures we still want
-      // attributed to the right server. See `recordToolUses` block at the
+      // attributed to the right server. See `createAgentToolTracker` at the
       // top of this function (docs/088 mid-turn crash detection).
-      if (toolBlocks.length > 0) recordToolUses(toolBlocks);
+      if (toolBlocks.length > 0) toolTracker.recordToolUses(toolBlocks);
 
       // Subagent (Task) events carry parentToolUseId. Route them under the
       // group that contains the parent Task tool, *not* into the main flow —
       // otherwise nested tool calls would corrupt the parent conversation.
       // (109 — subagent transparency)
       if (event.parentToolUseId && runner) {
-        const groups = runner.chatMessageGroups;
-        const parentGroup = findGroupContainingTool(groups, event.parentToolUseId);
-        if (parentGroup) {
-          parentGroup.subagentEvents = [
-            ...(parentGroup.subagentEvents ?? []),
-            { kind: "assistant", parentToolUseId: event.parentToolUseId, text, toolUse: toolBlocks },
-          ];
-          runner.chatMessageGroups = groups;
-        }
+        attachSubagentAssistant(runner, event.parentToolUseId, text, toolBlocks);
         return;
       }
 
@@ -1108,90 +772,22 @@ export function wireAgentListeners(
         runner.appliedPermissionMode = "plan";
       }
 
-      // Track message groups for chat history (split at tool-result boundaries)
+      // Track message groups for chat history (split at tool-result boundaries).
+      // The accumulation + standalone-tool-merge logic lives in
+      // `agent-message-builder.ts`.
       if ((text || toolBlocks.length > 0) && runner) {
-        const groups = runner.chatMessageGroups;
-        // Standalone tools (ExitPlanMode, AskUserQuestion) should merge with the
-        // preceding group to keep plan text together with the PlanApproval card.
-        // Without this, ExitPlanMode ends up in a separate message group with
-        // empty text when the agent does research between writing the plan and
-        // calling ExitPlanMode.
-        const STANDALONE_MERGE = new Set(["EnterPlanMode", "ExitPlanMode", "AskUserQuestion"]);
-        const isStandaloneOnly = !text && toolBlocks.length > 0
-          && toolBlocks.every((t) => STANDALONE_MERGE.has(t.name));
-        if (runner.needsNewMessageGroup && isStandaloneOnly && groups.length > 0) {
-          // Merge standalone tools with previous group; leave needsNewMessageGroup
-          // true so the next non-standalone event starts a fresh group.
-          const last = groups[groups.length - 1];
-          last.toolUse.push(...toolBlocks);
-        } else if (runner.needsNewMessageGroup || groups.length === 0) {
-          groups.push({ text, toolUse: [...toolBlocks] });
-          runner.needsNewMessageGroup = false;
-        } else {
-          const last = groups[groups.length - 1];
-          last.text += text;
-          last.toolUse.push(...toolBlocks);
-        }
-        runner.chatMessageGroups = groups;
+        accumulateAssistantGroups(runner, text, toolBlocks);
       }
 
-      // docs/163 — authored voice note: this OBSERVATION is the sole deliverer
-      // of the card (and webhook). The card is built entirely from the tool
-      // INPUT, and observation is guaranteed and rides the same fast channel as
-      // the rest of the turn — so the bridge → worker → orchestrator HTTP relay
-      // is reduced to a pure ack (it no longer delivers). That fixes the lag:
-      // when the agent batches `voice_note` with AskUserQuestion / ExitPlanMode
-      // (a parallel tool call), the relay fired late — the CLI is mid-interrupt
-      // — so the card used to trail the question dialog by a couple of seconds.
-      // Delivering here also sets the authored flag synchronously so the derived
-      // nudge below is suppressed even in the same-message case. Subagent calls
-      // carry `parentToolUseId` and returned early above, so they aren't
-      // observed and won't render — by design (a subagent shouldn't page the
-      // user).
-
-      if (runner && deps.deliverVoiceNote) {
-        const voiceCall = toolBlocks.find((t) => t.name === VOICE_NOTE_TOOL_NAME);
-        const input = (voiceCall?.input ?? {}) as {
-          summary?: unknown;
-          needsAttention?: unknown;
-          context?: unknown;
-        };
-        const summary = typeof input.summary === "string" ? input.summary.trim() : "";
-        if (voiceCall && summary) {
-          const context = sanitizeVoiceContext(input.context);
-          deps.deliverVoiceNote(
-            { summary, needsAttention: input.needsAttention === true, ...(context ? { context } : {}) },
-            runner,
-            "authored",
-          );
-        }
-      }
-
-      // docs/163 — source observation for the voice-note router. A top-level
-      // AskUserQuestion / ExitPlanMode interrupt always needs the user, so it
-      // should reach a hands-free user as a spoken headline. Authored-first:
-      // if the agent already authored a headline via the built-in `voice_note`
-      // tool this turn, ShipIt uses that and suppresses this derived nudge.
-      // Derivation is the fallback floor only — never leave the user silent.
-      // (Gated on the authored flag, set synchronously above when the authored
-      // call is observed, and by the bridge route; the per-turn cap in the
-      // router backstops any rare overlap.)
-      if (runner && deps.deliverVoiceNote && !hasAuthoredVoiceNoteThisTurn(runner)) {
-        const ask = toolBlocks.find(isWellFormedAskUserQuestion);
-        const plan = toolBlocks.find((t) => t.name === "ExitPlanMode");
-        if (ask) {
-          deps.deliverVoiceNote(
-            { summary: deriveAskHeadline(ask.input), needsAttention: true },
-            runner,
-            "ask",
-          );
-        } else if (plan) {
-          deps.deliverVoiceNote(
-            { summary: derivePlanHeadline(plan.input), needsAttention: true },
-            runner,
-            "plan",
-          );
-        }
+      // docs/163 — voice notes: deliver the authored card (sole deliverer, built
+      // from the tool INPUT, rides this fast channel) and, as the fallback
+      // floor, a derived headline when a top-level AskUserQuestion / ExitPlanMode
+      // interrupt needs the user but no authored note fired this turn. Subagent
+      // calls carry `parentToolUseId` and returned early above, so they aren't
+      // observed — by design (a subagent shouldn't page the user). See
+      // `observeVoiceNotes` in `agent-voice-handler.ts`.
+      if (runner) {
+        observeVoiceNotes(runner, toolBlocks, deps.deliverVoiceNote);
       }
 
       // The voice-note card's durable persist is owned by `routeVoiceNote` →
@@ -1289,20 +885,12 @@ export function wireAgentListeners(
       // routing fork below so failures inside Task children are caught too.
       // No-op when there are no errors / no MCP-prefixed names — cheap to
       // call on every result block.
-      if (toolResults.length > 0) reportMcpCrashesFromResults(toolResults);
+      if (toolResults.length > 0) toolTracker.reportMcpCrashesFromResults(toolResults);
 
       // Subagent tool_result events: attach to the parent group's subagentEvents
       // and do NOT split the main message group. (109 — subagent transparency)
       if (event.parentToolUseId && runner && toolResults.length > 0) {
-        const groups = runner.chatMessageGroups;
-        const parentGroup = findGroupContainingTool(groups, event.parentToolUseId);
-        if (parentGroup) {
-          parentGroup.subagentEvents = [
-            ...(parentGroup.subagentEvents ?? []),
-            { kind: "tool_result", parentToolUseId: event.parentToolUseId, toolResults },
-          ];
-          runner.chatMessageGroups = groups;
-        }
+        attachSubagentToolResults(runner, event.parentToolUseId, toolResults);
         return;
       }
 
@@ -1310,12 +898,7 @@ export function wireAgentListeners(
 
       // Attach tool results to the current message group
       if (toolResults.length > 0 && runner) {
-        const groups = runner.chatMessageGroups;
-        if (groups.length > 0) {
-          const last = groups[groups.length - 1];
-          last.toolResults = [...(last.toolResults ?? []), ...toolResults];
-          runner.chatMessageGroups = groups;
-        }
+        attachToolResultsToGroup(runner, toolResults);
       }
 
       // Persist all accumulated message groups as in-progress, interleaving any
@@ -1554,105 +1137,11 @@ export function wireAgentListeners(
     }
   });
 
-  agent.on("auth_required", () => {
-    const turnSession = opts.capturedSessionId
-      ? deps.sessionManager.get(opts.capturedSessionId)
-      : null;
-    const failingAgentId = turnSession?.agentId;
-    const turnSessionId = opts.capturedSessionId;
-
-    // docs/179 — decide SYNCHRONOUSLY (before the teardown below kills the agent
-    // and triggers the executor's `done` handler) whether this auth failure
-    // will be auto-recovered. `willRecoverAuth` returns true only for a first-
-    // attempt turn with a token healer wired, and flips the executor's stand-
-    // down flag so the `done` teardown defers to the recovery. When true we
-    // stay quiet — no sign-in card, no OAuth flow — and let `recoverAuth` heal
-    // the token and re-dispatch the turn. A transient stale-token 401 thus
-    // recovers without the user seeing anything or re-sending.
-    const willRecover = opts.willRecoverAuth?.() ?? false;
-
-    // The visible re-auth flow: tell the user (in the affected session only)
-    // to re-authenticate via Settings, nudge the per-agent silent refresher,
-    // and mark the turn ended.
-    const surfaceReauth = (): void => {
-      console.log("[server] Agent CLI requires authentication; prompting re-auth via Settings");
-      // We no longer auto-launch the interactive OAuth flow on a mid-turn 401.
-      // It broadcast the verification URL over a global SSE event, popping a
-      // blocking sign-in overlay in every open browser window. Instead, surface
-      // an actionable error in this session and let the per-agent refresher
-      // attempt a silent heal (which, on a genuine revocation, broadcasts
-      // `agent_auth_failed reason:revoked` → the "Sign in" toast that opens
-      // Settings → Agents).
-      emitToViewers({
-        type: "error",
-        message:
-          "This agent is not authenticated. Open Settings → Agents to sign in, then resend your message.",
-      });
-      // docs/153, docs/155 — let the per-agent module decide its side effect on
-      // auth failure (Claude nudges the silent OAuth refresher; others register
-      // their own hook or none). The listener doesn't know the agent — that's
-      // the point of the table. This is the silent token refresh, NOT the
-      // interactive login overlay we removed above.
-      if (failingAgentId) {
-        deps.onAgentAuthRequired?.(failingAgentId);
-      }
-      if (runner && turnSessionId) {
-        emitToViewers({
-          type: "session_status",
-          sessionId: turnSessionId,
-          running: false,
-          queueLength: runner.queueLength,
-        });
-      }
-      if (turnSessionId) {
-        deps.sseBroadcast("session_agent_finished", { sessionId: turnSessionId });
-      }
-    };
-
-    // Tear the failed turn's agent down. An auth failure ends the turn, but a
-    // persistent streaming agent (live steering) does NOT exit on a failed
-    // result, so the worker never clears `this.agent` and the runner is left
-    // with `running=true` — the next turn then 409s with "Agent already
-    // running". Killing the worker agent + clearing the runner's ref makes the
-    // failure recoverable. See docs/142 (Problem B1). Kill is fire-and-forget;
-    // the proxy surfaces any failure via the Logs panel, not the chat.
-    agent.kill();
-    if (runner) {
-      // Identity-guard: a concurrent turn may have replaced the runner's
-      // agent ref already; only clear if it's still our process.
-      if (runner.getAgent() === agent) {
-        runner.setAgent(null);
-        // docs/140 — streaming process is gone; reset the gate.
-        runner.isStreamingActive = false;
-      }
-      // docs/179 — on the recovery path leave `running` set: the turn is about
-      // to be re-dispatched, so flipping it (and emitting running=false) would
-      // make the client flicker out of its loading state. The re-dispatch
-      // resets turn state. On the surface path, the teardown below clears it.
-      if (!willRecover) runner.running = false;
-    }
-
-    if (willRecover && opts.recoverAuth) {
-      // docs/179 — quiet path: heal + re-dispatch. If the heal genuinely fails
-      // (token revoked / rate-limited), fall back to the visible re-auth flow.
-      // Fire-and-forget: `auth_required` is a sync event handler.
-      // eslint-disable-next-line no-restricted-syntax -- intentional fire-and-forget in a sync event handler
-      void opts.recoverAuth().then(
-        (handled) => {
-          if (!handled) surfaceReauth();
-        },
-        (err: unknown) => {
-          // recoverAuth owns its own errors and resolves false on a failed heal;
-          // a rejection here is unexpected. Fail open — surface the sign-in card
-          // rather than leaving the turn wedged behind an unhandled rejection.
-          console.error("[server] docs/179 auth recovery rejected unexpectedly:", err);
-          surfaceReauth();
-        },
-      );
-      return;
-    }
-    surfaceReauth();
-  });
+  // docs/179 — `auth_required` handling (auth-failure recovery / token refresh)
+  // lives in `agent-auth-handler.ts`. It reads only turn-start-captured values
+  // (`opts.capturedSessionId`, the resolved `runner`) and emits via
+  // `emitToViewers`, preserving the WS-lifecycle invariant.
+  wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
     console.error("[agent] process error:", err.message);
