@@ -1,4 +1,4 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ComponentRef } from "react";
+import { forwardRef, type ComponentPropsWithoutRef, type ComponentRef, type ReactNode } from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { cn } from "../../utils/cn.js";
 
@@ -14,11 +14,16 @@ const DropdownMenuSub = DropdownMenuPrimitive.Sub;
 
 const DropdownMenuRadioGroup = DropdownMenuPrimitive.RadioGroup;
 
+type DropdownMenuContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content> & {
+  /** Render through Radix Portal by default; disable inside modal dialogs. */
+  portaled?: boolean;
+};
+
 const DropdownMenuContent = forwardRef<
   ComponentRef<typeof DropdownMenuPrimitive.Content>,
-  ComponentPropsWithoutRef<typeof DropdownMenuPrimitive.Content>
->(({ className, sideOffset = 4, ...props }, ref) => (
-  <DropdownMenuPrimitive.Portal>
+  DropdownMenuContentProps
+>(({ className, sideOffset = 4, portaled = true, ...props }, ref) => {
+  const content: ReactNode = (
     <DropdownMenuPrimitive.Content
       ref={ref}
       sideOffset={sideOffset}
@@ -31,8 +36,9 @@ const DropdownMenuContent = forwardRef<
       )}
       {...props}
     />
-  </DropdownMenuPrimitive.Portal>
-));
+  );
+  return portaled ? <DropdownMenuPrimitive.Portal>{content}</DropdownMenuPrimitive.Portal> : content;
+});
 DropdownMenuContent.displayName = DropdownMenuPrimitive.Content.displayName;
 
 const DropdownMenuItem = forwardRef<
