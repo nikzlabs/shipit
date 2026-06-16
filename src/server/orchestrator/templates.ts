@@ -47,9 +47,12 @@ scaffold it for you, or start adding files yourself.
 const TEMPLATES: ProjectTemplate[] = [
   ...FRONTEND_TEMPLATES,
   ...FULLSTACK_TEMPLATES,
+  // EMPTY_TEMPLATE leads its `utility` group in the picker (the grid preserves
+  // array order within a category), so it must come before any other utility
+  // template — e.g. the Node.js CLI inside BACKEND_TEMPLATES.
+  EMPTY_TEMPLATE,
   ...BACKEND_TEMPLATES,
   ...PYTHON_TEMPLATES,
-  EMPTY_TEMPLATE,
 ];
 
 // ---------------------------------------------------------------------------
