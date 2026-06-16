@@ -2499,6 +2499,8 @@ describe("PrStatusPoller — catch-up probe", () => {
     const sessionManager = makeSessionManager([
       { id: "s1", branch: "shipit/closed-branch", remoteUrl: "https://github.com/owner/repo" },
     ]);
+    // Real transition: markClosed stamps closed_at and returns true on first call.
+    (sessionManager.markClosed as ReturnType<typeof vi.fn>).mockReturnValue(true);
     const sseBroadcast = vi.fn();
     const onMergeDetected = vi.fn().mockResolvedValue(undefined);
 
@@ -2518,6 +2520,14 @@ describe("PrStatusPoller — catch-up probe", () => {
 
     // Should stamp closed_at so the session sinks into "Recently resolved".
     expect(sessionManager.markClosed).toHaveBeenCalledWith("s1");
+
+    // And broadcast the updated session list so viewers demote the session into
+    // "Recently resolved" live — same effect as a merge (which broadcasts
+    // session_list via onMergeDetectedCb). Without this the close only reaches
+    // the client on a full reload.
+    expect(sseBroadcast).toHaveBeenCalledWith("session_list", expect.objectContaining({
+      sessions: expect.arrayContaining([expect.objectContaining({ id: "s1" })]),
+    }));
 
     poller.destroy();
   });

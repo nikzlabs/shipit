@@ -1449,8 +1449,16 @@ export class PrStatusPoller {
     // session sinks out of the active sidebar into "Recently resolved". (Merge
     // sets `merged_at` via the onMergeDetectedCb archive path below.) markClosed
     // is a no-op if the PR already merged, so ordering vs. the merge path is safe.
-    if (prState === "closed") {
-      this.sessionManager.markClosed(sessionId);
+    //
+    // On the real transition, broadcast the updated `session_list` so viewers
+    // demote the session into "Recently resolved" live — mirroring the merge
+    // path's `session_list` broadcast in `onMergeDetectedCb`. The `pr_status`
+    // event below only updates the PR card; without this `session_list`, the
+    // session's `closedAt` (which drives the sidebar grouping) wouldn't reach
+    // the client until a full reload re-bootstraps the list. `markClosed`
+    // returns true only on the first stamp, so this fires once per close.
+    if (prState === "closed" && this.sessionManager.markClosed(sessionId)) {
+      this.sseBroadcast("session_list", { sessions: this.sessionManager.list() });
     }
     this.mergedSessions.add(sessionId);
     // docs/146 — release the manager's per-session state when the PR moves
