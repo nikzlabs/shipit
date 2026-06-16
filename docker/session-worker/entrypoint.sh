@@ -50,4 +50,19 @@ for d in /workspace /uploads /dep-cache /credentials /home/shipit; do
   fi
 done
 
+# docs/172 Gap 5 (SHI-97) — read-only rootfs. The orchestrator mounts a tmpfs at
+# /home/shipit (the HOME holds writable caches: ~/.npm, ~/.npm-global, ~/.cache,
+# ~/.claude.json), which SHADOWS the image-baked credential symlinks. Re-create
+# them into the tmpfs so the agent CLIs still resolve their creds from the
+# persistent /credentials mount. No-op unless the orchestrator set the flag.
+if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
+  ln -sfn /credentials/.claude      /home/shipit/.claude
+  ln -sfn /credentials/.claude.json /home/shipit/.claude.json
+  ln -sfn /credentials/.codex       /home/shipit/.codex
+  mkdir -p /home/shipit/.npm-global /home/shipit/.npm
+  # `chown -h` the links themselves; the dirs are freshly made in the tmpfs.
+  chown -h "${UID_GID}:${UID_GID}" /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
+  chown "${UID_GID}:${UID_GID}" /home/shipit/.npm-global /home/shipit/.npm
+fi
+
 exec gosu "${UID_GID}:${UID_GID}" "$@"

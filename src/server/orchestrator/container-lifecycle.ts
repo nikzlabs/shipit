@@ -45,6 +45,7 @@ import {
   EGRESS_PROXY_LABEL,
 } from "./egress-proxy-install.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import { readonlyRootfsTmpfs } from "./container-hardening.js";
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -115,6 +116,21 @@ export interface LifecycleDeps {
    * `{ contained: true, extraHosts: [] }` (byte-for-byte the env-only behavior).
    */
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  /**
+   * docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated default-OFF
+   * (resolved in session-container.ts from `container-hardening.ts`). Omitted in
+   * tests / when the operator hasn't opted in → byte-for-byte unchanged.
+   *
+   * - `runtime` — alternate OCI runtime for `HostConfig.Runtime` (e.g. `runsc`
+   *   for gVisor) where the host registers it; undefined → Docker default `runc`.
+   * - `seccompSecurityOpt` — the `seccomp=<json>` SecurityOpt entry from the
+   *   committed profile; undefined → Docker's default seccomp profile applies.
+   * - `readonlyRootfs` — when true, `ReadonlyRootfs: true` + the minimal tmpfs
+   *   writable set; the persistent mounts (/workspace, /credentials, …) stay rw.
+   */
+  kernelRuntime?: string;
+  seccompSecurityOpt?: string;
+  readonlyRootfs?: boolean;
   /**
    * Orchestrator-visible state dir holding `overlay-base-meta/` — needed by the
    * base-hit marker pre-stamp (docs/183, `preStampInstallMarker`). Optional;
@@ -564,6 +580,16 @@ export async function createContainer(
     env.push("SHIPIT_SKIP_WORKSPACE_CHOWN=1");
   }
 
+  // docs/172 Gap 5 (SHI-97) — under a read-only rootfs, /home/shipit is a tmpfs
+  // (see readonlyRootfsTmpfs) which shadows the image-baked credential symlinks
+  // (`.claude`→/credentials, etc.). Signal the non-root entrypoint to re-create
+  // them into the tmpfs HOME before it gosu-drops. No-op when readonly-rootfs is
+  // off. (ReadonlyRootfs requires the non-root runtime, where the entrypoint's
+  // prep branch runs; in dev bind-mount mode it stays off.)
+  if (deps.readonlyRootfs) {
+    env.push("SHIPIT_READONLY_HOME=1");
+  }
+
   // Expose orchestrator API so the agent can query service status/logs
   env.push(...await buildOrchestratorCallbackEnv(config.sessionId));
 
@@ -692,8 +718,28 @@ export async function createContainer(
         // affects only this session — least privilege (no Privileged installer).
         // Gated on Tier C (egressProxy); unset otherwise so Tier A/B are unchanged.
         Sysctls: deps.egressProxy ? { "net.ipv4.conf.all.route_localnet": "1" } : undefined,
-        SecurityOpt: ["no-new-privileges"],
-        ReadonlyRootfs: false,
+        // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated
+        // default-OFF (see container-hardening.ts). With every flag unset this
+        // is byte-for-byte the prior config: no Runtime override (Docker default
+        // runc), SecurityOpt: ["no-new-privileges"], ReadonlyRootfs: false, no
+        // Tmpfs.
+        //
+        // gVisor: an alternate OCI runtime registered on the host. Omitted
+        // (undefined) unless SESSION_RUNTIME is set, so runc stays the default.
+        Runtime: deps.kernelRuntime,
+        // Custom seccomp profile appended to SecurityOpt; Docker's default
+        // seccomp applies when seccompSecurityOpt is undefined (never unconfined).
+        SecurityOpt: deps.seccompSecurityOpt
+          ? ["no-new-privileges", deps.seccompSecurityOpt]
+          : ["no-new-privileges"],
+        // Read-only rootfs shrinks the tamper surface; the persistent writable
+        // mounts (/workspace, /credentials, /uploads, /dep-cache) are bind/volume
+        // mounts and stay writable, and the image-rootfs writable paths come back
+        // as the tmpfs set below. Requires the non-root runtime (the entrypoint
+        // re-creates the credential symlinks into the tmpfs HOME — see
+        // SHIPIT_READONLY_HOME below + docker/session-worker/entrypoint.sh).
+        ReadonlyRootfs: deps.readonlyRootfs ?? false,
+        Tmpfs: deps.readonlyRootfs ? readonlyRootfsTmpfs() : undefined,
         CapDrop: ["ALL"],
         // docs/150 §10 — capability tightening after the non-root migration.
         // CHOWN/SETUID/SETGID/FOWNER stay: the root entrypoint needs them to chown
