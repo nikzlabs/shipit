@@ -38,10 +38,19 @@ privileges.
 
 SHI-161 lists "The UI shows all attached repos/PRs and their status." By this
 design ShipIt intentionally does **not** see what the agent cloned, so that
-criterion is dropped in favour of simplicity. Recorded here as a deliberate
-departure, not an oversight. (The narrower SHI-120 "secondary private repo
-mounting" is also subsumed: in a Sandbox the agent just clones the private repo
-itself, given Git access.)
+criterion is dropped.
+
+This is a **deliberate, scoped product degradation**, not just a simplification —
+and it sits in tension with CLAUDE.md §1–§4 ("ShipIt is the surface; inline beats
+link-out; PRs/diffs/CI surface inline"). The exception is acceptable **only**
+because a Sandbox is explicitly framed as a *lower-level, reduced-visibility
+workspace* (closer to a terminal than to a repo-bound project): the user opts
+into it from the "advanced session" menu knowing ShipIt won't render the agent's
+repos/PRs. It must therefore **not** be marketed as a full inline multi-PR
+ShipIt workflow — that richer experience (per-repo PR cards, inline status) stays
+a future, separate effort. The narrower SHI-120 "secondary private repo mounting"
+is subsumed: in a Sandbox the agent just clones the private repo itself, given
+GitHub access.
 
 ## Model
 
@@ -50,27 +59,46 @@ itself, given Git access.)
 - Reuse the existing `SessionInfo.kind` field. New value: `kind = "sandbox"`
   (alongside `"ops"`; normal repo-backed sessions leave `kind` undefined).
 - Add a `capabilities` set on the session, chosen at creation:
-  - `git` — the agent gets the git credential broker (clone/push private repos,
-    `gh`). Off ⇒ a sealed compute box: can pull public code but cannot
-    authenticate to or push to anything (a useful posture for running untrusted
-    code with no exfil path to the user's repos).
+  - `git` (UI label **"GitHub access"**) — the agent gets the GitHub credential
+    broker (clone/push **private** repos, brokered PR ops). Off ⇒ no GitHub
+    credentials: plain public `git clone` over HTTPS may still work, and the
+    container still has its agent API egress — so "off" means **no GitHub token
+    / no push to the user's repos**, *not* a fully network-sealed box. (If a
+    truly sealed posture is wanted, that's an egress concern — see Security.)
   - `docker` — **session-scoped** Docker (see below). Off ⇒ no Docker.
-- `remoteUrl` stays null. The DB column is already nullable; the app-layer code
-  that assumes its presence (PR lifecycle, polling, auto-push, siblings) is
-  already guarded by `if (remoteUrl)` and simply no-ops — which is what we want.
+- `remoteUrl` stays null.
 
 `kind` and `capabilities` are set **server-authoritatively at creation**, never
 inferred from workspace files, so an agent cannot self-promote (same rule as
 ops `setKind`).
+
+### The sandbox invariant (not merely "no remoteUrl")
+
+Codex review flagged that "repo-less" already half-exists (standalone sessions
+are repo-less but git-initialized) and that several paths are **not** actually
+guarded by `if (remoteUrl)`. So sandbox is defined by an explicit invariant, not
+the absence of a remote:
+
+1. **No root git repo** at `/workspace` (the agent clones into subdirs).
+2. **No session-level post-turn git management** — auto-commit/auto-push/PR card
+   are skipped by `kind === "sandbox"`, *not* inferred from `remoteUrl`
+   (`post-turn.ts` calls `git.autoCommit()` on the session dir **unconditionally**
+   today — it must be explicitly gated, or it errors on the non-repo root).
+3. **Capability-gated brokers** — git-credential and PR brokers check the
+   session's durable `capabilities`, not just container env (see Security).
+4. **No preview / PR surfaces**.
+5. **Its own sidebar group**, keyed on `kind === "sandbox"`, separate from the
+   defensive `remoteUrl ?? ""` standalone bucket (`sessions.ts`) so unrelated
+   no-remote sessions don't get lumped in.
 
 ### What turns off (mirrors ops)
 
 | Surface | Sandbox behavior |
 |---|---|
 | Preview / compose services | Off (no `x-shipit-preview`; ops keeps a docker proxy sibling, Sandbox keeps nothing unless `docker` granted) |
-| PR lifecycle card / auto-push | Off — no single `remoteUrl` to anchor them |
-| Auto-commit to remote | Off — `/workspace` root is not a repo |
-| Branch-op blocking shim | Off — the agent owns its own branches/PRs via `gh` |
+| PR lifecycle card / auto-push | Off — gated on `kind === "sandbox"` |
+| Session-level auto-commit | Off — **explicitly** skipped for sandbox (not auto-off: `post-turn.ts` commits the session dir unconditionally today; the non-repo root would error otherwise) |
+| Branch-op blocking shim | Off — the agent owns its own branches/PRs (see PR brokering) |
 | `RELEASES` / `NEW_PROJECT` prompt fragments | Dropped, like ops |
 | UI | PR lifecycle card replaced by the orientation banner (same chat-panel slot); side-panel Preview & PR tabs removed (Files + Terminal remain) |
 | Sidebar | Own group + badge, like the Host / Ops group |
@@ -79,11 +107,37 @@ ops `setKind`).
 ### What stays on
 
 Files tree, terminal, chat history (persists in the DB regardless of repo), and
-— when `git` is granted — the git/`gh` credential broker so the agent can clone
-and push. A Sandbox-specific **system-prompt variant** tells the agent: no bound
-repo; clone what you need into `/workspace/<name>`; ShipIt won't render previews
-or PR cards for these; manage PRs with `gh`; the workspace persists between turns
-on disk but treat pushed state as the source of truth.
+— when `git` is granted — the GitHub credential broker so the agent can clone,
+push, and open PRs (via the repo-aware shim below). A Sandbox-specific
+**system-prompt variant** tells the agent: no bound repo; clone what you need
+into `/workspace/<name>`; ShipIt won't render previews or PR cards for these; open
+PRs per-repo with `gh` from inside each clone; the workspace persists between
+turns on disk but treat pushed state as the source of truth.
+
+### PR brokering in a Sandbox — the shim must become repo-aware (CRITICAL)
+
+The current `gh` shim (`agent-shim/gh.ts`) **rejects `--repo`** and brokers every
+PR op through `/agent-ops/pr/*`, which the orchestrator resolves against the
+*session's* fixed `remoteUrl` and a workspace-root `GitManager`
+(`api-routes-github.ts`). In a Sandbox there is no `remoteUrl` and repos live in
+`/workspace/<name>` subdirs — so **the agent cannot open PRs at all** with the
+shim as-is. Using the real `gh` is not an option (per-agent credential isolation;
+only the shim is installed, and it deliberately avoids exposing the raw token).
+
+So a Sandbox needs a **repo-aware PR broker**:
+
+- The shim infers the **target repo from the working directory's git origin**
+  (the cwd's clone) rather than a fixed session repo, and **allows `--repo`** in
+  sandbox sessions to target a specific clone explicitly.
+- The `/agent-ops/pr/*` routes build their `GitManager`/remote from that resolved
+  clone, not `session.remoteUrl`.
+- The token still never reaches the agent — brokering and the
+  per-repo-scoped-token path (SHI-79) are preserved; we widen *which* repo the
+  broker may act on (any repo the user can access) but keep the no-raw-token
+  property.
+
+This is net-new work the original plan under-scoped; it is the piece that makes
+the multi-PR premise real, so it moves into Phase 2 as a first-class item.
 
 ### Docker scope (session-scoped, not host)
 
@@ -104,7 +158,14 @@ work:
 
 The **host**-level flavor (read-only host socket proxy + journal mounts) stays
 exclusive to the ops template — a user-facing toggle never grants host
-introspection.
+introspection. Because a sandbox now adds a **user-facing** Docker toggle (ops's
+was template-only), these must be locked down by explicit acceptance tests, not
+just relied on from the existing path:
+
+- sandbox `DOCKER_HOST` = the session proxy, **never** `OPS_DOCKER_HOST`;
+- `opsSession` is false, no journal/host mounts, no host socket reachable;
+- child containers/networks/volumes are reaped on archive/teardown (the
+  `removeVolumes` path), so a sandbox can't leak Docker resources.
 
 ### Workspace persistence
 
@@ -145,15 +206,39 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
 
 ## Security notes
 
-- Adding/cloning a second repo never inherits another repo's credentials —
-  there is no ShipIt-brokered inheritance at all; the agent uses the user's
-  git credentials, scoped to what that user can access. **Granting `git` to a
-  Sandbox is a deliberate trust expansion**: the session can reach any repo the
-  user can. Surfaced in the creation dialog.
-- `git` off = no credential broker = sealed compute box.
-- Docker is session-scoped and host-isolated (above); host access is ops-only.
+- **GitHub access is a real trust expansion.** With `git` granted, the broker can
+  act on **any repo the user can access**, not a single bound repo. There is no
+  cross-repo credential *inheritance* (the agent never holds a raw token; ops are
+  brokered, repo-scoped per SHI-79) — but the *blast radius* widens from one repo
+  to the user's whole reachable set. Surfaced explicitly in the creation dialog.
+- **"GitHub access off" ≠ network-sealed.** It removes the GitHub credential
+  broker (no token, no push to the user's repos), but the container still has its
+  normal agent API egress and worker/orchestrator callbacks. A truly sealed
+  "run untrusted code" posture is a separate **egress** decision
+  (`container-lifecycle.ts` egress enforcement) — call it out rather than imply
+  the off state is a sandbox jail.
+- **Capability gating must live at the orchestrator broker, not only container
+  env.** `GIT_CONFIG_GLOBAL` and the `/agent-ops/git/credential` endpoint are
+  always wired; the credential endpoint (and the PR broker) must check the
+  session's **durable `capabilities`** before returning a token / acting, so a
+  missed env/helper path can't silently self-grant `git`. Defense in depth.
+- Docker is session-scoped and host-isolated (above); host access is ops-only,
+  enforced by the acceptance tests listed under Docker scope.
 - `kind`/`capabilities` are server-set at creation and immutable; agents cannot
   self-elevate.
+
+## Design review (Codex, before implementation)
+
+A cross-agent review (Codex) validated the second-`kind` + `capabilities`
+direction and surfaced the corrections now folded in above: the **`gh` shim is
+not repo-aware** (the critical gap — see PR brokering), **auto-commit is not
+auto-disabled by `remoteUrl`** (must gate on `kind`), **capability gating belongs
+at the broker**, **"git off" is not a sealed box**, the sandbox **invariant** must
+be explicit (not "no remoteUrl"), the **sidebar group** must be `kind`-keyed, the
+dropped inline-PR criterion is a **product degradation** to own explicitly, and
+the user-facing **Docker toggle** needs lock-down tests. Nice-to-haves adopted:
+rename to "GitHub access", and the real UI **removes** Preview/PR tabs (the
+mockup's struck-through tabs are illustration only).
 
 ## Key files (to touch)
 
@@ -165,6 +250,13 @@ story in one discoverable place and leaves the normal repo-claim flow untouched.
   creation path modeled on `applyTemplate` / `OPS_TEMPLATE_ID`.
 - `src/server/orchestrator/container-lifecycle.ts` — thread `capabilities` into
   `buildContainerConfig` (`dockerAccess` from the toggle; git creds gate).
+- `src/server/orchestrator/ws-handlers/post-turn.ts` — skip session-level
+  `autoCommit`/push for `kind === "sandbox"`.
+- `src/server/session/agent-shim/gh.ts` + `agent-ops-routes.ts` +
+  `api-routes-github.ts` — **repo-aware PR brokering**: resolve the target repo
+  from the cwd's clone (allow `--repo`) instead of `session.remoteUrl`.
+- `agent-ops` git-credential endpoint — gate token issuance on durable
+  `capabilities.git`.
 - `src/server/orchestrator/agent-instructions.ts` + `prompts/` — sandbox
   system-prompt variant.
 - `src/client/components/SessionSidebar.tsx` — `+` menu, sandbox group + badge.
