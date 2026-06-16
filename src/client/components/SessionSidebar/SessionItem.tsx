@@ -236,6 +236,11 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                 ops
               </span>
             )}
+            {session.kind === "sandbox" && (
+              <span className="text-[9px] font-semibold uppercase tracking-wide text-(--color-sandbox) bg-(--color-sandbox-subtle) rounded px-1 leading-tight shrink-0">
+                sandbox
+              </span>
+            )}
             {repoLabel && (
               <span className="text-[10px] text-(--color-text-tertiary) truncate">{repoLabel}</span>
             )}

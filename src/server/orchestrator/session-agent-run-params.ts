@@ -98,14 +98,21 @@ export async function buildAgentRunParams(
   const mcpServers = Object.values(deps.credentialStore.getAllMcpServers()).filter(
     (s) => s.enabled,
   );
-  const autoCreatePr = deps.credentialStore.getAutoCreatePr()
-    && deps.githubAuthManager.authenticated;
   const replay = deps.sessionManager.consumeConversationReplay(sessionId);
   const selectedModel = deps.getSelectedModel();
-  // docs/128 — read the server-authoritative session kind synchronously, in
-  // the pre-`await` DB block (same ordering rule as the reads above), so the
-  // ops overlay in the system prompt can't be lost to a mid-build DB close.
-  const isOps = deps.sessionManager.get(sessionId)?.kind === "ops";
+  // docs/128 / docs/211 — read the server-authoritative session kind
+  // synchronously, in the pre-`await` DB block (same ordering rule as the reads
+  // above), so the ops overlay in the system prompt can't be lost to a mid-build
+  // DB close.
+  const sessionKind = deps.sessionManager.get(sessionId)?.kind;
+  const isOps = sessionKind === "ops";
+  const isSandbox = sessionKind === "sandbox";
+  // docs/211 — a sandbox has no bound repo / session branch, so the Stop-hook PR
+  // enforcement must never fire even when the user opted into auto-PR. The agent
+  // opens PRs itself per-clone with `gh`.
+  const autoCreatePr = !isSandbox
+    && deps.credentialStore.getAutoCreatePr()
+    && deps.githubAuthManager.authenticated;
 
   const userSystemPrompt = await deps.readSystemPrompt();
 
@@ -139,5 +146,5 @@ export async function buildAgentRunParams(
     ...(compact ? { compact: true } : {}),
   };
   const prepare = getPrepareRunParams(deps.runParamsPreps, agentId);
-  return prepare(baseParams, { autoCreatePrActive: autoCreatePr });
+  return prepare(baseParams, { autoCreatePrActive: autoCreatePr, sandboxActive: isSandbox });
 }

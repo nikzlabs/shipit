@@ -78,6 +78,13 @@ export interface ClaudeRunOptions {
    */
   autoCreatePr?: boolean;
   /**
+   * docs/211 — when true, set SHIPIT_SANDBOX=1 in the CLI environment. The
+   * managed-settings.json PreToolUse branch-block hook self-gates OFF on this
+   * var so a Sandbox session's agent can manage its own branches across the
+   * repos it clones. See docs/211-sandbox-sessions/plan.md.
+   */
+  sandbox?: boolean;
+  /**
    * docs/193 — the MCP tool the CLI calls for permission prompts
    * (`--permission-prompt-tool`, e.g. `mcp__shipit__permission_prompt`).
    * Routes the CLI's built-in sensitive-file gate to ShipIt's approve/deny card
@@ -103,7 +110,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -229,6 +236,15 @@ export class ClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
       delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+    // docs/211 — SHIPIT_SANDBOX=1 turns OFF the managed-settings.json branch-block
+    // hook for a Sandbox session (it owns its own branches across cloned repos).
+    // Normalized on every spawn like SHIPIT_AUTO_CREATE_PR so a leaked parent
+    // value (e.g. dogfooding under an outer ShipIt) can't flip it on.
+    if (sandbox) {
+      spawnEnv.SHIPIT_SANDBOX = "1";
+    } else {
+      delete spawnEnv.SHIPIT_SANDBOX;
     }
 
     try {
@@ -373,7 +389,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   private requestIdCounter = 0;
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
@@ -424,6 +440,15 @@ export class StreamingClaudeProcess extends EventEmitter {
       spawnEnv.SHIPIT_AUTO_CREATE_PR = "1";
     } else {
       delete spawnEnv.SHIPIT_AUTO_CREATE_PR;
+    }
+    // docs/211 — SHIPIT_SANDBOX=1 turns OFF the managed-settings.json branch-block
+    // hook for a Sandbox session (it owns its own branches across cloned repos).
+    // Normalized on every spawn like SHIPIT_AUTO_CREATE_PR so a leaked parent
+    // value (e.g. dogfooding under an outer ShipIt) can't flip it on.
+    if (sandbox) {
+      spawnEnv.SHIPIT_SANDBOX = "1";
+    } else {
+      delete spawnEnv.SHIPIT_SANDBOX;
     }
 
     console.log("[streaming-claude] spawning:", "claude", args.slice(0, 8).join(" "), "| cwd:", cwd);

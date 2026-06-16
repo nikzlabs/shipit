@@ -8,7 +8,8 @@ import path from "node:path";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
-import type { SessionInfo } from "../../shared/types.js";
+import type { SessionCapabilities, SessionInfo } from "../../shared/types.js";
+import { normalizeCapabilities } from "../../shared/types.js";
 import { getTemplate, applyTemplate as applyTemplateFiles, generatePackageLock, OPS_TEMPLATE_ID, buildOpsInvestigationSeed } from "../templates.js";
 import { ServiceError } from "./types.js";
 
@@ -179,4 +180,37 @@ export async function applyTemplate(
     sessionDir,
     ...(seedPrompt ? { seedPrompt } : {}),
   };
+}
+
+/**
+ * docs/211 — create a Sandbox session: a repo-less session that boots from an
+ * empty `/workspace` with an explicit, immutable {@link SessionCapabilities}
+ * set. Modeled on the ops creation path (`applyTemplate` + `setKind`) but with
+ * the project automation stripped:
+ *   - NO clone, NO `remoteUrl` — `createSessionDir` makes a bare empty dir.
+ *   - NO root `git init` (the sandbox invariant #1: the agent clones into
+ *     subdirs; a root repo would let the unconditional post-turn `git.autoCommit`
+ *     fire on a non-project root). The post-turn git flow is also gated on
+ *     `kind === "sandbox"` (see `ws-handlers/post-turn.ts`).
+ *   - NO template files.
+ *
+ * `kind` and `capabilities` are written server-authoritatively *before* the
+ * function returns (and before any container can boot), so an agent can never
+ * self-promote into a sandbox or widen its own grants. Capability *wiring* (egress
+ * / Docker / git-broker gating) is docs/211 Phase 2; this only persists the set.
+ */
+export async function createSandboxSession(
+  sessionManager: SessionManager,
+  createSessionDir: (title: string) => Promise<{ appSessionId: string; sessionDir: string; workspaceDir: string }>,
+  capabilities?: Partial<SessionCapabilities>,
+): Promise<{ session: SessionInfo; sessionDir: string; capabilities: SessionCapabilities }> {
+  const normalized = normalizeCapabilities(capabilities);
+  const created = await createSessionDir("Sandbox session");
+  // Server-authoritative kind + capabilities set up front — before the agent
+  // container can boot — exactly like the ops kind gate.
+  sessionManager.setKind(created.appSessionId, "sandbox");
+  sessionManager.setCapabilities(created.appSessionId, normalized);
+  const session = sessionManager.get(created.appSessionId);
+  if (!session) throw new ServiceError(500, "Sandbox session vanished after creation");
+  return { session, sessionDir: created.workspaceDir, capabilities: normalized };
 }

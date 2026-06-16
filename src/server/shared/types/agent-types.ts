@@ -457,6 +457,13 @@ export interface AgentRunParams {
    */
   autoCreatePr?: boolean;
   /**
+   * docs/211 — when true this is a Sandbox session: the Claude adapter sets
+   * SHIPIT_SANDBOX=1 in the CLI environment so the managed-settings.json
+   * PreToolUse branch-block hook self-gates off (a sandbox owns its own branches
+   * across cloned repos). Claude-only; other adapters ignore it.
+   */
+  sandbox?: boolean;
+  /**
    * When true, the Claude adapter spawns with --input-format stream-json
    * for live steering. Ignored by non-streaming adapters. (docs/140)
    */

@@ -74,6 +74,7 @@ export async function runPostInterruptCommit(args: {
       {
         createGitManager: deps.createGitManager,
         chatHistoryManager: deps.chatHistoryManager,
+        sessionManager: deps.sessionManager,
         scheduleAutoPush: deps.scheduleAutoPush ?? (() => {}),
       },
       {

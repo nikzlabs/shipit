@@ -27,6 +27,14 @@
   --ease-default: ease;
   --ease-out: ease-out;
   --ease-in: ease-in;
+
+  /* docs/211 — sandbox-session accent: teal, distinct from PR violet, ops amber,
+     and folder yellow. Defined once here (theme-independent) because mid-tone
+     teal reads on every theme's surface; a theme may override it in its own
+     block if a closer match is wanted. */
+  --color-sandbox: #2dd4bf;
+  --color-sandbox-subtle: rgba(45, 212, 191, 0.15);
+  --color-sandbox-border: rgba(45, 212, 191, 0.3);
 }
 
 /* Lock the page to the visible viewport. The app shell uses h-[100dvh] and

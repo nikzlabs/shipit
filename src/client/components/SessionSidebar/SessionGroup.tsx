@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, ListBulletsIcon, PlusIcon, PushPinIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { CubeIcon, DotsSixVerticalIcon, GithubLogoIcon, GitMergeIcon, ListBulletsIcon, PlusIcon, PushPinIcon, TrashIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { useAutoAnimate } from "@formkit/auto-animate/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
@@ -52,6 +52,71 @@ export function OpsSessionGroup({
           <WrenchIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-text-secondary)" />
           <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide group-hover:text-(--color-text-primary) transition-colors">
             Host / Ops
+          </span>
+        </button>
+      </div>
+      {!isCollapsed && (
+        <div className="flex flex-col gap-1">
+          {sessions.map((session) => (
+            <SessionItem
+              key={session.id}
+              session={session}
+              isCurrent={session.id === currentSessionId}
+              onResume={onResume}
+              onSelectCurrent={onSelectCurrent}
+              onArchive={onArchive}
+              isTouch={isTouch}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * docs/211 — pinned group for repo-less, capability-scoped sandbox sessions.
+ * Keyed off the server-authoritative `kind: "sandbox"` field (NOT the orphan
+ * `remoteUrl ?? ""` bucket), with a teal Cube icon distinguishing it from the
+ * amber ops group and repo groups.
+ */
+export function SandboxSessionGroup({
+  sessions,
+  currentSessionId,
+  isCollapsed,
+  onToggleCollapse,
+  onResume,
+  onSelectCurrent,
+  onArchive,
+  isTouch,
+}: {
+  sessions: SessionInfo[];
+  currentSessionId?: string;
+  isCollapsed: boolean;
+  onToggleCollapse: () => void;
+  onResume: (sessionId: string) => void;
+  onSelectCurrent?: () => void;
+  onArchive: (sessionId: string) => void;
+  isTouch: boolean;
+}) {
+  if (sessions.length === 0) return null;
+  return (
+    <div className="flex flex-col">
+      <div className="flex items-center gap-1.5 pl-3.5 pr-3 py-1.5 sticky top-0 bg-(--color-bg-primary) z-10">
+        <button
+          onClick={onToggleCollapse}
+          className="flex items-center gap-1.5 flex-1 min-w-0 text-left group"
+          aria-label={isCollapsed ? "Expand Sandbox" : "Collapse Sandbox"}
+        >
+          <span className="w-5 h-5 flex items-center justify-center shrink-0 text-(--color-text-tertiary) group-hover:text-(--color-text-secondary)">
+            {isCollapsed
+              ? <CaretRightIcon size={ICON_SIZE.XS} />
+              : <CaretDownIcon size={ICON_SIZE.XS} />
+            }
+          </span>
+          <CubeIcon size={ICON_SIZE.XS} weight="fill" className="shrink-0 text-(--color-sandbox)" />
+          <span className="text-xs font-semibold text-(--color-text-secondary) truncate tracking-wide group-hover:text-(--color-text-primary) transition-colors">
+            Sandbox
           </span>
         </button>
       </div>

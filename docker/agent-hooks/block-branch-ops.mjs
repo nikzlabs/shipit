@@ -33,6 +33,14 @@
 
 import { readFileSync } from "node:fs";
 
+// docs/211 — a Sandbox session has no single dedicated branch: the agent clones
+// repos into /workspace subdirs and owns its own branches/PRs there. Keeping the
+// agent pinned to one branch would break that, so the orchestrator sets
+// SHIPIT_SANDBOX=1 in the CLI env for sandbox sessions and we no-op here. (The
+// gate keys off the server-set env, derived from the session's authoritative
+// kind — never anything the agent can write.)
+if (process.env.SHIPIT_SANDBOX === "1") process.exit(0);
+
 let payload;
 try {
   payload = JSON.parse(readFileSync(0, "utf8"));

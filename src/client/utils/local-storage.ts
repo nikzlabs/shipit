@@ -411,6 +411,22 @@ export function saveOpsCollapsed(collapsed: boolean): void {
   } catch { /* ignore */ }
 }
 
+// docs/211 — collapsed state for the "Sandbox" sidebar group.
+const SANDBOX_COLLAPSED_KEY = "shipit-sandbox-collapsed";
+
+export function getSavedSandboxCollapsed(): boolean {
+  try {
+    return localStorage.getItem(SANDBOX_COLLAPSED_KEY) === "1";
+  } catch { /* ignore */ }
+  return false;
+}
+
+export function saveSandboxCollapsed(collapsed: boolean): void {
+  try {
+    localStorage.setItem(SANDBOX_COLLAPSED_KEY, collapsed ? "1" : "0");
+  } catch { /* ignore */ }
+}
+
 const DRAFT_MESSAGE_KEY_PREFIX = "shipit-draft-message:";
 
 /** Read the saved draft message text for a session (or `"new"` for the new-session view). */

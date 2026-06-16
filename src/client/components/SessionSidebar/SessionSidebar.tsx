@@ -1,20 +1,22 @@
 import { useState, useCallback, useMemo } from "react";
-import { GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon } from "@phosphor-icons/react";
+import { CubeIcon, GithubLogoIcon, LightningIcon, MicrophoneIcon, PlusIcon, SidebarSimpleIcon, WrenchIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { parseRepoName } from "../../utils/repo-label.js";
 import { Button } from "../ui/button.js";
 import { WithTooltip } from "../ui/tooltip.js";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from "../ui/dropdown-menu.js";
 import { RepoSwitcher } from "../RepoSwitcher.js";
 import { RemoveRepoDialog } from "../RemoveRepoDialog.js";
+import { SandboxDialog } from "../SandboxDialog.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useMediaQuery } from "../../hooks/useMediaQuery.js";
-import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, SessionCapabilities } from "../../../server/shared/types.js";
 import { useSidebarResize } from "./useSidebarResize.js";
 import { computeRepoGroups } from "./useSessionGrouping.js";
-import { OpsSessionGroup, OrphanSessionGroup, RepoGroup } from "./SessionGroup.js";
+import { OpsSessionGroup, OrphanSessionGroup, RepoGroup, SandboxSessionGroup } from "./SessionGroup.js";
 
 interface SessionSidebarProps {
   sessions: SessionInfo[];
@@ -67,7 +69,41 @@ export function SessionSidebar({
   const toggleParentCollapsed = useRepoStore((s) => s.toggleParentCollapsed);
   const opsCollapsed = useRepoStore((s) => s.opsCollapsed);
   const toggleOpsCollapsed = useRepoStore((s) => s.toggleOpsCollapsed);
+  const sandboxCollapsed = useRepoStore((s) => s.sandboxCollapsed);
+  const toggleSandboxCollapsed = useRepoStore((s) => s.toggleSandboxCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
+
+  // docs/211 — the capability dialog for a new Sandbox session, opened from the
+  // "+" advanced-session menu above the session list. `creatingSandbox` disables
+  // the dialog's controls while the create POST is in flight.
+  const [sandboxDialogOpen, setSandboxDialogOpen] = useState(false);
+  const [creatingSandbox, setCreatingSandbox] = useState(false);
+
+  const handleCreateSandbox = useCallback(async (capabilities: SessionCapabilities) => {
+    setCreatingSandbox(true);
+    try {
+      const newId = await useSessionStore.getState().createSandboxSession(capabilities);
+      if (newId) {
+        setSandboxDialogOpen(false);
+        onResume(newId);
+        if (mobile) onClose?.();
+      } else {
+        useUiStore.getState().setToast({ message: "Failed to create sandbox session" });
+      }
+    } finally {
+      setCreatingSandbox(false);
+    }
+  }, [mobile, onClose, onResume]);
+
+  const handleCreateOps = useCallback(async () => {
+    const newId = await useSessionStore.getState().createOpsSession();
+    if (newId) {
+      onResume(newId);
+      if (mobile) onClose?.();
+    } else {
+      useUiStore.getState().setToast({ message: "Failed to create ops session" });
+    }
+  }, [mobile, onClose, onResume]);
 
   // Drag-and-drop reorder state. Lives at the sidebar level so all groups
   // share a single drag context — only one group can be "over" at a time.
@@ -209,6 +245,51 @@ export function SessionSidebar({
   // capture overlay; the lightning+mic variant opens it with auto-mic on and
   // only renders when voice input is enabled. `side` lets the collapsed rail
   // anchor its tooltips to the right.
+  // docs/211 — the "+" affordance above the session list opens a menu to create
+  // an "advanced" session. Today: Sandbox (capability dialog) and Ops. This
+  // centralizes the privileged-session story in one discoverable place and
+  // leaves the normal repo-claim "New session" rows untouched.
+  const renderAdvancedSessionMenu = (_side?: "top" | "right") => (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="ghost"
+          size="sm"
+          className="p-0! w-7 h-7 text-(--color-sandbox) hover:text-(--color-sandbox)"
+          aria-label="New advanced session"
+          title="New advanced session"
+        >
+          <PlusIcon size={ICON_SIZE.SM} weight="bold" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-60">
+        <DropdownMenuLabel>New session</DropdownMenuLabel>
+        <DropdownMenuItem onSelect={() => setSandboxDialogOpen(true)} className="items-start gap-2.5 py-2">
+          <span className="w-7 h-7 rounded-md bg-(--color-sandbox-subtle) text-(--color-sandbox) flex items-center justify-center shrink-0">
+            <CubeIcon size={ICON_SIZE.SM} weight="fill" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold text-(--color-text-primary)">Sandbox session</span>
+            <span className="block text-[11.5px] text-(--color-text-secondary) leading-snug">
+              Empty workspace. Choose GitHub, Docker &amp; network access. The agent clones what it needs.
+            </span>
+          </span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={() => void handleCreateOps()} className="items-start gap-2.5 py-2">
+          <span className="w-7 h-7 rounded-md bg-(--color-warning-subtle) text-(--color-warning) flex items-center justify-center shrink-0">
+            <WrenchIcon size={ICON_SIZE.SM} weight="fill" />
+          </span>
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold text-(--color-text-primary)">Ops session</span>
+            <span className="block text-[11.5px] text-(--color-text-secondary) leading-snug">
+              Read-only host introspection — Docker proxy &amp; journal logs.
+            </span>
+          </span>
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+
   const renderQuickSessionControls = (side?: "top" | "right") => (
     <>
       <WithTooltip label="Quick session" side={side}>
@@ -269,6 +350,7 @@ export function SessionSidebar({
           <GithubLogoIcon size={ICON_SIZE.SM} weight="fill" className="shrink-0" />
         </Button>
         </RepoSwitcher>
+        {renderAdvancedSessionMenu("right")}
         {renderQuickSessionControls("right")}
         <div className="flex-1" />
         <WithTooltip label="New Session" side="right">
@@ -320,6 +402,7 @@ export function SessionSidebar({
           </Button>
           </WithTooltip>
           <span className="flex-1" />
+          {renderAdvancedSessionMenu()}
           {renderQuickSessionControls()}
           <RepoSwitcher
             repos={repos}
@@ -351,7 +434,19 @@ export function SessionSidebar({
             </Button>
           </div>
         ) : (
-          repoGroups.map((group) => group.kind === "ops" ? (
+          repoGroups.map((group) => group.kind === "sandbox" ? (
+            <SandboxSessionGroup
+              key="sandbox"
+              sessions={group.sessions}
+              currentSessionId={currentSessionId}
+              isCollapsed={sandboxCollapsed}
+              onToggleCollapse={toggleSandboxCollapsed}
+              onResume={onResume}
+              onSelectCurrent={handleSelectCurrent}
+              onArchive={onArchive}
+              isTouch={isTouch}
+            />
+          ) : group.kind === "ops" ? (
             <OpsSessionGroup
               key="ops"
               sessions={group.sessions}
@@ -413,6 +508,13 @@ export function SessionSidebar({
         className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
       />
     )}
+    {/* docs/211 — sandbox capability dialog (Radix portal, placement here is fine) */}
+    <SandboxDialog
+      open={sandboxDialogOpen}
+      onOpenChange={setSandboxDialogOpen}
+      onCreate={handleCreateSandbox}
+      creating={creatingSandbox}
+    />
     {/* Repo-removal confirmation (Radix portals, so placement here is fine) */}
     <RemoveRepoDialog
       open={removeRepoTarget !== null}

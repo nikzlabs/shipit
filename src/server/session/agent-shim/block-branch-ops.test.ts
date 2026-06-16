@@ -30,10 +30,11 @@ const HOOK_SCRIPT = path.resolve(
   "block-branch-ops.mjs",
 );
 
-function runHook(payload: unknown): { status: number | null; stderr: string } {
+function runHook(payload: unknown, env?: Record<string, string>): { status: number | null; stderr: string } {
   const r = spawnSync("node", [HOOK_SCRIPT], {
     input: typeof payload === "string" ? payload : JSON.stringify(payload),
     encoding: "utf8",
+    ...(env ? { env: { ...process.env, ...env } } : {}),
   });
   return { status: r.status, stderr: r.stderr };
 }
@@ -105,6 +106,19 @@ describe("block-branch-ops.mjs", () => {
         expect(r.stderr).toBe("");
       });
     }
+  });
+
+  describe("docs/211 — self-gates OFF for a sandbox session (SHIPIT_SANDBOX=1)", () => {
+    it("allows a branch-creating command when SHIPIT_SANDBOX=1", () => {
+      const r = runHook(bash("git checkout -b feature/foo"), { SHIPIT_SANDBOX: "1" });
+      expect(r.status).toBe(0);
+      expect(r.stderr).toBe("");
+    });
+
+    it("still blocks when SHIPIT_SANDBOX is unset / not '1'", () => {
+      expect(runHook(bash("git switch -c x"), { SHIPIT_SANDBOX: "0" }).status).toBe(2);
+      expect(runHook(bash("git switch -c x")).status).toBe(2);
+    });
   });
 
   describe("fails open on non-Bash / malformed input", () => {
