@@ -113,6 +113,54 @@ describe("pr-store", () => {
     });
   });
 
+  // docs/210 — the changed-docs strip is refreshed each post-turn commit via a
+  // notableFiles-only patch that must NOT disturb the poller-owned fields.
+  describe("setNotableFiles", () => {
+    it("patches notableFiles in place without touching phase/pr/checks", () => {
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("open", {
+          checks: { state: "success", total: 1, passed: 1, failed: 0, pending: 0 },
+          notableFiles: [{ path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" }],
+        }),
+      );
+
+      usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
+        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+        { path: "docs/b/plan.md", title: "B", kind: "doc", status: "A" },
+      ]);
+
+      const card = usePrStore.getState().cardBySession.s1;
+      expect(card?.phase).toBe("open");
+      expect(card?.pr?.number).toBe(1);
+      expect(card?.checks?.state).toBe("success");
+      expect(card?.notableFiles?.map((f) => f.path)).toEqual([
+        "docs/a/plan.md",
+        "docs/b/plan.md",
+      ]);
+    });
+
+    it("clears the strip when the recomputed list is empty (authoritative)", () => {
+      usePrStore.getState().updateCard(
+        "s1",
+        makeCard("open", {
+          notableFiles: [{ path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" }],
+        }),
+      );
+
+      usePrStore.getState().setNotableFiles("s1", "pr-card-s1", []);
+
+      expect(usePrStore.getState().cardBySession.s1?.notableFiles).toEqual([]);
+    });
+
+    it("no-ops when no card exists yet (no phantom card)", () => {
+      usePrStore.getState().setNotableFiles("s1", "pr-card-s1", [
+        { path: "docs/a/plan.md", title: "A", kind: "doc", status: "M" },
+      ]);
+      expect(usePrStore.getState().cardBySession.s1).toBeUndefined();
+    });
+  });
+
   describe("applyPrStatusUpdates", () => {
     it("overwrites card to merged even if it was open", () => {
       usePrStore.getState().updateCard("s1", makeCard("open"));

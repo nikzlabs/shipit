@@ -101,7 +101,7 @@ describe("computeNotableFiles — classification", () => {
   });
 });
 
-describe("notableFilesForBranch — derive from a base...HEAD diff", () => {
+describe("notableFilesForBranch — derive from the merge-base diff", () => {
   function git(args: string): void {
     execSync(`git ${args}`, {
       cwd: tmpDir,
@@ -134,6 +134,35 @@ describe("notableFilesForBranch — derive from a base...HEAD diff", () => {
     expect(Object.keys(byPath).sort()).toEqual(["docs/210-thing/plan.md", "shipit.yaml"]);
     expect(byPath["docs/210-thing/plan.md"]).toMatchObject({ kind: "doc", title: "A Thing", status: "A" });
     expect(byPath["shipit.yaml"]).toMatchObject({ kind: "config", title: "shipit.yaml", status: "A" });
+  });
+
+  it("ignores notable files that moved on the base after the branch point (merge-base, not two-dot)", async () => {
+    git("init -q -b main");
+    git("config user.email test@test.com");
+    git("config user.name Test");
+    fs.writeFileSync(path.join(tmpDir, "README.md"), "# Repo\n");
+    git("add -A");
+    git("commit -qm initial");
+
+    git("checkout -q -b feature");
+    fs.mkdirSync(path.join(tmpDir, "docs/210-thing"), { recursive: true });
+    fs.writeFileSync(path.join(tmpDir, "docs/210-thing/plan.md"), "---\ntitle: A Thing\n---\n");
+    git("add -A");
+    git("commit -qm feature");
+
+    // `main` advances with its own notable change after the branch diverged.
+    // A two-dot `main..HEAD` diff would surface this as a (reverse) change the
+    // branch never made; the merge-base diff must not.
+    git("checkout -q main");
+    fs.writeFileSync(path.join(tmpDir, "shipit.yaml"), "agent: {}\n");
+    git("add -A");
+    git("commit -qm base-advance");
+    git("checkout -q feature");
+
+    const manager = new GitManager(tmpDir);
+    const result = await notableFilesForBranch(manager, tmpDir, "main");
+
+    expect(result.map((f) => f.path)).toEqual(["docs/210-thing/plan.md"]);
   });
 
   it("returns [] when the base ref can't be resolved", async () => {

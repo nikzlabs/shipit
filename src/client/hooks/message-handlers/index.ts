@@ -41,6 +41,7 @@ import { handleMessageQueued } from "./message-queued.js";
 import { handleMessageSteered } from "./message-steered.js";
 import { handleModelInfo } from "./model-info.js";
 import { handlePrLifecycleUpdate } from "./pr-lifecycle-update.js";
+import { handlePrNotableFiles } from "./pr-notable-files.js";
 import { handlePresentCleared } from "./present-cleared.js";
 import { handlePresentContent } from "./present-content.js";
 import { handlePresentState } from "./present-state.js";
@@ -146,6 +147,7 @@ export const messageHandlers: MessageHandlerMap = {
   message_steered: handleMessageSteered,
   model_info: handleModelInfo,
   pr_lifecycle_update: handlePrLifecycleUpdate,
+  pr_notable_files: handlePrNotableFiles,
   present_cleared: handlePresentCleared,
   present_content: handlePresentContent,
   present_state: handlePresentState,

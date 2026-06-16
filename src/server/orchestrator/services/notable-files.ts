@@ -18,6 +18,7 @@ import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { NotableFileChange } from "../../shared/types.js";
 import { resolveDocTitle } from "../markdown.js";
+import { committedChangesVsBase } from "./git.js";
 
 /**
  * Config files surfaced on the strip, matched by basename. `CLAUDE.md` /
@@ -85,21 +86,20 @@ export async function computeNotableFiles(
 }
 
 /**
- * Derive the notable-file list for `HEAD` vs a base branch. Mirrors
- * `diffStatVsBranch`'s ref fallback (origin/<base> first, then local <base>) so
- * the strip lines up with the diff stat shown next to it. Returns `[]` when the
- * base can't be resolved — the toggle then hides entirely.
+ * Derive the notable-file list (docs + config) for a feature branch vs its
+ * base, classifying the SAME committed merge-base change set the Docs panel
+ * uses ({@link committedChangesVsBase}). Sharing that helper keeps the PR
+ * card's strip and the Docs panel's "Modified in this session" list in lockstep
+ * — the strip is just that set filtered to docs + the config allowlist.
+ *
+ * Returns `[]` when the base or merge-base can't be resolved — the toggle then
+ * hides entirely.
  */
 export async function notableFilesForBranch(
   git: GitManager,
   workspaceDir: string,
   baseBranch: string,
 ): Promise<NotableFileChange[]> {
-  for (const ref of [`origin/${baseBranch}`, baseBranch]) {
-    const changes = await git.diffNameStatus(ref, "HEAD");
-    if (changes.length > 0) {
-      return computeNotableFiles(workspaceDir, changes);
-    }
-  }
-  return [];
+  const changes = await committedChangesVsBase(git, baseBranch);
+  return computeNotableFiles(workspaceDir, changes);
 }

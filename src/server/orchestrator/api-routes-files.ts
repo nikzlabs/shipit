@@ -220,13 +220,21 @@ export async function registerFileRoutes(
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     const docs = await listDocs(dir);
-    // Flag docs the agent actually changed this session, using git (committed
-    // branch changes + uncommitted edits) rather than file mtimes. Git rewrites
-    // mtimes on every checkout/fetch/reset, so the mtime heuristic falsely
-    // flagged files the session never touched. Best-effort — on any git error
-    // we leave the flag unset and the client falls back gracefully.
+    // Flag docs the agent actually changed this session, from the committed
+    // merge-base diff vs the session's base branch — the SAME change set the PR
+    // card's notable-files strip uses (`committedChangesVsBase`), so the two
+    // surfaces show exactly the same documents. We resolve the base the way the
+    // PR lifecycle does (the tracked PR's base, else a re-armed session's prior
+    // base, else `main`) rather than hardcoding `main`, so a PR onto a non-main
+    // base lines up too. Best-effort — on any git error we leave the flag unset
+    // and the client falls back gracefully.
     try {
-      const changed = await getSessionChangedPaths(deps.createGitManager(dir));
+      const session = sessionManager.get(request.params.id);
+      const baseBranch =
+        deps.prStatusPoller?.getStatus(request.params.id)?.baseBranch ??
+        session?.previousMergedPr?.baseBranch ??
+        "main";
+      const changed = await getSessionChangedPaths(deps.createGitManager(dir), baseBranch);
       for (const doc of docs) {
         if (changed.has(doc.path)) doc.changedInSession = true;
       }
