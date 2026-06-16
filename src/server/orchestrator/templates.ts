@@ -19,12 +19,38 @@ export { BACKEND_TEMPLATES } from "./templates-backend.js";
 export { PYTHON_TEMPLATES } from "./templates-python.js";
 
 // ---------------------------------------------------------------------------
+// Empty template
+// ---------------------------------------------------------------------------
+
+// A blank repository with just a README — for users who want to start from
+// scratch (or describe what they want and let the agent scaffold it) rather
+// than picking a framework. No build tooling, no preview, no shipit.yaml.
+const EMPTY_TEMPLATE: ProjectTemplate = {
+  id: "empty",
+  name: "Empty",
+  description: "A blank repository with just a README — start from scratch",
+  category: "utility",
+  icon: "empty",
+  files: {
+    "README.md": `# My Project
+
+An empty project. Describe what you want to build in chat and the agent will
+scaffold it for you, or start adding files yourself.
+`,
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Merged template list
 // ---------------------------------------------------------------------------
 
 const TEMPLATES: ProjectTemplate[] = [
   ...FRONTEND_TEMPLATES,
   ...FULLSTACK_TEMPLATES,
+  // EMPTY_TEMPLATE leads its `utility` group in the picker (the grid preserves
+  // array order within a category), so it must come before any other utility
+  // template — e.g. the Node.js CLI inside BACKEND_TEMPLATES.
+  EMPTY_TEMPLATE,
   ...BACKEND_TEMPLATES,
   ...PYTHON_TEMPLATES,
 ];
