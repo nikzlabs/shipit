@@ -8,6 +8,14 @@ export interface ClaudeAuthCardProps {
   onApiKeySubmit: (key: string) => Promise<boolean | undefined>;
   onPasteAuthCode: (code: string) => void;
   onClearApiKey?: () => Promise<void> | void;
+  /**
+   * True when Claude has stored credentials/account state on the server even
+   * though the agent is *not* authenticated (`authConfigured === false`) — e.g.
+   * an account row whose on-disk token is stale or unverifiable. Gates the
+   * "Clear saved credentials" escape hatch in the not-authenticated panel so a
+   * pristine first-run card stays clutter-free.
+   */
+  hasStoredCredentials?: boolean;
 }
 
 /**
@@ -30,6 +38,14 @@ export interface ClaudeAuthCardProps {
  * clears both the stored API key and the OAuth credentials on disk
  * (`~/.claude/.credentials.json` and siblings), then refreshes the agent
  * registry so this card flips back to the "Sign in" state.
+ *
+ * The same full-reset is also surfaced as a "Clear saved credentials" escape
+ * hatch in the *not-authenticated* panel (gated by `hasStoredCredentials`):
+ * when an account's on-disk token is stale/unverifiable the agent reads as
+ * unauthenticated, the top-right "Sign out" is hidden, and the per-account
+ * "Disconnect" is blocked while sessions are pinned — leaving no other way to
+ * clear the stale state and re-authenticate. `DELETE /api/auth/api-key` is not
+ * blocked by pinned sessions, so it is the right reset path here.
  */
 export function ClaudeAuthCard({
   agent,
@@ -38,6 +54,7 @@ export function ClaudeAuthCard({
   onApiKeySubmit,
   onPasteAuthCode,
   onClearApiKey,
+  hasStoredCredentials = false,
 }: ClaudeAuthCardProps) {
   const [apiKey, setApiKey] = useState("");
   const [apiKeyError, setApiKeyError] = useState("");
@@ -56,6 +73,16 @@ export function ClaudeAuthCard({
   const handleStartAuth = () => {
     setAuthPendingLocal(true);
     onStartAuth();
+  };
+
+  const handleClearCredentials = async () => {
+    if (!onClearApiKey || signingOut) return;
+    setSigningOut(true);
+    try {
+      await onClearApiKey();
+    } finally {
+      setSigningOut(false);
+    }
   };
 
   const handleApiKeySubmit = async () => {
@@ -125,15 +152,7 @@ export function ClaudeAuthCard({
         </div>
         {agent.installed && agent.authConfigured && onClearApiKey && (
           <button
-            onClick={async () => {
-              if (signingOut) return;
-              setSigningOut(true);
-              try {
-                await onClearApiKey();
-              } finally {
-                setSigningOut(false);
-              }
-            }}
+            onClick={() => void handleClearCredentials()}
             disabled={signingOut}
             className="shrink-0 text-xs px-2 py-1 rounded-md text-(--color-text-secondary) hover:text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             data-testid="claude-sign-out"
@@ -206,6 +225,25 @@ export function ClaudeAuthCard({
               >
                 {authPending ? "Starting..." : "Sign in"}
               </button>
+
+              {/* Escape hatch: when stale/unverifiable credentials are stored
+                  (agent reads as unauthenticated), let the user wipe them and
+                  start over. Hidden on a pristine first-run card. */}
+              {hasStoredCredentials && onClearApiKey && (
+                <div className="pt-1" data-testid="claude-stale-credentials">
+                  <p className="text-xs text-(--color-text-tertiary)">
+                    Saved credentials couldn&apos;t be verified.
+                  </p>
+                  <button
+                    onClick={() => void handleClearCredentials()}
+                    disabled={signingOut}
+                    className="mt-0.5 text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    data-testid="claude-clear-credentials"
+                  >
+                    {signingOut ? "Clearing..." : "Clear saved credentials"}
+                  </button>
+                </div>
+              )}
             </div>
           )}
 
