@@ -143,6 +143,15 @@ describe("buildAgentSystemInstructions", () => {
     expect(buildAgentSystemInstructions()).toContain("## Live preview");
   });
 
+  it("ops overlay enumerates the read-only ShipIt source pillar (docs/162)", () => {
+    // Regression: the privilege-surface list once named only Docker + journal
+    // and framed that as exhaustive, which made Ops agents conclude they had
+    // no source access. The third pillar (`shipit source`) must be present.
+    const out = buildAgentSystemInstructions({ isOps: true });
+    expect(out).toContain("shipit source");
+    expect(out).toContain("--shipit-source");
+  });
+
   it("ops overlay composes with the per-agent Parallel sessions section", () => {
     const out = buildAgentSystemInstructions({ agentId: "claude", isOps: true });
     expect(out).toContain("## Ops session");
