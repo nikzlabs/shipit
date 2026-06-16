@@ -10,6 +10,13 @@
  * - JSON-RPC 2.0 over JSONL on stdio
  * - Lifecycle: initialize → thread/start → turn/start → stream events → turn/completed
  * - Three message types: requests (with id), responses (echo id), notifications (no id)
+ *
+ * This file keeps the process lifecycle, the JSON-RPC wire format (send/receive
+ * framing), and the public AgentProcess orchestration. The thread/turn event
+ * stream processing lives in `CodexEventHandler`, tool/diff normalization in
+ * `codex-tool-normalizer.ts`, and rate-limit/token-usage tracking in
+ * `codex-rate-limits.ts` (P14 of docs/201). The adapter wires those together
+ * via the `CodexTransport` surface and delegates protocol parsing to them.
  */
 
 import { EventEmitter } from "node:events";
@@ -20,13 +27,11 @@ import type { ChildProcess } from "node:child_process";
 import type {
   AgentId,
   AgentCapabilities,
-  AgentEvent,
   AgentMcpWriteContext,
   AgentMcpWriteResult,
   AgentProcess,
   AgentProcessEvents,
   AgentRunParams,
-  AgentContentBlock,
   PermissionRequester,
 } from "../agent-process.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
@@ -37,6 +42,12 @@ import {
 } from "../playwright-mcp.js";
 import { CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { codexHome } from "../../../shared/agent-home.js";
+import { CodexRateLimits } from "./codex-rate-limits.js";
+import { CodexEventHandler } from "./codex-event-handler.js";
+
+// Re-exported for unit tests and external callers that historically imported
+// these pure helpers from the adapter module (they now live in the normalizer).
+export { unwrapShellCommand, buildCodexPermissionInput } from "./codex-tool-normalizer.js";
 
 // ---- Codex JSON-RPC protocol types ----
 
@@ -113,256 +124,26 @@ export function hasCodexFileAuth(): boolean {
   }
 }
 
-// ---- Codex item types ----
-
-/**
- * An item from a Codex turn — message, command, file change, etc.
- *
- * Shapes follow the Codex App Server v2 protocol (CLI 0.132.x). Generate the
- * authoritative schema with `codex app-server generate-json-schema --out DIR`
- * and read `ItemCompletedNotification.json` → `definitions.ThreadItem`. The
- * `type` discriminator selects the variant; the fields below are the union of
- * the variants we map to ShipIt events.
- */
-interface CodexItem {
-  type?: string;
-  id?: string;
-  // agentMessage — final assistant text (a plain string, NOT a content array)
-  text?: string;
-  // userMessage / reasoning — typed content blocks (we don't surface these)
-  content?: { type: string; text?: string }[];
-  // commandExecution — shell tool calls
-  command?: string;
-  cwd?: string;
-  aggregatedOutput?: string | null;
-  exitCode?: number | null;
-  status?: string;
-  // fileChange — applied patch (FileUpdateChange[], v2 schema). `diff` is the
-  // top-level unified diff. `kind` is an internally-tagged enum object
-  // (`{ type: "add"|"delete"|"update", move_path? }`), not the plain string the
-  // field name suggests — interpolating it raw was the "[object Object]" bug.
-  changes?: { path: string; kind?: string | Record<string, unknown>; diff?: string }[];
-  // mcpToolCall / dynamicToolCall — generic tool invocations
-  tool?: string;
-  arguments?: string; // JSON-encoded arguments
-  result?: unknown;
-  error?: unknown;
-  // webSearch — native Codex internet browsing. `query` is always present on
-  // the thread item; `action` distinguishes searching from opening/finding in
-  // a fetched page.
-  query?: string;
-  action?: {
-    type?: string;
-    query?: string | null;
-    queries?: string[] | null;
-    url?: string | null;
-    pattern?: string | null;
-  } | null;
-  // collabToolCall — subagent orchestration (spawn_agent, send_input, wait, …)
-  prompt?: string;
-  receiverThreadId?: string;
-  newThreadId?: string;
-  agentStatus?: string;
-}
-
-/**
- * Strip Codex's shell wrapper so commands read like Claude's Bash tool. Codex
- * runs every shell command as `/bin/bash -lc '<script>'` (the `command` field is
- * that full invocation); we surface just `<script>`. Recognizes an optional path
- * prefix and `bash`/`sh` with a `-c`/`-lc`-style flag, then peels one layer of
- * matching outer quotes. Returns the input unchanged when it doesn't match, so
- * non-wrapped commands (and Claude's already-clean commands) pass through.
- */
-export function unwrapShellCommand(command: string): string {
-  const m = /^\s*(?:\S*\/)?(?:bash|sh)\s+-[a-z]*c\s+([\s\S]+?)\s*$/.exec(command);
-  if (!m) return command;
-  const inner = m[1].trim();
-  const q = inner[0];
-  if ((q === "'" || q === '"') && inner.length >= 2 && inner.endsWith(q)) {
-    return inner.slice(1, -1);
-  }
-  return inner;
-}
-
-/**
- * Resolve a human label ("add" | "delete" | "update") for a file change's
- * `kind`. Per the v2 schema (`PatchChangeKind`), Codex sends `kind` as an
- * internally-tagged enum object — `{ type: "update", move_path? }` — so
- * interpolating it directly yields "[object Object]". Accepts a plain string
- * and an externally-tagged single-key object too, for resilience.
- */
-function fileChangeKindLabel(kind: unknown): string {
-  if (typeof kind === "string" && kind) return kind;
-  if (kind && typeof kind === "object") {
-    const obj = kind as Record<string, unknown>;
-    if (typeof obj.type === "string" && obj.type) return obj.type;
-    const key = Object.keys(obj)[0];
-    if (key) return key;
-  }
-  return "update";
-}
-
-/**
- * The display diff for a single file change. Codex App Server 0.136.0 requires a
- * top-level `diff` string, but runtime verification showed add changes carry raw
- * file content there while `turn/diff/updated` carries the full unified diff.
- * Normalize raw add/delete content into the compact +/- shape DiffBlock expects.
- */
-function normalizeFileChangeDiff(change: { diff?: string }, kind: string): string | undefined {
-  if (typeof change.diff !== "string" || !change.diff) return undefined;
-  if (kind === "add" && !looksLikeUnifiedDiff(change.diff)) {
-    return contentToAddedDiff(change.diff) || undefined;
-  }
-  if (kind === "delete" && !looksLikeUnifiedDiff(change.diff)) {
-    return contentToDeletedDiff(change.diff) || undefined;
-  }
-  return change.diff;
-}
-
-function looksLikeUnifiedDiff(diff: string): boolean {
-  return /^(?:diff --git |@@|--- |\+\+\+ |\+|-)/m.test(diff);
-}
-
-function contentToAddedDiff(content: string): string {
-  if (!content) return "";
-  const withoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
-  if (!withoutFinalNewline) return "";
-  return withoutFinalNewline.split("\n").map((line) => `+${line}`).join("\n");
-}
-
-function contentToDeletedDiff(content: string): string {
-  if (!content) return "";
-  const withoutFinalNewline = content.endsWith("\n") ? content.slice(0, -1) : content;
-  if (!withoutFinalNewline) return "";
-  return withoutFinalNewline.split("\n").map((line) => `-${line}`).join("\n");
-}
-
-function summarizeCodexSubagentPrompt(prompt: unknown): string {
-  if (typeof prompt !== "string") return "Running agent...";
-  const firstLine = prompt.split(/\r?\n/).map((line) => line.trim()).find(Boolean);
-  if (!firstLine) return "Running agent...";
-  return firstLine.length > 90 ? `${firstLine.slice(0, 87)}...` : firstLine;
-}
-
-function normalizeWebSearchItem(item: CodexItem): { name: "WebFetch" | "WebSearch"; input: Record<string, unknown>; summary: string } {
-  const action = item.action ?? undefined;
-  const actionType = action?.type;
-  const query = action?.query ?? item.query ?? action?.queries?.find(Boolean) ?? "";
-
-  if (actionType === "openPage") {
-    const url = action?.url ?? item.query ?? "";
-    return {
-      name: "WebFetch",
-      input: { url, query: item.query },
-      summary: url ? `Fetched ${url}` : "Fetched page",
-    };
-  }
-
-  if (actionType === "findInPage") {
-    const url = action?.url ?? "";
-    const pattern = action?.pattern ?? "";
-    return {
-      name: "WebFetch",
-      input: { url, pattern, query: item.query },
-      summary: [url ? `Fetched ${url}` : "Fetched page", pattern ? `Found "${pattern}"` : ""]
-        .filter(Boolean)
-        .join("\n"),
-    };
-  }
-
-  const queries = action?.queries?.filter((q) => q.length > 0);
-  return {
-    name: "WebSearch",
-    input: {
-      query: query || item.query || "",
-      ...(queries && queries.length > 1 ? { queries } : {}),
-    },
-    summary: query || item.query ? `Searched web for: ${query || item.query}` : "Searched web",
-  };
-}
-
-/**
- * The bare tool name the ShipIt-managed ask bridge exposes (docs/147). The
- * Codex app-server may surface an MCP tool under a server-qualified name
- * (`AskUserQuestion`, `shipit__AskUserQuestion`, `shipit.AskUserQuestion`,
- * `shipit/AskUserQuestion`), so match the bare name or any of those
- * separator-prefixed forms rather than assuming one shape. Used only to IGNORE
- * the ask tool on the event stream — the question card is surfaced by the
- * bridge's worker round-trip, not from here (see handleItem's mcpToolCall case).
- */
-const ASK_TOOL_NAME = "AskUserQuestion";
-
-function isAskUserQuestionTool(tool: string | undefined): boolean {
-  if (!tool) return false;
-  if (tool === ASK_TOOL_NAME) return true;
-  return /(?:^|[._/]|__)AskUserQuestion$/.test(tool);
-}
-
-/**
- * docs/193 — derive a `{ toolName, input }` for the permission broker from a
- * Codex approval request. Best-effort across the v2 (`item.*`) and v1
- * (top-level) param shapes: a file-change approval yields the first changed
- * path as `file_path` (so the broker can render + remember it); a command
- * approval yields the unwrapped shell command. The broker uses these to derive
- * the card's path and summary, falling back to the tool name when absent.
- */
-export function buildCodexPermissionInput(
-  method: string,
-  params: Record<string, unknown>,
-): { toolName: string; input: Record<string, unknown> } {
-  const item = (params.item ?? params) as Record<string, unknown>;
-  if (method.includes("fileChange") || method.includes("applyPatch")) {
-    const changes = (item.changes ?? params.changes) as { path?: string }[] | undefined;
-    const firstPath = Array.isArray(changes)
-      ? changes.find((c) => typeof c?.path === "string")?.path
-      : undefined;
-    return { toolName: "apply_patch", input: firstPath ? { file_path: firstPath } : {} };
-  }
-  const rawCommand = item.command ?? params.command;
-  const command = Array.isArray(rawCommand)
-    ? rawCommand.filter((p) => typeof p === "string").join(" ")
-    : typeof rawCommand === "string"
-      ? rawCommand
-      : undefined;
-  const cwd = typeof item.cwd === "string" ? item.cwd : undefined;
-  return {
-    toolName: "shell",
-    input: {
-      ...(command ? { command: unwrapShellCommand(command) } : {}),
-      ...(cwd ? { cwd } : {}),
-    },
-  };
-}
-
-/**
- * Token usage snapshot from a `thread/tokenUsage/updated` notification.
- * `total` is the cumulative turn rollup (billing); `last` is the most recent
- * API call (real context-window occupancy — see AgentResultEvent.contextTokens).
- */
-interface CodexTokenUsage {
-  total?: { inputTokens?: number; outputTokens?: number; cachedInputTokens?: number };
-  last?: { totalTokens?: number };
-  modelContextWindow?: number;
-}
-
-/**
- * One rate-limit window from an `account/rateLimits/updated` notification.
- * `usedPercent` is 0–100, `resetsAt` is epoch *seconds*, `windowDurationMins`
- * distinguishes the 5-hour (300) and weekly (10080) windows. The app-server
- * sends two: `primary` (the 5h session window) and `secondary` (weekly).
- */
-interface CodexRateLimitWindow {
-  usedPercent?: number;
-  windowDurationMins?: number;
-  resetsAt?: number;
-}
-
 export class CodexAdapter
   extends EventEmitter<AgentProcessEvents>
   implements AgentProcess
 {
   constructor(private readonly hasFileAuth = hasCodexFileAuth) {
     super();
+    this.rateLimits = new CodexRateLimits();
+    this.eventHandler = new CodexEventHandler(
+      {
+        emitEvent: (event) => { this.emit("event", event); },
+        emitLog: (source, text) => { this.emit("log", source, text); },
+        sendRequest: (method, params) => this.sendRequest(method, params),
+        sendResponse: (id, result) => { this.sendResponse(id, result); },
+        sendErrorResponse: (id, code, message) => { this.sendErrorResponse(id, code, message); },
+        sendNotification: (method, params) => { this.sendNotification(method, params); },
+        kill: () => { this.kill(); },
+      },
+      this.rateLimits,
+      [...CODEX_TOOL_NAMES],
+    );
   }
 
   readonly agentId: AgentId = "codex";
@@ -408,69 +189,12 @@ export class CodexAdapter
   private proc: ChildProcess | null = null;
   private buffer = "";
   private nextId = 1;
-  private threadId: string | null = null;
-  private initialized = false;
-  private turnStartTime = 0;
-  private cwd = "";
 
-  /**
-   * Id of the turn currently in flight, captured from the `turn/started`
-   * event (and the `turn/start` response as a fallback). `turn/steer` requires
-   * it as `expectedTurnId` — the app-server validates it is non-empty and
-   * matches the active turn, and silently drops the steer otherwise. Cleared
-   * on `turn/completed`. Without this, live steering of Codex was a no-op.
-   */
-  private currentTurnId: string | null = null;
+  /** The thread/turn event-stream processor (initialize, item/turn handling). */
+  private readonly eventHandler: CodexEventHandler;
 
-  /**
-   * itemIds whose text we already streamed via `item/agentMessage/delta`.
-   * On the matching `item/completed` we skip re-emitting the full text — the
-   * orchestrator APPENDS each `agent_assistant` text block (`accumulatedText
-   * += text`), so emitting both the deltas and the final text would double it.
-   */
-  private streamedAgentItems = new Set<string>();
-
-  /**
-   * Tool-use ids already surfaced to ShipIt's chat model this turn. Codex App
-   * Server v2 does not consistently send `item/started` for every tool shape
-   * (notably MCP/dynamic tools can be completed-only), so completed handlers
-   * synthesize the missing tool_use before the result. This set prevents a
-   * duplicate card when both phases arrive.
-   */
-  private emittedToolUseIds = new Set<string>();
-
-  /** Latest token usage from `thread/tokenUsage/updated`, surfaced at turn end. */
-  private lastTokenUsage: CodexTokenUsage | null = null;
-
-  /**
-   * docs/178 — true once ShipIt has asked this app-server to compact (via
-   * `compact()` or a `compact`-flagged run). Codex emits no manual/auto field on
-   * its `contextCompaction` items, so the adapter labels the normalized event by
-   * correlation: `"manual"` when we requested it, `"auto"` otherwise (the CLI
-   * compacted on its own). Reset is unnecessary — the adapter instance is
-   * one-shot-per-turn (killed on turn completion).
-   */
-  private compactionRequested = false;
-
-  /**
-   * docs/178 — true when this run was spawned purely to compact
-   * (`run({ compact: true })`): we issue `thread/compact/start` instead of a
-   * `turn/start`, so there is no normal turn lifecycle to end the run. The
-   * `contextCompaction` `item/completed` becomes the turn terminus — we emit a
-   * synthetic `agent_result` and tear down. `compactionTerminated` guards
-   * against a double `agent_result` if the app-server ALSO sends `turn/completed`.
-   */
-  private compactSpawnMode = false;
-  private compactionTerminated = false;
-
-  /** Context occupancy captured when compaction started, used as `preTokens`. */
-  private compactionPreTokens: number | undefined;
-
-  /** Latest subscription rate-limit snapshot pushed by the app-server. */
-  private lastRateLimits: {
-    session: { usedPct: number; resetAt: string } | null;
-    weekly: { usedPct: number; resetAt: string } | null;
-  } = { session: null, weekly: null };
+  /** Rate-limit + token-usage tracker, shared with the event handler. */
+  private readonly rateLimits: CodexRateLimits;
 
   /** Pending JSON-RPC requests awaiting a response, keyed by id. */
   private pendingRequests = new Map<
@@ -478,15 +202,8 @@ export class CodexAdapter
     { resolve: (result: unknown) => void; reject: (err: Error) => void }
   >();
 
-  /**
-   * docs/193 — the worker's `PermissionBroker.request`, injected before run.
-   * When set, the app-server's blocking approval requests are routed through it
-   * (surfacing the shared approve/deny card) instead of being auto-accepted.
-   */
-  private requestPermission: PermissionRequester | null = null;
-
   setPermissionRequester(requester: PermissionRequester): void {
-    this.requestPermission = requester;
+    this.eventHandler.setPermissionRequester(requester);
   }
 
   /**
@@ -494,9 +211,7 @@ export class CodexAdapter
    * The process stays alive across turns — we create threads and turns within it.
    */
   run(params: AgentRunParams): void {
-    this.turnStartTime = Date.now();
-    this.cwd = params.cwd;
-    this.emittedToolUseIds.clear();
+    this.eventHandler.beginTurn(params.cwd);
 
     // Check binary exists before attempting spawn
     try {
@@ -593,7 +308,7 @@ export class CodexAdapter
     });
 
     // Start the initialization handshake, then create a thread and turn
-    this.initializeAndRun(params).catch((err: unknown) => {
+    this.eventHandler.initializeAndRun(params).catch((err: unknown) => {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
     });
   }
@@ -621,13 +336,15 @@ export class CodexAdapter
     // `input` is an array of content blocks, not a bare string — the same
     // shape as `turn/start` (see `initializeAndRun`); a string is rejected
     // with -32600 "invalid type: string, expected a sequence".
-    if (this.proc && this.threadId && this.currentTurnId) {
+    const threadId = this.eventHandler.getThreadId();
+    const currentTurnId = this.eventHandler.getCurrentTurnId();
+    if (this.proc && threadId && currentTurnId) {
       const steerText = data.trim();
       void (async () => {
         try {
           await this.sendRequest("turn/steer", {
-            threadId: this.threadId,
-            expectedTurnId: this.currentTurnId,
+            threadId,
+            expectedTurnId: currentTurnId,
             input: [{ type: "text", text: steerText }],
           });
           // docs/140 — the request resolved, so the app-server accepted the
@@ -673,9 +390,10 @@ export class CodexAdapter
     // docs/178 §4 — Codex's `thread/compact/start` RPC takes only a threadId;
     // it has no slot for custom-compaction instructions, so any `/compact <args>`
     // text is intentionally dropped (Claude-only feature).
-    if (this.proc && this.threadId) {
-      this.compactionRequested = true;
-      this.sendRequest("thread/compact/start", { threadId: this.threadId }).catch((err: unknown) => {
+    const threadId = this.eventHandler.getThreadId();
+    if (this.proc && threadId) {
+      this.eventHandler.markCompactionRequested();
+      this.sendRequest("thread/compact/start", { threadId }).catch((err: unknown) => {
         const reason = err instanceof Error ? err.message : String(err);
         this.emit("log", "codex", `thread/compact/start rejected: ${reason}`);
       });
@@ -700,10 +418,12 @@ export class CodexAdapter
     // request is rejected (older app-server without the method) — in both cases
     // the graceful path can't complete and we must not leave the process
     // resident waiting for input that never comes.
-    if (this.proc && this.threadId && this.currentTurnId) {
+    const threadId = this.eventHandler.getThreadId();
+    const currentTurnId = this.eventHandler.getCurrentTurnId();
+    if (this.proc && threadId && currentTurnId) {
       this.sendRequest("turn/interrupt", {
-        threadId: this.threadId,
-        turnId: this.currentTurnId,
+        threadId,
+        turnId: currentTurnId,
       }).catch((err: unknown) => {
         const reason = err instanceof Error ? err.message : String(err);
         this.emit("log", "codex", `turn/interrupt rejected, killing: ${reason}`);
@@ -941,7 +661,7 @@ export class CodexAdapter
     // the floor, hanging the turn forever (status → waitingOnApproval, UI stuck
     // on "Thinking…").
     if (hasId && hasMethod) {
-      this.handleServerRequest(msg);
+      this.eventHandler.handleServerRequest(msg);
       return;
     }
 
@@ -952,7 +672,7 @@ export class CodexAdapter
       if (pending) {
         this.pendingRequests.delete(resp.id);
         if (resp.error) {
-          pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${this.normalizeJsonRpcError(resp.error.message)}`));
+          pending.reject(new Error(`JSON-RPC error ${resp.error.code}: ${this.rateLimits.normalizeJsonRpcError(resp.error.message)}`));
         } else {
           pending.resolve(resp.result);
         }
@@ -961,643 +681,7 @@ export class CodexAdapter
     }
 
     // Server notification: a method, no id.
-    this.handleNotification(msg as JsonRpcServerNotification);
-  }
-
-  /**
-   * Answer a server→client request from the app-server.
-   *
-   * Approval requests (the `item/.../requestApproval` pair, legacy
-   * `execCommandApproval` / `applyPatchApproval`) are the app-server's blocking
-   * permission gate: it holds the turn (status → waitingOnApproval) until we
-   * respond. The model can
-   * raise one even under `approvalPolicy: "never"` by explicitly requesting
-   * escalated permissions; leaving it unanswered is THE bug behind "Codex stuck
-   * on Thinking…".
-   *
-   * docs/193 — instead of always auto-accepting (which routed around the user
-   * for genuinely escalated actions), route the request through the shared
-   * `PermissionBroker` when one is injected, so it surfaces the same approve/
-   * deny card as Claude's sensitive-file gate. When no requester is wired
-   * (tests / the broker is unavailable) OR the broker path throws, fall back to
-   * the historical auto-accept so a turn can never hang waiting on a human who
-   * isn't being asked.
-   *
-   * Decision enums come from the generated v2 schema (`codex app-server
-   * generate-json-schema`): CommandExecution/FileChange ApprovalDecision is
-   * `"accept"`/`"reject"`; the legacy v1 ReviewDecision is `"approved"`/`"denied"`.
-   */
-  private handleServerRequest(req: JsonRpcServerRequest): void {
-    switch (req.method) {
-      case "item/commandExecution/requestApproval":
-      case "item/fileChange/requestApproval":
-        this.resolveApproval(req, "v2");
-        return;
-      case "execCommandApproval":
-      case "applyPatchApproval":
-        this.resolveApproval(req, "v1");
-        return;
-      default: {
-        // Any other server→client request (tool input, MCP elicitation, …) we
-        // can't satisfy without a human. Reply with a JSON-RPC error rather
-        // than leaving it hanging — the turn then fails fast and visibly
-        // instead of silently stalling on "Thinking…".
-        this.emit("log", "codex-rpc", `unhandled server request: ${req.method}`);
-        this.sendErrorResponse(req.id, -32601, `Method not handled by ShipIt: ${req.method}`);
-      }
-    }
-  }
-
-  /**
-   * docs/193 — surface a Codex approval request as the shared approve/deny card
-   * (when a broker requester is wired) and answer the blocking JSON-RPC request
-   * with the user's decision, mapped to the protocol's enum. Auto-accepts when
-   * no requester is available or the broker path errors (never hang the turn).
-   */
-  private resolveApproval(req: JsonRpcServerRequest, protocol: "v1" | "v2"): void {
-    const accept = protocol === "v2" ? "accept" : "approved";
-    const reject = protocol === "v2" ? "reject" : "denied";
-
-    if (!this.requestPermission) {
-      this.sendResponse(req.id, { decision: accept });
-      return;
-    }
-
-    const input = buildCodexPermissionInput(req.method, req.params ?? {});
-    const requester = this.requestPermission;
-    void (async () => {
-      try {
-        const decision = await requester({ ...input, agentId: "codex" });
-        this.sendResponse(req.id, { decision: decision.behavior === "allow" ? accept : reject });
-      } catch (err: unknown) {
-        const reason = err instanceof Error ? err.message : String(err);
-        this.emit("log", "codex-rpc", `permission broker error, auto-accepting: ${reason}`);
-        this.sendResponse(req.id, { decision: accept });
-      }
-    })();
-  }
-
-  /** Handle streaming notifications from the Codex App Server. */
-  private handleNotification(notif: JsonRpcServerNotification): void {
-    const params = notif.params ?? {};
-
-    switch (notif.method) {
-      case "thread/started": {
-        // CLI 0.132.x nests the id under `thread.id`; older shape had a
-        // top-level `threadId`. Accept both.
-        const thread = params.thread as { id?: string } | undefined;
-        this.threadId = thread?.id ?? (params.threadId as string) ?? this.threadId;
-        break;
-      }
-
-      case "turn/started": {
-        // Turn has begun — capture its id so live steering can pass it as
-        // `expectedTurnId` on `turn/steer`. The v2 shape nests it under
-        // `turn.id`; accept a top-level `turnId` defensively.
-        const turn = params.turn as { id?: string } | undefined;
-        this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
-        break;
-      }
-
-      case "thread/status/changed": {
-        // Activity/status transitions (e.g. activeFlags: ["waitingOnApproval"]).
-        // We don't surface a distinct "waiting for approval" UI state because
-        // approval requests are auto-answered in handleServerRequest — just
-        // like Claude, the agent never actually blocks on a human here, so the
-        // wait is transient and a separate indicator would only flicker. Log
-        // it for diagnostics.
-        const status = params.status as { activeFlags?: string[] } | undefined;
-        const flags = status?.activeFlags?.join(",") ?? "";
-        this.emit("log", "codex-rpc", `thread/status/changed: ${flags || "active"}`);
-        break;
-      }
-
-      case "thread/tokenUsage/updated": {
-        this.lastTokenUsage = (params.tokenUsage as CodexTokenUsage) ?? this.lastTokenUsage;
-        break;
-      }
-
-      case "account/rateLimits/updated": {
-        this.handleRateLimits(params);
-        break;
-      }
-
-      case "item/started": {
-        this.handleItem(params, "started");
-        break;
-      }
-
-      case "item/completed": {
-        this.handleItem(params, "completed");
-        break;
-      }
-
-      case "item/agentMessage/delta": {
-        // Incremental text delta for streaming
-        this.handleMessageDelta(params);
-        break;
-      }
-
-      case "turn/completed": {
-        this.handleTurnCompleted(params);
-        break;
-      }
-
-      default: {
-        // Log unhandled notifications for debugging
-        this.emit("log", "codex-rpc", `${notif.method}: ${JSON.stringify(params).slice(0, 200)}`);
-        break;
-      }
-    }
-  }
-
-  // ---- Event mapping (Codex → AgentEvent) ----
-
-  /**
-   * Map a Codex `item/started` or `item/completed` notification to ShipIt
-   * AgentEvents. `phase` distinguishes the two so tool calls render live
-   * (tool_use on "started") with their output attached afterward (tool_result
-   * on "completed").
-   *
-   * The item shapes are the Codex App Server v2 protocol (CLI 0.132.x) — the
-   * pre-0.132 `role:"assistant"`/`function_call`/`function_call_output` shapes
-   * this adapter used to parse no longer appear on the wire. See CodexItem.
-   */
-  private handleItem(params: Record<string, unknown>, phase: "started" | "completed"): void {
-    const item = (params.item ?? params) as CodexItem;
-    const id = item.id ?? `codex-${Date.now()}`;
-
-    switch (item.type) {
-      case "agentMessage": {
-        // Final assistant text. Streamed incrementally via
-        // `item/agentMessage/delta`.
-        if (phase !== "completed") return;
-        if (item.id && this.streamedAgentItems.has(item.id)) {
-          // The deltas already populated accumulatedText / chatMessageGroups,
-          // but the orchestrator's `runner.turnSummary = text` overwrites on
-          // every event — so the LAST tiny delta (often a single punctuation
-          // character like ".") became the turn summary, and therefore the
-          // commit message. Re-emit the FULL text marked as the stream
-          // completion so the orchestrator can replace turnSummary without
-          // double-counting accumulatedText / message groups.
-          if (item.text) {
-            this.emit("event", {
-              type: "agent_assistant",
-              content: [{ type: "text", text: item.text }],
-              isStreamCompletion: true,
-            });
-          }
-          return;
-        }
-        if (item.text) this.emitAssistant([{ type: "text", text: item.text }]);
-        return;
-      }
-
-      case "contextCompaction": {
-        // docs/178 — the app-server compacted the thread's context (manually via
-        // our `thread/compact/start`, or on its own when the window filled). Map
-        // it to the normalized compaction signals. Codex carries no manual/auto
-        // field, so label by correlation (`compactionRequested`); token figures
-        // come from the adjacent `thread/tokenUsage/updated` snapshot (`last`
-        // = real context occupancy).
-        const trigger: "manual" | "auto" = this.compactionRequested ? "manual" : "auto";
-        if (phase === "started") {
-          this.compactionPreTokens = this.lastTokenUsage?.last?.totalTokens;
-          this.emit("event", { type: "agent_compaction_started", trigger });
-        } else {
-          const post = this.lastTokenUsage?.last?.totalTokens;
-          const event: AgentEvent = { type: "agent_compacted", trigger };
-          if (typeof this.compactionPreTokens === "number") event.preTokens = this.compactionPreTokens;
-          if (typeof post === "number") event.postTokens = post;
-          this.emit("event", event);
-          // In compact-spawn mode there is no `turn/start`, so nothing else will
-          // end the run. Close it here: emit a synthetic success result and tear
-          // down. Guard so a stray `turn/completed` can't double-emit.
-          if (this.compactSpawnMode && !this.compactionTerminated) {
-            this.compactionTerminated = true;
-            this.emit("event", {
-              type: "agent_result",
-              status: "success",
-              sessionId: this.threadId ?? "unknown",
-              durationMs: Date.now() - this.turnStartTime,
-            });
-            this.kill();
-          }
-        }
-        return;
-      }
-
-      case "commandExecution": {
-        if (phase === "started") {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
-        } else {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
-          const out = item.aggregatedOutput ?? "";
-          const exit = item.exitCode;
-          const content =
-            exit !== null && exit !== undefined && exit !== 0 ? `${out}\n[exit code: ${exit}]` : out;
-          this.emitToolResult(id, content);
-        }
-        return;
-      }
-
-      case "fileChange": {
-        // The patch has already been applied to disk by the time we see the
-        // completed item; surface it as a tool call so the edit renders as a
-        // diff (one block per file), matching how Claude's Edit/Write render.
-        if (phase !== "completed") return;
-        const changes = (item.changes ?? []).map((c) => {
-          const kind = fileChangeKindLabel(c.kind);
-          return {
-            path: c.path,
-            kind,
-            diff: normalizeFileChangeDiff(c, kind) ?? this.synthesizeAddedFileDiff(c.path, kind),
-          };
-        });
-        this.emitAssistant([
-          {
-            type: "tool_use",
-            id,
-            name: "apply_patch",
-            // `files` kept for back-compat; `changes` carries per-file diffs.
-            input: { files: changes.map((c) => c.path), changes },
-          },
-        ]);
-        this.emittedToolUseIds.add(id);
-        const summary = changes.map((c) => `${c.kind} ${c.path}`).join("\n");
-        this.emitToolResult(id, summary || "applied");
-        return;
-      }
-
-      case "mcpToolCall":
-      case "dynamicToolCall": {
-        // docs/147 — the ShipIt-managed `shipit` bridge's ask tool surfaces its
-        // AskUserQuestion card directly through the worker (the bridge POSTs to
-        // `/agent-ops/ask/submit`, which injects a synthetic `AskUserQuestion`
-        // tool_use), NOT through this event stream. The Codex app-server emits
-        // an `mcpToolCall` item only on `item/completed` — after the tool
-        // returns — but a well-formed question blocks and never returns, so
-        // relying on this path would never render the card (it would only time
-        // out). Ignore the ask tool entirely in both phases: emitting a
-        // tool_use here would duplicate the bridge's card, and emitting a
-        // tool_result would flip it to "answered" and disable the options.
-        if (isAskUserQuestionTool(item.tool)) return;
-        let input: Record<string, unknown> = {};
-        if (item.arguments) {
-          try {
-            input = JSON.parse(item.arguments) as Record<string, unknown>;
-          } catch {
-            input = { raw: item.arguments };
-          }
-        }
-        if (phase === "started") {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
-        } else {
-          this.emitToolUseOnce(id, item.tool ?? "tool", input);
-          const payload = item.result ?? item.error ?? "";
-          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
-        }
-        break;
-      }
-
-      case "webSearch": {
-        const normalized = normalizeWebSearchItem(item);
-        if (phase === "started") {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
-        } else {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
-          const payload = item.result ?? item.error;
-          this.emitToolResult(
-            id,
-            typeof payload === "string" && payload.length > 0
-              ? payload
-              : normalized.summary,
-          );
-        }
-        break;
-      }
-
-      case "collabToolCall": {
-        // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
-        // `wait`, `close_agent`, …). Surface it as a tool call so the review
-        // subagent's lifecycle is visible in chat, mirroring how Claude's
-        // `Task` tool renders. The actual review write-back still arrives via
-        // the `submit_review` MCP tool, mapped above.
-        if (phase === "started") {
-          if (item.tool === "spawn_agent") {
-            this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
-              subagent_type: "Codex",
-              description: summarizeCodexSubagentPrompt(item.prompt),
-              prompt: item.prompt,
-            });
-            return;
-          }
-          this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
-        } else {
-          if (item.tool === "spawn_agent") {
-            this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
-              subagent_type: "Codex",
-              description: summarizeCodexSubagentPrompt(item.prompt),
-              prompt: item.prompt,
-            });
-          } else {
-            this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
-          }
-          this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
-        }
-        break;
-      }
-
-      // userMessage (echo of our own prompt), reasoning, plan, imageView, etc.
-      // have no ShipIt mapping — ignore them.
-      default:
-        break;
-    }
-  }
-
-  /**
-   * Some Codex app-server builds omit the top-level `diff` for add/write
-   * changes. The file is already on disk when `item/completed` arrives, so for
-   * adds we can reconstruct the same all-`+` diff shape Claude-style write
-   * blocks need for line counts and the clickable diff affordance.
-   */
-  private synthesizeAddedFileDiff(filePath: string, kind: string): string | undefined {
-    if (kind !== "add") return undefined;
-    try {
-      const absolutePath = path.isAbsolute(filePath) ? filePath : path.join(this.cwd, filePath);
-      const stat = statSync(absolutePath);
-      if (!stat.isFile()) return undefined;
-      const content = readFileSync(absolutePath, "utf8");
-      const diff = contentToAddedDiff(content);
-      return diff || undefined;
-    } catch {
-      return undefined;
-    }
-  }
-
-  /** Emit an assistant event with the given content blocks. */
-  private emitAssistant(content: AgentContentBlock[]): void {
-    this.emit("event", { type: "agent_assistant", content });
-  }
-
-  /** Emit one tool_use block for a Codex item id, synthesizing starts as needed. */
-  private emitToolUseOnce(id: string, name: string, input: Record<string, unknown>): void {
-    if (this.emittedToolUseIds.has(id)) return;
-    this.emittedToolUseIds.add(id);
-    this.emitAssistant([{ type: "tool_use", id, name, input }]);
-  }
-
-  /** Emit a tool-result event for the given tool_use id. */
-  private emitToolResult(toolUseId: string, content: string): void {
-    this.emit("event", {
-      type: "agent_tool_result",
-      content: [{ type: "tool_result", tool_use_id: toolUseId, content }],
-    });
-  }
-
-  /**
-   * Handle incremental message deltas (streaming text). The v2 protocol
-   * delivers `delta` as a plain string with the item's `itemId`; we record the
-   * id so the matching `item/completed` agentMessage isn't re-emitted.
-   */
-  private handleMessageDelta(params: Record<string, unknown>): void {
-    const delta = params.delta;
-    if (typeof delta !== "string" || delta.length === 0) return;
-    const itemId = params.itemId as string | undefined;
-    if (itemId) this.streamedAgentItems.add(itemId);
-    this.emitAssistant([{ type: "text", text: delta }]);
-  }
-
-  /** Handle turn completion — emit agent_result. */
-  private handleTurnCompleted(params: Record<string, unknown>): void {
-    // docs/178 — a compact-spawn run already ended the turn from the
-    // `contextCompaction` `item/completed` (there was no `turn/start`, so this
-    // would be a spurious/duplicate completion). Skip to avoid a double
-    // `agent_result`.
-    if (this.compactionTerminated) return;
-    // v2 nests status under `turn`; older shape had a top-level `status`.
-    const turn = params.turn as { status?: string } | undefined;
-    const status = turn?.status ?? (params.status as string) ?? "completed";
-    const usage = this.lastTokenUsage;
-    const durationMs = Date.now() - this.turnStartTime;
-
-    this.emit("event", {
-      type: "agent_result",
-      status: status === "completed" ? "success" : "error",
-      sessionId: this.threadId ?? "unknown",
-      // `total` is the cumulative turn rollup (billing); `last.totalTokens` is
-      // the real context-window occupancy (input + cache from the final call).
-      tokens: usage?.total
-        ? {
-            input: usage.total.inputTokens ?? 0,
-            output: usage.total.outputTokens ?? 0,
-            cacheRead: usage.total.cachedInputTokens,
-          }
-        : undefined,
-      contextTokens: usage?.last?.totalTokens,
-      contextWindow: usage?.modelContextWindow,
-      durationMs,
-      error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
-    });
-
-    // Turn is over — no active turn to steer until the next one starts.
-    this.currentTurnId = null;
-
-    // Kill the app-server process after the turn completes
-    // (matching the one-shot-per-turn pattern of ClaudeAdapter)
-    this.kill();
-  }
-
-  /**
-   * Map an `account/rateLimits/updated` notification to an
-   * `agent_rate_limits` event. The app-server reports two windows —
-   * `primary` (5h session) and `secondary` (weekly) — the same data it
-   * draws its `/status` line from. The orchestrator routes this into the
-   * subscription-limits badge. We don't emit when neither window parses,
-   * so a malformed payload simply leaves the badge on its last snapshot.
-   */
-  private handleRateLimits(params: Record<string, unknown>): void {
-    const rl = params.rateLimits as Record<string, unknown> | undefined;
-    if (!rl || typeof rl !== "object") return;
-
-    const session = this.parseRateWindow(rl.primary);
-    const weekly = this.parseRateWindow(rl.secondary);
-    if (!session && !weekly) return;
-
-    this.lastRateLimits = { session, weekly };
-    this.emit("event", { type: "agent_rate_limits", session, weekly });
-  }
-
-  /** Normalize one Codex rate-limit window into `{ usedPct, resetAt }`. */
-  private parseRateWindow(
-    raw: unknown,
-  ): { usedPct: number; resetAt: string } | null {
-    if (!raw || typeof raw !== "object") return null;
-    const w = raw as CodexRateLimitWindow;
-    if (typeof w.usedPercent !== "number" || !Number.isFinite(w.usedPercent)) return null;
-    if (typeof w.resetsAt !== "number" || !Number.isFinite(w.resetsAt) || w.resetsAt <= 0) return null;
-    const usedPct = Math.min(100, Math.max(0, w.usedPercent));
-    // resetsAt is epoch seconds; tolerate a ms value defensively.
-    const ms = w.resetsAt < 10_000_000_000 ? w.resetsAt * 1000 : w.resetsAt;
-    return { usedPct, resetAt: new Date(ms).toISOString() };
-  }
-
-  /**
-   * Codex app-server can return the generic "org monthly usage limit" text
-   * even when its own pushed telemetry says the rolling 5h window is the
-   * exhausted meter. Correct only that known mismatch; all other upstream
-   * errors pass through unchanged.
-   */
-  private normalizeJsonRpcError(message: string): string {
-    if (!/monthly usage limit/i.test(message)) return message;
-
-    const sessionLimit = this.lastRateLimits.session;
-    if (!sessionLimit || sessionLimit.usedPct < 100) return message;
-
-    const reset = new Date(sessionLimit.resetAt);
-    const resetText = Number.isNaN(reset.getTime())
-      ? sessionLimit.resetAt
-      : reset.toISOString();
-    return `You've hit Codex's 5h usage limit. It resets at ${resetText}.`;
-  }
-
-  // ---- Initialization and turn lifecycle ----
-
-  /**
-   * Perform the JSON-RPC initialization handshake, create/resume a thread,
-   * and start a turn with the user's prompt.
-   */
-  private async initializeAndRun(params: AgentRunParams): Promise<void> {
-    // Step 1: Initialize handshake
-    await this.sendRequest("initialize", {
-      clientInfo: {
-        name: "shipit",
-        title: "ShipIt IDE",
-        version: "1.0.0",
-      },
-    });
-    this.sendNotification("initialized");
-    this.initialized = true;
-
-    // Step 2: Start or resume a thread.
-    //
-    // ShipIt's environment instructions (the "you are running inside ShipIt…"
-    // system prompt built by buildAgentSystemInstructions) arrive as
-    // `params.systemPrompt`. Codex's app-server has no per-turn system-prompt
-    // slot, but `thread/start`/`thread/resume` accept `developerInstructions` —
-    // appended to the model's base instructions rather than replacing them
-    // (that's `baseInstructions`, which we deliberately leave alone). Without
-    // this, Codex sessions had no idea they were running inside ShipIt, unlike
-    // Claude (which gets the same text via `--append-system-prompt`).
-    const threadBase: Record<string, unknown> = {};
-    if (params.systemPrompt) {
-      threadBase.developerInstructions = params.systemPrompt;
-    }
-
-    let threadResult: unknown;
-    if (params.sessionId) {
-      // Resume existing thread
-      try {
-        threadResult = await this.sendRequest("thread/resume", {
-          ...threadBase,
-          threadId: params.sessionId,
-        });
-      } catch {
-        // If resume fails, start a new thread
-        threadResult = await this.sendRequest("thread/start", { ...threadBase });
-      }
-    } else {
-      threadResult = await this.sendRequest("thread/start", { ...threadBase });
-    }
-
-    // Extract thread ID from the response.
-    //
-    // CLI 0.132.x nests the id under `thread.id`; the pre-0.132 shape had a
-    // top-level `threadId`. Accept both. Reading only `threadId` was THE bug
-    // behind "There's an issue with the selected model (gpt-5.x)": with the
-    // new shape `this.threadId` stayed null, so `turn/start` went out with a
-    // null threadId and the app-server rejected the whole turn with
-    // -32600 "missing field `threadId`" — which the model-picker rendered as
-    // a model-access error. The model was never the problem.
-    const threadData = threadResult as { thread?: { id?: string }; threadId?: string } | undefined;
-    const resolvedThreadId = threadData?.thread?.id ?? threadData?.threadId;
-    if (resolvedThreadId) {
-      this.threadId = resolvedThreadId;
-    }
-
-    // Emit agent_init so the server can track the session
-    this.emit("event", {
-      type: "agent_init",
-      agentId: "codex",
-      sessionId: this.threadId ?? `codex-${Date.now()}`,
-      model: params.model ?? "gpt-5.5",
-      tools: this.capabilities.toolNames,
-    });
-
-    // docs/178 — compact-spawn run: the orchestrator intercepted `/compact`
-    // with no live app-server to call `compact()` on, so we spawned this
-    // process purely to compact. Issue `thread/compact/start` on the resumed
-    // thread instead of a normal `turn/start`; the `contextCompaction` items
-    // drive the normalized signals, and the `item/completed` ends the run (see
-    // handleItem). No `turn/start` means no `turn/completed`, which is why the
-    // compaction-completed path synthesizes the `agent_result`.
-    if (params.compact) {
-      this.compactionRequested = true;
-      this.compactSpawnMode = true;
-      // The app-server replies with `contextCompaction` `item/started` /
-      // `item/completed`, which handleItem maps to the normalized signals — so
-      // we don't emit the started event here (that would double it).
-      await this.sendRequest("thread/compact/start", { threadId: this.threadId });
-      return;
-    }
-
-    // Step 3: Build turn input.
-    //
-    // `input` is an array of typed content blocks (`{type:"text",text:"…"}`)
-    // — Codex CLI 0.131.x tightened the `turn/start` schema and the
-    // app-server now rejects a bare string with:
-    //
-    //   {"error":{"code":-32600,
-    //     "message":"Invalid request: invalid type: string \"…\",
-    //                expected a sequence"}}
-    //
-    // The earlier UI symptom was a confusing "There's an issue with the
-    // selected model (gpt-5.4)" — that was the model-picker rendering a
-    // generic failure for the rejected turn, not an actual model access
-    // problem. The fix is to send the new shape; gpt-5.4 (and the rest of
-    // the lineup) work fine once the request is well-formed.
-    const turnParams: Record<string, unknown> = {
-      threadId: this.threadId,
-      input: [{ type: "text", text: params.prompt }],
-      // ShipIt runs each agent inside its own session container — the
-      // container IS the sandbox and the agent is meant to operate the box
-      // autonomously (CLAUDE.md §5). So we disable Codex's own approval gate
-      // and internal sandbox: otherwise every shell command stalls on an
-      // `item/commandExecution/requestApproval` that nothing answers, and
-      // Codex's bubblewrap sandbox fails outright in-container ("No
-      // permissions to create a new namespace"). Both apply for this turn and
-      // subsequent steers. See TurnStartParams in the generated v2 schema.
-      approvalPolicy: "never",
-      sandboxPolicy: { type: "dangerFullAccess" },
-    };
-
-    if (params.cwd) {
-      turnParams.cwd = params.cwd;
-    }
-
-    if (params.model) {
-      turnParams.model = params.model;
-    }
-
-    // Step 4: Start the turn (this triggers streaming notifications).
-    // TurnStartResponse carries the turn id — capture it as a fallback in
-    // case the `turn/started` event is missed, so live steering always has
-    // an `expectedTurnId` to send.
-    const turnResult = await this.sendRequest("turn/start", turnParams);
-    const turnData = turnResult as { turnId?: string; turn?: { id?: string } } | undefined;
-    this.currentTurnId = turnData?.turn?.id ?? turnData?.turnId ?? this.currentTurnId;
+    this.eventHandler.handleNotification(msg as JsonRpcServerNotification);
   }
 }
 
