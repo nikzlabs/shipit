@@ -9,6 +9,11 @@ You normally work inside a single session: the one the user has open. But
 when the user explicitly asks for *another session*, *a parallel branch*, or
 *a separate workspace*, you can spawn one without making the user leave chat.
 
+> A **sandbox session** is a different shape: a repo-less workspace where you
+> clone and manage your own repos with capability toggles for git/docker/network.
+> If you are *in* one (empty `/workspace`, no PR card), see
+> [sandbox-session.md](sandbox-session.md).
+
 ## When to spawn a sibling session
 
 Spawn a new session when **the user has asked for it**. Concretely, when the

@@ -31,18 +31,31 @@
 
 ## Phase 2 — capabilities wiring
 - [ ] Gate GitHub credential broker on `capabilities.git` **at the orchestrator
-      endpoint** (not just container env) — defense in depth
+      endpoint** (not just container env) — defense in depth _(sibling PR)_
 - [ ] **Repo-aware PR brokering** (CRITICAL): `gh` shim resolves target repo from
       the cwd's clone + allow `--repo`; `/agent-ops/pr/*` + `api-routes-github.ts`
       build GitManager/remote from the resolved clone, not `session.remoteUrl`;
-      keep the no-raw-token property
-- [ ] Thread `docker` capability → `dockerAccess` in `buildContainerConfig`
-- [ ] Thread `network` capability (default on = standard allowlist; off =
-      lifeline-only) → `egressEnforce` + `EgressAllowlistStore` per-session scope;
-      GitHub access adds github.com to the lifeline when network is off; hide the
-      toggle where egress enforcement isn't deployed (no silent no-op)
-- [ ] Sandbox system-prompt variant (agent-instructions.ts + prompts/)
-- [ ] Document Sandbox session in `src/server/shipit-docs/`
+      keep the no-raw-token property _(sibling PR)_
+- [x] Thread `docker` capability → `dockerAccess` in `buildConfigForWorkspace`
+      (override param, `?? limits.dockerAccess`) threaded from
+      `createContainerForRunner` (`app-lifecycle.ts`) via the session's
+      `capabilities.docker`. A sandbox gets the **session-scoped** proxy (non-ops
+      `dockerAccess` path), never `OPS_DOCKER_HOST`; ops-precedence guard intact.
+- [x] Thread `network` capability (default on = standard allowlist; off =
+      lifeline-only) → `resolveEgressConfig` returns `sandboxLifelineEgressConfig`
+      for a Network-off sandbox: empties the session allowlist (extraHosts `[]`)
+      and narrows the base to `EGRESS_LIFELINE_ALLOWLIST` (+ github.com via
+      `EGRESS_GITHUB_LIFELINE_HOSTS` when `git` is granted), `contained: true`.
+      Orchestrator/worker lifeline added separately by `orchestratorInternalNames`.
+      Inert where egress enforcement isn't deployed (install gated on
+      `egressEnforce && contained`). The live `reloadEgress` path reuses the same
+      resolver, so an allowlist edit can't re-widen a sealed sandbox.
+- [x] Sandbox system-prompt variant (agent-instructions.ts third `mode` axis +
+      `prompts/sandbox-session.md`, `git-workflow{,-sandbox}.md`,
+      `pull-requests-sandbox.md`; Git section tokenized to `{{GIT_WORKFLOW}}`).
+      Threaded `isSandbox` in `session-agent-run-params.ts`.
+- [x] Document Sandbox session in `src/server/shipit-docs/sandbox-session.md`
+      (+ README + sessions.md cross-links)
 
 ## Phase 3 — polish
 - [x] `+` menu above session list (Sandbox / Ops) — `renderAdvancedSessionMenu`
@@ -55,10 +68,15 @@
       (`ws-handlers/post-turn.test.ts`), branch-op self-gate
       (`agent-shim/block-branch-ops.test.ts`), sidebar grouping
       (`useSessionGrouping.test.ts`), run-params sandbox flag
-      (`agent-run-params-prep.test.ts`). _Remaining (Phase 2):_ capability gating
-      (broker-level), repo-aware PR brokering, prompt variant.
-- [ ] Docker lock-down tests: sandbox uses session proxy not `OPS_DOCKER_HOST`;
-      no journal/host mounts; child resources reaped on archive
+      (`agent-run-params-prep.test.ts`), docker capability override
+      (`session-container.test.ts`), egress lifeline (`egress-allowlist.test.ts`),
+      sandbox prompt variant (`agent-instructions.test.ts`). _Remaining (sibling
+      PR):_ capability gating (broker-level), repo-aware PR brokering.
+- [x] Docker lock-down tests: sandbox uses session proxy not `OPS_DOCKER_HOST`
+      (`container-lifecycle.test.ts`), no journal/host mounts
+      (`session-container.test.ts` asserts `opsSession` falsy + no `hostMounts`).
+      Child-resource reaping on archive rides the existing `removeVolumes`/
+      `cleanupSessionDockerResources` path (covered by its own tests).
 
 ## Resolved
 - [x] Egress posture: **tighten-only**, two states. On (default) = the standard

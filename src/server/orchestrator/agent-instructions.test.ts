@@ -159,4 +159,62 @@ describe("buildAgentSystemInstructions", () => {
     // Shared base still present.
     expect(out).toContain("## Browser access");
   });
+
+  // docs/211 — sandbox overlay. A third, mutually-exclusive session mode. Same
+  // axis discipline as ops: structural anchors only, fragment selection + cache
+  // stability — never literal prose.
+
+  it("sandbox is a distinct precomputed variant (cache stability) and differs from std + ops", () => {
+    const sandbox = buildAgentSystemInstructions({ isSandbox: true });
+    // Pure lookup of a frozen constant — same reference across calls.
+    expect(buildAgentSystemInstructions({ isSandbox: true })).toBe(sandbox);
+    // Distinct from both the default (std) and the ops overlay.
+    expect(sandbox).not.toBe(buildAgentSystemInstructions());
+    expect(sandbox).not.toBe(buildAgentSystemInstructions({ isOps: true }));
+    // Renders fully with no unresolved tokens.
+    expect(sandbox.length).toBeGreaterThan(1000);
+    expect(sandbox).not.toMatch(/\{\{[A-Z0-9_]+\}\}/);
+  });
+
+  it("ops wins when both flags are set (mutually exclusive at the source)", () => {
+    expect(buildAgentSystemInstructions({ isOps: true, isSandbox: true })).toBe(
+      buildAgentSystemInstructions({ isOps: true }),
+    );
+  });
+
+  it("sandbox splices the orientation block and swaps the auto-commit Git guidance", () => {
+    const out = buildAgentSystemInstructions({ isSandbox: true });
+    // The sandbox orientation block is present (it is NOT the ops block)…
+    expect(out).toContain("## Sandbox session");
+    expect(out).not.toContain("## Ops session");
+    // …and the "ShipIt auto-commits, don't run git" reflex is gone — a sandbox
+    // owns its own git. Assert the swap (fragment selection), not the wording.
+    expect(out).not.toContain("ShipIt automatically commits your changes");
+    expect(out).toContain("/shipit-docs/sandbox-session.md");
+  });
+
+  it("sandbox drops the Live preview section (no preview pane)", () => {
+    const out = buildAgentSystemInstructions({ isSandbox: true });
+    expect(out).not.toContain("## Live preview");
+    // Default (std) keeps it.
+    expect(buildAgentSystemInstructions()).toContain("## Live preview");
+  });
+
+  it("sandbox swaps the PR nudge for the per-repo gh variant", () => {
+    const out = buildAgentSystemInstructions({ isSandbox: true });
+    expect(out).toContain("## Pull requests");
+    // The std "edited a file ⇒ open a PR on this branch" reflex is replaced by
+    // per-repo guidance ("from inside the relevant clone").
+    expect(out).not.toContain("Do not ask first");
+    expect(out).toContain("per-repo");
+    // And the "scaffold a new project" best practice is dropped, like ops.
+    expect(out).not.toContain("scaffold the essential files");
+  });
+
+  it("sandbox composes with the per-agent Parallel sessions section + shared base", () => {
+    const out = buildAgentSystemInstructions({ agentId: "claude", isSandbox: true });
+    expect(out).toContain("## Sandbox session");
+    expect(out).toContain("## Parallel sessions");
+    expect(out).toContain("## Browser access");
+  });
 });

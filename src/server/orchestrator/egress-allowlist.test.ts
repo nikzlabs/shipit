@@ -16,9 +16,13 @@ import {
   composeEgressIdentityRules,
   buildEffectiveAllowlist,
   isBuiltinDefault,
+  EGRESS_LIFELINE_ALLOWLIST,
+  sandboxLifelineBase,
+  sandboxLifelineEgressConfig,
 } from "./egress-allowlist.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
+import type { SessionInfo } from "../shared/types.js";
 
 // ---------------------------------------------------------------------------
 // normalizeHost / hostMatchesEntry
@@ -318,5 +322,63 @@ describe("composeEgressIdentityRules", () => {
       durableRules: [{ host: ".s3.amazonaws.com", identities: ["session-bucket"] }],
     });
     expect(JSON.parse(out)).toEqual([{ host: ".s3.amazonaws.com", identities: ["session-bucket"] }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// docs/211 — sandbox lifeline-only egress (network capability OFF)
+// ---------------------------------------------------------------------------
+describe("sandboxLifelineBase", () => {
+  it("is the LLM-API lifeline only — no registries, no git host — when git is off", () => {
+    const base = sandboxLifelineBase({ git: false });
+    expect(base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
+    // The agent's own API is reachable…
+    expect(base).toContain(".anthropic.com");
+    // …but the package registries and git host of the FULL default base are not.
+    expect(base).not.toContain(".npmjs.org");
+    expect(base).not.toContain(".github.com");
+  });
+
+  it("re-opens github.com when git is granted, so push/PR still work", () => {
+    const base = sandboxLifelineBase({ git: true });
+    expect(base).toContain(".github.com");
+    // Still no package registries — github is the only addition.
+    expect(base).not.toContain(".npmjs.org");
+  });
+});
+
+describe("sandboxLifelineEgressConfig", () => {
+  const sandbox = (caps: Partial<SessionInfo["capabilities"]>): Pick<SessionInfo, "kind" | "capabilities"> => ({
+    kind: "sandbox",
+    capabilities: { git: false, docker: false, network: true, ...caps },
+  });
+
+  it("returns null for a non-sandbox session (normal store-driven path)", () => {
+    expect(sandboxLifelineEgressConfig({ kind: undefined, capabilities: undefined }, "")).toBeNull();
+    expect(sandboxLifelineEgressConfig({ kind: "ops", capabilities: undefined }, "")).toBeNull();
+    expect(sandboxLifelineEgressConfig(undefined, "")).toBeNull();
+  });
+
+  it("returns null for a sandbox with network ON (standard allowlist path)", () => {
+    expect(sandboxLifelineEgressConfig(sandbox({ network: true }), "")).toBeNull();
+  });
+
+  it("network OFF → contained, empty extras, lifeline-only base", () => {
+    const cfg = sandboxLifelineEgressConfig(sandbox({ network: false, git: false }), "");
+    expect(cfg).not.toBeNull();
+    expect(cfg!.contained).toBe(true);
+    expect(cfg!.extraHosts).toEqual([]);
+    expect(cfg!.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
+  });
+
+  it("network OFF + git ON → github.com spliced into the lifeline base", () => {
+    const cfg = sandboxLifelineEgressConfig(sandbox({ network: false, git: true }), "");
+    expect(cfg!.base).toContain(".github.com");
+  });
+
+  it("carries identity rules through only when non-empty", () => {
+    expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.identityRules).toBeUndefined();
+    const rules = '[{"host":".s3.amazonaws.com","identities":["b"]}]';
+    expect(sandboxLifelineEgressConfig(sandbox({ network: false }), rules)!.identityRules).toBe(rules);
   });
 });

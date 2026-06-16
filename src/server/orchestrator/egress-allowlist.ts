@@ -24,7 +24,7 @@
  */
 
 import type { CredentialStore } from "./credential-store.js";
-import type { EgressAllowlistEntry, EgressAllowlistSource } from "../shared/types.js";
+import type { EgressAllowlistEntry, EgressAllowlistSource, SessionInfo } from "../shared/types.js";
 import { getMcpOAuthProvider } from "./mcp-oauth-providers.js";
 
 // ---------------------------------------------------------------------------
@@ -63,6 +63,54 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".pypi.org", // pypi.org
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
 ];
+
+/**
+ * docs/211 — the **lifeline** allowlist: the irreducible hosts a contained
+ * agent must reach for the loop to function at all — its inference/auth API.
+ * Used when a sandbox session's `network` capability is OFF: egress is dropped
+ * to this set (plus the ShipIt orchestrator/worker, which the resolver/proxy add
+ * separately via {@link orchestratorInternalNames}, and plus GitHub when the
+ * `git` capability is granted — see {@link EGRESS_GITHUB_LIFELINE_HOSTS}).
+ *
+ * This is the LLM-API slice of {@link EGRESS_DEFAULT_ALLOWLIST} — registries and
+ * the git host are deliberately excluded ("no internet, lifeline only"). Cutting
+ * these hosts would kill the agent, so "off" is lifeline-only, never a literal
+ * air-gap.
+ */
+export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
+  // --- Agent API endpoints (Claude / Anthropic) ---
+  ".anthropic.com",
+  ".claude.ai",
+  // --- Agent API endpoints (Codex / OpenAI) ---
+  ".openai.com",
+  ".chatgpt.com",
+];
+
+/**
+ * docs/211 — GitHub hosts spliced into the lifeline base when a Network-off
+ * sandbox ALSO has the `git` capability, so `git push` / PR brokering keep
+ * working even with the internet otherwise sealed. GitHub access controls the
+ * *token*; Network controls *everything else* — granting git re-opens just this
+ * host. Mirrors the git slice of {@link EGRESS_DEFAULT_ALLOWLIST}.
+ */
+export const EGRESS_GITHUB_LIFELINE_HOSTS: readonly string[] = [
+  ".github.com",
+  ".githubusercontent.com",
+  ".githubassets.com",
+];
+
+/**
+ * docs/211 — compose the lifeline egress base for a Network-off sandbox: the LLM
+ * API lifeline, plus GitHub when `git` is granted. The orchestrator/worker
+ * internal names are added separately by the resolver/proxy, so they are always
+ * reachable and not listed here. Returns a fresh array (safe to mutate).
+ */
+export function sandboxLifelineBase(opts: { git: boolean }): string[] {
+  return [
+    ...EGRESS_LIFELINE_ALLOWLIST,
+    ...(opts.git ? EGRESS_GITHUB_LIFELINE_HOSTS : []),
+  ];
+}
 
 // ---------------------------------------------------------------------------
 // Host matching
@@ -387,6 +435,32 @@ export interface ResolvedEgressConfig {
    * "" / unset → no identity scoping (the host allowlist still applies).
    */
   identityRules?: string;
+}
+
+/**
+ * docs/211 — the per-session egress config for a **sandbox with `network` OFF**,
+ * or `null` for any other session (the caller then takes the normal store-driven
+ * path). Network-off drops egress to **lifeline-only**: an empty session
+ * allowlist (no user/MCP/operator extras, no full default base) with the base
+ * narrowed to the LLM-API lifeline (+ github.com when `git` is granted), and
+ * containment forced on — "off" only ever tightens, never loosens. The
+ * orchestrator/worker lifeline is added separately by the resolver/proxy
+ * (`orchestratorInternalNames`), so it is always reachable and not listed here.
+ *
+ * Inert where egress enforcement isn't deployed: the firewall install is gated
+ * on `egressEnforce && contained`, so this config is simply not consumed there.
+ */
+export function sandboxLifelineEgressConfig(
+  session: Pick<SessionInfo, "kind" | "capabilities"> | undefined,
+  identityRules: string,
+): ResolvedEgressConfig | null {
+  if (session?.kind !== "sandbox" || session.capabilities?.network !== false) return null;
+  return {
+    contained: true,
+    extraHosts: [],
+    base: sandboxLifelineBase({ git: session.capabilities.git }),
+    ...(identityRules ? { identityRules } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------

@@ -309,9 +309,10 @@ async function createContainerForRunner(opts: {
   /** docs/128 — true when the session's server-side `kind === "ops"`. Enables
    *  the privileged journal mounts + read-only Docker proxy wiring. */
   opsSession?: boolean;
-  /** docs/183 — session identity (remote + kind) used to resolve overlay-dep-store
-   *  eligibility + specs. Absent → no overlay (the unchanged path). */
-  session?: Pick<SessionInfo, "remoteUrl" | "kind">;
+  /** docs/183 / docs/211 — session identity (remote + kind + capabilities) used
+   *  to resolve overlay-dep-store eligibility + specs and the sandbox Docker
+   *  grant. Absent → no overlay (the unchanged path). */
+  session?: Pick<SessionInfo, "remoteUrl" | "kind" | "capabilities">;
   /** Optional qualifier appended to the failure broadcast (e.g. "from standby fallback"). */
   failureContext?: string;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
@@ -347,6 +348,13 @@ async function createContainerForRunner(opts: {
     const pnpmStoreDir = opts.session
       ? mgr.preparePnpmStore({ workspaceDir: opts.workspaceDir, session: opts.session })
       : undefined;
+    // docs/211 — a sandbox's Docker access is the server-authoritative
+    // `capabilities.docker` grant (its empty `/workspace` has no shipit.yaml to
+    // derive it from). `undefined` for any non-sandbox session so the existing
+    // shipit.yaml-derived path is byte-for-byte unchanged.
+    const sandboxDockerAccess = opts.session?.kind === "sandbox"
+      ? !!opts.session.capabilities?.docker
+      : undefined;
     const config = mgr.buildConfigForWorkspace({
       sessionId,
       sessionDir: opts.sessionDir,
@@ -355,6 +363,7 @@ async function createContainerForRunner(opts: {
       depCacheDir: opts.depCacheDir,
       pnpmStoreDir,
       opsSession: opts.opsSession,
+      ...(sandboxDockerAccess !== undefined ? { dockerAccess: sandboxDockerAccess } : {}),
       overlaySpecs,
     });
     const createStart = Date.now();

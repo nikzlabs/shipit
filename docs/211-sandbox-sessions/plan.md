@@ -353,3 +353,44 @@ Deferred to Phase 2 (a parallel effort builds on the stable
 git-credential + PR-broker capability gates, repo-aware PR brokering, threading
 `docker`/`network` into `buildContainerConfig`/egress, the sandbox system-prompt
 variant, and the in-container `shipit-docs` page.
+
+### Phase 2a landed (capability wiring: docker, network, prompt, docs)
+
+Building on that contract (and running in parallel with the git-credential +
+repo-aware-PR-broker effort, which owns `agent-shim/gh.ts`,
+`agent-ops-routes.ts`, `api-routes-github.ts`, `services/github*.ts`):
+
+- **Docker → session-scoped proxy.** `buildConfigForWorkspace` gained a
+  `dockerAccess?` override (`opts.dockerAccess ?? limits.dockerAccess`); a
+  sandbox's empty `/workspace` has no `shipit.yaml`, so the
+  server-authoritative `capabilities.docker` grant is threaded in from
+  `createContainerForRunner` (`app-lifecycle.ts`) via the session's
+  `capabilities`. With it on, `buildEnv`'s existing non-ops `dockerAccess` branch
+  routes `DOCKER_HOST` at the per-session proxy and creates the session bridge
+  network + compose project — **never** `OPS_DOCKER_HOST`. A sandbox is never
+  ops, so the ops-precedence guard (`buildContainerConfig` forces
+  `dockerAccess: false` for ops) is untouched and a sandbox gets no journal/host
+  mounts (`opsSession` falsy, `hostMounts` undefined).
+- **Network → tighten-only egress.** `resolveEgressConfig` (`index.ts`) now calls
+  `sandboxLifelineEgressConfig` first: for a `kind === "sandbox"` session with
+  `capabilities.network === false` it returns a lifeline-only config — `contained:
+  true`, `extraHosts: []`, and `base` narrowed to `EGRESS_LIFELINE_ALLOWLIST` (the
+  LLM-API slice) plus `EGRESS_GITHUB_LIFELINE_HOSTS` when `git` is granted. The
+  orchestrator/worker lifeline rides `orchestratorInternalNames` (added by the
+  resolver/proxy), so it's always reachable. Returns `null` (→ the unchanged
+  store-driven path) for every other session, so `network` ON is byte-for-byte the
+  normal allowlist. Inert where egress enforcement isn't deployed (the firewall
+  install is gated on `egressEnforce && contained`). The live `reloadEgress` path
+  reuses the same resolver, so an allowlist edit can't re-widen a sealed sandbox.
+- **System-prompt variant.** `agent-instructions.ts` gained a third, mutually
+  exclusive session `mode` (`std`/`ops`/`sandbox`) alongside `agentId`; all
+  `agentId × mode` variants are still precomputed once at module load (cache
+  contract preserved). The sandbox mode splices `prompts/sandbox-session.md`,
+  swaps the auto-commit Git guidance for `prompts/git-workflow-sandbox.md` (the
+  Git section was tokenized to `{{GIT_WORKFLOW}}`; `git-workflow.md` is the
+  unchanged standard), swaps in `prompts/pull-requests-sandbox.md` (per-repo `gh`
+  from inside each clone), and drops Live preview + Releases + the new-project
+  bullet. `session-agent-run-params.ts` threads the already-computed `isSandbox`.
+- **In-container docs.** `src/server/shipit-docs/sandbox-session.md` documents the
+  empty workspace, the three capabilities, per-repo cloning/PRs, and persistence;
+  linked from `README.md` and `sessions.md`.

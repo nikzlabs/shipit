@@ -117,7 +117,7 @@ export async function buildAgentRunParams(
   const userSystemPrompt = await deps.readSystemPrompt();
 
   const agentInstructions = agentInstructionsEnabled
-    ? buildAgentSystemInstructions({ agentId, isOps })
+    ? buildAgentSystemInstructions({ agentId, isOps, isSandbox })
     : undefined;
   let systemPrompt: string | undefined =
     [agentInstructions, userSystemPrompt].filter(Boolean).join("\n\n") || undefined;
