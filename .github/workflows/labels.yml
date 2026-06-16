@@ -22,7 +22,9 @@ permissions:
 jobs:
   labeler:
     name: Sync labels
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # Pure GitHub API calls, no compute — 2vcpu to conserve Blacksmith free
+    # minutes (they scale inversely with vcpu; a bigger machine adds nothing).
+    runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
       # skip-delete: true so labels not listed in labels.yml (e.g. GitHub's

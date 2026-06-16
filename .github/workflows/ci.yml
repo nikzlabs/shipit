@@ -42,6 +42,12 @@ jobs:
       # extract/link work `npm ci` does even with a warm ~/.npm download cache
       # (setup-node's `cache: npm` only caches the tarballs, not the installed
       # tree). The key includes the Node major so a runtime bump busts it.
+      #
+      # Keep this on upstream actions/cache — do NOT swap to useblacksmith/cache.
+      # On a Blacksmith runner the GitHub cache API is transparently redirected
+      # (network-level) to Blacksmith's colocated ~4x-faster store with zero
+      # workflow changes, and the useblacksmith/* forks are now archived. Same
+      # applies to setup-node's `cache: npm` above. See blacksmith.sh/blog/cache.
       - uses: actions/cache@v5
         id: node-modules-cache
         with:
