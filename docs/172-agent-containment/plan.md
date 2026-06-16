@@ -381,6 +381,89 @@ mount and downgrade to `:ro` where the agent has no legitimate write need (uploa
 candidate; credentials need write only during first-turn provisioning and could be
 provisioned then remounted read-only).
 
+This is distinct from Gap 5's `ReadonlyRootfs` (SHI-97), which makes the **whole image
+rootfs** read-only with a tmpfs writable set; Gap 6 is the per-mount `:ro` downgrade of
+the **persistent data mounts** (`/uploads`, `/credentials`) that stay writable even under
+Gap 5. The two compose.
+
+#### `/uploads` → `:ro` — **shipped (SHI-45).**
+
+`buildMounts` (`container-lifecycle.ts`) now mounts `/uploads` read-only in **both**
+runtime modes: the dev bind is `:ro` and the prod volume-subpath carries `ReadOnly: true`.
+This is safe because the **agent never writes `/uploads`** — uploads are produced by the
+user from the browser and written **orchestrator-side** on the host path
+(`services/files.ts` `saveUploadedFile`/`deleteUpload`, which the orchestrator process
+runs against the host directory, then `chownToSessionWorker` so the agent can *read* its
+attachments). The session worker has zero `/uploads` references; it only ever reads the
+mount. A prompt-injected agent can therefore no longer delete or tamper with the user's
+uploads. Tests assert the `:ro` bind and `ReadOnly: true` volume in
+`container-lifecycle.test.ts`. Agent-facing docs updated (`shipit-docs/environment.md`:
+`/uploads` is read-only; copy elsewhere to transform).
+
+#### `/credentials` → `:ro` — **blocked; prerequisite scoped (SHI-164).**
+
+`/credentials` is **not** flipped to `:ro` in SHI-45. The blocker is that the agent CLI
+refreshes its short-lived OAuth **access token in place inside this mount**: the CLI's
+credential file (`~/.claude/.credentials.json` → `/credentials/.claude/.credentials.json`;
+Codex equivalently under `/credentials/.codex`) is **rewritten** by the CLI when it rotates
+a token mid-turn (docs/142 Problem A — "a refresh inside the session writes to
+`sessions/<id>/.claude/.credentials.json`"). A `:ro` mount would make that in-container
+refresh fail → 401 / broken auth, re-introducing exactly the failure docs/142 fixed.
+
+Crucially, the *only* blocker is the **in-container CLI write**. The orchestrator-side
+credential ops (`provisionAgentCredentials`/`copyCredentialPath`, `syncAgentTokenIn`,
+`syncAgentTokenBack`, `repushAgentToken` in `session-credentials.ts`) all write the **host**
+path directly and are unaffected by the container mount mode. So the prerequisite is narrow:
+
+**What must move first (SHI-164):** relocate the agent CLI's *writable* token file out of
+the `/credentials` mount.
+
+1. Point the CLI's credential symlink target (or `CLAUDE_*`/`CODEX_*` config home) at a
+   **writable per-session location outside the `/credentials` mount** — e.g. the tmpfs HOME
+   already used under read-only-rootfs (Gap 5), or a dedicated small writable per-session
+   volume.
+2. Seed it from source at turn start (host-side `syncAgentTokenIn`, already exists).
+3. Copy the rotated token back from that writable location after the turn (host-side
+   `syncAgentTokenBack`, expiry-guarded — already exists; just re-point its source path).
+4. **Then** flip `/credentials` to `:ro` — it becomes read-only seed material (`.gitconfig`
+   + base creds) — and add a test asserting the mount is `:ro`.
+
+Out-of-process refresh (an orchestrator-owned central refresher) is the alternative, but
+docs/142 rated it fragile; relocating the write target is the lower-risk path that preserves
+the per-session copy model. Tracked as **SHI-164**
+(<https://linear.app/shipit-ai/issue/SHI-164>); references docs/142.
+
+#### Cross-platform validation (SHI-45)
+
+SHI-45 also owns cross-platform validation of the container hardening. The hardening this
+issue adds — and the existing mount/HostConfig hardening it sits alongside — is expressed
+**entirely through standard Docker API fields**, not platform-specific mechanisms, so it is
+portable by construction across the supported hosts:
+
+- **`/uploads` read-only.** Dev mode emits the `:ro` suffix on the `Binds` string; prod mode
+  sets `ReadOnly: true` on a `Mounts` volume entry. Both are core Docker Engine API fields
+  honored identically by Docker Engine (Linux), Docker Desktop (macOS, virtiofs), and Docker
+  Desktop (WSL2 backend). There is no host filesystem dependence — the read-only enforcement
+  is the daemon's, not the host FS's.
+- **No new platform-specific surface.** SHI-45 introduces no sysctls, capabilities, runtimes,
+  seccomp, or bind-path assumptions (those live in Gaps 1/5 and are independently host-gated
+  and live-verified — see their checklist entries). It only changes a mount mode.
+
+**Testable here:** the unit tests in `container-lifecycle.test.ts` assert the exact
+HostConfig/Binds shape (`:ro` bind, `ReadOnly: true` volume) the orchestrator hands Docker,
+on every platform, since `buildMounts` is pure and platform-independent. These pass.
+
+**Not testable in this environment:** live container provisioning. This session container has
+no Docker socket / Docker-in-Docker (`docker` is not on PATH), so a real `:ro`-enforcement
+check (write into `/uploads` from inside a running session container → EROFS/EACCES) cannot
+run from here. That live check belongs on a real Docker host, the same verify-on-a-live-host
+pattern SHI-90 (egress) and SHI-97 (kernel-tier) used; the dogfood container-mode orchestrator
+on the maintainer's host is the venue. The 067 cross-platform checklist (Linux Docker Engine,
+WSL2 Docker Desktop, WSL2 native Docker Engine) tracks the remaining live matrix; the `:ro`
+mount mode is not expected to behave differently across them because it is a daemon-level API
+field, but a one-line in-container `touch /uploads/x` smoke check should be folded into that
+matrix when it runs.
+
 ## Prioritization
 
 | Pri | Gap | Why first | Rough shape |
@@ -390,7 +473,7 @@ provisioned then remounted read-only).
 | P0 | Gap 2-R — broker is caller-blind (SHI-79) | Residual: agent still extracts the PAT on demand via the broker | Short-lived scoped tokens and/or out-of-process git; egress backstop |
 | P0 | Gap 1 — egress allowlist | The load-bearing defense once approval friction is gone | Default-deny egress proxy / internal net + gateway; identity-validating proxy for multi-tenant hosts |
 | ✅ | Gap 3 — repo trust gate | Stops "open repo == run its code" | Done — per-remote trust gate defers install/compose until the user trusts the remote (`service-manager-setup.ts`, `RepoStore.isTrusted`, `RepoTrustBanner`; `docs/178-repo-trust-gate`) |
-| P2 | Gap 6 — read-only mounts (SHI-45) | Structural, low-risk | Downgrade mounts to `:ro` where possible |
+| ◑ | Gap 6 — read-only mounts (SHI-45) | Structural, low-risk | `/uploads` `:ro` shipped + cross-platform validated; `/credentials` `:ro` blocked on SHI-164 (in-mount OAuth refresh, docs/142) |
 | ✅ | Gap 5 — gVisor / seccomp / ro-rootfs (SHI-97) | Hardens the weakest tier | Done (default-OFF) — `SESSION_RUNTIME` (gVisor opt-in), `SESSION_SECCOMP` (custom profile), `SESSION_READONLY_ROOTFS` (`container-hardening.ts`) |
 | —  | Gap 4 — untrusted-input lens (SHI-98 + issue slice SHI-85) | Cross-cutting | Apply to Gaps 1/3 and future input surfaces |
 

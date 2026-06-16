@@ -33,9 +33,15 @@ macOS (Docker Desktop, Apple Silicon, virtiofs) is fully validated. Linux and WS
 
 ## Security Hardening
 
-### Credential mounts
+### Read-only data mounts (Gap 6 — SHI-45)
 
-- [ ] Switch `/credentials` to read-only once Claude CLI `--resume` write path is isolated
+- [x] Switch `/uploads` to read-only (SHI-45). The agent only reads uploads; they're
+  written orchestrator-side on the host. `buildMounts` (`container-lifecycle.ts`) emits a
+  `:ro` bind / `ReadOnly: true` volume; tested in `container-lifecycle.test.ts`. See
+  `docs/172-agent-containment/` Gap 6.
+- [ ] Switch `/credentials` to read-only once the agent CLI's in-place OAuth token-refresh
+  write is relocated out of the mount (docs/142). Blocked; prerequisite tracked as
+  **SHI-164** and scoped in `docs/172-agent-containment/` Gap 6.
 
 ### Non-root worker
 

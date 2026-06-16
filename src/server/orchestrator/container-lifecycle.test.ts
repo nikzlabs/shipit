@@ -115,6 +115,33 @@ describe("buildMounts", () => {
     expect(result.mounts.filter((m) => m.Target === PNPM_STORE_CONTAINER_PATH)).toHaveLength(0);
     expect(result.binds.filter((b) => b.includes("/pnpm-store"))).toHaveLength(0);
   });
+
+  // docs/172 Gap 6 (SHI-45) — /uploads is mounted READ-ONLY. The agent only
+  // consumes user uploads, it never writes them, so a `:ro` mount removes the
+  // ability for a prompt-injected agent to delete or tamper with them.
+  it("mounts uploadsDir at /uploads read-only as a bind mount (dev mode)", () => {
+    const config = baseConfig({ uploadsDir: "/workspace/sessions/sess-1/uploads" });
+    const result = buildMounts(config, undefined, undefined);
+    expect(result.binds).toContain("/workspace/sessions/sess-1/uploads:/uploads:ro");
+    // It must NOT be writable.
+    expect(result.binds).not.toContain("/workspace/sessions/sess-1/uploads:/uploads:rw");
+  });
+
+  it("mounts uploadsDir at /uploads read-only as a volume subpath (prod mode)", () => {
+    const config = baseConfig({ uploadsDir: "/workspace/sessions/sess-1/uploads" });
+    const result = buildMounts(config, "my-workspace-vol", undefined);
+    const uploadsMount = result.mounts.find((m) => m.Target === "/uploads");
+    expect(uploadsMount).toBeDefined();
+    expect(uploadsMount!.ReadOnly).toBe(true);
+    expect(uploadsMount!.Source).toBe("my-workspace-vol");
+    expect(uploadsMount!.VolumeOptions?.Subpath).toBe("sessions/sess-1/uploads");
+  });
+
+  it("adds no uploads mount when uploadsDir is undefined", () => {
+    const result = buildMounts(baseConfig(), "my-workspace-vol", undefined);
+    expect(result.mounts.filter((m) => m.Target === "/uploads")).toHaveLength(0);
+    expect(result.binds.filter((b) => b.includes(":/uploads:"))).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
