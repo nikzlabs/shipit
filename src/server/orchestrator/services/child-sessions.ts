@@ -15,6 +15,7 @@ import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionContainerManager } from "../session-container.js";
 import { ContainerSessionRunner } from "../container-session-runner.js";
+import { agentIdForModel, getAgentCapabilities, KNOWN_AGENT_IDS } from "../../shared/agent-registry.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
@@ -190,6 +191,39 @@ export async function spawnChildSession(
     throw new ServiceError(400, "Parent session has no workspace");
   }
 
+  // Resolve and validate the agent/model overrides BEFORE any disk work, so a
+  // bad value fails fast (400 surfaced on the shim) instead of booting a
+  // container that 401s or errors on its first turn. The spawning agent supplies
+  // these as free text — an LLM picking an exact model id is a known source of
+  // typos and cross-backend mismatches — so the registry is the source of truth.
+  if (opts.agent && !getAgentCapabilities(opts.agent)) {
+    throw new ServiceError(
+      400,
+      `Unknown agent '${opts.agent}'. Valid agents: ${KNOWN_AGENT_IDS.join(", ")}.`,
+    );
+  }
+  // Mirror the client's rule that the model is the source of truth and the agent
+  // is derived from it (`agentIdForModel`): when `--model` names a backend-owned
+  // model and `--agent` was omitted, route to that backend so `--model gpt-5.5`
+  // alone lands on Codex instead of silently inheriting the parent's Claude.
+  // When both are given, reject a cross-backend mismatch with an actionable
+  // message. An unlisted/versioned id (`modelOwner === undefined`) is passed
+  // through for forward-compat — the CLI forwards `--model` as-is, so a
+  // valid-but-newer id the picker hasn't surfaced yet must not be rejected.
+  let agentOverride: AgentId | undefined = opts.agent;
+  if (opts.model) {
+    const modelOwner = agentIdForModel(opts.model);
+    if (modelOwner && !agentOverride) {
+      agentOverride = modelOwner;
+    } else if (modelOwner && agentOverride && modelOwner !== agentOverride) {
+      throw new ServiceError(
+        400,
+        `Model '${opts.model}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
+          `Pass --agent ${modelOwner}, or omit --agent to derive it from the model.`,
+      );
+    }
+  }
+
   // Quota: per-parent cap on active spawned children. Fail-closed.
   // docs/205 — a detached spawn is not a child (no parent linkage), so it does
   // not count against and is not bounded by the per-parent active-children cap;
@@ -342,7 +376,7 @@ export async function spawnChildSession(
   graduateSession(graduationDeps, {
     sessionId: newSessionId,
     userText: trimmedPrompt,
-    agentId: opts.agent ?? parent.agentId ?? defaultAgentId,
+    agentId: agentOverride ?? parent.agentId ?? defaultAgentId,
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
     ...((opts.model ?? parent.model) ? { model: (opts.model ?? parent.model)! } : {}),
@@ -358,13 +392,13 @@ export async function spawnChildSession(
   // `runner.dispatch` then either starts the turn directly (when
   // SystemTurnDeps are wired) or enqueues for the next agent start.
   //
-  // Precedence: explicit `opts.agent` (e.g. `--agent` on the shim) wins;
-  // otherwise inherit the parent's pinned `agentId` so a child spawned from
-  // a Codex session stays on Codex (the orchestrator's `defaultAgentId` is
-  // global and may point at a provider the user hasn't authenticated). Fall
-  // back to `defaultAgentId` only when the parent hasn't been pinned yet
-  // (fresh parent, no turn taken).
-  const childAgentId: AgentId = opts.agent ?? parent.agentId ?? defaultAgentId;
+  // Precedence: the resolved `agentOverride` (an explicit `--agent`, or the
+  // agent derived from `--model` above) wins; otherwise inherit the parent's
+  // pinned `agentId` so a child spawned from a Codex session stays on Codex (the
+  // orchestrator's `defaultAgentId` is global and may point at a provider the
+  // user hasn't authenticated). Fall back to `defaultAgentId` only when the
+  // parent hasn't been pinned yet (fresh parent, no turn taken).
+  const childAgentId: AgentId = agentOverride ?? parent.agentId ?? defaultAgentId;
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, childAgentId);
 
   // docs/149 — bring the child to full env-prep parity with the WS path
@@ -424,6 +458,18 @@ export interface ChildSessionView {
   prUrl?: string;
   /** Most recent assistant message text. Undefined when the child has not produced one yet. */
   latestAssistantMessage?: string;
+  /**
+   * Agent backend the child is pinned to (`claude`/`codex`). Surfaced so the
+   * spawning agent can confirm which backend a child actually runs on rather
+   * than trusting the child's (unreliable) self-report. Undefined until the
+   * child's first turn pins it.
+   */
+  agent?: AgentId;
+  /**
+   * Model the child is pinned to. Undefined when the child inherited the
+   * default (no explicit `--model` and no parent model pin).
+   */
+  model?: string;
 }
 
 /**
@@ -526,6 +572,8 @@ function buildChildView(
   };
   if (child.branch) view.branch = child.branch;
   if (child.spawnedByTurn) view.spawnedByTurn = child.spawnedByTurn;
+  if (child.agentId) view.agent = child.agentId;
+  if (child.model) view.model = child.model;
   const latest = projections.chatHistoryManager?.loadLatestAssistantText(child.id);
   if (latest) view.latestAssistantMessage = latest;
   const pr = projections.prStatusPoller?.getStatus(child.id);

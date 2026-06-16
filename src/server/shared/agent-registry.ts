@@ -178,6 +178,15 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
 ];
 
 /**
+ * Runtime list of known agent ids, derived from `AGENT_DEFS` so it can never
+ * drift from the static definitions. `AgentId` is a compile-time union with no
+ * runtime form, so callers that must validate an agent id supplied as free text
+ * (e.g. the spawn route's `--agent`) need this to both check membership and
+ * render a "valid agents: …" error message.
+ */
+export const KNOWN_AGENT_IDS: AgentId[] = AGENT_DEFS.map((d) => d.id);
+
+/**
  * Map a model id to the agent that owns it, using the static `AGENT_DEFS`
  * model lists. Returns `undefined` when the model is empty or not present in
  * any agent's list (e.g. a versioned id the picker doesn't surface, or an

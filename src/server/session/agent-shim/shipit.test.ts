@@ -532,6 +532,8 @@ describe("shipit session view", () => {
               queueLength: 0,
               spawnedAt: "2026-05-04T14:22:31Z",
               spawnedByTurn: "turn-1",
+              agent: "codex",
+              model: "gpt-5.5",
             },
           },
         },
@@ -541,7 +543,34 @@ describe("shipit session view", () => {
     expect(out.stdout).toContain("Port API (ses_a)");
     expect(out.stdout).toContain("status:     running");
     expect(out.stdout).toContain("branch:     port-api-ts");
+    expect(out.stdout).toContain("agent:      codex");
+    expect(out.stdout).toContain("model:      gpt-5.5");
     expect(out.stdout).toContain("turn:       turn-1");
+  });
+
+  it("omits the agent/model lines when the broker doesn't report them", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "view", "ses_a"],
+      {
+        "GET /agent-ops/session/view/ses_a": {
+          status: 200,
+          body: {
+            child: {
+              id: "ses_a",
+              title: "Port API",
+              branch: "port-api-ts",
+              status: "idle",
+              queueLength: 0,
+              spawnedAt: "2026-05-04T14:22:31Z",
+            },
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).not.toContain("agent:");
+    expect(out.stdout).not.toContain("model:");
   });
 
   it("--json prints just the child object", async () => {

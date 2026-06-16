@@ -62,6 +62,19 @@ follow-ups → wait → archive.
 - [x] Unit tests for the three new shim handlers (happy path, 404, 409/429 surfacing, timeout exit).
 - [x] Integration tests: message enqueues on the child runner; wait blocks until `running=false && queueLength=0` (both the "already idle" fast path and the "register listener then finish" path); archive moves the child to archived and refuses with 409 when it's running.
 
+## Agent/model selection — validation + view exposure (DONE)
+
+Hardens the already-shipped `--agent`/`--model` spawn flags: validate before
+disk work, derive backend from model, and surface the resolved agent/model on
+`view`.
+
+- [x] `services/child-sessions.ts` — `spawnChildSession` validates `--agent` against `KNOWN_AGENT_IDS`, derives the agent from `--model` when `--agent` is omitted (`agentIdForModel`), and rejects a cross-backend `agent`+`model` mismatch — all before the claim/disk work. Unlisted/versioned model ids pass through (CLI forwards `--model` as-is).
+- [x] `services/child-sessions.ts` — `ChildSessionView` gains `agent`/`model`; `buildChildView` populates them from the child's `SessionInfo`.
+- [x] `shared/agent-registry.ts` — exports `KNOWN_AGENT_IDS` (derived from `AGENT_DEFS`) for runtime agent-id validation.
+- [x] `agent-shim/shipit-session.ts` — `shipit session view` plain-text output renders `agent:`/`model:` lines (omitted when unset).
+- [x] `shipit-docs/sessions.md` — documents model-as-source-of-truth derivation, fail-fast validation, and the new `view` fields.
+- [x] Tests: shim view rendering (`shipit.test.ts`); spawn validation, model→agent derivation, and `view` agent/model exposure (`agent-spawned-session.test.ts`).
+
 ## Phase 4 — Cross-repo spawns *(OPTIONAL — DEFERRED)*
 
 Per-account setting that allows `--repo <owner/name>` on
