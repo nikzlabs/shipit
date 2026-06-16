@@ -72,7 +72,7 @@ ops `setKind`).
 | Auto-commit to remote | Off — `/workspace` root is not a repo |
 | Branch-op blocking shim | Off — the agent owns its own branches/PRs via `gh` |
 | `RELEASES` / `NEW_PROJECT` prompt fragments | Dropped, like ops |
-| UI tabs | No Preview / PR tab — Files + terminal + chat |
+| UI | PR lifecycle card replaced by the orientation banner (same chat-panel slot); side-panel Preview & PR tabs removed (Files + Terminal remain) |
 | Sidebar | Own group + badge, like the Host / Ops group |
 | Warm pool | Cheaper to warm — no clone needed |
 

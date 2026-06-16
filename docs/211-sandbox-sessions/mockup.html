@@ -125,11 +125,11 @@
   .btn.primary { background: var(--sandbox); color: #04201d; border-color: var(--sandbox); }
   .btn.primary:hover { filter: brightness(1.08); }
   /* ---- session view ---- */
-  .sv { width: 560px; min-height: 460px; display:flex; flex-direction: column; }
+  .sv { width: 680px; min-height: 460px; display:flex; flex-direction: column; }
   .sv-head { display:flex; align-items:center; gap: 10px; padding: 12px 16px; border-bottom: 1px solid var(--color-border-primary); }
   .sv-head .nm { font-weight: 650; font-size: 14px; }
   .tabs { display:flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--color-border-primary); }
-  .tab { padding: 7px 12px; font-size: 12.5px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; cursor: pointer; display:flex; align-items:center; gap:6px;}
+  .tab { padding: 7px 9px; font-size: 12.5px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; cursor: pointer; display:flex; align-items:center; gap:6px; white-space: nowrap; }
   .tab.active { color: var(--color-text-primary); border-bottom-color: var(--sandbox); }
   .tab.gone { opacity: .35; text-decoration: line-through; cursor: not-allowed; }
   .sv-body { flex: 1; padding: 16px; display:flex; flex-direction: column; gap: 12px; }
@@ -151,6 +151,16 @@
   .term { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; background: #0d1117; border:1px solid var(--color-border-primary); border-radius: 8px; padding: 10px 12px; color: #c9d1d9; }
   .term .p { color: var(--sandbox); }
   .term .c { color: #8b949e; }
+  .sv-panes { flex: 1; display: flex; min-height: 0; }
+  .chat-pane { flex: 1.55; display: flex; flex-direction: column; border-right: 1px solid var(--color-border-primary); min-width: 0; }
+  .side-pane { flex: 1.1; display: flex; flex-direction: column; min-width: 0; }
+  .slot-label { font-size: 10px; color: var(--color-text-tertiary); padding: 8px 14px 0; display:flex; align-items:center; gap:6px; }
+  .slot-label .ln { flex:1; height:1px; background: var(--color-border-primary); }
+  .files { padding: 6px; font-size: 12.5px; }
+  .frow { display:flex; align-items:center; gap: 8px; padding: 5px 8px; border-radius: 6px; color: var(--color-text-secondary); }
+  .frow:hover { background: var(--color-bg-hover); }
+  .frow svg { flex:none; }
+  .frow.dir { color: var(--color-text-primary); }
   .legend { margin-top: 26px; font-size: 12px; color: var(--color-text-tertiary); max-width: 820px; }
   .legend b { color: var(--color-text-secondary); }
 </style>
@@ -288,29 +298,44 @@
           <span class="chip on">Git</span>
           <span class="chip off"><s>Docker</s></span>
         </div>
-        <div class="tabs">
-          <div class="tab active"><svg width="13" height="13" viewBox="0 0 256 256" fill="currentColor"><path d="M168 152a8 8 0 0 1-8 8H96a8 8 0 0 1 0-16h64a8 8 0 0 1 8 8z"/></svg> Chat</div>
-          <div class="tab">Files</div>
-          <div class="tab">Terminal</div>
-          <div class="tab gone" title="Not available for sandbox sessions">Preview</div>
-          <div class="tab gone" title="Not available for sandbox sessions">PR</div>
-        </div>
-        <div class="sv-body">
-          <div class="info-banner">
-            <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="flex:none;color:var(--sandbox)"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm-8 56a12 12 0 1 1-12 12 12 12 0 0 1 12-12zm20 96a8 8 0 0 1-8-8v-32a8 8 0 0 1 0-16h8a8 8 0 0 1 8 8v32a8 8 0 0 1 8 8z"/></svg>
-            <div><span class="ttl">Sandbox session — no repository bound.</span> The agent clones and pushes repos itself, so there’s no live preview or PR card here. Granted: <b>Git</b>.</div>
+        <div class="sv-panes">
+          <!-- chat panel: banner sits in the PR-card slot -->
+          <div class="chat-pane">
+            <div class="slot-label"><span>Chat panel · PR-card slot</span><span class="ln"></span></div>
+            <div style="padding: 6px 12px 4px;">
+              <div class="info-banner">
+                <svg width="16" height="16" viewBox="0 0 256 256" fill="currentColor" style="flex:none;color:var(--sandbox)"><path d="M128 24a104 104 0 1 0 104 104A104.1 104.1 0 0 0 128 24zm-8 56a12 12 0 1 1-12 12 12 12 0 0 1 12-12zm20 96a8 8 0 0 1-8-8v-32a8 8 0 0 1 0-16h8a8 8 0 0 1 8 8v32a8 8 0 0 1 8 8z"/></svg>
+                <div><span class="ttl">Sandbox session — no repository bound.</span> The agent clones and pushes repos itself, so there’s no live preview or PR card here. Granted: <b>Git</b>.</div>
+              </div>
+            </div>
+            <div class="sv-body" style="padding-top: 6px;">
+              <div class="chat-card">
+                <div class="who">You</div>
+                Pull <code>nikzlabs/auth-core</code> and <code>nikzlabs/web</code>, bump the shared token lib in both, and open a PR on each.
+              </div>
+              <div class="chat-card">
+                <div class="who">Agent</div>
+                <div class="term">
+                  <span class="c"># both repos cloned side by side in the sandbox</span><br>
+                  <span class="p">~/workspace$</span> git clone …/auth-core &amp;&amp; git clone …/web<br>
+                  <span class="p">~/workspace$</span> cd web &amp;&amp; gh pr create -t "Bump token lib"<br>
+                  <span class="c">✓ auth-core#214 · ✓ web#88 — two PRs</span>
+                </div>
+              </div>
+            </div>
           </div>
-          <div class="chat-card">
-            <div class="who">You</div>
-            Pull <code>nikzlabs/auth-core</code> and <code>nikzlabs/web</code>, bump the shared token lib in both, and open a PR on each.
-          </div>
-          <div class="chat-card">
-            <div class="who">Agent</div>
-            <div class="term">
-              <span class="c"># both repos cloned side by side in the sandbox</span><br>
-              <span class="p">~/workspace$</span> git clone …/auth-core &amp;&amp; git clone …/web<br>
-              <span class="p">~/workspace$</span> cd web &amp;&amp; gh pr create -t "Bump token lib"<br>
-              <span class="c">✓ auth-core#214 · ✓ web#88 — two PRs, one session</span>
+          <!-- side panel: its tabs (Chat is NOT a tab); Preview & PR removed -->
+          <div class="side-pane">
+            <div class="tabs">
+              <div class="tab active">Files</div>
+              <div class="tab">Terminal</div>
+              <div class="tab gone" title="Removed for sandbox sessions">Preview</div>
+              <div class="tab gone" title="Removed for sandbox sessions">PR</div>
+            </div>
+            <div class="files">
+              <div class="frow dir"><svg width="14" height="14" viewBox="0 0 256 256" fill="var(--color-folder)"><path d="M216 72h-84.7l-27.3-27.3A15.9 15.9 0 0 0 92.7 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V88a16 16 0 0 0-16-16z"/></svg> auth-core/</div>
+              <div class="frow dir"><svg width="14" height="14" viewBox="0 0 256 256" fill="var(--color-folder)"><path d="M216 72h-84.7l-27.3-27.3A15.9 15.9 0 0 0 92.7 40H40a16 16 0 0 0-16 16v144a16 16 0 0 0 16 16h176a16 16 0 0 0 16-16V88a16 16 0 0 0-16-16z"/></svg> web/</div>
+              <div class="frow"><svg width="14" height="14" viewBox="0 0 256 256" fill="currentColor"><path d="M213.7 82.3l-56-56A8 8 0 0 0 152 24H56a16 16 0 0 0-16 16v176a16 16 0 0 0 16 16h144a16 16 0 0 0 16-16V88a8 8 0 0 0-2.3-5.7zM152 88V44l44 44z"/></svg> notes.md</div>
             </div>
           </div>
         </div>
