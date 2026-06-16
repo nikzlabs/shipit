@@ -1,5 +1,7 @@
 # Checklist — large-file split & tech-debt
 
+> ✅ All phases merged to main — refactor complete.
+
 Each **phase below is one PR**, sized to land independently. They are designed to be
 **implemented in parallel**: every phase keeps its original file as a thin facade and
 preserves the existing export surface (the plan's guiding rule), so **importers never
@@ -30,30 +32,30 @@ typecheck` + `npm run lint:dev` clean → no behavior change. Open one PR per ph
 
 ## Group 2 — Orchestrator god-modules (one file each → one PR each)
 
-- [ ] **P4 · `index.ts`** (2118) → `app-assembly.ts` / `bootstrap-managers.ts` / `startup-monitors.ts` / `route-registry.ts`; `index.ts` = ordered entry point.
+- [x] **P4 · `index.ts`** (2118) → `app-assembly.ts` / `bootstrap-managers.ts` / `startup-monitors.ts` / `route-registry.ts`; `index.ts` = ordered entry point.
 - [x] **P5 · `disk-janitor.ts`** (1850) → `startup-janitor.ts` / `tier-escalation.ts` / `disk-utils.ts`. `disk-janitor.ts` kept as a thin re-export facade so callers (`index.ts`) are unchanged; tests split into `startup-janitor.test.ts` + `disk-tier-escalation.test.ts`.
 - [x] **P6 · `ws-handlers/agent-listeners.ts`** (1715) → `agent-event-normalizer.ts` / `agent-message-builder.ts` / `agent-voice-handler.ts` / `agent-auth-handler.ts` / `agent-rate-limits.ts`; facade keeps `wireAgentListeners` (1715 → 1235 lines). Public export surface preserved via facade re-exports; co-located tests for each module (incl. new `agent-rate-limits.test.ts`).
-- [ ] **P7 · `session-credentials.ts`** (1216) → `session-credentials-scaffold.ts` / `session-agent-credentials.ts` / `token-sync-manager.ts` / `repo-memory-manager.ts`.
+- [x] **P7 · `session-credentials.ts`** (1216) → `session-credentials-scaffold.ts` / `session-agent-credentials.ts` / `token-sync-manager.ts` / `repo-memory-manager.ts`.
 - [x] **P8 · `service-manager.ts`** (1484) → extracted `compose-cli.ts` (`ComposeCli` class: arg construction, `up`/`upService`/`stop`/`down`, single-retry container-name conflict recovery, `killStaleContainers`, default runner/query, `extractConflictContainerId`). `service-manager.ts` keeps the start/stop/reconcile state machine, install gate, log streaming, and collaborator wiring, now delegating compose invocation to `this.compose`. `ComposeRunner`/`ComposeQuery` re-exported from the facade so importers (incl. the test) are unchanged. `install-gate.ts` left in place — too coupled to the poller/retry/start machine to extract cleanly. Existing `service-manager.test.ts` stays green unchanged.
-- [ ] **P9 · `pr-status-poller.ts`** (1367) → `pr-polling-supervisor.ts` / `pr-session-tracker.ts` / `polling-global-gate.ts`; collaborators stay.
-- [ ] **P10 · `api-routes-session.ts`** (1255) → `api-routes-session-{crud,repos,spawn}.ts` + `api-routes-shipit-fix.ts`. **Registers new files in `api-routes.ts`** (only phase that touches it).
-- [ ] **P11 · `session-container.ts`** (1124) → `container-config-builder.ts` / `container-overlay-provisioner.ts`; keep create/destroy/monitor in facade.
+- [x] **P9 · `pr-status-poller.ts`** (1367) → `pr-polling-supervisor.ts` / `pr-session-tracker.ts` / `polling-global-gate.ts`; collaborators stay.
+- [x] **P10 · `api-routes-session.ts`** (1255) → `api-routes-session-{crud,repos,spawn}.ts` + `api-routes-shipit-fix.ts`. **Registers new files in `api-routes.ts`** (only phase that touches it).
+- [x] **P11 · `session-container.ts`** (1124) → `container-config-builder.ts` / `container-overlay-provisioner.ts`; keep create/destroy/monitor in facade.
 
 ## Group 3 — Session & agent layer
 
-- [ ] **P12 · `agent-shim/shipit.ts`** (2057) **+ `gh.ts`** (736) → `shipit-{session,issue,agent,source}.ts` + shared `shim-common.ts` (parseFlags/callBroker/ShimIO/wait loop) used by both. *(These two ship together — they share `shim-common.ts`.)*
-- [ ] **P13 · `session-worker.ts`** (1693) → `agent-controller.ts` / `terminal-controller.ts` / `file-watcher-controller.ts` / `install-controller.ts` / `mcp-config-controller.ts`; facade = app builder.
-- [ ] **P14 · `codex/adapter.ts`** (1634) → `codex-adapter.ts` (lifecycle + JSON-RPC) / `codex-event-handler.ts` / `codex-tool-normalizer.ts` / `codex-rate-limits.ts`.
+- [x] **P12 · `agent-shim/shipit.ts`** (2057) **+ `gh.ts`** (736) → `shipit-{session,issue,agent,source}.ts` + shared `shim-common.ts` (parseFlags/callBroker/ShimIO/wait loop) used by both. *(These two ship together — they share `shim-common.ts`.)*
+- [x] **P13 · `session-worker.ts`** (1693) → `agent-controller.ts` / `terminal-controller.ts` / `file-watcher-controller.ts` / `install-controller.ts` / `mcp-config-controller.ts`; facade = app builder.
+- [x] **P14 · `codex/adapter.ts`** (1634) → `codex-adapter.ts` (lifecycle + JSON-RPC) / `codex-event-handler.ts` / `codex-tool-normalizer.ts` / `codex-rate-limits.ts`.
 
 ## Group 4 — Client god-components (each → its own directory, original filename re-exported)
 
-- [ ] **P15 · `Settings.tsx`** (1995) → `Settings/` with per-tab files (`AuthTab`, `VoiceTab`, `PrAutomationTab`, `AdvancedTab`, `AgentAccountsTab`) + provider-account/voice-credential hooks.
-- [ ] **P16 · `App.tsx`** (1607) → `AppBootstrap` + `hooks/{useSessionActivation,useAppKeyboardShortcuts,useAppModals}`; `App.tsx` renders shell + wires hooks.
-- [ ] **P17 · `SessionSidebar.tsx`** (1500) → `SessionSidebar/` with `SessionItem` / `SessionGroup` / `SessionStatusIndicators` + `useSidebarResize` / `useSessionGrouping`.
-- [ ] **P18 · `MessageList.tsx`** (1199) → `MessageList/` with `useMessageScroll` + `MessageToolUse` / `MessageMedia` + `cards/` subdir.
-- [ ] **P19 · `MessageInput.tsx`** (1015) → `MessageInput/` with `useTextareaSizing` / `useMessageDraft` / `useUploadBackend` + `AutoComplete/` / `VoiceInputSection` / `ContextDial`.
-- [ ] **P20 · `PreviewFrame.tsx`** (887) → extract `useIframePool` / `usePreviewHealthPoller` + device/error/toolbar children.
-- [ ] **P21 · `PrLifecycleCard.tsx`** (868) → one file per lifecycle phase + indicator children.
-- [ ] **P22 · `SessionHealthStrip.tsx`** (808) → `useContainerHealthPoll` hook + `healthState` utils + summary/details/recovery children.
-- [ ] **P23 · `MarkdownSelectionComments.tsx`** (800) → selection/anchoring hooks + markdown utils + comment children.
-- [ ] **P24 · `McpServerSettings.tsx`** (789) → form/oauth hooks + row/form children + payload utils.
+- [x] **P15 · `Settings.tsx`** (1995) → `Settings/` with per-tab files (`AuthTab`, `VoiceTab`, `PrAutomationTab`, `AdvancedTab`, `AgentAccountsTab`) + provider-account/voice-credential hooks.
+- [x] **P16 · `App.tsx`** (1607) → `AppBootstrap` + `hooks/{useSessionActivation,useAppKeyboardShortcuts,useAppModals}`; `App.tsx` renders shell + wires hooks.
+- [x] **P17 · `SessionSidebar.tsx`** (1500) → `SessionSidebar/` with `SessionItem` / `SessionGroup` / `SessionStatusIndicators` + `useSidebarResize` / `useSessionGrouping`.
+- [x] **P18 · `MessageList.tsx`** (1199) → `MessageList/` with `useMessageScroll` + `MessageToolUse` / `MessageMedia` + `cards/` subdir.
+- [x] **P19 · `MessageInput.tsx`** (1015) → `MessageInput/` with `useTextareaSizing` / `useMessageDraft` / `useUploadBackend` + `AutoComplete/` / `VoiceInputSection` / `ContextDial`.
+- [x] **P20 · `PreviewFrame.tsx`** (887) → extract `useIframePool` / `usePreviewHealthPoller` + device/error/toolbar children.
+- [x] **P21 · `PrLifecycleCard.tsx`** (868) → one file per lifecycle phase + indicator children.
+- [x] **P22 · `SessionHealthStrip.tsx`** (808) → `useContainerHealthPoll` hook + `healthState` utils + summary/details/recovery children.
+- [x] **P23 · `MarkdownSelectionComments.tsx`** (800) → selection/anchoring hooks + markdown utils + comment children.
+- [x] **P24 · `McpServerSettings.tsx`** (789) → form/oauth hooks + row/form children + payload utils.
