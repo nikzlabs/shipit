@@ -54,6 +54,19 @@ GitHub access.
 
 ## Model
 
+### Mental model
+
+A Sandbox is a **regular session with the repo-bound project automation stripped
+out** — *not* a session the orchestrator ignores. The orchestrator **stops**:
+auto-cloning a repo (empty `/workspace`), running `agent.install` (no root
+`shipit.yaml`; the agent's clones live in subdirs it doesn't scan), preview/
+compose, auto-commit, auto-push, and the PR card/polling. It **still** provides
+the full runtime substrate: container lifecycle, agent process + system prompt,
+chat-history persistence, terminal, file tree, and — **gated by the granted
+capabilities** — the credential, egress, and Docker brokers. So the shift is
+"the orchestrator no longer assumes one project and automates around it,"
+brokering capabilities on request instead of automatically.
+
 ### Session kind + capabilities
 
 - Reuse the existing `SessionInfo.kind` field. New value: `kind = "sandbox"`
