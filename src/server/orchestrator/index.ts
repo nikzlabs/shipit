@@ -198,7 +198,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     });
   }
 
-  const app = Fastify({ logger: false });
+  // Fastify's maxParamLength defaults to 100: a request whose *decoded* path
+  // param exceeds it doesn't 404 — it silently falls through to the SPA static
+  // handler. The repo-scoped routes (DELETE /api/repos/:url and
+  // POST /api/repos/:url/claim-session) carry a full encodeURIComponent'd remote
+  // URL in the path, so any URL longer than ~100 chars (long org/repo names, or
+  // a credential-bearing URL) makes the repo silently undeletable from the UI.
+  // Raise the ceiling so every realistic remote URL routes correctly.
+  const app = Fastify({ logger: false, routerOptions: { maxParamLength: 2048 } });
 
   await app.register(fastifyWebsocket);
   await app.register(fastifyMultipart, {

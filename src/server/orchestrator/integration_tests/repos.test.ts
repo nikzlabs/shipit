@@ -207,6 +207,26 @@ describe("DELETE /api/repos/:url", () => {
     expect(res.statusCode).toBe(404);
   });
 
+  it("removes a repo whose URL exceeds Fastify's default 100-char maxParamLength", async () => {
+    // A remote URL longer than 100 chars (long org/repo names, or a
+    // credential-bearing URL) overflows Fastify's default maxParamLength of 100.
+    // Before raising the ceiling the request never matched the route — it fell
+    // through to a 404 here, and to the SPA static handler in prod — so the repo
+    // was silently undeletable from the UI. See `maxParamLength` in index.ts.
+    const longUrl =
+      "https://github.com/a-very-long-organization-name-here/an-equally-long-repository-name-that-pushes-us-well-past-one-hundred-characters.git";
+    expect(longUrl.length).toBeGreaterThan(100);
+    repoStore.add(longUrl);
+
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/api/repos/${encodeURIComponent(longUrl)}`,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ success: true });
+    expect(repoStore.has(longUrl)).toBe(false);
+  });
+
   it("archives the repo's sessions so they leave the sidebar but stay in the DB", async () => {
     const repoUrl = "https://github.com/owner/repo.git";
     repoStore.add(repoUrl);
