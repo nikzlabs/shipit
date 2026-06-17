@@ -8,6 +8,7 @@ import {
   formatResetCountdown,
   formatAge,
   meterDisplay,
+  timeElapsedPct,
 } from "./SubscriptionLimitsBadge.js";
 import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 
@@ -93,6 +94,30 @@ describe("meterDisplay", () => {
 
   it("classifies a null-utilization open window as unknown", () => {
     expect(meterDisplay({ usedPct: null, resetAt: future }, now, now)).toEqual({ kind: "unknown" });
+  });
+});
+
+describe("timeElapsedPct", () => {
+  const windowMs = 7 * 24 * 60 * 60_000; // 7d
+  const now = Date.parse("2026-05-19T12:00:00Z");
+
+  it("returns the fraction of the window already elapsed", () => {
+    // resets in 7d → 0% elapsed; resets now → 100% elapsed; halfway → 50%.
+    const justStarted = new Date(now + windowMs).toISOString();
+    const halfway = new Date(now + windowMs / 2).toISOString();
+    expect(timeElapsedPct(justStarted, windowMs, now)).toBeCloseTo(0, 5);
+    expect(timeElapsedPct(halfway, windowMs, now)).toBeCloseTo(50, 5);
+  });
+
+  it("clamps to 0–100 for resets outside the nominal window", () => {
+    const farFuture = new Date(now + windowMs * 2).toISOString(); // before start
+    const past = new Date(now - 60_000).toISOString(); // after reset
+    expect(timeElapsedPct(farFuture, windowMs, now)).toBe(0);
+    expect(timeElapsedPct(past, windowMs, now)).toBe(100);
+  });
+
+  it("returns null for an unparseable reset timestamp", () => {
+    expect(timeElapsedPct("not-a-date", windowMs, now)).toBeNull();
   });
 });
 
@@ -231,7 +256,7 @@ describe("SubscriptionLimitPill", () => {
     expect(meters.length).toBe(2);
     expect(meters[0].getAttribute("data-meter-pct")).toBe("96");
     expect(meters[1].getAttribute("data-meter-pct")).toBe("22");
-    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    const fills = container.querySelectorAll<HTMLElement>("[data-meter-fill]");
     expect(fills[0].style.width).toBe("96%");
     expect(fills[1].style.width).toBe("22%");
   });
@@ -247,7 +272,7 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    const fills = container.querySelectorAll<HTMLElement>("[data-meter-fill]");
     expect(fills[0].style.backgroundColor).toContain("--color-context-full");
     expect(fills[1].style.backgroundColor).toContain("--color-text-secondary");
   });
@@ -284,7 +309,7 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.queryByText(/5h 0%/)).toBeNull();
     expect(screen.queryByText(/5h 100%/)).toBeNull();
     // No gauge fill in the reset state — only the still-open weekly has one.
-    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    const fills = container.querySelectorAll<HTMLElement>("[data-meter-fill]");
     expect(fills.length).toBe(1);
     // Weekly window is still open — unchanged.
     expect(screen.getByText(/7d 91%/)).toBeInTheDocument();
@@ -301,7 +326,7 @@ describe("SubscriptionLimitPill", () => {
         })}
       />,
     );
-    const fills = container.querySelectorAll<HTMLElement>("[aria-hidden]");
+    const fills = container.querySelectorAll<HTMLElement>("[data-meter-fill]");
     expect(fills[0].style.width).toBe("100%");
     expect(fills[1].style.width).toBe("0%");
   });
@@ -344,8 +369,9 @@ describe("SubscriptionLimitPill", () => {
     expect(screen.getByText(/5h · —/)).toBeInTheDocument();
     expect(screen.queryByText(/\d+%/)).toBeNull();
     expect(screen.queryByText(/resets in/)).toBeNull();
-    // No fill bar (`aria-hidden` is the fill div in the percentage path).
-    expect(container.querySelector("[aria-hidden]")).toBeNull();
+    // No fill bar and no time marker in the unknown state.
+    expect(container.querySelector("[data-meter-fill]")).toBeNull();
+    expect(container.querySelector("[data-time-marker]")).toBeNull();
     // Tooltip explains the absence and points at the refresh button.
     expect(container.querySelector("span")?.getAttribute("title")).toContain(
       "usage not reported",
@@ -366,5 +392,52 @@ describe("SubscriptionLimitPill", () => {
     );
     const meter = container.querySelector('[data-meter-pct="42"]');
     expect(meter?.className).toContain("opacity-50");
+  });
+
+  it("renders a time marker positioned at the elapsed fraction of the window", () => {
+    // Weekly (7d) window resetting in 3.5d → ~50% of the window elapsed, so
+    // the marker sits at ~50% regardless of the 48% quota fill.
+    const halfwayWeekly = new Date(Date.now() + 3.5 * 24 * 60 * 60_000).toISOString();
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ session: null, weekly: { usedPct: 48, resetAt: halfwayWeekly } })}
+      />,
+    );
+    const marker = container.querySelector<HTMLElement>("[data-time-marker]");
+    expect(marker).not.toBeNull();
+    expect(parseFloat(marker!.style.left)).toBeCloseTo(50, 0);
+  });
+
+  it("omits the time marker when resetAt is unparseable", () => {
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({ session: null, weekly: { usedPct: 48, resetAt: "x" } })}
+      />,
+    );
+    // The quota fill still renders; the marker is skipped rather than drawn
+    // at a bogus position.
+    expect(container.querySelector("[data-meter-fill]")).not.toBeNull();
+    expect(container.querySelector("[data-time-marker]")).toBeNull();
+  });
+
+  it("fades the time marker along with a stale meter", () => {
+    const future = new Date(Date.now() + 3 * 24 * 60 * 60_000).toISOString();
+    const { container } = render(
+      <SubscriptionLimitPill
+        label="Claude"
+        snapshot={makeSnap({
+          session: null,
+          weekly: { usedPct: 42, resetAt: future },
+          fetchedAt: Date.now() - 20 * 60_000,
+        })}
+      />,
+    );
+    const meter = container.querySelector('[data-meter-pct="42"]');
+    expect(meter?.className).toContain("opacity-50");
+    // The marker is a descendant of the dimmed wrapper, so the stale fade
+    // cascades to it — no separate opacity handling needed.
+    expect(meter?.querySelector("[data-time-marker]")).not.toBeNull();
   });
 });
