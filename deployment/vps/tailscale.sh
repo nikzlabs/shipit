@@ -34,12 +34,21 @@
 #   bash /opt/shipit/deployment/vps/tailscale.sh
 #
 # Optional environment:
-#   SHIPIT_TAILSCALE_HOSTNAME=shipit
+#   SHIPIT_TAILSCALE_HOSTNAME=myname  # OPTIONAL override of the node's tailnet
+#                                     # name. Unset (the default) leaves the
+#                                     # node's existing Tailscale hostname
+#                                     # untouched — a fresh node keeps the name
+#                                     # Tailscale derives from the system
+#                                     # hostname, and a rerun never renames it.
+#                                     # Only set this to force a specific name.
 #   SHIPIT_TAILSCALE_AUTHKEY=tskey-auth-...
 #   SHIPIT_TAILSCALE_PORT=4123        # tailnet-facing port for ShipIt
 set -euo pipefail
 
-HOSTNAME="${SHIPIT_TAILSCALE_HOSTNAME:-shipit}"
+# Empty unless the operator explicitly sets it; we only ever call
+# `tailscale set --hostname` / `tailscale up --hostname` when it is non-empty,
+# so the node's own Tailscale hostname is never clobbered by a bare rerun.
+HOSTNAME="${SHIPIT_TAILSCALE_HOSTNAME:-}"
 LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-4123}"
 BACKEND_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
@@ -87,21 +96,35 @@ else
   systemctl start tailscaled
 fi
 
-# --- Authenticate + set hostname --------------------------------------------
+# --- Authenticate + (optionally) set hostname -------------------------------
+# The hostname is only ever changed when SHIPIT_TAILSCALE_HOSTNAME is set. Left
+# unset, the node keeps whatever Tailscale name it already has (and a fresh node
+# gets Tailscale's own default, derived from the system hostname), so rerunning
+# this script never renames the node out from under the operator.
 if tailscale ip -4 &>/dev/null; then
   echo "==> Tailscale is already authenticated."
-  if tailscale set --hostname="$HOSTNAME" &>/dev/null; then
-    echo "==> Hostname set to '$HOSTNAME'."
+  if [ -n "$HOSTNAME" ]; then
+    if tailscale set --hostname="$HOSTNAME" &>/dev/null; then
+      echo "==> Hostname set to '$HOSTNAME'."
+    else
+      echo "==> Could not update hostname with 'tailscale set'; keeping existing Tailscale hostname."
+    fi
   else
-    echo "==> Could not update hostname with 'tailscale set'; keeping existing Tailscale hostname."
+    echo "==> Keeping the node's existing Tailscale hostname (SHIPIT_TAILSCALE_HOSTNAME not set)."
   fi
 else
   echo "==> Authenticating this server with Tailscale..."
+  # Pass --hostname only when explicitly requested; otherwise let Tailscale
+  # pick its default name for this node.
+  HOSTNAME_ARG=()
+  if [ -n "$HOSTNAME" ]; then
+    HOSTNAME_ARG=(--hostname="$HOSTNAME")
+  fi
   if [ -n "${SHIPIT_TAILSCALE_AUTHKEY:-}" ]; then
-    tailscale up --hostname="$HOSTNAME" --authkey="$SHIPIT_TAILSCALE_AUTHKEY"
+    tailscale up "${HOSTNAME_ARG[@]}" --authkey="$SHIPIT_TAILSCALE_AUTHKEY"
   else
     echo "    A login URL will appear below. Open it in a browser where you are logged into Tailscale."
-    tailscale up --hostname="$HOSTNAME"
+    tailscale up "${HOSTNAME_ARG[@]}"
   fi
 fi
 
@@ -176,7 +199,10 @@ systemctl restart shipit-tailscale-preview.service
 # subdomain URL for a raw 100.x host. Traffic still rides the WireGuard-encrypted
 # tailnet; HTTP only (there is no wildcard TLS cert for these names).
 SSLIP_HOST="${TS_IP//./-}.sslip.io"
-MAGICDNS_HOST="${TAILSCALE_FQDN:-$HOSTNAME}"
+# The node's real MagicDNS name from `tailscale status`. HOSTNAME may be empty
+# now (it is only set on an explicit override), so fall back to a clear
+# placeholder rather than an empty string if the FQDN can't be read.
+MAGICDNS_HOST="${TAILSCALE_FQDN:-${HOSTNAME:-<your-node>.<tailnet>.ts.net}}"
 PORT_SUFFIX=""
 if [ "$LISTEN_PORT" != "80" ]; then
   PORT_SUFFIX=":${LISTEN_PORT}"

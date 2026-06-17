@@ -181,7 +181,7 @@ ssh root@<server-ip>
 bash /opt/shipit/deployment/vps/tailscale.sh
 ```
 
-The script installs Tailscale if needed, authenticates the VPS, sets the node hostname to `shipit` by default, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
+The script installs Tailscale if needed, authenticates the VPS, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. It leaves the node's Tailscale hostname alone — rerunning it never renames your node — unless you set `SHIPIT_TAILSCALE_HOSTNAME` to force a specific name. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
 
 ### Subdomain previews over Tailscale
 
@@ -196,7 +196,7 @@ Two caveats with this default:
 
 #### Optional — a cleaner hostname via native MagicDNS
 
-If you'd rather use the node's native MagicDNS name (`http://shipit.tailnet.ts.net:4123`, previews at `{sessionId}--{port}.shipit.tailnet.ts.net`) and drop the third-party resolver, grant the node Tailscale's MagicDNS wildcard capability once. After running the script, add the `nodeAttrs` block it prints (with your node's tailnet IP already filled in) to your [tailnet policy file](https://login.tailscale.com/admin/acls):
+If you'd rather use the node's native MagicDNS name (`http://<node>.<tailnet>.ts.net:4123`, previews at `{sessionId}--{port}.<node>.<tailnet>.ts.net` — the script prints the actual name) and drop the third-party resolver, grant the node Tailscale's MagicDNS wildcard capability once. After running the script, add the `nodeAttrs` block it prints (with your node's tailnet IP already filled in) to your [tailnet policy file](https://login.tailscale.com/admin/acls):
 
 1. Open the [Access controls page](https://login.tailscale.com/admin/acls).
 2. Click the **JSON editor** toggle at the top (Tailscale defaults to the Visual editor, which has

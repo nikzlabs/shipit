@@ -54,6 +54,10 @@
       (dashed-tailnet-IP host); demote the `nodeAttrs` grant to an optional
       upgrade; colorize the printed banner/steps/paste-block (TTY-guarded).
 - [x] `plan.md`: revise the decision + wiring sections for the sslip.io default.
+- [x] `tailscale.sh`: make the script idempotent for reruns — `SHIPIT_TAILSCALE_HOSTNAME`
+      is now an opt-in override with no default; unset, the script never renames
+      the node (neither on first `up` nor on a rerun `set`), so a bare rerun
+      preserves the operator's Tailscale hostname.
 - [ ] Manual verification on a real tailnet: open
       `http://<dashed-tailnet-ip>.sslip.io:4123`, confirm a preview subdomain
       resolves and renders. Separately, if the tailnet has the grant, confirm the
