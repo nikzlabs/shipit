@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-171
 description: Add stable/edge release channels so self-hosters can pin to vetted, low-frequency releases instead of always tracking main.
 ---
 
