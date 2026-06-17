@@ -113,7 +113,7 @@ parses it (`release-markers.ts`) and drives the poller via
 
 ## Phase 5 — Channel promotion for arbitrary repos (only if demand)
 
-- [ ] Generalize the stable/edge fast-forward-pointer model (`docs/162`) so a repo
+- [ ] Generalize the stable/edge maintenance-branch model (`docs/162`) so a repo
       can define promotion channels.
 
 ## Deferred / out of scope

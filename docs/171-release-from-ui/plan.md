@@ -6,12 +6,23 @@ description: Generalize ShipIt's own release automation into a chat-initiated, a
 
 # Release from ShipIt
 
+> **Update (docs/214):** the concrete mechanism for repos that publish via a
+> **maintenance branch** — auto-publish on merge of a version-bump PR, plus the
+> deterministic `shipit release` command that takes the bump/cherry-pick/PR
+> mechanics out of the agent's hands — is specified in
+> `docs/214-release-auto-publish`. That **supersedes this doc's Phase-1
+> *agent-pushes-the-tag* mechanism for `release-branch` repos** (the tag-triggered
+> MVP described below still applies to repos that tag a default-branch commit
+> directly). The card/poller/detection/`release:`-config machinery described here
+> is built and shared by both.
+
 ## Problem
 
 ShipIt already releases *itself* through a hand-built pipeline that lives only in
 this repo: a maintainer manually bumps `package.json`, commits, tags `vX.Y.Z`,
-and pushes; `.github/workflows/release.yml` then gates on `check` + `test`,
-fast-forwards `stable`, and runs `gh release create --generate-notes` (see
+and pushes; `.github/workflows/release.yml` then gates on `version-guard` +
+`check` + `test` and runs `gh release create --generate-notes` (`stable` is a
+maintenance branch the maintainer moves, not CI — see
 `RELEASING.md`, `.github/workflows/release.yml`, `.github/release.yml`, and
 `docs/162-release-channels/plan.md`). That machinery is invisible to a ShipIt
 *user* working on *their own* repo. If they want to cut a release of the project
@@ -435,7 +446,7 @@ auto-PR flow.
 gated, for repos that don't want a workflow or want instant Release creation.
 
 **Phase 5 — Channel promotion for arbitrary repos.**
-Generalize the stable/edge fast-forward-pointer model (`docs/162`) so a repo can
+Generalize the stable/edge maintenance-branch model (`docs/162`) so a repo can
 define promotion channels — well beyond the MVP, only if demand appears.
 
 ## Open questions & risks
