@@ -29,6 +29,15 @@ const AGENT_LABEL: Record<AgentId, string> = {
  */
 const STALE_AFTER_MS = 15 * 60_000;
 
+/**
+ * Fixed window lengths backing the time marker. Claude's short window is 5h
+ * and the weekly window is 7d (see `SubscriptionLimitsWindow`). The provider
+ * only ever gives us `resetAt`, so the elapsed fraction is derived against
+ * these constants — no extra data is fetched.
+ */
+const SESSION_WINDOW_MS = 5 * 60 * 60_000; // 5h
+const WEEKLY_WINDOW_MS = 7 * 24 * 60 * 60_000; // 7d
+
 interface SubscriptionLimitsBadgeProps {
   limits: SubscriptionLimitsMap;
 }
@@ -79,10 +88,22 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh }: Subscrip
     >
       <span>{label}</span>
       {snapshot.session && (
-        <Meter shortLabel="5h" window={snapshot.session} fetchedAt={snapshot.fetchedAt} now={now} />
+        <Meter
+          shortLabel="5h"
+          window={snapshot.session}
+          windowMs={SESSION_WINDOW_MS}
+          fetchedAt={snapshot.fetchedAt}
+          now={now}
+        />
       )}
       {snapshot.weekly && (
-        <Meter shortLabel="7d" window={snapshot.weekly} fetchedAt={snapshot.fetchedAt} now={now} />
+        <Meter
+          shortLabel="7d"
+          window={snapshot.weekly}
+          windowMs={WEEKLY_WINDOW_MS}
+          fetchedAt={snapshot.fetchedAt}
+          now={now}
+        />
       )}
       {!hasData && <span>—</span>}
       {showRefresh && <LimitsRefreshButton snapshot={snapshot} />}
@@ -93,8 +114,30 @@ export function SubscriptionLimitPill({ label, snapshot, showRefresh }: Subscrip
 interface MeterProps {
   shortLabel: string;
   window: SubscriptionLimitsWindow;
+  /** Fixed length of this window in ms (5h / 7d) — drives the time marker. */
+  windowMs: number;
   fetchedAt: number;
   now: number;
+}
+
+/**
+ * Fraction of the window already elapsed (0–100), derived from the fixed
+ * window length: the window started at `resetAt − windowMs`, so elapsed =
+ * `now − start`. Returns `null` when `resetAt` is unparseable so the marker
+ * is simply omitted rather than drawn at a bogus position.
+ *
+ * This is the second dimension the pill was missing: "48% used" reads very
+ * differently on day 1 of the week than on day 6. The marker shows where the
+ * clock is, so quota-vs-time pace is legible at a glance — fill short of the
+ * marker means you're under pace, fill past it means you're burning quota
+ * faster than the window is elapsing.
+ */
+export function timeElapsedPct(resetAt: string, windowMs: number, now: number): number | null {
+  const resetMs = Date.parse(resetAt);
+  if (Number.isNaN(resetMs)) return null;
+  const pct = ((now - (resetMs - windowMs)) / windowMs) * 100;
+  if (!Number.isFinite(pct)) return null;
+  return Math.max(0, Math.min(100, pct));
 }
 
 type MeterDisplay =
@@ -130,7 +173,7 @@ export function meterDisplay(
  * wasn't (docs/161). The reset time itself moves to the tooltip in those
  * states.
  */
-function Meter({ shortLabel, window, fetchedAt, now }: MeterProps) {
+function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
   const display = meterDisplay(window, fetchedAt, now);
 
   if (display.kind === "reset") {
@@ -159,6 +202,10 @@ function Meter({ shortLabel, window, fetchedAt, now }: MeterProps) {
   const fillWidth = `${Math.max(0, Math.min(100, pct))}%`;
   const color = tierColor(pct);
   const countdown = pct > 90 ? formatResetCountdown(window.resetAt, now) : null;
+  const elapsedPct = timeElapsedPct(window.resetAt, windowMs, now);
+  // The marker lives INSIDE this wrapper, so the `opacity-50` stale dimming
+  // above cascades to it automatically — a stale meter fades the time marker
+  // along with its number and fill.
   return (
     <span
       className={`relative inline-flex items-center whitespace-nowrap pb-0.5${display.stale ? " opacity-50" : ""}`}
@@ -170,9 +217,18 @@ function Meter({ shortLabel, window, fetchedAt, now }: MeterProps) {
       <span className="absolute inset-x-0 bottom-0 h-0.5 rounded-full bg-(--color-text-secondary)/25">
         <span
           aria-hidden
+          data-meter-fill
           className="absolute inset-y-0 left-0 rounded-full"
           style={{ width: fillWidth, backgroundColor: color }}
         />
+        {elapsedPct !== null && (
+          <span
+            aria-hidden
+            data-time-marker
+            className="absolute -top-[3px] -bottom-[3px] w-0.5 -translate-x-1/2 rounded-full bg-(--color-text-primary)"
+            style={{ left: `${elapsedPct}%` }}
+          />
+        )}
       </span>
     </span>
   );
