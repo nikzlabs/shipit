@@ -1,11 +1,10 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: load egress allowlist on mount / session change (external system sync)
+// eslint-disable-next-line no-restricted-imports -- useEffect: load the global egress allowlist on mount (external system sync)
 import { useEffect, useState } from "react";
 import { TrashIcon, PencilSimpleIcon, ShieldCheckIcon, CheckIcon, XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
-import { useEgressStore, type EgressScope } from "../stores/egress-store.js";
-import { useSessionStore } from "../stores/session-store.js";
+import { useEgressStore } from "../stores/egress-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { EgressAllowlistEntry, EgressAllowlistSource } from "../../server/shared/types.js";
 
@@ -136,21 +135,21 @@ function AllowlistRow({
  * Settings → Network — "Network egress" (docs/172 / SHI-90).
  *
  * A **global-only** first-class allowlist editor: the default-on containment
- * toggle and the effective allowlist with provenance — user-added entries are
- * removable/editable; built-in / operator / MCP entries are shown read-only so
- * the user can see *why* each host is reachable. Adds from here always land at
- * **global** scope (the Settings dialog holds app-wide settings only).
+ * toggle and the *global* effective allowlist with provenance — user-added
+ * entries are removable/editable; built-in / operator / MCP entries are shown
+ * read-only so the user can see *why* each host is reachable. The view is loaded
+ * with **no session in scope** (`load(null)`), so per-session ("This session")
+ * entries never appear here and every editable row is global — the Settings
+ * dialog holds app-wide settings only.
  *
- * Per-*session* egress controls deliberately live on session-scoped surfaces
- * instead of this global dialog: the containment override (Inherit / Contained /
- * Open) is on the session's own menu in the sidebar, and a per-session host add
- * happens inline via the blocked-egress card. Session-added hosts still surface
- * in the effective list below (badged "This session") so they remain visible and
- * removable from one place. Egress is a container-start choice, so the copy
+ * The one per-*session* egress control — the containment override (Inherit /
+ * Contained / Open) — deliberately lives on the session's own menu in the
+ * sidebar (`SessionEgressMode.tsx`), not in this global dialog. (The
+ * blocked-egress card's "Add to allowlist" persists to the *global* scope, so it
+ * shows up in this editor too.) Egress is a container-start choice, so the copy
  * states changes apply on the next restart.
  */
 export function SettingsEgress() {
-  const sessionId = useSessionStore((s) => s.sessionId);
   const loaded = useEgressStore((s) => s.loaded);
   const entries = useEgressStore((s) => s.entries) ?? [];
   const globalEnabled = useEgressStore((s) => s.globalEnabled);
@@ -159,12 +158,15 @@ export function SettingsEgress() {
   const [hostInput, setHostInput] = useState("");
   const [busy, setBusy] = useState(false);
 
-  // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch the effective allowlist when the panel opens / the active session changes
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch the GLOBAL effective allowlist when the panel opens
   useEffect(() => {
-    void useEgressStore.getState().load(sessionId ?? null).catch((err: unknown) => {
+    // Load with no session in scope: Settings → Network is global-only, so the
+    // effective list must exclude per-session ("This session") entries. The
+    // per-session containment override lives on the session's own menu instead.
+    void useEgressStore.getState().load(null).catch((err: unknown) => {
       console.error("[settings] failed to load egress allowlist:", err);
     });
-  }, [sessionId]);
+  }, []);
 
   const toast = (message: string) => useUiStore.getState().setToast({ message });
 
@@ -195,9 +197,9 @@ export function SettingsEgress() {
   };
 
   const handleRemove = async (entry: EgressAllowlistEntry) => {
-    const scope: EgressScope = entry.source === "user-session" ? "session" : "global";
+    // Global-only view, so every editable entry is global-scoped.
     try {
-      await useEgressStore.getState().removeHost(entry.host, scope);
+      await useEgressStore.getState().removeHost(entry.host, "global");
     } catch (err) {
       toast(`Failed to remove ${entry.host} from the allowlist`);
       console.error("[settings] egress remove host failed:", err);
@@ -205,9 +207,8 @@ export function SettingsEgress() {
   };
 
   const handleEdit = async (entry: EgressAllowlistEntry, next: string) => {
-    const scope: EgressScope = entry.source === "user-session" ? "session" : "global";
     try {
-      await useEgressStore.getState().editHost(entry.host, next, scope);
+      await useEgressStore.getState().editHost(entry.host, next, "global");
     } catch (err) {
       toast(`Failed to update ${entry.host}`);
       console.error("[settings] egress edit host failed:", err);

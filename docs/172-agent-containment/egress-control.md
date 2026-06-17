@@ -316,10 +316,9 @@ Stored orchestrator-side alongside MCP servers / secrets.
 > defaults"** action (`POST /api/egress/defaults/restore`) clears the suppressions. Only
 > **operator** (`SESSION_EGRESS_ALLOWLIST`) and **MCP** hosts stay read-only (they're derived
 > live from the deployment env / connected MCP servers, shown under "Also allowed"). The user
-> can add/remove/**edit** entries; adds from the Settings dialog land at **global** scope
-> (Settings → Network is **global-only** — see "Surface split" below), while per-session host
-> adds happen inline on the blocked-egress card. **"Add to
-> allowlist"** (the Tier C card's `add`, and a session-scoped host add) persists durably AND
+> can add/remove/**edit** entries; the Settings editor is loaded **global-only** (`load(null)`,
+> see "Surface split" below), so every editable row is global and per-session entries never
+> appear there. **"Add to allowlist"** (the Tier C card's `add`) persists durably AND
 > live-reloads the running session's resolver + proxy (`egress-reload.ts`) so a brand-new
 > host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted with no restart;
 > `egress-policy` reconciles its allow-once set against the durable store via an injected
@@ -337,14 +336,19 @@ Stored orchestrator-side alongside MCP servers / secrets.
 
 - **Surface split — global vs session controls.** A "Settings" dialog should hold app-wide
   settings only, so the egress UI is split by scope rather than crammed into one tab.
-  **Settings → Network** holds the *global* controls: the containment toggle and the global
-  allowlist editor (adds here are always global). The *session-scoped* controls live on
-  session-scoped surfaces instead: the **containment override** (Inherit / Contained / Open)
-  is on the session's own overflow menu in the sidebar (`SessionEgressMode.tsx`, current
-  session only, wired by direct `GET /api/egress/allowlist?session=` + `PUT
-  /api/egress/session/:id`), and a **per-session host add** happens inline on the
-  blocked-egress card. Session-added hosts still surface (badged "This session") in the
-  Settings effective list so they stay visible and removable from one place.
+  **Settings → Network** holds the *global* controls only: the containment toggle and the
+  global allowlist editor. It loads the effective view with **no session in scope**
+  (`load(null)`), so per-session ("This session") rows never render there and every editable
+  row is global; adds from the dialog are always global. The one *session-scoped* control —
+  the **containment override** (Inherit / Contained / Open) — lives on the session's own
+  overflow menu in the sidebar instead (`SessionEgressMode.tsx`, current session only, wired
+  by direct `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`).
+  - **Note on per-session *hosts*.** The blocked-egress card's "Add to allowlist" persists to
+    the **global** scope (`egress-handlers.ts`), and the Settings add-scope toggle was removed,
+    so the UI no longer creates per-session host entries — `user-session` remains a valid store
+    scope (durable model + `PUT /api/egress/session/:id` override), just without a host-add
+    surface. If a per-session host editor is ever wanted, it belongs on a session surface, not
+    this global dialog.
 - **Allow-once / add-to-allowlist on block.** When the gateway denies a host, **deny fast**
   (no held sockets) and surface an inline **blocked-egress card** (`host`, allow-once /
   add-to-allowlist / dismiss); the agent retries once the host is permitted. We deliberately

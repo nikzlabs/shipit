@@ -158,6 +158,18 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     expect(screen.queryByTestId("settings-egress-add-scope")).not.toBeInTheDocument();
   });
 
+  it("loads the GLOBAL allowlist (no ?session=) even when a session is active", async () => {
+    // The mechanism behind global-only: the effective view is fetched with no
+    // session in scope, so the server never returns "This session" rows.
+    useSessionStore.setState({ sessionId: "s1" });
+    const impl = stubFetch([], { withSession: true });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toBeInTheDocument());
+    const allowlistGets = impl.mock.calls.filter(([url]) => url.startsWith("/api/egress/allowlist"));
+    expect(allowlistGets.length).toBeGreaterThan(0);
+    expect(allowlistGets.every(([url]) => !url.includes("session="))).toBe(true);
+  });
+
   it("adds at global scope even when a session is active", async () => {
     useSessionStore.setState({ sessionId: "s1" });
     const impl = stubFetch([], { withSession: true });
