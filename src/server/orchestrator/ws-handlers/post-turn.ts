@@ -4,6 +4,7 @@ import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "../services/secret-scan-notice.js";
+import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
@@ -114,6 +115,35 @@ export async function postTurnCommit(
         currentHeadHash &&
         currentHeadHash !== opts.turnStartHeadHash
       ) {
+        // docs/213 — the agent moved HEAD itself this turn (e.g. it ran its own
+        // `git commit`), so `autoCommit` saw a clean tree and never scanned that
+        // content. Guard the auto-push: if the move is a pure ADDITION on top of
+        // the turn-start HEAD (turnStartHead is an ancestor of HEAD), scan the
+        // newly-added commits and refuse the push on a finding. If history was
+        // rewritten instead (rebase/amend/reset — turnStartHead is NOT an
+        // ancestor), skip the scan: those commits replay pre-existing history, so
+        // re-flagging them would false-block a legitimate rebase (and any secret
+        // there is already in history, not newly introduced this turn).
+        const addedOnTop = await git.isAncestor(opts.turnStartHeadHash, currentHeadHash);
+        if (addedOnTop) {
+          const findings = scanDiffForSecrets(
+            await git.diffRange(opts.turnStartHeadHash, currentHeadHash),
+          );
+          if (findings.length > 0) {
+            if (opts.sessionId) {
+              emitNoticePostTurn(
+                opts.emit,
+                ctx.chatHistoryManager,
+                opts.sessionId,
+                formatSecretScanNotice(findings),
+                "warn",
+              );
+            }
+            // Do NOT push the secret-bearing commit(s). It stays local; the agent
+            // must amend/scrub it before it can reach the remote.
+            return null;
+          }
+        }
         ctx.scheduleAutoPush(git, opts.sessionId);
       }
       return null;

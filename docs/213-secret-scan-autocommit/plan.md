@@ -195,19 +195,22 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
 - **Anchored allowlist.** `ALLOWLIST_PATH_PATTERNS` (and `.gitleaks.toml`'s
   `paths`) are anchored to EXACT repo-relative paths, not a basename match — a
   stray `secret-scan.test.ts` elsewhere (or in a user repo) can't bypass the scan.
+- **Agent self-commits (moved HEAD).** When the agent moves HEAD itself this turn
+  (its own `git commit`), `autoCommit` makes no commit but post-turn auto-pushes
+  the moved HEAD — content `autoCommit` never scanned. `post-turn.ts` now scans
+  the added commits (`git.diffRange`) before that push and refuses on a finding.
+  It only does so when HEAD is a pure ADDITION (`turnStartHead` is an ancestor of
+  HEAD); a rewritten history (rebase/amend/reset) skips the scan, because those
+  commits replay pre-existing history and re-flagging them would false-block a
+  legitimate rebase. The refused commit stays local (never pushed); the agent
+  must amend/scrub it. (GitHub push protection, if enabled, is a further net here.)
+- **Agent-driven PR after a refusal.** `flushPendingTurnCommit` returns a typed
+  `secretBlocked`; `agentCreatePr` aborts with a 422 when the just-made edit was
+  refused for a secret, instead of silently opening/updating the PR from the
+  prior (stale) commits. The redacted warning is surfaced by the flush.
 
 ## Known limitations / future
 
-- **Agent self-commits.** The guard is the auto-commit path. If an agent runs
-  `git commit` itself and the post-turn auto-commit then only auto-pushes a moved
-  HEAD, that commit's content isn't scanned. ShipIt auto-commits and discourages
-  agent self-commits, so this is the normal-path boundary; scanning the
-  `turnStartHeadHash..HEAD` range before such a push is a candidate fix, but must
-  avoid false-blocking a legitimate rebase that replays pre-existing history.
-- **`agentCreatePr` after a refusal.** A refused commit leaves the secret
-  *uncommitted*, so the agent-driven PR path never pushes it; it just proceeds
-  from prior (clean) commits. No leak, but a typed refusal would make the outcome
-  clearer to the agent. (Tracked as a UX follow-up.)
 - **Fork PRs in CI.** `secret-scan.yml` matches `ci.yml` and skips fork PRs;
   scanning forks (read-only, no secrets needed) is a reasonable policy change to
   consider.
@@ -215,3 +218,6 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
   lifecycle card.
 - **`.gitleaks.toml` ↔ `SECRET_RULES` sync is manual**; a generator could enforce
   parity.
+- **GitHub push protection** is a complementary backstop (not a replacement: it's
+  push-time, GitHub-only, and needs GHAS for private repos), worth enabling on the
+  public ShipIt repo as a third net behind the commit-time guard and gitleaks CI.

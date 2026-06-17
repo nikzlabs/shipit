@@ -226,6 +226,22 @@ export class GitManager {
     }
   }
 
+  /**
+   * docs/213 — the unified diff introduced between two commits (`git diff
+   * from..to`, two-dot: the cumulative change from `from` to `to`). Used by the
+   * post-turn guard to scan commits the AGENT created itself this turn (which
+   * `autoCommit` never staged) before they're auto-pushed. Callers must ensure
+   * `from` is an ancestor of `to` so the range is purely the new commits — see
+   * the moved-HEAD branch in `post-turn.ts`. Best-effort: "" on error.
+   */
+  async diffRange(from: string, to: string): Promise<string> {
+    try {
+      return await this.git.diff([`${from}..${to}`]);
+    } catch {
+      return "";
+    }
+  }
+
   /** Return recent commit log entries. */
   async log(maxCount = 50): Promise<GitCommitInfo[]> {
     let result: LogResult;
