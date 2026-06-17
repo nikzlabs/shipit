@@ -43,6 +43,12 @@
   --color-pr: #7c3aed;
   --color-pr-subtle: rgba(124, 58, 237, 0.1);
   --color-pr-border: rgba(124, 58, 237, 0.3);
+  /* docs/211 — sandbox accent darkened for light surfaces: the :root teal-400
+     reads too pale as text on a light tint. Mirrors --color-warning's per-theme
+     darkening; dark themes keep the bright :root token. */
+  --color-sandbox: #0f766e;
+  --color-sandbox-subtle: rgba(15, 118, 110, 0.1);
+  --color-sandbox-border: rgba(15, 118, 110, 0.3);
   --color-folder: #eab308;
   --color-autofix: #f97316;
   --color-attention: #d97706;
