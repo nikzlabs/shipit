@@ -11,4 +11,4 @@
 - [x] `typecheck` + `lint:dev` clean, unit tests green
 - [x] Design doc + Linear issue (SHI-169) cross-linked
 - [x] Mirror `SECRET_RULES` + path allowlist into `.gitleaks.toml` (in this PR)
-- [ ] Add the gitleaks CI workflow `.github/workflows/secret-scan.yml` that runs against `.gitleaks.toml` (companion PR)
+- [x] Add the diff-only gitleaks CI workflow `.github/workflows/secret-scan.yml` (in this PR; scans markdown too)
