@@ -14,14 +14,17 @@ Builds happen in GitHub Actions via the `Android build` workflow
 (`.github/workflows/android.yml`) — **manually triggered only**, never on
 push or PR. From the GitHub UI: **Actions → Android build → Run workflow**.
 
-| Mode | What it produces | Where it goes |
+| Input | What it produces | Where it goes |
 |------|------------------|---------------|
 | `release: false` (default) | Unsigned debug APK | Workflow artifact `shipit-debug-apk` |
 | `release: true` | Signed release APK **and** signed AAB | Artifacts `shipit-release-apk` (sideload / GitHub Release) and `shipit-release-aab` (Play Store upload) |
+| `release: true` + `publish: true` | The above, **and** uploads the AAB to Google Play | Google Play **internal** testing track (auto-updates testers) |
 
 The **APK** is for sideloading or attaching to a GitHub Release. The **AAB**
-(`app-release.aab`) is for uploading to the Play Store — see "Play Store
-(internal testing)" below.
+(`app-release.aab`) is for the Play Store. Set `publish: true` to push the AAB
+straight to the internal track from CI — no manual Console upload. Both toggles
+must be on; `publish` requires the `PLAY_SERVICE_ACCOUNT_JSON` secret (see
+"Play Store" below).
 
 ### versionCode
 
@@ -91,24 +94,45 @@ For Play-managed auto-updates — on your own device or a small group of named
 testers — use the **Internal testing** track. It needs no public listing and
 skips the production-track testing requirements.
 
-One-time setup:
+### One-time setup
 
 1. Create a [Google Play Console](https://play.google.com/console) developer
    account ($25 one-time, plus identity verification).
-2. Create the app, then enroll in **Play App Signing**. Your `release.keystore`
-   becomes the **upload key**; Google holds the real app-signing key and
-   re-signs each upload. (An upload key can be reset via Play support if lost —
-   unlike a pure sideload key.) The same four GitHub secrets are reused.
-3. Provide store metadata: icon (512×512), ≥2 screenshots, descriptions, a
-   privacy policy URL, content rating, and the Data Safety form.
+2. Create the app (`applicationId` is `com.shipit.wrapper`), then enroll in
+   **Play App Signing**. Your `release.keystore` becomes the **upload key**;
+   Google holds the real app-signing key and re-signs each upload. (An upload
+   key can be reset via Play support if lost — unlike a pure sideload key.) The
+   same four signing secrets are reused.
+3. Provide store metadata (see `play/README.md`):
+   - **App icon** — `play/icon-512.png` (committed).
+   - **Feature graphic** — `play/feature-graphic-1024x500.png` (committed).
+   - **Privacy policy URL** — the policy lives at `android/PRIVACY.md`; paste its
+     GitHub URL into the Console (see "Privacy policy" below).
+   - **≥2 phone screenshots** — capture from a device/emulator (not committed).
+   - Descriptions, content rating, and the Data Safety form.
+4. **Seed the first build manually.** The Play API can only update an app that
+   already has at least one uploaded build, so the very first AAB must be
+   uploaded by hand: run **Android build** with `release: true`, download the
+   `shipit-release-aab` artifact, and upload it to the **Internal testing**
+   track in the Console. Add your tester email(s) and accept the opt-in link.
+5. **Wire up CI publishing** (so future releases upload automatically):
+   - In Google Cloud, create a **service account**, then in Play Console →
+     **Users and permissions** invite that service account and grant it access
+     to **releases** for this app (Admin → Account details has the linked GCP
+     project; the grant can be app-scoped).
+   - Create a **JSON key** for the service account and download it.
+   - Add it as the GitHub Actions secret **`PLAY_SERVICE_ACCOUNT_JSON`** (paste
+     the entire JSON file contents as the value).
 
-Each release:
+### Each release (automated)
 
-1. Run **Android build** with `release: true` and download the
-   `shipit-release-aab` artifact.
-2. Upload `app-release.aab` to the **Internal testing** track.
-3. Add tester emails, open the opt-in link on the device, and install from the
-   Play Store. Subsequent uploads auto-update.
+Run **Android build** with **`release: true`** *and* **`publish: true`**. CI
+builds the signed AAB, stamps a fresh `versionCode`, and uploads it to the
+internal track via the `r0adkll/upload-google-play` action. Testers' devices
+auto-update from the Play Store — no manual Console step.
+
+> Leave `publish: false` to build the artifacts without touching Play (e.g. to
+> grab an APK for sideloading or a GitHub Release).
 
 The app targets **API 35 (Android 15)**, the minimum Google Play accepts for
 new submissions — so it is submission-ready. See "Edge-to-edge / window insets"
@@ -145,6 +169,26 @@ same on the older OS versions `minSdk 26` still supports, not only Android 15.
 > is no Android toolchain in the dev container. Run the **Android build**
 > workflow, install the debug APK, and check the WebView top/bottom and the
 > Settings form with the keyboard open.
+
+### Privacy policy (hosted from this repo)
+
+Play requires a publicly reachable privacy policy URL. Rather than standing up a
+site, the policy is committed at [`PRIVACY.md`](PRIVACY.md) and served straight
+from GitHub — paste this URL into the Console's **Privacy policy** field:
+
+```
+https://github.com/nikzlabs/shipit/blob/main/android/PRIVACY.md
+```
+
+GitHub renders the Markdown as a normal web page, which Play's reviewer can
+fetch. **This only works while the repo is public** — Play's crawler is
+unauthenticated, so a private repo's blob URL (and free GitHub Pages) won't be
+reachable.
+
+Want a cleaner, chrome-free URL? Enable **GitHub Pages** (Settings → Pages →
+Source: `main`) and link to the rendered page instead
+(`https://nikzlabs.github.io/shipit/android/PRIVACY`). The blob URL above works
+with zero setup, so it's the recommended starting point.
 
 ## App behavior
 
