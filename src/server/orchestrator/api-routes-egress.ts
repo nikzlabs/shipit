@@ -34,19 +34,28 @@ export function egressCardId(sessionId: string, host: string): string {
   return `egress-${sessionId}-${normalizeHost(host)}`;
 }
 
-/** Snapshot the global egress settings (toggle + user allowlist). */
-function globalSettings(store: EgressAllowlistStore): EgressSettings {
-  return { globalEnabled: store.getGlobalEnabled(), globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE) };
+/** Snapshot the global egress settings (toggle + user allowlist + enforcement). */
+function globalSettings(store: EgressAllowlistStore, enforcementActive: boolean): EgressSettings {
+  return {
+    globalEnabled: store.getGlobalEnabled(),
+    globalHosts: store.listHosts(EGRESS_GLOBAL_SCOPE),
+    enforcementActive,
+  };
 }
 
 /** Snapshot a session's egress view (override + per-session hosts + resolution). */
-function sessionSettings(store: EgressAllowlistStore, sessionId: string): EgressSessionSettings {
+function sessionSettings(
+  store: EgressAllowlistStore,
+  sessionId: string,
+  enforcementActive: boolean,
+): EgressSessionSettings {
   return {
     sessionId,
     override: store.getSessionOverride(sessionId),
     hosts: store.listHosts(sessionId),
     effectiveContained: store.resolveContained(sessionId),
     globalEnabled: store.getGlobalEnabled(),
+    enforcementActive,
   };
 }
 
@@ -59,6 +68,7 @@ function allowlistView(
   store: EgressAllowlistStore,
   credentialStore: CredentialStore | undefined,
   sessionId: string | undefined,
+  enforcementActive: boolean,
 ): EgressAllowlistView {
   const entries = buildEffectiveAllowlist({
     credentialStore,
@@ -69,21 +79,27 @@ function allowlistView(
   return {
     entries,
     globalEnabled: store.getGlobalEnabled(),
-    session: sessionId ? sessionSettings(store, sessionId) : null,
+    enforcementActive,
+    session: sessionId ? sessionSettings(store, sessionId, enforcementActive) : null,
     defaultsCustomized: store.hasSuppressedDefaults(),
   };
 }
 
 export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps): Promise<void> {
   const store = deps.egressAllowlistStore;
+  // Whether this deployment can actually ENFORCE containment (enforcement on +
+  // sidecar image configured). Resolved once at registration — it's a fixed
+  // function of the process env. The honest signal the browser uses to
+  // distinguish containment policy from enforcement (docs/172, SHI-90).
+  const enforcementActive = deps.egressEnforcementActive ?? false;
 
   // ---- Browser-only egress settings (docs/172, SHI-90) ------------------
   // NO `containerAccessible` flag: SHI-129's default-deny keeps the contained
   // agent from reaching these to loosen its own containment. Registered only
   // when a store is wired (test setups without egress can omit it).
   if (store) {
-    // Read the global containment toggle + user allowlist.
-    app.get("/api/egress/settings", async () => globalSettings(store));
+    // Read the global containment toggle + user allowlist + enforcement state.
+    app.get("/api/egress/settings", async () => globalSettings(store, enforcementActive));
 
     // The effective allowlist with provenance (built-in / operator / MCP /
     // user-added) for the Settings editor. `?session=<id>` folds in that
@@ -93,7 +109,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         const sessionId =
           typeof request.query.session === "string" && request.query.session ? request.query.session : undefined;
-        return allowlistView(store, deps.credentialStore, sessionId);
+        return allowlistView(store, deps.credentialStore, sessionId, enforcementActive);
       },
     );
 
@@ -104,9 +120,9 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         if (typeof request.body?.globalEnabled === "boolean") {
           store.setGlobalEnabled(request.body.globalEnabled);
-          deps.sseBroadcast("egress_settings", globalSettings(store));
+          deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         }
-        return globalSettings(store);
+        return globalSettings(store, enforcementActive);
       },
     );
 
@@ -130,13 +146,13 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         } else {
           store.addHost(scope, host);
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store));
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         // A per-session add can take effect immediately on a running session.
         if (scope !== EGRESS_GLOBAL_SCOPE) {
           void deps.containerManager?.reloadEgress(scope).catch(() => {});
-          return sessionSettings(store, scope);
+          return sessionSettings(store, scope, enforcementActive);
         }
-        return globalSettings(store);
+        return globalSettings(store, enforcementActive);
       },
     );
 
@@ -158,22 +174,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         } else {
           store.removeHost(scope, host);
         }
-        deps.sseBroadcast("egress_settings", globalSettings(store));
-        return scope === EGRESS_GLOBAL_SCOPE ? globalSettings(store) : sessionSettings(store, scope);
+        deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
+        return scope === EGRESS_GLOBAL_SCOPE
+          ? globalSettings(store, enforcementActive)
+          : sessionSettings(store, scope, enforcementActive);
       },
     );
 
     // Restore all built-in defaults (clear every user suppression).
     app.post("/api/egress/defaults/restore", async () => {
       store.restoreDefaults();
-      deps.sseBroadcast("egress_settings", globalSettings(store));
-      return allowlistView(store, deps.credentialStore, undefined);
+      deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
+      return allowlistView(store, deps.credentialStore, undefined, enforcementActive);
     });
 
     // Read a session's egress view (override + per-session hosts + resolution).
     app.get<{ Params: { id: string } }>(
       "/api/egress/session/:id",
-      async (request) => sessionSettings(store, request.params.id),
+      async (request) => sessionSettings(store, request.params.id, enforcementActive),
     );
 
     // Set/clear a session's containment override (null = inherit global).
@@ -184,7 +202,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         if (override === true || override === false || override === null) {
           store.setSessionOverride(request.params.id, override);
         }
-        return sessionSettings(store, request.params.id);
+        return sessionSettings(store, request.params.id, enforcementActive);
       },
     );
   }

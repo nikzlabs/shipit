@@ -307,8 +307,9 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as EgressSettings;
       const store = useEgressStore.getState();
       if (!store.loaded) return;
-      // Reflect the toggle immediately, then re-fetch the full provenance view.
-      useEgressStore.setState({ globalEnabled: data.globalEnabled });
+      // Reflect the toggle + enforcement state immediately, then re-fetch the
+      // full provenance view.
+      useEgressStore.setState({ globalEnabled: data.globalEnabled, enforcementActive: data.enforcementActive });
       void store.refresh().catch(() => {});
     });
 

@@ -53,12 +53,32 @@ shipit_sync_checkout() {
   git -C "$SHIPIT_HOME" reset --hard "$ref"
 }
 
-# Build the prod images and start the orchestrator detached. session-worker is
-# built (it's needed by SessionContainerManager at runtime) but not started; it
-# lives under the build-only compose profile.
+# Persisted operator env for the orchestrator service. The egress preflight in
+# deployment/local/setup.sh writes the opt-out (SESSION_EGRESS_ENFORCE=0) here so
+# it survives re-runs; compose's ${VAR:-} substitution picks it up. Lives next to
+# the checkout so it persists across image rebuilds and git resets (.env-style,
+# untracked).
+SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-$SHIPIT_HOME/.shipit.env}"
+
+# Source the persisted env file (if any) and export its vars so the docker
+# compose invocations below see them for ${VAR:-} substitution.
+shipit_load_env_file() {
+  if [ -f "$SHIPIT_ENV_FILE" ]; then
+    set -a
+    # shellcheck source=/dev/null
+    . "$SHIPIT_ENV_FILE"
+    set +a
+  fi
+}
+
+# Build the prod images and start the orchestrator detached. session-worker and
+# egress-sidecar are built (needed by SessionContainerManager / the default-on
+# egress containment at runtime) but not started; they live under the build-only
+# compose profile.
 shipit_build_and_up() {
+  shipit_load_env_file
   echo "==> Building ShipIt images..."
-  docker compose -f "$COMPOSE_FILE" build --pull session-worker shipit
+  docker compose -f "$COMPOSE_FILE" build --pull session-worker shipit egress-sidecar
   echo "==> Starting ShipIt (detached)..."
   docker compose -f "$COMPOSE_FILE" up -d --no-build shipit
 }

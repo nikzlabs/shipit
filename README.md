@@ -274,15 +274,17 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
   enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every process
   it spawns run as an unprivileged user (not root), with capabilities trimmed to the minimum, so a
   prompt-injected command has a smaller blast radius inside the box.
+- **Default-deny egress containment** — agent containers are network-contained **by default** on
+  every instance: outbound traffic is restricted to an allowlist of known hosts (the agent API, your
+  git host, package registries, your connected MCP servers) via a privileged sidecar in each
+  container's network namespace. It is **fail-closed** — if a host can't enforce containment a
+  session refuses to start rather than running open — and the installer detects incapable hosts and
+  offers the opt-out (`SESSION_EGRESS_ENFORCE=0`). This is the main defense against a prompt-injected
+  agent exfiltrating your credentials.
 - **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
   the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
   aren't sitting at rest in the agent's sandbox. When you configure a GitHub App, git operations use
   short-lived, single-repo-scoped tokens instead of a full account PAT.
-- **Opt-in egress containment** — a default-deny network gateway (iptables allow-list + controlled
-  DNS resolver + transparent SNI proxy, enforced inside the agent's own network namespace) can box
-  the agent in to an allow-listed set of hosts, so a prompt-injected agent can't exfiltrate
-  credentials to an arbitrary server. It's built and live-verified but ships off by default; an
-  operator turns it on, after which containment is fail-secure and editable inline.
 - **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
   age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
 - **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
@@ -290,9 +292,9 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 - **Access control is yours** — there's no built-in user auth, so don't expose a raw instance; the
   VPS installer can put ShipIt behind Cloudflare Zero Trust or Tailscale with no open ports.
 
-The full picture — trust model, every defense, and the gaps ShipIt has consciously accepted (notably
-that egress containment and kernel-tier hardening ship off by default, so an unconfigured instance
-still has open agent egress) along with their planned mitigations — is in
+The full picture — trust model, every defense (including how the UI distinguishes containment
+*policy* from actual *enforcement*), and the gaps ShipIt has consciously accepted (notably that
+kernel-tier hardening still ships off by default) along with their planned mitigations — is in
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Contributing

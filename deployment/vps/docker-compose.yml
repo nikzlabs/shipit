@@ -81,6 +81,16 @@ services:
       # no-ops. Empty (= off, the default) unless the operator exports
       # OVERLAY_DEP_STORE=1 before bringing the stack up.
       - OVERLAY_DEP_STORE=${OVERLAY_DEP_STORE:-}
+      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # all instances (fail-closed). The orchestrator runs the privileged
+      # installer/resolver/proxy sidecars in the agent netns from this image;
+      # deploy.sh builds the :prod tag every deploy. A contained session whose
+      # deployment can't supply this image refuses to start, so it must be set.
+      # Opt out (e.g. a host that can't run a NET_ADMIN sidecar — the installer
+      # detects this and asks): SESSION_EGRESS_ENFORCE=0, persisted in the env
+      # file deploy.sh loads (see deployment/vps/setup.sh + deploy.sh).
+      - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
+      - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
     networks:
       - shipit
     logging:
@@ -99,12 +109,12 @@ services:
 
   # Egress firewall sidecar (docs/172 Gap 1, SHI-90). One image, three roles
   # (Tier A installer / Tier B resolver / Tier C SNI proxy) run by the orchestrator
-  # in the agent netns when SESSION_EGRESS_ENFORCE=1. Build-only (like session-worker)
-  # — built by deploy.sh, never started by `up`. Its Dockerfile COPYs `egress-sidecar/*`
-  # so the build context is `docker/` (../../docker from here). Building it on every
-  # deploy keeps the sidecar in lockstep with main; enforcement stays default-OFF until
-  # an operator sets SESSION_EGRESS_ENFORCE=1 + SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
-  # (see docs/172-agent-containment/egress-control.md).
+  # in the agent netns. Build-only (like session-worker) — built by deploy.sh, never
+  # started by `up`. Its Dockerfile COPYs `egress-sidecar/*` so the build context is
+  # `docker/` (../../docker from here). Building it on every deploy keeps the sidecar
+  # in lockstep with main; containment is ON by default (the orchestrator service
+  # above sets SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod). Opt out with
+  # SESSION_EGRESS_ENFORCE=0 (see docs/172-agent-containment/egress-control.md).
   egress-sidecar:
     build:
       context: ../../docker

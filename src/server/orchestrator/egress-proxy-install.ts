@@ -10,11 +10,11 @@
  * Sequencing in `createContainer`: agent starts → Tier A installer (now also
  * installs the :443 redirect) → Tier B resolver → THIS proxy → health check.
  *
- * Gated behind `SESSION_EGRESS_PROXY=1`, which also requires Tier B
- * (`SESSION_EGRESS_DNS=1`) and Tier A (`SESSION_EGRESS_ENFORCE=1`) — C builds on
- * the resolver's resolve-and-pin (the proxy dials the original destination IP,
- * which the resolver already pinned into the ipset for allowlisted hosts).
- * Default OFF.
+ * Enabled by default; only `SESSION_EGRESS_PROXY=0` disables it. Still requires
+ * Tier B (controlled DNS) and therefore Tier A (enforcement) — C builds on the
+ * resolver's resolve-and-pin (the proxy dials the original destination IP, which
+ * the resolver already pinned into the ipset for allowlisted hosts). Disabling
+ * either lower tier disables the proxy.
  *
  * Unlike the installer, the proxy does NOT get `NET_ADMIN` — it only listens and
  * dials. It runs as `EGRESS_PROXY_UID` so the installer's owner-match can exclude
@@ -26,6 +26,7 @@
 
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
+import { egressDnsEnabled } from "./egress-dns-install.js";
 
 /**
  * Uid the SNI proxy runs as. The Tier A installer REDIRECTs the agent's :443 to
@@ -46,13 +47,14 @@ export const EGRESS_PROXY_LISTEN = `127.0.0.1:${EGRESS_PROXY_PORT}`;
  */
 export const EGRESS_PROXY_LABEL = "shipit-egress-proxy";
 
-/** Is Tier C (SNI proxy) enabled? Requires Tier B (DNS) and Tier A (enforce). */
+/**
+ * Is Tier C (SNI proxy) enabled? Default ON — only `SESSION_EGRESS_PROXY=0`
+ * disables it. Still requires Tier B (controlled DNS), which in turn requires
+ * Tier A (enforcement): the tier-stacking invariant C ⊃ B ⊃ A. Disabling any
+ * lower tier disables the proxy.
+ */
 export function egressProxyEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return (
-    env.SESSION_EGRESS_PROXY === "1" &&
-    env.SESSION_EGRESS_DNS === "1" &&
-    env.SESSION_EGRESS_ENFORCE === "1"
-  );
+  return env.SESSION_EGRESS_PROXY !== "0" && egressDnsEnabled(env);
 }
 
 export interface ProxyAllowedOpts {

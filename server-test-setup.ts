@@ -25,3 +25,19 @@ if (Number.isInteger(count)) {
 for (const key of keysToClear) {
   Reflect.deleteProperty(process.env, key);
 }
+
+/**
+ * docs/172 (SHI-90) — agent egress containment is now ON by default
+ * (`egressEnforceEnabled()` returns true unless `SESSION_EGRESS_ENFORCE=0`).
+ * In production that's correct; in the server test suite it's an artifact: the
+ * container-lifecycle / standby / warm-pool integration tests create sessions
+ * against a *fake* Docker with no `SESSION_EGRESS_SIDECAR_IMAGE`, so a contained
+ * session would (correctly) fail closed and abort `createContainer`. Default the
+ * opt-out here so those tests exercise container lifecycle without a real
+ * NET_ADMIN sidecar. The egress-specific unit tests don't rely on this — they
+ * pass explicit env objects to `egressEnforceEnabled(...)` / `egressEnforcementActive(...)`
+ * — and any test that wants enforcement on can still set the var locally.
+ */
+if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
+  process.env.SESSION_EGRESS_ENFORCE = "0";
+}

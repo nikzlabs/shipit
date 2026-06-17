@@ -187,6 +187,14 @@ export interface ApiDeps {
    * don't exercise egress settings.
    */
   egressAllowlistStore?: EgressAllowlistStore;
+  /**
+   * docs/172 (SHI-90) — whether this deployment can actually ENFORCE egress
+   * containment (enforcement enabled AND the sidecar image configured). Surfaced
+   * to the browser so the Settings → Network egress panel distinguishes
+   * containment *policy* from *enforcement*. Defaults to false when omitted (test
+   * setups / deployments without egress wiring).
+   */
+  egressEnforcementActive?: boolean;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
   /**

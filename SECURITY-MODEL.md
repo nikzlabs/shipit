@@ -186,6 +186,23 @@ be hostile.
   the target container IP from **server-side session state** (not user input), and rewrites
   the `Host` header to the container's local dev server — closing off DNS-rebinding and
   SSRF-to-arbitrary-host vectors.
+- **Default-deny network egress containment (on by default).** Each agent container's
+  outbound network is contained **by default on every instance**: a privileged sidecar runs
+  in the container's own network namespace and applies a default-deny `iptables` policy with
+  an `ipset` allowlist (Tier A), a controlled DNS resolver that only resolves allowlisted
+  domains (Tier B), and a transparent SNI proxy that allowlists TLS by server name to close
+  the CDN co-tenancy gap an IP allowlist can't (Tier C). The agent container itself holds no
+  `NET_ADMIN`; the capability lives only in the short-lived installer sidecar, and the agent
+  cannot flush the rules. The allowlist covers the agent API, your git host, package
+  registries, and your connected MCP servers; the user can extend it (global or per-session)
+  in **Settings → Network egress**. Containment is **fail-closed**: if a contained session's
+  deployment can't run the sidecar (no image, NET_ADMIN denied, rootless Docker), the session
+  **refuses to start** rather than running with open egress. The installer detects an
+  incapable host and offers the opt-out (`SESSION_EGRESS_ENFORCE=0`). Because policy and
+  capability are independent, the Settings UI **distinguishes the containment *policy* (the
+  durable Contained/Open switch) from actual *enforcement*** — a deployment that says
+  "Contained" but can't enforce shows an explicit "NOT enforced on this deployment" warning
+  rather than a reassuring green state. See `docs/172-agent-containment/egress-control.md`.
 
 ## Network egress containment
 
@@ -312,18 +329,21 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 Honesty is part of the security model. These are the gaps ShipIt is aware of, the reasoning
 for accepting them today, and where they're headed.
 
-- **Agent network egress is open unless the operator turns containment on (the big one).**
-  The default-deny egress gateway is now **built and live-verified** (all three tiers + the
-  Phase-2 identity proxy — see "Network egress containment"), but it ships **default-OFF**:
-  it activates only when an operator sets `SESSION_EGRESS_ENFORCE=1` (+ the sidecar image and,
-  for Tiers B/C, `SESSION_EGRESS_DNS` / `SESSION_EGRESS_PROXY`). Until then, agent containers
-  have full outbound internet access, and any credential reachable inside the container — the
-  agent CLI's own OAuth/subscription token, MCP server tokens, any secret you marked reachable
-  by the agent, and the GitHub PAT the credential helper hands out on request — can be
-  **exfiltrated by a prompt-injected agent**. So the residual risk is now **activation, not
-  absence of a mechanism**: the gap is shrinking the operator-opt-in step (and eventually
-  flipping the default). Until you enable containment on your instance, treat anything
-  reachable inside the container as reachable by a compromised agent.
+- **Hosts that can't enforce egress containment opt out (the residual gap).** Agent network
+  egress is now **contained by default** (see "Default-deny network egress containment" under
+  *Agent and container containment*): a credential reachable inside the container — the agent
+  CLI's own OAuth/subscription token, MCP server tokens, any secret you marked reachable by the
+  agent, the GitHub PAT the credential helper hands out — can no longer be `curl`-ed to an
+  arbitrary host, because the default-deny allowlist + controlled resolver + SNI proxy block
+  the destination. The accepted residual: a host that **can't run the NET_ADMIN sidecar**
+  (rootless Docker, a locked-down kernel) can't enforce containment. There, containment is
+  fail-closed (sessions refuse to start), and the installer detects the incapable host and asks
+  whether to opt out (`SESSION_EGRESS_ENFORCE=0`) — an operator who opts out is back to open
+  egress and should treat anything reachable inside the container as reachable by a compromised
+  agent. The Settings UI surfaces this honestly: it distinguishes the containment *policy* from
+  actual *enforcement*, so an opted-out / incapable deployment shows a "NOT enforced" warning
+  rather than a false green. An **identity-validating proxy** for multi-tenant allowlisted hosts
+  is a Phase-2 follow-up (SHI-90, `docs/172-agent-containment/egress-control.md`).
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /
   time-of-use race exists in principle. Exploiting it requires an already-in-sandbox
@@ -341,14 +361,14 @@ for accepting them today, and where they're headed.
 - **The agent's own CLI credentials are present in its container.** The pinned agent's CLI
   needs its OAuth/subscription token to authenticate, so that token is present on disk inside
   the session (in the per-session credential copy described above). A prompt-injected agent
-  can therefore read — and, with egress open, exfiltrate — its own token. This is the
-  accepted *"the agent runs in the same box as its own credentials"* limitation from the
+  can therefore read its own token, and — **only if egress containment is disabled or
+  unenforceable on the host** — exfiltrate it. This is the accepted *"the agent runs in the
+  same box as its own credentials"* limitation from the
   [managed-agents model](https://www.anthropic.com/engineering/managed-agents); a read-only
   mount wouldn't help, since it blocks writes, not reads. The exposure is bounded — a session
   holds only its *own* pinned agent's token, and the orchestrator (not the container) remains
-  the source of truth for it — but the live token is still reachable in-container while the
-  agent runs, and egress containment (when the operator enables it) is what closes the
-  exfiltration path.
+  the source of truth for it — and the default-on egress allowlist above is the containment
+  that closes the exfiltration path wherever it can be enforced.
 - **No orchestrator-level user auth.** As above, this is by design for single-tenant use
   and is covered by the deployment access layer — but it does mean an unprotected exposed
   instance is fully open. Don't run one. (This is about the *browser* caller. The separate

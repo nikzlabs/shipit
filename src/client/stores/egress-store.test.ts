@@ -16,7 +16,15 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
   const view = (): EgressAllowlistView => ({
     entries,
     globalEnabled,
-    session: { sessionId: "s1", override, hosts: [], effectiveContained: override ?? globalEnabled, globalEnabled },
+    enforcementActive: true,
+    session: {
+      sessionId: "s1",
+      override,
+      hosts: [],
+      effectiveContained: override ?? globalEnabled,
+      globalEnabled,
+      enforcementActive: true,
+    },
     defaultsCustomized: false,
   });
 

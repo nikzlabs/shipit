@@ -854,7 +854,15 @@ export async function createContainer(
     const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
     if (deps.egressEnforce && egressCfg.contained) {
       if (!deps.egressSidecarImage) {
-        throw new Error("SESSION_EGRESS_ENFORCE=1 but SESSION_EGRESS_SIDECAR_IMAGE is not set");
+        // Fail closed: this session is contained but the deployment can't run
+        // the privileged egress sidecar (no image configured), so we refuse to
+        // start it rather than run with unenforced/open egress. Name the escape
+        // hatches so the operator (and the surfaced session-start error) can act.
+        throw new Error(
+          "Agent egress containment is on but cannot be enforced: SESSION_EGRESS_SIDECAR_IMAGE is not set. " +
+            "Provide/build the egress sidecar image (deploy.sh / dev.sh build it), or disable containment " +
+            "with SESSION_EGRESS_ENFORCE=0 if this host can't run the NET_ADMIN sidecar.",
+        );
       }
       const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
       const inputs = await buildTierAEgressInputs();
@@ -952,12 +960,36 @@ export async function createContainer(
     deps.emitter.emit("container_started", config.sessionId);
     return sc;
   } catch (err) {
-    // Clean up on failure — stop/remove the container if it was created
+    // Clean up on failure. Mirror destroyContainer's ordering: stop the agent
+    // container, reap any parent-session-labeled child resources, THEN remove
+    // the agent container. The egress Tier B/C sidecars (resolver + proxy) are
+    // long-lived containers that share the agent's netns (`container:<agent>`)
+    // and carry the `shipit-parent-session` label; if a later step throws after
+    // one of them launched, removing only the agent container leaks them (and
+    // they keep a netns reference). cleanupSessionDockerResources is what reaps
+    // them — the agent container itself isn't parent-session-labeled, so the
+    // explicit stop/remove around the cleanup is still required.
     deps.containers.delete(config.sessionId);
     if (sc.id) {
       try {
         const c = deps.docker.getContainer(sc.id);
         try { await c.stop({ t: 2 }); } catch { /* may not be running */ }
+      } catch {
+        // Container reference invalid
+      }
+    }
+    // Reap egress sidecars / docker-proxy child containers, networks, and
+    // volumes created before the throw. Best-effort — the disk-janitor orphan
+    // sweep is the backstop — and done before removing the agent container so
+    // the netns-sharing sidecars are gone first.
+    try {
+      await cleanupSessionDockerResources(deps.docker, config.sessionId);
+    } catch {
+      /* best-effort; disk-janitor is the backstop */
+    }
+    if (sc.id) {
+      try {
+        const c = deps.docker.getContainer(sc.id);
         try { await c.remove({ force: true }); } catch { /* may already be gone */ }
       } catch {
         // Container reference invalid

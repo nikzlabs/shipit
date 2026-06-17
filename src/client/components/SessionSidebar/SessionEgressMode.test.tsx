@@ -16,12 +16,20 @@ function renderInMenu(sessionId = "s1") {
   );
 }
 
-function stubFetch(initialOverride: boolean | null = null) {
+function stubFetch(initialOverride: boolean | null = null, enforcementActive = true) {
   let override = initialOverride;
   const view = (): EgressAllowlistView => ({
     entries: [],
     globalEnabled: true,
-    session: { sessionId: "s1", override, hosts: [], effectiveContained: override ?? true, globalEnabled: true },
+    enforcementActive,
+    session: {
+      sessionId: "s1",
+      override,
+      hosts: [],
+      effectiveContained: override ?? true,
+      globalEnabled: true,
+      enforcementActive,
+    },
     defaultsCustomized: false,
   });
   const impl = vi.fn(async (url: string, init?: RequestInit) => {
@@ -57,6 +65,32 @@ describe("SessionEgressMode (docs/172)", () => {
     await waitFor(() =>
       expect(screen.getByRole("menuitemradio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
     );
+  });
+
+  it("warns when this session would be contained but the deployment can't enforce", async () => {
+    stubFetch(null, false); // inherit → global Contained, but enforcement inactive
+    renderInMenu();
+    await waitFor(() =>
+      expect(screen.getByTestId("session-egress-enforcement-warning")).toBeInTheDocument(),
+    );
+  });
+
+  it("does NOT warn when enforcement is active", async () => {
+    stubFetch(null, true);
+    renderInMenu();
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(screen.queryByTestId("session-egress-enforcement-warning")).not.toBeInTheDocument();
+  });
+
+  it("does NOT warn when this session is Open even if enforcement is inactive", async () => {
+    stubFetch(false, false); // override=false → Open
+    renderInMenu();
+    await waitFor(() =>
+      expect(screen.getByRole("menuitemradio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
+    );
+    expect(screen.queryByTestId("session-egress-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("PUTs the chosen override for the session", async () => {

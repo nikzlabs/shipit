@@ -83,6 +83,47 @@ if [ "$OS" = "Linux" ]; then
   fi
 fi
 
+# --- Agent egress containment preflight (docs/172, SHI-90) ---
+# Containment is ON by default for all ShipIt instances (fail-closed): the
+# orchestrator runs a privileged NET_ADMIN sidecar in each agent container's
+# netns to apply a default-deny egress allowlist. If this host can't run that
+# sidecar, ShipIt fails closed and refuses to start sessions. Non-interactive
+# (check-and-instruct, matching the tooling preflight above): on an incapable
+# host we fail with the exact opt-out, unless SHIPIT_EGRESS=off is set to
+# disable containment up front.
+echo "==> Checking agent egress containment support..."
+# Bringing loopback down in a throwaway NET_ADMIN container requires
+# CAP_NET_ADMIN and touches only that container's own netns — a safe,
+# dependency-light proxy for "can run the egress sidecar".
+if docker run --rm --cap-add NET_ADMIN alpine sh -c 'ip link set lo down' >/dev/null 2>&1; then
+  echo "    Agent egress containment: enabled (default-deny allowlist)."
+elif [ "${SHIPIT_EGRESS:-}" = "off" ]; then
+  mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
+  touch "$SHIPIT_ENV_FILE"; chmod 600 "$SHIPIT_ENV_FILE"
+  if grep -q '^SESSION_EGRESS_ENFORCE=' "$SHIPIT_ENV_FILE" 2>/dev/null; then
+    sed -i.bak "s/^SESSION_EGRESS_ENFORCE=.*/SESSION_EGRESS_ENFORCE=0/" "$SHIPIT_ENV_FILE" && rm -f "$SHIPIT_ENV_FILE.bak"
+  else
+    echo "SESSION_EGRESS_ENFORCE=0" >> "$SHIPIT_ENV_FILE"
+  fi
+  echo "    Egress containment DISABLED (SHIPIT_EGRESS=off -> SESSION_EGRESS_ENFORCE=0 in $SHIPIT_ENV_FILE)."
+  echo "    Sessions will run with UNRESTRICTED outbound network on this host."
+else
+  echo "" >&2
+  echo "Error: this host can't run the egress containment sidecar." >&2
+  echo "  ShipIt isolates each agent container's outbound network with a privileged" >&2
+  echo "  NET_ADMIN sidecar (default-deny + allowlist). This host denied that" >&2
+  echo "  capability — common with rootless Docker or a locked-down kernel." >&2
+  echo "" >&2
+  echo "  Egress containment is ON by default and FAILS CLOSED, so ShipIt would" >&2
+  echo "  refuse to start agent sessions here. To install anyway with containment" >&2
+  echo "  DISABLED (sessions run with unrestricted egress — a prompt-injected agent" >&2
+  echo "  could exfiltrate credentials), re-run with:" >&2
+  echo "" >&2
+  echo "      SHIPIT_EGRESS=off bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)" >&2
+  echo "" >&2
+  exit 1
+fi
+
 # --- Build + start ---
 shipit_build_and_up
 

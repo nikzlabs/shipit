@@ -16,11 +16,16 @@ import {
 } from "./egress-dns-install.js";
 
 describe("egressDnsEnabled", () => {
-  it("requires BOTH SESSION_EGRESS_DNS=1 and SESSION_EGRESS_ENFORCE=1", () => {
+  it("is ON by default (with enforcement on by default)", () => {
+    expect(egressDnsEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(egressDnsEnabled({ SESSION_EGRESS_DNS: "1", SESSION_EGRESS_ENFORCE: "1" } as NodeJS.ProcessEnv)).toBe(true);
-    expect(egressDnsEnabled({ SESSION_EGRESS_DNS: "1" } as NodeJS.ProcessEnv)).toBe(false); // enforce off
-    expect(egressDnsEnabled({ SESSION_EGRESS_ENFORCE: "1" } as NodeJS.ProcessEnv)).toBe(false); // dns off
-    expect(egressDnsEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it("is disabled by an explicit SESSION_EGRESS_DNS=0", () => {
+    expect(egressDnsEnabled({ SESSION_EGRESS_DNS: "0" } as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it("requires Tier A — resolves OFF when enforcement is opted out", () => {
+    expect(egressDnsEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false);
+    expect(egressDnsEnabled({ SESSION_EGRESS_DNS: "1", SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false);
   });
 });
 

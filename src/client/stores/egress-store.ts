@@ -34,6 +34,13 @@ interface EgressState {
   entries: EgressAllowlistEntry[];
   /** Global containment switch: true = Contained (default-deny), false = Open. */
   globalEnabled: boolean;
+  /**
+   * Whether this deployment can actually ENFORCE containment (enforcement on +
+   * sidecar image configured). When containment is the policy but this is false,
+   * the panel warns "Contained — NOT enforced on this deployment" instead of a
+   * reassuring green state (docs/172, SHI-90).
+   */
+  enforcementActive: boolean;
   /** In-scope session override: null = inherit global, true/false = force. */
   override: boolean | null;
   /** Resolved containment for the in-scope session (override ?? global). */
@@ -72,6 +79,9 @@ export const useEgressStore = create<EgressState>((set, get) => ({
   sessionId: null,
   entries: [],
   globalEnabled: true,
+  // Optimistic: assume enforcement is active until the server view loads, so a
+  // capable deployment doesn't briefly flash the "not enforced" warning.
+  enforcementActive: true,
   override: null,
   effectiveContained: true,
   defaultsCustomized: false,
@@ -83,6 +93,7 @@ export const useEgressStore = create<EgressState>((set, get) => ({
     set({
       entries: Array.isArray(v?.entries) ? v.entries : [],
       globalEnabled: v?.globalEnabled ?? true,
+      enforcementActive: v?.enforcementActive ?? true,
       override: v?.session?.override ?? null,
       effectiveContained: v?.session?.effectiveContained ?? v?.globalEnabled ?? true,
       defaultsCustomized: v?.defaultsCustomized ?? false,

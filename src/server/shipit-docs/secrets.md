@@ -100,7 +100,7 @@ same name.
 | `name` | string (required) | Env var name. Must match `^[A-Za-z_][A-Za-z0-9_]*$`. |
 | `description` | string | Free-form description shown to the user in the secrets panel. Helps them know what to configure. |
 | `required` | boolean | If true, the orchestrator surfaces a "Configure secrets" banner when no value is set. The compose stack still attempts to start — the banner is informational, not a hard block. |
-| `agent` | boolean | Also inject this env var into the agent container. Use for connection strings the agent needs when running CLI tools (`prisma migrate`, `bun test`, codegen). **Treat any `agent: true` value as exfiltratable**: it lands in the agent container's environment, and the agent can run arbitrary shell, so a prompt injection can read and POST it anywhere (agent containers currently have unrestricted network egress — see the security note below). Avoid for true secrets — the agent doesn't usually need API keys. |
+| `agent` | boolean | Also inject this env var into the agent container. Use for connection strings the agent needs when running CLI tools (`prisma migrate`, `bun test`, codegen). **Treat any `agent: true` value as exfiltratable**: it lands in the agent container's environment, and the agent can run arbitrary shell, so a prompt injection can read it — and POST it anywhere egress containment allows or isn't enforced (see the security note below). Avoid for true secrets — the agent doesn't usually need API keys. |
 
 Unknown fields on the object are ignored. The same secret declared by
 multiple services merges its metadata: `required` and `agent` are OR'd, the
@@ -174,17 +174,24 @@ threat model.
 
 ## Security note: agent-container egress
 
-Agent containers currently have **unrestricted outbound network access** and no
-egress allowlist or proxy chokepoint. Any value reachable from inside the agent
-container — `agent: true` secrets, MCP tokens, the agent's own CLI OAuth — can
-be POSTed to an arbitrary host by code the agent runs (including code injected
-via a malicious dependency README, fetched web page, or repo content). The
-GitHub PAT is the one credential deliberately kept *out* of the container
-(brokered via `gh` and `shipit-git-credential`; see `github.md`), but the rest
-live in-container by design. This is a documented, accepted risk
-(`docs/088-security-audit` finding #6); the mitigation is to scope `agent: true`
-to non-sensitive values. A future orchestrator-managed forward proxy with a
-host allowlist would shrink this exposure.
+Agent containers are **network-contained by default** (SHI-90,
+`docs/172-agent-containment`): a default-deny egress allowlist + controlled DNS
+resolver + transparent SNI proxy restrict outbound traffic to known hosts (the
+agent API, your git host, package registries, your connected MCP servers). So a
+value reachable inside the container — `agent: true` secrets, MCP tokens, the
+agent's own CLI OAuth — can no longer be POSTed to an arbitrary attacker host by
+code the agent runs (a malicious dependency README, fetched page, or repo
+content). The GitHub PAT is additionally kept *out* of the container (brokered
+via `gh` and `shipit-git-credential`; see `github.md`).
+
+Containment is **on by default and fail-closed** — a session refuses to start on
+a host that can't enforce it — but an operator **can** disable it
+(`SESSION_EGRESS_ENFORCE=0`, e.g. when the host can't run the required NET_ADMIN
+sidecar; the installer detects this and asks). When containment is disabled or
+unenforceable, the old unrestricted-egress exposure returns, so still scope
+`agent: true` to non-sensitive values. The Settings → Network egress panel shows
+whether containment is actually **enforced** on this deployment (it warns
+"Contained — NOT enforced" when policy says contain but the host can't).
 
 ## When secrets change
 

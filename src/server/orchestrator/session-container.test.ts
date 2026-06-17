@@ -440,6 +440,46 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  // --- docs/172 Gap 1 (SHI-90) — egress containment fail-closed at create ---
+
+  describe("egress fail-closed", () => {
+    // Enforcement is ON by default; the server test setup opts out globally so
+    // the fake-Docker lifecycle tests run. Re-enable it here to assert the
+    // fail-closed throw when the deployment can't supply the sidecar image.
+    let savedEnv: NodeJS.ProcessEnv;
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+      process.env.SESSION_EGRESS_ENFORCE = "1";
+      delete process.env.SESSION_EGRESS_SIDECAR_IMAGE; // no image → can't enforce
+    });
+    afterEach(() => {
+      process.env = savedEnv;
+    });
+
+    it("refuses to start a contained session when no sidecar image is configured", async () => {
+      await expect(manager.create(buildConfig())).rejects.toThrow(
+        /Agent egress containment is on but cannot be enforced.*SESSION_EGRESS_SIDECAR_IMAGE/s,
+      );
+    });
+
+    it("names the escape hatches (build the image, or SESSION_EGRESS_ENFORCE=0) and tears the container down", async () => {
+      await expect(manager.create(buildConfig())).rejects.toThrow(/SESSION_EGRESS_ENFORCE=0/);
+      // Fail-closed: no half-started container is left registered.
+      expect(manager.get("test-session-1")).toBeUndefined();
+      expect(manager.size).toBe(0);
+    });
+
+    it("reaps parent-session-labeled children on create failure (no leaked egress sidecars)", async () => {
+      // The create-failure path must run cleanupSessionDockerResources so the
+      // long-lived Tier B/C sidecars (which share the agent netns and carry the
+      // shipit-parent-session label) can't leak when a later step throws.
+      await expect(manager.create(buildConfig())).rejects.toThrow();
+      expect(mockDocker.listContainers).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: { label: ["shipit-parent-session=test-session-1"] } }),
+      );
+    });
+  });
+
   // --- docs/183 dep-dir design — overlay sessions (N nested dep-dir mounts) ---
 
   describe("overlay session", () => {

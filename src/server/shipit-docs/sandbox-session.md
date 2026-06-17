@@ -46,8 +46,8 @@ A sandbox grants up to three independent capabilities, decided at creation:
   is locked to the agent's lifeline only (the LLM API and the ShipIt
   orchestrator/worker), with `github.com` re-opened only if GitHub access is also
   granted (so push still works). "Off" only ever tightens; it is never an
-  air-gap (the lifeline is irreducible). Where egress enforcement isn't deployed,
-  the toggle is inert.
+  air-gap (the lifeline is irreducible). Egress containment is enforced by default;
+  where it's been disabled or the host can't enforce it, the toggle is inert.
 
 ## Pull requests
 

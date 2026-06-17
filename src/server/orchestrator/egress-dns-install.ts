@@ -7,8 +7,8 @@
  * runs (creates the ipset + locks DNS to the resolver uid) → THIS launches the
  * resolver → health check → ready.
  *
- * Gated behind `SESSION_EGRESS_DNS=1` (which also requires `SESSION_EGRESS_ENFORCE=1`).
- * The resolver is labeled `shipit-parent-session=<id>` so the existing
+ * Enabled by default (requires Tier A enforcement too); only `SESSION_EGRESS_DNS=0`
+ * disables it. The resolver is labeled `shipit-parent-session=<id>` so the existing
  * `cleanupSessionDockerResources` tears it down with the session — no separate
  * teardown bookkeeping needed.
  *
@@ -21,6 +21,7 @@ import os from "node:os";
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 import { buildDnsmasqConfig, EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import { egressEnforceEnabled } from "./egress-firewall-install.js";
 
 /** Default public upstream resolvers for allowlisted domains (overridable). */
 export const EGRESS_DNS_DEFAULT_UPSTREAMS = ["1.1.1.1", "1.0.0.1"];
@@ -34,9 +35,13 @@ export const EGRESS_DNS_DEFAULT_UPSTREAMS = ["1.1.1.1", "1.0.0.1"];
  */
 export const EGRESS_RESOLVER_LABEL = "shipit-egress-resolver";
 
-/** Is Tier B (controlled DNS) enabled? Requires Tier A enforcement too. */
+/**
+ * Is Tier B (controlled DNS) enabled? Default ON — only `SESSION_EGRESS_DNS=0`
+ * disables it. Still requires Tier A enforcement (the tier-stacking invariant:
+ * B requires A), so disabling enforcement disables the resolver too.
+ */
 export function egressDnsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.SESSION_EGRESS_DNS === "1" && env.SESSION_EGRESS_ENFORCE === "1";
+  return env.SESSION_EGRESS_DNS !== "0" && egressEnforceEnabled(env);
 }
 
 /**

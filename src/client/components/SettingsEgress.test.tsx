@@ -9,17 +9,31 @@ import type { EgressAllowlistEntry, EgressAllowlistView } from "../../server/sha
 /** Stateful fetch stub returning the effective-allowlist view. */
 function stubFetch(
   initial: EgressAllowlistEntry[],
-  opts: { globalEnabled?: boolean; withSession?: boolean; defaultsCustomized?: boolean } = {},
+  opts: {
+    globalEnabled?: boolean;
+    withSession?: boolean;
+    defaultsCustomized?: boolean;
+    enforcementActive?: boolean;
+  } = {},
 ) {
   let entries = [...initial];
   let globalEnabled = opts.globalEnabled ?? true;
   let defaultsCustomized = opts.defaultsCustomized ?? false;
+  const enforcementActive = opts.enforcementActive ?? true;
   let override: boolean | null = null;
   const view = (): EgressAllowlistView => ({
     entries,
     globalEnabled,
+    enforcementActive,
     session: opts.withSession
-      ? { sessionId: "s1", override, hosts: [], effectiveContained: override ?? globalEnabled, globalEnabled }
+      ? {
+          sessionId: "s1",
+          override,
+          hosts: [],
+          effectiveContained: override ?? globalEnabled,
+          globalEnabled,
+          enforcementActive,
+        }
       : null,
     defaultsCustomized,
   });
@@ -49,7 +63,7 @@ const user = (host: string): EgressAllowlistEntry => ({ host, source: "user-glob
 const mcp = (host: string): EgressAllowlistEntry => ({ host, source: "mcp", removable: false });
 
 beforeEach(() => {
-  useEgressStore.setState({ loaded: false, sessionId: null, entries: [], globalEnabled: true, override: null, effectiveContained: true });
+  useEgressStore.setState({ loaded: false, sessionId: null, entries: [], globalEnabled: true, enforcementActive: true, override: null, effectiveContained: true });
   useSessionStore.setState({ sessionId: undefined });
 });
 
@@ -119,6 +133,27 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     await userEvent.click(screen.getByTestId("settings-egress-edit-save-old.example.com"));
     await waitFor(() => expect(screen.getByText("new.example.com")).toBeInTheDocument());
     expect(screen.queryByText("old.example.com")).not.toBeInTheDocument();
+  });
+
+  it("warns when containment is the policy but enforcement is not active on this deployment", async () => {
+    stubFetch([], { globalEnabled: true, enforcementActive: false });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-enforcement-warning")).toBeInTheDocument());
+    expect(screen.getByText(/NOT enforced on this deployment/i)).toBeInTheDocument();
+  });
+
+  it("does NOT warn when containment is the policy AND enforcement is active", async () => {
+    stubFetch([], { globalEnabled: true, enforcementActive: true });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "true"));
+    expect(screen.queryByTestId("settings-egress-enforcement-warning")).not.toBeInTheDocument();
+  });
+
+  it("does NOT warn when policy is Open even if enforcement is inactive", async () => {
+    stubFetch([], { globalEnabled: false, enforcementActive: false });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toHaveAttribute("aria-checked", "false"));
+    expect(screen.queryByTestId("settings-egress-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("toggles containment off", async () => {

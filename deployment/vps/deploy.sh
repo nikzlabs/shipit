@@ -9,6 +9,19 @@ COMPOSE_FILE="$SHIPIT_DIR/deployment/vps/docker-compose.yml"
 
 cd "$SHIPIT_DIR"
 
+# Load persisted operator env (e.g. SESSION_EGRESS_ENFORCE=0 written by the
+# egress preflight in setup.sh). Exported here so the `docker compose up`
+# ${VAR:-} substitutions below see it on every deploy — setup.sh and update.sh
+# both call this script, and the host shell env doesn't persist between them.
+# Lives outside the git checkout so it survives resets/rebuilds.
+SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-/etc/shipit/shipit.env}"
+if [ -f "$SHIPIT_ENV_FILE" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$SHIPIT_ENV_FILE"
+  set +a
+fi
+
 # Kill stale session-worker and compose service containers from previous runs
 docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit") 2>/dev/null || true
 docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
@@ -93,8 +106,9 @@ fi
 # named explicitly). egress-sidecar (shipit-egress-sidecar:prod) is the SHI-90 egress
 # firewall image — built every deploy so a docker/egress-sidecar/ change ships in lockstep
 # with main instead of lagging a stale manual build. It's independent of session-worker
-# (no FROM dependency), so it builds here alongside it; enforcement stays default-OFF
-# until an operator sets SESSION_EGRESS_ENFORCE=1 + SESSION_EGRESS_SIDECAR_IMAGE.
+# (no FROM dependency), so it builds here alongside it. Egress containment is ON by default
+# (the compose orchestrator service sets SESSION_EGRESS_SIDECAR_IMAGE); the setup.sh egress
+# preflight persists SESSION_EGRESS_ENFORCE=0 for hosts that can't run the NET_ADMIN sidecar.
 # Reuses Docker's build cache by default; set FORCE_REBUILD=1 (or "true",
 # "yes", "on") to bypass it.
 #

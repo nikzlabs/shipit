@@ -37,6 +37,8 @@ describe("egress settings routes", () => {
     const deps = {
       egressAllowlistStore: store,
       credentialStore: stubCredentialStore,
+      // This deployment can enforce (enforcement on + sidecar image configured).
+      egressEnforcementActive: true,
       sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
       containerManager: { reloadEgress } as unknown,
       runnerRegistry: { get: () => undefined },
@@ -77,13 +79,13 @@ describe("egress settings routes", () => {
     });
   });
 
-  it("GET /api/egress/settings returns the default-on toggle + empty allowlist", async () => {
+  it("GET /api/egress/settings returns the default-on toggle + empty allowlist + enforcement", async () => {
     const res = await app.inject({ method: "GET", url: "/api/egress/settings" });
     expect(res.statusCode).toBe(200);
-    expect(res.json<EgressSettings>()).toEqual({ globalEnabled: true, globalHosts: [] });
+    expect(res.json<EgressSettings>()).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: true });
   });
 
-  it("PUT /api/egress/settings flips the global toggle + broadcasts", async () => {
+  it("PUT /api/egress/settings flips the global toggle + broadcasts (with enforcement)", async () => {
     const res = await app.inject({
       method: "PUT",
       url: "/api/egress/settings",
@@ -92,7 +94,20 @@ describe("egress settings routes", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json<EgressSettings>().globalEnabled).toBe(false);
     expect(store.getGlobalEnabled()).toBe(false);
-    expect(broadcasts).toContainEqual({ event: "egress_settings", data: { globalEnabled: false, globalHosts: [] } });
+    expect(broadcasts).toContainEqual({
+      event: "egress_settings",
+      data: { globalEnabled: false, globalHosts: [], enforcementActive: true },
+    });
+  });
+
+  it("includes enforcementActive in the allowlist view + per-session view", async () => {
+    const globalView = (await app.inject({ method: "GET", url: "/api/egress/allowlist" })).json<EgressAllowlistView>();
+    expect(globalView.enforcementActive).toBe(true);
+    const sessionView = (
+      await app.inject({ method: "GET", url: "/api/egress/allowlist?session=session-1" })
+    ).json<EgressAllowlistView>();
+    expect(sessionView.enforcementActive).toBe(true);
+    expect(sessionView.session?.enforcementActive).toBe(true);
   });
 
   it("POST /api/egress/hosts adds a global host (applies on next start, no reload)", async () => {
@@ -178,7 +193,31 @@ describe("egress settings routes", () => {
       hosts: ["session.example.com"],
       effectiveContained: true,
       globalEnabled: true,
+      enforcementActive: true,
     });
+  });
+
+  it("reports enforcementActive=false when the deployment can't enforce (no sidecar image)", async () => {
+    // A second app whose deps say enforcement is NOT active — the UI uses this to
+    // warn "Contained — NOT enforced on this deployment".
+    const app2 = Fastify();
+    await registerEgressRoutes(app2, {
+      egressAllowlistStore: store,
+      credentialStore: stubCredentialStore,
+      egressEnforcementActive: false,
+      sseBroadcast: () => {},
+      runnerRegistry: { get: () => undefined },
+      chatHistoryManager: {},
+    } as unknown as ApiDeps);
+    await app2.ready();
+    try {
+      const settings = (await app2.inject({ method: "GET", url: "/api/egress/settings" })).json<EgressSettings>();
+      expect(settings).toEqual({ globalEnabled: true, globalHosts: [], enforcementActive: false });
+      const view = (await app2.inject({ method: "GET", url: "/api/egress/allowlist" })).json<EgressAllowlistView>();
+      expect(view.enforcementActive).toBe(false);
+    } finally {
+      await app2.close();
+    }
   });
 
   it("PUT /api/egress/session/:id sets and clears a containment override", async () => {
