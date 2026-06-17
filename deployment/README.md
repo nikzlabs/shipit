@@ -90,7 +90,7 @@ The script will ask whether to install Cloudflare, Tailscale, both, or neither, 
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:
   - Cloudflare: install `cloudflared`, authenticate, create a Zero Trust Access application + policy via the Cloudflare API, create a tunnel, configure DNS routes, and lock down the firewall
-  - Tailscale: install Tailscale, authenticate the VPS, and expose ShipIt with Tailscale Serve
+  - Tailscale: install Tailscale, authenticate the VPS, run a Host-preserving forwarder on the node's tailnet IP, and print an sslip.io access URL (app + subdomain previews) that works with no further setup
 - Build and start ShipIt
 
 You can also run either access setup later:
@@ -187,7 +187,12 @@ The script installs Tailscale if needed, authenticates the VPS, sets the node ho
 
 ShipIt previews are served on subdomains (`{sessionId}--{port}.<host>`). Tailscale Serve can't carry those (it binds only the node's own name), so the script runs a Host-preserving TCP forwarder bound to the node's tailnet IP and needs a host whose wildcard resolves back to that IP.
 
-**Default — sslip.io (zero setup, works today).** The script prints an access URL built from the node's tailnet IP in dash notation, e.g. `http://100-70-78-74.sslip.io:4123`. [sslip.io](https://sslip.io/) is a public wildcard DNS resolver that maps any `<dashed-ip>.sslip.io` name straight back to that IP, so previews resolve at `{sessionId}--{port}.100-70-78-74.sslip.io:4123` with **no tailnet policy edit and no owned domain**. DNS resolution is public; the traffic itself rides the WireGuard-encrypted tailnet. HTTP only (there is no wildcard TLS cert for these names — safe over the encrypted tailnet). The only caveat: a device whose DNS resolver enforces DNS-rebinding protection may refuse public names that point into CGNAT `100.64/10` space — sslip.io serves these, but a hardened local resolver (some routers, Pi-hole, NextDNS) may block it; use one of the alternatives below on such a device.
+**Default — sslip.io (zero setup, works today).** The script prints an access URL built from the node's tailnet IP in dash notation, e.g. `http://100-70-78-74.sslip.io:4123`. [sslip.io](https://sslip.io/) is a public wildcard DNS resolver that maps any `<dashed-ip>.sslip.io` name straight back to that IP, so previews resolve at `{sessionId}--{port}.100-70-78-74.sslip.io:4123` with **no tailnet policy edit and no owned domain**. As long as it answers honestly, the connection then rides the WireGuard-encrypted tailnet. HTTP only (there is no wildcard TLS cert for these names).
+
+Two caveats with this default:
+
+- **DNS trust.** sslip.io sits in the resolution path. It serves a fixed IP-to-name mapping, but because the connection is HTTP (no cert pinning the server's identity), a resolver outage, a bad/cached answer, or DNS tampering could point your browser at a non-tailnet endpoint under the same host. If that dependency isn't acceptable, use the native MagicDNS hostname or owned-domain options below — or self-host the open-source sslip.io resolver on the node.
+- **DNS-rebinding protection.** A device whose resolver refuses public names that point into CGNAT `100.64/10` space (some routers, Pi-hole, NextDNS) won't resolve sslip.io — sslip.io serves these, but a hardened local resolver may block it; use one of the alternatives below on such a device.
 
 #### Optional — a cleaner hostname via native MagicDNS
 

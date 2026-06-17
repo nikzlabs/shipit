@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-174
 title: Subdomain-only previews (remove path-based fallback and the auto/always mode)
 description: Drop the broken path-based preview iframe fallback and the previewSubdomains auto/always switch; standardize on subdomain routing with a clear empty-state when a host can't carry wildcard subdomains.
 ---
@@ -291,10 +292,9 @@ or C instead.
    for HTTPS. `tailscale.sh` prints this guidance, and `deployment/README.md`
    documents both alternatives.
 
-**Client dependency:** the client only builds a subdomain URL when
-`previewSubdomains` is `always` (the `auto` heuristic rejects `.ts.net`). Prod
-already sets `SHIPIT_PREVIEW_SUBDOMAINS=always`, and the mode-removal in this doc
-makes subdomain-building unconditional. The URL is built from
+**Client dependency:** after the mode-removal in this doc, the client builds a
+subdomain URL **unconditionally** except for raw IPv4/IPv6 hosts (the old
+`previewSubdomains` auto/always switch is gone). The URL is built from
 `window.location.host`, so opening ShipIt through the sslip.io host makes
 previews sslip.io subdomains automatically; dash notation also clears the
 client's dotted-IPv4 guard (a raw `100.x` host is the empty-state, but

@@ -46,8 +46,8 @@ FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
 
 # --- Terminal colors (only when stdout is a TTY) ----------------------------
-# The one-time ACL step is easy to scroll past, so the banner and the
-# paste-this block are colored to stand out from the rest of the output.
+# The access URL and the optional one-time ACL step are easy to scroll past, so
+# the banners, the URLs, and the paste-this block are colored to stand out.
 if [ -t 1 ]; then
   C_BANNER=$'\033[1;33m'   # bold yellow — the can't-miss one-time step
   C_STEP=$'\033[1;36m'     # bold cyan   — the numbered steps
@@ -67,8 +67,9 @@ echo "  ShipIt — Tailscale private access"
 echo "==========================================="
 echo ""
 echo "This adds tailnet-only access (app + subdomain previews) without changing"
-echo "any existing Cloudflare path. Previews use native MagicDNS wildcard"
-echo "resolution; this script prints the one ACL grant you need to add."
+echo "any existing Cloudflare path. Previews resolve out of the box via sslip.io"
+echo "wildcard DNS; this script prints the access URL (and an optional upgrade to"
+echo "a native MagicDNS hostname)."
 echo ""
 
 # --- Install Tailscale ------------------------------------------------------
@@ -194,9 +195,17 @@ echo "${C_PASTE}      {sessionId}--{port}.${SSLIP_HOST}${PORT_SUFFIX}${C_RESET}"
 echo ""
 echo "  How: sslip.io is a public wildcard DNS resolver that maps any"
 echo "  <dashed-ip>.sslip.io name back to that IP — here this node's tailnet"
-echo "  address (${TS_IP}). DNS resolution is public; the traffic itself rides"
-echo "  the WireGuard-encrypted tailnet. HTTP only (no wildcard TLS for .ts.net),"
-echo "  which is safe over the encrypted tailnet."
+echo "  address (${TS_IP}). As long as it answers honestly, the connection then"
+echo "  rides the WireGuard-encrypted tailnet. HTTP only (no wildcard TLS for"
+echo "  these names)."
+echo ""
+echo "  Trust note: with this default, sslip.io is in the resolution path. It"
+echo "  serves a fixed IP-to-name mapping, but because the connection is HTTP"
+echo "  (no cert to pin identity), a resolver outage, a bad/cached answer, or"
+echo "  tampering could point the browser at a non-tailnet endpoint under the"
+echo "  same host. If that dependency isn't acceptable, use the native MagicDNS"
+echo "  hostname below, an owned wildcard domain (HTTPS), or self-host the"
+echo "  open-source sslip.io resolver on this node."
 echo ""
 echo "  Forwarder: ${TS_IP}:${LISTEN_PORT} -> 127.0.0.1:${BACKEND_PORT} (Host preserved)"
 echo "  Any existing Cloudflare tunnel access is unchanged."
