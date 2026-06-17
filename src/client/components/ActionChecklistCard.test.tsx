@@ -8,7 +8,8 @@ import type { ActionChecklistCard as ActionChecklistCardData } from "../../serve
  * Tests for the interactive `ActionChecklistCard` (docs/207 / SHI-153). The card
  * renders straight from its props (no store, no lifecycle). Submit produces ONE
  * message from the selected payloads; Add comment seeds the main composer with a
- * whole-menu snapshot. The post-submit ack is transient client-only state.
+ * snapshot of the SELECTED actions only. The post-submit ack is transient
+ * client-only state.
  */
 
 function card(over: Partial<ActionChecklistCardData> = {}): ActionChecklistCardData {
@@ -92,7 +93,7 @@ describe("ActionChecklistCard — multi action", () => {
     expect(screen.getByRole("button", { name: /^Submit$/ })).toBeDisabled();
   });
 
-  it("Add comment seeds the composer with the whole-menu [x]/[ ] payload snapshot and never sends", () => {
+  it("Add comment seeds the composer with ONLY the selected payloads as bullets and never sends", () => {
     const onSubmit = vi.fn();
     render(<ActionChecklistCard card={card()} onSubmit={onSubmit} />);
     fireEvent.click(screen.getByRole("button", { name: /Add comment/ }));
@@ -100,8 +101,10 @@ describe("ActionChecklistCard — multi action", () => {
     expect(onSubmit).not.toHaveBeenCalled();
     const seeded = useSessionStore.getState().prefillText ?? "";
     expect(seeded).toContain("Re: Optional follow-ups");
-    // default-checked a3 is [x]; others [ ]; uses payloads
-    expect(seeded).toContain("[x] File a follow-up issue for the rate-limit case.");
-    expect(seeded).toContain("[ ] Open a PR for this change.");
+    // only default-checked a3 is seeded, as a bullet; the unticked ones are absent
+    expect(seeded).toContain("- File a follow-up issue for the rate-limit case.");
+    expect(seeded).not.toContain("Open a PR for this change.");
+    expect(seeded).not.toContain("[x]");
+    expect(seeded).not.toContain("[ ]");
   });
 });
