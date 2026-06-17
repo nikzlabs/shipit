@@ -255,7 +255,7 @@ export function SessionSidebar({
         <Button
           variant="ghost"
           size="sm"
-          className="p-0! w-7 h-7 text-(--color-sandbox) hover:text-(--color-sandbox)"
+          className="p-0! w-7 h-7 text-(--color-text-tertiary) hover:text-(--color-text-primary)"
           aria-label="New advanced session"
           title="New advanced session"
         >
