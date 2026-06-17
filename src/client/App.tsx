@@ -328,6 +328,7 @@ export default function App() {
     drainMessages,
     terminalRef,
     bootstrapLoaded,
+    reconnect,
   });
 
   // Session resume/claim/routing: the four route-sync effects + the

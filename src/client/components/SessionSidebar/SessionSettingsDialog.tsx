@@ -1,15 +1,28 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: load this session's egress override when the dialog opens (external system sync)
 import { useEffect, useState } from "react";
-import { GlobeIcon, ShieldCheckIcon, ShieldSlashIcon, WarningIcon, CheckCircleIcon } from "@phosphor-icons/react";
+import {
+  GlobeIcon,
+  ShieldCheckIcon,
+  ShieldSlashIcon,
+  WarningIcon,
+  CheckCircleIcon,
+  ClockClockwiseIcon,
+  ArrowsClockwiseIcon,
+  CircleNotchIcon,
+} from "@phosphor-icons/react";
 import {
   Dialog,
   DialogContent,
   DialogTitle,
   DialogDescription,
 } from "../ui/dialog.js";
+import { Button } from "../ui/button.js";
+import { WithTooltip } from "../ui/tooltip.js";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { useUiStore } from "../../stores/ui-store.js";
-import type { EgressAllowlistView } from "../../../server/shared/types.js";
+import { useSessionStore } from "../../stores/session-store.js";
+import { useApi, ApiError } from "../../hooks/useApi.js";
+import type { EgressAllowlistView, EgressSessionSettings } from "../../../server/shared/types.js";
 
 /**
  * Per-session settings dialog (docs/172 / SHI-90).
@@ -22,10 +35,19 @@ import type { EgressAllowlistView } from "../../../server/shared/types.js";
  * capability picker. This is deliberately separate from the global Settings →
  * Network dialog (app-wide allowlist); per-session lives with the session.
  *
- * The override applies on the session's next container start. Wired with direct
- * fetches (GET the effective view for the current value, PUT to set/clear) so it
- * doesn't depend on the Settings store, which is single-session-scoped and only
- * loaded while that dialog is open.
+ * Egress is a CREATION-TIME network-topology choice: the firewall + DNS resolver
+ * + SNI-proxy sidecars are plumbed into the container's netns when it is created.
+ * Changing the mode on a RUNNING session persists the override (PUT) but does
+ * NOT re-plumb the live container. So the dialog surfaces a **pending** state
+ * (the server diffs the now-resolved containment against what the live container
+ * actually started with — `EgressSessionSettings.pendingRestart`) and offers
+ * "Restart to apply now", which reuses the existing container-restart lifecycle
+ * control (POST /api/sessions/:id/container/restart). Restart is never automatic
+ * and is disabled while an agent turn is running (it would kill the agent).
+ *
+ * Wired with direct fetches for the read/override (GET the effective view, PUT to
+ * set/clear) so it doesn't depend on the Settings store, which is single-session-
+ * scoped and only loaded while that dialog is open.
  */
 
 type Mode = "inherit" | "contained" | "open";
@@ -52,6 +74,18 @@ export function SessionSettingsDialog({
   // containment. Optimistic `true` so a capable host never flashes the warning.
   const [globalEnabled, setGlobalEnabled] = useState(true);
   const [enforcementActive, setEnforcementActive] = useState(true);
+  // Server-computed: the now-resolved containment differs from what this
+  // session's live container was created with, so the change applies only on the
+  // next container start. Null while loading / when no container is running.
+  const [pendingRestart, setPendingRestart] = useState(false);
+  const [restarting, setRestarting] = useState(false);
+
+  const api = useApi();
+  // The active session's live "is an agent turn running" flag. The dialog only
+  // renders for the current session, so this is the right session's state. A
+  // restart would kill the running agent (see CLAUDE.md never-kill rules), so it
+  // gates the restart action.
+  const agentRunning = useSessionStore((s) => s.isLoading);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's current override when the dialog opens
   useEffect(() => {
@@ -66,6 +100,7 @@ export function SessionSettingsDialog({
           setMode(modeFromOverride(view?.session?.override ?? null));
           setGlobalEnabled(view?.globalEnabled ?? true);
           setEnforcementActive(view?.session?.enforcementActive ?? view?.enforcementActive ?? true);
+          setPendingRestart(view?.session?.pendingRestart ?? false);
         }
       } catch {
         if (!cancelled) setMode("inherit");
@@ -86,10 +121,37 @@ export function SessionSettingsDialog({
         body: JSON.stringify({ override: overrideFromMode(next) }),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      // The PUT returns the fresh session view, including the recomputed
+      // pendingRestart (resolved-now vs the live container's started-with mode),
+      // so the indicator reflects the selection without a second round-trip.
+      const settings = (await res.json()) as EgressSessionSettings;
+      setPendingRestart(settings?.pendingRestart ?? false);
     } catch (err) {
       setMode(prev);
       useUiStore.getState().setToast({ message: "Failed to update this session's network mode" });
       console.error("[session-egress] failed to set override:", err);
+    }
+  };
+
+  const handleRestart = async () => {
+    if (restarting || agentRunning) return;
+    setRestarting(true);
+    try {
+      await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
+      // Re-handshake the WS so the worker reattaches to the freshly-restarted
+      // container (mirrors the SessionHealthStrip rescue flow). Bridged to App's
+      // `reconnect()` via the window-event listener in useAppBootstrap.
+      window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
+      // The new container starts with the now-resolved mode, so nothing is
+      // pending anymore.
+      setPendingRestart(false);
+      useUiStore.getState().setToast({ message: "Restarting container to apply the new network mode" });
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      useUiStore.getState().setToast({ message: `Failed to restart container: ${message}` });
+      console.error("[session-egress] restart-to-apply failed:", err);
+    } finally {
+      setRestarting(false);
     }
   };
 
@@ -144,6 +206,45 @@ export function SessionSettingsDialog({
             onSelect={() => void handleChange("open")}
           />
         </div>
+
+        {/* Pending — the selected mode resolves to a different containment than the
+            live container was started with. Egress is plumbed at container
+            creation, so it applies on the next start; offer the existing restart
+            as an explicit "apply now". */}
+        {pendingRestart && (
+          <div
+            className="mx-5 mb-1 flex items-center gap-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-2"
+            data-testid="session-settings-pending"
+          >
+            <span className="shrink-0 text-(--color-text-tertiary)"><ClockClockwiseIcon size={ICON_SIZE.SM} /></span>
+            <p className="flex-1 text-xs text-(--color-text-secondary)">
+              Pending · applies on next container start
+            </p>
+            <WithTooltip
+              label={
+                agentRunning
+                  ? "Wait for the current turn to finish"
+                  : "Restart this session's container to apply the new network mode now"
+              }
+            >
+              {/* span wrapper so the tooltip still shows while the button is disabled */}
+              <span>
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={agentRunning || restarting}
+                  onClick={() => void handleRestart()}
+                  data-testid="session-settings-restart"
+                >
+                  {restarting
+                    ? <CircleNotchIcon size={ICON_SIZE.XS} className="animate-spin" />
+                    : <ArrowsClockwiseIcon size={ICON_SIZE.XS} />}
+                  Restart to apply now
+                </Button>
+              </span>
+            </WithTooltip>
+          </div>
+        )}
 
         {showEnforcementWarning && (
           <div

@@ -300,6 +300,21 @@ tracker as separate issues. None implemented yet.
           resolve to Contained (live off the selected mode) but enforcement is inactive. The fail-closed
           session-start error reaches the user via the existing `recordCreateError` → health →
           SessionHealthStrip channel (the reworded egress-specific message is what's shown).
+    - [x] **Per-session control → Session settings dialog + pending/restart-to-apply.** The
+          containment override (Inherit / Contained / Open) moved off the bare radio group at the
+          bottom of the session overflow menu into a styled **Session settings** dialog
+          (`SessionSettingsDialog.tsx`), opened from a menu item that matches the other rows.
+          Because egress is a creation-time topology choice, the dialog now surfaces the
+          deferred-to-next-start semantics that were previously invisible: container creation
+          records `SessionContainer.egressContainedAtStart`, the egress API derives
+          `startedContained` + `pendingRestart` onto `EgressSessionSettings` (read via
+          `containerManager.get`, browser-only surface preserved), and the dialog shows
+          "Pending · applies on next container start" with a **"Restart to apply now"** action that
+          reuses `POST /api/sessions/:id/container/restart` (+ `shipit:reconnect-ws` bridge).
+          Restart is explicit-only and disabled during an active turn (`isLoading`) so it never
+          kills a running agent. Tests: `api-routes-egress.test.ts` (pending diff),
+          `SessionSettingsDialog.test.tsx` (pending shown only on real delta, restart disabled
+          while running, no auto-restart on toggle).
     - [x] **Cross-agent (Codex) review fixes.** (1) `deployment/vps/restart.sh` now sources
           `/etc/shipit/shipit.env` like `deploy.sh`, so a persisted `SESSION_EGRESS_ENFORCE=0`
           opt-out survives "Just Restart" instead of silently flipping enforcement back on.
