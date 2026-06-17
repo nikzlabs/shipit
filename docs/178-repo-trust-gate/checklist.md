@@ -20,6 +20,7 @@
 ## Client
 - [x] Inline trust consent (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered as the Preview tab's restricted empty state: a centered card overlaying the (empty) preview frame, visible only on the Preview tab
 - [x] Wire accept action (`trustRepo` store action); reflect trusted state from the repo's `trusted` flag; persists in RepoStore so it doesn't recur per session
+- [x] Show the banner *before the first turn* on a freshly-added/claimed repo. `App.tsx` keyed the banner off `currentSession?.remoteUrl`, but a just-claimed session stays **warm** (`warm=1`) until its first turn graduates it, and `SessionManager.list()` excludes warm sessions — so `currentSession` (and thus `currentRepoUrl`) was undefined and the banner silently bailed, leaving only the misleading "Installing dependencies" startup overlay until the first agent turn. Fixed by falling back to the `/{slug}/new` route's repo: `currentRepoUrl = currentSession?.remoteUrl ?? newSessionRepoUrl`.
 
 ## Tests
 - [x] Untrusted clone does NOT run `agent.install` / start compose on activation (`setupServiceManager` gate unit test)
