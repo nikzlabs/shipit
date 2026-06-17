@@ -274,7 +274,6 @@ export default function App() {
     () => sessions.find((s) => s.id === sessionId),
     [sessions, sessionId],
   );
-  const currentRepoUrl = currentSession?.remoteUrl;
 
   const liveSteeringActive = liveSteering && (agentList.find((a) => a.id === activeAgentId)?.supportsSteering ?? false);
 
@@ -303,6 +302,13 @@ export default function App() {
     if (!newSessionRepoSlug) return undefined;
     return repos.find((r) => parseRepoLabel(r.url) === newSessionRepoSlug)?.url;
   }, [newSessionRepoSlug, repos]);
+  // A freshly-claimed session stays *warm* (warm=1) until its first turn
+  // graduates it, and warm sessions are excluded from the broadcast session
+  // list — so `currentSession` is undefined during that window. Fall back to
+  // the /{slug}/new route's repo so trust-banner / preview wiring keyed on the
+  // repo URL works before graduation (otherwise the RepoTrustBanner only
+  // appears after the first agent turn — see docs/178).
+  const currentRepoUrl = currentSession?.remoteUrl ?? newSessionRepoUrl;
   const search = useSearch(messages);
   const { notify, requestPermission } = useNotification();
   useAttentionNotifications(notify);
