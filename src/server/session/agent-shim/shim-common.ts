@@ -285,29 +285,91 @@ export function success(io: ShimIO, message: string): void {
 // Body-from-file/stdin resolution
 // ---------------------------------------------------------------------------
 
-export async function readStdin(): Promise<string> {
-  let out = "";
-  process.stdin.setEncoding("utf8");
-  for await (const chunk of process.stdin) {
-    out += typeof chunk === "string" ? chunk : String(chunk);
-  }
-  return out;
+/**
+ * Read all of stdin to a string.
+ *
+ * `stdin` is injectable so unit tests can feed a fake stream without touching
+ * the real `process.stdin`. The `idleTimeoutMs` backstop guards the
+ * "non-TTY-but-never-EOF" case — an inherited open pipe with no writer that
+ * delivers zero bytes and never reaches EOF, which would otherwise hang the
+ * async read forever (the production hang behind this fix). The timer fires
+ * ONLY while nothing has arrived yet; once any byte is seen we assume a real
+ * producer and wait for natural EOF, so a legitimately slow/large heredoc is
+ * never truncated. The TTY check in `readBodyFromFileOrStdin` is the primary,
+ * fast-failing guard; this is belt-and-suspenders.
+ */
+export async function readStdin(
+  stdin: NodeJS.ReadStream = process.stdin,
+  idleTimeoutMs = 15_000,
+): Promise<string> {
+  stdin.setEncoding("utf8");
+  return new Promise<string>((resolve, reject) => {
+    let out = "";
+    let timer: ReturnType<typeof setTimeout> | undefined = setTimeout(() => {
+      if (out.length === 0) {
+        cleanup();
+        reject(new Error("no input received on stdin"));
+      }
+    }, idleTimeoutMs);
+    timer.unref?.();
+    const cleanup = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = undefined;
+      }
+      stdin.off("data", onData);
+      stdin.off("end", onEnd);
+      stdin.off("error", onErr);
+    };
+    const onData = (chunk: string | Buffer) => {
+      out += typeof chunk === "string" ? chunk : String(chunk);
+    };
+    const onEnd = () => {
+      cleanup();
+      resolve(out);
+    };
+    const onErr = (err: Error) => {
+      cleanup();
+      reject(err);
+    };
+    stdin.on("data", onData);
+    stdin.on("end", onEnd);
+    stdin.on("error", onErr);
+  });
 }
 
 /**
  * Read a body/prompt from a file path, or from stdin when the path is `-`.
+ *
+ * When the source is `-` but there is no piped stdin (it's a TTY, so nothing
+ * will ever be written), fail fast with actionable guidance instead of hanging
+ * on a read that never completes — the production bug this fix targets. The
+ * message is derived from `noun` ("body file" → "body"/`--body-file`,
+ * "prompt file" → "prompt"/`--prompt-file`) so it reads correctly for every
+ * caller (`gh ... --body-file -`, `shipit issue/session/agent ... -file -`).
+ *
  * On a read error, fails the command with `<errorPrefix>: could not read
  * <noun> <source>: <message>` (matching each shim's existing wording via the
  * `errorPrefix`/`noun` parameters) and never returns.
+ *
+ * `stdin` is injectable for tests; real callers use the default `process.stdin`.
  */
 export async function readBodyFromFileOrStdin(
   source: string,
   io: ShimIO,
   errorPrefix: string,
   noun = "body file",
+  stdin: NodeJS.ReadStream = process.stdin,
 ): Promise<string> {
+  if (source === "-" && stdin.isTTY) {
+    const kind = noun.replace(/ file$/, ""); // "body file" → "body", "prompt file" → "prompt"
+    fail(
+      io,
+      `${errorPrefix}: no ${kind} on stdin — pass a file path instead of '-', or pipe the ${kind} via a single-quoted heredoc (… --${kind}-file - <<'EOF' … EOF).`,
+    );
+  }
   try {
-    return source === "-" ? await readStdin() : await fsp.readFile(source, "utf8");
+    return source === "-" ? await readStdin(stdin) : await fsp.readFile(source, "utf8");
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     fail(io, `${errorPrefix}: could not read ${noun} ${source}: ${message}`);
