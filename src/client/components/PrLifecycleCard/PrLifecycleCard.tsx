@@ -12,6 +12,7 @@ import { useState, useCallback, useMemo } from "react";
 import { usePrStore } from "../../stores/pr-store.js";
 import { collectPrCardIssueRefs } from "../../utils/pr-card-issue-refs.js";
 import { useSessionStore } from "../../stores/session-store.js";
+import { useIsMobile } from "../../hooks/useMediaQuery.js";
 import { PrActionsMenu } from "../PrActionsMenu.js";
 import { ChangedDocsStrip } from "../ChangedDocsStrip.js";
 import {
@@ -100,28 +101,34 @@ export function PrLifecycleCard({
   // The panel (and its header toggle) appears when there's anything to show in
   // it — related issues OR notable files. An issues-only PR still gets a toggle.
   const hasPanelContent = notableFiles.length > 0 || issueRefs.length > 0;
-  // Collapse state is per-session view state in localStorage, default collapsed.
+  // Collapse state is per-session view state in localStorage. A session with no
+  // stored preference defaults to expanded on desktop (roomy) and collapsed on
+  // mobile (where header height is precious); a stored preference always wins.
   // We adjust state during render when `sessionId` changes (re-reading the saved
   // value) rather than reaching for useEffect — the React-endorsed "store info
   // from previous render" pattern, so a session switch restores that session's
   // own expanded/collapsed preference without an effect.
+  const defaultExpanded = !useIsMobile();
   const [docsState, setDocsState] = useState(() => ({
     sessionId,
-    expanded: getSavedChangedDocsExpanded(sessionId),
+    expanded: getSavedChangedDocsExpanded(sessionId, defaultExpanded),
   }));
   let docsExpanded = docsState.expanded;
   if (docsState.sessionId !== sessionId) {
-    docsExpanded = getSavedChangedDocsExpanded(sessionId);
+    docsExpanded = getSavedChangedDocsExpanded(sessionId, defaultExpanded);
     setDocsState({ sessionId, expanded: docsExpanded });
   }
   const toggleDocs = useCallback(() => {
     setDocsState((prev) => {
-      const base = prev.sessionId === sessionId ? prev.expanded : getSavedChangedDocsExpanded(sessionId);
+      const base =
+        prev.sessionId === sessionId
+          ? prev.expanded
+          : getSavedChangedDocsExpanded(sessionId, defaultExpanded);
       const next = !base;
       saveChangedDocsExpanded(sessionId, next);
       return { sessionId, expanded: next };
     });
-  }, [sessionId]);
+  }, [sessionId, defaultExpanded]);
 
   // The whole card body opens the PR detail tab, but only once a PR exists
   // (open/merged/closed) — the ready/creating/error phases have no PR to

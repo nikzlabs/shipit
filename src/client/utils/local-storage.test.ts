@@ -58,6 +58,17 @@ describe("changed-docs strip collapse state (docs/205)", () => {
     expect(getSavedChangedDocsExpanded("s1")).toBe(false);
   });
 
+  it("falls back to the caller-supplied default when no preference is stored", () => {
+    // Desktop passes `true`, mobile passes `false`.
+    expect(getSavedChangedDocsExpanded("s1", true)).toBe(true);
+    expect(getSavedChangedDocsExpanded("s1", false)).toBe(false);
+  });
+
+  it("lets a stored preference win over the supplied default", () => {
+    saveChangedDocsExpanded("s1", false);
+    expect(getSavedChangedDocsExpanded("s1", true)).toBe(false);
+  });
+
   it("persists expanded state per session independently", () => {
     saveChangedDocsExpanded("s1", true);
     saveChangedDocsExpanded("s2", false);

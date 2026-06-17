@@ -12,6 +12,24 @@ import { useIssuesStore } from "../stores/issues-store.js";
 import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
 import { saveChangedDocsExpanded } from "../utils/local-storage.js";
 
+/**
+ * Stub `window.matchMedia` so `useIsMobile()` returns the desired value.
+ * Pass `true` to simulate a mobile viewport. jsdom doesn't implement
+ * matchMedia, so every render of PrLifecycleCard (which calls useIsMobile)
+ * needs this.
+ */
+function mockMatchMedia(isMobile: boolean) {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vi.fn().mockImplementation((query: string) => ({
+      matches: query === "(max-width: 767px)" ? isMobile : false,
+      media: query,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    })),
+  });
+}
+
 function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionInfo {
   return {
     title: overrides.id,
@@ -23,6 +41,8 @@ function makeSession(overrides: Partial<SessionInfo> & { id: string }): SessionI
 }
 
 beforeEach(() => {
+  // Default to desktop for all tests; the changed-docs block overrides per-case.
+  mockMatchMedia(false);
   usePrStore.setState({
     statusBySession: {},
     cardBySession: {},
@@ -1269,6 +1289,8 @@ describe("PrLifecycleCard — open PR details", () => {
 describe("PrLifecycleCard — changed-docs strip", () => {
   beforeEach(() => {
     localStorage.clear();
+    // Default to desktop, where the strip is expanded by default.
+    mockMatchMedia(false);
   });
 
   const cardWithDocs: PrCardState = {
@@ -1285,17 +1307,37 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     expect(screen.queryByLabelText("Related issues and changed docs in this PR")).not.toBeInTheDocument();
   });
 
-  it("shows the toggle when notable files are present, collapsed by default", () => {
+  it("shows the toggle when notable files are present, expanded by default on desktop", () => {
     setCard("s1", cardWithDocs);
     render(<PrLifecycleCard sessionId="s1" />);
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toBeInTheDocument();
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    // Strip is expanded → chips rendered.
+    expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
+  });
+
+  it("defaults to collapsed on mobile, where header height is precious", () => {
+    mockMatchMedia(true);
+    setCard("s1", cardWithDocs);
+    render(<PrLifecycleCard sessionId="s1" />);
+    const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
-    // Strip is collapsed → chips not rendered.
     expect(screen.queryByText("PR-scoped changed docs")).not.toBeInTheDocument();
   });
 
-  it("expands the strip on toggle and persists the state per session", () => {
+  it("lets a stored collapse preference win over the desktop default", () => {
+    saveChangedDocsExpanded("s1", false);
+    setCard("s1", cardWithDocs);
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(
+      screen.getByLabelText("Related issues and changed docs in this PR"),
+    ).toHaveAttribute("aria-expanded", "false");
+  });
+
+  it("toggles the strip and persists the state per session", () => {
+    // Start collapsed so the toggle exercises the expand path.
+    saveChangedDocsExpanded("s1", false);
     setCard("s1", cardWithDocs);
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
     fireEvent.click(screen.getByLabelText("Related issues and changed docs in this PR"));
@@ -1312,6 +1354,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
 
   it("keeps collapse state independent across sessions", () => {
     saveChangedDocsExpanded("s1", true);
+    saveChangedDocsExpanded("s2", false);
     setCard("s1", cardWithDocs);
     setCard("s2", cardWithDocs);
 

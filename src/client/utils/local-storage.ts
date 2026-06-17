@@ -323,9 +323,10 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
 //
 // Per-session expanded/collapsed state for the PR card's changed-docs strip.
 // Pure view state, so it lives in localStorage (not server-persisted) and can
-// differ between desktop and mobile. Default is COLLAPSED — a session with no
-// stored preference reads as collapsed, keeping the header height unchanged
-// until the user opts in.
+// differ between desktop and mobile. A session with no stored preference falls
+// back to the caller-supplied default — the PR card passes expanded on desktop
+// (roomy) and collapsed on mobile (where header height is precious). A stored
+// preference always wins, so toggling once pins that session's choice.
 
 const CHANGED_DOCS_EXPANDED_KEY = "shipit-changed-docs-expanded-by-session";
 
@@ -344,8 +345,11 @@ function readChangedDocsMap(): Record<string, boolean> {
   }
 }
 
-export function getSavedChangedDocsExpanded(sessionId: string): boolean {
-  return readChangedDocsMap()[sessionId] ?? false;
+export function getSavedChangedDocsExpanded(
+  sessionId: string,
+  defaultExpanded = false,
+): boolean {
+  return readChangedDocsMap()[sessionId] ?? defaultExpanded;
 }
 
 export function saveChangedDocsExpanded(sessionId: string, expanded: boolean): void {
