@@ -55,17 +55,27 @@ import { resolveShipitConfig } from "../shared/shipit-config.js";
  * defaults — `branch` → "stable", path → auto-detect), and once Phase 1
  * populates them the same access returns the real values with no change here.
  */
+/** Read a string-valued property off an unknown value, or undefined. */
+function readStringProp(obj: unknown, key: string): string | undefined {
+  if (obj && typeof obj === "object" && key in obj) {
+    const value = (obj as Record<string, unknown>)[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
 function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: string } {
   try {
     const config = resolveShipitConfig(dir);
-    // Cast through `unknown`: the Phase-1 fields aren't on `ReleaseConfig` yet, and
-    // a direct assertion is a structural no-op (so ESLint flags it as unnecessary).
-    const release = config.release as unknown as
-      | { branch?: string; versionSourcePath?: string }
-      | undefined;
+    // The Phase-1 fields (`branch`, `version-source-path`) aren't on `ReleaseConfig`
+    // yet, so read them off the value as `unknown` via a runtime guard rather than a
+    // type assertion (a structural assertion would be flagged as unnecessary).
+    const release: unknown = config.release;
+    const branch = readStringProp(release, "branch");
+    const versionSourcePath = readStringProp(release, "versionSourcePath");
     return {
-      ...(release?.branch ? { branch: release.branch } : {}),
-      ...(release?.versionSourcePath ? { versionSourcePath: release.versionSourcePath } : {}),
+      ...(branch ? { branch } : {}),
+      ...(versionSourcePath ? { versionSourcePath } : {}),
     };
   } catch {
     // A broken/absent shipit.yaml just means "use the defaults".
