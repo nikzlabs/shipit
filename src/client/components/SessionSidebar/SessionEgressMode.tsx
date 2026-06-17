@@ -1,10 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: load this session's egress override when the menu opens (external system sync)
 import { useEffect, useState } from "react";
+import { WarningIcon } from "@phosphor-icons/react";
 import {
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
 } from "../ui/dropdown-menu.js";
+import { ICON_SIZE } from "../../design-tokens.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { EgressAllowlistView } from "../../../server/shared/types.js";
 
@@ -36,6 +38,11 @@ const overrideFromMode = (mode: Mode): boolean | null =>
 export function SessionEgressMode({ sessionId }: { sessionId: string }) {
   // undefined = not yet loaded; render the group disabled-ish until it resolves.
   const [mode, setMode] = useState<Mode | undefined>(undefined);
+  // Deployment-level facts (not changed by this session's override): the global
+  // containment switch and whether this deployment can actually ENFORCE
+  // containment. Optimistic `true` so a capable host never flashes the warning.
+  const [globalEnabled, setGlobalEnabled] = useState(true);
+  const [enforcementActive, setEnforcementActive] = useState(true);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: read the session's current override when this menu mounts (open)
   useEffect(() => {
@@ -45,7 +52,11 @@ export function SessionEgressMode({ sessionId }: { sessionId: string }) {
         const res = await fetch(`/api/egress/allowlist?session=${encodeURIComponent(sessionId)}`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const view = (await res.json()) as EgressAllowlistView;
-        if (!cancelled) setMode(modeFromOverride(view?.session?.override ?? null));
+        if (!cancelled) {
+          setMode(modeFromOverride(view?.session?.override ?? null));
+          setGlobalEnabled(view?.globalEnabled ?? true);
+          setEnforcementActive(view?.session?.enforcementActive ?? view?.enforcementActive ?? true);
+        }
       } catch {
         if (!cancelled) setMode("inherit");
       }
@@ -73,6 +84,15 @@ export function SessionEgressMode({ sessionId }: { sessionId: string }) {
     }
   };
 
+  // Would this session resolve to Contained? "inherit" follows the global switch;
+  // "contained"/"open" force it. Computed from the live `mode` so toggling to
+  // Open hides the warning immediately (Open isn't claiming containment).
+  const sessionContained = mode === "open" ? false : mode === "contained" ? true : globalEnabled;
+  // Policy says contain but the deployment can't enforce → warn instead of
+  // silently implying protection. Mirrors the Settings → Network egress banner,
+  // condensed for the menu.
+  const showEnforcementWarning = mode !== undefined && sessionContained && !enforcementActive;
+
   return (
     <div data-testid="session-egress-mode">
       <DropdownMenuLabel>Network access</DropdownMenuLabel>
@@ -81,6 +101,15 @@ export function SessionEgressMode({ sessionId }: { sessionId: string }) {
         <DropdownMenuRadioItem value="contained">Contained</DropdownMenuRadioItem>
         <DropdownMenuRadioItem value="open">Open</DropdownMenuRadioItem>
       </DropdownMenuRadioGroup>
+      {showEnforcementWarning && (
+        <div
+          className="flex items-start gap-1.5 px-2 py-1.5 text-xs text-(--color-warning)"
+          data-testid="session-egress-enforcement-warning"
+        >
+          <WarningIcon size={ICON_SIZE.XS} weight="fill" className="mt-0.5 shrink-0" />
+          <span>Not enforced on this deployment — contained sessions fail to start. See install notes.</span>
+        </div>
+      )}
     </div>
   );
 }
