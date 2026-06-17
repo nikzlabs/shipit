@@ -353,8 +353,12 @@ Stored orchestrator-side alongside MCP servers / secrets.
   (`load(null)`), so per-session ("This session") rows never render there and every editable
   row is global; adds from the dialog are always global. The one *session-scoped* control —
   the **containment override** (Inherit / Contained / Open) — lives on the session's own
-  overflow menu in the sidebar instead (`SessionEgressMode.tsx`, current session only, wired
-  by direct `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`).
+  overflow menu in the sidebar instead, behind a **Session settings** item that opens a
+  dialog (`SessionSettingsDialog.tsx`, current session only, wired by direct
+  `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`). It was originally a
+  bare Radix radio group rendered inline at the bottom of the menu (`SessionEgressMode.tsx`),
+  but those `text-sm`, icon-less rows broke the menu's visual rhythm; it now matches the other
+  menu rows and lives in a styled dialog with room for future per-session settings.
   - **Note on per-session *hosts*.** The blocked-egress card's "Add to allowlist" persists to
     the **global** scope (`egress-handlers.ts`), and the Settings add-scope toggle was removed,
     so the UI no longer creates per-session host entries — `user-session` remains a valid store
@@ -409,9 +413,9 @@ as an operator default / fail-secure floor).
   route-table unchanged — no new container route) — `api-routes-egress.ts`,
   `api-container-guard.ts`.
 - Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Network,
-  **global-only**) + `components/SessionSidebar/SessionEgressMode.tsx` (the per-session
-  containment override on the session's overflow menu) + `egress_settings` SSE sync in
-  `useServerEvents.ts`.
+  **global-only**) + `components/SessionSidebar/SessionSettingsDialog.tsx` (the per-session
+  containment override, opened from the **Session settings** item on the session's overflow
+  menu) + `egress_settings` SSE sync in `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.
 

@@ -1,10 +1,10 @@
 import { useState, useRef, useCallback } from "react";
-import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
+import { ArchiveIcon as PhArchiveIcon, ArrowCounterClockwiseIcon, DownloadSimpleIcon, PencilSimpleIcon, PushPinIcon, WrenchIcon, SlidersHorizontalIcon, CaretRightIcon, CaretDownIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
 import { OverflowMenu } from "../ui/overflow-menu.js";
-import { SessionEgressMode } from "./SessionEgressMode.js";
+import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import { PrStateBadge } from "../PrLifecycleCard.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -57,6 +57,7 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
   const hasChildren = (childCount ?? 0) > 0 && !!onToggleChildren;
 
   const [menuOpen, setMenuOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [isEditing, setIsEditing] = useState(false);
   const [editingTitle, setEditingTitle] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
@@ -305,14 +306,18 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                     Investigate in Ops session
                   </DropdownMenuItem>
                 )}
-                {/* Per-session egress override — the session-scoped half of the
+                {/* Per-session settings — currently the session-scoped half of the
                     Network egress controls (docs/172); the global toggle/allowlist
-                    stay in Settings → Network. Current session only, to avoid a
-                    fetch-per-row and keep this off inactive rows. */}
+                    stay in Settings → Network. Opens a dialog (styled to match the
+                    other rows) rather than inlining a radio group that broke the
+                    menu's rhythm. Current session only, to avoid a fetch-per-row. */}
                 {isCurrent && (
                   <>
                     <DropdownMenuSeparator />
-                    <SessionEgressMode sessionId={session.id} />
+                    <DropdownMenuItem onSelect={() => setSettingsOpen(true)}>
+                      <SlidersHorizontalIcon size={ICON_SIZE.SM} />
+                      Session settings
+                    </DropdownMenuItem>
                   </>
                 )}
               </>
@@ -325,6 +330,14 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
             )}
           </OverflowMenu>
         </div>
+      )}
+
+      {isCurrent && (
+        <SessionSettingsDialog
+          sessionId={session.id}
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+        />
       )}
     </div>
   );

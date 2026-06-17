@@ -295,9 +295,9 @@ tracker as separate issues. None implemented yet.
           populated by `api-routes-egress.ts` from `egressEnforcementActive()` (threaded via
           `ApiDeps.egressEnforcementActive`) and re-broadcast on `egress_settings`. Settings →
           Network egress shows a "Contained — NOT enforced on this deployment" warning when
-          policy is Contained but `enforcementActive` is false. The per-session sidebar menu
-          (`SessionEgressMode`) shows the condensed equivalent when this session would resolve to
-          Contained (live off the selected mode) but enforcement is inactive. The fail-closed
+          policy is Contained but `enforcementActive` is false. The per-session Session settings
+          dialog (`SessionSettingsDialog`) shows the equivalent warning when this session would
+          resolve to Contained (live off the selected mode) but enforcement is inactive. The fail-closed
           session-start error reaches the user via the existing `recordCreateError` → health →
           SessionHealthStrip channel (the reworded egress-specific message is what's shown).
     - [x] **Cross-agent (Codex) review fixes.** (1) `deployment/vps/restart.sh` now sources

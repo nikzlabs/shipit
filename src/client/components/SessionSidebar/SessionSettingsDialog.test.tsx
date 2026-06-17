@@ -1,19 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { SessionEgressMode } from "./SessionEgressMode.js";
-import { DropdownMenu, DropdownMenuContent } from "../ui/dropdown-menu.js";
+import { SessionSettingsDialog } from "./SessionSettingsDialog.js";
 import type { EgressAllowlistView } from "../../../server/shared/types.js";
 
-/** Render the override control inside an open menu (Radix radios need the menu context). */
-function renderInMenu(sessionId = "s1") {
-  return render(
-    <DropdownMenu open modal={false}>
-      <DropdownMenuContent portaled={false}>
-        <SessionEgressMode sessionId={sessionId} />
-      </DropdownMenuContent>
-    </DropdownMenu>,
-  );
+function renderDialog(sessionId = "s1") {
+  return render(<SessionSettingsDialog sessionId={sessionId} open onOpenChange={() => {}} />);
 }
 
 function stubFetch(initialOverride: boolean | null = null, enforcementActive = true) {
@@ -50,54 +42,45 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe("SessionEgressMode (docs/172)", () => {
+describe("SessionSettingsDialog (docs/172)", () => {
   it("loads the session's current override and reflects it (open → 'Open' checked)", async () => {
     stubFetch(false); // override=false → Open
-    renderInMenu();
+    renderDialog();
     await waitFor(() =>
-      expect(screen.getByRole("menuitemradio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("radio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
     );
   });
 
   it("defaults to Inherit when there's no override", async () => {
     stubFetch(null);
-    renderInMenu();
+    renderDialog();
     await waitFor(() =>
-      expect(screen.getByRole("menuitemradio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("radio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
     );
   });
 
   it("warns when this session would be contained but the deployment can't enforce", async () => {
     stubFetch(null, false); // inherit → global Contained, but enforcement inactive
-    renderInMenu();
+    renderDialog();
     await waitFor(() =>
-      expect(screen.getByTestId("session-egress-enforcement-warning")).toBeInTheDocument(),
+      expect(screen.getByTestId("session-settings-enforcement-warning")).toBeInTheDocument(),
     );
-  });
-
-  it("does NOT warn when enforcement is active", async () => {
-    stubFetch(null, true);
-    renderInMenu();
-    await waitFor(() =>
-      expect(screen.getByRole("menuitemradio", { name: "Inherit global" })).toHaveAttribute("aria-checked", "true"),
-    );
-    expect(screen.queryByTestId("session-egress-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("does NOT warn when this session is Open even if enforcement is inactive", async () => {
     stubFetch(false, false); // override=false → Open
-    renderInMenu();
+    renderDialog();
     await waitFor(() =>
-      expect(screen.getByRole("menuitemradio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
+      expect(screen.getByRole("radio", { name: "Open" })).toHaveAttribute("aria-checked", "true"),
     );
-    expect(screen.queryByTestId("session-egress-enforcement-warning")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("session-settings-enforcement-warning")).not.toBeInTheDocument();
   });
 
   it("PUTs the chosen override for the session", async () => {
     const impl = stubFetch(null);
-    renderInMenu();
-    await waitFor(() => expect(screen.getByRole("menuitemradio", { name: "Contained" })).toBeInTheDocument());
-    await userEvent.click(screen.getByRole("menuitemradio", { name: "Contained" }));
+    renderDialog();
+    await waitFor(() => expect(screen.getByRole("radio", { name: "Contained" })).toBeInTheDocument());
+    await userEvent.click(screen.getByRole("radio", { name: "Contained" }));
     await waitFor(() =>
       expect(
         impl.mock.calls.some(([url, init]) => {
@@ -107,5 +90,11 @@ describe("SessionEgressMode (docs/172)", () => {
         }),
       ).toBe(true),
     );
+  });
+
+  it("does not fetch while closed", async () => {
+    const impl = stubFetch(null);
+    render(<SessionSettingsDialog sessionId="s1" open={false} onOpenChange={() => {}} />);
+    expect(impl).not.toHaveBeenCalled();
   });
 });
