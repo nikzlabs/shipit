@@ -333,6 +333,41 @@ configured — i.e. only when there is a firewall to punch the hole in. Agent-fa
 guidance (`shipit-docs/preview.md`) is updated to tell the agent to reach previews from
 its browser at the service registry's `containerIp:port`.
 
+### Scope: this hole is needed only where the agent is *multi-homed* (docker-access checked — no analogous bug)
+
+The fix above keys off the one fact that makes the bug real: the agent **gains a second
+network interface** onto a subnet that the Tier A install-time allow-set never saw. That
+only happens for the **compose/preview** network (`shipit-session-<full-sessionId>`), which
+`docker compose up` creates and `connectToNetwork` attaches the agent to after the fact. A
+natural follow-up worry is whether **docker-access** sessions (`config.dockerAccess`, the
+agent driving a Docker-socket proxy) have the same class of bug via *their* per-session
+network `shipit-session-<shortId>` (`config.sessionId.slice(0, 12)`, created early in
+`container-lifecycle.ts`). **They do not** — traced and confirmed:
+
+- The `shipit-session-<shortId>` network is created for child containers, and the
+  docker-proxy injects it as the **child's** `NetworkMode`
+  (`docker-proxy-sanitize.ts`). The **agent** container is created with only
+  `NetworkMode: deps.networkName` (the orchestrator bridge); no code path connects the
+  agent to the `<shortId>` network. `SHIPIT_SESSION_NETWORK` is *set* in the agent env but
+  the orchestrator never reads it back to attach the agent, and no `NetworkingConfig`/
+  `network.connect`/`connectToNetwork` targets the short-id network (the only such calls
+  target the full-id **compose** network).
+- This is **by design, not an oversight.** Keeping child containers off the agent's /
+  orchestrator's network is the SHI-135 isolation property (`docker-proxy-sanitize.ts`): a
+  child on the orchestrator network would present an unknown IP that the API trust boundary
+  would mis-classify as a trusted browser origin. The agent operates its children through
+  the **Docker API proxy** (`DOCKER_HOST` → docker-socket-proxy), not by direct IP, so it
+  needs no interface on the `<shortId>` subnet. (Ops sessions force `dockerAccess: false`
+  and reach their docker-socket-proxy over the *compose* network, already covered above.)
+
+So there is **no multi-homing of the agent onto the `<shortId>` subnet** and therefore no
+dropped-traffic bug to fix — adding an `allow-subnet` rule for a subnet the agent has no
+interface on would be a dead no-op rule. The `allowEgressToSubnets` / `extractNetworkSubnets`
+mechanism stays scoped to the multi-homed compose-network join, which is the only place the
+hole is real. (If a future change *did* attach the agent to the `<shortId>` network, the
+same `connectToNetwork` hook would cover it — the fix is at the attach point, not per
+network kind.)
+
 ## Settings & UX (browser-only, SHI-129-protected)
 
 All egress configuration is mutated **only from the browser**. SHI-129's guard is
