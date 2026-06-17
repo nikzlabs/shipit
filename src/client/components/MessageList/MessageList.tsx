@@ -4,7 +4,7 @@ import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
-import type { WsRewindPreview } from "../../../server/shared/types.js";
+import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
 
 // Sub-component imports
 import { ToolUseItem } from "../message-tools.js";
@@ -88,7 +88,7 @@ export function MessageList({
    */
   onResumeSession?: (sessionId: string) => void;
   /** docs/171 — confirm a proposed release from its inline card. */
-  onReleaseConfirm?: (version: string) => void;
+  onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release from its inline card. */
   onReleaseCancel?: (version: string) => void;
 }) {

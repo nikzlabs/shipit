@@ -196,6 +196,18 @@ The release card learns the PR-merge lifecycle: `release-types.ts` gains
 the PR until merged, then falls into the existing tag/release polling
 (`gating → published → released`).
 
+**Mechanism-aware confirm message.** The `proposed` card's "Confirm & publish"
+button injects a chat reply that becomes the agent's marching orders, so its
+wording must match the repo's mechanism. `release-types.ts`'s `ReleaseStatusSummary`
+carries a `mechanism` field (sourced authoritatively from `shipit.yaml`
+`release.mechanism` in `release-flow.ts`, with the propose marker as an optional
+override, defaulting to `tag-triggered`). For `release-branch` the reply tells the
+agent to bump + open/merge the version-bump PR and **explicitly NOT to create or
+push a tag** (CI owns tagging — a hand-pushed tag collides with the merge-triggered
+publish); for `tag-triggered` it keeps the bump + annotated-tag + push wording. The
+per-mechanism text lives in the pure `release-confirm-message.ts` builder so it's
+unit-tested independently of `App.tsx`.
+
 **Card persistence.** The `release-status-poller` is in-memory only, and the
 `proposed`/`tagging`/`gating` phases are short-lived, so the card today is correctly
 transient (rehydrated by polling on reconnect, like `pr-store`). The new
@@ -310,7 +322,8 @@ path and the script as the fallback.
 - `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`.
 - `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`).
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.
-- `release-types.ts`, `release-markers.ts`, `release-status-poller.ts`, `services/release-flow.ts` — `pr_open`/`pr_merged` lifecycle.
+- `release-types.ts`, `release-markers.ts`, `release-status-poller.ts`, `services/release-flow.ts` — `pr_open`/`pr_merged` lifecycle; `mechanism` on the card (resolved from `shipit.yaml` in `release-flow.ts`).
+- `src/client/utils/release-confirm-message.ts` (new) — pure, mechanism-aware builder for the "Confirm & publish" reply; consumed by `App.tsx` (`handleReleaseConfirm`), threaded via `ReleaseLifecycleCard` → `MessageList`/`MessageCards` `onReleaseConfirm(version, mechanism)`.
 - `src/server/orchestrator/templates-release.ts` (new) — scaffolding.
 - `src/server/shipit-docs/release.md`, `orchestrator/prompts/releases.md`, `RELEASING.md`, `CLAUDE.md` — agent + maintainer guidance.
 - Related: `docs/162-release-channels/plan.md`, `docs/171-release-from-ui/plan.md`.

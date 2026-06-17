@@ -20,6 +20,21 @@ import type { GitHubDeploymentStatus } from "./deployment-types.js";
 export type ReleaseBumpType = "major" | "minor" | "patch" | "prerelease";
 
 /**
+ * Release mechanism (mirrors `shipit.yaml` `release.mechanism`):
+ * - `tag-triggered` (default) — the agent pushes a `vX.Y.Z` tag and the repo's
+ *   own `on: push: tags` workflow gates + publishes.
+ * - `brokered` — orchestrator-brokered Release creation (later phase).
+ * - `release-branch` (docs/214) — a release is cut by merging a version-bump PR
+ *   into a long-lived maintenance branch; CI derives the tag from the version
+ *   source on the merged commit and publishes. The agent NEVER pushes a tag.
+ *
+ * Defined here (not only in `shipit-config.ts`) so it rides on the release card
+ * through the shared types barrel — the client reads it to word the confirm
+ * message correctly per mechanism. `shipit-config.ts` re-exports this type.
+ */
+export type ReleaseMechanism = "tag-triggered" | "brokered" | "release-branch";
+
+/**
  * Release lifecycle card state machine (docs/171 "Card state machine"):
  *
  * - `proposed`  — agent computed the next version + notes preview; the card
@@ -122,4 +137,12 @@ export interface ReleaseStatusSummary {
   prUrl?: string;
   /** The release (maintenance) branch the bump PR targets, e.g. "stable". */
   releaseBranch?: string;
+  /**
+   * Release mechanism (from `shipit.yaml` `release.mechanism`), carried on the
+   * card so the client can word the confirm message correctly: a
+   * `release-branch` repo opens/merges a version-bump PR (CI tags), while a
+   * `tag-triggered` repo pushes the tag. Absent → treat as `tag-triggered`
+   * (the platform default). Only meaningful in the `proposed` phase.
+   */
+  mechanism?: ReleaseMechanism;
 }

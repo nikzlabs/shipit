@@ -50,7 +50,7 @@ function makeFakeRegistry(viewerCount = 1): SessionRunnerRegistry {
   } as unknown as SessionRunnerRegistry;
 }
 
-interface CardSnapshot { phase: string; tag: string; cardId: string; alreadyReleased?: boolean }
+interface CardSnapshot { phase: string; tag: string; cardId: string; alreadyReleased?: boolean; mechanism?: string }
 
 function makePoller() {
   const { gh, state } = makeFakeGitHub();
@@ -89,6 +89,14 @@ describe("ReleaseStatusPoller", () => {
     expect(lastCard(ctx.cards)?.cardId).toBe("release:s1:v0.3.0");
     expect(ctx.state.checkStatusCalls).toBe(0);
     expect(ctx.state.releaseCalls).toBe(0);
+  });
+
+  it("propose carries the mechanism onto the card (docs/214)", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false, mechanism: "release-branch" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastCard(ctx.cards)?.mechanism).toBe("release-branch");
   });
 
   it("markTagged → gating → released once the Release is published", async () => {

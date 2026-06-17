@@ -72,7 +72,7 @@ import { RebaseBanner } from "./components/RebaseBanner.js";
 import { QueueIndicator } from "./components/QueueIndicator.js";
 import { AgentStatusBar } from "./components/AgentStatusBar.js";
 import type { AgentOption } from "./agent-types.js";
-import type { AgentId, DocEntry, ProviderAccount, TrackerIssue } from "../server/shared/types.js";
+import type { AgentId, DocEntry, ProviderAccount, TrackerIssue, ReleaseMechanism } from "../server/shared/types.js";
 
 import { useSessionStore } from "./stores/session-store.js";
 import { useGitStore } from "./stores/git-store.js";
@@ -92,6 +92,7 @@ import { saveAgentId, saveModelId } from "./utils/local-storage.js";
 import { siblingsOf, orderSiblingsForTabs, siblingTabLabel, isPlanPath } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
+import { buildReleaseConfirmMessage } from "./utils/release-confirm-message.js";
 import type { SendCommentsPayload } from "./components/FilePreviewModal.js";
 
 export default function App() {
@@ -626,12 +627,19 @@ export default function App() {
   // docs/171 — confirm/cancel a proposed release. These send a chat message
   // (answering the agent's proposal) through the same user-message surface as
   // any other reply — NOT a shell command (CLAUDE.md §5). The agent's follow-up
-  // turn performs the bump/tag/push and the release flow advances the card.
+  // turn performs the bump/PR-or-tag and the release flow advances the card.
+  //
+  // The confirm wording is mechanism-aware (docs/214): a `release-branch` repo
+  // (ShipIt's own) is released by merging a version-bump PR into the maintenance
+  // branch — CI tags + publishes — so the message must NOT tell the agent to
+  // push a tag (a hand-pushed tag collides with CI). Only a `tag-triggered` repo
+  // pushes the tag. Anything else (absent/unknown/brokered) defaults to the
+  // tag-triggered wording, matching the platform default.
   const handleReleaseConfirm = useCallback(
-    (version: string) => {
+    (version: string, mechanism: ReleaseMechanism) => {
       const session = useSessionStore.getState();
       const pm = useSettingsStore.getState().getPermissionMode(session.sessionId);
-      const text = `Yes — confirm and publish the ${version} release: bump the version, commit, create the annotated tag, and push the tag.`;
+      const text = buildReleaseConfirmMessage(version, mechanism);
       sendUserMessage({
         bubble: { role: "user", text },
         activity: "Publishing release...",

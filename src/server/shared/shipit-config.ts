@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import type { ReleaseMechanism } from "./types/release-types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -70,7 +71,9 @@ export interface ComposeConfig {
 export type ReleaseVersionSource = "package.json" | "Cargo.toml" | "pyproject.toml" | "VERSION" | "tag";
 
 /**
- * Release mechanism:
+ * Release mechanism — defined in `types/release-types.ts` (it rides on the
+ * release card through the shared types barrel) and re-exported here so the
+ * `release:` config parser keeps a single source of truth:
  * - `tag-triggered` (option a) — the agent pushes a `vX.Y.Z` tag and the repo's
  *   own `on: push: tags` workflow gates + publishes.
  * - `brokered` (option b, Phase 4) — orchestrator-brokered Release creation.
@@ -79,7 +82,7 @@ export type ReleaseVersionSource = "package.json" | "Cargo.toml" | "pyproject.to
  *   source on the merged commit, gates, tags, and publishes. Requires a non-tag
  *   version source (a branch push has no tag to read the version from).
  */
-export type ReleaseMechanism = "tag-triggered" | "brokered" | "release-branch";
+export type { ReleaseMechanism } from "./types/release-types.js";
 
 /**
  * Optional `release:` block in shipit.yaml — overrides auto-detection for
