@@ -182,8 +182,55 @@ When multiple version files are detected, do **not** guess. Surface the ambiguit
 On resolution, offer to write the `release:` block (`version-source` +
 `version-source-path`) in `shipit.yaml` so the next release skips the question.
 
+## Scaffold a release workflow
+
+If the repo has **no release workflow**, you can scaffold one and open a PR — CI
+still does the publish, so the repo gets the same hands-off auto-publish flow
+without anyone leaving ShipIt. Use this when the user asks to "set up releases",
+or when a release request hits a repo whose `.github/workflows/release.yml` (or
+the path in `release.workflow`) is absent.
+
+### Detect → offer → write → PR
+
+1. **Detect.** Check whether a release workflow already exists at
+   `.github/workflows/release.yml` (or `release.workflow` from `shipit.yaml`). If
+   one is present, don't scaffold — use the normal release flow above.
+2. **Offer.** Tell the user you can scaffold a merge-triggered auto-publish
+   workflow, and confirm the parameters before writing:
+   - **version source** — auto-detect (`package.json` / `Cargo.toml` /
+     `pyproject.toml` / `VERSION`). A `release-branch` workflow needs an
+     authoritative *file* version source; a tag-only repo can't use it (a branch
+     push has no version to read). If multiple version files are detected
+     (monorepo), ask which one — don't guess.
+   - **release branch** — the long-lived maintenance branch a release is cut by
+     merging into (default `stable`).
+   - **gate** (optional) — a command to run before tag + publish (e.g.
+     `npm test`).
+   - **prerelease** — whether to also accept `vX.Y.Z-rc.N` tags for release
+     candidates.
+3. **Write** these three files into the workspace:
+   - `.github/workflows/release.yml` — the auto-publish workflow (one workflow,
+     gates + tags + publishes in the same run).
+   - `.github/release.yml` — the categorized release-notes config.
+   - `.github/scripts/shipit-read-version.mjs` — a tiny Node helper the workflow
+     runs (via `setup-node`, even in non-Node repos) to read the version. It
+     uses the **same logic** ShipIt uses to bump the version, so the tag CI
+     creates can never silently disagree with the version source.
+4. **Open a PR** via the normal auto-PR flow (you don't push the workflow to the
+   default branch directly — it lands as a reviewable PR like any other change).
+
+### How the scaffolded workflow publishes
+
+A release is cut by **merging a version-bump PR into the release branch**. On
+that merge the workflow reads HEAD's version, tags the commit, and publishes the
+GitHub Release in the same run — it never *moves* the release branch. The agent
+never pushes a tag for a final release; **merging the PR is the human-act gate**,
+and CI does the irreversible publish. (When prereleases are enabled, an
+`vX.Y.Z-rc.N` tag pushed directly is published as a GitHub prerelease via the
+workflow's tag path.)
+
 ## Still unsupported (future phases)
 
 - The deterministic `shipit release` command (docs/214 Phase 2).
-- Scaffolding a release workflow for repos that have none (docs/214 Phase 3).
 - Orchestrator-brokered Release creation via the GitHub Releases API.
+- Channel promotion (stable/edge) for arbitrary repos.
