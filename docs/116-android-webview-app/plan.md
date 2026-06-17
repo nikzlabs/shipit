@@ -75,6 +75,34 @@ The one thing the app must do is permit cleartext HTTP **scoped to the tailnet**
 
 **Users must enter the full MagicDNS FQDN** (`http://shipit.tailnet.ts.net:4123`), not the bare short name `shipit` or the raw `100.x` tailnet IP. Only the FQDN matches the `ts.net` rule and only the FQDN lets the preview subdomains resolve — so the bare name and IP are intentionally rejected.
 
+### API level & edge-to-edge insets (Android 15 / API 35)
+
+The app targets **API 35 (Android 15)** — the minimum Google Play accepts for new
+submissions — built with **AGP 8.6.1** (the minimum that supports `compileSdk 35`;
+needs Gradle ≥ 8.7, already pinned in the workflow). `minSdk` stays at 26.
+
+Targeting 35 forces **edge-to-edge**: activities lay out behind the status and
+nav/gesture bars, and `android:statusBarColor` / `android:navigationBarColor` are
+ignored (both removed from `Theme.ShipIt`). The bars are transparent and the dark
+`windowBackground` shows through, so the full-bleed look is preserved.
+
+Because the WebView loads a **remote** ShipIt instance we don't control, we can't
+rely on the page honoring CSS `env(safe-area-inset-*)`. Inset handling is therefore
+native and is the reliable path:
+
+- **`MainActivity.applyEdgeToEdgeInsets()`** pads the WebView's container by the top
+  + bottom `systemBars()` insets so chat content (top) and the bottom-anchored input
+  (bottom) clear the bars. It also injects `viewport-fit=cover` into the page as a
+  best-effort extra — explicitly *not* the path we depend on.
+- **`SettingsActivity.applyInsets()`** pads its scrolling root by the union of
+  `systemBars()` **and** `ime()` insets, so the URL field and Save button stay clear
+  of the status bar and the soft keyboard.
+
+Both opt in explicitly via `WindowCompat.setDecorFitsSystemWindows(window, false)`,
+so the behavior is consistent down to `minSdk 26`, not only on Android 15. Layout
+correctness must be validated on a device/emulator (no Android toolchain in the dev
+container) — via the **Android build** workflow → install debug APK.
+
 ### Build environment — no local toolchain
 
 The user explicitly does not want a local Android toolchain. Build is a **manually-triggered GitHub Actions workflow** (`workflow_dispatch`, *not* on push):

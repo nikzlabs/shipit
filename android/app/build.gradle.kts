@@ -5,12 +5,15 @@ plugins {
 
 android {
     namespace = "com.shipit.wrapper"
-    compileSdk = 34
+    compileSdk = 35
 
     defaultConfig {
         applicationId = "com.shipit.wrapper"
         minSdk = 26
-        targetSdk = 34
+        // API 35 (Android 15) is the minimum target Google Play accepts for new
+        // submissions. Targeting 35 also opts the app into enforced edge-to-edge
+        // — see MainActivity/SettingsActivity inset handling and themes.xml.
+        targetSdk = 35
         // versionCode must strictly increase on every Play Store upload. In CI
         // it's set from the GitHub Actions run number (see android.yml); locally
         // it falls back to 1 so `gradle assembleRelease` works offline.

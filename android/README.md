@@ -110,10 +110,41 @@ Each release:
 3. Add tester emails, open the opt-in link on the device, and install from the
    Play Store. Subsequent uploads auto-update.
 
-> Play requires new apps/updates to target a recent API level (API 35 /
-> Android 15 as of 2025). This app currently targets API 34 — bump
-> `compileSdk`/`targetSdk` before your first submission, and verify the
-> full-bleed WebView still handles Android 15's edge-to-edge insets.
+The app targets **API 35 (Android 15)**, the minimum Google Play accepts for
+new submissions — so it is submission-ready. See "Edge-to-edge / window insets"
+below for the behavioral change that came with that bump.
+
+## Edge-to-edge / window insets
+
+Targeting API 35 opts the app into Android 15's **enforced edge-to-edge**: the
+activity is laid out behind the status bar (top) and the nav/gesture bar
+(bottom), and the old `android:statusBarColor` / `android:navigationBarColor`
+theme attributes are **ignored** (they were removed from `Theme.ShipIt`). The
+system bars are transparent; the dark `windowBackground` shows through them, so
+the app still looks full-bleed.
+
+Because the WebView loads a **remote** ShipIt instance we don't control, we
+can't rely on the web side honoring CSS `env(safe-area-inset-*)`. So inset
+handling is native:
+
+- **`MainActivity`** pads the WebView's container by the top + bottom
+  system-bar insets (`WindowInsetsCompat.Type.systemBars()`), keeping chat
+  content clear of the status bar and the bottom-anchored input clear of the
+  nav/gesture bar. It also injects `viewport-fit=cover` into the page as a
+  best-effort extra — but the native padding is the reliable path, not the
+  injection.
+- **`SettingsActivity`** pads its scrolling root by the union of the system-bar
+  **and IME** insets (`systemBars() or ime()`), so the URL field and Save button
+  stay clear of both the status bar and the on-screen keyboard.
+
+Edge-to-edge is opted into explicitly via
+`WindowCompat.setDecorFitsSystemWindows(window, false)`, so the behavior is the
+same on the older OS versions `minSdk 26` still supports, not only Android 15.
+
+> Inset/layout correctness can only be confirmed on a device or emulator — there
+> is no Android toolchain in the dev container. Run the **Android build**
+> workflow, install the debug APK, and check the WebView top/bottom and the
+> Settings form with the keyboard open.
 
 ## App behavior
 

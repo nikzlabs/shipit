@@ -7,8 +7,11 @@
         <item name="colorAccent">@color/shipit_accent</item>
         <item name="android:colorBackground">@color/shipit_bg</item>
         <item name="android:windowBackground">@color/shipit_bg</item>
-        <item name="android:statusBarColor" tools:targetApi="21">@color/shipit_bg</item>
-        <item name="android:navigationBarColor" tools:targetApi="21">@color/shipit_bg</item>
+        <!-- targetSdk 35 (Android 15) enforces edge-to-edge and IGNORES
+             android:statusBarColor / android:navigationBarColor, so those are
+             gone. The bars are transparent; the dark windowBackground above
+             shows through them, keeping the full-bleed look. We still ask for
+             light (white) status-bar icons since that background is dark. -->
         <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
     </style>
 
