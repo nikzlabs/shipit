@@ -277,10 +277,9 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 - **Default-deny egress containment** — agent containers are network-contained **by default** on
   every instance: outbound traffic is restricted to an allowlist of known hosts (the agent API, your
   git host, package registries, your connected MCP servers) via a privileged sidecar in each
-  container's network namespace. It is **fail-closed** — if a host can't enforce containment a
-  session refuses to start rather than running open — and the installer detects incapable hosts and
-  offers the opt-out (`SESSION_EGRESS_ENFORCE=0`). This is the main defense against a prompt-injected
-  agent exfiltrating your credentials.
+  container's network namespace. It is **fail-closed** — a session never silently runs with open
+  egress — which makes it the main defense against a prompt-injected agent exfiltrating your
+  credentials.
 - **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
   the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
   aren't sitting at rest in the agent's sandbox. When you configure a GitHub App, git operations use
@@ -289,12 +288,10 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
   age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
 - **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
   first, and you review the redacted result.
-- **Access control is yours** — there's no built-in user auth, so don't expose a raw instance; the
-  VPS installer can put ShipIt behind Cloudflare Zero Trust or Tailscale with no open ports.
+- **Access control is yours** — the VPS installer puts ShipIt behind Cloudflare Zero Trust or
+  Tailscale with no open inbound ports, so only the people you authorize can reach your instance.
 
-The full picture — trust model, every defense (including how the UI distinguishes containment
-*policy* from actual *enforcement*), and the gaps ShipIt has consciously accepted (notably that
-kernel-tier hardening still ships off by default) along with their planned mitigations — is in
+The full picture — the trust model, every defense, and the limitations ShipIt — is in
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Contributing

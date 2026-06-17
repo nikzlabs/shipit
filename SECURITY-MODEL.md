@@ -231,26 +231,36 @@ tiers compose:
   rejecting `attacker.s3.amazonaws.com` and the path-style apex on the same IP) so an
   approved API can't be used to upload into an attacker's account.
 
-- **Operator opt-in, fail-secure once on.** The whole subsystem is gated on
-  `SESSION_EGRESS_ENFORCE=1` (+ `SESSION_EGRESS_SIDECAR_IMAGE`, now auto-built by
-  `dev.sh`/`deploy.sh`), with Tiers B and C behind their own `SESSION_EGRESS_DNS` /
-  `SESSION_EGRESS_PROXY` flags; **default OFF**. When enabled, containment is fail-secure: a
-  missing global setting resolves to **Contained**, and the per-session resolution
-  (`resolveContained`) defaults to Contained too. A Settings → **Network** tab exposes a
-  global containment toggle, a per-session Inherit/Contained/Open override, and a
+- **On by default, fail-closed.** All three tiers are **on by default** — enforcement
+  (`SESSION_EGRESS_ENFORCE`) and Tiers B/C (`SESSION_EGRESS_DNS` / `SESSION_EGRESS_PROXY`)
+  each enforce unless explicitly set to `0`, and the sidecar image
+  (`SESSION_EGRESS_SIDECAR_IMAGE`) is wired into both compose files and auto-built by
+  `dev.sh`/`deploy.sh`. The containment *policy* is fail-secure too: a missing global
+  setting resolves to **Contained**, and the per-session resolution (`resolveContained`)
+  defaults to Contained. If a contained session genuinely *can't* be enforced (no sidecar
+  image, or the host denies the `NET_ADMIN` sidecar), the session **refuses to start**
+  rather than silently running open — and the installer (`deployment/*/setup.sh`) detects an
+  incapable host up front and asks before persisting the `SESSION_EGRESS_ENFORCE=0` opt-out.
+- **The UI distinguishes policy from enforcement.** Settings → **Network egress** exposes
+  the global containment toggle, a per-session Inherit/Contained/Open override, and a
   first-class allowlist editor showing the **effective** allowlist with provenance (built-in
-  / operator / MCP / user-added). Built-in defaults are overridable with a "Restore
-  defaults" action. When the proxy denies a brand-new host it surfaces a persisted
-  **allow-once / add-to-allowlist** card in chat; approving it live-reloads the running
-  session's resolver and proxy **without a container restart**.
+  / operator / MCP / user-added; built-in defaults overridable with "Restore defaults").
+  Crucially, the panel surfaces `enforcementActive` (`egressEnforceEnabled()` *and* a
+  sidecar image): when policy says Contained but the deployment can't enforce, it shows an
+  explicit **"not enforced on this deployment"** warning instead of a reassuring green
+  state. When the proxy denies a brand-new host it surfaces a persisted **allow-once /
+  add-to-allowlist** card in chat; approving it live-reloads the running session's resolver
+  and proxy **without a container restart**.
 - **MCP hosts and operator extras can't drift.** One composition seam merges
   `SESSION_EGRESS_ALLOWLIST` + live MCP-server hosts + the durable user allowlist and feeds
   *both* the Tier B resolver's pinned set and the Tier C proxy's SNI allowlist at container
   start, so the two enforcement points always agree.
 
 All three tiers and the Phase-2 identity proxy have been verified non-vacuously on a live
-host. The residual is **activation, not absence** — see Known limitations: until an operator
-flips the flags on, egress is still open and the credential-exfiltration risk stands.
+host. With containment on by default, the residual is narrow — **hosts that can't run the
+sidecar must consciously opt out** (the installer surfaces this); an operator who does opt
+out is back to open egress and should treat anything reachable inside the container as
+reachable by a compromised agent.
 
 ## Untrusted input — content is data, not instructions
 
