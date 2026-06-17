@@ -131,11 +131,31 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
 | `anthropic-api-key` | `sk-ant-` + ≥20-char body |
 | `github-pat` | `gh[pousr]_` + ≥36 base62 (open-ended length) |
 | `github-fine-grained-pat` | `github_pat_` + ≥40-char body |
+| `github-app-token-stateless` | `ghs_<appid>_<JWT>` — GitHub's 2026 stateless installation/Actions token |
 | `aws-access-key-id` | `AKIA`/`ASIA` + 16 upper-alnum |
 | `private-key-block` | `-----BEGIN … PRIVATE KEY-----` |
 | `slack-token` | `xox[baprs]-` + body |
 | `jwt` | `eyJ…` three base64url segments |
 | `git-credential-url` | `https://x-access-token:<token>@` / `user:<token>@host` |
+
+## Keeping up with token-format changes
+
+Token formats drift, so the rules are built to absorb the common case and flag
+the rest:
+
+- **Length drift is absorbed.** Every token-body length is open-ended (`{36,}`,
+  `{40,}`, …), never a hard count — GitHub explicitly told integrators to drop
+  fixed-length checks like `ghs_[A-Za-z0-9]{36}`
+  ([changelog](https://github.blog/changelog/2026-04-24-notice-about-upcoming-new-format-for-github-app-installation-tokens/)).
+- **Structural changes need a rule.** The 2026 stateless GitHub App / Actions
+  token (`ghs_<appid>_<JWT>`, ~520 chars, rolling out Apr–Jun 2026) is a
+  *structural* change the classic `gh[pousr]_…` rule can't match (the underscore
+  after the app id breaks the base62 run), so it gets its own
+  `github-app-token-stateless` rule.
+- **The CI backstop tracks upstream.** A brand-new prefix/alphabet still needs an
+  edit here; the companion diff-only `gitleaks` CI check picks up the
+  ecosystem's pattern updates even before this inline set is touched. The inline
+  guard is the *early* net; gitleaks is the *current-patterns* net.
 
 ## Tests
 

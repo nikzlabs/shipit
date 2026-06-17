@@ -72,6 +72,19 @@ export const SECRET_RULES: SecretRule[] = [
     regex: /github_pat_[A-Za-z0-9_]{40,}/g,
   },
   {
+    id: "github-app-token-stateless",
+    description: "GitHub App installation / Actions token, 2026 stateless format (ghs_…_JWT)",
+    // GitHub Changelog 2026-04-24: GitHub App installation tokens and the Actions
+    // GITHUB_TOKEN move to a stateless `ghs_<appid>_<JWT>` shape (~520 chars,
+    // rolled out Apr–Jun 2026). The classic `gh[pousr]_[A-Za-z0-9]{36,}` rule
+    // does NOT match it — the `_` after the app id breaks the base62 run before
+    // 36 chars — and GitHub explicitly told integrators to drop the old
+    // fixed-length validation. So match the structural shape instead: `ghs_` +
+    // app id + `_` + a JWT. (The embedded `eyJ…` part may ALSO match the generic
+    // `jwt` rule below; a duplicate finding is harmless — both block the commit.)
+    regex: /ghs_[A-Za-z0-9]+_eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g,
+  },
+  {
     id: "aws-access-key-id",
     description: "AWS access key ID (AKIA…)",
     // AKIA/ASIA + exactly 16 uppercase-alphanumerics.

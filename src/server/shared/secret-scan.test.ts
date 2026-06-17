@@ -14,6 +14,9 @@ const FAKE = {
   githubPat: "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
   githubFineGrained:
     "github_pat_11ABCDEFG0aBcDeFgHiJk_LmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMnOpQrStUvWx",
+  // 2026 stateless GitHub App / Actions token: ghs_<appid>_<JWT>.
+  githubAppStateless:
+    "ghs_123456_eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOiIxMjM0NTYiLCJpYXQiOjE3MTgwMDAwMDB9.aGVsbG9zaWduYXR1cmVfdmFsdWVfaGVyZV9wYWRkaW5nX3RvX2xlbmd0aA",
   aws: "AKIAIOSFODNN7EXAMPLE",
   slack: "xoxb-1234567890-ABCDEFGHIJKLMNOP",
   jwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
@@ -53,6 +56,13 @@ describe("scanDiffForSecrets — detection", () => {
     expect(f.map((x) => x.rule)).toContain("github-fine-grained-pat");
     // Must not also mis-fire the classic gh[pousr]_ rule on the same token.
     expect(f.map((x) => x.rule)).not.toContain("github-pat");
+  });
+
+  it("detects the 2026 stateless GitHub App / Actions token (ghs_…_JWT)", () => {
+    // The classic fixed-length ghs_ rule can't match this shape; the dedicated
+    // structural rule must. (The embedded JWT may also match the jwt rule.)
+    const f = scanDiffForSecrets(addedDiff("ci.log", [`token=${FAKE.githubAppStateless}`]));
+    expect(f.map((x) => x.rule)).toContain("github-app-token-stateless");
   });
 
   it("detects an AWS access key id", () => {
