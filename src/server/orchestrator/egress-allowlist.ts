@@ -62,6 +62,7 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   ".yarnpkg.com", // registry.yarnpkg.com
   ".pypi.org", // pypi.org
   ".pythonhosted.org", // files.pythonhosted.org (wheel downloads)
+  ".nodejs.org", // nodejs.org — node-gyp downloads the Node headers tarball (npm `disturl`) here to compile native modules (node-pty, etc.)
 ];
 
 /**
