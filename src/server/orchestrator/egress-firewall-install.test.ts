@@ -11,6 +11,7 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 import type Docker from "dockerode";
 import {
   egressEnforceEnabled,
+  egressEnforcementActive,
   fetchGitHubMetaCidrs,
   buildTierAEgressInputs,
   installEgressFirewall,
@@ -25,13 +26,32 @@ beforeEach(() => _resetEgressCidrCache());
 // ---------------------------------------------------------------------------
 
 describe("egressEnforceEnabled", () => {
-  it("is OFF by default and for any value other than '1'", () => {
-    expect(egressEnforceEnabled({} as NodeJS.ProcessEnv)).toBe(false);
-    expect(egressEnforceEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false);
-    expect(egressEnforceEnabled({ SESSION_EGRESS_ENFORCE: "true" } as NodeJS.ProcessEnv)).toBe(false);
-  });
-  it("is ON only for exactly '1'", () => {
+  it("is ON by default and for any value other than '0'", () => {
+    expect(egressEnforceEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     expect(egressEnforceEnabled({ SESSION_EGRESS_ENFORCE: "1" } as NodeJS.ProcessEnv)).toBe(true);
+    expect(egressEnforceEnabled({ SESSION_EGRESS_ENFORCE: "true" } as NodeJS.ProcessEnv)).toBe(true);
+  });
+  it("is OFF only for an explicit '0' opt-out", () => {
+    expect(egressEnforceEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false);
+  });
+});
+
+describe("egressEnforcementActive", () => {
+  it("is true only when enforcement is on AND the sidecar image is configured", () => {
+    expect(
+      egressEnforcementActive({ SESSION_EGRESS_SIDECAR_IMAGE: "shipit-egress-sidecar:prod" } as NodeJS.ProcessEnv),
+    ).toBe(true);
+  });
+  it("is false when enforcement is on but no sidecar image (would fail closed)", () => {
+    expect(egressEnforcementActive({} as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it("is false when enforcement is explicitly opted out, even with an image", () => {
+    expect(
+      egressEnforcementActive({
+        SESSION_EGRESS_ENFORCE: "0",
+        SESSION_EGRESS_SIDECAR_IMAGE: "shipit-egress-sidecar:prod",
+      } as NodeJS.ProcessEnv),
+    ).toBe(false);
   });
 });
 

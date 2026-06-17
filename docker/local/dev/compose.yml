@@ -42,6 +42,14 @@ services:
       # (SHI-90 Tier B host verification). Harmless when egress is off.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
+      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # all instances (fail-closed). The orchestrator runs the privileged
+      # installer/resolver/proxy sidecars in the agent netns from this image; it
+      # MUST be set or a contained session refuses to start. dev.sh builds the
+      # :dev tag. Opt out (e.g. a host that can't run a NET_ADMIN sidecar) by
+      # exporting SESSION_EGRESS_ENFORCE=0 before `up`.
+      - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:dev
+      - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
       # docs/172 Gap 5 (SHI-97) — kernel-tier hardening flags, default-OFF.
       # Set for live-host verification (SHI-97). Empty unless exported before `up`.
       - SESSION_SECCOMP=${SESSION_SECCOMP:-}
@@ -60,7 +68,8 @@ services:
       - build-only
 
   # Egress firewall sidecar (docs/172 Gap 1, SHI-90). Built into shipit-egress-sidecar:dev
-  # and run by the orchestrator in the agent netns when SESSION_EGRESS_ENFORCE=1.
+  # and run by the orchestrator in the agent netns. Containment is ON by default
+  # (opt out with SESSION_EGRESS_ENFORCE=0).
   # Build-only (like session-worker) — built by dev.sh, never started by `up`. Its
   # build context is `docker/` (the Dockerfile COPYs `egress-sidecar/*`), so the
   # context here is ../.. relative to this compose file. Without this, a change to

@@ -16,13 +16,17 @@ import {
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 
 describe("egressProxyEnabled", () => {
-  it("requires SESSION_EGRESS_PROXY=1 AND Tier B (DNS) AND Tier A (enforce)", () => {
+  it("is ON by default (all tiers default on)", () => {
+    expect(egressProxyEnabled({} as NodeJS.ProcessEnv)).toBe(true);
     const all = { SESSION_EGRESS_PROXY: "1", SESSION_EGRESS_DNS: "1", SESSION_EGRESS_ENFORCE: "1" };
     expect(egressProxyEnabled(all as NodeJS.ProcessEnv)).toBe(true);
-    expect(egressProxyEnabled({ SESSION_EGRESS_PROXY: "1", SESSION_EGRESS_DNS: "1" } as NodeJS.ProcessEnv)).toBe(false); // enforce off
-    expect(egressProxyEnabled({ SESSION_EGRESS_PROXY: "1", SESSION_EGRESS_ENFORCE: "1" } as NodeJS.ProcessEnv)).toBe(false); // dns off
-    expect(egressProxyEnabled({ SESSION_EGRESS_DNS: "1", SESSION_EGRESS_ENFORCE: "1" } as NodeJS.ProcessEnv)).toBe(false); // proxy off
-    expect(egressProxyEnabled({} as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it("is disabled by an explicit SESSION_EGRESS_PROXY=0", () => {
+    expect(egressProxyEnabled({ SESSION_EGRESS_PROXY: "0" } as NodeJS.ProcessEnv)).toBe(false);
+  });
+  it("preserves tier stacking C ⊃ B ⊃ A — OFF when DNS or enforcement is opted out", () => {
+    expect(egressProxyEnabled({ SESSION_EGRESS_DNS: "0" } as NodeJS.ProcessEnv)).toBe(false); // Tier B off
+    expect(egressProxyEnabled({ SESSION_EGRESS_ENFORCE: "0" } as NodeJS.ProcessEnv)).toBe(false); // Tier A off
   });
 });
 

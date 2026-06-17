@@ -27,6 +27,15 @@ services:
       - DOCKER_NETWORK=shipit-prod
       - SESSION_WORKER_IMAGE=shipit-session-worker:prod
       - DOCKER_STACK=shipit-prod
+      # docs/172 Gap 1 (SHI-90) — agent egress containment is ON by default for
+      # all instances (fail-closed). The orchestrator runs the privileged
+      # installer/resolver/proxy sidecars in the agent netns from this image;
+      # the local installer (deployment/local/setup.sh -> lib.sh) builds the
+      # :prod tag. A contained session whose deployment can't supply this image
+      # refuses to start. The local installer's egress preflight offers the
+      # opt-out (SESSION_EGRESS_ENFORCE=0) when this host can't run the sidecar.
+      - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
+      - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
     networks:
       - shipit-prod
 
@@ -35,6 +44,18 @@ services:
       context: ../../..
       dockerfile: docker/Dockerfile.session-worker.prod
     image: shipit-session-worker:prod
+    profiles:
+      - build-only
+
+  # Egress firewall sidecar (docs/172 Gap 1, SHI-90) — see SESSION_EGRESS_SIDECAR_IMAGE
+  # above. Build-only (like session-worker); built by lib.sh shipit_build_and_up,
+  # never started by `up`. Its Dockerfile COPYs egress-sidecar/* so the build
+  # context is docker/ (../.. from here).
+  egress-sidecar:
+    build:
+      context: ../..
+      dockerfile: Dockerfile.egress-sidecar
+    image: shipit-egress-sidecar:prod
     profiles:
       - build-only
 

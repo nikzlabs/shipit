@@ -9,9 +9,12 @@
  * lives only in this sidecar, which exits immediately after — the rules persist
  * in the netns and the agent cannot flush them.
  *
- * Gated behind `SESSION_EGRESS_ENFORCE=1` (default off): merging this is inert
- * until an operator enables it, so it can land without changing prod behavior
- * and be verified on a canary/dogfood session (the SHI-90 checklist).
+ * Enabled by default (SHI-90 default-on): containment runs unless an operator
+ * explicitly sets `SESSION_EGRESS_ENFORCE=0`. The install gate also requires the
+ * sidecar image (`SESSION_EGRESS_SIDECAR_IMAGE`) — a contained session whose
+ * deployment can't supply it fails closed (see `container-lifecycle.ts`). The
+ * installer detects incapable hosts (no NET_ADMIN sidecar) and offers the
+ * opt-out at install time (the `deployment/{local,vps}/setup.sh` preflights).
  *
  * This module is the orchestration seam. The pieces that are pure and
  * unit-testable — the GitHub meta fetch + parse + fallback, the allow-set
@@ -33,9 +36,27 @@ const GITHUB_META_URL = "https://api.github.com/meta";
 const META_FETCH_TIMEOUT_MS = 5_000;
 const META_CACHE_TTL_MS = 60 * 60 * 1000; // 1h — GitHub ranges change rarely
 
-/** Is Tier A egress enforcement enabled? Default OFF (fail-safe rollout). */
+/**
+ * Is Tier A egress enforcement enabled? Default ON — containment runs unless an
+ * operator explicitly opts out with `SESSION_EGRESS_ENFORCE=0`. Any other value
+ * (including unset/empty) keeps it on, so a stock deployment is contained.
+ */
 export function egressEnforceEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env.SESSION_EGRESS_ENFORCE === "1";
+  return env.SESSION_EGRESS_ENFORCE !== "0";
+}
+
+/**
+ * Can this deployment actually ENFORCE containment? Enforcement is *active* only
+ * when it's enabled AND the privileged installer sidecar image is configured
+ * (`SESSION_EGRESS_SIDECAR_IMAGE`). This is the honest answer the UI needs to
+ * distinguish containment *policy* (the durable Contained/Open switch) from
+ * actual *enforcement*: a deployment with enforcement enabled but no sidecar
+ * image shows "Contained" yet would fail closed at session start, so the UI must
+ * warn rather than show a reassuring green state. Mirrors the install gate in
+ * `container-lifecycle.ts` (`egressEnforce && !egressSidecarImage` → fail-closed).
+ */
+export function egressEnforcementActive(env: NodeJS.ProcessEnv = process.env): boolean {
+  return egressEnforceEnabled(env) && Boolean(env.SESSION_EGRESS_SIDECAR_IMAGE);
 }
 
 // --- GitHub meta CIDR fetch (cached + fallback) ----------------------------

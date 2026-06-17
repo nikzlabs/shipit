@@ -21,7 +21,15 @@ function stubFetch(initialOverride: boolean | null = null) {
   const view = (): EgressAllowlistView => ({
     entries: [],
     globalEnabled: true,
-    session: { sessionId: "s1", override, hosts: [], effectiveContained: override ?? true, globalEnabled: true },
+    enforcementActive: true,
+    session: {
+      sessionId: "s1",
+      override,
+      hosts: [],
+      effectiveContained: override ?? true,
+      globalEnabled: true,
+      enforcementActive: true,
+    },
     defaultsCustomized: false,
   });
   const impl = vi.fn(async (url: string, init?: RequestInit) => {

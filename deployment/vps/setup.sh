@@ -205,6 +205,69 @@ systemctl daemon-reload
 systemctl enable --now shipit-updater.path
 systemctl enable --now shipit-restarter.path
 
+# --- Agent egress containment preflight (docs/172, SHI-90) ---
+# Egress containment is ON by default for all ShipIt instances (fail-closed):
+# the orchestrator runs a privileged NET_ADMIN sidecar in each agent container's
+# network namespace to apply a default-deny egress allowlist. If this host can't
+# run that sidecar (NET_ADMIN denied, rootless Docker, locked-down kernel),
+# ShipIt would fail closed and refuse to start sessions. Detect that here and
+# offer the opt-out, persisted where deploy.sh reads it.
+SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
+
+# Probe whether a NET_ADMIN container can manipulate its network namespace — the
+# capability the egress sidecar needs to install iptables rules. Bringing
+# loopback down requires CAP_NET_ADMIN and touches only the throwaway container's
+# own netns, so it's a safe, dependency-light proxy for "can run the sidecar".
+egress_host_capable() {
+  docker run --rm --cap-add NET_ADMIN alpine sh -c 'ip link set lo down' >/dev/null 2>&1
+}
+
+# Persist SESSION_EGRESS_ENFORCE into the env file deploy.sh loads (replace any
+# existing line, else append). The file is created 0600 since it tunes runtime.
+persist_egress_enforce() {
+  local value="$1"
+  mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
+  touch "$SHIPIT_ENV_FILE"
+  chmod 600 "$SHIPIT_ENV_FILE"
+  if grep -q '^SESSION_EGRESS_ENFORCE=' "$SHIPIT_ENV_FILE" 2>/dev/null; then
+    sed -i "s/^SESSION_EGRESS_ENFORCE=.*/SESSION_EGRESS_ENFORCE=$value/" "$SHIPIT_ENV_FILE"
+  else
+    echo "SESSION_EGRESS_ENFORCE=$value" >> "$SHIPIT_ENV_FILE"
+  fi
+}
+
+echo ""
+echo "==> Checking agent egress containment support..."
+if egress_host_capable; then
+  echo "    Agent egress containment: enabled (default-deny allowlist)."
+else
+  echo ""
+  echo "  WARNING: this host can't run the egress containment sidecar."
+  echo "  ShipIt isolates each agent container's outbound network with a privileged"
+  echo "  NET_ADMIN sidecar (default-deny + allowlist). This host denied that"
+  echo "  capability — common with rootless Docker or a locked-down kernel."
+  echo ""
+  echo "  Egress containment is ON by default and FAILS CLOSED: with it on, ShipIt"
+  echo "  will refuse to start agent sessions on this host. You can disable"
+  echo "  containment to let sessions run with UNRESTRICTED outbound network"
+  echo "  (a prompt-injected agent could then exfiltrate credentials)."
+  echo ""
+  read -rp "  Proceed with egress containment DISABLED? [y/N]: " EGRESS_DISABLE
+  EGRESS_DISABLE="${EGRESS_DISABLE:-N}"
+  case "$EGRESS_DISABLE" in
+    y|Y|yes|Yes|YES)
+      persist_egress_enforce 0
+      echo "    Egress containment DISABLED (SESSION_EGRESS_ENFORCE=0 persisted in $SHIPIT_ENV_FILE)."
+      echo "    Re-enable later by removing that line and re-running deploy.sh."
+      ;;
+    *)
+      echo "    Keeping egress containment ON (secure default). Sessions will fail to"
+      echo "    start until this host can run the NET_ADMIN sidecar. To override later,"
+      echo "    set SESSION_EGRESS_ENFORCE=0 in $SHIPIT_ENV_FILE and re-run deploy.sh."
+      ;;
+  esac
+fi
+
 # --- Build and start ShipIt (always run - this is the deploy step) ---
 echo "==> Building and starting ShipIt..."
 bash /opt/shipit/deployment/vps/deploy.sh

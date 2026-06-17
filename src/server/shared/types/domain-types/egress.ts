@@ -10,6 +10,17 @@
 export interface EgressSettings {
   globalEnabled: boolean;
   globalHosts: string[];
+  /**
+   * Whether this deployment can actually ENFORCE containment, as opposed to the
+   * `globalEnabled` *policy* switch. True only when egress enforcement is on
+   * (`SESSION_EGRESS_ENFORCE !== "0"`) AND the privileged sidecar image is
+   * configured (`SESSION_EGRESS_SIDECAR_IMAGE`). When `globalEnabled` is true but
+   * this is false the UI must warn ("Contained — NOT enforced on this deployment")
+   * rather than show a reassuring green state: the policy says contain, but a
+   * session would fail closed (or, if disabled, run open) instead of being
+   * contained. Distinguishes policy from enforcement (docs/172, SHI-90).
+   */
+  enforcementActive: boolean;
 }
 
 /**
@@ -25,6 +36,13 @@ export interface EgressSessionSettings {
   effectiveContained: boolean;
   /** The current global switch, for rendering the "inherits global" state. */
   globalEnabled: boolean;
+  /**
+   * Whether this deployment can actually ENFORCE containment (see
+   * {@link EgressSettings.enforcementActive}). When `effectiveContained` is true
+   * but this is false, the session shows "Contained — NOT enforced on this
+   * deployment": policy says contain but the container would fail closed at start.
+   */
+  enforcementActive: boolean;
 }
 
 /**
@@ -55,6 +73,13 @@ export interface EgressAllowlistEntry {
 export interface EgressAllowlistView {
   entries: EgressAllowlistEntry[];
   globalEnabled: boolean;
+  /**
+   * Whether this deployment can actually ENFORCE containment (see
+   * {@link EgressSettings.enforcementActive}). Carried at the top level so the
+   * global-only view (no session in scope) can still render the policy-vs-
+   * enforcement warning.
+   */
+  enforcementActive: boolean;
   /** The in-scope session's settings, or null for the global-only view. */
   session: EgressSessionSettings | null;
   /** True when the user has removed any built-in default (drives "Restore defaults"). */

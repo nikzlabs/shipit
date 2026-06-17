@@ -1,6 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: load the global egress allowlist on mount (external system sync)
 import { useEffect, useState } from "react";
-import { TrashIcon, PencilSimpleIcon, ShieldCheckIcon, CheckIcon, XIcon } from "@phosphor-icons/react";
+import { TrashIcon, PencilSimpleIcon, ShieldCheckIcon, CheckIcon, XIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
@@ -153,6 +153,7 @@ export function SettingsEgress() {
   const loaded = useEgressStore((s) => s.loaded);
   const entries = useEgressStore((s) => s.entries) ?? [];
   const globalEnabled = useEgressStore((s) => s.globalEnabled);
+  const enforcementActive = useEgressStore((s) => s.enforcementActive);
   const defaultsCustomized = useEgressStore((s) => s.defaultsCustomized);
 
   const [hostInput, setHostInput] = useState("");
@@ -230,6 +231,12 @@ export function SettingsEgress() {
   const editableEntries = entries.filter((e) => e.removable);
   const derivedEntries = entries.filter((e) => !e.removable);
 
+  // Containment POLICY says "contain" but the deployment can't ENFORCE it
+  // (enforcement off, or no NET_ADMIN sidecar image). Warn rather than show a
+  // reassuring "Contained" — a contained session would fail closed / run open.
+  // Global-only view, so the policy is the global switch.
+  const showEnforcementWarning = loaded && globalEnabled && !enforcementActive;
+
   return (
     <div className="space-y-4" data-testid="settings-egress">
       <div className="space-y-3">
@@ -253,6 +260,23 @@ export function SettingsEgress() {
           </div>
           <ToggleSwitch enabled={globalEnabled} onToggle={(v) => void handleToggle(v)} testId="settings-egress-contained" />
         </div>
+
+        {showEnforcementWarning && (
+          <div
+            className="flex items-start gap-2 rounded-md border border-(--color-warning) bg-(--color-warning-subtle) px-3 py-2"
+            data-testid="settings-egress-enforcement-warning"
+          >
+            <span className="mt-0.5 shrink-0 text-(--color-warning)"><WarningIcon size={ICON_SIZE.SM} weight="fill" /></span>
+            <div className="space-y-0.5">
+              <p className="text-sm font-medium text-(--color-warning)">Contained — NOT enforced on this deployment</p>
+              <p className="text-xs text-(--color-text-tertiary)">
+                The containment policy is on, but this deployment can&rsquo;t enforce it. Build/provide the egress
+                sidecar image, or this host can&rsquo;t run the required NET_ADMIN sidecar — see the install notes.
+                Until then, contained sessions fail to start (or run with open egress if containment is disabled).
+              </p>
+            </div>
+          </div>
+        )}
 
         <p className="text-xs text-(--color-text-tertiary)">
           To contain or open a single session, use <span className="text-(--color-text-secondary)">Network access</span> on

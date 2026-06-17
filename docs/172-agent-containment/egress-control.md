@@ -331,6 +331,18 @@ Stored orchestrator-side alongside MCP servers / secrets.
   *Contained*. The toggle applies at the session's next container start (egress is a
   creation-time network-topology choice; ShipIt recycles containers routinely), and the UI
   states that rather than implying an instant effect.
+- **Policy vs. enforcement (default-on, two independent layers).** The durable toggle above is
+  the containment **policy**. **Enforcement** is a separate layer: the orchestrator only
+  installs the sidecar tiers when enforcement is enabled (`SESSION_EGRESS_ENFORCE !== "0"`,
+  **default ON**) AND the sidecar image is configured (`SESSION_EGRESS_SIDECAR_IMAGE`, set in
+  all compose files). When policy says Contained but the deployment can't enforce, ShipIt
+  **fails closed** — the session refuses to start (`container-lifecycle.ts`) — and the installer
+  (`deployment/*/setup.sh`) detects an incapable host at install time and offers the opt-out
+  (`SESSION_EGRESS_ENFORCE=0`, persisted where `deploy.sh`/`lib.sh` load it). Because the two
+  layers are independent, the API surfaces `enforcementActive` (`EgressSettings` /
+  `EgressSessionSettings` / `EgressAllowlistView`) and the Settings panel shows an explicit
+  "Contained — NOT enforced on this deployment" warning rather than a false-green "Contained",
+  so the UI never claims protection it can't deliver.
 - **Per-session override.** "Allow this session to also reach `X`" — the smaller-blast-radius
   version of the global switch, matching the real "I'm debugging one thing" need.
 

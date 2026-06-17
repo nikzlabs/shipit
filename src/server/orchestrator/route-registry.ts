@@ -19,6 +19,7 @@ import * as rollbackHandlers from "./ws-handlers/rollback-handlers.js";
 import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as egressHandlers from "./ws-handlers/egress-handlers.js";
+import { egressEnforcementActive } from "./egress-firewall-install.js";
 import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
@@ -286,6 +287,9 @@ export async function registerRoutes(
     secretStore,
     reviewStore,
     egressAllowlistStore,
+    // docs/172 (SHI-90) — honest enforcement signal for the browser: policy vs
+    // actual enforcement. Fixed function of the process env.
+    egressEnforcementActive: egressEnforcementActive(),
     presentStore,
     serviceManagers,
     composeStopPromises,

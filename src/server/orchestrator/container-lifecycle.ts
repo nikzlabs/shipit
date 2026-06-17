@@ -854,7 +854,15 @@ export async function createContainer(
     const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
     if (deps.egressEnforce && egressCfg.contained) {
       if (!deps.egressSidecarImage) {
-        throw new Error("SESSION_EGRESS_ENFORCE=1 but SESSION_EGRESS_SIDECAR_IMAGE is not set");
+        // Fail closed: this session is contained but the deployment can't run
+        // the privileged egress sidecar (no image configured), so we refuse to
+        // start it rather than run with unenforced/open egress. Name the escape
+        // hatches so the operator (and the surfaced session-start error) can act.
+        throw new Error(
+          "Agent egress containment is on but cannot be enforced: SESSION_EGRESS_SIDECAR_IMAGE is not set. " +
+            "Provide/build the egress sidecar image (deploy.sh / dev.sh build it), or disable containment " +
+            "with SESSION_EGRESS_ENFORCE=0 if this host can't run the NET_ADMIN sidecar.",
+        );
       }
       const egressLabels = { ...deps.baseLabels(), "shipit-parent-session": config.sessionId };
       const inputs = await buildTierAEgressInputs();
