@@ -1,7 +1,7 @@
 
 ## Releases — how to cut a release
 
-When the user asks to **cut / tag / publish a release** (e.g. "cut a 0.3.0 release", "release a patch", "tag an rc"), you are the actor that performs the mechanical steps, exactly as a maintainer would. ShipIt renders the result as an inline **release lifecycle card**. Read /shipit-docs/release.md for the full reference; the essentials:
+When the user asks to **cut / tag / publish a release** (e.g. "cut a 0.3.0 release", "release a patch", "tag an rc"), you are the actor that performs the mechanical steps. **Prefer the deterministic `shipit release` command** — `shipit release plan <bump>` (read-only: detect version + compute next, for the propose step) and `shipit release prepare <bump> [--pick <sha>…] [--from <branch>] [--bootstrap] [--prerelease [--confirm]]` (does the bump / branch / cherry-pick / PR or rc tag) — rather than hand-running git. ShipIt renders the result as an inline **release lifecycle card**. Read /shipit-docs/release.md for the full reference; the essentials:
 
 **First, determine the release mechanism.** Check `shipit.yaml` for a `release.mechanism` key:
 
@@ -16,17 +16,7 @@ When the user asks to **cut / tag / publish a release** (e.g. "cut a 0.3.0 relea
 
 Then stop and wait. The card shows **Confirm & publish** / **Cancel**; the user confirms there (or replies "yes, ship it" in chat). A published tag and Release are outward-facing and effectively irreversible — this confirmation is the human-act gate.
 
-**2a. On confirmation — `release-branch` repos: open a version-bump PR into the branch.** Do NOT push a tag. Bump the version source on a release branch off the maintenance branch and open a PR targeting it:
-
-```
-git fetch origin
-git checkout -B release/0.3.0 origin/stable      # the release.branch (default: stable)
-# bring in what you're shipping (release from main: merge origin/main; hotfix: cherry-pick <sha>…)
-# bump the version source (e.g. edit package.json "version" to 0.3.0)
-git commit -am "Release v0.3.0"
-```
-
-Then open the PR with **base = the maintenance branch** (`gh pr create --base stable …`). **Merging that PR is the release** — on merge, the repo's `release.yml` derives the tag `v0.3.0` from the merged commit, gates on a green build, creates + pushes the tag, and publishes the GitHub Release. You stop at the open PR; the user merges; CI does the irreversible publish.
+**2a. On confirmation — `release-branch` repos: open a version-bump PR into the branch.** Run **`shipit release prepare <bump> [--pick <sha>…] [--from <branch>] [--bootstrap]`** — it creates the `release/<version>` branch off the maintenance branch, brings in the work (`--pick` for a hotfix, `--from` to bring a branch's content, `--bootstrap` for the first release), bumps the version source, and opens (or updates) the PR with base = the maintenance branch. You do NOT push a tag. **Merging that PR is the release** — on merge the repo's `release.yml` derives the tag from the merged commit, gates on a green build, creates + pushes the tag, and publishes the GitHub Release. You stop at the open PR; the user merges; CI does the irreversible publish. (Equivalent by hand only if the command is unavailable: `git checkout -B release/0.3.0 origin/stable` → bring in the work → bump the version source → commit → `gh pr create --base stable …`.)
 
 **2b. On confirmation — `tag-triggered` repos: bump, commit, tag, push.** First check idempotency: `git tag --list v0.3.0` and `git ls-remote --tags origin v0.3.0`. If the tag exists, emit `<!--shipit:release {"action":"already-released","tag":"v0.3.0","version":"0.3.0"}-->` and stop. Otherwise:
 

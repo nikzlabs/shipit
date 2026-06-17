@@ -22,6 +22,31 @@ How a repo publishes is set by `release.mechanism` in `shipit.yaml`:
 Determine the mechanism **before** proposing. The flows share step 1 (propose)
 and step 4 (CI publishes, never the agent), and differ only in step 3.
 
+## Use the `shipit release` command (don't hand-run the mechanics)
+
+ShipIt provides a deterministic `shipit release` command that performs the
+version detection, bump, branch, cherry-pick, and PR for you — so you never
+hand-edit a version file or run `git tag`. **Prefer it over the manual git steps
+below** (those are kept only to explain what the command does and as a fallback):
+
+- `shipit release plan [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]`
+  — **read-only**: detect the version source and compute the next version. Run
+  this in the propose step (it reflects a `proposed` card); then stop for confirm.
+- `shipit release prepare [<bump|VERSION>] [--pick SHA]… [--from BRANCH] [--release-branch NAME] [--bootstrap] [--notes TEXT] [--prerelease [--confirm]] [--version-source-path FILE] [--json]`
+  — on confirmation, do the release mechanics:
+  - **`release-branch` final release:** opens (or updates) a version-bump PR
+    against the release branch. `--pick <sha>` cherry-picks a hotfix; `--from <branch>`
+    brings a branch's content; `--bootstrap` creates the release branch on the
+    first release. **Merging the PR is the release** — CI tags + publishes. You
+    stop at the open PR.
+  - **prerelease (rc):** `shipit release prepare --prerelease` proposes the rc;
+    re-run with `--confirm` to cut + push the `vX.Y.Z-rc.N` tag (a tag push is
+    always confirmation-gated). CI publishes it as a GitHub prerelease.
+
+There is intentionally **no** `shipit release tag`/`publish`/`push` — publishing
+is CI's job. The manual git in §3 below is the same thing done by hand; reach for
+it only if the command is unavailable.
+
 ## The flow
 
 ### 1. Propose — never act without confirmation
@@ -73,8 +98,10 @@ commit, tag, open a PR, or push in the proposal turn.**
 
 ### 3a. `release-branch` — open a version-bump PR into the branch
 
-You do **not** push a tag. Bump the version source on a branch off the
-maintenance branch and open a PR targeting it:
+Run **`shipit release prepare <bump> [--pick <sha>…] [--from <branch>] [--bootstrap]`** —
+it creates the `release/<version>` branch off the maintenance branch, brings in
+the work, bumps the version source, and opens (or updates) the PR. You do **not**
+push a tag. The equivalent by hand, if the command is unavailable:
 
 ```
 git fetch origin
@@ -99,9 +126,8 @@ from the merged commit's version source, gates on a green build, creates +
 pushes the tag, and publishes the GitHub Release. Your job ends at the open PR;
 the user merges; CI does the rest.
 
-> A deterministic `shipit release` command that performs the bump / cherry-pick /
-> PR mechanics for you is planned (docs/214 Phase 2). Until it lands, do the
-> steps above by hand.
+> The steps above are exactly what `shipit release prepare` runs for you — prefer
+> the command; this manual sequence is the fallback.
 
 ### 3b. `tag-triggered` — bump, commit, tag, push
 
@@ -135,12 +161,12 @@ finishes.
 ## Prereleases (release candidates)
 
 rc's do **not** go through the maintenance branch (they must not advance the
-stable line). For a `release-branch` repo, an rc is cut via the **tag path**:
-push a `vX.Y.Z-rc.N` tag (set `"prerelease": true` in the marker). The repo's CI
-publishes it as a GitHub *prerelease*. (A deterministic, confirmation-gated
-`shipit release prepare --prerelease` is planned — docs/214 Phase 2.) For a
-`tag-triggered` repo, set `"prerelease": true` and use a `vX.Y.Z-rc.N` tag the
-same way.
+stable line). For a `release-branch` repo, cut an rc with
+**`shipit release prepare --prerelease`** (then re-run with `--confirm` to push
+the `vX.Y.Z-rc.N` tag — a tag push is always confirmation-gated); CI publishes it
+as a GitHub *prerelease*. The by-hand equivalent is pushing a `vX.Y.Z-rc.N` tag
+with `"prerelease": true` in the marker. For a `tag-triggered` repo, set
+`"prerelease": true` and use a `vX.Y.Z-rc.N` tag the same way.
 
 ## Marker reference
 
@@ -231,6 +257,5 @@ workflow's tag path.)
 
 ## Still unsupported (future phases)
 
-- The deterministic `shipit release` command (docs/214 Phase 2).
 - Orchestrator-brokered Release creation via the GitHub Releases API.
 - Channel promotion (stable/edge) for arbitrary repos.
