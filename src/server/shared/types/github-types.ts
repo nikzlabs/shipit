@@ -384,16 +384,17 @@ export interface PrFileStat {
 
 /**
  * docs/205 — a "notable" file changed somewhere across the whole PR: a design
- * doc (`.md`) or an allowlisted config file. Powers the PR card's collapsible
- * changed-docs strip, where each entry renders as a chip that opens the file
- * inline. A pure projection of the PR's changed-file list; not persisted.
+ * doc (`.md`), an allowlisted config file, or an image (added or modified).
+ * Powers the PR card's collapsible changed-docs strip, where each entry renders
+ * as a chip that opens the file inline. A pure projection of the PR's
+ * changed-file list; not persisted.
  */
 export interface NotableFileChange {
   /** Workspace-relative path (used as the chip's tooltip and the open target). */
   path: string;
-  /** Frontmatter `title` for docs (falls back to a path-derived name); basename for config. */
+  /** Frontmatter `title` for docs (falls back to a path-derived name); basename for config/images. */
   title: string;
-  kind: "doc" | "config";
+  kind: "doc" | "config" | "image";
   /** Normalized git status — Modified, Added, or Deleted (renames/copies map to M). */
   status: "M" | "A" | "D";
 }

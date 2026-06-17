@@ -134,13 +134,36 @@ describe("computeNotableFiles — classification", () => {
     ]);
   });
 
-  it("skips non-notable files (code, lockfiles, assets)", async () => {
+  it("skips non-notable files (code, lockfiles)", async () => {
     const result = await computeNotableFiles(tmpDir, [
       { status: "M", path: "src/client/App.tsx" },
       { status: "M", path: "package-lock.json" },
-      { status: "A", path: "public/logo.png" },
+      { status: "M", path: "data/sample.csv" },
     ]);
     expect(result).toEqual([]);
+  });
+
+  it("classifies added/modified images by extension (case-insensitive)", async () => {
+    const result = await computeNotableFiles(tmpDir, [
+      { status: "A", path: "public/logo.png" },
+      { status: "M", path: "docs/210-thing/mockup.svg" },
+      { status: "A", path: "assets/Hero.JPG" },
+      { status: "D", path: "assets/old-banner.gif" },
+    ]);
+    expect(result).toEqual([
+      { path: "public/logo.png", title: "logo.png", kind: "image", status: "A" },
+      { path: "docs/210-thing/mockup.svg", title: "mockup.svg", kind: "image", status: "M" },
+      { path: "assets/Hero.JPG", title: "Hero.JPG", kind: "image", status: "A" },
+      { path: "assets/old-banner.gif", title: "old-banner.gif", kind: "image", status: "D" },
+    ]);
+  });
+
+  it("never collapses images sharing a basename across directories", async () => {
+    const result = await computeNotableFiles(tmpDir, [
+      { status: "A", path: "docs/a/diagram.png" },
+      { status: "A", path: "docs/b/diagram.png" },
+    ]);
+    expect(result.map((f) => f.path)).toEqual(["docs/a/diagram.png", "docs/b/diagram.png"]);
   });
 
   it("normalizes rename/copy statuses to M and drops unknown statuses", async () => {

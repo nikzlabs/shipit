@@ -14,6 +14,7 @@ afterEach(() => {
 const files: NotableFileChange[] = [
   { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
   { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
+  { path: "docs/205-pr-changed-docs/mockup.png", title: "mockup.png", kind: "image", status: "A" },
 ];
 
 describe("ChangedDocsStrip", () => {
@@ -34,6 +35,12 @@ describe("ChangedDocsStrip", () => {
     render(<ChangedDocsStrip sessionId="s1" notableFiles={files} />);
     fireEvent.click(screen.getByText("PR-scoped changed docs"));
     expect(openPreview).toHaveBeenCalledWith("s1", "docs/205-pr-changed-docs/plan.md");
+  });
+
+  it("renders an image chip that opens the asset inline when clicked", () => {
+    render(<ChangedDocsStrip sessionId="s1" notableFiles={files} />);
+    fireEvent.click(screen.getByText("mockup.png"));
+    expect(openPreview).toHaveBeenCalledWith("s1", "docs/205-pr-changed-docs/mockup.png");
   });
 
   it("renders nothing when there are no notable files", () => {

@@ -150,6 +150,15 @@ doc's main page, and stays in first-seen position. Config files are **not**
 deduped — a monorepo's multiple `package.json` / `docker-compose.yml` are
 genuinely distinct.
 
+**Images are a third notable tier.** Any added/modified/deleted image (matched
+by extension — `.png/.jpg/.jpeg/.gif/.webp/.svg/.avif/.bmp/.ico`) becomes a
+chip titled by its basename, with an image icon (`ImageIcon`, link-tinted).
+The chip opens the asset inline via the existing `openPreview` →
+`FilePreviewModal` image branch, so committed mockups, screenshots, and logos
+are eyeballable on the card without scanning the diff. Like config, images are
+never deduped (same-named assets in different dirs are distinct). The
+`NotableFileChange.kind` union widened to `"doc" | "config" | "image"`.
+
 Key files added: `src/server/orchestrator/services/notable-files.ts`,
 `src/client/components/ChangedDocsStrip.tsx`, and the
 `getSavedChangedDocsExpanded` / `saveChangedDocsExpanded` helpers in
