@@ -6,6 +6,7 @@
 #   • Tier A installer (default ENTRYPOINT, short-lived): init-firewall.sh
 #   • Tier B controlled resolver (long-lived): --entrypoint run-resolver.sh
 #   • Tier C SNI proxy (long-lived): --entrypoint /usr/local/bin/sni-proxy
+#   • Intra-session subnet allow (short-lived): --entrypoint allow-subnet.sh
 # See `egress-sidecar/*` and `docs/172-agent-containment/egress-control.md`.
 #
 # Build/publish this and point `SESSION_EGRESS_SIDECAR_IMAGE` at it; enforcement
@@ -40,8 +41,9 @@ RUN addgroup -g 912 egressproxy && adduser -D -H -u 912 -G egressproxy egresspro
 
 COPY egress-sidecar/init-firewall.sh /usr/local/bin/init-firewall.sh
 COPY egress-sidecar/run-resolver.sh /usr/local/bin/run-resolver.sh
+COPY egress-sidecar/allow-subnet.sh /usr/local/bin/allow-subnet.sh
 COPY --from=proxy-build /out/sni-proxy /usr/local/bin/sni-proxy
-RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/sni-proxy
+RUN chmod +x /usr/local/bin/init-firewall.sh /usr/local/bin/run-resolver.sh /usr/local/bin/allow-subnet.sh /usr/local/bin/sni-proxy
 
 # Default entrypoint is the Tier A installer; the Tier B resolver and Tier C proxy
 # override it with --entrypoint.

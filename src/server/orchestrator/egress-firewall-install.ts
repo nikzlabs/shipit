@@ -30,6 +30,7 @@ import {
   EGRESS_GITHUB_CIDRS_FALLBACK,
   parseGitHubMetaCidrs,
   buildIpsetMembers,
+  isValidCidr,
 } from "./egress-firewall.js";
 
 const GITHUB_META_URL = "https://api.github.com/meta";
@@ -206,4 +207,81 @@ export async function installEgressFirewall(
       /* already gone */
     }
   }
+}
+
+// --- Intra-session subnet allow (SHI-90 — preview reachability) -------------
+
+export interface AllowEgressToSubnetsOpts {
+  /** Docker id of the running agent container whose netns we add the rule to. */
+  agentContainerId: string;
+  /** Image that contains `allow-subnet.sh` + iptables/ip6tables. */
+  sidecarImage: string;
+  /** CIDR subnets to allow (the session/compose network's IPAM subnets). */
+  subnets: string[];
+  /** Labels to stamp on the sidecar container (for cleanup/discovery). */
+  labels?: Record<string, string>;
+}
+
+/**
+ * Re-open the agent's default-deny egress to its OWN session/compose network
+ * subnet(s), so the (multi-homed) agent — and its in-netns Playwright browser —
+ * can reach preview service containers by IP (docs/172 Gap 1, SHI-90).
+ *
+ * The Tier A installer (`init-firewall.sh`) runs at agent-container creation and
+ * only allows the *default-gateway* bridge subnet; a session's compose/preview
+ * network is created later and attached to the agent after the fact, so its
+ * subnet is dropped by `OUTPUT DROP`. This runs the short-lived `allow-subnet.sh`
+ * sidecar in the agent's netns to append an `ACCEPT` for that one subnet — the
+ * agent gains no route to any other network, so cross-session isolation is
+ * unchanged. We deliberately allow only the specific session subnet, never broad
+ * RFC1918 (which the host could forward into its own VPC/LAN).
+ *
+ * **Best-effort, not fail-closed.** Unlike {@link installEgressFirewall} (whose
+ * failure tears the container down), a failure here is logged and swallowed by
+ * the caller: failing to open the preview subnet only degrades the agent's own
+ * browser reachability — it never weakens containment. Returns the validated
+ * subnets that were submitted (empty when nothing valid was passed → no-op, no
+ * sidecar launched).
+ */
+export async function allowEgressToSubnets(
+  docker: Docker,
+  opts: AllowEgressToSubnetsOpts,
+): Promise<string[]> {
+  const subnets = opts.subnets.map((s) => s.trim()).filter((s) => s && isValidCidr(s));
+  if (subnets.length === 0) return [];
+
+  const container = await docker.createContainer({
+    Image: opts.sidecarImage,
+    Labels: opts.labels,
+    // Override the image's default Tier A entrypoint with the subnet-allow script.
+    Entrypoint: ["/usr/local/bin/allow-subnet.sh"],
+    HostConfig: {
+      NetworkMode: `container:${opts.agentContainerId}`,
+      CapAdd: ["NET_ADMIN"],
+      AutoRemove: false,
+    },
+    Env: [`EGRESS_ALLOW_SUBNETS=${subnets.join(" ")}`],
+  });
+
+  try {
+    await container.start();
+    const result = (await container.wait()) as { StatusCode?: number };
+    const code = result.StatusCode ?? -1;
+    if (code !== 0) {
+      let logs = "";
+      try {
+        logs = (await container.logs({ stdout: true, stderr: true, tail: 40 })).toString("utf-8");
+      } catch {
+        /* logs best-effort */
+      }
+      throw new Error(`egress subnet-allow sidecar exited ${code}${logs ? `:\n${logs}` : ""}`);
+    }
+  } finally {
+    try {
+      await container.remove({ force: true });
+    } catch {
+      /* already gone */
+    }
+  }
+  return subnets;
 }

@@ -234,6 +234,22 @@ tracker as separate issues. None implemented yet.
         container id + StartedAt); `https://example.com` then returned 200 with no restart.
         The reload also carried `identityRules` through — the relaunched proxy kept `1 identity
         rule(s)` and still denied `attacker.s3.amazonaws.com` (rc=35).
+- [x] **Gap 1 — intra-session preview reachability (GH #1495).** The multi-homed agent's
+      compose/preview subnet is attached *after* the Tier A install, so default-deny dropped
+      the agent's (and its in-netns Playwright browser's) traffic to its own dev server —
+      breaking "open the preview and screenshot to verify". Fix: on network join,
+      `connectToNetwork` inspects the joined network's IPAM subnet (`extractNetworkSubnets`)
+      and runs a short-lived `allow-subnet.sh` NET_ADMIN sidecar (`allowEgressToSubnets`) that
+      appends an `OUTPUT ... ACCEPT` for **that one subnet** (never broad RFC1918 — which the
+      host would forward into its own VPC/LAN). Best-effort (logs, never fail-closed; only
+      degrades preview convenience), no-op unless the session was contained at start.
+      Agent-facing `shipit-docs/preview.md` updated to point the browser at `containerIp:port`.
+      Unit-tested (`egress-firewall.test.ts`, `egress-firewall-install.test.ts`); the netns
+      rule application is verified on a live host like the other tiers.
+    - [ ] **Verify on a live host:** a contained session with an `auto` Vite preview —
+          `browser_navigate` to the dev container's `containerIp:5173` renders the real app
+          (no timeout); a non-allowlisted internet host is still blocked; reconnect-after-recreate
+          re-opens the subnet (idempotent).
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.

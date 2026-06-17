@@ -143,6 +143,42 @@ export function parseGitHubMetaCidrs(meta: unknown): string[] {
 // ipset member composition
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Intra-session subnet extraction (SHI-90 — preview reachability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Extract the validated, de-duplicated CIDR subnet list from a Docker network
+ * inspect result (the `IPAM.Config[].Subnet` entries). Used to re-open the
+ * agent's default-deny egress to its OWN session/compose network subnet so the
+ * agent (and its in-netns Playwright browser) can reach preview service
+ * containers by IP — the multi-homed agent's non-default subnet is otherwise
+ * dropped by the Tier A `OUTPUT DROP` policy (see `allow-subnet.sh`).
+ *
+ * Pure + defensive: tolerates a missing/garbage `IPAM`/`Config` shape (returns
+ * `[]`) and drops any entry that isn't a valid CIDR, so a malformed inspect can
+ * never poison the rule set or throw.
+ */
+export function extractNetworkSubnets(networkInfo: unknown): string[] {
+  if (!networkInfo || typeof networkInfo !== "object") return [];
+  const ipam = (networkInfo as Record<string, unknown>).IPAM;
+  if (!ipam || typeof ipam !== "object") return [];
+  const config = (ipam as Record<string, unknown>).Config;
+  if (!Array.isArray(config)) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of config) {
+    if (!entry || typeof entry !== "object") continue;
+    const subnet = (entry as Record<string, unknown>).Subnet;
+    if (typeof subnet !== "string") continue;
+    const cidr = subnet.trim();
+    if (!isValidCidr(cidr) || seen.has(cidr)) continue;
+    seen.add(cidr);
+    out.push(cidr);
+  }
+  return out;
+}
+
 /**
  * Compose the deduplicated, validated member set for the Tier A `allowed-egress`
  * ipset (`hash:net`, which accepts both bare IPs and CIDRs) from resolved host

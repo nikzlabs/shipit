@@ -283,6 +283,56 @@ proxy launch omits the var → no identity scoping (Tier C host-allowlist behavi
 operator-global env, so every contained session currently gets the same rules. A per-session
 Settings editor would feed `durableRules` (the seam is in place).
 
+## Intra-session preview reachability (SHI-90 follow-up)
+
+Tier A's installer (`init-firewall.sh`) runs at **agent-container creation** and, for
+local destinations, allows only the agent's **default-gateway bridge subnet** (the
+orchestrator network — needed for the orchestrator API + docker proxy). But the agent
+is **multi-homed**: a session's compose/preview network (`shipit-session-<id>`) is
+created later by `docker compose up` and the agent is attached to it *after the fact*
+(`connectToNetwork`, after the worker is ready and the stack is up). That second subnet
+is **not** in the install-time allow-set, so the default-deny `OUTPUT DROP` policy
+silently dropped the agent's traffic to its own dev server. The visible symptom
+(GH #1495): the agent's built-in **Playwright browser** — which shares the agent's netns
+and is therefore subject to the same firewall — **could not reach the live preview** to
+screenshot/verify its work (`curl`/navigation to the dev container's `containerIp:port`
+timed out), even though the user's preview pane worked fine (that routes through the
+orchestrator's `preview-proxy`, which is on the already-allowed orchestrator subnet).
+
+**Fix:** when the agent joins a session network, re-open egress to **that one subnet**.
+`SessionContainerManager.connectToNetwork` inspects the joined network's `IPAM.Config`
+subnet(s) (`extractNetworkSubnets`) and runs a short-lived `allow-subnet.sh` sidecar
+(`--network container:<agent> --cap-add NET_ADMIN`, mirroring the Tier A installer) that
+appends `iptables -A OUTPUT -d <subnet> -j ACCEPT` into the agent's netns
+(`allowEgressToSubnets`). Idempotent (`-C` before `-A`) so the reconnect-after-recreate
+re-join is safe.
+
+**Why this doesn't weaken containment:**
+- It allows **only the specific session subnet**, never broad RFC1918. A broad
+  `10/8 + 172.16/12 + 192.168/16` allow would be simpler but unsafe: the agent's
+  default route is the Docker host, which *would* forward those packets into the host's
+  own VPC/LAN (an SSRF surface). The exact-subnet rule grants the agent **no route to
+  any other network** — only its own session's containers become reachable, so
+  cross-session isolation (per-session networks + source-IP id, NET_RAW dropped) is
+  unchanged.
+- It is **best-effort, never fail-closed.** Unlike the Tier A install (whose failure
+  tears the container down), a failure here is logged and swallowed: failing to open the
+  preview subnet only degrades the agent's *own* browser convenience — it never opens
+  internet egress, so there is nothing to fail closed about.
+- The residual it *does* admit — a compose service container has unrestricted egress, so
+  an agent that can reach it could exfiltrate *through* it as a relay — is **inherent to
+  the feature** (the agent reaching the preview at all) and is **not** specific to this
+  mechanism: routing the agent's browser through the orchestrator `preview-proxy` instead
+  would forward agent→orchestrator→compose-container and leave the same relay open. It is
+  gated upstream by the repo-trust boundary (Gap 3 — untrusted repos don't run compose)
+  and the user having explicitly started the preview.
+
+No-op unless the session was actually contained at start
+(`SessionContainer.egressContainedAtStart`), enforcement is on, and the sidecar image is
+configured — i.e. only when there is a firewall to punch the hole in. Agent-facing
+guidance (`shipit-docs/preview.md`) is updated to tell the agent to reach previews from
+its browser at the service registry's `containerIp:port`.
+
 ## Settings & UX (browser-only, SHI-129-protected)
 
 All egress configuration is mutated **only from the browser**. SHI-129's guard is
@@ -436,6 +486,11 @@ as an operator default / fail-secure floor).
   + gateway attachment).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
+- Intra-session preview reachability (SHI-90 follow-up, GH #1495) —
+  `docker/egress-sidecar/allow-subnet.sh` (the netns rule-adder),
+  `allowEgressToSubnets` + `extractNetworkSubnets` (orchestrator-side, unit-tested in
+  `egress-firewall-install.test.ts` / `egress-firewall.test.ts`), wired in
+  `SessionContainerManager.connectToNetwork` (`session-container.ts`).
 - `egress-allowlist.ts` (reused) — host matcher + `composeEgressExtraHosts` composition.
 - `egress-allowlist-store.ts` (durable allowlist + containment toggle, SQLite) +
   `egress-reload.ts` (live resolver/proxy relaunch on a durable add).

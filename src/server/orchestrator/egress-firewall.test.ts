@@ -9,6 +9,7 @@ import {
   isValidCidr,
   parseGitHubMetaCidrs,
   buildIpsetMembers,
+  extractNetworkSubnets,
 } from "./egress-firewall.js";
 
 describe("isValidIp", () => {
@@ -103,6 +104,54 @@ describe("buildIpsetMembers", () => {
 
   it("handles empty input", () => {
     expect(buildIpsetMembers({})).toEqual([]);
+  });
+});
+
+describe("extractNetworkSubnets", () => {
+  it("pulls valid CIDR subnets from a Docker network inspect (IPAM.Config)", () => {
+    const info = {
+      Name: "shipit-session-abc",
+      IPAM: { Config: [{ Subnet: "172.19.0.0/16", Gateway: "172.19.0.1" }] },
+    };
+    expect(extractNetworkSubnets(info)).toEqual(["172.19.0.0/16"]);
+  });
+
+  it("collects v4 + v6 subnets and de-duplicates", () => {
+    const info = {
+      IPAM: {
+        Config: [
+          { Subnet: "172.19.0.0/16" },
+          { Subnet: "fd00:dead:beef::/64" },
+          { Subnet: "172.19.0.0/16" }, // dup
+        ],
+      },
+    };
+    expect(extractNetworkSubnets(info)).toEqual(["172.19.0.0/16", "fd00:dead:beef::/64"]);
+  });
+
+  it("drops malformed/garbage subnet entries (must not poison the rule set)", () => {
+    const info = {
+      IPAM: {
+        Config: [
+          { Subnet: "172.19.0.0/16" },
+          { Subnet: "10.0.0.0/99" }, // bad prefix
+          { Subnet: "not-a-cidr" },
+          { Gateway: "172.19.0.1" }, // no Subnet key
+          { Subnet: 12345 }, // non-string
+          "garbage",
+        ],
+      },
+    };
+    expect(extractNetworkSubnets(info)).toEqual(["172.19.0.0/16"]);
+  });
+
+  it("returns [] for missing/garbage IPAM shapes (never throws)", () => {
+    expect(extractNetworkSubnets(undefined)).toEqual([]);
+    expect(extractNetworkSubnets(null)).toEqual([]);
+    expect(extractNetworkSubnets({})).toEqual([]);
+    expect(extractNetworkSubnets({ IPAM: {} })).toEqual([]);
+    expect(extractNetworkSubnets({ IPAM: { Config: "nope" } })).toEqual([]);
+    expect(extractNetworkSubnets("string")).toEqual([]);
   });
 });
 
