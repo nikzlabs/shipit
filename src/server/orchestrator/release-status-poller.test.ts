@@ -17,8 +17,10 @@ function makeFakeGitHub() {
     authenticated: true,
     checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 } as Checks,
     release: null as ReleaseByTag | null,
+    pr: null as { state: "open" | "closed"; merged: boolean } | null,
     checkStatusCalls: 0,
     releaseCalls: 0,
+    prCalls: 0,
   };
   const gh = {
     get authenticated() {
@@ -31,6 +33,10 @@ function makeFakeGitHub() {
     async getReleaseByTag(): Promise<ReleaseByTag | null> {
       state.releaseCalls++;
       return state.release;
+    },
+    async viewPullRequest() {
+      state.prCalls++;
+      return state.pr;
     },
   } as unknown as GitHubAuthManager;
   return { gh, state };
@@ -99,6 +105,53 @@ describe("ReleaseStatusPoller", () => {
     expect(card?.phase).toBe("released");
     expect(card?.release?.htmlUrl).toContain("releases/tag/v0.3.0");
     expect(card?.notes).toContain("Features");
+  });
+
+  it("markPrOpened sets a pr_open card and polls the PR (docs/214)", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "open", merged: false };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const card = poller.getStatus("s1");
+    expect(card?.phase).toBe("pr_open");
+    expect(card?.prNumber).toBe(42);
+    expect(card?.releaseBranch).toBe("stable");
+    expect(ctx.state.prCalls).toBeGreaterThan(0);
+    // No Release polling while the PR is still open.
+    expect(ctx.state.releaseCalls).toBe(0);
+  });
+
+  it("pr_open → pr_merged → released once the PR merges and CI publishes", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "open", merged: true }; // already merged when first polled
+    ctx.state.release = {
+      name: "v0.3.0", body: "notes", htmlUrl: "https://github.com/owner/repo/releases/tag/v0.3.0",
+      prerelease: false, publishedAt: "2026-06-03T00:00:00Z", tagName: "v0.3.0",
+    };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // merge detected → immediate re-poll picks up the published Release.
+    expect(poller.getStatus("s1")?.phase).toBe("released");
+  });
+
+  it("pr_open → failed when the PR is closed without merging", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "closed", merged: false };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller.getStatus("s1")?.phase).toBe("failed");
   });
 
   it("markTagged → failed when the gate fails and no Release exists", async () => {

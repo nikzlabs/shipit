@@ -23,6 +23,7 @@ import type { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
 import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { PrStatusPoller } from "./pr-status-poller.js";
+import type { ReleaseStatusPoller } from "./release-status-poller.js";
 import type { MergeWatchManager } from "./merge-watch.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { ServiceManager } from "./service-manager.js";
@@ -175,6 +176,8 @@ export interface ApiDeps {
   containerManager?: SessionContainerManager;
   /** PR status poller — needed for tracking new PRs. */
   prStatusPoller?: PrStatusPoller;
+  /** docs/214 — release lifecycle poller; the release routes drive it directly. */
+  releaseStatusPoller?: ReleaseStatusPoller;
   /** docs/196 — notify-on-merge deliverer; the register route fires its register-time terminal-state check. */
   mergeWatchManager?: MergeWatchManager;
   /** Database manager — needed for full reset to clear all tables atomically. */

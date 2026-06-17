@@ -60,6 +60,7 @@ import {
   handleIssueView,
 } from "./shipit-issue.js";
 import { handleAgentRun } from "./shipit-agent.js";
+import { handleReleasePlan, handleReleasePrepare } from "./shipit-release.js";
 import {
   handleSourceBlame,
   handleSourceCat,
@@ -118,6 +119,25 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   created. On 'edit' labels are added to the issue's existing set. --priority is
   urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
   label there instead.
+
+Releases (docs/214 — deterministic, merge-triggered; CI publishes):
+  shipit release plan    [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]
+  shipit release prepare [<bump|VERSION>] [--pick SHA]... [--from BRANCH]
+                         [--release-branch NAME] [--bootstrap] [--notes TEXT]
+                         [--prerelease [--confirm]] [--version-source-path FILE] [--json]
+
+  'plan' is read-only: it detects the version source and computes the next
+  version. 'prepare' opens a version-bump PR against the release branch
+  (default 'stable') — MERGING that PR is what publishes the release; CI tags
+  the merged commit and creates the GitHub Release. You never push a tag for a
+  final release. Use --pick <sha> to cherry-pick a hotfix, or --from <branch>
+  to bring a branch's content. --bootstrap creates the release branch on its
+  first use.
+
+  Prereleases (rc) don't go through the release branch. 'prepare --prerelease'
+  proposes the rc; re-run with --confirm to cut + push the vX.Y.Z-rc.N tag
+  (a tag push is always confirmation-gated). There is no 'release tag',
+  'release publish', or 'release push' — publishing is CI's job.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
   shipit agent run --agent claude|codex --prompt-file FILE [--model M] [--json]
@@ -265,6 +285,14 @@ const REJECTED_ISSUE_SUBCOMMANDS = new Set([
   "close",  // use `shipit issue status <pointer> completed` (or `canceled`) instead.
 ]);
 
+/**
+ * Release verbs the agent might reach for that the shim refuses (docs/214). For
+ * a FINAL release publishing is CI's job — the agent never hand-pushes a tag;
+ * `prepare` opens the bump PR and merging it triggers the publish. (rc tags are
+ * cut via `prepare --prerelease --confirm`, still never a raw `git tag`.)
+ */
+const REJECTED_RELEASE_SUBCOMMANDS = new Set(["tag", "publish", "push"]);
+
 const SESSION_HANDLERS: Record<
   string,
   (args: string[], deps: RunDeps) => Promise<void>
@@ -296,6 +324,14 @@ const AGENT_HANDLERS: Record<
   (args: string[], deps: RunDeps) => Promise<void>
 > = {
   run: handleAgentRun,
+};
+
+const RELEASE_HANDLERS: Record<
+  string,
+  (args: string[], deps: RunDeps) => Promise<void>
+> = {
+  plan: handleReleasePlan,
+  prepare: handleReleasePrepare,
 };
 
 const SOURCE_HANDLERS: Record<
@@ -355,6 +391,11 @@ export async function runShim(
 
   if (command === "agent") {
     await dispatchAgent(args.slice(1), deps, io);
+    return;
+  }
+
+  if (command === "release") {
+    await dispatchRelease(args.slice(1), deps, io);
     return;
   }
 
@@ -449,6 +490,33 @@ async function dispatchAgent(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = AGENT_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit agent subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  await handler(args.slice(1), deps);
+}
+
+/**
+ * Dispatch a `shipit release <sub>` invocation (docs/214). `plan`/`prepare`
+ * only — `tag`/`publish`/`push` are rejected with a pointer at the
+ * merge-triggered flow (publishing is CI's job, not the agent's).
+ */
+async function dispatchRelease(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
+  const sub = args[0];
+  if (!sub || sub === "--help" || sub === "-h" || sub === "help") {
+    success(io, HELP);
+    return;
+  }
+  if (REJECTED_RELEASE_SUBCOMMANDS.has(sub)) {
+    fail(
+      io,
+      `${SHIM_NAME} does not support \`shipit release ${sub}\` — publishing is CI's job.\n` +
+        "For a final release run `shipit release prepare` and MERGE the bump PR; CI tags + publishes.\n" +
+        "For a prerelease run `shipit release prepare --prerelease --confirm`.\n" +
+        "See /shipit-docs/release.md.",
+    );
+  }
+  const handler = RELEASE_HANDLERS[sub];
+  if (!handler) {
+    fail(io, `Unsupported shipit release subcommand: ${sub}\n${REJECTED_HELP}`);
   }
   await handler(args.slice(1), deps);
 }

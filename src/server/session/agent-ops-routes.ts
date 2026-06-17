@@ -205,6 +205,27 @@ export function registerAgentOpsRoutes(
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
+  // POST /agent-ops/release/plan — read-only release plan (docs/214). Backs
+  // `shipit release plan`. The worker injects the trusted SESSION_ID; the
+  // orchestrator detects the version source + computes the next version.
+  app.post<{ Body: { bump?: string; prerelease?: boolean; versionSourcePath?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/release/plan",
+    async (request, reply) => relay("POST", "/release/plan", request.body ?? {}, reply),
+  );
+
+  // POST /agent-ops/release/prepare — open the bump PR (final release) or cut the
+  // rc tag (prerelease, confirmation-gated). Backs `shipit release prepare`.
+  app.post<{
+    Body: {
+      bump?: string; prerelease?: boolean; pick?: string[]; from?: string;
+      releaseBranch?: string; bootstrap?: boolean; confirm?: boolean;
+      versionSourcePath?: string; notes?: string; cwd?: string; repo?: string;
+    };
+  }>(
+    "/agent-ops/release/prepare",
+    async (request, reply) => relay("POST", "/release/prepare", request.body ?? {}, reply),
+  );
+
   // POST /agent-ops/git/credential — broker a git credential for the
   // in-container `shipit-git-credential` helper (docs/088 finding #5). The
   // helper POSTs the requested host here; the orchestrator returns the GitHub

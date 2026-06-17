@@ -56,6 +56,24 @@ export async function reactToReleaseMarkers(args: {
         });
         break;
       }
+      case "pr-opened": {
+        // docs/214 — normally driven directly from the prepare route
+        // (`markPrOpened`); handled here too so a marker-driven emit stays
+        // supported. Fill the version source from local detection when omitted.
+        const versionSource = marker.versionSource ?? detectVersionSource(sessionDir)?.source;
+        deps.releaseStatusPoller.markPrOpened(sessionId, repoUrl, {
+          version: marker.version,
+          tag: marker.tag,
+          prerelease: marker.prerelease ?? marker.tag.includes("-"),
+          prNumber: marker.prNumber,
+          prUrl: marker.prUrl,
+          releaseBranch: marker.releaseBranch,
+          ...(marker.bumpType ? { bumpType: marker.bumpType } : {}),
+          ...(versionSource ? { versionSource } : {}),
+          ...(marker.notes ? { notes: marker.notes } : {}),
+        });
+        break;
+      }
       case "tagged": {
         deps.releaseStatusPoller.markTagged(sessionId, repoUrl, {
           tag: marker.tag,

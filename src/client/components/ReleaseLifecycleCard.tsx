@@ -119,6 +119,8 @@ function Notes({ notes }: { notes?: string }) {
 const STATUS_LABEL: Record<ReleaseStatusSummary["phase"], string> = {
   proposed: "Release proposed",
   tagging: "Tagging…",
+  pr_open: "Release PR open — merge to publish",
+  pr_merged: "Release PR merged — publishing…",
   gating: "Publishing release…",
   published: "Release published",
   deploying: "Deploying…",
@@ -137,7 +139,7 @@ function headerIconFor(phase: ReleaseStatusSummary["phase"]) {
   if (phase === "cancelled") {
     return <ProhibitIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />;
   }
-  if (phase === "tagging" || phase === "gating" || phase === "deploying") {
+  if (phase === "tagging" || phase === "pr_merged" || phase === "gating" || phase === "deploying") {
     return <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />;
   }
   return <RocketLaunchIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />;
@@ -153,6 +155,7 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
 
   const { phase, version, tag, prerelease, bumpType, versionSource } = card;
   const releaseUrl = card.release?.htmlUrl;
+  const prUrl = card.prUrl;
   const label = phase === "released" && card.alreadyReleased ? "Already released" : STATUS_LABEL[phase];
 
   const meta = (
@@ -171,12 +174,20 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
   const actions = (
     <div className="ml-auto flex items-center gap-2">
       <GateIndicator checks={card.checks} />
-      {releaseUrl && (
+      {(releaseUrl || prUrl) && (
         <OverflowMenu label="Release actions" triggerClassName="h-auto w-auto p-1">
-          <DropdownMenuItem onSelect={() => window.open(releaseUrl, "_blank", "noopener,noreferrer")}>
-            <ArrowSquareOutIcon size={ICON_SIZE.SM} />
-            View release on GitHub
-          </DropdownMenuItem>
+          {prUrl && (
+            <DropdownMenuItem onSelect={() => window.open(prUrl, "_blank", "noopener,noreferrer")}>
+              <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+              View release PR on GitHub
+            </DropdownMenuItem>
+          )}
+          {releaseUrl && (
+            <DropdownMenuItem onSelect={() => window.open(releaseUrl, "_blank", "noopener,noreferrer")}>
+              <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+              View release on GitHub
+            </DropdownMenuItem>
+          )}
         </OverflowMenu>
       )}
     </div>

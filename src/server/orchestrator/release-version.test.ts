@@ -12,6 +12,7 @@ import {
   readVersionFile,
   detectVersionSource,
   detectAllVersionSources,
+  writeVersionToSource,
 } from "./release-version.js";
 
 describe("parseSemVer", () => {
@@ -229,5 +230,83 @@ describe("detectAllVersionSources", () => {
     fs.writeFileSync(path.join(dir, "VERSION"), "0.1.0");
     const sources = detectAllVersionSources(dir);
     expect(sources.map((s) => s.source)).toEqual(["package.json", "Cargo.toml", "pyproject.toml", "VERSION"]);
+  });
+});
+
+describe("writeVersionToSource", () => {
+  let dir: string;
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "release-write-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rewrites package.json's version, preserving indentation and trailing newline", () => {
+    const file = path.join(dir, "package.json");
+    fs.writeFileSync(file, `{\n  "name": "x",\n  "version": "1.2.3"\n}\n`);
+    writeVersionToSource({ source: "package.json", path: file, version: "1.2.3" }, "1.3.0");
+    const out = fs.readFileSync(file, "utf8");
+    expect(JSON.parse(out).version).toBe("1.3.0");
+    expect(out.endsWith("}\n")).toBe(true);
+    expect(out).toContain(`  "version": "1.3.0"`);
+    // re-detect confirms write/read symmetry
+    expect(detectVersionSource(dir)?.version).toBe("1.3.0");
+  });
+
+  it("does not touch a nested dependency version in package.json", () => {
+    const file = path.join(dir, "package.json");
+    fs.writeFileSync(file, JSON.stringify({ version: "1.0.0", dependencies: { foo: "9.9.9" } }, null, 2));
+    writeVersionToSource({ source: "package.json", path: file, version: "1.0.1" }, "1.0.1");
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8"));
+    expect(parsed.version).toBe("1.0.1");
+    expect(parsed.dependencies.foo).toBe("9.9.9");
+  });
+
+  it("best-effort bumps package-lock.json root + packages[\"\"]", () => {
+    fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({ name: "x", version: "1.0.0" }, null, 2));
+    fs.writeFileSync(
+      path.join(dir, "package-lock.json"),
+      JSON.stringify({ name: "x", version: "1.0.0", packages: { "": { name: "x", version: "1.0.0" } } }, null, 2),
+    );
+    writeVersionToSource({ source: "package.json", path: path.join(dir, "package.json"), version: "1.0.0" }, "2.0.0");
+    const lock = JSON.parse(fs.readFileSync(path.join(dir, "package-lock.json"), "utf8"));
+    expect(lock.version).toBe("2.0.0");
+    expect(lock.packages[""].version).toBe("2.0.0");
+  });
+
+  it("rewrites Cargo.toml [package] version only", () => {
+    const file = path.join(dir, "Cargo.toml");
+    fs.writeFileSync(file, '[package]\nname = "myapp"\nversion = "0.5.2"\n\n[dependencies]\nfoo = { version = "1.0" }\n');
+    writeVersionToSource({ source: "Cargo.toml", path: file, version: "0.5.2" }, "0.6.0");
+    const out = fs.readFileSync(file, "utf8");
+    expect(readCargoTomlVersion(dir)).toBe("0.6.0");
+    expect(out).toContain('foo = { version = "1.0" }');
+  });
+
+  it("rewrites pyproject [project] version", () => {
+    const file = path.join(dir, "pyproject.toml");
+    fs.writeFileSync(file, '[project]\nname = "myapp"\nversion = "1.0.0"\n');
+    writeVersionToSource({ source: "pyproject.toml", path: file, version: "1.0.0" }, "1.1.0");
+    expect(readPyprojectVersion(dir)).toBe("1.1.0");
+  });
+
+  it("rewrites a VERSION file's first line", () => {
+    const file = path.join(dir, "VERSION");
+    fs.writeFileSync(file, "1.2.3\n");
+    writeVersionToSource({ source: "VERSION", path: file, version: "1.2.3" }, "1.2.4");
+    expect(fs.readFileSync(file, "utf8")).toBe("1.2.4\n");
+  });
+
+  it("throws for a tag-only source", () => {
+    expect(() => writeVersionToSource({ source: "tag", version: "1.0.0" }, "1.0.1")).toThrow(/tag-only/);
+  });
+
+  it("throws when the version field cannot be located", () => {
+    const file = path.join(dir, "Cargo.toml");
+    fs.writeFileSync(file, '[package]\nname = "myapp"\n');
+    expect(() =>
+      writeVersionToSource({ source: "Cargo.toml", path: file, version: "0.0.0" }, "0.1.0"),
+    ).toThrow(/locate the version field/);
   });
 });

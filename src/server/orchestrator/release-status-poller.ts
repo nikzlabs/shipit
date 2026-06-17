@@ -37,8 +37,12 @@ export const RELEASE_SLOW_INTERVAL_MS = 120_000;
  */
 const VIEWER_DETACH_GRACE_MS = 60_000;
 
-/** Phases that still need polling (a remote artifact may still change). */
-const ACTIVE_PHASES: ReadonlySet<ReleasePhase> = new Set(["gating", "deploying"]);
+/**
+ * Phases that still need polling (a remote artifact may still change):
+ * - `pr_open`   — poll the release PR until it merges (docs/214).
+ * - `pr_merged` / `gating` / `deploying` — poll the gate + published Release.
+ */
+const ACTIVE_PHASES: ReadonlySet<ReleasePhase> = new Set(["pr_open", "pr_merged", "gating", "deploying"]);
 /** Terminal phases — no further polling. */
 const TERMINAL_PHASES: ReadonlySet<ReleasePhase> = new Set(["released", "failed", "cancelled"]);
 
@@ -67,6 +71,18 @@ export interface ReleaseTaggedInput {
   version: string;
   prerelease: boolean;
   sha?: string;
+  notes?: string;
+}
+
+export interface ReleasePrOpenedInput {
+  version: string;
+  tag: string;
+  prerelease: boolean;
+  prNumber: number;
+  prUrl: string;
+  releaseBranch: string;
+  bumpType?: ReleaseStatusSummary["bumpType"];
+  versionSource?: string;
   notes?: string;
 }
 
@@ -187,6 +203,51 @@ export class ReleaseStatusPoller {
       ...(input.notes ? { notes: input.notes } : {}),
     };
     this.setCard(card);
+  }
+
+  /**
+   * docs/214 — record that a version-bump PR was opened against the release
+   * branch (driven directly from the `shipit release prepare` route, so the
+   * agent is out of the state-reporting loop). Moves the card to `pr_open` and
+   * starts polling the PR until it merges; once merged the card advances to
+   * `pr_merged` and folds into the existing tag/Release polling.
+   *
+   * Re-prepares for the SAME tag (the release branch was reset + the PR updated)
+   * reuse the same card — keyed by `{sessionId, tag}` — patching `prNumber`/
+   * `prUrl` in place rather than appending a duplicate card. If the tag was
+   * already observed as published (dedup), surface that terminal result instead.
+   */
+  markPrOpened(sessionId: string, repoUrl: string | undefined, input: ReleasePrOpenedInput): void {
+    const repo = this.resolveRepo(sessionId, repoUrl);
+    const prev = this.cards.get(sessionId);
+
+    if (repo) {
+      const dedup = this.releasedByKey.get(`${repo.repoKey}#${input.tag}`);
+      if (dedup) {
+        this.setCard({ ...dedup, sessionId, cardId: cardIdFor(sessionId, input.tag), alreadyReleased: true });
+        return;
+      }
+    }
+
+    const card: ReleaseStatusSummary = {
+      sessionId,
+      cardId: cardIdFor(sessionId, input.tag),
+      phase: "pr_open",
+      version: input.version,
+      tag: input.tag,
+      prerelease: input.prerelease,
+      prNumber: input.prNumber,
+      prUrl: input.prUrl,
+      releaseBranch: input.releaseBranch,
+      ...(input.bumpType ?? prev?.bumpType ? { bumpType: input.bumpType ?? prev?.bumpType } : {}),
+      ...(input.versionSource ?? prev?.versionSource ? { versionSource: input.versionSource ?? prev?.versionSource } : {}),
+      ...(input.notes ?? prev?.notes ? { notes: input.notes ?? prev?.notes } : {}),
+    };
+    this.setCard(card);
+    this.ensureSupervisor();
+    void this.pollSession(sessionId).catch((err: unknown) => {
+      console.error(`[release-poller] initial PR poll error for ${sessionId}:`, err);
+    });
   }
 
   /**
@@ -369,6 +430,35 @@ export class ReleaseStatusPoller {
     if (!this.githubAuth.authenticated) return;
 
     this.lastPolledAt.set(sessionId, Date.now());
+
+    // docs/214 — `pr_open`: poll the release PR until it merges. On merge, fold
+    // into the tag/Release polling below (phase `pr_merged`); on a close without
+    // a merge, terminate the card as `failed`.
+    if (card.phase === "pr_open") {
+      if (typeof card.prNumber !== "number") return;
+      const pr = await this.githubAuth.viewPullRequest(repo.owner, repo.repo, card.prNumber);
+      const current = this.cards.get(sessionId);
+      if (!current) return;
+      if (current.tag !== card.tag || current.phase !== "pr_open") return;
+      if (!pr) return; // transient read failure — keep polling
+      if (pr.merged) {
+        this.setCard({ ...current, phase: "pr_merged" });
+        // Immediately probe the gate/Release so a fast CI publish shows up
+        // without waiting a full poll interval.
+        void this.pollSession(sessionId).catch((err: unknown) => {
+          console.error(`[release-poller] post-merge poll error for ${sessionId}:`, err);
+        });
+        return;
+      }
+      if (pr.state === "closed") {
+        this.setCard({
+          ...current,
+          phase: "failed",
+          errorMessage: "The release PR was closed without merging.",
+        });
+      }
+      return;
+    }
 
     const checks = card.commitSha
       ? await this.githubAuth.getCheckStatus(repo.owner, repo.repo, card.commitSha)

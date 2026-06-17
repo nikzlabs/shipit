@@ -39,3 +39,4 @@ export * from "./sub-agent.js";
 export * from "./voice.js";
 export * from "./redaction.js";
 export * from "./bug-report.js";
+export * from "./release-prepare.js";

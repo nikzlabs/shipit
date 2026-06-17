@@ -29,6 +29,33 @@ describe("parseReleaseMarkers", () => {
     ]);
   });
 
+  it("parses a pr-opened marker with all fields (docs/214)", () => {
+    const text = `<!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0","prNumber":42,"prUrl":"https://github.com/o/r/pull/42","releaseBranch":"stable","bumpType":"minor","versionSource":"package.json"}-->`;
+    expect(parseReleaseMarkers(text)).toEqual([
+      {
+        action: "pr-opened",
+        version: "0.3.0",
+        tag: "v0.3.0",
+        prNumber: 42,
+        prUrl: "https://github.com/o/r/pull/42",
+        releaseBranch: "stable",
+        bumpType: "minor",
+        versionSource: "package.json",
+      },
+    ]);
+  });
+
+  it("ignores a pr-opened marker missing required fields", () => {
+    expect(
+      parseReleaseMarkers(`<!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0"}-->`),
+    ).toEqual([]);
+    expect(
+      parseReleaseMarkers(
+        `<!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0","prNumber":0,"prUrl":"x","releaseBranch":"stable"}-->`,
+      ),
+    ).toEqual([]);
+  });
+
   it("parses already-released and cancelled markers", () => {
     expect(parseReleaseMarkers(`<!--shipit:release {"action":"already-released","tag":"v1.0.0"}-->`)).toEqual([
       { action: "already-released", tag: "v1.0.0" },
