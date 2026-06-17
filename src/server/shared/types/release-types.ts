@@ -25,11 +25,17 @@ export type ReleaseBumpType = "major" | "minor" | "patch" | "prerelease";
  * - `proposed`  — agent computed the next version + notes preview; the card
  *   shows Confirm & publish / Cancel. No tag exists yet.
  * - `tagging`   — confirmed; the agent is bumping + committing + tagging + pushing.
+ * - `pr_open`   — (docs/214, release-branch mechanism) a version-bump PR is open
+ *   against the release branch, awaiting a human merge. Long-lived (a release PR
+ *   can sit open for days), so the card is persisted and the poller polls the PR.
+ * - `pr_merged` — (docs/214) the release PR merged; the repo's CI is now tagging
+ *   + publishing off the merged commit. Folds into the same gate/release polling
+ *   as `gating`.
  * - `gating`    — tag pushed; the repo's CI is running its release gate.
  * - `published` — the GitHub Release exists (grouped notes, prerelease flag).
  * - `deploying` — a downstream deploy is in flight for the tagged commit.
  * - `released`  — Release published AND (deploy succeeded OR no deploy target).
- * - `failed`    — gate failed / push rejected / API error.
+ * - `failed`    — gate failed / push rejected / PR closed unmerged / API error.
  * - `cancelled` — the user declined the proposal on the card (terminal). The
  *   card collapses to a "Release cancelled" row and persists like any other
  *   terminal state, rather than vanishing.
@@ -37,6 +43,8 @@ export type ReleaseBumpType = "major" | "minor" | "patch" | "prerelease";
 export type ReleasePhase =
   | "proposed"
   | "tagging"
+  | "pr_open"
+  | "pr_merged"
   | "gating"
   | "published"
   | "deploying"
@@ -104,4 +112,14 @@ export interface ReleaseStatusSummary {
   release?: PublishedReleaseInfo;
   deployments?: GitHubDeploymentStatus[];
   errorMessage?: string;
+  /**
+   * docs/214 (release-branch mechanism) — the version-bump PR opened against the
+   * release branch. Present from the `pr_open` phase onward. The poller polls
+   * this PR until it merges, then falls into the existing tag/Release polling.
+   */
+  prNumber?: number;
+  /** Link-out to the release PR on GitHub (overflow escape hatch only). */
+  prUrl?: string;
+  /** The release (maintenance) branch the bump PR targets, e.g. "stable". */
+  releaseBranch?: string;
 }

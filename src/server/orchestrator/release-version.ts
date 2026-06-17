@@ -204,3 +204,135 @@ export function detectAllVersionSources(dir: string): DetectedVersionSource[] {
 export function detectVersionSource(dir: string): DetectedVersionSource | null {
   return detectAllVersionSources(dir)[0] ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Write side (docs/214 Phase 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Detect the indentation unit a JSON file uses, so a rewrite preserves the
+ * file's existing formatting instead of reflowing it. Returns the whitespace of
+ * the first indented line (`"  "`, `"\t"`, …), defaulting to two spaces.
+ */
+function detectJsonIndent(raw: string): string {
+  const m = /\n([ \t]+)\S/.exec(raw);
+  return m?.[1] ?? "  ";
+}
+
+/**
+ * Rewrite the top-level `version` field of a `package.json`-shaped file,
+ * preserving the file's indentation and trailing newline. Parsing (rather than
+ * a blind regex) guarantees we touch the authoritative top-level field and not,
+ * say, a nested dependency's `version`. Returns the new file text.
+ */
+function rewritePackageJson(raw: string, newVersion: string): string {
+  const parsed = JSON.parse(raw) as Record<string, unknown>;
+  parsed.version = newVersion;
+  const indent = detectJsonIndent(raw);
+  const out = JSON.stringify(parsed, null, indent);
+  return raw.endsWith("\n") ? `${out}\n` : out;
+}
+
+/**
+ * Replace the `version = "…"` line inside the first matching TOML section. The
+ * section regexes mirror the readers above so the write side targets exactly the
+ * field the read side parses (write/read symmetry — docs/214). Returns the new
+ * file text, or null when no `version` line was found in any candidate section.
+ */
+function rewriteTomlVersion(raw: string, sectionRes: RegExp[], newVersion: string): string | null {
+  for (const sectionRe of sectionRes) {
+    const section = sectionRe.exec(raw);
+    if (!section) continue;
+    const body = section[1] ?? "";
+    const versionRe = /^(\s*version\s*=\s*")([^"]+)(")/m;
+    if (!versionRe.test(body)) continue;
+    const newBody = body.replace(versionRe, `$1${newVersion}$3`);
+    return raw.slice(0, section.index) + raw.slice(section.index).replace(body, newBody);
+  }
+  return null;
+}
+
+/**
+ * Best-effort root-version bump of a Node lockfile (`package-lock.json`) next to
+ * the rewritten `package.json`. npm records the package's own version at the
+ * lockfile root AND under `packages[""]`; leaving them stale makes the lockfile
+ * disagree with `package.json` (and `npm ci` warn). We do NOT run the package
+ * manager — a string-level edit is deterministic and offline (docs/214 "Lean
+ * best-effort"). Silent no-op when the lockfile is absent or unparseable.
+ */
+function bumpNodeLockfile(pkgPath: string, newVersion: string): void {
+  const lockPath = path.join(path.dirname(pkgPath), "package-lock.json");
+  let raw: string;
+  try {
+    raw = fs.readFileSync(lockPath, "utf8");
+  } catch {
+    return; // no lockfile — nothing to bump
+  }
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown; packages?: Record<string, { version?: unknown }> };
+    if (typeof parsed.version === "string") parsed.version = newVersion;
+    const rootPkg = parsed.packages?.[""];
+    if (rootPkg && typeof rootPkg.version === "string") rootPkg.version = newVersion;
+    const indent = detectJsonIndent(raw);
+    const out = JSON.stringify(parsed, null, indent);
+    fs.writeFileSync(lockPath, raw.endsWith("\n") ? `${out}\n` : out, "utf8");
+  } catch {
+    // Malformed lockfile — leave it untouched rather than risk corrupting it.
+  }
+}
+
+/**
+ * Rewrite the version in a previously-detected version source to `newVersion`
+ * (docs/214 Phase 2). The write side mirrors the read side exactly — same files,
+ * same fields — so the version the release CI later reads back equals the one we
+ * wrote. For a Node `package.json` it also bumps `package-lock.json`'s root
+ * version best-effort (see `bumpNodeLockfile`).
+ *
+ * Throws when:
+ *   - `detected.source` is `"tag"` (no file to write — the `release-branch`
+ *     mechanism requires an authoritative file source; docs/214).
+ *   - the source has no `path`.
+ *   - the expected version field can't be located in the file (so we never write
+ *     a file we didn't actually update).
+ */
+export function writeVersionToSource(detected: DetectedVersionSource, newVersion: string): void {
+  if (detected.source === "tag") {
+    throw new Error("Cannot write a version to a tag-only source — release-branch needs a version file.");
+  }
+  if (!detected.path) {
+    throw new Error(`Version source ${detected.source} has no file path to write to.`);
+  }
+  const raw = fs.readFileSync(detected.path, "utf8");
+
+  let next: string | null;
+  switch (detected.source) {
+    case "package.json":
+      next = rewritePackageJson(raw, newVersion);
+      break;
+    case "Cargo.toml":
+      next = rewriteTomlVersion(raw, [/\[package\]([\s\S]*?)(?=\n\[|\s*$)/], newVersion);
+      break;
+    case "pyproject.toml":
+      next = rewriteTomlVersion(
+        raw,
+        [/\[project\]([\s\S]*?)(?=\n\[|\s*$)/, /\[tool\.poetry\]([\s\S]*?)(?=\n\[|\s*$)/],
+        newVersion,
+      );
+      break;
+    case "VERSION": {
+      const lines = raw.split("\n");
+      lines[0] = newVersion;
+      next = lines.join("\n");
+      break;
+    }
+  }
+
+  if (next === null) {
+    throw new Error(`Could not locate the version field in ${detected.path} to rewrite.`);
+  }
+  fs.writeFileSync(detected.path, next, "utf8");
+
+  if (detected.source === "package.json") {
+    bumpNodeLockfile(detected.path, newVersion);
+  }
+}

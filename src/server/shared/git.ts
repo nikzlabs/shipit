@@ -718,6 +718,109 @@ export class GitManager {
   }
 
   /**
+   * docs/214 — create-or-reset a local branch to `startPoint` and check it out
+   * (`git checkout -B <branch> <startPoint>`). Used by the release-prepare flow
+   * to build a deterministic `release/<version>` head branch off
+   * `origin/<release-branch>`: the same invocation creates the branch on a first
+   * run and force-resets it on a re-run, so a re-prepared release re-uses the
+   * same head (and the same open PR) instead of spawning a duplicate.
+   */
+  async createBranchFrom(branch: string, startPoint: string): Promise<void> {
+    await this.git.checkout(["-B", branch, startPoint]);
+    console.log("[git] checkout -B", branch, "from", startPoint);
+  }
+
+  /**
+   * docs/214 — alias of {@link createBranchFrom} (`git checkout -B`), named for
+   * the re-run case where the caller's intent is "throw away the previous
+   * attempt and reset `release/<version>` back to `origin/<base>`". The
+   * higher-level refusal-to-clobber guard (a branch carrying commits the prepare
+   * flow didn't author) lives in `release-prepare.ts`, not here — this is the
+   * mechanical reset once that check has passed.
+   */
+  async resetBranchTo(branch: string, startPoint: string): Promise<void> {
+    await this.createBranchFrom(branch, startPoint);
+  }
+
+  /**
+   * docs/214 — cherry-pick one or more commits onto the current branch (hotfix
+   * release payload). On a conflict the pick is aborted so the working tree is
+   * left clean — committing a half-resolved pick onto the release branch would
+   * publish a broken tree — and the offending sha is surfaced to the caller to
+   * relay to the user. `git cherry-pick` applies the shas in the given order.
+   */
+  async cherryPick(shas: string[]): Promise<{ success: boolean; conflictedSha?: string; conflicts?: string[] }> {
+    if (shas.length === 0) return { success: true };
+    try {
+      await this.git.raw(["cherry-pick", ...shas]);
+      console.log("[git] cherry-picked", shas.join(" "));
+      return { success: true };
+    } catch (err: unknown) {
+      const status = await this.git.status();
+      // The sha being applied when the pick stopped — CHERRY_PICK_HEAD points at it.
+      let conflictedSha: string | undefined;
+      try {
+        conflictedSha = (await this.git.revparse(["CHERRY_PICK_HEAD"])).trim() || undefined;
+      } catch {
+        conflictedSha = undefined;
+      }
+      try {
+        await this.git.raw(["cherry-pick", "--abort"]);
+      } catch {
+        // abort may fail if the pick never properly started — best-effort cleanup.
+      }
+      if (status.conflicted.length > 0 || conflictedSha) {
+        return {
+          success: false,
+          ...(conflictedSha ? { conflictedSha } : {}),
+          conflicts: status.conflicted,
+        };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * docs/214 — list tag names, optionally filtered to those matching a shell
+   * glob `pattern` (e.g. `"v1.2.3-rc.*"`). Used by the prerelease path to find
+   * the highest existing `-rc.N` for a base version so `{n}` auto-increments.
+   * Returns an empty array on error or no matches.
+   */
+  async listTags(pattern?: string): Promise<string[]> {
+    try {
+      const args = ["tag", "--list", ...(pattern ? [pattern] : [])];
+      const out = await this.git.raw(args);
+      return out.split("\n").map((t) => t.trim()).filter(Boolean);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * docs/214 — the full commit message (subject + body) of a ref's tip, or null
+   * when the ref can't be resolved. The release-prepare re-run guard reads the
+   * remote head branch's tip message to decide whether the branch carries a
+   * commit the prepare flow didn't author (no `Shipit-Release-Version` trailer)
+   * before force-resetting it.
+   */
+  async tipCommitMessage(ref: string): Promise<string | null> {
+    try {
+      const out = await this.git.raw(["log", "-1", "--format=%B", ref]);
+      return out;
+    } catch {
+      return null;
+    }
+  }
+
+  /** Create an annotated tag at HEAD (or `ref`) and push it to `remote`. */
+  async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
+    const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];
+    await this.git.raw(args);
+    await this.git.push(remote, tag);
+    console.log("[git] created + pushed tag", tag);
+  }
+
+  /**
    * Stage only the given paths and commit them. Returns the commit hash, or
    * null when there's nothing to commit (paths produced no staged changes —
    * e.g. an uninstall that already happened).

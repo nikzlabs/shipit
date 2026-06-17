@@ -281,6 +281,7 @@ export async function registerRoutes(
     createSessionDirFull: createSessionDir,
     containerManager: containerManager ?? undefined,
     prStatusPoller,
+    releaseStatusPoller,
     mergeWatchManager,
     databaseManager,
     secretStore,
