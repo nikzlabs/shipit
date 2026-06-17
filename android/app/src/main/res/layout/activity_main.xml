@@ -8,14 +8,19 @@
      inside inner containers, so the WebView document sits at scrollY == 0 and
      SwipeRefreshLayout.canChildScrollUp() reported "at top" for every downward
      swipe, stealing the gesture and making chat history unscrollable. The cog's
-     long-press → reload is the Reload action (see docs/116 plan.md:40). -->
+     long-press → reload is the Reload action (see docs/116 plan.md:40).
+
+     Insets: targetSdk 35 forces edge-to-edge, so this root is laid out behind
+     the status and nav bars. MainActivity applies the system-bar insets as
+     padding on this FrameLayout in code (not android:fitsSystemWindows, which
+     we removed for explicit control). The dark @color/shipit_bg fills the
+     padded area so it still reads as full-bleed. -->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@color/shipit_bg"
-    android:fitsSystemWindows="true">
+    android:background="@color/shipit_bg">
 
     <WebView
         android:id="@+id/web_view"

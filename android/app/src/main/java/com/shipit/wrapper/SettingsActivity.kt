@@ -3,6 +3,10 @@ package com.shipit.wrapper
 import android.app.Activity
 import android.os.Bundle
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.updatePadding
 import com.shipit.wrapper.databinding.ActivitySettingsBinding
 
 /**
@@ -25,10 +29,36 @@ class SettingsActivity : AppCompatActivity() {
         binding = ActivitySettingsBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        applyInsets()
+
         prefs = Prefs(applicationContext)
 
         binding.urlInput.setText(prefs.shipitUrl ?: "")
         binding.saveButton.setOnClickListener { onSaveClicked() }
+    }
+
+    /**
+     * targetSdk 35 enforces edge-to-edge, so the form would otherwise sit under
+     * the status bar (top) and, with the keyboard open, under the IME (bottom).
+     * Pad the scrolling root by the union of the system-bar and IME insets on
+     * every side so the URL field, helper text, and Save button stay clear of
+     * both the status bar and the keyboard. Combining the two inset types makes
+     * the bottom padding the larger of nav-bar / keyboard height automatically.
+     */
+    private fun applyInsets() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
+            val bars = insets.getInsets(
+                WindowInsetsCompat.Type.systemBars() or WindowInsetsCompat.Type.ime(),
+            )
+            view.updatePadding(
+                left = bars.left,
+                top = bars.top,
+                right = bars.right,
+                bottom = bars.bottom,
+            )
+            insets
+        }
     }
 
     private fun onSaveClicked() {
