@@ -51,6 +51,7 @@ import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
+import { SandboxDialog } from "./components/SandboxDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
@@ -249,6 +250,7 @@ export default function App() {
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const sandboxDialogOpen = useUiStore((s) => s.sandboxDialogOpen);
   const quickCaptureHotkey = useKeybinding("quick-capture");
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
   const voiceHotkeyModeB = useKeybinding("voice-mode-b");
@@ -285,6 +287,10 @@ export default function App() {
   // when e.g. Claude auth completes and noAgentReady flips to false mid-wizard.
   const onboardingTriggeredRef = useRef(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  // docs/211 — sandbox create is in flight; disables the dialog controls. The
+  // dialog itself is rendered once here (not in SessionSidebar) so the empty
+  // HomeScreen can open it on mobile, where the sidebar unmounts when closed.
+  const [creatingSandbox, setCreatingSandbox] = useState(false);
   if (needsOnboarding && !onboardingTriggeredRef.current) {
     onboardingTriggeredRef.current = true;
   }
@@ -1139,7 +1145,12 @@ export default function App() {
         </div>
       )}
       {showHomeScreen ? (
-        <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
+        <HomeScreen
+          onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+          onCreateSandbox={() => useUiStore.getState().setSandboxDialogOpen(true)}
+          githubAuthenticated={githubStatus.authenticated}
+          hasRepos={repos.length > 0}
+        />
       ) : (
         // Wrapping the message list + bottom-stack (status bar / attachments / rebase / PR card) in a single
         // flex-1 container gives the rocket overlay stable bounds. Anything that grows here (e.g. attachments
@@ -1474,6 +1485,25 @@ export default function App() {
           }}
         />
       )}
+      <SandboxDialog
+        open={sandboxDialogOpen}
+        onOpenChange={(open) => useUiStore.getState().setSandboxDialogOpen(open)}
+        creating={creatingSandbox}
+        onCreate={async (capabilities) => {
+          setCreatingSandbox(true);
+          try {
+            const newId = await useSessionStore.getState().createSandboxSession(capabilities);
+            if (newId) {
+              useUiStore.getState().setSandboxDialogOpen(false);
+              handleSessionResume(newId, navigate);
+            } else {
+              useUiStore.getState().setToast({ message: "Failed to create sandbox session" });
+            }
+          } finally {
+            setCreatingSandbox(false);
+          }
+        }}
+      />
     </div>
     </TooltipProvider>
   );

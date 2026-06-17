@@ -77,6 +77,10 @@ interface UiState {
   /** Cumulative output tokens across every turn in the session. */
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
+  /** docs/211 — the Sandbox capability dialog. Hoisted here (rather than local
+   *  to SessionSidebar) so the no-GitHub on-ramp on the empty HomeScreen can
+   *  open it too. */
+  sandboxDialogOpen: boolean;
   quickCaptureOpen: boolean;
   /**
    * docs/144 Mode B — when the quick-capture overlay is opened via the
@@ -145,6 +149,7 @@ interface UiState {
   setContextTokens: (tokens: number) => void;
   setCumulativeTokens: (input: number, output: number) => void;
   setSettingsOpen: (open: boolean) => void;
+  setSandboxDialogOpen: (open: boolean) => void;
   setQuickCaptureOpen: (open: boolean, autoMic?: boolean) => void;
   setQuickCaptureAutoMic: (active: boolean) => void;
   setSettingsTab: (tab: SettingsTab) => void;
@@ -185,6 +190,7 @@ const initialState = {
   cumulativeInputTokens: 0,
   cumulativeOutputTokens: 0,
   settingsOpen: false,
+  sandboxDialogOpen: false,
   quickCaptureOpen: false,
   quickCaptureAutoMic: false,
   settingsTab: undefined as SettingsTab,
@@ -241,6 +247,7 @@ export const useUiStore = create<UiState>((set) => ({
     set({ cumulativeInputTokens, cumulativeOutputTokens }),
 
   setSettingsOpen: (settingsOpen) => set({ settingsOpen }),
+  setSandboxDialogOpen: (sandboxDialogOpen) => set({ sandboxDialogOpen }),
 
   setQuickCaptureOpen: (quickCaptureOpen, autoMic = false) =>
     set({ quickCaptureOpen, quickCaptureAutoMic: quickCaptureOpen ? autoMic : false }),
