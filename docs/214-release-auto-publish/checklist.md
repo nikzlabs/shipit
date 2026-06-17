@@ -56,3 +56,19 @@ branch when `prepare` opens the PR, reusing the existing PR-card + merge plumbin
 - [x] `services/release-branch-adopt.ts`: repoint `session.branch` → `release/<version>`, `reArm` + `forceRefreshSession` the PR poller, rebroadcast `session_list` (own-repo guard; no-op on re-run)
 - [x] Wire into the `/release/prepare` route's `pr-opened` branch (guarded to `remoteUrl === session.remoteUrl`)
 - [x] Tests: `release-branch-adopt.test.ts` (repoint + re-arm ordering, re-run no-op, missing session, no-poller degrade)
+
+## Follow-up — refuse a content-free release by default
+Found when a real `shipit release prepare patch` (no `--pick`/`--from`) shipped a content-free
+`0.2.1`: a bare `prepare` resets `release/<version>` to `origin/<release-branch>` and adds only
+the version-bump commit, so the PR carries **no new commits** over what's already released — a
+release identical to the previous one, version number aside. Nothing warned or stopped it.
+- [x] `git.ts`: `countCommitsAhead(base, head)` (`rev-list --count base..head`)
+- [x] `release-prepare.ts`: after the payload (`--pick`/`--from`) is applied and BEFORE the bump
+  commit, refuse when `countCommitsAhead(origin/<release-branch>, HEAD) === 0` — error names the
+  fix (`--from <branch>`, or `--allow-empty`). Exempt `--bootstrap` (first release legitimately
+  ships everything on the new branch); the prerelease path never reaches the guard.
+- [x] `--allow-empty` opt-out threaded through the shim → route → service
+- [x] Agent docs: `shipit-docs/release.md`, `prompts/releases.md`, `shipit.ts` help
+- [x] Tests: `release-prepare.test.ts` (bare refuse, `--from`/`--pick` succeed, already-merged `--from`
+  refused, `--allow-empty` permits, `--bootstrap`/`--prerelease` not regressed) + shim flag mapping +
+  content-free error surfacing in `shipit-release.test.ts`
