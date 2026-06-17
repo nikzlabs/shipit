@@ -14,10 +14,12 @@ committed historically — it spread into two commit messages and a `docs/*.md`
 file across hundreds of PR refs and could not be fully scrubbed from history.
 **The durable fix is prevention at commit time, not cleanup.**
 
-A complementary PR adds a diff-only `gitleaks` CI check (`.github/workflows/secret-scan.yml`
-+ `.gitleaks.toml`) as a backstop. This feature is the stronger, earlier net:
-it blocks the commit *before* it happens, server-side, so a credential never
-enters a commit or a push in the first place.
+A diff-only `gitleaks` CI check is the backstop. Its config — `.gitleaks.toml`,
+mirroring this guard's rules + path allowlist — ships **in this PR**; the CI
+workflow that runs it (`.github/workflows/secret-scan.yml`) is the companion
+piece. This feature is the stronger, earlier net: it blocks the commit *before*
+it happens, server-side, so a credential never enters a commit or a push in the
+first place.
 
 ## What it does
 
@@ -111,6 +113,9 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
 - `src/server/shared/secret-scan.ts` — the detector: `SECRET_RULES`,
   `scanDiffForSecrets`, `redactSecret`, `isAllowlistedPath`, inline-allow markers.
   **The source of truth for patterns; mirror into `.gitleaks.toml`.**
+- `.gitleaks.toml` — the CI backstop's config, a faithful mirror of `SECRET_RULES`
+  + the path allowlist (`useDefault = true` layers our rules over gitleaks'
+  built-ins). Edit it in lockstep with `secret-scan.ts`.
 - `src/server/shared/git.ts` — `GitManager.autoCommit` runs the scan on the
   staged diff and refuses the commit on a finding; `stagedDiff()` helper;
   `AutoCommitResult.secretFindings`.

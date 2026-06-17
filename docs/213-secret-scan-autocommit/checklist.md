@@ -10,4 +10,5 @@
 - [x] `secretFindings` threaded through `SystemTurnDeps.autoCommit` + test mocks
 - [x] `typecheck` + `lint:dev` clean, unit tests green
 - [x] Design doc + Linear issue (SHI-169) cross-linked
-- [ ] Mirror `SECRET_RULES` + path allowlist into `.gitleaks.toml` (companion CI PR)
+- [x] Mirror `SECRET_RULES` + path allowlist into `.gitleaks.toml` (in this PR)
+- [ ] Add the gitleaks CI workflow `.github/workflows/secret-scan.yml` that runs against `.gitleaks.toml` (companion PR)
