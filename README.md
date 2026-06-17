@@ -112,8 +112,8 @@ running even when your laptop is closed.
 ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises
 the inotify limits session containers need, and optionally puts ShipIt behind a
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-(with required Zero Trust SSO by default) and/or exposes it over [Tailscale](https://tailscale.com/) — no open
-inbound ports required.
+(with required Zero Trust SSO by default) and/or exposes it over [Tailscale](https://tailscale.com/)
+— no open inbound ports required.
 
 **Run it as root.** The script installs system packages, configures Docker, and sets up systemd
 units, so it needs root — run it as the `root` user (as below) or via `sudo`.
@@ -123,7 +123,6 @@ container (agent CLI plus the session's Compose services — optional, but usual
 server), so headroom matters once you have a few sessions open at once.
 
 ```bash
-ssh root@<server-ip>
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
 ```
 
@@ -272,12 +271,18 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 
 - **Container-isolated agents** — each session runs in its own Docker container on an isolated
   network; sessions can't reach each other. Containers get no Docker socket, only a proxy that
-  enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every
-  process it spawns run as an unprivileged user (not root), with capabilities trimmed to the
-  minimum, so a prompt-injected command has a smaller blast radius inside the box.
+  enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every process
+  it spawns run as an unprivileged user (not root), with capabilities trimmed to the minimum, so a
+  prompt-injected command has a smaller blast radius inside the box.
 - **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
   the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
-  aren't sitting at rest in the agent's sandbox.
+  aren't sitting at rest in the agent's sandbox. When you configure a GitHub App, git operations use
+  short-lived, single-repo-scoped tokens instead of a full account PAT.
+- **Opt-in egress containment** — a default-deny network gateway (iptables allow-list + controlled
+  DNS resolver + transparent SNI proxy, enforced inside the agent's own network namespace) can box
+  the agent in to an allow-listed set of hosts, so a prompt-injected agent can't exfiltrate
+  credentials to an arbitrary server. It's built and live-verified but ships off by default; an
+  operator turns it on, after which containment is fail-secure and editable inline.
 - **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
   age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
 - **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
@@ -286,7 +291,8 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
   VPS installer can put ShipIt behind Cloudflare Zero Trust or Tailscale with no open ports.
 
 The full picture — trust model, every defense, and the gaps ShipIt has consciously accepted (notably
-unrestricted agent network egress) along with their planned mitigations — is in
+that egress containment and kernel-tier hardening ship off by default, so an unconfigured instance
+still has open agent egress) along with their planned mitigations — is in
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Contributing
