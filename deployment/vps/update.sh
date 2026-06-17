@@ -69,23 +69,47 @@ trap cleanup EXIT
 # Resolve the release channel (feature 162). Default to edge when the
 # preference file is absent so existing installs keep tracking main.
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
-case "$CHANNEL" in
-  stable) REF="origin/stable" ;;
-  *)      REF="origin/main" ;;
-esac
-echo "$(date -Iseconds) Updating on channel '$CHANNEL' (ref $REF)"
+echo "$(date -Iseconds) Updating on channel '$CHANNEL'"
 
-# Pull latest code for the channel's ref. Tags are fetched so the version
-# resolver can name the stable release. We only ever reset a tracking branch
-# ref, never checkout a tag, so HEAD stays on a branch and build-id stays a SHA.
+# Fetch all tags + the channel's branch. We resolve a COMMIT to reset to (not a
+# branch ref) so build-id stays a SHA and the checkout never points ahead of the
+# image for longer than the build.
 git fetch origin --tags --prune
-git fetch origin "${REF#origin/}"
-TARGET_SHA="$(git rev-parse "$REF")"
 
-# Advance the checkout to the new tip so the build bakes the new SHIPIT_BUILD_ID.
-# If the build fails the EXIT trap rolls this back to PRIOR_SHA, so the window in
-# which the checkout is "ahead" of the image lasts only as long as the build.
-git reset --hard "$REF"
+if [ "$CHANNEL" = "stable" ]; then
+  # Option A (docs/214): the stable channel advances ONLY to the latest final
+  # (non-prerelease) tag REACHABLE FROM origin/stable — never the branch tip,
+  # which is transiently an un-published merge commit after a release PR merges
+  # (before CI tags + publishes). `git tag --merged` is reachability;
+  # `grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'` keeps strict final tags (drops
+  # vX.Y.Z-rc.N); `sort -V | tail -n1` picks the highest. NOT `git describe`
+  # (nearest tag by distance — wrong on a branch with multiple tags).
+  REF="origin/stable"
+  git fetch origin stable
+  LATEST_TAG="$(git tag --merged origin/stable \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V \
+    | tail -n1)"
+  if [ -z "$LATEST_TAG" ]; then
+    # Fail closed: no vetted release to move to. Never reset to the branch tip.
+    echo "$(date -Iseconds) No final release tag reachable from origin/stable — no stable release yet; refusing to update."
+    exit 1
+  fi
+  TARGET_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
+  echo "$(date -Iseconds) Stable channel target: $LATEST_TAG ($TARGET_SHA)"
+else
+  REF="origin/main"
+  git fetch origin main
+  TARGET_SHA="$(git rev-parse "$REF")"
+  echo "$(date -Iseconds) Edge channel target: $REF ($TARGET_SHA)"
+fi
+
+# Advance the checkout to the resolved commit so the build bakes the new
+# SHIPIT_BUILD_ID. If the build fails the EXIT trap rolls this back to PRIOR_SHA,
+# so the window in which the checkout is "ahead" of the image lasts only as long
+# as the build. On stable this leaves HEAD detached at the tag's commit, which is
+# fine for build-id (a SHA) and lets `git describe --exact-match` name the tag.
+git reset --hard "$TARGET_SHA"
 
 # Build and restart. A non-zero exit here trips `set -e`, firing the cleanup
 # trap (rollback + failure marker) before the script aborts.

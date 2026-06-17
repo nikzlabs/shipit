@@ -359,6 +359,12 @@ Two rules govern what goes into `package.json`. Both are enforced by `npm run ch
 
 When bumping a dependency, edit `package.json` to the new exact version, run `npm install` to refresh the lockfile, then run `npm run check-deps` before opening the PR.
 
+## Releasing
+
+ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml` `release:` block, docs/214) — releases are **merge-triggered**, not hand-tagged. A release is cut by **opening a version-bump PR into `stable` and merging it**; `.github/workflows/release.yml` then runs on the `stable` push, derives the tag `v<package.json version>` from the merged commit, gates on a green build, **creates + pushes the annotated tag itself**, and publishes the GitHub Release. **Never hand-push a `vX.Y.Z` tag for a final release** — CI owns that. rc's are the exception: they're cut via the **tag path** (push a `vX.Y.Z-rc.N` tag), never by merging into `stable`.
+
+The **stable channel follows the latest final tag** reachable from `origin/stable`, not the branch tip (docs/214 Option A) — the updater resolves the highest non-prerelease tag and resets to its commit, so the merge-before-publish window and any failed publish are invisible to stable users, and it **fails closed** ("no stable release yet") rather than ever landing on an un-tagged tip. Full ritual (normal / hotfix / rc / bootstrap): `RELEASING.md`. The agent-facing version of this flow lives in `src/server/shipit-docs/release.md` + `prompts/releases.md`.
+
 ## Docs structure
 
 ```

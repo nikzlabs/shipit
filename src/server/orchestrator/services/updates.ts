@@ -12,9 +12,11 @@ import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import {
   HOST_REPO_DIR,
+  NO_STABLE_RELEASE,
   UPDATE_FAILED_FILE,
   channelBranch,
   channelRef,
+  pickLatestFinalTag,
   readChannel,
   writeChannel,
 } from "../release-channel.js";
@@ -171,7 +173,46 @@ async function describeRef(
 }
 
 /**
- * Fetch from upstream and compare HEAD to the channel's target ref.
+ * Resolve the stable channel's target — the latest **final** (non-prerelease)
+ * release tag reachable from `origin/stable`, and its commit (docs/214 Option A).
+ *
+ * We use `git tag --merged origin/stable` (reachability) + a strict-SemVer
+ * highest-version pick, NOT `git describe` (nearest tag by commit distance) and
+ * NOT the branch tip (which is transiently an un-published merge commit after a
+ * release PR merges, before CI tags + publishes). Returns null when no final tag
+ * is reachable, so the caller fails closed instead of offering an un-released
+ * commit.
+ */
+async function resolveLatestStableTag(
+  gitOpts: { cwd: string; timeout: number },
+): Promise<{ tag: string; commit: string } | null> {
+  let tags: string[];
+  try {
+    const { stdout } = await execFileAsync("git", ["tag", "--merged", "origin/stable"], gitOpts);
+    tags = stdout.split("\n").map((t) => t.trim()).filter(Boolean);
+  } catch {
+    return null;
+  }
+  const tag = pickLatestFinalTag(tags);
+  if (!tag) return null;
+  try {
+    // Resolve the (annotated) tag to its commit SHA.
+    const { stdout } = await execFileAsync("git", ["rev-parse", `${tag}^{commit}`], gitOpts);
+    return { tag, commit: stdout.trim() };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Fetch from upstream and compare HEAD to the channel's target.
+ *
+ * - **edge** tracks the `origin/main` branch tip (every merge).
+ * - **stable** tracks the latest final tag reachable from `origin/stable`
+ *   (docs/214 Option A), NOT the branch tip — so the merge-before-publish window
+ *   is invisible and a failed publish strands nothing. Fails closed ("no stable
+ *   release yet") when no final tag exists.
+ *
  * Requires /opt/shipit to be bind-mounted into the container.
  */
 export async function checkForUpdates(): Promise<UpdateStatus> {
@@ -186,9 +227,8 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
   const channel = await readChannel();
   const branch = channelBranch(channel);
-  const targetRef = channelRef(channel);
 
-  // Fetch the channel's branch plus tags (needed to name the stable version).
+  // Fetch the channel's branch plus tags (needed to resolve/name the version).
   try {
     await execFileAsync("git", ["fetch", "origin", branch, "--tags"], gitOpts);
   } catch (err) {
@@ -199,17 +239,46 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     const { stdout: currentCommit } = await execFileAsync(
       "git", ["rev-parse", "HEAD"], gitOpts,
     );
+    const current = currentCommit.trim();
+    const currentVersion = await describeRef("HEAD", channel, gitOpts);
+    const lastUpdateError = await readLastUpdateError();
+
+    // Resolve the channel's target commit + human version label.
+    let targetRef: string;
+    let latestVersion: string;
+    if (channel === "stable") {
+      // Option A: advance only to the latest final tag reachable from
+      // origin/stable — never the (possibly un-published) branch tip.
+      const resolved = await resolveLatestStableTag(gitOpts);
+      if (!resolved) {
+        // Fail closed — no final release tag yet; do not offer the branch tip.
+        return {
+          available: false,
+          currentCommit: current,
+          latestCommit: current,
+          behindBy: 0,
+          commitMessages: [],
+          channel,
+          currentVersion,
+          latestVersion: NO_STABLE_RELEASE,
+          isDowngrade: false,
+          updateMode: getUpdateMode(),
+          lastUpdateError,
+        };
+      }
+      targetRef = resolved.commit;
+      latestVersion = resolved.tag;
+    } else {
+      targetRef = channelRef(channel); // origin/main
+      latestVersion = await describeRef(targetRef, channel, gitOpts);
+    }
+
     const { stdout: latestCommit } = await execFileAsync(
       "git", ["rev-parse", targetRef], gitOpts,
     );
-
-    const current = currentCommit.trim();
     const latest = latestCommit.trim();
 
-    const currentVersion = await describeRef("HEAD", channel, gitOpts);
-    const latestVersion = await describeRef(targetRef, channel, gitOpts);
     const releaseUrl = await resolveReleaseUrl(latestVersion, channel, gitOpts);
-    const lastUpdateError = await readLastUpdateError();
 
     if (current === latest) {
       return {

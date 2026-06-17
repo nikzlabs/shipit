@@ -2,44 +2,77 @@
 
 ShipIt ships in two **release channels** (see `docs/162-release-channels/plan.md`):
 
-| Channel  | Tracks          | Audience                        |
-|----------|-----------------|---------------------------------|
-| `stable` | `origin/stable` | default; conservative operators |
-| `edge`   | `origin/main`   | early adopters, contributors    |
+| Channel  | Tracks                                              | Audience                        |
+|----------|----------------------------------------------------|---------------------------------|
+| `stable` | latest final tag reachable from `origin/stable`    | default; conservative operators |
+| `edge`   | `origin/main`                                       | early adopters, contributors    |
 
 `edge` always tracks `main` — nothing to do. This document is about cutting a
 **stable** release.
 
-## Release model
+## Release model (merge-triggered, auto-published)
 
-- **`stable` is a long-lived maintenance branch** — not a pointer CI drags
-  behind `main`. It carries its own curated history: the released code, plus any
-  fixes **cherry-picked** onto it. `origin/stable` is therefore "the latest
-  stable release," queried with the same git machinery as `main`.
-- **Releases are annotated tags** `vX.Y.Z` (semver) cut **from `stable`** (its
-  HEAD). You bump + tag on `stable` and push the branch and the tag together, so
-  the tag always sits on the stable commit.
-- **CI does not move `stable`.** The release workflow only verifies the build is
-  green and publishes the GitHub Release; advancing `stable` is a deliberate
-  maintainer act (merge or cherry-pick from `main`, then bump + tag).
+ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml`
+`release:` block, docs/214). A release is cut by **merging a version-bump PR into
+`stable`** — CI does the rest. No hand-pushed tags, no `npm run release` push.
+
+- **`stable` is a long-lived maintenance branch** — not a pointer CI drags behind
+  `main`. It carries its own curated history: the released code, plus any fixes
+  **cherry-picked** onto it.
+- **A release is a merge into `stable`.** When a version-bump PR merges,
+  `.github/workflows/release.yml` runs on the `stable` push: it derives the tag
+  `v<package.json version>` from the merged commit, gates on a green build
+  (`check` + `test`), **creates and pushes the annotated tag itself** on the
+  merged commit, and publishes the GitHub Release with auto-generated notes.
+- **CI does not move `stable`** — the merge already advanced it. CI only reads
+  HEAD's version, tags that commit, and publishes.
+- **The stable channel follows the latest final tag, not the branch tip**
+  (docs/214 Option A). The updater resolves the highest final (non-prerelease)
+  tag reachable from `origin/stable` and resets to *its commit* — so the
+  merge-before-publish window (and any failed publish) is invisible to stable
+  users; they only ever land on a vetted, published release. If no final tag is
+  reachable yet, the channel reports "no stable release yet" and refuses to
+  update (it never falls back to the un-tagged branch tip).
 - A **GitHub Release** hangs auto-generated notes (PR titles since the previous
   tag) off each tag. Those notes are the changelog ShipIt surfaces inline in the
   update panel.
-- The notes are **grouped into sections** (Features, Fixes, Docs, Dependencies,
-  Maintenance) by PR label, configured in `.github/release.yml`. Label your PRs
-  so they land in the right section — an unlabeled PR falls through to *Other
-  Changes*, so nothing is dropped, but the notes read better when labeled.
 
 Because `stable` is a real branch, **`main` and `stable` intentionally
 diverge**: `main` (edge) carries everything; `stable` carries only what's been
-vetted onto it. The flip side of that freedom is **forward-port discipline** — a
-fix you cherry-pick onto `stable` should already exist on `main` (or land there
-too), so the next minor doesn't regress it.
+vetted onto it. The flip side is **forward-port discipline** — a fix you
+cherry-pick onto `stable` should already exist on `main` (or land there too), so
+the next minor doesn't regress it.
+
+## The publish workflow — one workflow, two triggers
+
+`.github/workflows/release.yml` triggers on **`push: { branches: [stable],
+tags: ['v*'] }`** and self-publishes (a tag pushed by CI's own `GITHUB_TOKEN`
+would not re-trigger an `on: push: tags` workflow, so the branch path must gate,
+tag, *and* publish in one run):
+
+- A **`resolve`** job classifies the trigger:
+  - **branch path** (`stable` push): `tag = v<package.json version>`. Tag absent →
+    new release. Tag exists but its Release is missing → **repair** (a prior run
+    pushed the tag but `gh release create` failed). Tag + Release present → no-op.
+    A `-rc.N` version on `stable` is **rejected** (rc's use the tag path).
+  - **tag path** (a pushed `v*` tag): gate + publish that tag; never create one.
+- **`version-guard`** runs on the **tag path only** — it checks `package.json`
+  equals the tag. On the branch path the tag is *derived from* `package.json`, so
+  they can't drift and the guard is skipped.
+- **`check`** + **`test`** reuse `ci.yml`'s gates — a release must be green.
+- **`publish`** (serialized per tag via `concurrency`): on green, on the branch
+  path it creates the annotated tag on the merged commit and pushes it; then it
+  checks **Release** existence (`gh release view`) and, if missing,
+  `gh release create --generate-notes --verify-tag` (`--prerelease` for `-rc.N`).
+
+CI on PRs into `stable` (`ci.yml` now triggers on PRs into `main` **and**
+`stable`) gives reviewers a green check before merge — a recommended quality gate,
+but no longer load-bearing for safety (tag-resolution owns that).
 
 ## Labels
 
-The auto-generated GitHub Release notes are **grouped into sections by PR
-label**. `.github/release.yml` maps labels to sections:
+The auto-generated GitHub Release notes are **grouped into sections by PR label**
+(`.github/release.yml`):
 
 | Section | Labels |
 |---|---|
@@ -50,137 +83,106 @@ label**. `.github/release.yml` maps labels to sections:
 | 🧰 Maintenance | `chore`, `refactor`, `ci`, `test` |
 | Other Changes | everything else (`*`) |
 
-PRs labeled `ignore-for-release` are excluded from the notes entirely. An
-unlabeled PR lands in **Other Changes**.
-
-- **`.github/labels.yml` is the source of truth** for the label set (name,
-  color, description). The `Sync labels` workflow (`.github/workflows/labels.yml`)
-  creates/updates these labels in the repo on every push to `main` that touches
-  `labels.yml`, and on manual `workflow_dispatch`. It runs with `skip-delete`,
-  so GitHub's default labels are left untouched.
-- **The auto-labeler applies best-effort labels.** On every PR, the labeler
-  workflow (`.github/workflows/labeler.yml`, using `actions/labeler`) maps
-  changed file paths to labels via `.github/labeler.yml` (e.g. `docs/**` →
-  `documentation`, `.github/workflows/**` → `ci`). This is advisory only:
-  **maintainers can add or remove labels by hand before merge**, and an
-  unlabeled PR never fails CI. Hand-label anything the path rules miss so it
-  lands in the right release-notes section.
+PRs labeled `ignore-for-release` are excluded; an unlabeled PR lands in **Other
+Changes**. `.github/labels.yml` is the source of truth for the label set, and the
+auto-labeler applies best-effort labels by changed-file path — hand-label
+anything the path rules miss so it lands in the right release-notes section.
 
 ## Cutting a normal release
 
-Releases are cut **from `stable` by a maintainer** with push access to it — not
-through a ShipIt session/PR (those land on `main`). A release tag cut off any
-branch other than `stable` puts the released code somewhere `stable` users never
-receive it.
+The supported, hands-off path is **chat-driven**: in a ShipIt session on this
+repo, ask the agent to cut the release. It opens a version-bump PR into `stable`;
+you review and merge it; CI tags and publishes. Manually, the same steps are:
 
-1. Get onto an up-to-date `stable` and bring in the changes you're shipping:
+1. Create a release branch off `stable` and bring in what you're shipping:
    ```sh
-   git checkout stable && git pull origin stable
+   git fetch origin
+   git checkout -B release/0.3.0 origin/stable
    # a whole batch of new work from main:
    git merge --no-ff origin/main
    # …or specific fixes only (the conservative path):
    git cherry-pick <sha-from-main> [<sha> …]
    ```
-   Your squash-merge habit makes cherry-picking clean — each feature/fix is a
-   single commit on `main`.
-2. Bump the version and create the release commit + tag in one step:
+2. Bump the version source:
    ```sh
-   npm run release -- 0.2.1
+   # edit package.json "version" to 0.3.0 (and refresh package-lock.json)
+   git commit -am "Release v0.3.0"
    ```
-   `npm run release` (`scripts/release.ts`) refuses to run on a dirty tree or a
-   downgrade, rewrites `package.json` + `package-lock.json`, commits
-   `Release v0.2.1`, and creates the annotated `v0.2.1` tag on `stable`'s HEAD.
-   It does **not** push — pushing the tag is the deliberate act that triggers the
-   release.
-3. Push the branch and the tag:
+   `npm run release -- 0.3.0` (`scripts/release.ts`) still works as a local
+   convenience to rewrite `package.json` + `package-lock.json` and commit — but
+   **do not push a tag**; the version bump is all you need on the branch.
+3. Open a PR with **base `stable`** and merge it once green:
    ```sh
-   git push origin stable
-   git push origin v0.2.1
+   git push -u origin release/0.3.0
+   gh pr create --base stable -t "Release v0.3.0" --label feature
    ```
-4. CI takes over (`.github/workflows/release.yml`):
-   - **`version-guard`** fails the release unless `package.json` version equals
-     the tag (it always will when you use `npm run release`). This is the guard
-     that keeps the human-facing version and the tag from drifting.
-   - Runs the full `check` + `test` gates against the tagged commit. A release
-     must be green.
-   - Publishes a GitHub Release with auto-generated, label-grouped notes. **CI
-     does not touch `stable`** — you already pushed it in step 3.
+4. **Merge the PR.** That's the release — `release.yml` runs on the `stable`
+   push, gates, tags `v0.3.0` on the merged commit, and publishes the GitHub
+   Release. Nothing else to push.
 
 Stable instances pick up the release the next time a user clicks **Check for
-Updates** → **Update Now** in Settings → Advanced → Software Updates (the updater
-resets to `origin/stable`).
-
-> The manual alternative (hand-edit `package.json`, commit, tag) still works,
-> but `version-guard` will reject the release if the version and tag disagree —
-> so `npm run release` is the supported path.
+Updates** → **Update Now** (the updater resets to the latest final tag reachable
+from `origin/stable`).
 
 ## Release candidates (prereleases)
 
-To validate a build before promoting it to all stable users, cut a prerelease.
-Any tag with a semver prerelease suffix (`vX.Y.Z-rc.N`) is treated specially:
+rc's do **not** go through `stable` (they must not advance the stable channel, and
+the channel ignores `-rc.N` tags anyway). Cut an rc via the **tag path** — push a
+`vX.Y.Z-rc.N` tag directly:
 
 ```sh
-npm run release -- 0.2.0-rc.1
-git push origin HEAD
-git push origin v0.2.0-rc.1
+git tag -a v0.3.0-rc.1 -m "Release v0.3.0-rc.1" <commit>
+git push origin v0.3.0-rc.1
 ```
 
-The release workflow publishes it as a **GitHub prerelease**. CI never moves
-`stable` (for any release), so a prerelease leaves the stable channel untouched
-by construction. Cut an rc off a release-candidate branch or off `stable` itself
-without pushing `stable`; testers point at the specific tag. When it looks good,
-fold the work into `stable` and cut the final `v0.2.0` the normal way.
+The release workflow's tag path publishes it as a **GitHub prerelease**. Testers
+point at the specific tag. When it looks good, fold the work into a `stable` bump
+PR and cut the final `v0.3.0` the normal (merge-triggered) way.
 
 ## Patch / hotfix releases
 
-A conservative `stable` channel can lag a critical fix. The maintenance-branch
-model is built for exactly this — you ship **only** the fix, none of `main`'s
-unrelated churn:
+A conservative `stable` channel can lag a critical fix. Ship **only** the fix:
 
 1. Land the fix on `main` as usual (so it's forward-ported).
-2. Cherry-pick just that commit onto `stable`, then cut the patch:
+2. Open a release branch off `stable`, cherry-pick just that commit, bump, and PR:
    ```sh
-   git checkout stable && git pull origin stable
+   git checkout -B release/0.2.1 origin/stable
    git cherry-pick <fix-sha-from-main>
-   npm run release -- 0.2.1
-   git push origin stable
-   git push origin v0.2.1
+   # bump package.json to 0.2.1
+   git commit -am "Release v0.2.1"
+   git push -u origin release/0.2.1
+   gh pr create --base stable -t "Release v0.2.1" --label fix
    ```
-
-This is the payoff for `stable` being a real branch: a `0.2.1` that carries the
-security fix and nothing else, even if dozens of features have merged to `main`
-since `0.2.0`.
+3. Merge it — CI tags `v0.2.1` and publishes. A `0.2.1` carrying the fix and
+   nothing else, even if dozens of features have merged to `main` since `0.2.0`.
 
 ## Bootstrapping the first stable release
 
-The `stable` branch does not exist until the first release is cut. Until then:
+`stable` does not exist until the first release. `setup.sh` falls back to `main`
+for new installs until it does, and the stable channel reports "no stable release
+yet" (it fails closed — never the branch tip) until a final tag is reachable.
 
-- `setup.sh` falls back to `main` for new installs (it checks `ls-remote` for
-  `stable` and degrades gracefully).
-- The updater's `stable` channel resolves to `origin/stable`, which won't exist
-  yet — cut `v0.1.0` before advertising the stable channel.
-
-Create `stable` as a branch the first time, off the release commit, then cut the
-release from it:
+Create `stable` off the release commit, bump, and push the branch — the push
+triggers `release.yml`, which tags + publishes:
 
 ```sh
-git checkout -b stable <release-commit>   # e.g. main at the point you're releasing
-npm run release -- 0.2.0
+git checkout -b stable <release-commit>   # e.g. main at the release point
+# bump package.json to 0.1.0
+git commit -am "Release v0.1.0"
 git push -u origin stable
-git push origin v0.2.0
 ```
 
-From then on `stable` is a long-lived branch you cherry-pick onto and re-tag —
-CI never recreates or moves it.
+From then on `stable` is a long-lived branch you open bump PRs against — CI never
+recreates or moves it.
 
 ## Versioning notes
 
-- `package.json` `version` is the human-facing version. Bump it with
-  `npm run release -- <version>`, never by hand — the `version-guard` job
-  enforces that it equals the tag.
-- The running instance's version is resolved at runtime via `git describe
-  --tags --exact-match` against the host repo (`resolveVersion()` in
-  `src/server/orchestrator/build-id.ts`): a tag → `vX.Y.Z`, otherwise
-  `main @ <short-sha>`.
+- `package.json` `version` is the human-facing version and the source CI derives
+  the tag from. Bump it in the release PR; never push a `vX.Y.Z` tag by hand for a
+  final release (CI owns that).
+- The running instance's version is resolved at runtime against the host repo
+  (`resolveVersion()` in `src/server/orchestrator/build-id.ts`): on `stable` the
+  checkout sits on a release tag's commit, so `git describe --tags --exact-match`
+  names it `vX.Y.Z`; otherwise `main @ <short-sha>`.
 - The Android wrapper's version (`versionCode` / `versionName`) is **not** yet
-  synced by `npm run release` — that work is tracked separately (SHI-66).
+  synced — tracked separately (SHI-66).
