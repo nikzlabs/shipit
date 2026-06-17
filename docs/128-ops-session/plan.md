@@ -185,14 +185,20 @@ The ops session is a genuinely different kind of session, not a
 normal repo-backed one, so the UI treats it as its own thing rather
 than blending it into the list. Three decisions:
 
-**1. Created from Settings, not from a phantom list card.** Before
+**1. Created from the sidebar, not from a phantom list card.** Before
 the ops session exists there is nothing to render in the sidebar, so
-a placeholder card would just be confusing. The create affordance
-lives in a gated **"Ops / Host"** section in Settings
-(`Settings.tsx`) — a short explanation plus a single "Create ops
-session for this host" button. This is also the natural home for the
-operator gate (the button is only shown/enabled for the host
-operator; see "Auth gate"). Creation calls the existing
+a placeholder card would just be confusing.
+
+> **Update:** the original gated **"Ops / Host"** section in Settings
+> (`AdvancedTab.tsx`) with a "Create ops session for this host" button
+> has been **removed** — it duplicated capability already reachable from
+> the sidebar. The create affordances now live in the sidebar: the `+`
+> menu (`SessionSidebar.tsx` → `handleCreateOps`) for a blank ops
+> session, and the per-row `⋯` "Investigate in Ops session" entry
+> (`SessionItem.tsx`) for a target-scoped one. Both route through the
+> `createOpsSession(targetSessionId?)` store action.
+
+Creation calls the existing
 `POST /api/sessions/:id/template` route with `:id = "new"` and body
 `{ templateId: "ops" }` (implementation step 2).
 
