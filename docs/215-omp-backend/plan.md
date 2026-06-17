@@ -87,18 +87,89 @@ Adding a backend means implementing the established adapter surface (mirror the
 - Review bridge / chat-native review (`supportsReview`).
 - `shipit agent run --agent omp` one-shot consultation path.
 
+## Auth — concrete options
+
+This is the load-bearing decision and the primary blocker, so it gets its own
+section. ShipIt's premise is "use your existing subscription, **no per-call API
+keys**," and the codebase has exactly **two** auth mechanisms today, both of
+which omp could plug into:
+
+- **(M1) Subscription brokering via an `AgentAuthManager`.** Claude uses OAuth
+  (`AuthManager`); Codex uses RFC-8628 device flow (`CodexAuthManager` →
+  `codex login --device-auth`, token persisted to `auth.json` on the
+  `/credentials` volume so it survives container rebuilds). The registry's
+  `isAuthConfigured` treats either an on-disk credential file **or** the
+  agent's `AUTH_ENV_KEYS` env var as "configured."
+- **(M2) BYO API key via the `set_agent_env` allowlist.** The `set_agent_env`
+  WS message writes a key into `CredentialStore.agentEnv`, gated by
+  `isAllowedAgentEnvKey` (literal `ALLOWED_ENV_KEYS` = `{OPENAI_API_KEY}` today,
+  plus the `mcp__*` namespace). `app-di.ts` loads persisted `agentEnv` into
+  `process.env` at startup; the adapter inherits it. Adding a provider key is a
+  one-line edit to `ALLOWED_ENV_KEYS`.
+
+The four ways to wire omp onto those, best to worst fit:
+
+### Option A — Anthropic-only, ride the existing Claude OAuth (honors the promise)
+Configure omp with **Anthropic as its sole provider** and feed it the OAuth
+credential ShipIt already brokers (M1). No new auth surface, no API keys, no
+product-promise violation.
+
+- **Pro:** zero new auth code; the cleanest possible fit with §"no API keys."
+- **Con:** suppresses omp's headline feature (40-provider routing) — at which
+  point *"why not just use Claude Code?"* is a fair question. omp's
+  differentiators (LSP/DAP, hashline edits, hindsight) would be the only reason
+  to bother.
+- **Gating unknown (must spike first):** does the omp binary accept Anthropic
+  **subscription OAuth** credentials, or only `ANTHROPIC_API_KEY`? Claude Code
+  reads OAuth tokens from its own credential file; a separate binary likely
+  expects an API key. If omp can't consume the subscription token, Option A
+  collapses into Option B for Anthropic. **This is the single most important
+  thing to verify before any adapter work.**
+
+### Option B — BYO multi-provider keys via `set_agent_env` (unlocks the USP, breaks the promise)
+Add omp's provider keys (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, …) to `ALLOWED_ENV_KEYS`; the user pastes keys in settings,
+they persist in `CredentialStore.agentEnv`, omp routes across them.
+
+- **Pro:** minimal new code — the plumbing already exists (M2); unlocks omp's
+  full multi-provider/role-routing value.
+- **Con:** **directly violates the no-API-keys promise** — the user is back to
+  managing raw provider keys, the exact friction ShipIt exists to remove.
+  Category-mismatched with the product unless framed as a power-user escape
+  hatch.
+
+### Option C — Dedicated `OmpAuthManager` with per-provider device/OAuth flows
+Mirror `CodexAuthManager` for each provider that supports a headless device
+flow.
+
+- **Pro:** keeps the subscription model across multiple providers.
+- **Con:** most providers have **no** device flow; omp already owns provider
+  auth via its own config; ShipIt would be reimplementing a flow per provider.
+  High effort, low return. **Not recommended.**
+
+### Option D — Hybrid: Anthropic OAuth by default, opt-in keys for routing (recommended)
+Default omp to **Option A** (Anthropic subscription, promise intact) for the
+happy path; let power users **opt in** to extra provider keys via **Option B**
+(`set_agent_env`) to light up cross-provider routing. The default honors the
+no-API-keys promise; the multi-provider USP becomes an explicit, advanced
+opt-in rather than a requirement.
+
+- **Pro:** best of both — clean default, full capability available without
+  forcing keys on anyone; both mechanisms already exist.
+- **Con:** two code paths to test; still depends on Option A's gating unknown
+  (omp consuming the Anthropic OAuth token). If that spike fails, the "default"
+  half degrades to "paste at least an Anthropic key," weakening the pitch.
+
+**Recommendation: Option D, contingent on the Option-A spike.** Run the spike
+(*can omp authenticate to Anthropic with ShipIt's brokered OAuth token, no API
+key?*) first — its outcome decides whether D is viable as written or whether the
+realistic floor is Option B with a clear "your keys, your spend" disclosure.
+
 ## Open questions / risks
 
-1. **Auth-model mismatch — the primary blocker.** ShipIt's premise is "user's
-   existing subscription, no per-call API keys," brokered via OAuth
-   (`AuthManager`, `CodexAuthManager`). omp is **BYO-API-key across 40+
-   providers** with per-role routing. Decisions needed:
-   - Which provider's credential does ShipIt broker for omp? Just Anthropic
-     (so it rides the same OAuth ShipIt already has)? Or expose omp's
-     multi-provider routing and accept an API-key model for it?
-   - If the former, omp's headline feature (provider flexibility) is mostly
-     suppressed — at which point "why not just use Claude Code?" is a fair
-     question. If the latter, it breaks the no-API-keys product promise.
+1. **Auth-model mismatch — see "Auth — concrete options" above.** The gating
+   spike (Option A: omp + Anthropic OAuth, no API key) blocks the rest of this
+   decision.
 2. **Maturity / maintenance risk.** omp is new (2025–26) and effectively a
    single-maintainer fork, vs. Anthropic-/OpenAI-backed CLIs. For a *supported*
    backend that's a real reliability and upkeep consideration.
@@ -120,9 +191,16 @@ clean takeaway is that ShipIt's agent-agnostic design (`docs/155`) means omp
 *can* be added cheaply when there's concrete user demand and the credential
 model is settled.
 
-A sensible first step short of a full integration: prototype `shipit agent run
---agent omp` against a BYO-key omp install to validate the ACP/RPC event seam,
-before committing to the full adapter + auth work.
+A sensible first step short of a full integration is **two spikes**, both behind
+`shipit agent run --agent omp` against a BYO-key omp install:
+1. **Auth (Option A gate):** can omp authenticate to Anthropic with ShipIt's
+   brokered subscription OAuth token, with **no** `ANTHROPIC_API_KEY`? This
+   decides whether the recommended Option D is viable or degrades to Option B.
+2. **Event seam:** does omp's ACP/RPC stream carry enough structure (tool
+   start/result boundaries, assistant deltas, usage) to satisfy ShipIt's
+   message-group invariants without scraping the TUI?
+
+Both must pass before committing to the full adapter + auth work.
 
 ## Key files (if this proceeds)
 
