@@ -15,6 +15,8 @@
  */
 
 import fsp from "node:fs/promises";
+import http from "node:http";
+import https from "node:https";
 
 // ---------------------------------------------------------------------------
 // Flag parsing
@@ -147,17 +149,81 @@ export function workerBaseUrl(env: ShimEnv = {}): string {
 }
 
 /**
+ * Describe a transport error, surfacing the underlying cause code when present.
+ * The global `fetch` (undici) collapses every low-level failure into the opaque
+ * `TypeError: fetch failed`; the real signal (connection refused, reset, or a
+ * client-side header/body timeout) lives on `err.cause.code`. Exposing it turns
+ * an unactionable "fetch failed" into "fetch failed (UND_ERR_HEADERS_TIMEOUT)".
+ */
+function describeTransportError(err: unknown): string {
+  if (err instanceof Error) {
+    const code = (err as { cause?: { code?: unknown } }).cause?.code;
+    return typeof code === "string" ? `${err.message} (${code})` : err.message;
+  }
+  return String(err);
+}
+
+/**
+ * Unbounded JSON request over Node's `http`/`https` — no response timeout at
+ * all. Used for the long-lived `shipit agent run` spawn leg, which legitimately
+ * runs up to the sub-agent wall-clock cap (tens of minutes). The global `fetch`
+ * (undici) imposes a default 300s `headersTimeout`/`bodyTimeout` that an
+ * AbortController-free call CANNOT disable, so a multi-minute consult aborts
+ * with the opaque "fetch failed" even though the run is still in flight. Node's
+ * `http` has no default response timeout, so it honors the unbounded contract.
+ * Resolves with the parsed JSON + status; rejects on a genuine transport error.
+ */
+function requestJsonUnbounded(
+  method: string,
+  url: string,
+  payload: string | undefined,
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const mod = u.protocol === "https:" ? https : http;
+    const headers: Record<string, string | number> = {};
+    if (payload !== undefined) {
+      headers["Content-Type"] = "application/json";
+      headers["Content-Length"] = Buffer.byteLength(payload);
+    }
+    const req = mod.request(
+      { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers },
+      (res) => {
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          let parsed: unknown;
+          try { parsed = JSON.parse(data); } catch { parsed = {}; }
+          resolve({
+            status: res.statusCode ?? 0,
+            body: (parsed && typeof parsed === "object" ? parsed : {}) as Record<string, unknown>,
+          });
+        });
+        res.on("error", reject);
+      },
+    );
+    req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
+
+/**
  * Send a request to the worker's /agent-ops broker.
  * Returns parsed JSON and HTTP status. Network errors are surfaced as
  * status: 0 with an error body so the caller can format a helpful message.
  *
- * `timeoutMs` (docs/182) is an optional AbortController-based per-request
- * timeout so a black-holed (half-open) socket on the shim→worker leg fails
- * fast instead of hanging until an OS-level timeout. The `shipit` wait loop
- * passes one per segment; a timed-out request surfaces as `status: 0`, which
- * the loop classifies as transient and retries with backoff. When omitted (the
- * `gh` shim and most `shipit` paths) there is no abort signal at all, so the
- * behavior is identical to a plain `fetch`.
+ * `timeoutMs` selects the transport:
+ * - omitted (the `gh` shim and most `shipit` paths) → plain `fetch`.
+ * - positive (docs/182, the `shipit` wait loop) → `fetch` with an
+ *   AbortController per-segment timeout so a black-holed (half-open) socket
+ *   fails fast instead of hanging until an OS-level timeout. A timed-out
+ *   request surfaces as `status: 0`, which the loop retries with backoff.
+ * - `0` → an explicitly UNBOUNDED request (the `shipit agent run` spawn). Routed
+ *   over Node's `http` rather than `fetch`, because undici's default 300s
+ *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult with
+ *   the opaque "fetch failed" — misread as an unreachable worker.
  */
 export async function callBroker(
   method: "GET" | "POST" | "PATCH",
@@ -167,12 +233,25 @@ export async function callBroker(
   timeoutMs?: number,
 ): Promise<{ status: number; body: Record<string, unknown> }> {
   const url = `${workerBaseUrl(env)}${path}`;
+  const payload = body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined;
+
+  if (timeoutMs === 0) {
+    try {
+      return await requestJsonUnbounded(method, url, payload);
+    } catch (err) {
+      return {
+        status: 0,
+        body: { error: `Could not reach the ShipIt session worker at ${url}: ${describeTransportError(err)}` },
+      };
+    }
+  }
+
   const init: RequestInit = {
     method,
     headers: { "Content-Type": "application/json" },
   };
-  if (body !== undefined && method !== "GET") {
-    init.body = JSON.stringify(body);
+  if (payload !== undefined) {
+    init.body = payload;
   }
   const controller = timeoutMs ? new AbortController() : undefined;
   const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
@@ -182,11 +261,10 @@ export async function callBroker(
   try {
     res = await fetch(url, init);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
     return {
       status: 0,
       body: {
-        error: `Could not reach the ShipIt session worker at ${url}: ${message}`,
+        error: `Could not reach the ShipIt session worker at ${url}: ${describeTransportError(err)}`,
       },
     };
   } finally {

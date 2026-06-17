@@ -12,6 +12,8 @@
  * - `SESSION_ID` — the session this container belongs to. The worker injects
  *   this into every request path so the agent cannot specify a different one.
  */
+import http from "node:http";
+import https from "node:https";
 import { getErrorMessage } from "../shared/utils.js";
 
 export interface OrchestratorClientOptions {
@@ -110,13 +112,21 @@ export class OrchestratorClient {
   /**
    * Send a JSON request to a session-scoped orchestrator endpoint.
    *
-   * docs/182 — `opts.timeoutMs` arms an AbortController so a black-holed
-   * (half-open) socket fails fast instead of hanging until an OS-level timeout.
-   * Used by the resilient `shipit session wait` segment loop, which bounds each
-   * server segment: a timed-out segment surfaces as `status: 0` (transient),
-   * which the shim swallows and retries rather than treating as a real outcome.
-   * Other callers omit it and keep the unbounded behavior (spawn clones can run
-   * for minutes).
+   * `opts.timeoutMs` selects the transport (matching the `worker-http.ts`
+   * convention where `0` means "unbounded"):
+   * - omitted → plain `fetch` (the default for short PR/issue/source relays).
+   * - positive (docs/182, the `shipit session wait` segment loop) → `fetch`
+   *   with an AbortController so a black-holed (half-open) socket fails fast;
+   *   a timed-out segment surfaces as `status: 0` (transient), which the shim
+   *   swallows and retries rather than treating as a real outcome.
+   * - `0` → an explicitly UNBOUNDED request (the `shipit agent run` spawn relay).
+   *   Routed over Node's `http` rather than `fetch`: undici's default 300s
+   *   `headersTimeout` would otherwise abort a multi-minute sub-agent consult —
+   *   which the chain intends to run up to the 30-minute sub-agent cap — with an
+   *   opaque "fetch failed", surfaced to the agent as an unreachable worker.
+   *
+   * Either transport preserves the multi-baseUrl fallback: a transport error on
+   * one candidate is collected and the next is tried.
    */
   async request(
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE",
@@ -124,37 +134,19 @@ export class OrchestratorClient {
     body?: unknown,
     opts?: { timeoutMs?: number },
   ): Promise<OrchestratorResponse> {
-    const init: RequestInit = {
-      method,
-      headers: { "Content-Type": "application/json" },
-    };
-    if (body !== undefined && method !== "GET") {
-      init.body = JSON.stringify(body);
-    }
+    const payload = body !== undefined && method !== "GET" ? JSON.stringify(body) : undefined;
+    const unbounded = opts?.timeoutMs === 0;
     const failures: string[] = [];
     for (const baseUrl of this.baseUrls) {
       const url = this.url(baseUrl, suffix);
-      const controller = opts?.timeoutMs ? new AbortController() : undefined;
-      const timer = controller
-        ? setTimeout(() => controller.abort(), opts!.timeoutMs)
-        : undefined;
-      timer?.unref?.();
-      let res: Response;
       try {
-        res = await fetch(url, { ...init, ...(controller ? { signal: controller.signal } : {}) });
+        return unbounded
+          ? await this.requestNodeHttp(method, url, payload)
+          : await this.requestFetch(method, url, payload, opts?.timeoutMs);
       } catch (err) {
         failures.push(`${baseUrl}: ${getErrorMessage(err)}`);
         continue;
-      } finally {
-        if (timer) clearTimeout(timer);
       }
-      let parsed: unknown;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = {};
-      }
-      return { ok: res.ok, status: res.status, body: parsed };
     }
     return {
       ok: false,
@@ -165,5 +157,75 @@ export class OrchestratorClient {
           : "Could not reach orchestrator",
       },
     };
+  }
+
+  /**
+   * `fetch`-based transport. Throws on a transport error (so {@link request}'s
+   * fallback loop tries the next baseUrl); a non-2xx response or a body that
+   * doesn't parse as JSON resolves normally with whatever status/body arrived.
+   */
+  private async requestFetch(
+    method: string,
+    url: string,
+    payload: string | undefined,
+    timeoutMs: number | undefined,
+  ): Promise<OrchestratorResponse> {
+    const init: RequestInit = { method, headers: { "Content-Type": "application/json" } };
+    if (payload !== undefined) init.body = payload;
+    const controller = timeoutMs ? new AbortController() : undefined;
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : undefined;
+    timer?.unref?.();
+    try {
+      const res = await fetch(url, { ...init, ...(controller ? { signal: controller.signal } : {}) });
+      let parsed: unknown;
+      try {
+        parsed = await res.json();
+      } catch {
+        parsed = {};
+      }
+      return { ok: res.ok, status: res.status, body: parsed };
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Node-`http`/`https` transport with NO response timeout — see {@link request}
+   * for why the unbounded spawn leg must avoid undici's default header timeout.
+   * Throws on a transport error (caught by the fallback loop); any HTTP status
+   * resolves normally.
+   */
+  private requestNodeHttp(
+    method: string,
+    url: string,
+    payload: string | undefined,
+  ): Promise<OrchestratorResponse> {
+    return new Promise((resolve, reject) => {
+      const u = new URL(url);
+      const mod = u.protocol === "https:" ? https : http;
+      const headers: Record<string, string | number> = {};
+      if (payload !== undefined) {
+        headers["Content-Type"] = "application/json";
+        headers["Content-Length"] = Buffer.byteLength(payload);
+      }
+      const req = mod.request(
+        { hostname: u.hostname, port: u.port, path: u.pathname + u.search, method, headers },
+        (res) => {
+          let data = "";
+          res.setEncoding("utf-8");
+          res.on("data", (chunk: string) => { data += chunk; });
+          res.on("end", () => {
+            let parsed: unknown;
+            try { parsed = JSON.parse(data); } catch { parsed = {}; }
+            const status = res.statusCode ?? 0;
+            resolve({ ok: status >= 200 && status < 300, status, body: parsed });
+          });
+          res.on("error", reject);
+        },
+      );
+      req.on("error", reject);
+      if (payload !== undefined) req.write(payload);
+      req.end();
+    });
   }
 }

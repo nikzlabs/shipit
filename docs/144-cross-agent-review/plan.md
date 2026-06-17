@@ -673,6 +673,18 @@ v0 is implemented end-to-end behind the `enableSubAgents` global setting
   the inherited `SHIPIT_AGENT_DEPTH`, prints the sub-agent's text on stdout.
 - **Worker broker** — `agent-ops-routes.ts` (`POST /agent-ops/agent/spawn`,
   unbounded timeout) → orchestrator session-scoped route.
+- **Unbounded transport on the two `fetch` legs** — the spawn holds one request
+  open for the whole run (up to the 30-min sub-agent cap), but the global `fetch`
+  (undici) imposes a default 300s `headersTimeout` that `{ timeoutMs: 0 }` cannot
+  disable, so a longer consult aborted as the opaque `TypeError: fetch failed` —
+  surfaced by the shim as a (false) "Could not reach the ShipIt session worker".
+  The shim→worker leg (`agent-shim/shim-common.ts` `callBroker`) and the
+  worker→orchestrator leg (`orchestrator-client.ts` `OrchestratorClient.request`)
+  now route the explicitly-unbounded (`timeoutMs: 0`) request over Node `http`
+  (no default response timeout), matching the orchestrator→worker leg which
+  already used `worker-http.ts`. Short/bounded calls keep the `fetch` path.
+  Tests: `agent-shim/shim-common.test.ts` (`callBroker`),
+  `orchestrator-client.test.ts` (unbounded relay).
 - **Orchestrator route + service** — `api-routes-agent.ts`
   (`POST /api/sessions/:id/agent/spawn`) → `services/sub-agent.ts` (`runSubAgent`
   with the setting/auth/pin/recursion/per-turn-cap gates, lazy account-correct

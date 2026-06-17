@@ -23,9 +23,16 @@ import type { AgentProcess, AgentRunParams, AgentEvent, AgentId } from "./types.
  * §5 shipped an initial 5-minute cap, but a real consult — an audit, a review of
  * a large diff, a generation task — routinely runs past that, and the 5-minute
  * SIGTERM was killing otherwise-healthy spawns mid-answer. The HTTP transport is
- * already unbounded (`{ timeoutMs: 0 }` on every leg), so this timer is the only
- * thing that bounds a spawn; we raise it to 30 minutes. Override with
+ * unbounded on every leg (`{ timeoutMs: 0 }`), so this timer is the only thing
+ * that bounds a spawn; we raise it to 30 minutes. Override with
  * `SHIPIT_SUB_AGENT_TIMEOUT_MS` (milliseconds) for an even longer cap.
+ *
+ * NB "unbounded" was once aspirational: the shim→worker and worker→orchestrator
+ * legs use the global `fetch` (undici), whose default 300s `headersTimeout` an
+ * AbortController-free call cannot disable, so a consult past ~5 min aborted
+ * with the opaque "fetch failed". Those two legs now route `timeoutMs: 0` over
+ * Node `http` (no default response timeout) so the contract actually holds; the
+ * orchestrator→worker leg already used Node `http` (`worker-http.ts`).
  */
 export const DEFAULT_SUB_AGENT_TIMEOUT_MS = parseTimeoutEnv(
   process.env.SHIPIT_SUB_AGENT_TIMEOUT_MS,
