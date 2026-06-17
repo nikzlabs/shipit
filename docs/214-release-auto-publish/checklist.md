@@ -1,9 +1,11 @@
 # Release auto-publish — checklist
 
 ## Phase 1 — Auto-publish CI + config
-- [ ] Rework `.github/workflows/release.yml`: `on: push: { branches: [stable], tags: ['v*'] }` + `resolve` job (derive tag on branch path, no-op if tag exists, create tag on green, publish)
-- [ ] Add `concurrency` group to serialize releases
-- [ ] `shipit-config.ts`: add `"release-branch"` to `ReleaseMechanism`/`RELEASE_MECHANISMS`; add `branch` to `ReleaseConfig` + `KNOWN_RELEASE_KEYS` + parser (+ co-located test)
+- [ ] Rework `.github/workflows/release.yml`: `on: push: { branches: [stable], tags: ['v*'] }` + `resolve` job (derive tag on branch path; no-op only if HEAD == existing tag commit; **fail** if tag exists but HEAD moved; reject `-rc.N` on branch path; create tag on green; publish)
+- [ ] CI git identity before tagging; idempotent `gh release create` (skip if Release exists)
+- [ ] `concurrency` grouped by **resolved tag** (not `github.ref`)
+- [ ] Enforce the stable-channel invariant: branch protection on `stable` (gate passes before merge; no direct pushes) — document in `RELEASING.md`
+- [ ] `shipit-config.ts`: add `"release-branch"` to `ReleaseMechanism`/`RELEASE_MECHANISMS`; add `branch` to `ReleaseConfig` + `KNOWN_RELEASE_KEYS` + parser; `release-branch` requires a non-tag `versionSource` (+ co-located test)
 - [ ] Dogfood: add `release:` block to ShipIt's own `shipit.yaml`
 - [ ] Docs: `RELEASING.md`, `CLAUDE.md`, `docs/162`, `docs/171` updated to the merge-triggered model
 
@@ -21,3 +23,15 @@
 - [ ] `templates-release.ts`: `renderReleaseWorkflow(...)` + `renderReleaseNotesConfig()` (not in `TEMPLATES`)
 - [ ] Agent detect-missing-workflow → offer → write files → open PR
 - [ ] Docs: scaffold offer in `shipit-docs/release.md`
+
+## Test cases (from the Codex design review)
+- [ ] No-bump push to `stable` (tag exists, HEAD moved) → CI fails loudly
+- [ ] Release PR gate fails → cannot merge to `stable` (branch protection)
+- [ ] First-release bootstrap: release branch absent → `prepare` offers to create it
+- [ ] Existing tag at a different SHA → resolve-job failure, not a duplicate
+- [ ] Concurrent `stable` push + manual `vX.Y.Z` tag for same version → serialized (concurrency by resolved tag)
+- [ ] `-rc.N` version on the branch path → rejected (prereleases don't advance stable)
+- [ ] Lockfile root-version bump applied alongside `package.json`
+- [ ] Monorepo / multiple version sources → ambiguity surfaced, choice persisted
+- [ ] `--pick`/`--from` merge conflict → abort + actionable error, no broken commit
+- [ ] Re-running `shipit release prepare` for the same version → updates the same PR (deterministic `release/<version>` branch)

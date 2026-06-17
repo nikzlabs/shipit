@@ -16,13 +16,20 @@ the only documented path was manual — `git checkout stable / cherry-pick /
 npm run release / git push` run by hand. That's the failure mode the product
 principles forbid.
 
-This doc specifies the path that closes the gap, building on what already exists.
-Much of `docs/171-release-from-ui` (SHI-71) is **already built and ecosystem-
-generic**: the release lifecycle card + poller + markers + store/UI
-(`release-status-poller.ts`, `release-markers.ts`, `release-store.ts`,
-`ReleaseLifecycleCard.tsx`), multi-ecosystem version detection + semver
-(`release-version.ts`), and the `shipit.yaml` `release:` block (`shipit-config.ts`).
-What's missing is exactly three things, mapping to three user asks:
+This doc specifies the path that closes the gap, building on an existing
+**foundation** from `docs/171-release-from-ui` (SHI-71): the release lifecycle
+card + poller + markers + store/UI (`release-status-poller.ts`,
+`release-markers.ts`, `release-store.ts`, `ReleaseLifecycleCard.tsx`),
+multi-ecosystem version detection + semver (`release-version.ts`), and the
+`shipit.yaml` `release:` block (`shipit-config.ts`). That foundation is real and
+ecosystem-generic, but it is **tag/marker-oriented**: the card phases are
+`proposed | tagging | gating | …` (no `pr_open`/`pr_merged`), the poller is driven
+by markers + `markTagged` (not a route-driven PR lifecycle), and the `release:`
+config only knows `mechanism: tag-triggered | brokered` (no `release-branch`, no
+`branch` field). So this doc is **new design that extends that foundation** — the
+`release-branch` mechanism, the `branch` field, the `pr_open`/`pr_merged`
+lifecycle, and the `shipit release` command are all to-be-built, not already
+present. What's missing maps to three user asks:
 
 1. **Auto-publish** — CI that tags + publishes on merge to the release branch.
 2. **Deterministic mechanics** — a command that does the bump/branch/cherry-pick/PR
@@ -62,21 +69,47 @@ arbitrary repos).
 with a `resolve` job:
 
 - **tag path** (existing rc / manual tags): `tag = ref_name`, don't create a tag.
-- **branch path** (new): `tag = v<version-from-source>`; if the tag already exists
-  → no-op (a `stable` push with no bump must not release); else mark it for creation.
+- **branch path** (new): `tag = v<version-from-source>`. Three cases, enforcing
+  the stable-channel invariant below:
+  - tag does **not** exist → new release, mark it for creation.
+  - tag exists **and** HEAD is exactly the tag's commit → no-op (nothing new).
+  - tag exists **and** HEAD ≠ the tag's commit → **fail loudly**: `stable`
+    advanced without a version bump, which would expose an un-released commit to
+    stable users. Not a silent no-op.
+- A branch-path version with a prerelease suffix (`-rc.N`) is **rejected** —
+  prereleases must not advance the stable channel (see below); rc's use the tag path.
 - `version-guard` + `check` + `test` run when proceeding (unchanged gate steps).
-- `publish`: **on green**, create the annotated tag on the pushed commit (branch
-  path only) and push it, then `gh release create --generate-notes --verify-tag`
-  (+ `--prerelease` for a `-rc.N` suffix).
-- `concurrency: { group: release-${{ github.ref }}, cancel-in-progress: false }`
-  serializes pushes so two can't race the tag-exists check.
+- `publish`: **on green**, configure a CI git identity, create the annotated tag
+  on the pushed commit (branch path only), push it, then `gh release create
+  --generate-notes --verify-tag` (idempotent — skip if the Release already exists).
+  The tag path passes `--prerelease` for a `-rc.N` suffix.
+- `concurrency: { group: release-<resolved-tag>, cancel-in-progress: false }` —
+  group by the **resolved tag**, not `github.ref`, so a `stable` push and a manual
+  `vX.Y.Z` tag push for the same version can't race.
 
-Properties: the tag is only created once the build is green (stricter than the old
-"tag, then CI" order); routine `stable` pushes with no version bump cost one tiny
-`resolve` job and stop; `stable` is never *moved* by CI — CI only reads HEAD's
-version, tags that commit, and publishes. The maintenance-branch model
-(`docs/162`) is unchanged; only the *trigger* moves from a hand-run
-`npm run release` to **merging the bump PR**.
+Properties: the tag is only created once the build is green; `stable` is never
+*moved* by CI — CI only reads HEAD's version, tags that commit, and publishes. The
+maintenance-branch model (`docs/162`) is unchanged; only the *trigger* moves from
+a hand-run `npm run release` to **merging the bump PR**.
+
+### Stable-channel safety invariant
+
+The self-update channel tracks `origin/stable` (`docs/162`), so **every commit
+reachable as `origin/stable` must be a green, released (tagged) commit** —
+otherwise a stable instance updates to un-gated or un-released code. The old
+FF-follower model held this trivially (CI only fast-forwarded `stable` *to* a
+tag). The maintenance-branch model advances `stable` on *merge*, before CI tags,
+so it must be actively enforced:
+
+1. **Branch protection on `stable`**: the release PR's `check` + `test` must pass
+   **before merge**, and direct pushes to `stable` are disabled — so the commit is
+   already green when it lands (the post-merge workflow gate is belt-and-suspenders).
+2. **`stable` only ever advances via a version-bump release PR.** The resolve job's
+   "tag exists but HEAD moved → fail" case turns any no-bump push into a loud CI
+   failure rather than a silent exposure.
+3. Together these keep `origin/stable` tip == the latest released commit. (Alternative
+   considered: track the latest stable *tag* instead of the branch tip — rejected to
+   preserve `docs/162`'s one-line `origin/stable` ref parametrization.)
 
 ## Deterministic mechanics — the `shipit release` command
 
@@ -89,16 +122,27 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   source, compute next version (reuse `release-version.ts`), emit the existing
   `propose` marker → card shows `proposed`.
 - `shipit release prepare [<bump|VERSION>] [--pick <sha>…] [--from <branch>] [--release-branch <name>]`
-  — resolve the release branch (`release.branch`/flag/`stable`); branch off
-  `origin/<branch>`; `--pick` cherry-pick (hotfix) or merge `--from` (release from
-  main); bump the version source (new `writeVersionToSource` in `release-version.ts`);
-  commit; open a PR with `base = release branch` by **reusing `agentCreatePr`**
-  (idempotent on an open PR). The orchestrator route drives the poller **directly**
-  (`markPrOpened`) — the agent is out of the state-reporting loop.
+  — resolve the release branch (`release.branch`/flag/`stable`); create a
+  **deterministic head branch** named `release/<version>` off `origin/<branch>`
+  (re-running for the same version **resets** that branch via `checkout -B`, so
+  `agentCreatePr` updates the same open PR rather than spawning a second); `--pick`
+  cherry-pick (hotfix) or merge `--from` (release from main); bump the version
+  source (new `writeVersionToSource` in `release-version.ts`); commit; open a PR
+  with `base = release branch` by **reusing `agentCreatePr`**. The orchestrator
+  route drives the poller **directly** (`markPrOpened`) — the agent is out of the
+  state-reporting loop.
 
 No `shipit release tag`/`publish`/`push` — publishing is CI's job (rejected
-subcommands). Errors (dirty tree, unknown release branch, no version source,
-cherry-pick conflict) surface as actionable messages from the orchestrator.
+subcommands). Errors surface as actionable messages from the orchestrator:
+dirty tree; **release branch absent** (offer to bootstrap it — see below); no
+version source / ambiguous (monorepo) version sources; and `--pick`/`--from`
+**merge conflict** (abort the cherry-pick/merge, name the conflicting commit, and
+ask the user to resolve rather than committing a broken tree).
+
+**First-release bootstrap.** The very first release must *create* the release
+branch (`docs/162` "Bootstrapping"). When `release.branch` doesn't exist on the
+remote, `prepare` offers to create it off the current release commit (then bump +
+PR), rather than erroring — so even bootstrapping needs no manual git.
 
 The release card learns the PR-merge lifecycle: `release-types.ts` gains
 `pr_open`/`pr_merged` phases + `prNumber`/`prUrl`/`releaseBranch`; the poller polls
@@ -118,6 +162,14 @@ flow — **not** the project-template grid (docs/171 Phase 3).
 - `shipit-config.ts` gains a `"release-branch"` `mechanism` value and a `branch`
   field; `release.mechanism`/`branch`/`versionSource`/`gate` parameterize the
   render and select this template vs. the simpler tag-triggered one.
+- **`release-branch` requires an authoritative version source.** The branch-path
+  derive reads the version from a file on the merged commit, so `release-branch`
+  is only valid when `release.versionSource` resolves to `package.json` /
+  `Cargo.toml` / `pyproject.toml` / `VERSION` — **not** tag-only (a branch push has
+  no version to read). A monorepo with multiple version files is ambiguous: the
+  agent surfaces the options, the user picks, and the choice is persisted in
+  `release.versionSource` (don't guess — `docs/171`). Tag-only / unresolved repos
+  stay on the `tag-triggered` mechanism.
 
 ## Phasing
 
@@ -140,18 +192,23 @@ flow — **not** the project-template grid (docs/171 Phase 3).
   `shipit release` shim — centralized, any-repo, agent can't fumble them.
 - The poller is driven **server-side from the prepare route**, not an agent-echoed
   marker — the agent is fully out of the state-reporting loop.
-- `stable` stays a **maintenance branch**; CI never *moves* it.
+- `stable` stays a **maintenance branch**; CI never *moves* it — and the
+  **stable-channel safety invariant** (branch protection + fail-on-no-bump) keeps
+  `origin/stable` tip == the latest released commit.
+- **Prereleases never advance the stable channel**: rc's are cut via the tag path
+  (release-candidate branch / `-rc.N` tag), never by merging a prerelease bump into
+  the release branch.
 
 ## Open questions
 
 - **Lockfile bump** for Node: best-effort root-version string edit vs. running the
   package manager (heavier, non-deterministic). Lean best-effort.
 - **Release-from-main default**: merge `origin/main` (can conflict on a truly
-  diverged branch) vs. require explicit `--from`/`--pick`.
-- **Monorepo / non-Node**: a single derived `vX.Y.Z` assumes one authoritative
-  version; surface ambiguity and persist `release.versionSource` (don't guess).
-  Cargo/pyproject parsing in CI bash is brittle — the scaffolded gate may need
-  hand-tuning.
+  diverged branch) vs. require explicit `--from`/`--pick`. Leaning: require an
+  explicit `--from`/`--pick` so the PR's payload is never a surprise.
+- **Non-Node version reads in CI**: Cargo/pyproject parsing in the scaffolded
+  workflow's bash is brittle (`tomlq` may be absent) — prefer a tiny inline parser
+  or per-ecosystem `setup-*` action; the scaffolded gate may need hand-tuning.
 
 ## Key files
 
