@@ -225,22 +225,37 @@ In both, the documented "open ShipIt at …" URL becomes the wildcard-resolvable
 one. Tailscale Serve can stay for the bare-app convenience URL, but previews use
 the direct tailnet listener.
 
-### Decision: Option A is the only supported Tailscale recipe
+### Decision: sslip.io (Option B) is the scripted default; MagicDNS (Option A) is an optional upgrade
 
-Native MagicDNS wildcard **is available now** — Tailscale stable is **v1.98.5**
-(2026-06-01), issue #1196 is closed (PR #18356). It's an **opt-in ACL grant**
-(undocumented in the changelog/MagicDNS docs, but live): add a `nodeAttrs` entry
-granting `dns-subdomain-resolve` to the node, and `*.shipit.tailnet.ts.net`
-resolves to the node's tailnet IP. HTTP only (no wildcard cert,
-[tailscale#7081](https://github.com/tailscale/tailscale/issues/7081)) — fine over
+**Revised 2026-06 after field testing.** Option A (native MagicDNS wildcard)
+looked GA — Tailscale stable is **v1.98.5** (2026-06-01), issue #1196 closed (PR
+#18356) — but the `dns-subdomain-resolve` node attribute is **gated per-tailnet
+at the control plane** and still rolling out. On a tailnet without it, saving the
+`nodeAttrs` grant is rejected with `tailnet is not permitted to use the
+"dns-subdomain-resolve" node attribute`, so A is **not reliably available** as a
+zero-touch default.
+
+So `tailscale.sh` now **defaults to Option B (sslip.io)**: it prints an access
+URL built from the node's tailnet IP in dash notation
+(`http://100-x-y-z.sslip.io:<port>`), and previews resolve at
+`{id}--{port}.100-x-y-z.sslip.io` with **zero policy edits and zero owned
+domain**, on any Tailscale version, the moment the script finishes. This works
+with **no client/proxy changes**: the subdomain proxy regex already matches
+`{uuid}--{port}.anything`, and dash notation sidesteps the client's dotted-IPv4
+guard (`usePreviewHealthPoller.ts` returns `null` for a raw `100.x` host but
+builds a normal subdomain URL for `100-x-y-z.sslip.io`). HTTP only — fine over
 the WireGuard-encrypted tailnet.
 
-We support **only Option A** for `tailscale.sh`. It needs no third-party DNS
-(unlike B/sslip.io) and no owned domain (unlike C), at the cost of one ACL paste
-and HTTP-only. B and C remain valid manual setups a user can do themselves, but
-the script targets A.
+Option A remains supported as an **optional upgrade** for a cleaner native
+hostname with no third-party resolver: the script still prints the ready-to-paste
+`nodeAttrs` block, now framed as optional and annotated with the per-tailnet
+gating caveat. Option C (owned wildcard domain) stays the path to real HTTPS.
+The one sslip.io caveat: a device whose resolver enforces DNS-rebinding
+protection may refuse public names pointing into CGNAT `100.64/10` — sslip.io
+serves these, but a hardened local resolver can block it; such a device uses A
+or C instead.
 
-### How `tailscale.sh` wires Option A
+### How `tailscale.sh` wires it
 
 1. **Install / auth Tailscale, set hostname** (existing behavior, kept).
 2. **Host-preserving forwarder on the tailnet IP.** The orchestrator listens on
@@ -249,15 +264,21 @@ the script targets A.
    `socat` TCP forwarder (a systemd unit) bound to the node's tailnet IP
    (`tailscale ip -4`, **not** `0.0.0.0`) → `127.0.0.1:4123`. TCP-level
    forwarding preserves the `Host` header, so the orchestrator's subdomain proxy
-   sees `{id}--{port}.shipit.tailnet.ts.net` and routes to the container. A tiny
-   wrapper re-reads the tailnet IP at unit start so a re-auth that changes the
-   IP self-heals. **Serve is dropped from the preview path** — the single
-   supported URL becomes `http://shipit.tailnet.ts.net:4123`, which serves both
-   the app and (as subdomains) previews from one origin.
-3. **ACL grant (operator action).** A `nodeAttrs` change is a *tailnet policy*
-   edit, which can't be made safely from the node's shell (auto-editing HuJSON
-   risks clobbering the user's policy). The script **prints** a ready-to-paste
-   block targeting this node's tailnet IP plus the admin-console link:
+   sees `{id}--{port}.<host>` and routes to the container. A tiny wrapper
+   re-reads the tailnet IP at unit start so a re-auth that changes the IP
+   self-heals. **Serve is dropped from the preview path** — one origin serves
+   both the app and (as subdomains) previews. This forwarder is shared by all
+   three host options (sslip.io / MagicDNS / owned domain).
+3. **Print the sslip.io access URL (default).** The script reads `tailscale ip
+   -4` → `100.x.y.z`, converts dots to dashes, and prints
+   `http://100-x-y-z.sslip.io:<port>`. No tailnet policy edit, no owned domain,
+   no waiting on a control-plane rollout — previews resolve at
+   `{id}--{port}.100-x-y-z.sslip.io` immediately.
+4. **Print the optional MagicDNS ACL grant.** A `nodeAttrs` change is a *tailnet
+   policy* edit, which can't be made safely from the node's shell (auto-editing
+   HuJSON risks clobbering the user's policy), so the script **prints** a
+   ready-to-paste block targeting this node's tailnet IP plus the admin-console
+   link, framed as an optional upgrade to a cleaner native hostname:
    ```json
    { "nodeAttrs": [{ "target": ["<node-100.x-ip>"], "attr": ["dns-subdomain-resolve"] }] }
    ```
@@ -265,23 +286,25 @@ the script targets A.
    but Tailscale still **gates `dns-subdomain-resolve` per-tailnet at the
    control plane** and is rolling it out. Saving the policy can fail with
    `tailnet is not permitted to use the "dns-subdomain-resolve" node attribute`;
-   that tailnet must request access from Tailscale (support / feature preview),
-   or fall back to a wildcard DNS record it owns pointed at the node's tailnet
-   IP. `tailscale.sh` prints this guidance, and `deployment/README.md` documents
-   the fallback.
-4. **Print the access URL** and note previews resolve at
-   `{id}--{port}.shipit.tailnet.ts.net:4123` once the grant is added.
+   that tailnet requests access from Tailscale (support / feature preview) — the
+   sslip.io URL keeps working in the meantime — or uses an owned wildcard domain
+   for HTTPS. `tailscale.sh` prints this guidance, and `deployment/README.md`
+   documents both alternatives.
 
-**Client dependency:** the client only builds a `.ts.net` subdomain URL when
+**Client dependency:** the client only builds a subdomain URL when
 `previewSubdomains` is `always` (the `auto` heuristic rejects `.ts.net`). Prod
 already sets `SHIPIT_PREVIEW_SUBDOMAINS=always`, and the mode-removal in this doc
-makes subdomain-building unconditional — either way Option A's client side is
-covered. (Raw-IP access still can't be subdomained; that's the empty-state.)
+makes subdomain-building unconditional. The URL is built from
+`window.location.host`, so opening ShipIt through the sslip.io host makes
+previews sslip.io subdomains automatically; dash notation also clears the
+client's dotted-IPv4 guard (a raw `100.x` host is the empty-state, but
+`100-x-y-z.sslip.io` is not). (Raw-IP access still can't be subdomained.)
 
 ### Future simplification
 
-Once a Tailscale release with `dns-subdomain-resolve` is old enough to assume,
-the only remaining step is the forwarder + the grant; if Tailscale ever ships
+If/when `dns-subdomain-resolve` becomes generally enabled (not control-plane
+gated) on a Tailscale release old enough to assume, the MagicDNS name can become
+the default again and the sslip.io dependency dropped; if Tailscale ever ships
 wildcard certs ([#7081](https://github.com/tailscale/tailscale/issues/7081)) we
 can move the tailnet URL to HTTPS.
 
