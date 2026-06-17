@@ -52,6 +52,7 @@ import { handleRebaseAborted } from "./rebase-aborted.js";
 import { handleRebaseComplete } from "./rebase-complete.js";
 import { handleRebaseConflicts } from "./rebase-conflicts.js";
 import { handleRebaseStarted } from "./rebase-started.js";
+import { handleReleaseCard } from "./release-card.js";
 import { handleRewindComplete } from "./rewind-complete.js";
 import { handleRewindPreview } from "./rewind-preview.js";
 import { handleRewindRestored } from "./rewind-restored.js";
@@ -158,6 +159,7 @@ export const messageHandlers: MessageHandlerMap = {
   rebase_complete: handleRebaseComplete,
   rebase_conflicts: handleRebaseConflicts,
   rebase_started: handleRebaseStarted,
+  release_card: handleReleaseCard,
   rewind_complete: handleRewindComplete,
   rewind_preview: handleRewindPreview,
   rewind_restored: handleRewindRestored,

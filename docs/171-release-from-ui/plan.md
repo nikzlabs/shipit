@@ -206,11 +206,32 @@ seam (no orchestrator-side confirmation surface).
 
 ## Release lifecycle card
 
-Model the card on the PR lifecycle card. A **`ReleaseStatusPoller`** (new,
-mirroring `pr-status-poller.ts`) is constructed once in `buildApp()`, fed the
-same `githubAuthManager`, `sessionManager`, `runnerRegistry`, and `sseBroadcast`
-closure, and broadcasts a new `release_status` SSE event consumed by a new
-`release-store.ts` (mirroring `pr-store.ts`).
+The card is a **persisted transcript card** — it renders inline in the chat
+scrollback at the point the release was proposed (with normal card margins), like
+the bug-report / issue-write cards, NOT as chat-panel top chrome. A
+**`ReleaseStatusPoller`** (new, mirroring `pr-status-poller.ts`) is constructed
+once in `buildApp()` and owns the live state machine, but every phase transition
+goes through one injected `onCard` sink (wired in `bootstrap-managers.ts`) that:
+
+1. **persists** the full `ReleaseStatusSummary` to chat history via
+   `ChatHistoryManager.upsertReleaseCard(sessionId, card)` (keyed by a stable
+   `cardId = release:${sessionId}:${tag}` — append on the first transition, patch
+   in place on every later one), and
+2. **emits** a per-session `release_card` WS message (`runner.emitMessage`), which
+   the client upserts into the transcript by `cardId`.
+
+This makes the card survive a reconnect, a session switch, a full reload, AND an
+orchestrator restart — the durability the previous in-memory-only `release_status`
+SSE lacked (a restart lost the poller's `cards` map entirely). There is no client
+store and no SSE snapshot for releases anymore; chat history is the source of
+truth and the WS upsert is the live channel.
+
+The card has two shapes, driven by `phase`: `proposed` is the expanded,
+interactive form (Confirm & publish / Cancel); **every other phase collapses to a
+compact row**, so the card "collapses to that state" the moment the user decides
+and then keeps advancing to the terminal `released`/`failed` in place. The Confirm
+control carries a one-shot guard so a proposal can't be double-confirmed while the
+agent's follow-up turn is still in flight (the prior double-send bug).
 
 ### Card state machine
 
@@ -226,6 +247,8 @@ deploying → downstream deploy (Deployments API) in flight for the tagged commi
 released  → Release published AND (deploy succeeded OR no deploy target).
 failed    → gate failed / push rejected / workflow missing / API error.
             Card shows the failing job's surfaced log (reuse getJobLogs()).
+cancelled → user declined the proposal on the card. Terminal; the card collapses
+            to a "Release cancelled" row and persists (it does not vanish).
 ```
 
 This deliberately parallels the PR card's
@@ -255,9 +278,11 @@ near-identical.
 (`PR_STATUS_POLL_INTERVAL_MS = 15_000`), **fast (15s)** while a release is in
 `gating`/`deploying`, **slow (120s)** once `released`. The global poll gate
 (viewer attached, or 60s detach grace, or autonomous action in flight) is reused
-verbatim. Results stream over the existing `/api/events` SSE channel — **no new
-WebSocket** — and a snapshot is sent on connect (the `getAllStatuses()` pattern,
-`pr-status-poller.ts`).
+verbatim. Each poll transition flows through the same `onCard` sink as the
+turn-driven transitions (persist + per-session `release_card` WS), so an async
+gating → released advance both updates the live inline card and is durable for a
+reload. There is no `release_status` SSE snapshot on connect anymore — the card
+rehydrates from chat history with the rest of the transcript.
 
 ### What renders inline
 

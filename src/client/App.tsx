@@ -64,7 +64,6 @@ const EMPTY_TURN_USAGE: TurnUsage[] = [];
 const DiffPanel = lazy(() => import("./components/DiffPanel.js").then(m => ({ default: m.DiffPanel })));
 import { PrLifecycleCard } from "./components/PrLifecycleCard.js";
 import { SandboxBanner } from "./components/SandboxBanner.js";
-import { ReleaseLifecycleCard } from "./components/ReleaseLifecycleCard.js";
 import { PrDetailPanel } from "./components/PrDetailPanel.js";
 import { PresentPane } from "./components/PresentPane.js";
 import { HostPanel } from "./components/HostPanel.js";
@@ -1132,13 +1131,6 @@ export default function App() {
           />
         )
       )}
-      {!showHomeScreen && !showNewSessionView && wsSessionId && (
-        <ReleaseLifecycleCard
-          sessionId={wsSessionId}
-          onConfirm={handleReleaseConfirm}
-          onCancel={handleReleaseCancel}
-        />
-      )}
       {!showHomeScreen && !showNewSessionView && wsSessionId && isMobile && (
         <div className="relative z-30 flex justify-center px-3 py-1.5 bg-(--color-bg-primary) pointer-events-none">
           <div className="pointer-events-auto max-w-full">
@@ -1182,6 +1174,8 @@ export default function App() {
             onUndoIssueWrite={(cardId) => send({ type: "undo_issue_write", cardId })}
             onOpenIssue={handleOpenIssue}
             onResumeSession={(sid) => handleSessionResume(sid, navigate)}
+            onReleaseConfirm={handleReleaseConfirm}
+            onReleaseCancel={handleReleaseCancel}
           />
           {/*
             Bottom stack: thinking indicator, rebase banner, queue indicator.

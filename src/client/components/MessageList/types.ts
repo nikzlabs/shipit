@@ -6,6 +6,7 @@ import type {
   ActionChecklistCard as ActionChecklistCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
+import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
 
 // ── Type exports (kept here as the canonical location for backward compat) ──
 
@@ -165,6 +166,14 @@ export interface ChatMessage {
     mergeSha?: string;
     createdAt: string;
   };
+  /**
+   * docs/171 — when set, this message renders an inline `ReleaseLifecycleCard`.
+   * Carries the full `ReleaseStatusSummary` snapshot; the `release_card` WS
+   * handler upserts it by `cardId`, so every phase transition (propose → tagged
+   * → released/failed, cancelled) patches the same card in place. Persisted to
+   * chat history so it survives reload + restart (no client store).
+   */
+  releaseCard?: ReleaseStatusSummary;
   /**
    * docs/117 cross-cutting follow-up — when set, this message renders a
    * `SpawnFailedCard` inline in the parent's chat. Populated from

@@ -4,12 +4,11 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
-import { useReleaseStore } from "../stores/release-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 
 let reloadingForClientUpdate = false;
@@ -327,16 +326,9 @@ export function useServerEvents(): void {
       usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
     });
 
-    // docs/171 — release lifecycle card updates. Same snapshot/removal
-    // semantics as pr_status; drives the inline ReleaseLifecycleCard.
-    es.addEventListener("release_status", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as {
-        updates: ReleaseStatusSummary[];
-        removals?: string[];
-        isSnapshot?: boolean;
-      };
-      useReleaseStore.getState().applyReleaseStatusUpdates(data.updates, data.removals, data.isSnapshot);
-    });
+    // docs/171 — the release lifecycle card is a persisted transcript card now
+    // (delivered over the per-session WS as `release_card` and rehydrated from
+    // chat history), so there is no longer a `release_status` SSE to handle here.
 
     // GitHub API rate-limit state. The server pauses GraphQL polling while
     // limited and pushes these transitions; the UI surfaces a non-error
