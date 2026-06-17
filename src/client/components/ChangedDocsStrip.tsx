@@ -14,7 +14,7 @@
  * the same card) only when expanded, so a collapsed card keeps its height.
  */
 
-import { FileTextIcon, GearSixIcon, CircleDashedIcon } from "@phosphor-icons/react";
+import { FileTextIcon, GearSixIcon, ImageIcon, CircleDashedIcon } from "@phosphor-icons/react";
 import type { NotableFileChange } from "../../server/shared/types/github-types.js";
 import type { IssueChipRef, IssueIntent } from "../utils/pr-card-issue-refs.js";
 import { useFileStore } from "../stores/file-store.js";
@@ -47,10 +47,21 @@ const INTENT_VERB_CLASS: Record<IssueIntent, string> = {
   origin: "text-(--color-pr)",
 };
 
+/** Icon + tint per notable-file kind — doc (purple), image (link), config (link). */
+const KIND_ICON: Record<NotableFileChange["kind"], typeof FileTextIcon> = {
+  doc: FileTextIcon,
+  config: GearSixIcon,
+  image: ImageIcon,
+};
+const KIND_ICON_CLASS: Record<NotableFileChange["kind"], string> = {
+  doc: "text-(--color-pr)",
+  config: "text-(--color-text-link)",
+  image: "text-(--color-text-link)",
+};
+
 function ChangedDocChip({ sessionId, file }: { sessionId: string; file: NotableFileChange }) {
-  const isDoc = file.kind === "doc";
-  const Icon = isDoc ? FileTextIcon : GearSixIcon;
-  const iconColor = isDoc ? "text-(--color-pr)" : "text-(--color-text-link)";
+  const Icon = KIND_ICON[file.kind];
+  const iconColor = KIND_ICON_CLASS[file.kind];
 
   return (
     <button

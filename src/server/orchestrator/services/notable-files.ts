@@ -3,11 +3,13 @@
  *
  * A "notable" file is one worth surfacing on the PR lifecycle card so the user
  * notices it moved without scanning the full diff or detouring to the Docs
- * panel. Two tiers:
+ * panel. Three tiers:
  *
  *   1. **Design docs** — any `.md` file. The chip reads the frontmatter `title`
  *      ("Session lifecycle") rather than the filename ("plan.md").
  *   2. **Config** — a small allowlist of "wait, what moved?" files.
+ *   3. **Images** — any added/modified image (by extension). The chip opens the
+ *      asset inline so the user can eyeball it.
  *
  * Everything else stays in the full diff. The list is a pure projection of the
  * PR's changed-file set, so it's sticky and drift-free by construction.
@@ -32,6 +34,23 @@ const CONFIG_FILENAMES = new Set([
   "CLAUDE.md",
   "AGENTS.md",
   "package.json",
+]);
+
+/**
+ * Image extensions surfaced on the strip, matched by (lowercased) extension.
+ * An added/modified image is worth a chip so the user can eyeball the asset
+ * inline (committed mockups, screenshots, logos) without scanning the diff.
+ */
+const IMAGE_EXTENSIONS = new Set([
+  ".png",
+  ".jpg",
+  ".jpeg",
+  ".gif",
+  ".webp",
+  ".svg",
+  ".avif",
+  ".bmp",
+  ".ico",
 ]);
 
 /** A changed file as reported by `git diff --name-status`. */
@@ -105,10 +124,10 @@ function dedupeNotableDocs(files: NotableFileChange[]): NotableFileChange[] {
 }
 
 /**
- * Classify a changed-file list into the notable subset (docs + config),
- * resolving the frontmatter `title` for docs against `workspaceDir`. Docs that
- * resolve to the same title are collapsed to a single chip (see
- * {@link dedupeNotableDocs}).
+ * Classify a changed-file list into the notable subset (docs + config +
+ * images), resolving the frontmatter `title` for docs against `workspaceDir`.
+ * Docs that resolve to the same title are collapsed to a single chip (see
+ * {@link dedupeNotableDocs}); config and images are never collapsed.
  */
 export async function computeNotableFiles(
   workspaceDir: string,
@@ -125,17 +144,20 @@ export async function computeNotableFiles(
     } else if (change.path.endsWith(".md")) {
       const title = await resolveDocTitle(path.join(workspaceDir, change.path), change.path);
       out.push({ path: change.path, title, kind: "doc", status });
+    } else if (IMAGE_EXTENSIONS.has(path.extname(change.path).toLowerCase())) {
+      out.push({ path: change.path, title: basename, kind: "image", status });
     }
   }
   return dedupeNotableDocs(out);
 }
 
 /**
- * Derive the notable-file list (docs + config) for a feature branch vs its
- * base, classifying the SAME committed merge-base change set the Docs panel
- * uses ({@link committedChangesVsBase}). Sharing that helper keeps the PR
+ * Derive the notable-file list (docs + config + images) for a feature branch
+ * vs its base, classifying the SAME committed merge-base change set the Docs
+ * panel uses ({@link committedChangesVsBase}). Sharing that helper keeps the PR
  * card's strip and the Docs panel's "Modified in this session" list in lockstep
- * — the strip is just that set filtered to docs + the config allowlist.
+ * — the strip is just that set filtered to docs, the config allowlist, and
+ * images.
  *
  * Returns `[]` when the base or merge-base can't be resolved — the toggle then
  * hides entirely.
