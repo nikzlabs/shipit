@@ -155,6 +155,12 @@ export function PrLifecycleCard({
     onOpenDetails?.();
   };
 
+  // When the strip drops in below, it owns the assembly's bottom border — so the
+  // header drops its own `border-b` to avoid a divider line between the two,
+  // letting header + strip read as one seamless card (they share the same
+  // transparent background).
+  const stripShown = hasPanelContent && docsExpanded;
+
   // Key the inner subtree on sessionId so transient per-session UI state
   // (e.g. MergeButton's "Merging..." flag, CreatePR's "Creating..." flag,
   // OpenPhase's "Fixing..." flag) resets when the user switches sessions.
@@ -187,7 +193,7 @@ export function PrLifecycleCard({
         key={sessionId}
         onClick={handleClick}
         aria-label={clickable ? "Open PR details" : undefined}
-        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 py-2 border-b border-(--color-border-primary) ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
+        className={`shrink-0 flex items-start gap-2 px-3 sm:px-4 py-2 ${stripShown ? "" : "border-b border-(--color-border-primary)"} ${clickable ? "cursor-pointer hover:bg-(--color-bg-hover)/40 transition-colors" : ""}`}
       >
         <div className="min-w-0 flex-1 flex items-center">
           {phaseContent}
