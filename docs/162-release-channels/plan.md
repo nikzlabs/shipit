@@ -127,6 +127,12 @@ maintainer pushes alongside the tag. The release ritual: from an up-to-date
 `npm run release -- vX.Y.Z` and push the branch and the tag. CI gates and
 publishes. `RELEASING.md` documents this in full.
 
+> **Auto-publish (docs/214):** `docs/214-release-auto-publish` removes the manual
+> `npm run release` + push step. The agent opens a version-bump PR into `stable`;
+> on merge, CI derives the tag, gates, tags, and publishes — so the channel model
+> here stays identical, but the *trigger* becomes merging the bump PR instead of a
+> hand-run release. `stable` is still never moved by CI.
+
 ## Where the channel preference lives
 
 The preference must survive `git reset --hard origin/<ref>` and image rebuilds,

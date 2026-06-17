@@ -6,6 +6,16 @@ description: Generalize ShipIt's own release automation into a chat-initiated, a
 
 # Release from ShipIt
 
+> **Update (docs/214):** the concrete mechanism for repos that publish via a
+> **maintenance branch** — auto-publish on merge of a version-bump PR, plus the
+> deterministic `shipit release` command that takes the bump/cherry-pick/PR
+> mechanics out of the agent's hands — is specified in
+> `docs/214-release-auto-publish`. That **supersedes this doc's Phase-1
+> *agent-pushes-the-tag* mechanism for `release-branch` repos** (the tag-triggered
+> MVP described below still applies to repos that tag a default-branch commit
+> directly). The card/poller/detection/`release:`-config machinery described here
+> is built and shared by both.
+
 ## Problem
 
 ShipIt already releases *itself* through a hand-built pipeline that lives only in
