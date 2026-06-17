@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Starter prompts — empty-session launchpad</title>
+<style>
+  :root {
+    --bg-primary: #0a0a0a;
+    --bg-secondary: #18181b;
+    --bg-tertiary: #27272a;
+    --border-primary: #27272a;
+    --border-secondary: #3f3f46;
+    --text-primary: #fafafa;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #71717a;
+    --accent: #f97316;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
+    background: #000;
+    color: var(--text-primary);
+    padding: 32px;
+  }
+  h1 { font-size: 18px; font-weight: 600; margin: 0 0 4px; }
+  .sub { color: var(--text-secondary); font-size: 13px; margin: 0 0 28px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .panel {
+    width: 420px;
+    height: 540px;
+    background: var(--bg-primary);
+    border: 1px solid var(--border-primary);
+    border-radius: 14px;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    overflow: hidden;
+    isolation: isolate;
+  }
+  .panel-label {
+    font-size: 12px; color: var(--text-tertiary);
+    text-transform: uppercase; letter-spacing: .06em;
+    margin: 0 0 10px; font-weight: 600;
+  }
+  /* decorative rocket glow sitting BEHIND the prompts (z-index -1, like the real one) */
+  .rocket {
+    position: absolute; left: 50%; bottom: 64px; transform: translateX(-50%);
+    width: 120px; height: 240px; z-index: -1; pointer-events: none;
+    background: radial-gradient(50% 35% at 50% 80%, rgba(249,115,22,.28), transparent 70%);
+  }
+  .rocket::after {
+    content: "🚀"; position: absolute; left: 50%; top: 30%;
+    transform: translateX(-50%); font-size: 40px; opacity: .9;
+  }
+  /* The empty-state container (rocket + launchpad). In the real layout the
+     composer is a SIBLING after this, so the launchpad's bottom edge sits
+     directly above the composer — no overlap. */
+  .messages { flex: 1; position: relative; isolation: isolate; }
+  /* launchpad layer: anchored to the bottom of the message area, in front of rocket */
+  .launchpad {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; justify-content: center; padding: 0 16px 12px;
+    pointer-events: none;
+  }
+  .launchpad-inner { width: 100%; max-width: 360px; }
+  .lead {
+    text-align: center; font-size: 12px; color: var(--text-tertiary);
+    margin: 0 0 12px; line-height: 1.5; text-wrap: balance;
+  }
+  .chips { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; pointer-events: auto; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 8px;
+    border: 1px solid var(--border-primary);
+    background: rgba(24,24,27,.8);
+    backdrop-filter: blur(4px);
+    color: var(--text-secondary);
+    padding: 6px 12px; border-radius: 9999px;
+    font-size: 12px; cursor: pointer;
+    transition: all .15s ease;
+  }
+  .chip:hover {
+    border-color: var(--border-secondary);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+  }
+  .chip .ic { width: 14px; height: 14px; color: var(--text-tertiary); }
+  .chip:hover .ic { color: var(--accent); }
+  /* composer */
+  .composer {
+    margin: 16px; border: 1px solid var(--border-secondary);
+    border-radius: 12px; background: var(--bg-secondary);
+    padding: 12px 14px; color: var(--text-tertiary); font-size: 13px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .send { width: 28px; height: 28px; border-radius: 8px; background: var(--bg-tertiary); display:flex; align-items:center; justify-content:center; color: var(--text-secondary); }
+</style>
+</head>
+<body>
+  <h1>Starter prompts — empty-session launchpad</h1>
+  <p class="sub">Clickable example prompts sit just above the composer, in front of the decorative rocket (z-index&nbsp;-1). They seed the composer for review &amp; send, and vanish the instant the first message lands.</p>
+  <div class="row">
+    <!-- Scratch / sandbox variant -->
+    <div>
+      <p class="panel-label">Scratch / sandbox session</p>
+      <div class="panel">
+        <div class="messages">
+          <div class="rocket"></div>
+          <div class="launchpad">
+            <div class="launchpad-inner">
+              <p class="lead">Just describe what you want — I'll write the code and show you a live preview as I build. Try:</p>
+              <div class="chips">
+                <span class="chip"><span class="ic">🏪</span> Landing page for a coffee shop</span>
+                <span class="chip"><span class="ic">👤</span> Personal portfolio site</span>
+                <span class="chip"><span class="ic">✅</span> A to-do app I can use</span>
+                <span class="chip"><span class="ic">🎮</span> A game to play in the browser</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer"><span>Describe what you want to build…</span><span class="send">↑</span></div>
+      </div>
+    </div>
+    <!-- Repo-backed variant -->
+    <div>
+      <p class="panel-label">Repo-backed session</p>
+      <div class="panel">
+        <div class="messages">
+          <div class="rocket"></div>
+          <div class="launchpad">
+            <div class="launchpad-inner">
+              <p class="lead">Tell me what to change — I'll edit the code, run the live preview, and open a pull request when it's ready. Try:</p>
+              <div class="chips">
+                <span class="chip"><span class="ic">📖</span> Explain this project</span>
+                <span class="chip"><span class="ic">🐛</span> Find and fix a bug, open a PR</span>
+                <span class="chip"><span class="ic">✨</span> Add a feature</span>
+                <span class="chip"><span class="ic">🧪</span> Write tests for weak spots</span>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="composer"><span>Describe what you want to build…</span><span class="send">↑</span></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

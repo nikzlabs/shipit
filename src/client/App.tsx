@@ -27,6 +27,7 @@ import { MessageInput, type SendPayload } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
 import { RocketLaunch } from "./components/RocketLaunch.js";
+import { StarterPrompts } from "./components/StarterPrompts.js";
 import { PreviewFrame } from "./components/PreviewFrame.js";
 import { RepoTrustBanner } from "./components/RepoTrustBanner.js";
 import { usePreviewErrors, type PreviewError } from "./hooks/usePreviewErrors.js";
@@ -1194,6 +1195,18 @@ export default function App() {
             <div className="absolute inset-0 pointer-events-none overflow-hidden" style={{ clipPath: "inset(0 0 -80px 0)", zIndex: -1 }}>
               <RocketLaunch />
             </div>
+          )}
+          {/* docs/216 — first-session launchpad. Same empty-state gate as the
+              rocket, so clickable example prompts appear on every empty session
+              and vanish the instant the first message lands. Repo-backed
+              sessions get "work on existing code" prompts; scratch/sandbox get
+              "build from zero" prompts. Clicking seeds the composer (edit-then-
+              send), teaching the chat-as-input surface rather than telling it. */}
+          {showRocket && (
+            <StarterPrompts
+              repoBacked={!!currentRepoUrl}
+              onPick={(prompt) => useSessionStore.getState().setPrefillText(prompt)}
+            />
           )}
           <MessageList
             messages={messages}
