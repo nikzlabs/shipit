@@ -72,7 +72,7 @@ describe("turn completion broadcast ordering", () => {
     });
     const autoCommit = vi.fn(async () => {
       order.push("commit");
-      return { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false };
+      return { commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
     });
 
     const deps: SystemTurnDeps = {

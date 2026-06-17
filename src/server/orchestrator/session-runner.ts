@@ -13,6 +13,7 @@ import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage } from "./chat-history.js";
+import type { SecretFinding } from "../shared/secret-scan.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 
@@ -267,6 +268,8 @@ export interface SystemTurnDeps {
     parentHash: string | null;
     conflictedFiles: string[];
     rebaseInProgress: boolean;
+    /** docs/213 — likely secrets in the staged diff; non-empty ⇒ commit refused. */
+    secretFindings: SecretFinding[];
   }>;
   /** Schedule a debounced auto-push after a commit. */
   scheduleAutoPush: (sessionDir: string) => void;

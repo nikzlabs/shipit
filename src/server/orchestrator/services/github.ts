@@ -15,6 +15,7 @@ import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
+import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 
 /**
@@ -554,7 +555,12 @@ async function removePrLabels(
  * it after `replaceInProgress` finalizes the rows — that's the same fallback
  * `postTurnCommit` uses for the codex double-`turn/completed` race.
  *
- * Returns the new commit hash, or null if there was nothing to commit.
+ * Returns `commitHash` (null when there was nothing to commit) and
+ * `secretBlocked` — true when `autoCommit` refused because the staged diff
+ * carried a likely secret (docs/213). Callers that push/open a PR must abort on
+ * `secretBlocked`: the secret-bearing change was NOT committed, so proceeding
+ * would silently push/PR the prior (stale) branch state, hiding the agent's
+ * just-made edit. The redacted warning notice is already emitted/persisted here.
  */
 export async function flushPendingTurnCommit(
   git: GitManager,
@@ -565,7 +571,7 @@ export async function flushPendingTurnCommit(
      * emitted, so it survives a reload — not just a reconnect. */
     chatHistory?: ChatHistoryManager;
   },
-): Promise<string | null> {
+): Promise<{ commitHash: string | null; secretBlocked: boolean }> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
@@ -576,7 +582,16 @@ export async function flushPendingTurnCommit(
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+  const secretBlocked = secretFindings.length > 0;
+  if (secretBlocked && runner) {
+    const message = formatSecretScanNotice(secretFindings);
+    if (deps.chatHistory) {
+      emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, runner.sessionId, message, "warn");
+    } else {
+      runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if ((conflictedFiles.length > 0 || rebaseInProgress) && runner) {
     const message = formatUnresolvedConflictNotice({ conflictedFiles, rebaseInProgress });
     if (deps.chatHistory) {
@@ -585,13 +600,13 @@ export async function flushPendingTurnCommit(
       runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
     }
   }
-  if (!commitHash) return null;
+  if (!commitHash) return { commitHash: null, secretBlocked };
 
   if (runner && parentHash) {
     runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
   }
   runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
-  return commitHash;
+  return { commitHash, secretBlocked: false };
 }
 
 /**
@@ -656,11 +671,23 @@ export async function agentCreatePr(
   // Commit any pending working-tree changes *before* checking for an existing
   // PR or pushing. This ensures the just-made edits are part of the branch
   // state we either push to the existing PR or use to create a new one.
-  await flushPendingTurnCommit(git, {
+  const flush = await flushPendingTurnCommit(git, {
     sessionId: options.sessionId,
     runnerRegistry: options.runnerRegistry,
     ...(options.chatHistory ? { chatHistory: options.chatHistory } : {}),
   });
+  // docs/213 — a secret in the just-made edit means `autoCommit` refused it, so
+  // the working-tree change is NOT on the branch. Pushing / opening a PR now
+  // would silently publish the prior (stale) state without the agent's edit —
+  // and the agent would believe its change shipped. Abort with a clear error;
+  // the redacted warning notice was already surfaced by the flush.
+  if (flush.secretBlocked) {
+    throw new ServiceError(
+      422,
+      "Refused to create the PR: a likely secret was found in the staged changes, so they were not committed. " +
+        "Remove the secret (use an env var / ShipIt secret) — or add a `gitleaks:allow` comment to the line if it's a false positive — then try again.",
+    );
+  }
 
   const head = await git.getCurrentBranch();
 

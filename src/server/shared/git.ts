@@ -1,6 +1,7 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 import fs from "node:fs";
 import path from "node:path";
+import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -88,6 +89,14 @@ export interface AutoCommitResult {
    * and docs that happen to contain marker-shaped text commit normally.
    */
   rebaseInProgress: boolean;
+  /**
+   * docs/213 — likely secrets found in the staged diff. When non-empty, NO
+   * commit was made: the whole commit is refused (the secret-bearing change
+   * stays in the working tree for the agent to fix) and the caller surfaces a
+   * persisted warning notice. Empty on every clean commit and on the conflict
+   * refusal above.
+   */
+  secretFindings: SecretFinding[];
 }
 
 export class GitManager {
@@ -159,19 +168,78 @@ export class GitManager {
         rebaseInProgress ? "rebase in progress;" : "",
         conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, conflictedFiles, rebaseInProgress };
+      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [] };
     }
 
     if (status.isClean()) {
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false };
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
     }
 
     await this.git.add("-A");
-    const message = summary || "Claude turn";
+
+    // docs/213 — secret-scan guard. Scan the STAGED diff (which now includes
+    // new untracked files, since we just `git add -A`'d) for high-signal
+    // credentials. If any are found, refuse the WHOLE commit — same posture as
+    // the conflict refusal above: nothing is committed or pushed, and the
+    // working tree is left intact (we `git reset` to unstage) so the agent can
+    // fix the secret next turn. Cheap: one synchronous regex pass over the
+    // staged diff, no extra git round-trips beyond the diff read.
+    const secretFindings = scanDiffForSecrets(await this.stagedDiff());
+    if (secretFindings.length > 0) {
+      console.warn(
+        "[git] autoCommit refused — likely secret(s) in staged diff:",
+        secretFindings.map((f) => `${f.rule} in ${f.file}`).join(", "),
+      );
+      // Unstage so the working tree is preserved for the next turn. Best-effort:
+      // a repo with no HEAD yet (no initial commit) has nothing to reset to.
+      try {
+        await this.git.reset(["--mixed"]);
+      } catch {
+        // no HEAD / nothing staged — safe to ignore.
+      }
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings };
+    }
+
+    // docs/213 — the commit MESSAGE is derived from agent-authored turn text,
+    // and the historical leak spread into commit messages too. A clean diff with
+    // a secret in the summary must not write that secret into git history, so
+    // scrub the message (the code still commits, just with a redacted summary).
+    const message = redactSecretsInText(summary || "Claude turn");
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false };
+    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+  }
+
+  /**
+   * docs/213 — the unified diff of everything currently staged (`git diff
+   * --cached`). Used by the secret-scan guard in {@link autoCommit}; after a
+   * `git add -A` this captures new untracked files too, which is exactly where
+   * a leaked credential file would appear. Best-effort: returns "" on error
+   * (e.g. no HEAD), so the scan simply finds nothing rather than blocking.
+   */
+  async stagedDiff(): Promise<string> {
+    try {
+      return await this.git.diff(["--cached"]);
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * docs/213 — the unified diff introduced between two commits (`git diff
+   * from..to`, two-dot: the cumulative change from `from` to `to`). Used by the
+   * post-turn guard to scan commits the AGENT created itself this turn (which
+   * `autoCommit` never staged) before they're auto-pushed. Callers must ensure
+   * `from` is an ancestor of `to` so the range is purely the new commits — see
+   * the moved-HEAD branch in `post-turn.ts`. Best-effort: "" on error.
+   */
+  async diffRange(from: string, to: string): Promise<string> {
+    try {
+      return await this.git.diff([`${from}..${to}`]);
+    } catch {
+      return "";
+    }
   }
 
   /** Return recent commit log entries. */
@@ -670,9 +738,27 @@ export class GitManager {
     await this.git.add(paths);
     const status = await this.git.status();
     if (status.isClean()) return null;
-    const result = await this.git.commit(message);
+    // docs/213 — same secret guard as autoCommit, on the path-scoped staged diff.
+    // A marketplace skill install shouldn't be a hole in the "never commit a
+    // credential" guarantee. On a finding: unstage and refuse (return null, the
+    // caller's "nothing committed" path).
+    const secretFindings = scanDiffForSecrets(await this.stagedDiff());
+    if (secretFindings.length > 0) {
+      console.warn(
+        "[git] commitPaths refused — likely secret(s) in staged diff:",
+        secretFindings.map((f) => `${f.rule} in ${f.file}`).join(", "),
+      );
+      try {
+        await this.git.reset(["--mixed"]);
+      } catch {
+        // no HEAD / nothing staged — safe to ignore.
+      }
+      return null;
+    }
+    const safeMessage = redactSecretsInText(message);
+    const result = await this.git.commit(safeMessage);
     const hash = result.commit || "";
-    console.log("[git] Committed (path-scoped):", hash, message);
+    console.log("[git] Committed (path-scoped):", hash, safeMessage);
     return hash;
   }
 

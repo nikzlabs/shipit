@@ -3,6 +3,8 @@ import type { ConnectionCtx, AppCtx } from "./types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
+import { formatSecretScanNotice } from "../services/secret-scan-notice.js";
+import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
@@ -80,7 +82,20 @@ export async function postTurnCommit(
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
+    if (secretFindings.length > 0 && opts.sessionId) {
+      // docs/213 — the commit was refused because the staged diff carried a
+      // likely secret. Persist (append + emit) the redacted warning so it
+      // survives a reload, exactly like the conflict notice below. commitHash
+      // is null, so the no-commit path below short-circuits push + PR.
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        formatSecretScanNotice(secretFindings),
+        "warn",
+      );
+    }
     if ((conflictedFiles.length > 0 || rebaseInProgress) && opts.sessionId) {
       // Persisted (append + emit), not emit-only, so the conflict warning
       // survives a reload. It fires after the turn's final persist, so
@@ -100,6 +115,35 @@ export async function postTurnCommit(
         currentHeadHash &&
         currentHeadHash !== opts.turnStartHeadHash
       ) {
+        // docs/213 — the agent moved HEAD itself this turn (e.g. it ran its own
+        // `git commit`), so `autoCommit` saw a clean tree and never scanned that
+        // content. Guard the auto-push: if the move is a pure ADDITION on top of
+        // the turn-start HEAD (turnStartHead is an ancestor of HEAD), scan the
+        // newly-added commits and refuse the push on a finding. If history was
+        // rewritten instead (rebase/amend/reset — turnStartHead is NOT an
+        // ancestor), skip the scan: those commits replay pre-existing history, so
+        // re-flagging them would false-block a legitimate rebase (and any secret
+        // there is already in history, not newly introduced this turn).
+        const addedOnTop = await git.isAncestor(opts.turnStartHeadHash, currentHeadHash);
+        if (addedOnTop) {
+          const findings = scanDiffForSecrets(
+            await git.diffRange(opts.turnStartHeadHash, currentHeadHash),
+          );
+          if (findings.length > 0) {
+            if (opts.sessionId) {
+              emitNoticePostTurn(
+                opts.emit,
+                ctx.chatHistoryManager,
+                opts.sessionId,
+                formatSecretScanNotice(findings),
+                "warn",
+              );
+            }
+            // Do NOT push the secret-bearing commit(s). It stays local; the agent
+            // must amend/scrub it before it can reach the remote.
+            return null;
+          }
+        }
         ctx.scheduleAutoPush(git, opts.sessionId);
       }
       return null;

@@ -30,6 +30,7 @@ import { wireAgentListeners } from "./ws-handlers/agent-listeners.js";
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
+import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
 import { emitNoticePostTurn } from "./chat-card-persistence.js";
 
 /**
@@ -336,6 +337,15 @@ export async function executeAgentTurn(
       }
       // Fallback for minimal test setups that wire `autoCommit` but not `commitTurn`.
       const result = await deps.autoCommit(runner.sessionDir, summary);
+      if (result.secretFindings.length > 0) {
+        emitNoticePostTurn(
+          emit,
+          deps.listenerDeps.chatHistoryManager,
+          sessionId,
+          formatSecretScanNotice(result.secretFindings),
+          "warn",
+        );
+      }
       if (result.conflictedFiles.length > 0 || result.rebaseInProgress) {
         emitNoticePostTurn(
           emit,
