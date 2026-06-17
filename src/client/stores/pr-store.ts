@@ -101,13 +101,6 @@ export interface PrCardState {
     title: string;
     baseBranch: string;
   };
-  /**
-   * docs/205 — notable files (docs + allowlisted config) changed across the
-   * whole PR, for the collapsible changed-docs strip. A pure projection of the
-   * PR's file list; preserved across poller updates that omit it so the strip
-   * stays sticky.
-   */
-  notableFiles?: NotableFileChange[];
   /** Error message (error phase). */
   errorMessage?: string;
   /**
@@ -127,6 +120,21 @@ interface PrState {
   cardBySession: Record<string, PrCardState>;
   /** sessionId → auto-merge preference/state, available before a PR card exists. */
   autoMergeBySession: Record<string, NonNullable<PrCardState["autoMerge"]>>;
+  /**
+   * docs/205/210 — sessionId → notable files (docs + allowlisted config +
+   * images) changed across the whole PR, for the collapsible changed-docs strip.
+   *
+   * Kept in its OWN map rather than on the card because it's git-derived and
+   * arrives on a different cadence/transport than the poller-driven card: at PR
+   * creation and on each post-turn commit (`pr_notable_files`), plus a re-seed
+   * when a viewer (re)connects (route-registry's `activateSession`). The poller's
+   * `pr_status` snapshot — which rebuilds the card on reload/session-switch —
+   * carries none of this, so holding it on the card meant a rebuild dropped the
+   * doc chips until the next turn. A standalone slice survives card rebuilds and
+   * doesn't depend on the card existing yet when a patch lands (the two travel on
+   * independent sockets, with no ordering guarantee on first paint).
+   */
+  notableFilesBySession: Record<string, NotableFileChange[]>;
 
   // Repo import search (used by home page repo picker)
   importSearchResults: ImportSearchResult[];
@@ -149,10 +157,11 @@ interface PrState {
   /** Update inline card from pr_lifecycle_update WS message. */
   updateCard: (sessionId: string, card: PrCardState) => void;
   /**
-   * docs/210 — patch ONLY the changed-docs strip on an existing card, from a
-   * `pr_notable_files` WS message emitted each post-turn commit. Merges into the
-   * live card so the poller-owned fields (phase/pr/checks) are untouched; the
-   * list is authoritative (an empty array correctly clears the strip).
+   * docs/210 — set the changed-docs strip for a session, from a
+   * `pr_notable_files` WS message (emitted each post-turn commit and on viewer
+   * re-connect). Writes the standalone `notableFilesBySession` slice so it's
+   * independent of the poller-owned card; the list is authoritative — an empty
+   * array clears the strip. `cardId` is unused (the slice is keyed by session).
    */
   setNotableFiles: (sessionId: string, cardId: string, notableFiles: NotableFileChange[]) => void;
 
@@ -221,6 +230,7 @@ const initialState = {
   statusBySession: {} as Record<string, PrStatusSummary>,
   cardBySession: {} as Record<string, PrCardState>,
   autoMergeBySession: {} as Record<string, NonNullable<PrCardState["autoMerge"]>>,
+  notableFilesBySession: {} as Record<string, NotableFileChange[]>,
   importSearchResults: [] as ImportSearchResult[],
 };
 
@@ -234,6 +244,7 @@ export const usePrStore = create<PrState>((set, get) => ({
       const nextStatus = { ...state.statusBySession };
       const nextCards = { ...state.cardBySession };
       const nextAutoMerge = { ...state.autoMergeBySession };
+      const nextNotable = { ...state.notableFilesBySession };
 
       // Authoritative snapshot: drop poller state for any session not present
       // in `updates`. statusBySession is purely poller-owned so it's pruned
@@ -254,6 +265,10 @@ export const usePrStore = create<PrState>((set, get) => ({
           if (pollerPhase && !present.has(sessionId)) {
             // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
             delete nextCards[sessionId];
+            // Drop the strip for a card pruned as stale, so a now-gone PR can't
+            // leave its changed-docs chips behind.
+            // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+            delete nextNotable[sessionId];
           }
         }
       }
@@ -266,6 +281,8 @@ export const usePrStore = create<PrState>((set, get) => ({
           delete nextCards[sessionId];
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
           delete nextAutoMerge[sessionId];
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete nextNotable[sessionId];
         }
       }
 
@@ -298,9 +315,6 @@ export const usePrStore = create<PrState>((set, get) => ({
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
-            // docs/205 — the poller doesn't carry notableFiles; keep the
-            // lifecycle-update-derived list so the strip survives a poll tick.
-            notableFiles: existing?.notableFiles,
           };
         } else {
           nextCards[update.sessionId] = {
@@ -326,14 +340,16 @@ export const usePrStore = create<PrState>((set, get) => ({
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
             reviewThreads: update.reviewThreads ?? existing?.reviewThreads,
-            // docs/205 — the poller doesn't carry notableFiles; keep the
-            // lifecycle-update-derived list so the strip survives a poll tick.
-            notableFiles: existing?.notableFiles,
           };
         }
       }
 
-      return { statusBySession: nextStatus, cardBySession: nextCards, autoMergeBySession: nextAutoMerge };
+      return {
+        statusBySession: nextStatus,
+        cardBySession: nextCards,
+        autoMergeBySession: nextAutoMerge,
+        notableFilesBySession: nextNotable,
+      };
     });
   },
 
@@ -361,10 +377,6 @@ export const usePrStore = create<PrState>((set, get) => ({
           [sessionId]: {
             ...card,
             autoMerge: card.autoMerge ?? existing?.autoMerge ?? state.autoMergeBySession[sessionId],
-            // docs/205 — phases that don't compute a file list (creating/error/
-            // merged, and the graduate-session ready card) omit notableFiles;
-            // keep the last-known list so the changed-docs strip stays sticky.
-            notableFiles: card.notableFiles ?? existing?.notableFiles,
           },
         },
       };
@@ -373,17 +385,16 @@ export const usePrStore = create<PrState>((set, get) => ({
 
   setNotableFiles: (sessionId, _cardId, notableFiles) => {
     set((state) => {
-      const existing = state.cardBySession[sessionId];
-      // No card to patch yet — the poller hasn't emitted one. Since this message
-      // only fires when a PR already exists, a card is effectively guaranteed;
-      // skip rather than render a strip on a phantom card.
-      if (!existing) return state;
-      return {
-        cardBySession: {
-          ...state.cardBySession,
-          [sessionId]: { ...existing, notableFiles },
-        },
-      };
+      const next = { ...state.notableFilesBySession };
+      // Authoritative: an empty list clears the strip. Drop the key so the map
+      // doesn't grow an entry per session that ever had — then lost — changed docs.
+      if (notableFiles.length === 0) {
+        // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+        delete next[sessionId];
+      } else {
+        next[sessionId] = notableFiles;
+      }
+      return { notableFilesBySession: next };
     });
   },
 

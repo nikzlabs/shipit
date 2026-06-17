@@ -10,6 +10,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useCommentStore } from "../stores/comment-store.js";
 import { useIssuesStore } from "../stores/issues-store.js";
 import type { PrMergeableState, PrReviewDecision, SessionInfo } from "../../server/shared/types.js";
+import type { NotableFileChange } from "../../server/shared/types/github-types.js";
 import { saveChangedDocsExpanded } from "../utils/local-storage.js";
 
 /**
@@ -100,6 +101,12 @@ function setMergeable(
 function setCard(sessionId: string, card: PrCardState) {
   usePrStore.setState((s) => ({
     cardBySession: { ...s.cardBySession, [sessionId]: card },
+  }));
+}
+
+function setNotableFiles(sessionId: string, files: NotableFileChange[]) {
+  usePrStore.setState((s) => ({
+    notableFilesBySession: { ...s.notableFilesBySession, [sessionId]: files },
   }));
 }
 
@@ -1293,12 +1300,15 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     mockMatchMedia(false);
   });
 
-  const cardWithDocs: PrCardState = {
-    ...openPrCard,
-    notableFiles: [
-      { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
-      { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
-    ],
+  const docFiles: NotableFileChange[] = [
+    { path: "docs/205-pr-changed-docs/plan.md", title: "PR-scoped changed docs", kind: "doc", status: "A" },
+    { path: "shipit.yaml", title: "shipit.yaml", kind: "config", status: "M" },
+  ];
+  // docs/210 — the strip is sourced from the standalone `notableFilesBySession`
+  // slice, so a card + a slice entry together drive it.
+  const seedDocs = (sessionId: string) => {
+    setCard(sessionId, openPrCard);
+    setNotableFiles(sessionId, docFiles);
   };
 
   it("hides the toggle when the PR changed no notable file", () => {
@@ -1307,8 +1317,16 @@ describe("PrLifecycleCard — changed-docs strip", () => {
     expect(screen.queryByLabelText("Related issues and changed docs in this PR")).not.toBeInTheDocument();
   });
 
+  it("does not render a floating strip when notable files exist but no card does", () => {
+    // The viewer-connect re-seed can populate the slice before the poller's card
+    // snapshot lands; without a card there's nothing to attach the strip to.
+    setNotableFiles("s1", docFiles);
+    render(<PrLifecycleCard sessionId="s1" />);
+    expect(screen.queryByLabelText("Related issues and changed docs in this PR")).not.toBeInTheDocument();
+  });
+
   it("shows the toggle when notable files are present, expanded by default on desktop", () => {
-    setCard("s1", cardWithDocs);
+    seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toBeInTheDocument();
@@ -1319,7 +1337,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
 
   it("defaults to collapsed on mobile, where header height is precious", () => {
     mockMatchMedia(true);
-    setCard("s1", cardWithDocs);
+    seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     const toggle = screen.getByLabelText("Related issues and changed docs in this PR");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
@@ -1328,7 +1346,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
 
   it("lets a stored collapse preference win over the desktop default", () => {
     saveChangedDocsExpanded("s1", false);
-    setCard("s1", cardWithDocs);
+    seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     expect(
       screen.getByLabelText("Related issues and changed docs in this PR"),
@@ -1338,7 +1356,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   it("toggles the strip and persists the state per session", () => {
     // Start collapsed so the toggle exercises the expand path.
     saveChangedDocsExpanded("s1", false);
-    setCard("s1", cardWithDocs);
+    seedDocs("s1");
     const { unmount } = render(<PrLifecycleCard sessionId="s1" />);
     fireEvent.click(screen.getByLabelText("Related issues and changed docs in this PR"));
     expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
@@ -1346,7 +1364,7 @@ describe("PrLifecycleCard — changed-docs strip", () => {
 
     // Remount (e.g. page reload) — the expanded state is restored from storage.
     unmount();
-    setCard("s1", cardWithDocs);
+    seedDocs("s1");
     render(<PrLifecycleCard sessionId="s1" />);
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("PR-scoped changed docs")).toBeInTheDocument();
@@ -1355,8 +1373,8 @@ describe("PrLifecycleCard — changed-docs strip", () => {
   it("keeps collapse state independent across sessions", () => {
     saveChangedDocsExpanded("s1", true);
     saveChangedDocsExpanded("s2", false);
-    setCard("s1", cardWithDocs);
-    setCard("s2", cardWithDocs);
+    seedDocs("s1");
+    seedDocs("s2");
 
     const { rerender } = render(<PrLifecycleCard sessionId="s1" />);
     expect(screen.getByLabelText("Related issues and changed docs in this PR")).toHaveAttribute("aria-expanded", "true");
