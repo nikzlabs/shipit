@@ -58,7 +58,9 @@ import { resolveShipitConfig } from "../shared/shipit-config.js";
 function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: string } {
   try {
     const config = resolveShipitConfig(dir);
-    const release = config.release as
+    // Cast through `unknown`: the Phase-1 fields aren't on `ReleaseConfig` yet, and
+    // a direct assertion is a structural no-op (so ESLint flags it as unnecessary).
+    const release = config.release as unknown as
       | { branch?: string; versionSourcePath?: string }
       | undefined;
     return {
