@@ -15,6 +15,10 @@ docker rm -f $(docker ps -aq --filter "label=shipit-stack=shipit-prod") 2>/dev/n
 docker rm -f $(docker ps -aq --filter "label=shipit-parent-session") 2>/dev/null || true
 # Prune orphaned networks from previous sessions to reclaim address space
 docker network prune -f
-# Build both images in parallel (session-worker is needed by SessionContainerManager at runtime)
-docker compose build --pull session-worker shipit
+# Build the images in parallel. session-worker is needed by SessionContainerManager
+# at runtime; egress-sidecar (shipit-egress-sidecar:prod) is required because the prod
+# compose has egress containment ON by default (SESSION_EGRESS_SIDECAR_IMAGE set) — a
+# contained session fails closed without it. To run with containment off instead, export
+# SESSION_EGRESS_ENFORCE=0 before this script (compose substitutes it into the orchestrator env).
+docker compose build --pull session-worker shipit egress-sidecar
 exec docker compose up --no-build shipit "$@"

@@ -298,6 +298,14 @@ tracker as separate issues. None implemented yet.
           policy is Contained but `enforcementActive` is false. The fail-closed session-start
           error reaches the user via the existing `recordCreateError` → health → SessionHealthStrip
           channel (the reworded egress-specific message is what's shown).
+    - [x] **Cross-agent (Codex) review fixes.** (1) `deployment/vps/restart.sh` now sources
+          `/etc/shipit/shipit.env` like `deploy.sh`, so a persisted `SESSION_EGRESS_ENFORCE=0`
+          opt-out survives "Just Restart" instead of silently flipping enforcement back on.
+          (2) `docker/local/prod.sh` now builds `egress-sidecar` (its compose sets the image),
+          so the prod-like local runner doesn't fail closed on a missing sidecar.
+          (3) `container-lifecycle.ts` create-failure path now runs `cleanupSessionDockerResources`
+          (stop agent → reap parent-session children → remove agent, mirroring `destroyContainer`),
+          so a throw after the Tier B/C sidecars launched can't leak them. Regression test added.
 
 ## P1
 

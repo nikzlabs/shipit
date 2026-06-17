@@ -468,6 +468,16 @@ describe("SessionContainerManager", () => {
       expect(manager.get("test-session-1")).toBeUndefined();
       expect(manager.size).toBe(0);
     });
+
+    it("reaps parent-session-labeled children on create failure (no leaked egress sidecars)", async () => {
+      // The create-failure path must run cleanupSessionDockerResources so the
+      // long-lived Tier B/C sidecars (which share the agent netns and carry the
+      // shipit-parent-session label) can't leak when a later step throws.
+      await expect(manager.create(buildConfig())).rejects.toThrow();
+      expect(mockDocker.listContainers).toHaveBeenCalledWith(
+        expect.objectContaining({ filters: { label: ["shipit-parent-session=test-session-1"] } }),
+      );
+    });
   });
 
   // --- docs/183 dep-dir design — overlay sessions (N nested dep-dir mounts) ---

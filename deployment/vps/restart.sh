@@ -18,6 +18,21 @@ SHIPIT_DIR="/opt/shipit"
 COMPOSE_FILE="$SHIPIT_DIR/deployment/vps/docker-compose.yml"
 TRIGGER_FILE="$SHIPIT_DIR/.restart-requested"
 
+# Load persisted operator env (e.g. SESSION_EGRESS_ENFORCE=0 from the egress
+# preflight in setup.sh) BEFORE the compose recreate below, exactly as deploy.sh
+# does. Without this, a "Just Restart" recreates the orchestrator with the var
+# unset → compose's ${SESSION_EGRESS_ENFORCE:-} substitutes empty → egress
+# enforcement flips back ON, and an incapable host that deliberately opted out
+# fails closed on every session. The env file is the source of truth across both
+# the deploy and restart paths.
+SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-/etc/shipit/shipit.env}"
+if [ -f "$SHIPIT_ENV_FILE" ]; then
+  set -a
+  # shellcheck source=/dev/null
+  . "$SHIPIT_ENV_FILE"
+  set +a
+fi
+
 # Remove trigger file immediately so we don't re-run
 rm -f "$TRIGGER_FILE"
 
