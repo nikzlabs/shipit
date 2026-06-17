@@ -103,9 +103,13 @@ skips the production-track testing requirements.
    Google holds the real app-signing key and re-signs each upload. (An upload
    key can be reset via Play support if lost — unlike a pure sideload key.) The
    same four signing secrets are reused.
-3. Provide store metadata: the app icon (`play/icon-512.png`, committed in this
-   repo), a feature graphic (1024×500), ≥2 screenshots, descriptions, a privacy
-   policy URL, content rating, and the Data Safety form. See `play/README.md`.
+3. Provide store metadata (see `play/README.md`):
+   - **App icon** — `play/icon-512.png` (committed).
+   - **Feature graphic** — `play/feature-graphic-1024x500.png` (committed).
+   - **Privacy policy URL** — the policy lives at `android/PRIVACY.md`; paste its
+     GitHub URL into the Console (see "Privacy policy" below).
+   - **≥2 phone screenshots** — capture from a device/emulator (not committed).
+   - Descriptions, content rating, and the Data Safety form.
 4. **Seed the first build manually.** The Play API can only update an app that
    already has at least one uploaded build, so the very first AAB must be
    uploaded by hand: run **Android build** with `release: true`, download the
@@ -134,6 +138,26 @@ auto-update from the Play Store — no manual Console step.
 > Android 15 as of 2025). This app currently targets API 34 — bump
 > `compileSdk`/`targetSdk` before your first submission, and verify the
 > full-bleed WebView still handles Android 15's edge-to-edge insets.
+
+### Privacy policy (hosted from this repo)
+
+Play requires a publicly reachable privacy policy URL. Rather than standing up a
+site, the policy is committed at [`PRIVACY.md`](PRIVACY.md) and served straight
+from GitHub — paste this URL into the Console's **Privacy policy** field:
+
+```
+https://github.com/nikzlabs/shipit/blob/main/android/PRIVACY.md
+```
+
+GitHub renders the Markdown as a normal web page, which Play's reviewer can
+fetch. **This only works while the repo is public** — Play's crawler is
+unauthenticated, so a private repo's blob URL (and free GitHub Pages) won't be
+reachable.
+
+Want a cleaner, chrome-free URL? Enable **GitHub Pages** (Settings → Pages →
+Source: `main`) and link to the rendered page instead
+(`https://nikzlabs.github.io/shipit/android/PRIVACY`). The blob URL above works
+with zero setup, so it's the recommended starting point.
 
 ## App behavior
 

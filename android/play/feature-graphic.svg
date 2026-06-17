@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 500" width="1024" height="500">
+  <!--
+    Google Play feature graphic (1024x500). Branded banner: the same red
+    gradient + white rocket as the app icon, with the ShipIt wordmark and
+    tagline. Keep important content away from the extreme edges — Play may crop
+    or overlay UI on top of this graphic in some placements.
+  -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f0506e"/>
+      <stop offset="1" stop-color="#b8294b"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1024" height="500" fill="url(#bg)"/>
+
+  <!-- Rocket (favicon 512-grid geometry), placed left-of-center. -->
+  <g transform="translate(245,250) scale(0.82) translate(-256,-266)">
+    <path d="M214 394 L256 472 L298 394 Z" fill="#ffd27a"/>
+    <path d="M236 394 L256 440 L276 394 Z" fill="#fff6df"/>
+    <path d="M256 60 C300 110 326 182 326 262 L326 352 Q326 382 296 394 L216 394 Q186 382 186 352 L186 262 C186 182 212 110 256 60 Z" fill="#fff"/>
+    <path d="M186 300 L118 398 L186 374 Z" fill="#fff"/>
+    <path d="M326 300 L394 398 L326 374 Z" fill="#fff"/>
+    <circle cx="256" cy="212" r="46" fill="#b8294b"/>
+  </g>
+
+  <!-- Wordmark + tagline. -->
+  <text x="440" y="252" font-family="DejaVu Sans, Liberation Sans, sans-serif"
+        font-weight="bold" font-size="140" fill="#ffffff">ShipIt</text>
+  <text x="446" y="318" font-family="DejaVu Sans, Liberation Sans, sans-serif"
+        font-weight="normal" font-size="40" fill="#ffffff" fill-opacity="0.92">Build software by chatting.</text>
+</svg>
