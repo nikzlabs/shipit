@@ -261,6 +261,14 @@ the script targets A.
    ```json
    { "nodeAttrs": [{ "target": ["<node-100.x-ip>"], "attr": ["dns-subdomain-resolve"] }] }
    ```
+   **Caveat (observed in practice):** the client capability shipped in v1.96+,
+   but Tailscale still **gates `dns-subdomain-resolve` per-tailnet at the
+   control plane** and is rolling it out. Saving the policy can fail with
+   `tailnet is not permitted to use the "dns-subdomain-resolve" node attribute`;
+   that tailnet must request access from Tailscale (support / feature preview),
+   or fall back to a wildcard DNS record it owns pointed at the node's tailnet
+   IP. `tailscale.sh` prints this guidance, and `deployment/README.md` documents
+   the fallback.
 4. **Print the access URL** and note previews resolve at
    `{id}--{port}.shipit.tailnet.ts.net:4123` once the grant is added.
 

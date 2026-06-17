@@ -216,7 +216,8 @@ paste-it-in path.
 
 Requirements and caveats:
 
-- **Tailscale v1.96+** on the VPS *and* on the devices you browse from (the capability is GA in current releases; it is not in older clients).
+- **Tailscale v1.96+** on the VPS *and* on the devices you browse from (the capability landed in v1.96; it is not in older clients).
+- **The capability is gated per-tailnet at Tailscale's control plane** and is still rolling out. If saving the policy is rejected with `tailnet is not permitted to use the "dns-subdomain-resolve" node attribute`, your tailnet doesn't have it enabled yet — request access from Tailscale (support / feature preview), or use the wildcard-DNS fallback below.
 - **HTTP only** — there is no wildcard TLS cert for `*.ts.net` ([tailscale/tailscale#7081](https://github.com/tailscale/tailscale/issues/7081)). This is safe because tailnet traffic is already WireGuard-encrypted end to end.
 - Until the grant is added, the app works over Tailscale but previews won't resolve.
 

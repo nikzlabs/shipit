@@ -14,9 +14,14 @@
 #     1. Forward the node's tailnet IP :4123 -> 127.0.0.1:4123 at the TCP level
 #        (Host header preserved), so the orchestrator's subdomain proxy can route.
 #     2. Rely on Tailscale's native MagicDNS wildcard resolution
-#        (`dns-subdomain-resolve` node capability, GA since ~v1.96) so that
+#        (`dns-subdomain-resolve` node capability, clients v1.96+) so that
 #        *.shipit.tailnet.ts.net resolves to this node. That capability is an
 #        ACL grant the operator adds once — this script prints the exact block.
+#        Tailscale gates it per-tailnet at the control plane, so saving the
+#        grant can be rejected with "tailnet is not permitted to use the
+#        'dns-subdomain-resolve' node attribute"; in that case the operator
+#        requests access from Tailscale or uses the wildcard-DNS fallback
+#        (see deployment/README.md).
 #   Access is HTTP over the WireGuard-encrypted tailnet (no wildcard TLS cert
 #   exists for *.ts.net — tracked upstream at tailscale/tailscale#7081).
 #
@@ -34,6 +39,18 @@ LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-4123}"
 BACKEND_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
+
+# --- Terminal colors (only when stdout is a TTY) ----------------------------
+# The one-time ACL step is easy to scroll past, so the banner and the
+# paste-this block are colored to stand out from the rest of the output.
+if [ -t 1 ]; then
+  C_BANNER=$'\033[1;33m'   # bold yellow — the can't-miss one-time step
+  C_STEP=$'\033[1;36m'     # bold cyan   — the numbered steps
+  C_PASTE=$'\033[0;32m'    # green       — the literal block to paste
+  C_RESET=$'\033[0m'
+else
+  C_BANNER='' C_STEP='' C_PASTE='' C_RESET=''
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Error: run as root, e.g. sudo bash /opt/shipit/deployment/vps/tailscale.sh" >&2
@@ -160,31 +177,42 @@ echo ""
 echo "  Forwarder: ${TS_IP}:${LISTEN_PORT} -> 127.0.0.1:${BACKEND_PORT} (Host preserved)"
 echo "  Any existing Cloudflare tunnel access is unchanged."
 echo ""
-echo "-------------------------------------------------------------------------"
-echo "  ONE-TIME STEP — enable subdomain previews over Tailscale"
-echo "-------------------------------------------------------------------------"
+echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
+echo "${C_BANNER}  ONE-TIME STEP — enable subdomain previews over Tailscale${C_RESET}"
+echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
 echo ""
 echo "  Previews are served at {sessionId}--{port}.${SHIPIT_HOST}. For those"
 echo "  hostnames to resolve over your tailnet, grant this node the MagicDNS"
 echo "  wildcard capability by editing your tailnet policy file:"
 echo ""
-echo "    1. Open  https://login.tailscale.com/admin/acls"
-echo "    2. Click the 'JSON editor' toggle at the top of the page."
-echo "    3. Add the block below as a TOP-LEVEL key inside the policy"
-echo "       object — a sibling of \"acls\"/\"groups\", not nested inside"
-echo "       them. Mind JSON commas: keys are comma-separated."
-echo "    4. Click Save."
+echo "${C_STEP}    1. Open  https://login.tailscale.com/admin/acls${C_RESET}"
+echo "${C_STEP}    2. Click the 'JSON editor' toggle at the top of the page.${C_RESET}"
+echo "${C_STEP}    3. Add this block as a TOP-LEVEL key inside the policy object${C_RESET}"
+echo "${C_STEP}       — a sibling of \"acls\"/\"groups\", not nested inside them.${C_RESET}"
+echo "${C_STEP}       Mind JSON commas: keys are comma-separated.${C_RESET}"
 echo ""
-echo '      "nodeAttrs": ['
-echo '        {'
-echo "          \"target\": [\"${TS_IP}\"],"
-echo '          "attr": ["dns-subdomain-resolve"]'
-echo '        }'
-echo '      ]'
+echo "${C_PASTE}      \"nodeAttrs\": [${C_RESET}"
+echo "${C_PASTE}        {${C_RESET}"
+echo "${C_PASTE}          \"target\": [\"${TS_IP}\"],${C_RESET}"
+echo "${C_PASTE}          \"attr\": [\"dns-subdomain-resolve\"]${C_RESET}"
+echo "${C_PASTE}        }${C_RESET}"
+echo "${C_PASTE}      ]${C_RESET}"
+echo ""
+echo "${C_STEP}    4. Click Save.${C_RESET}"
 echo ""
 echo "  (In the Visual editor this same grant lives under Definitions ->"
 echo "  Node attributes, but the JSON editor is the direct way to paste it.)"
 echo ""
 echo "  (Requires Tailscale v1.96+ on this node and the devices you browse from.)"
 echo "  Until that grant is added, the app works but previews won't resolve."
+echo ""
+echo "  If Save is rejected with \"tailnet is not permitted to use the"
+echo "  'dns-subdomain-resolve' node attribute\", the capability is not yet"
+echo "  enabled for your tailnet — Tailscale gates it per-tailnet at the"
+echo "  control plane and is still rolling it out. Either:"
+echo "    - request access from Tailscale (support / feature preview), then"
+echo "      re-add the block above once it's enabled; or"
+echo "    - skip the policy edit and point a wildcard DNS record you own"
+echo "      (e.g. *.shipit-tail.example.com) at ${TS_IP}, then open ShipIt"
+echo "      through that hostname (this path also gives you real HTTPS)."
 echo ""
