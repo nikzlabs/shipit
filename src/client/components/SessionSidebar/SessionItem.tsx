@@ -4,6 +4,7 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { formatRelativeDate } from "../../utils/dates.js";
 import { DropdownMenuItem, DropdownMenuSeparator } from "../ui/dropdown-menu.js";
 import { OverflowMenu } from "../ui/overflow-menu.js";
+import { SessionEgressMode } from "./SessionEgressMode.js";
 import { PrStateBadge } from "../PrLifecycleCard.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
@@ -303,6 +304,16 @@ export function SessionItem({ session, isCurrent, onResume, onSelectCurrent, onA
                     <WrenchIcon size={ICON_SIZE.SM} />
                     Investigate in Ops session
                   </DropdownMenuItem>
+                )}
+                {/* Per-session egress override — the session-scoped half of the
+                    Network egress controls (docs/172); the global toggle/allowlist
+                    stay in Settings → Network. Current session only, to avoid a
+                    fetch-per-row and keep this off inactive rows. */}
+                {isCurrent && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <SessionEgressMode sessionId={session.id} />
+                  </>
                 )}
               </>
             )}

@@ -316,7 +316,9 @@ Stored orchestrator-side alongside MCP servers / secrets.
 > defaults"** action (`POST /api/egress/defaults/restore`) clears the suppressions. Only
 > **operator** (`SESSION_EGRESS_ALLOWLIST`) and **MCP** hosts stay read-only (they're derived
 > live from the deployment env / connected MCP servers, shown under "Also allowed"). The user
-> can add/remove/**edit** entries at global **or** per-session scope. **"Add to
+> can add/remove/**edit** entries; adds from the Settings dialog land at **global** scope
+> (Settings → Network is **global-only** — see "Surface split" below), while per-session host
+> adds happen inline on the blocked-egress card. **"Add to
 > allowlist"** (the Tier C card's `add`, and a session-scoped host add) persists durably AND
 > live-reloads the running session's resolver + proxy (`egress-reload.ts`) so a brand-new
 > host resolves (DNS + dnsmasq `ipset=` auto-pin) and is SNI-permitted with no restart;
@@ -332,6 +334,17 @@ Stored orchestrator-side alongside MCP servers / secrets.
   states that rather than implying an instant effect.
 - **Per-session override.** "Allow this session to also reach `X`" — the smaller-blast-radius
   version of the global switch, matching the real "I'm debugging one thing" need.
+
+- **Surface split — global vs session controls.** A "Settings" dialog should hold app-wide
+  settings only, so the egress UI is split by scope rather than crammed into one tab.
+  **Settings → Network** holds the *global* controls: the containment toggle and the global
+  allowlist editor (adds here are always global). The *session-scoped* controls live on
+  session-scoped surfaces instead: the **containment override** (Inherit / Contained / Open)
+  is on the session's own overflow menu in the sidebar (`SessionEgressMode.tsx`, current
+  session only, wired by direct `GET /api/egress/allowlist?session=` + `PUT
+  /api/egress/session/:id`), and a **per-session host add** happens inline on the
+  blocked-egress card. Session-added hosts still surface (badged "This session") in the
+  Settings effective list so they stay visible and removable from one place.
 - **Allow-once / add-to-allowlist on block.** When the gateway denies a host, **deny fast**
   (no held sockets) and surface an inline **blocked-egress card** (`host`, allow-once /
   add-to-allowlist / dismiss); the agent retries once the host is permitted. We deliberately
@@ -379,8 +392,10 @@ as an operator default / fail-secure floor).
 - Browser-only routes (default-protected by *not* setting `containerAccessible`; golden
   route-table unchanged — no new container route) — `api-routes-egress.ts`,
   `api-container-guard.ts`.
-- Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Advanced →
-  "Network egress") + `egress_settings` SSE sync in `useServerEvents.ts`.
+- Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Network,
+  **global-only**) + `components/SessionSidebar/SessionEgressMode.tsx` (the per-session
+  containment override on the session's overflow menu) + `egress_settings` SSE sync in
+  `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.
 

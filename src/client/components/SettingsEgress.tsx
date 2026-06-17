@@ -39,43 +39,6 @@ function ToggleSwitch({ enabled, onToggle, testId }: { enabled: boolean; onToggl
   );
 }
 
-/** Small segmented control (used for the per-session override + add scope). */
-function Segmented<T extends string>({
-  value,
-  options,
-  onChange,
-  testId,
-}: {
-  value: T;
-  options: { value: T; label: string }[];
-  onChange: (v: T) => void;
-  testId?: string;
-}) {
-  return (
-    <div className="inline-flex rounded-md border border-(--color-border-secondary) p-0.5" role="group" data-testid={testId}>
-      {options.map((opt) => {
-        const active = opt.value === value;
-        return (
-          <button
-            key={opt.value}
-            type="button"
-            aria-pressed={active}
-            onClick={() => onChange(opt.value)}
-            data-testid={testId ? `${testId}-${opt.value}` : undefined}
-            className={`rounded px-2.5 py-1 text-xs font-medium transition-[color,background-color] duration-(--duration-fast) ${
-              active
-                ? "bg-(--color-accent) text-(--color-accent-text)"
-                : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
-            }`}
-          >
-            {opt.label}
-          </button>
-        );
-      })}
-    </div>
-  );
-}
-
 /** One editable allowlist row (user-added: removable + editable). */
 function AllowlistRow({
   entry,
@@ -170,27 +133,30 @@ function AllowlistRow({
 }
 
 /**
- * Settings → Advanced → "Network egress" (docs/172 / SHI-90).
+ * Settings → Network — "Network egress" (docs/172 / SHI-90).
  *
- * A first-class allowlist editor: the default-on containment toggle, a
- * per-session containment override (when a session is open), and the effective
- * allowlist with provenance — user-added entries are removable/editable at
- * global OR per-session scope; built-in / operator / MCP entries are shown
- * read-only so the user can see *why* each host is reachable. Egress is a
- * container-start choice, so the copy states changes apply on the next restart;
- * a user-scoped add to the open session also reloads it live.
+ * A **global-only** first-class allowlist editor: the default-on containment
+ * toggle and the effective allowlist with provenance — user-added entries are
+ * removable/editable; built-in / operator / MCP entries are shown read-only so
+ * the user can see *why* each host is reachable. Adds from here always land at
+ * **global** scope (the Settings dialog holds app-wide settings only).
+ *
+ * Per-*session* egress controls deliberately live on session-scoped surfaces
+ * instead of this global dialog: the containment override (Inherit / Contained /
+ * Open) is on the session's own menu in the sidebar, and a per-session host add
+ * happens inline via the blocked-egress card. Session-added hosts still surface
+ * in the effective list below (badged "This session") so they remain visible and
+ * removable from one place. Egress is a container-start choice, so the copy
+ * states changes apply on the next restart.
  */
 export function SettingsEgress() {
   const sessionId = useSessionStore((s) => s.sessionId);
   const loaded = useEgressStore((s) => s.loaded);
   const entries = useEgressStore((s) => s.entries) ?? [];
   const globalEnabled = useEgressStore((s) => s.globalEnabled);
-  const override = useEgressStore((s) => s.override);
-  const effectiveContained = useEgressStore((s) => s.effectiveContained);
   const defaultsCustomized = useEgressStore((s) => s.defaultsCustomized);
 
   const [hostInput, setHostInput] = useState("");
-  const [addScope, setAddScope] = useState<EgressScope>("global");
   const [busy, setBusy] = useState(false);
 
   // eslint-disable-next-line no-restricted-syntax -- external system sync: fetch the effective allowlist when the panel opens / the active session changes
@@ -211,22 +177,14 @@ export function SettingsEgress() {
     }
   };
 
-  const handleOverride = async (mode: "inherit" | "contained" | "open") => {
-    const value = mode === "inherit" ? null : mode === "contained";
-    try {
-      await useEgressStore.getState().setOverride(value);
-    } catch (err) {
-      toast("Failed to update this session's egress override");
-      console.error("[settings] egress override failed:", err);
-    }
-  };
-
   const handleAdd = async () => {
     const host = hostInput.trim();
     if (!host || busy) return;
     setBusy(true);
     try {
-      await useEgressStore.getState().addHost(host, addScope);
+      // Adds from the global Settings dialog always land at global scope;
+      // per-session adds happen on the blocked-egress card instead.
+      await useEgressStore.getState().addHost(host, "global");
       setHostInput("");
     } catch (err) {
       toast(`Failed to add ${host} to the allowlist`);
@@ -270,7 +228,6 @@ export function SettingsEgress() {
   // servers) hosts are derived live and shown read-only.
   const editableEntries = entries.filter((e) => e.removable);
   const derivedEntries = entries.filter((e) => !e.removable);
-  const overrideMode: "inherit" | "contained" | "open" = override === null ? "inherit" : override ? "contained" : "open";
 
   return (
     <div className="space-y-4" data-testid="settings-egress">
@@ -296,28 +253,10 @@ export function SettingsEgress() {
           <ToggleSwitch enabled={globalEnabled} onToggle={(v) => void handleToggle(v)} testId="settings-egress-contained" />
         </div>
 
-        {sessionId && (
-          <div className="flex items-center justify-between py-1 gap-4" data-testid="settings-egress-session-override">
-            <div>
-              <span className="text-sm text-(--color-text-primary)">This session</span>
-              <p className="text-xs text-(--color-text-tertiary)">
-                Override containment for the open session only — currently{" "}
-                <span className="text-(--color-text-secondary)">{effectiveContained ? "contained" : "open"}</span>.
-                Applies on its next container start.
-              </p>
-            </div>
-            <Segmented
-              value={overrideMode}
-              onChange={(v) => void handleOverride(v)}
-              testId="settings-egress-override"
-              options={[
-                { value: "inherit", label: "Inherit" },
-                { value: "contained", label: "Contained" },
-                { value: "open", label: "Open" },
-              ]}
-            />
-          </div>
-        )}
+        <p className="text-xs text-(--color-text-tertiary)">
+          To contain or open a single session, use <span className="text-(--color-text-secondary)">Network access</span> on
+          that session&rsquo;s menu in the sidebar.
+        </p>
       </div>
 
       <div className="space-y-2">
@@ -342,17 +281,6 @@ export function SettingsEgress() {
         </p>
 
         <div className="flex items-center gap-2">
-          {sessionId && (
-            <Segmented
-              value={addScope}
-              onChange={setAddScope}
-              testId="settings-egress-add-scope"
-              options={[
-                { value: "global", label: "Global" },
-                { value: "session", label: "This session" },
-              ]}
-            />
-          )}
           <input
             type="text"
             value={hostInput}
