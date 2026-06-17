@@ -181,7 +181,7 @@ ssh root@<server-ip>
 bash /opt/shipit/deployment/vps/tailscale.sh
 ```
 
-The script installs Tailscale if needed, authenticates the VPS, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. It leaves the node's Tailscale hostname alone — rerunning it never renames your node — unless you set `SHIPIT_TAILSCALE_HOSTNAME` to force a specific name. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
+The script installs Tailscale if needed, authenticates the VPS, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. It leaves the node's Tailscale hostname entirely to Tailscale, so rerunning it never renames your node. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
 
 ### Subdomain previews over Tailscale
 
