@@ -169,19 +169,49 @@ the rest:
 ## Tests
 
 - `src/server/shared/secret-scan.test.ts` — detection per rule, no-false-positive
-  on bare prefixes / removed+context lines, path allowlist, inline-allow markers,
-  redaction, dedupe, line-number derivation.
+  on bare prefixes / removed+context lines, anchored path allowlist (incl. the
+  no-bypass case), inline-allow markers, redaction, `redactSecretsInText`,
+  file-name detection, dedupe, line-number derivation.
 - `src/server/shared/git-secret-scan.test.ts` — real-git temp-repo: commit refused
   + tree preserved on a finding, commits once the secret is removed, untracked
-  file caught via `git add -A`, inline `gitleaks:allow` honored.
+  file caught via `git add -A`, commit-message scrub, `commitPaths` refusal,
+  inline `gitleaks:allow` honored.
 - `src/server/orchestrator/services/secret-scan-notice.test.ts` — notice content,
   no raw-token echo, pluralization, empty-guard.
 
-## Out of scope / future
+## What else is covered (review hardening)
 
-- `GitManager.commitPaths` (user-driven marketplace skill install) is not scanned
-  — narrow, user-initiated path; can be extended if needed.
-- A "commit anyway" override button would upgrade the notice to a dedicated
+A Codex review (SHI-169) surfaced additional vectors, now closed:
+
+- **Commit messages.** The commit message is derived from agent-authored turn
+  text, and the historical leak spread into commit messages too. `autoCommit`
+  (and `commitPaths`) run the message through `redactSecretsInText` before
+  writing it — clean code still commits, just with a redacted summary.
+- **File names.** `scanDiffForSecrets` also scans each added file's *path*; a
+  secret in a file name is detected and reported under a `(file name)`
+  placeholder so the raw path is never echoed into a finding/notice/log.
+- **`commitPaths`.** The path-scoped marketplace-install commit now runs the same
+  staged-diff scan and refuses (unstage + return null) on a finding.
+- **Anchored allowlist.** `ALLOWLIST_PATH_PATTERNS` (and `.gitleaks.toml`'s
+  `paths`) are anchored to EXACT repo-relative paths, not a basename match — a
+  stray `secret-scan.test.ts` elsewhere (or in a user repo) can't bypass the scan.
+
+## Known limitations / future
+
+- **Agent self-commits.** The guard is the auto-commit path. If an agent runs
+  `git commit` itself and the post-turn auto-commit then only auto-pushes a moved
+  HEAD, that commit's content isn't scanned. ShipIt auto-commits and discourages
+  agent self-commits, so this is the normal-path boundary; scanning the
+  `turnStartHeadHash..HEAD` range before such a push is a candidate fix, but must
+  avoid false-blocking a legitimate rebase that replays pre-existing history.
+- **`agentCreatePr` after a refusal.** A refused commit leaves the secret
+  *uncommitted*, so the agent-driven PR path never pushes it; it just proceeds
+  from prior (clean) commits. No leak, but a typed refusal would make the outcome
+  clearer to the agent. (Tracked as a UX follow-up.)
+- **Fork PRs in CI.** `secret-scan.yml` matches `ci.yml` and skips fork PRs;
+  scanning forks (read-only, no secrets needed) is a reasonable policy change to
+  consider.
+- **A "commit anyway" override** would upgrade the notice to a dedicated
   lifecycle card.
-- Keeping `.gitleaks.toml` in sync with `SECRET_RULES` is manual; a shared
-  generator could enforce it.
+- **`.gitleaks.toml` ↔ `SECRET_RULES` sync is manual**; a generator could enforce
+  parity.

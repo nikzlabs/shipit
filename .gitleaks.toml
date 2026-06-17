@@ -87,12 +87,14 @@ keywords = ["x-access-token", "@github.com", "@gitlab.com"]
 
 [allowlist]
 description = "Files that legitimately contain pattern-shaped fixtures"
+# Anchored to exact repo-relative paths (not a basename match) so a stray file
+# with one of these names elsewhere can't silently bypass the scan.
 paths = [
-  '''(^|/)secret-scan\.ts$''',
-  '''(^|/)secret-scan\.test\.ts$''',
-  '''(^|/)git-secret-scan\.test\.ts$''',
-  '''(^|/)secret-scan-notice\.ts$''',
-  '''(^|/)secret-scan-notice\.test\.ts$''',
-  '''(^|/)\.gitleaks\.toml$''',
-  '''(^|/)docs/\d+-secret-scan-autocommit/''',
+  '''^src/server/shared/secret-scan\.ts$''',
+  '''^src/server/shared/secret-scan\.test\.ts$''',
+  '''^src/server/shared/git-secret-scan\.test\.ts$''',
+  '''^src/server/orchestrator/services/secret-scan-notice\.ts$''',
+  '''^src/server/orchestrator/services/secret-scan-notice\.test\.ts$''',
+  '''^\.gitleaks\.toml$''',
+  '''^docs/\d+-secret-scan-autocommit/''',
 ]

@@ -1,7 +1,7 @@
 import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
 import fs from "node:fs";
 import path from "node:path";
-import { scanDiffForSecrets, type SecretFinding } from "./secret-scan.js";
+import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -200,7 +200,11 @@ export class GitManager {
       return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings };
     }
 
-    const message = summary || "Claude turn";
+    // docs/213 — the commit MESSAGE is derived from agent-authored turn text,
+    // and the historical leak spread into commit messages too. A clean diff with
+    // a secret in the summary must not write that secret into git history, so
+    // scrub the message (the code still commits, just with a redacted summary).
+    const message = redactSecretsInText(summary || "Claude turn");
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
@@ -718,9 +722,27 @@ export class GitManager {
     await this.git.add(paths);
     const status = await this.git.status();
     if (status.isClean()) return null;
-    const result = await this.git.commit(message);
+    // docs/213 — same secret guard as autoCommit, on the path-scoped staged diff.
+    // A marketplace skill install shouldn't be a hole in the "never commit a
+    // credential" guarantee. On a finding: unstage and refuse (return null, the
+    // caller's "nothing committed" path).
+    const secretFindings = scanDiffForSecrets(await this.stagedDiff());
+    if (secretFindings.length > 0) {
+      console.warn(
+        "[git] commitPaths refused — likely secret(s) in staged diff:",
+        secretFindings.map((f) => `${f.rule} in ${f.file}`).join(", "),
+      );
+      try {
+        await this.git.reset(["--mixed"]);
+      } catch {
+        // no HEAD / nothing staged — safe to ignore.
+      }
+      return null;
+    }
+    const safeMessage = redactSecretsInText(message);
+    const result = await this.git.commit(safeMessage);
     const hash = result.commit || "";
-    console.log("[git] Committed (path-scoped):", hash, message);
+    console.log("[git] Committed (path-scoped):", hash, safeMessage);
     return hash;
   }
 

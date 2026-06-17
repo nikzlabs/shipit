@@ -131,14 +131,20 @@ const INLINE_ALLOW_MARKERS = ["gitleaks:allow", "shipit:allow-secret"];
  * backstop agrees. Deliberately narrow: the historical leak was in a generic
  * `docs/*.md`, so we do NOT allowlist docs broadly — only this feature's dir.
  */
+// Anchored to EXACT repo-relative paths, not a basename match. A loose
+// `(^|/)secret-scan\.test\.ts$` would exempt any file with that name in ANY
+// repo edited inside ShipIt — a trivial bypass (drop a `secret-scan.test.ts`
+// anywhere and the scan skips it). These exact paths only exist in the ShipIt
+// repo, so in a user's repo nothing is exempted and the inline `gitleaks:allow`
+// marker is the only override — which is correct.
 const ALLOWLIST_PATH_PATTERNS: RegExp[] = [
-  /(^|\/)secret-scan\.ts$/,
-  /(^|\/)secret-scan\.test\.ts$/,
-  /(^|\/)git-secret-scan\.test\.ts$/,
-  /(^|\/)secret-scan-notice\.ts$/,
-  /(^|\/)secret-scan-notice\.test\.ts$/,
-  /(^|\/)\.gitleaks\.toml$/,
-  /(^|\/)docs\/\d+-secret-scan-autocommit\//,
+  /^src\/server\/shared\/secret-scan\.ts$/,
+  /^src\/server\/shared\/secret-scan\.test\.ts$/,
+  /^src\/server\/shared\/git-secret-scan\.test\.ts$/,
+  /^src\/server\/orchestrator\/services\/secret-scan-notice\.ts$/,
+  /^src\/server\/orchestrator\/services\/secret-scan-notice\.test\.ts$/,
+  /^\.gitleaks\.toml$/,
+  /^docs\/\d+-secret-scan-autocommit\//,
 ];
 
 /** True when `filePath` is exempt from scanning (see ALLOWLIST_PATH_PATTERNS). */
@@ -169,6 +175,24 @@ export interface SecretFinding {
 export function redactSecret(match: string): string {
   const prefix = match.slice(0, 4);
   return `${prefix}…[redacted, ${match.length} chars]`;
+}
+
+/**
+ * Redact every secret-shaped substring in a free-text string, replacing each
+ * match with its `redactSecret` form. Used to sanitize a COMMIT MESSAGE before
+ * it's written — the auto-commit message is derived from agent-authored text,
+ * and the historical leak spread into commit messages, not just files. Unlike a
+ * file diff (where a secret blocks the whole commit), a secret in the *message*
+ * is simply scrubbed: the clean code still gets committed, just with a redacted
+ * summary. Returns the input unchanged when nothing matches.
+ */
+export function redactSecretsInText(text: string): string {
+  let out = text;
+  for (const rule of SECRET_RULES) {
+    rule.regex.lastIndex = 0;
+    out = out.replace(rule.regex, (m) => redactSecret(m));
+  }
+  return out;
 }
 
 /** Scan one line of (already-stripped) added content for any rule match. */
@@ -213,6 +237,23 @@ export function scanDiffForSecrets(diff: string): SecretFinding[] {
       currentFile = target.replace(/^b\//, "");
       if (currentFile === "/dev/null") currentFile = "(staged change)";
       fileAllowlisted = isAllowlistedPath(currentFile);
+      // A secret can hide in the FILE NAME itself, not just its contents. Scan
+      // the path too; report it under a non-leaking placeholder (never echo the
+      // raw secret-bearing path into a finding/notice/log).
+      if (!fileAllowlisted) {
+        for (const { rule, match } of scanLine(currentFile)) {
+          const redacted = redactSecret(match);
+          const key = `filename|${rule.id}|${redacted}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          findings.push({
+            rule: rule.id,
+            description: `${rule.description} — in a file name`,
+            file: "(file name)",
+            redacted,
+          });
+        }
+      }
       continue;
     }
     // The `---` old-file header must not be treated as a removed content line.

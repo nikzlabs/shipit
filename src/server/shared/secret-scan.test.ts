@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   scanDiffForSecrets,
   redactSecret,
+  redactSecretsInText,
   isAllowlistedPath,
   SECRET_RULES,
 } from "./secret-scan.js";
@@ -154,6 +155,44 @@ describe("scanDiffForSecrets — allowlist overrides", () => {
     // The historical leak was in docs/*.md — those must still be scanned.
     const f = scanDiffForSecrets(addedDiff("docs/099-foo/plan.md", [FAKE.githubPat]));
     expect(f.map((x) => x.rule)).toContain("github-pat");
+  });
+
+  it("does NOT allowlist a same-basename file outside its exact path (no bypass)", () => {
+    // A loose basename allowlist would exempt this; the anchored one must not.
+    const f = scanDiffForSecrets(addedDiff("some/other/secret-scan.test.ts", [FAKE.githubPat]));
+    expect(f.map((x) => x.rule)).toContain("github-pat");
+  });
+});
+
+describe("scanDiffForSecrets — secret in a file name", () => {
+  it("detects a secret embedded in the file path and never echoes it raw", () => {
+    const f = scanDiffForSecrets(addedDiff(`config/${FAKE.githubPat}.txt`, ["nothing here"]));
+    const hit = f.find((x) => x.rule === "github-pat");
+    expect(hit).toBeDefined();
+    expect(hit!.file).toBe("(file name)");
+    expect(hit!.redacted).not.toContain(FAKE.githubPat.slice(4));
+  });
+});
+
+describe("isAllowlistedPath — anchored", () => {
+  it("only matches the exact repo-relative paths", () => {
+    expect(isAllowlistedPath("src/server/shared/secret-scan.test.ts")).toBe(true);
+    expect(isAllowlistedPath("packages/x/src/server/shared/secret-scan.test.ts")).toBe(false);
+    expect(isAllowlistedPath("evil/secret-scan.ts")).toBe(false);
+  });
+});
+
+describe("redactSecretsInText", () => {
+  it("scrubs every secret-shaped substring, leaving surrounding text intact", () => {
+    const out = redactSecretsInText(`deploy with ${FAKE.githubPat} now`);
+    expect(out).toContain("deploy with ");
+    expect(out).toContain(" now");
+    expect(out).toContain("[redacted");
+    expect(out).not.toContain(FAKE.githubPat.slice(4));
+  });
+
+  it("returns text unchanged when there is no secret", () => {
+    expect(redactSecretsInText("Add the login page")).toBe("Add the login page");
   });
 });
 

@@ -86,6 +86,33 @@ describe("GitManager.autoCommit — docs/213 secret-scan guard", () => {
     expect(result.secretFindings.map((f) => f.file)).toContain("creds.env");
   });
 
+  it("scrubs a secret from the commit MESSAGE while still committing clean code", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+    fs.writeFileSync(path.join(tmpDir, "ok.ts"), "export const x = 1;\n");
+
+    // Clean diff, but the agent-derived summary carries a token.
+    const result = await git.autoCommit(`Wire up auth with ${FAKE_PAT}`);
+    expect(result.commitHash).toBeTruthy();
+
+    const log = await git.log();
+    expect(log[0].message).not.toContain(FAKE_PAT);
+    expect(log[0].message).toContain("[redacted");
+    expect(log[0].message).toContain("Wire up auth with");
+  });
+
+  it("commitPaths refuses a path-scoped commit that introduces a secret", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+    const headBefore = await git.getHeadHash();
+
+    fs.writeFileSync(path.join(tmpDir, "skill.ts"), `export const T = "${FAKE_PAT}";\n`);
+    const hash = await git.commitPaths(["skill.ts"], "Install skill");
+
+    expect(hash).toBeNull();
+    expect(await git.getHeadHash()).toBe(headBefore);
+  });
+
   it("honors an inline gitleaks:allow override", async () => {
     const git = new GitManager(tmpDir);
     await git.init();
