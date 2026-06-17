@@ -76,9 +76,12 @@ Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trus
 
 ## Step 2: Provision the server
 
+The script must run as root (it installs packages, configures Docker, and writes systemd units). The
+command runs it via `sudo` — a harmless no-op if you SSH in as `root`.
+
 ```bash
-ssh root@<server-ip>
-bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
+ssh root@<server-ip>   # or: ssh <user>@<server-ip> for a sudo-capable user
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
 The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
