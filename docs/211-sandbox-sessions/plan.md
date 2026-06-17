@@ -340,7 +340,9 @@ What shipped, and where it diverged from the sketch above:
   buildAgentRunParams → Claude run-params-prep → adapter → `ClaudeProcess` spawn
   env, mirroring `SHIPIT_AUTO_CREATE_PR`); `block-branch-ops.mjs` self-gates off on
   it. Sandbox also forces `autoCreatePr = false`.
-- **UI.** Teal `--color-sandbox` token (theme-independent, in `index.css`);
+- **UI.** Teal `--color-sandbox` token — bright teal-400 in `:root` (the dark-theme
+  value); the six light themes override the trio to a darker teal-700 for text
+  contrast on light tints, mirroring `--color-warning`'s per-theme darkening;
   `SandboxSessionGroup` + a teal `sandbox` badge keyed on `kind`; a `+`
   advanced-session menu (`renderAdvancedSessionMenu`) above the session list
   opening `SandboxDialog` (the capability picker) or creating an ops session;
