@@ -333,6 +333,30 @@ configured — i.e. only when there is a firewall to punch the hole in. Agent-fa
 guidance (`shipit-docs/preview.md`) is updated to tell the agent to reach previews from
 its browser at the service registry's `containerIp:port`.
 
+### Services API now hands the agent a ready-to-use `url` (GH #1509)
+
+The agent and its in-netns Playwright browser still had to *construct*
+`http://<containerIp>:<port>` themselves from the services response, and the docs pointed
+them at the right pieces but not a usable address. `ManagedService` now carries a derived
+**`url`** field — `getServices()` computes `http://<containerIp>:<port>/` on read (never
+stored, so it can't go stale) for any service that is `running` with both an IP and a port.
+`GET /api/sessions/:id/services` surfaces it directly, and `shipit-docs/preview.md` tells
+the agent to `browser_navigate`/`curl` that `url`. This is purely the same direct-IP route
+this section already opens — it does not change routing or containment, it just stops the
+agent from hand-assembling the address (and gives one place to evolve the contract).
+
+> **Open — residual unreachability needs live-host diagnosis.** GH #1509 reports that even
+> with the SHI-90 hole-punch in place, `containerIp:port` (now `url`) still times out from
+> the agent in at least one real deployment, while the user's Preview tab (orchestrator
+> proxy) works. The iptables ordering is **not** the cause: `allow-subnet.sh` appends
+> `-A OUTPUT -d <subnet> ACCEPT`, which sits before the `-P OUTPUT DROP` policy (no explicit
+> terminal DROP/REJECT rule precedes it), so the rule is effective *if it runs*. The
+> remaining suspects are all operational and need a Docker host to disambiguate: (a) the
+> best-effort `allowEgressToSessionNetwork` silently failing (only a `console.warn`), (b) a
+> path/timing gap where `connectToNetwork`'s egress step never fires for a given start path,
+> or (c) the agent not actually being multi-homed onto the compose subnet. The verification
+> recipe lives in this PR's description.
+
 ### Scope: this hole is needed only where the agent is *multi-homed* (docker-access checked — no analogous bug)
 
 The fix above keys off the one fact that makes the bug real: the agent **gains a second

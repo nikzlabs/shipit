@@ -87,6 +87,20 @@ export interface ManagedService {
   dependsOnInstall: boolean;
   /** Container IP on the session network (populated by status polling). */
   containerIp?: string;
+  /**
+   * Direct, agent-reachable URL for this service's dev server
+   * (`http://<containerIp>:<port>/`). Populated by {@link getServices} only when
+   * the service is running and both its container IP and port are known.
+   *
+   * This is the address the agent's own tooling — `curl` and the in-container
+   * Playwright browser — should hit to reach the live preview. docs/172 Gap 1
+   * (SHI-90) opens the agent's egress to its session subnet so this IP is
+   * routable from the agent's netns. It is deliberately NOT the user's
+   * Preview-tab origin, which is the orchestrator's `{sessionId}--{port}.<host>`
+   * subdomain proxy and does not resolve from inside the agent container. See
+   * GH #1509.
+   */
+  url?: string;
 }
 
 /**
@@ -563,7 +577,14 @@ export class ServiceManager extends EventEmitter {
 
   /** Get all managed services. */
   getServices(): ManagedService[] {
-    return [...this.services.values()];
+    // Derive `url` on read (never stored) so it can't go stale: the agent-facing
+    // direct URL exists only while the service is running with a known IP+port.
+    // See GH #1509 and the `url` field doc on ManagedService.
+    return [...this.services.values()].map((svc) =>
+      svc.status === "running" && svc.containerIp && svc.port
+        ? { ...svc, url: `http://${svc.containerIp}:${svc.port}/` }
+        : { ...svc },
+    );
   }
 
   /** Get a specific service by name. */
