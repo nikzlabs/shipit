@@ -26,8 +26,9 @@ export function useAppBootstrap(params: {
   drainMessages: () => MessageEvent[];
   terminalRef: RefObject<InteractiveTerminalHandle | null>;
   bootstrapLoaded: boolean;
+  reconnect: () => void;
 }): { showBootstrapSpinner: boolean } {
-  const { status, send, lastMessage, drainMessages, terminalRef, bootstrapLoaded } = params;
+  const { status, send, lastMessage, drainMessages, terminalRef, bootstrapLoaded, reconnect } = params;
 
   useConnectionSync({ status, send, onSessionConnect: (sid: string) => {
     void useFileStore.getState().hydrateUploads(sid);
@@ -68,6 +69,13 @@ export function useAppBootstrap(params: {
     window.addEventListener("shipit:restore-rewind", handleRestore);
     return () => window.removeEventListener("shipit:restore-rewind", handleRestore);
   }, [send]);
+
+  // eslint-disable-next-line no-restricted-syntax -- browser event bridge: a deeply-nested action (the Session settings dialog's "Restart to apply now") asks the active WS to re-handshake so the worker reattaches to the freshly-restarted container, mirroring the SessionHealthStrip rescue flow.
+  useEffect(() => {
+    const handleReconnect = () => reconnect();
+    window.addEventListener("shipit:reconnect-ws", handleReconnect);
+    return () => window.removeEventListener("shipit:reconnect-ws", handleReconnect);
+  }, [reconnect]);
 
   return { showBootstrapSpinner };
 }

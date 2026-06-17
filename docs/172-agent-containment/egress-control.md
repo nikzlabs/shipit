@@ -353,14 +353,49 @@ Stored orchestrator-side alongside MCP servers / secrets.
   (`load(null)`), so per-session ("This session") rows never render there and every editable
   row is global; adds from the dialog are always global. The one *session-scoped* control —
   the **containment override** (Inherit / Contained / Open) — lives on the session's own
-  overflow menu in the sidebar instead (`SessionEgressMode.tsx`, current session only, wired
-  by direct `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`).
+  overflow menu in the sidebar instead, behind a **Session settings** item that opens a
+  dialog (`SessionSettingsDialog.tsx`, current session only, wired by direct
+  `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`). It was originally a
+  bare Radix radio group rendered inline at the bottom of the menu (`SessionEgressMode.tsx`),
+  but those `text-sm`, icon-less rows broke the menu's visual rhythm; it now matches the other
+  menu rows and lives in a styled dialog with room for future per-session settings.
   - **Note on per-session *hosts*.** The blocked-egress card's "Add to allowlist" persists to
     the **global** scope (`egress-handlers.ts`), and the Settings add-scope toggle was removed,
     so the UI no longer creates per-session host entries — `user-session` remains a valid store
     scope (durable model + `PUT /api/egress/session/:id` override), just without a host-add
     surface. If a per-session host editor is ever wanted, it belongs on a session surface, not
     this global dialog.
+
+- **Pending change + "Restart to apply now" (the deferred-to-next-start signal made visible).**
+  Egress is a **creation-time** topology choice — the Tier A firewall, Tier B resolver and
+  Tier C proxy are plumbed into the agent netns when the container is *created*
+  (`container-lifecycle.ts`). Flipping the per-session mode on a **running** session persists
+  the override (`PUT /api/egress/session/:id`) but does **not** re-plumb the live container, so
+  the change is invisible until the next container start. Previously the menu gave zero
+  indication of this; the dialog now makes it explicit:
+  - **Live-mode source of truth.** Container creation records the resolved containment it
+    actually started with on the in-memory container record — `SessionContainer.egressContainedAtStart`
+    (set from `ResolvedEgressConfig.contained` right where the sidecars are installed). This is
+    the only authoritative "what is the live container running" value; the resolved policy
+    (`store.resolveContained`) is "what the *next* container would run".
+  - **The diff rides the existing view.** `EgressSessionSettings` (the body the dialog already
+    GETs via `/api/egress/allowlist?session=` and gets back from the `PUT`) gains
+    `startedContained` (the live value, `null` when no running container) and a derived
+    `pendingRestart` = `startedContained !== null && startedContained !== effectiveContained`.
+    The route reads the live value via `deps.containerManager.get(sessionId)` — an in-memory
+    record lookup, **not** the agent's netns — so the value stays on the browser-only egress
+    surface (SHI-129); no new container-reachable route. When pending, the dialog shows
+    "Pending · applies on next container start".
+  - **Restart reuses the existing lifecycle control.** "Restart to apply now" calls the
+    existing `POST /api/sessions/:id/container/restart` (the same `services/recovery.ts`
+    `restartContainer` already surfaced as "Rescue session" in the SessionHealthStrip — breaker
+    + loop-detector resets included), then dispatches the `shipit:reconnect-ws` window event so
+    App's WS re-handshakes and the worker reattaches to the fresh container (bridged in
+    `useAppBootstrap`, mirroring the rewind-restore bridge). This is **not** a new
+    shell-shaped task-runner button (CLAUDE.md §5) — it is "apply the pending change" framed on
+    an existing lifecycle action. Restart is **never** automatic on mode selection, and is
+    **disabled while an agent turn is running** (`useSessionStore.isLoading`) with an explanatory
+    tooltip — restarting would kill the agent (CLAUDE.md never-kill-running-agent rule).
 - **Allow-once / add-to-allowlist on block.** When the gateway denies a host, **deny fast**
   (no held sockets) and surface an inline **blocked-egress card** (`host`, allow-once /
   add-to-allowlist / dismiss); the agent retries once the host is permitted. We deliberately
@@ -407,10 +442,15 @@ as an operator default / fail-secure floor).
   unit-tested in `sni-proxy/main_test.go`.
 - Browser-only routes (default-protected by *not* setting `containerAccessible`; golden
   route-table unchanged — no new container route) — `api-routes-egress.ts`,
-  `api-container-guard.ts`.
+  `api-container-guard.ts`. The pending-restart diff is computed here from the live record.
+- Live-mode source of truth — `SessionContainer.egressContainedAtStart` (`session-container.ts`),
+  recorded at container creation in `container-lifecycle.ts` from `ResolvedEgressConfig.contained`;
+  exposed as `startedContained` + `pendingRestart` on `EgressSessionSettings`.
 - Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Network,
-  **global-only**) + `components/SessionSidebar/SessionEgressMode.tsx` (the per-session
-  containment override on the session's overflow menu) + `egress_settings` SSE sync in
+  **global-only**) + `components/SessionSidebar/SessionSettingsDialog.tsx` (the per-session
+  containment override + pending/"Restart to apply now", opened from the **Session settings**
+  item on the session's overflow menu; restart reuses `POST /api/sessions/:id/container/restart`
+  via the `shipit:reconnect-ws` bridge in `useAppBootstrap.ts`) + `egress_settings` SSE sync in
   `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.

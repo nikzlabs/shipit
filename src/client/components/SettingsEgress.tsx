@@ -144,7 +144,8 @@ function AllowlistRow({
  *
  * The one per-*session* egress control — the containment override (Inherit /
  * Contained / Open) — deliberately lives on the session's own menu in the
- * sidebar (`SessionEgressMode.tsx`), not in this global dialog. (The
+ * sidebar (Session settings → `SessionSettingsDialog.tsx`), not in this global
+ * dialog. (The
  * blocked-egress card's "Add to allowlist" persists to the *global* scope, so it
  * shows up in this editor too.) Egress is a container-start choice, so the copy
  * states changes apply on the next restart.

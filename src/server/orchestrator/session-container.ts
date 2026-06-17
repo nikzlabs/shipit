@@ -209,6 +209,15 @@ export interface SessionContainer {
    * re-deriving eligibility. Absent for non-overlay sessions.
    */
   overlayVolumeNames?: string[];
+  /**
+   * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
+   * this container was actually created with. The egress topology is installed
+   * into the netns at creation, so this is the source of truth for "what is the
+   * live container running"; the egress API compares it against the now-resolved
+   * policy to surface a "pending — restart to apply" indicator. Absent on
+   * rediscovered/re-adopted containers, where the booted policy isn't known.
+   */
+  egressContainedAtStart?: boolean;
 }
 
 export interface SessionContainerManagerEvents {

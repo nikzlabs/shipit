@@ -33,6 +33,8 @@ function stubFetch(
           effectiveContained: override ?? globalEnabled,
           globalEnabled,
           enforcementActive,
+          startedContained: null,
+          pendingRestart: false,
         }
       : null,
     defaultsCustomized,
