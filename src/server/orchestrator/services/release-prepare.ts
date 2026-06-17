@@ -68,6 +68,14 @@ export interface ReleasePlan {
   /** Absolute path to the version-source file. */
   versionSourcePath: string;
   prerelease: boolean;
+  /**
+   * docs/214 cold-start guard — set when this is a `release-branch` plan whose
+   * maintenance branch can't auto-publish on merge yet (no / legacy workflow).
+   * Populated by the route (which has the git handle to read the branch's
+   * workflow); the shim surfaces it so a merge never *looks* successful while it
+   * will silently no-op. See `release-autopublish-check.ts`.
+   */
+  warning?: string;
 }
 
 export interface PlanReleaseArgs {
@@ -222,6 +230,14 @@ export type PrepareReleaseResult =
       prNumber: number;
       prUrl: string;
       alreadyExisted: boolean;
+      /**
+       * docs/214 cold-start guard — set when merging this PR into the
+       * maintenance branch will NOT auto-publish (the branch lacks the
+       * merge-triggered workflow). Populated by the route after `prepare`'s fetch
+       * so the post-bootstrap branch state is reflected. See
+       * `release-autopublish-check.ts`.
+       */
+      warning?: string;
     }
   | {
       kind: "prerelease-proposed";

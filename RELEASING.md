@@ -175,6 +175,26 @@ git push -u origin stable
 From then on `stable` is a long-lived branch you open bump PRs against — CI never
 recreates or moves it.
 
+### Cold-start caveat: the merge-trigger workflow must already be on `stable`
+
+**Merge-publish only works once `stable` carries the merge-triggered `release.yml`**
+(`on: push: { branches: [stable] }`). GitHub Actions evaluates a workflow as it
+exists *on the branch that was pushed*, so merging a bump PR into a `stable` that
+still has the **legacy tag-triggered** workflow (`on: push: { tags: ['v*'] }`,
+no `branches:` trigger) matches no trigger and runs **nothing** — the PR merges
+cleanly but **no tag and no Release** are produced. This is a bootstrap deadlock:
+the very commit that *adds* the merge-trigger workflow is unreleased on `main` and
+only reaches `stable` by being released.
+
+Break it with a **one-time tag-path release** on a `main` commit that already
+carries the merge-triggered workflow (push a `vX.Y.Z` tag — CI evaluates the
+workflow at the tagged commit and publishes). Once that workflow is on `stable`,
+every subsequent merge auto-publishes and you never push a tag again.
+
+`shipit release plan|prepare` checks the maintenance branch's workflow and
+**warns** when a merge won't auto-publish yet, naming this remedy — so a normal
+prepare never *looks* successful while the merge would silently no-op.
+
 ## Versioning notes
 
 - `package.json` `version` is the human-facing version and the source CI derives

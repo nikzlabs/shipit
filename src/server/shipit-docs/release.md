@@ -46,6 +46,20 @@ below** (those are kept only to explain what the command does and as a fallback)
       or `--allow-empty` to cut a bump-only release on purpose. (`--bootstrap`
       implies this — the first release legitimately ships everything on the new
       branch.)
+
+    **Cold-start caveat — the merge-trigger workflow must be on the branch.**
+    GitHub Actions evaluates a workflow as it exists *on the branch that was
+    pushed*. Merge-publish only fires once the maintenance branch carries the
+    merge-triggered `release.yml` (`on: push: { branches: [<branch>] }`). If the
+    branch has **no** workflow or still has the **legacy tag-triggered** one
+    (`on: push: { tags: ['v*'] }`), merging the bump PR matches no trigger and
+    runs **nothing** — the PR merges cleanly but **no tag, no Release**. `plan`
+    and `prepare` detect this and print a **⚠ warning** when it applies — if you
+    see it, **relay it to the user and do not present the merge as the release**.
+    The one-time fix: bootstrap the branch by cutting the first release via the
+    **tag path** (push a `vX.Y.Z` tag on a commit that already carries the
+    merge-trigger workflow), or `--bootstrap` when the branch doesn't exist yet.
+    After that the workflow is on the branch and every future merge auto-publishes.
   - **prerelease (rc):** `shipit release prepare --prerelease` proposes the rc;
     re-run with `--confirm` to cut + push the `vX.Y.Z-rc.N` tag (a tag push is
     always confirmation-gated). CI publishes it as a GitHub prerelease.

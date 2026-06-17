@@ -62,6 +62,9 @@ export async function handleReleasePlan(args: string[], deps: RunDeps): Promise<
     `bump:       ${asString(b.bumpType)}`,
     `source:     ${asString(b.versionSource)}`,
     ...(b.prerelease ? ["prerelease: yes"] : []),
+    // docs/214 cold-start guard — set when merging into the maintenance branch
+    // won't auto-publish yet (no / legacy workflow on the branch).
+    ...(b.warning ? ["", asString(b.warning)] : []),
   ]);
 }
 
@@ -111,7 +114,12 @@ export async function handleReleasePrepare(args: string[], deps: RunDeps): Promi
         `version:    ${asString(b.version)} (tag ${asString(b.tag)})`,
         `base:       ${asString(b.releaseBranch)}`,
         "",
-        "Merge the PR to publish — CI tags the merged commit and creates the GitHub Release.",
+        // docs/214 cold-start guard: when the maintenance branch can't
+        // auto-publish on merge yet, lead with the warning instead of the
+        // (misleading) "merge to publish" line so the no-op is impossible to miss.
+        ...(b.warning
+          ? [asString(b.warning)]
+          : ["Merge the PR to publish — CI tags the merged commit and creates the GitHub Release."]),
       ]);
       break;
     case "prerelease-proposed":
