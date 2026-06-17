@@ -51,6 +51,7 @@ import { HomeScreen } from "./components/HomeScreen.js";
 import { AddRepoDialog } from "./components/AddRepoDialog.js";
 import { AllSessionsDialog } from "./components/AllSessionsDialog.js";
 import { NewRepoDialog } from "./components/NewRepoDialog.js";
+import { SandboxDialog } from "./components/SandboxDialog.js";
 import { UsageModal } from "./components/UsageModal.js";
 import type { TurnDiffData } from "./components/DiffPanel.js";
 import type { TurnUsage } from "../server/shared/types.js";
@@ -249,6 +250,7 @@ export default function App() {
   const modelInfo = useUiStore((s) => s.modelInfo);
   const contextTokens = useUiStore((s) => s.contextTokens);
   const settingsOpen = useUiStore((s) => s.settingsOpen);
+  const sandboxDialogOpen = useUiStore((s) => s.sandboxDialogOpen);
   const quickCaptureHotkey = useKeybinding("quick-capture");
   const voiceInputEnabled = useSettingsStore((s) => s.voiceInputEnabled);
   const voiceHotkeyModeB = useKeybinding("voice-mode-b");
@@ -284,6 +286,10 @@ export default function App() {
   // when e.g. Claude auth completes and noAgentReady flips to false mid-wizard.
   const onboardingTriggeredRef = useRef(false);
   const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  // docs/211 — sandbox create is in flight; disables the dialog controls. The
+  // dialog itself is rendered once here (not in SessionSidebar) so the empty
+  // HomeScreen can open it on mobile, where the sidebar unmounts when closed.
+  const [creatingSandbox, setCreatingSandbox] = useState(false);
   if (needsOnboarding && !onboardingTriggeredRef.current) {
     onboardingTriggeredRef.current = true;
   }
@@ -1145,7 +1151,12 @@ export default function App() {
         </div>
       )}
       {showHomeScreen ? (
-        <HomeScreen onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)} hasRepos={repos.length > 0} />
+        <HomeScreen
+          onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
+          onCreateSandbox={() => useUiStore.getState().setSandboxDialogOpen(true)}
+          githubAuthenticated={githubStatus.authenticated}
+          hasRepos={repos.length > 0}
+        />
       ) : (
         // Wrapping the message list + bottom-stack (status bar / attachments / rebase / PR card) in a single
         // flex-1 container gives the rocket overlay stable bounds. Anything that grows here (e.g. attachments
@@ -1404,6 +1415,13 @@ export default function App() {
         repos={repos}
         onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
         onCreateNewRepo={() => {
+          // Creating a repo is GitHub-backed. Without a connected account the
+          // NewRepoDialog would dead-end on a 401, so route to the AddRepoDialog
+          // (which shows an inline Connect GitHub prompt) instead.
+          if (!githubStatus.authenticated) {
+            useRepoStore.getState().setAddRepoDialogOpen(true);
+            return;
+          }
           useRepoStore.getState().setAddRepoDialogOpen(false);
           // eslint-disable-next-line no-restricted-syntax -- fire-and-forget one-liner
           if (templates.length === 0) apiGet<{ templates: typeof templates }>("/api/bootstrap").then((d) => useUiStore.getState().setTemplates(d.templates)).catch(() => {});
@@ -1415,6 +1433,8 @@ export default function App() {
       />
       <AddRepoDialog
         open={addRepoDialogOpen}
+        githubAuthenticated={githubStatus.authenticated}
+        onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }}
         onClose={() => useRepoStore.getState().setAddRepoDialogOpen(false)}
         onAdd={async (url) => { await useRepoStore.getState().addRepo(url); }}
         onRepoReady={(url) => { useRepoStore.getState().setActiveRepoUrl(url); void navigate(repoLabelToNewPath(url)); }}
@@ -1470,6 +1490,25 @@ export default function App() {
           }}
         />
       )}
+      <SandboxDialog
+        open={sandboxDialogOpen}
+        onOpenChange={(open) => useUiStore.getState().setSandboxDialogOpen(open)}
+        creating={creatingSandbox}
+        onCreate={async (capabilities) => {
+          setCreatingSandbox(true);
+          try {
+            const newId = await useSessionStore.getState().createSandboxSession(capabilities);
+            if (newId) {
+              useUiStore.getState().setSandboxDialogOpen(false);
+              handleSessionResume(newId, navigate);
+            } else {
+              useUiStore.getState().setToast({ message: "Failed to create sandbox session" });
+            }
+          } finally {
+            setCreatingSandbox(false);
+          }
+        }}
+      />
     </div>
     </TooltipProvider>
   );
