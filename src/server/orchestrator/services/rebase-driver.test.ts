@@ -218,7 +218,7 @@ async function runFlow(
 ): ReturnType<typeof runRebaseFlow> {
   deps.runner.setSystemTurnDeps({
     agentFactory: deps.agentFactory!,
-    autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false }),
+    autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }),
     scheduleAutoPush: () => { /* postTurn: "none" skips this for rebase turns */ },
     listenerDeps: {
       sessionManager: deps.sessionManager,

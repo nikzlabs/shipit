@@ -15,6 +15,7 @@ import { ServiceError } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
+import { formatSecretScanNotice } from "./secret-scan-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 
 /**
@@ -576,7 +577,15 @@ export async function flushPendingTurnCommit(
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+  if (secretFindings.length > 0 && runner) {
+    const message = formatSecretScanNotice(secretFindings);
+    if (deps.chatHistory) {
+      emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, runner.sessionId, message, "warn");
+    } else {
+      runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if ((conflictedFiles.length > 0 || rebaseInProgress) && runner) {
     const message = formatUnresolvedConflictNotice({ conflictedFiles, rebaseInProgress });
     if (deps.chatHistory) {

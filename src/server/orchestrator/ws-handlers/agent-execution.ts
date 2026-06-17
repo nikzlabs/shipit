@@ -310,8 +310,8 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     autoCommit: async (sessionDir, summary) => {
       const git = ctx.createGitManager(sessionDir);
       const parentHash = await git.getHeadHash();
-      const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(summary);
-      return { commitHash, parentHash, conflictedFiles, rebaseInProgress };
+      const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+      return { commitHash, parentHash, conflictedFiles, rebaseInProgress, secretFindings };
     },
     // Only used by the fallback commit path; the WS path always uses commitTurn
     // (which drives its own push via postTurnCommit → ctx.scheduleAutoPush).

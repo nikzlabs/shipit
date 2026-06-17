@@ -3,6 +3,7 @@ import type { ConnectionCtx, AppCtx } from "./types.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { withWorkspaceLock } from "../services/marketplace.js";
 import { formatUnresolvedConflictNotice } from "../services/conflict-marker-notice.js";
+import { formatSecretScanNotice } from "../services/secret-scan-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
@@ -80,7 +81,20 @@ export async function postTurnCommit(
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
+    if (secretFindings.length > 0 && opts.sessionId) {
+      // docs/213 — the commit was refused because the staged diff carried a
+      // likely secret. Persist (append + emit) the redacted warning so it
+      // survives a reload, exactly like the conflict notice below. commitHash
+      // is null, so the no-commit path below short-circuits push + PR.
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        formatSecretScanNotice(secretFindings),
+        "warn",
+      );
+    }
     if ((conflictedFiles.length > 0 || rebaseInProgress) && opts.sessionId) {
       // Persisted (append + emit), not emit-only, so the conflict warning
       // survives a reload. It fires after the turn's final persist, so

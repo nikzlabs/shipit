@@ -70,6 +70,7 @@ function makeDeps(
       parentHash: null,
       conflictedFiles: [],
       rebaseInProgress: false,
+      secretFindings: [],
     }),
     scheduleAutoPush: vi.fn(),
     listenerDeps: {

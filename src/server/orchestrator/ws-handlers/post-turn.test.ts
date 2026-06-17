@@ -12,7 +12,7 @@ import { postTurnCommit } from "./post-turn.js";
 import type { SessionInfo } from "../../shared/types.js";
 
 function makeCtx(kind?: SessionInfo["kind"]) {
-  const autoCommit = vi.fn(async () => ({ commitHash: null, conflictedFiles: [], rebaseInProgress: false }));
+  const autoCommit = vi.fn(async () => ({ commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }));
   const getHeadHash = vi.fn(async () => null);
   const scheduleAutoPush = vi.fn();
   const createGitManager = vi.fn(() => ({ autoCommit, getHeadHash }));

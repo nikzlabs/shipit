@@ -64,6 +64,7 @@ function makeDeps(agents: FakeAgent[], appended: unknown[]): {
       parentHash: null,
       conflictedFiles: [],
       rebaseInProgress: false,
+      secretFindings: [],
     }),
     scheduleAutoPush: vi.fn(),
     listenerDeps: {
