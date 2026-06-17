@@ -250,6 +250,22 @@ tracker as separate issues. None implemented yet.
           `browser_navigate` to the dev container's `containerIp:5173` renders the real app
           (no timeout); a non-allowlisted internet host is still blocked; reconnect-after-recreate
           re-opens the subnet (idempotent).
+    - [x] **docker-access sessions checked — no analogous bug (Refs #1495).** Traced whether
+          the per-session **docker-access** network `shipit-session-<shortId>`
+          (`sessionId.slice(0,12)`, created early in `container-lifecycle.ts` under
+          `config.dockerAccess`) reproduces the multi-homing drop. It does **not**: that
+          network is for **child** containers (the docker-proxy injects it as the *child's*
+          `NetworkMode`, `docker-proxy-sanitize.ts`); the **agent** is created with only
+          `NetworkMode: deps.networkName` and **no code path attaches it to the `<shortId>`
+          network** (`SHIPIT_SESSION_NETWORK` is set in the agent env but never read back to
+          connect; the only `connectToNetwork`/`NetworkingConfig`/`network.connect` calls
+          target the full-id **compose** network). Keeping children off the agent/orchestrator
+          network is the deliberate SHI-135 isolation property — the agent drives children via
+          the Docker API proxy (`DOCKER_HOST`), not by IP — so the agent is never multi-homed
+          onto that subnet and there is nothing to re-open. `allowEgressToSubnets` /
+          `extractNetworkSubnets` stay scoped to the compose-network join (the only real hole).
+          No code change. See egress-control.md → "Scope: this hole is needed only where the
+          agent is *multi-homed*".
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.
