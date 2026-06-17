@@ -41,8 +41,9 @@ A **two-document icon button** is added to the PR card header's action cluster, 
 the ⋯ menu**. It appears **only when** the PR changed ≥1 notable file — its presence is the
 signal, so there is **no count badge** (you can see/count them on expand).
 
-- **Collapsed (default):** icon only. The header bar is pixel-identical to today — **zero
-  added height**. Caret points up.
+- **Collapsed:** icon only. The header bar is pixel-identical to today — **zero
+  added height**. Caret points up. This is the **mobile default** (header height is
+  precious there); on **desktop** the strip is **expanded by default** for new sessions.
 - **Expanded:** the icon turns active (purple, `--color-pr`), the caret flips **down**
   toward the panel, and a strip drops in below the header (inside the same card) listing the
   notable changed files as **compact chips** (Option B — chips wrap several-per-line for
@@ -69,8 +70,11 @@ not a second diff view). If the PR changed no notable file, the toggle is **hidd
 ### Collapse state
 
 Remembered **per session in localStorage** (not server-persisted): mobile and desktop can
-differ independently, and it's pure view state. **Default collapsed** when no stored
-preference exists.
+differ independently, and it's pure view state. When no stored preference exists the default
+is **viewport-dependent** — **expanded on desktop** (roomy), **collapsed on mobile** (header
+height is precious). The PR card computes the fallback via `useIsMobile()` and passes it to
+`getSavedChangedDocsExpanded(sessionId, defaultExpanded)`; a stored preference always wins,
+so toggling once pins that session's choice.
 
 ## Data flow
 
@@ -87,8 +91,8 @@ preference exists.
    `card.notableFiles`, gated on `notableFiles.length > 0`.
 3. **Client — open.** Chip click calls the existing `openPreview(sessionId, path)` — markdown
    renders as rich HTML in `FilePreviewModal`, code/config in Monaco.
-4. **Collapse persistence.** A tiny `localStorage` helper keyed by sessionId; default
-   collapsed.
+4. **Collapse persistence.** A tiny `localStorage` helper keyed by sessionId; the fallback
+   default is viewport-dependent (expanded on desktop, collapsed on mobile).
 
 No new persistence layer, no new chat-history card, no per-turn snapshotting — the strip is a
 pure projection of the PR card's existing file data, so it's sticky and drift-free by
