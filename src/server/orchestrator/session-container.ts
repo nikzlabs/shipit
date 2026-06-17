@@ -50,7 +50,8 @@ import {
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
-import { egressEnforceEnabled } from "./egress-firewall-install.js";
+import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
+import { extractNetworkSubnets } from "./egress-firewall.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
@@ -568,6 +569,58 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("already exists")) throw err;
+    }
+
+    // docs/172 Gap 1 (SHI-90) — the agent is now multi-homed: it has an interface
+    // on this session/compose network in addition to the orchestrator bridge. The
+    // Tier A egress firewall (installed at container creation) default-denies
+    // OUTPUT and only allowed the *default-gateway* subnet, so traffic to preview
+    // service containers on THIS subnet is dropped — the agent (and its in-netns
+    // Playwright browser) can't reach the live preview to verify its work. Re-open
+    // egress to this one session subnet via the short-lived allow-subnet sidecar.
+    // The agent gains no route to any other network, so cross-session isolation is
+    // unchanged. Best-effort: a failure only degrades preview reachability, it
+    // never weakens containment, so we log and continue (never fail the join).
+    await this.allowEgressToSessionNetwork(sc.id, sessionId, networkName);
+  }
+
+  /**
+   * Best-effort: open the agent's default-deny egress to the IPAM subnet(s) of a
+   * session/compose network it just joined (docs/172 Gap 1, SHI-90). No-op unless
+   * the session was actually contained at start (`egressContainedAtStart`),
+   * enforcement is enabled, and the sidecar image is configured — i.e. only when
+   * there is a firewall to punch a hole in. Swallows all errors (logs a warning):
+   * preview reachability is a convenience, not a containment guarantee.
+   */
+  private async allowEgressToSessionNetwork(
+    agentContainerId: string,
+    sessionId: string,
+    networkName: string,
+  ): Promise<void> {
+    const sc = this.containers.get(sessionId);
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    if (!egressEnforceEnabled() || sc?.egressContainedAtStart !== true || !sidecarImage) {
+      return; // No firewall in this session → nothing to re-open.
+    }
+    try {
+      const info = await this.docker.getNetwork(networkName).inspect();
+      const subnets = extractNetworkSubnets(info);
+      if (subnets.length === 0) {
+        console.warn(`[egress:${sessionId}] no IPAM subnet found for ${networkName}; preview may be unreachable from the agent browser`);
+        return;
+      }
+      const allowed = await allowEgressToSubnets(this.docker, {
+        agentContainerId,
+        sidecarImage,
+        subnets,
+        labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
+      });
+      console.log(`[egress:${sessionId}] opened agent egress to session subnet(s) ${allowed.join(", ")} (${networkName})`);
+    } catch (err) {
+      console.warn(
+        `[egress:${sessionId}] failed to open egress to ${networkName} (preview may be unreachable from the agent browser):`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 
