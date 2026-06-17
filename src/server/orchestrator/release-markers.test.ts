@@ -22,6 +22,20 @@ describe("parseReleaseMarkers", () => {
     ]);
   });
 
+  it("parses a propose marker's mechanism when valid, drops it when not (docs/214)", () => {
+    const valid = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false,"mechanism":"release-branch"}-->`;
+    expect(parseReleaseMarkers(valid)).toEqual([
+      { action: "propose", version: "0.3.0", tag: "v0.3.0", prerelease: false, mechanism: "release-branch" },
+    ]);
+
+    // An unknown mechanism is silently dropped (the card falls back to the
+    // tag-triggered default) rather than half-driving the confirm wording.
+    const bogus = `<!--shipit:release {"action":"propose","version":"0.3.0","tag":"v0.3.0","prerelease":false,"mechanism":"nonsense"}-->`;
+    expect(parseReleaseMarkers(bogus)).toEqual([
+      { action: "propose", version: "0.3.0", tag: "v0.3.0", prerelease: false },
+    ]);
+  });
+
   it("parses a tagged marker with the commit sha", () => {
     const text = `<!--shipit:release {"action":"tagged","tag":"v0.3.0","version":"0.3.0","sha":"abc123"}-->`;
     expect(parseReleaseMarkers(text)).toEqual([

@@ -28,7 +28,7 @@
  * (Codex, or a manual emit) stays supported.
  */
 
-import type { ReleaseBumpType } from "../shared/types/release-types.js";
+import type { ReleaseBumpType, ReleaseMechanism } from "../shared/types/release-types.js";
 
 export interface ReleaseProposeMarker {
   action: "propose";
@@ -37,6 +37,12 @@ export interface ReleaseProposeMarker {
   prerelease: boolean;
   bumpType?: ReleaseBumpType;
   versionSource?: string;
+  /**
+   * Release mechanism, if the agent stated it. Usually omitted — the orchestrator
+   * authoritatively resolves it from `shipit.yaml` (`reactToReleaseMarkers`),
+   * defaulting to `tag-triggered`. Accepted here for parity / marker-driven paths.
+   */
+  mechanism?: ReleaseMechanism;
   notes?: string;
 }
 
@@ -86,6 +92,7 @@ function asString(v: unknown): string | undefined {
 }
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
+const MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered", "release-branch"]);
 
 /**
  * Parse all release markers from a block of turn text, in document order.
@@ -112,6 +119,7 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
       const tag = asString(raw.tag);
       if (!version || !tag) continue;
       const bump = asString(raw.bumpType);
+      const mechanism = asString(raw.mechanism);
       out.push({
         action: "propose",
         version,
@@ -119,6 +127,7 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
         prerelease: raw.prerelease === true,
         ...(bump && BUMP_TYPES.has(bump) ? { bumpType: bump as ReleaseBumpType } : {}),
         ...(asString(raw.versionSource) ? { versionSource: asString(raw.versionSource)! } : {}),
+        ...(mechanism && MECHANISMS.has(mechanism) ? { mechanism: mechanism as ReleaseMechanism } : {}),
         ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),
       });
     } else if (action === "pr-opened") {

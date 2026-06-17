@@ -63,6 +63,8 @@ export interface ReleaseProposeInput {
   prerelease: boolean;
   bumpType?: ReleaseStatusSummary["bumpType"];
   versionSource?: string;
+  /** Release mechanism — drives the card's confirm wording (release-branch vs tag). */
+  mechanism?: ReleaseStatusSummary["mechanism"];
   notes?: string;
 }
 
@@ -200,6 +202,7 @@ export class ReleaseStatusPoller {
       prerelease: input.prerelease,
       ...(input.bumpType ? { bumpType: input.bumpType } : {}),
       ...(input.versionSource ? { versionSource: input.versionSource } : {}),
+      ...(input.mechanism ? { mechanism: input.mechanism } : {}),
       ...(input.notes ? { notes: input.notes } : {}),
     };
     this.setCard(card);

@@ -13,6 +13,7 @@ import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
+import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 
 /** Callbacks the inline transcript cards may invoke. */
@@ -38,7 +39,7 @@ export interface MessageCardCallbacks {
   }) => void;
   onSendFollowUp?: (text: string) => void;
   /** docs/171 — confirm a proposed release (sends the "yes, ship it" reply). */
-  onReleaseConfirm?: (version: string) => void;
+  onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** docs/171 — cancel a proposed release (sends the cancel reply). */
   onReleaseCancel?: (version: string) => void;
 }

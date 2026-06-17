@@ -40,7 +40,15 @@ describe("ReleaseLifecycleCard — proposed", () => {
     fireEvent.click(btn);
     fireEvent.click(btn);
     expect(onConfirm).toHaveBeenCalledTimes(1);
-    expect(onConfirm).toHaveBeenCalledWith("0.3.0");
+    // No mechanism on the card → defaults to tag-triggered (platform default).
+    expect(onConfirm).toHaveBeenCalledWith("0.3.0", "tag-triggered");
+  });
+
+  it("passes the card's mechanism to onConfirm (release-branch, docs/214)", () => {
+    const onConfirm = vi.fn();
+    render(<ReleaseLifecycleCard card={card({ mechanism: "release-branch" })} onConfirm={onConfirm} />);
+    fireEvent.click(screen.getByRole("button", { name: /Confirm & publish/ }));
+    expect(onConfirm).toHaveBeenCalledWith("0.3.0", "release-branch");
   });
 
   it("cancel fires once and passes the version", () => {

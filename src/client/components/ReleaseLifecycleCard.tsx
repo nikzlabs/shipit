@@ -41,14 +41,20 @@ import { DropdownMenuItem } from "./ui/dropdown-menu.js";
 import type {
   ReleaseStatusSummary,
   ReleaseChecksSummary,
+  ReleaseMechanism,
   GitHubDeploymentStatus,
 } from "../../server/shared/types.js";
 
 export interface ReleaseLifecycleCardProps {
   /** Full release snapshot — the card renders straight from this (no store). */
   card: ReleaseStatusSummary;
-  /** Confirm & publish — sends the "yes, ship it" chat message to the agent. */
-  onConfirm?: (version: string) => void;
+  /**
+   * Confirm & publish — sends the "yes, ship it" chat message to the agent. The
+   * mechanism (defaulted to `tag-triggered` when the card omits it) lets the
+   * handler word the message correctly: a `release-branch` repo opens/merges a
+   * version-bump PR (CI tags), while `tag-triggered` pushes the tag.
+   */
+  onConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
   /** Cancel — sends the cancel chat message to the agent. */
   onCancel?: (version: string) => void;
 }
@@ -244,7 +250,7 @@ export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifec
           onClick={() => {
             if (acted) return;
             setActed(true);
-            onConfirm?.(version);
+            onConfirm?.(version, card.mechanism ?? "tag-triggered");
           }}
         >
           <RocketLaunchIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
