@@ -27,6 +27,10 @@ import {
 import { ICON_SIZE } from "../../design-tokens.js";
 import { isDefaultBranch } from "./shared.js";
 import { ReadyPhase, OpenPhase, TerminalPhase, ErrorPhase } from "./phases/index.js";
+import type { NotableFileChange } from "../../../server/shared/types/github-types.js";
+
+/** Stable empty reference so a card-less / no-docs render doesn't churn props. */
+const EMPTY_NOTABLE_FILES: NotableFileChange[] = [];
 
 // ---- Changed-docs toggle (docs/205) ----
 
@@ -82,10 +86,16 @@ export function PrLifecycleCard({
 }: PrLifecycleCardProps) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
 
-  // docs/205 — the changed-docs strip. The toggle is hidden entirely when the
-  // PR changed no notable file (its presence is the signal). Collapse state is
-  // pure view state, per session in localStorage, defaulting to collapsed.
-  const notableFiles = card?.notableFiles ?? [];
+  // docs/205/210 — the changed-docs strip. Sourced from the standalone
+  // `notableFilesBySession` slice (not the card) so it survives the poller
+  // rebuilding the card on reload/session-switch and repopulates from the
+  // viewer-connect re-seed. Only contributes to the strip when a card exists, so
+  // a session with changed docs but no PR card yet doesn't render a floating
+  // strip. The toggle is hidden entirely when there's nothing to show (its
+  // presence is the signal). Collapse state is pure view state, per session in
+  // localStorage, defaulting to collapsed.
+  const storedNotableFiles = usePrStore((s) => s.notableFilesBySession[sessionId]);
+  const notableFiles = card ? (storedNotableFiles ?? EMPTY_NOTABLE_FILES) : EMPTY_NOTABLE_FILES;
 
   // docs/206 — related-issue chips, computed purely from data already on the
   // client: the PR body (poller `prBody`, falling back to the lifecycle card's

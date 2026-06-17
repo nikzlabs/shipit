@@ -9,6 +9,7 @@ import { getErrorMessage } from "./validation.js";
 import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
+import { notableFilesForBranch } from "./services/notable-files.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
@@ -769,6 +770,35 @@ export async function registerRoutes(
           void prStatusPoller.forceRefreshSession(sid).catch((err: unknown) => {
             console.error(`[pr-poller] Error on session-activated refresh ${sid}:`, err);
           });
+          // Re-seed the PR card's changed-docs strip on (re)connect. notableFiles
+          // is git-derived and only pushed transiently — at PR creation and on
+          // each post-turn commit (docs/210). The poller's `pr_status` snapshot
+          // that rebuilds the card on reload/session-switch carries no
+          // notableFiles, so the strip would render its issue chips but drop its
+          // doc/config/image chips until the next turn committed. Recompute from
+          // the current branch and push a `pr_notable_files` patch now so the
+          // strip is correct on first paint. Best-effort + fire-and-forget: a git
+          // error just leaves the strip empty until the next commit, and it adds
+          // no latency to activation.
+          if (dir) {
+            const seedDir = dir;
+            void (async () => {
+              try {
+                const base =
+                  prStatusPoller.getStatus(sid)?.baseBranch ?? s.previousMergedPr?.baseBranch ?? "main";
+                const git = createGitManager(seedDir);
+                const notableFiles = await notableFilesForBranch(git, seedDir, base);
+                send({
+                  type: "pr_notable_files",
+                  sessionId: sid,
+                  cardId: `pr-card-${sid}`,
+                  notableFiles,
+                });
+              } catch (err) {
+                console.error(`[pr-lifecycle] notableFiles re-seed failed for ${sid}:`, getErrorMessage(err));
+              }
+            })();
+          }
         }
         if (dir) void checkGitIdentity(dir);
         // docs/161 — after the session is up and the user has control, kick a

@@ -84,6 +84,52 @@ choice: `updateCard` *replaces* the whole card, so a partial lifecycle update
 would clobber the poller's phase/pr/checks. `pr_notable_files` → `setNotableFiles`
 merges, so it's a safe in-place patch.
 
+## Follow-up: strip empty after reload / session-switch (the third gap)
+
+docs/210 fixed staleness *during a live session* (recompute every post-turn
+commit). But `notableFiles` was still **transient client state** held on the
+poller-driven card, pushed only at PR creation and on each post-turn commit. The
+poller's `pr_status` snapshot — which rebuilds the card on a page reload, a
+session switch, or an orchestrator restart — carries **no** `notableFiles`, and
+`applyPrStatusUpdates` could only re-thread `existing?.notableFiles` (undefined
+on a fresh load). So after a reload the strip rendered its **issue chips**
+(derived client-side from the PR body + first message, so they survive) but
+**dropped its doc/config/image chips** until the next turn committed. For a
+finished PR (no more turns) the doc chips never came back. That's the
+"modified documents are not always recognized" report.
+
+### Fix
+
+1. **Standalone client slice.** `notableFiles` moved off the card into its own
+   `pr-store` map, `notableFilesBySession` (mirrors `autoMergeBySession`). It's
+   keyed by session, independent of the poller-owned card, so a card rebuild
+   can't drop it and a patch that arrives *before* the card exists isn't
+   discarded (the re-seed and the poller snapshot travel on independent sockets
+   with no ordering guarantee). `setNotableFiles` writes this slice
+   authoritatively (empty list → key deleted → strip cleared); `updateCard` /
+   `applyPrStatusUpdates` no longer thread it. The card only *gates* the strip's
+   visibility — `PrLifecycleCard` shows doc chips only when a card exists, so a
+   session with changed docs but no PR card can't render a floating strip.
+
+2. **Re-seed on viewer connect (server).** `route-registry.ts`'s
+   `activateSession` — which runs on every per-session WS (re)connect — now
+   recomputes `notableFilesForBranch` for a session with a remote and pushes a
+   `pr_notable_files` patch. Fire-and-forget + best-effort, so it adds no
+   latency and a git error just leaves the strip empty until the next commit.
+   This is the load-time analogue of the post-turn recompute: the same way the
+   Docs panel re-derives from git on every `GET /docs`, the strip re-derives on
+   every connect.
+
+### Key files (follow-up)
+
+- `src/server/orchestrator/route-registry.ts` — `activateSession` re-seed.
+- `src/client/stores/pr-store.ts` — `notableFilesBySession` slice; `setNotableFiles`
+  rewritten; card threading removed; removal/snapshot pruning of the slice.
+- `src/client/hooks/message-handlers/pr-lifecycle-update.ts` — routes the
+  PR-create `notableFiles` into the slice instead of onto the card.
+- `src/client/components/PrLifecycleCard/PrLifecycleCard.tsx` — reads the slice,
+  gates the strip on a card existing.
+
 ## Key files
 
 - `src/server/orchestrator/services/git.ts` — `committedChangesVsBase` (new
