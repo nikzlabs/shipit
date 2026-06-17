@@ -512,10 +512,20 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     // root, so it reads/writes `<root>/.claude` + `<root>/.claude.json`.
     this.activeCredentialDir = opts?.credentialDir ?? null;
     this.activeFlowAccountId = opts?.accountId ?? null;
+    // Remove any stale/expired credential files for this scope *before*
+    // spawning the CLI. `claude /login` only presents the full OAuth code-paste
+    // flow when it starts from a clean slate; with an expired
+    // `.credentials.json` still on disk it short-circuits (treats the account
+    // as already logged in / refreshes in place) and never writes a fresh
+    // token, so the flow silently fails. This is exactly what the user had to
+    // do by hand — click "Clear saved credentials" before re-authenticating —
+    // now done automatically. The mtime baseline below (#1406) guards against a
+    // *premature success*; this wipe is what makes a fresh login actually
+    // start. After the wipe the baseline is 0, so any write the flow produces
+    // counts as fresh.
+    this.removeCredentialFiles(this.claudeConfigDir(this.activeCredentialDir));
     // Baseline the credential file's mtime *before* spawning the CLI, so the
-    // completion checks below only fire on a genuinely-new write. Re-auth of
-    // an account with a stale/expired file would otherwise look instantly
-    // "complete" and kill the CLI before it exchanges the pasted code.
+    // completion checks below only fire on a genuinely-new write.
     this.credentialBaselineMtime = this.credentialMtimeMs();
     const home = this.homeFor(this.activeCredentialDir);
 
@@ -752,7 +762,19 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
    */
   signOut(opts?: AgentAuthScopeOptions): void {
     this.kill();
-    const configDir = this.claudeConfigDir(opts?.credentialDir ?? null);
+    this.removeCredentialFiles(this.claudeConfigDir(opts?.credentialDir ?? null));
+    // Re-derive the singleton flag only for a singleton sign-out; a scoped
+    // sign-out leaves the global state alone.
+    if (!opts?.credentialDir) this.checkCredentials();
+  }
+
+  /**
+   * Delete every candidate credential file in `configDir`. Shared by
+   * {@link signOut} and {@link startOAuthFlow}: a fresh interactive login must
+   * start from a clean slate (see the call site in `startOAuthFlow` for why).
+   * Idempotent — missing files are skipped.
+   */
+  private removeCredentialFiles(configDir: string): void {
     for (const fileName of CLAUDE_CREDENTIAL_FILES) {
       const fullPath = path.join(configDir, fileName);
       try {
@@ -764,9 +786,6 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
         console.warn(`[auth] Failed to remove ${fullPath}:`, err instanceof Error ? err.message : err);
       }
     }
-    // Re-derive the singleton flag only for a singleton sign-out; a scoped
-    // sign-out leaves the global state alone.
-    if (!opts?.credentialDir) this.checkCredentials();
   }
 
   /** Kill the auth process if running. */
