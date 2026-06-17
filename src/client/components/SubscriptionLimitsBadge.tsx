@@ -225,7 +225,7 @@ function Meter({ shortLabel, window, windowMs, fetchedAt, now }: MeterProps) {
           <span
             aria-hidden
             data-time-marker
-            className="absolute -top-[3px] -bottom-[3px] w-0.5 -translate-x-1/2 rounded-full bg-(--color-text-primary)"
+            className="absolute -top-[1px] -bottom-[1px] w-0.5 -translate-x-1/2 rounded-full bg-(--color-text-primary)"
             style={{ left: `${elapsedPct}%` }}
           />
         )}
