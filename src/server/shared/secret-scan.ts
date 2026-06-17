@@ -18,12 +18,15 @@
  *  - CHEAP. Pure synchronous regex over the *added* lines of a staged diff
  *    (not the whole tree), run once per commit. No I/O, no network.
  *  - ALLOWLIST-AWARE. A per-line `gitleaks:allow` / `shipit:allow-secret`
- *    marker, plus a path allowlist that mirrors the companion `.gitleaks.toml`
- *    `[allowlist]`, let a genuine false positive through without a code change.
+ *    marker, plus an exact-path allowlist, let a genuine false positive through
+ *    without a code change.
  *
- * Keep the rule set small and well-commented so it's easy to extend. When you
- * add a rule here, mirror it (and any path allowlist entry) into `.gitleaks.toml`
- * so the diff-only CI backstop stays in sync.
+ * This guard is the PRIMARY net — it blocks at commit time, free, on every repo
+ * edited in ShipIt. The push-time backstop is GitHub's native secret scanning +
+ * push protection (free for public repos; enable in repo Settings → Code
+ * security), which covers GitHub's partner patterns. Custom patterns here that
+ * GitHub's free tier doesn't push-protect (e.g. `sk-ant-`) are covered by this
+ * guard. Keep the rule set small and well-commented so it's easy to extend.
  */
 
 /** One detector rule. `regex` MUST be global (`g`) — `scanLine` iterates matches. */
@@ -143,7 +146,6 @@ const ALLOWLIST_PATH_PATTERNS: RegExp[] = [
   /^src\/server\/shared\/git-secret-scan\.test\.ts$/,
   /^src\/server\/orchestrator\/services\/secret-scan-notice\.ts$/,
   /^src\/server\/orchestrator\/services\/secret-scan-notice\.test\.ts$/,
-  /^\.gitleaks\.toml$/,
   /^docs\/\d+-secret-scan-autocommit\//,
 ];
 

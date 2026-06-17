@@ -197,10 +197,9 @@ describe("redactSecretsInText", () => {
 });
 
 describe("isAllowlistedPath", () => {
-  it("allowlists the detector, its tests, gitleaks config, and this feature dir", () => {
+  it("allowlists the detector, its tests, and this feature dir", () => {
     expect(isAllowlistedPath("src/server/shared/secret-scan.ts")).toBe(true);
     expect(isAllowlistedPath("src/server/shared/secret-scan.test.ts")).toBe(true);
-    expect(isAllowlistedPath(".gitleaks.toml")).toBe(true);
     expect(isAllowlistedPath("docs/213-secret-scan-autocommit/plan.md")).toBe(true);
   });
   it("does not allowlist ordinary source or docs", () => {

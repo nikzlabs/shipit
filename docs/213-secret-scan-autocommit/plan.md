@@ -14,14 +14,17 @@ committed historically — it spread into two commit messages and a `docs/*.md`
 file across hundreds of PR refs and could not be fully scrubbed from history.
 **The durable fix is prevention at commit time, not cleanup.**
 
-A diff-only `gitleaks` CI check is the backstop — both its config (`.gitleaks.toml`,
-mirroring this guard's rules + path allowlist) and the workflow that runs it
-(`.github/workflows/secret-scan.yml`) ship **in this PR**. The workflow scans the
-PR's commit range only (`base..head`) and — unlike `ci.yml` — does **not** ignore
-`docs/**`/`**.md`, because the historical leak was in a `docs/*.md` file. This
-server-side guard is the stronger, earlier net: it blocks the commit *before* it
-happens, so a credential never enters a commit or a push in the first place; the
-CI check catches anything that reaches a PR by a non-agent path.
+This commit-time guard is the **primary** net: it blocks the commit *before* it
+happens, server-side, free, on every repo edited in ShipIt, so a credential
+never enters a commit or a push in the first place. The **backstop** for the
+ShipIt repo itself is **GitHub's native secret scanning + push protection** (free
+for public repos; enable in repo Settings → Code security), which push-protects
+GitHub's partner patterns and is maintained upstream — no CI workflow to run or
+keep in sync. We deliberately do *not* ship a custom gitleaks CI workflow: it's
+extra maintenance for the same backstop role, and native push protection blocks
+even earlier (at push, not at PR-CI time). The one gap — GitHub's free tier
+doesn't push-protect *custom* patterns like `sk-ant-` — is covered by this
+commit-time guard anyway.
 
 ## What it does
 
@@ -94,15 +97,16 @@ High-signal patterns rarely false-positive because each requires a realistic
 token *body*, not just a public prefix (`ghp_`, `sk-ant-`, `AKIA` in prose do
 **not** match). For the residual cases there are two overrides:
 
-- **Inline marker** — a line containing `gitleaks:allow` (the gitleaks
-  convention, so one marker silences both this guard and the CI backstop) or the
-  explicit `shipit:allow-secret` alias is skipped. This is the per-line escape
-  hatch: add the comment and re-run.
+- **Inline marker** — a line containing `gitleaks:allow` (the de-facto gitleaks
+  convention, so the same marker also works if anyone runs gitleaks locally) or
+  the explicit `shipit:allow-secret` alias is skipped. This is the per-line
+  escape hatch: add the comment and re-run.
 - **Path allowlist** — `secret-scan.ts` carries a narrow `ALLOWLIST_PATH_PATTERNS`
-  list (the detector + its tests, `.gitleaks.toml`, this feature's doc dir) that
-  **mirrors** `.gitleaks.toml`'s `[allowlist] paths`. Deliberately narrow: the
-  historical leak was in a generic `docs/*.md`, so docs are **not** allowlisted
-  broadly — only this feature's own directory.
+  list anchored to EXACT repo-relative paths (the detector + its tests, this
+  feature's doc dir). Deliberately narrow: the historical leak was in a generic
+  `docs/*.md`, so docs are **not** allowlisted broadly — only this feature's own
+  directory. Anchored, not basename-matched, so a stray same-named file (or one
+  in a user's repo) can't bypass the scan.
 
 ### Performance
 
@@ -112,17 +116,13 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
 
 ## Key files
 
-- `src/server/shared/secret-scan.ts` — the detector: `SECRET_RULES`,
-  `scanDiffForSecrets`, `redactSecret`, `isAllowlistedPath`, inline-allow markers.
-  **The source of truth for patterns; mirror into `.gitleaks.toml`.**
-- `.gitleaks.toml` — the CI backstop's config, a faithful mirror of `SECRET_RULES`
-  + the path allowlist (`useDefault = true` layers our rules over gitleaks'
-  built-ins). Edit it in lockstep with `secret-scan.ts`.
-- `.github/workflows/secret-scan.yml` — diff-only gitleaks CI job (`base..head`,
-  `--redact`), scanning markdown too. The backstop runner for `.gitleaks.toml`.
+- `src/server/shared/secret-scan.ts` — the detector and **single source of truth
+  for patterns**: `SECRET_RULES`, `scanDiffForSecrets`, `redactSecret`,
+  `redactSecretsInText`, `isAllowlistedPath`, inline-allow markers.
 - `src/server/shared/git.ts` — `GitManager.autoCommit` runs the scan on the
-  staged diff and refuses the commit on a finding; `stagedDiff()` helper;
-  `AutoCommitResult.secretFindings`.
+  staged diff and refuses the commit on a finding (also scrubs the commit
+  message); `commitPaths` runs the same guard; `stagedDiff()` / `diffRange()`
+  helpers; `AutoCommitResult.secretFindings`.
 - `src/server/orchestrator/services/secret-scan-notice.ts` —
   `formatSecretScanNotice` builds the redacted, persisted warning text.
 - `src/server/orchestrator/ws-handlers/post-turn.ts` — surfaces the notice on the
@@ -161,10 +161,10 @@ the rest:
   *structural* change the classic `gh[pousr]_…` rule can't match (the underscore
   after the app id breaks the base62 run), so it gets its own
   `github-app-token-stateless` rule.
-- **The CI backstop tracks upstream.** A brand-new prefix/alphabet still needs an
-  edit here; the companion diff-only `gitleaks` CI check picks up the
-  ecosystem's pattern updates even before this inline set is touched. The inline
-  guard is the *early* net; gitleaks is the *current-patterns* net.
+- **The backstop tracks upstream.** A brand-new prefix/alphabet still needs an
+  edit here; GitHub's native secret scanning (the push-time backstop) picks up
+  the ecosystem's partner-pattern updates without any change on our side. The
+  inline guard is the *early* net; GitHub native is the *current-patterns* net.
 
 ## Tests
 
@@ -192,9 +192,9 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
   placeholder so the raw path is never echoed into a finding/notice/log.
 - **`commitPaths`.** The path-scoped marketplace-install commit now runs the same
   staged-diff scan and refuses (unstage + return null) on a finding.
-- **Anchored allowlist.** `ALLOWLIST_PATH_PATTERNS` (and `.gitleaks.toml`'s
-  `paths`) are anchored to EXACT repo-relative paths, not a basename match — a
-  stray `secret-scan.test.ts` elsewhere (or in a user repo) can't bypass the scan.
+- **Anchored allowlist.** `ALLOWLIST_PATH_PATTERNS` is anchored to EXACT
+  repo-relative paths, not a basename match — a stray `secret-scan.test.ts`
+  elsewhere (or in a user repo) can't bypass the scan.
 - **Agent self-commits (moved HEAD).** When the agent moves HEAD itself this turn
   (its own `git commit`), `autoCommit` makes no commit but post-turn auto-pushes
   the moved HEAD — content `autoCommit` never scanned. `post-turn.ts` now scans
@@ -209,15 +209,31 @@ A Codex review (SHI-169) surfaced additional vectors, now closed:
   refused for a secret, instead of silently opening/updating the PR from the
   prior (stale) commits. The redacted warning is surfaced by the flush.
 
+## Backstop: GitHub native secret scanning (not a custom CI job)
+
+The push-time backstop is **GitHub's native secret scanning + push protection**,
+not a custom gitleaks workflow. Rationale:
+
+- **Free for public repos**, always-on; push protection blocks GitHub's partner
+  patterns by default — at *push* time, earlier than a PR-CI job.
+- **Zero maintenance** — patterns are updated upstream; nothing to keep in sync.
+- A custom gitleaks CI job would be extra maintenance for the same backstop role
+  (and `gitleaks-action` needs a paid license for org-owned repos; running the
+  binary directly avoids that but still adds a workflow to own).
+
+**Action:** enable it in the ShipIt repo's Settings → Code security & analysis
+(Secret scanning + Push protection). It's a settings toggle, not code.
+
+Coverage note: GitHub's free tier does **not** push-protect *custom* patterns
+(e.g. `sk-ant-`, generic JWTs) — those need paid GitHub Secret Protection. That
+gap is covered by the commit-time guard (which scans them for free, before
+commit, on every repo), so the combination is still strong.
+
 ## Known limitations / future
 
-- **Fork PRs in CI.** `secret-scan.yml` matches `ci.yml` and skips fork PRs;
-  scanning forks (read-only, no secrets needed) is a reasonable policy change to
-  consider.
 - **A "commit anyway" override** would upgrade the notice to a dedicated
   lifecycle card.
-- **`.gitleaks.toml` ↔ `SECRET_RULES` sync is manual**; a generator could enforce
-  parity.
-- **GitHub push protection** is a complementary backstop (not a replacement: it's
-  push-time, GitHub-only, and needs GHAS for private repos), worth enabling on the
-  public ShipIt repo as a third net behind the commit-time guard and gitleaks CI.
+- **Private repos / non-GitHub remotes** get no push-time backstop (native push
+  protection needs GHAS for private; it's GitHub-only). The commit-time guard
+  still applies everywhere. A custom gitleaks job could be reinstated if a
+  visibility-/host-agnostic CI backstop is ever wanted.
