@@ -129,7 +129,8 @@ round-trips beyond a single `git diff --cached`. It does not stall a turn.
 | Rule | Matches |
 |---|---|
 | `anthropic-api-key` | `sk-ant-` + ≥20-char body |
-| `github-pat` | `gh[pousr]_` + ≥36 base62 |
+| `github-pat` | `gh[pousr]_` + ≥36 base62 (open-ended length) |
+| `github-fine-grained-pat` | `github_pat_` + ≥40-char body |
 | `aws-access-key-id` | `AKIA`/`ASIA` + 16 upper-alnum |
 | `private-key-block` | `-----BEGIN … PRIVATE KEY-----` |
 | `slack-token` | `xox[baprs]-` + body |

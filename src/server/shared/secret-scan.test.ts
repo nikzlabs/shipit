@@ -12,6 +12,8 @@ import {
 const FAKE = {
   anthropic: "sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA1234567890bbbb",
   githubPat: "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+  githubFineGrained:
+    "github_pat_11ABCDEFG0aBcDeFgHiJk_LmNoPqRsTuVwXyZ0123456789AbCdEfGhIjKlMnOpQrStUvWx",
   aws: "AKIAIOSFODNN7EXAMPLE",
   slack: "xoxb-1234567890-ABCDEFGHIJKLMNOP",
   jwt: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c",
@@ -44,6 +46,13 @@ describe("scanDiffForSecrets — detection", () => {
   it("detects a GitHub PAT", () => {
     const f = scanDiffForSecrets(addedDiff("a.txt", [FAKE.githubPat]));
     expect(f.map((x) => x.rule)).toContain("github-pat");
+  });
+
+  it("detects a GitHub fine-grained PAT (github_pat_)", () => {
+    const f = scanDiffForSecrets(addedDiff("a.txt", [FAKE.githubFineGrained]));
+    expect(f.map((x) => x.rule)).toContain("github-fine-grained-pat");
+    // Must not also mis-fire the classic gh[pousr]_ rule on the same token.
+    expect(f.map((x) => x.rule)).not.toContain("github-pat");
   });
 
   it("detects an AWS access key id", () => {

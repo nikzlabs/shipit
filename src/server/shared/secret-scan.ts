@@ -55,8 +55,21 @@ export const SECRET_RULES: SecretRule[] = [
   {
     id: "github-pat",
     description: "GitHub personal access / OAuth / app token (gh[pousr]_)",
-    // GitHub tokens are `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` + 36 base62 chars.
+    // GitHub's prefixed-token family: `ghp_`/`gho_`/`ghu_`/`ghs_`/`ghr_` + a
+    // base62 body. The body length is OPEN-ENDED (`{36,}`, not exactly 36) on
+    // purpose: today's tokens are 36 chars after the prefix, but a length change
+    // by GitHub shouldn't blind the detector. A *new prefix* or a *new alphabet*
+    // would still need a rule edit — that's what the gitleaks CI backstop (which
+    // tracks upstream pattern updates) and this maintained rule set are for.
     regex: /gh[pousr]_[A-Za-z0-9]{36,}/g,
+  },
+  {
+    id: "github-fine-grained-pat",
+    description: "GitHub fine-grained personal access token (github_pat_)",
+    // Distinct prefix + a longer body that itself contains an underscore (a
+    // 22-char id, `_`, then the secret). gitleaks pins this to exactly 82 word
+    // chars; we use an open-ended `{40,}` so a future length change still trips.
+    regex: /github_pat_[A-Za-z0-9_]{40,}/g,
   },
   {
     id: "aws-access-key-id",
