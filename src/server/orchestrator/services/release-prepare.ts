@@ -194,6 +194,12 @@ export interface PrepareReleaseArgs extends PlanReleaseArgs {
   from?: string;
   /** Bootstrap the release branch off the default base when it's absent. */
   bootstrap?: boolean;
+  /**
+   * Opt out of the content-free guard — cut a bump-only release on purpose even
+   * when the payload brings no new commits over the release branch. Off by
+   * default so a bare `prepare` can't silently ship a version-number-only release.
+   */
+  allowEmpty?: boolean;
   /** Prerelease only: push the rc tag (the confirmation gate). */
   confirm?: boolean;
   /** Notes preview / PR body fragment. */
@@ -374,6 +380,26 @@ async function prepareFinalRelease(
         409,
         `Merging ${args.from} hit a conflict (${(merge.conflicts ?? []).join(", ")}) — aborted (nothing committed). ` +
           "Resolve it manually, then re-run.",
+      );
+    }
+  }
+
+  // Content-free guard (docs/214): a bare `prepare` (no --pick/--from) resets the
+  // head branch to `origin/<release-branch>` and adds only a bump commit, so the
+  // release would ship the version number with zero code changes — identical to
+  // what's already released. Measure the payload's commits over the release
+  // branch (BEFORE the bump commit) and refuse an empty one unless it's a
+  // bootstrap (first release legitimately ships everything on the new branch) or
+  // the caller explicitly opted in with --allow-empty.
+  if (!args.bootstrap && !args.allowEmpty) {
+    const newCommits = await git.countCommitsAhead(startPoint, "HEAD");
+    if (newCommits === 0) {
+      throw new ServiceError(
+        400,
+        `This release would contain no new commits — it would ship only the version bump, ` +
+          `identical to what's already released on "${releaseBranch}". ` +
+          `Pass --from <branch> (e.g. --from main) to bring content into the release, ` +
+          `or --allow-empty to cut a bump-only release on purpose.`,
       );
     }
   }

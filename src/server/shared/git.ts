@@ -812,6 +812,24 @@ export class GitManager {
     }
   }
 
+  /**
+   * docs/214 — count the commits reachable from `head` but not `base`
+   * (`git rev-list --count base..head`). The release-prepare guard uses this to
+   * detect a content-free release: after the payload (`--pick`/`--from`) is
+   * applied but before the version bump, a count of 0 means the bump PR would
+   * ship only the version-number change, identical to what `base` already has.
+   * Returns 0 when either ref can't be resolved (treated as "nothing new").
+   */
+  async countCommitsAhead(base: string, head: string): Promise<number> {
+    try {
+      const out = await this.git.raw(["rev-list", "--count", `${base}..${head}`]);
+      const n = Number.parseInt(out.trim(), 10);
+      return Number.isFinite(n) ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+
   /** Create an annotated tag at HEAD (or `ref`) and push it to `remote`. */
   async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];

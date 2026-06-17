@@ -5,10 +5,13 @@
  * `shipit release plan [<patch|minor|major|VERSION>]` — READ-ONLY: detect the
  *   version source + compute the next version; reflects a `proposed` card.
  * `shipit release prepare [<bump|VERSION>] [--pick <sha>…] [--from <branch>]
- *   [--release-branch <name>] [--bootstrap] [--prerelease] [--confirm]
- *   [--notes <text>]` — open the version-bump PR against the release branch
- *   (final release; the human-act gate is merging it, CI publishes), OR cut the
- *   `vX.Y.Z-rc.N` tag (prerelease; confirmation-gated via `--confirm`).
+ *   [--release-branch <name>] [--bootstrap] [--allow-empty] [--prerelease]
+ *   [--confirm] [--notes <text>]` — open the version-bump PR against the release
+ *   branch (final release; the human-act gate is merging it, CI publishes), OR
+ *   cut the `vX.Y.Z-rc.N` tag (prerelease; confirmation-gated via `--confirm`).
+ *   A bare `prepare` (no `--pick`/`--from`) is refused as content-free — it would
+ *   ship only the version bump; pass `--from <branch>` to bring content, or
+ *   `--allow-empty` to cut a bump-only release on purpose.
  *
  * There is intentionally NO `shipit release tag`/`publish`/`push` for final
  * releases — publishing is CI's job (the rejected subcommands live in
@@ -76,6 +79,7 @@ export async function handleReleasePrepare(args: string[], deps: RunDeps): Promi
       "--prerelease": "prerelease",
       "--confirm": "confirm",
       "--bootstrap": "bootstrap",
+      "--allow-empty": "allowEmpty",
     },
   });
   if (parsed.unsupported.length > 0) {
@@ -87,6 +91,7 @@ export async function handleReleasePrepare(args: string[], deps: RunDeps): Promi
   if (parsed.booleans.has("prerelease")) payload.prerelease = true;
   if (parsed.booleans.has("confirm")) payload.confirm = true;
   if (parsed.booleans.has("bootstrap")) payload.bootstrap = true;
+  if (parsed.booleans.has("allowEmpty")) payload.allowEmpty = true;
   if (parsed.arrays.pick?.length) payload.pick = parsed.arrays.pick;
   if (parsed.values.from) payload.from = parsed.values.from;
   if (parsed.values.releaseBranch) payload.releaseBranch = parsed.values.releaseBranch;

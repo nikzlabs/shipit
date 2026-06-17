@@ -158,7 +158,14 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   and surfaces that, rather than silently clobbering); `--pick` cherry-pick (hotfix)
   or merge `--from` (release from main); bump the version source (new
   `writeVersionToSource` in `release-version.ts`); commit; open the PR with `base =
-  release branch`. **This needs new plumbing on `agentCreatePr`, not just a reuse:**
+  release branch`. **Content-free guard:** after the payload is applied and BEFORE
+  the bump commit, `prepare` counts the new commits over `origin/<branch>`
+  (`git.countCommitsAhead`); if zero — a bare `prepare` with no `--pick`/`--from`,
+  or a `--from` whose branch is already merged — it **refuses** (a release identical
+  to the previous one, version number aside) and names the fix (`--from <branch>`,
+  or `--allow-empty` to opt into a bump-only release). `--bootstrap` is exempt (the
+  first release legitimately ships the whole new branch); the prerelease path never
+  reaches the guard. **This needs new plumbing on `agentCreatePr`, not just a reuse:**
   today it derives head from `getCurrentBranch()` and auto-detects base as
   `main`/`master` (the only base override is the narrow `reArm.baseBranch`). So
   `prepare` must (a) leave the clone with `release/<version>` checked out so

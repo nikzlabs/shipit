@@ -123,8 +123,9 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
 Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   shipit release plan    [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]
   shipit release prepare [<bump|VERSION>] [--pick SHA]... [--from BRANCH]
-                         [--release-branch NAME] [--bootstrap] [--notes TEXT]
-                         [--prerelease [--confirm]] [--version-source-path FILE] [--json]
+                         [--release-branch NAME] [--bootstrap] [--allow-empty]
+                         [--notes TEXT] [--prerelease [--confirm]]
+                         [--version-source-path FILE] [--json]
 
   'plan' is read-only: it detects the version source and computes the next
   version. 'prepare' opens a version-bump PR against the release branch
@@ -132,7 +133,9 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   the merged commit and creates the GitHub Release. You never push a tag for a
   final release. Use --pick <sha> to cherry-pick a hotfix, or --from <branch>
   to bring a branch's content. --bootstrap creates the release branch on its
-  first use.
+  first use. A bare 'prepare' (no --pick/--from) brings no new commits and is
+  refused as content-free — pass --from <branch> to bring content, or
+  --allow-empty to cut a bump-only release on purpose.
 
   Prereleases (rc) don't go through the release branch. 'prepare --prerelease'
   proposes the rc; re-run with --confirm to cut + push the vX.Y.Z-rc.N tag

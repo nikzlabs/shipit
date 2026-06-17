@@ -32,13 +32,20 @@ below** (those are kept only to explain what the command does and as a fallback)
 - `shipit release plan [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]`
   — **read-only**: detect the version source and compute the next version. Run
   this in the propose step (it reflects a `proposed` card); then stop for confirm.
-- `shipit release prepare [<bump|VERSION>] [--pick SHA]… [--from BRANCH] [--release-branch NAME] [--bootstrap] [--notes TEXT] [--prerelease [--confirm]] [--version-source-path FILE] [--json]`
+- `shipit release prepare [<bump|VERSION>] [--pick SHA]… [--from BRANCH] [--release-branch NAME] [--bootstrap] [--allow-empty] [--notes TEXT] [--prerelease [--confirm]] [--version-source-path FILE] [--json]`
   — on confirmation, do the release mechanics:
   - **`release-branch` final release:** opens (or updates) a version-bump PR
     against the release branch. `--pick <sha>` cherry-picks a hotfix; `--from <branch>`
     brings a branch's content; `--bootstrap` creates the release branch on the
     first release. **Merging the PR is the release** — CI tags + publishes. You
     stop at the open PR.
+    - **Content-free guard:** a bare `prepare` with no `--pick`/`--from` brings no
+      new commits over the release branch, so it would ship only the version bump —
+      a release identical to the previous one. This is **refused** with an error
+      naming the fix: pass `--from <branch>` (e.g. `--from main`) to bring content,
+      or `--allow-empty` to cut a bump-only release on purpose. (`--bootstrap`
+      implies this — the first release legitimately ships everything on the new
+      branch.)
   - **prerelease (rc):** `shipit release prepare --prerelease` proposes the rc;
     re-run with `--confirm` to cut + push the `vX.Y.Z-rc.N` tag (a tag push is
     always confirmation-gated). CI publishes it as a GitHub prerelease.

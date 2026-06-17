@@ -85,6 +85,48 @@ describe("shipit release prepare", () => {
     expect(out.stdout).toContain("Merge the PR to publish");
   });
 
+  it("maps --from / --allow-empty to the prepare payload", async () => {
+    const { run } = makeRunner();
+    const out = await run(["release", "prepare", "patch", "--from", "main", "--allow-empty"], {
+      "POST /agent-ops/release/prepare": {
+        status: 200,
+        body: { kind: "pr-opened", version: "0.2.1", tag: "v0.2.1", releaseBranch: "stable", prNumber: 9, prUrl: "https://github.com/o/r/pull/9", alreadyExisted: false },
+      },
+    });
+    expect(out.calls[0]?.body).toEqual({ bump: "patch", from: "main", allowEmpty: true });
+    expect(out.stdout).toContain("opened release PR #9");
+  });
+
+  it("omits allowEmpty from the payload when --allow-empty is absent", async () => {
+    const { run } = makeRunner();
+    const out = await run(["release", "prepare", "patch", "--from", "main"], {
+      "POST /agent-ops/release/prepare": {
+        status: 200,
+        body: { kind: "pr-opened", version: "0.2.1", tag: "v0.2.1", releaseBranch: "stable", prNumber: 9, prUrl: "https://github.com/o/r/pull/9", alreadyExisted: false },
+      },
+    });
+    expect(out.calls[0]?.body).toEqual({ bump: "patch", from: "main" });
+  });
+
+  it("surfaces the content-free guard error (bare bump-only prepare)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["release", "prepare", "patch"], {
+      "POST /agent-ops/release/prepare": {
+        status: 400,
+        body: {
+          error:
+            'This release would contain no new commits — it would ship only the version bump, ' +
+            'identical to what\'s already released on "stable". Pass --from <branch> (e.g. --from main) ' +
+            "to bring content into the release, or --allow-empty to cut a bump-only release on purpose.",
+        },
+      },
+    });
+    expect(out.stderr).toContain("no new commits");
+    expect(out.stderr).toContain("--from <branch>");
+    expect(out.stderr).toContain("--allow-empty");
+    expect(out.exitCode).toBe(1);
+  });
+
   it("renders the prerelease proposed state", async () => {
     const { run } = makeRunner();
     const out = await run(["release", "prepare", "--prerelease"], {

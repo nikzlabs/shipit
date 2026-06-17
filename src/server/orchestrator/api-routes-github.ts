@@ -330,6 +330,7 @@ export async function registerGitHubRoutes(
       from?: string;
       releaseBranch?: string;
       bootstrap?: boolean;
+      allowEmpty?: boolean;
       confirm?: boolean;
       versionSourcePath?: string;
       notes?: string;
@@ -359,6 +360,7 @@ export async function registerGitHubRoutes(
           from: request.body?.from,
           releaseBranch: request.body?.releaseBranch ?? rel.branch ?? "stable",
           bootstrap: request.body?.bootstrap,
+          allowEmpty: request.body?.allowEmpty,
           confirm: request.body?.confirm,
           versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
           notes: request.body?.notes,
