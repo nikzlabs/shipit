@@ -160,18 +160,21 @@ is introduced.
 
 ### `checkForUpdates()` (`services/updates.ts`)
 
-Becomes channel-aware:
+Becomes channel-aware (docs/214 Option A — as built):
 
 1. Read `/opt/shipit/.release-channel` (default per Migration rules).
-2. Resolve the target ref: `stable` → `origin/stable`, `edge` → `origin/main`.
-3. `git fetch origin <branch> --tags` (tags needed so we can name the stable
-   version).
-4. Compare `HEAD` vs the target ref as today. Extend the returned
-   `UpdateStatus` with:
+2. Resolve the target **commit**: `edge` → `origin/main` (branch tip); `stable` →
+   the commit of the latest final tag reachable from `origin/stable`
+   (`git tag --merged origin/stable` → strict-SemVer, drop prereleases, highest —
+   `pickLatestFinalTag()` in `release-channel.ts`). When stable has no final tag,
+   **fail closed**: `available: false`, `latestVersion: "no stable release yet"`,
+   never the branch tip.
+3. `git fetch origin <branch> --tags`.
+4. Compare `HEAD` vs the target commit. Extend the returned `UpdateStatus` with:
    - `channel: "stable" | "edge"`
    - `currentVersion: string` — `git describe --tags --exact-match HEAD` if on a
-     tag, else `main @ <short-sha>`.
-   - `latestVersion: string` — same for the target ref (`vX.Y.Z` on stable).
+     tag (true on a stable box, which sits on the tag's commit), else `main @ <short-sha>`.
+   - `latestVersion: string` — the resolved tag (`vX.Y.Z`) on stable, `main @ <sha>` on edge.
    - keep `behindBy` / `commitMessages` (commit list between current and target,
      rendered inline as the changelog).
 5. Handle the **direction** correctly: when a user switches edge→stable, `HEAD`
@@ -189,24 +192,35 @@ implies.
 
 ### `update.sh`
 
-Reads the channel and resets to the right ref:
+Reads the channel and resets to the right **commit** (docs/214 Option A — as
+built). Edge resets to the `origin/main` branch tip; stable resolves the latest
+final tag reachable from `origin/stable` and resets to *its commit* (fail closed
+if none):
 
 ```sh
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
-case "$CHANNEL" in
-  stable) REF="origin/stable" ;;
-  *)      REF="origin/main" ;;
-esac
 git fetch origin --tags --prune
-git fetch origin "${REF#origin/}"
-git reset --hard "$REF"
+if [ "$CHANNEL" = "stable" ]; then
+  git fetch origin stable
+  LATEST_TAG="$(git tag --merged origin/stable \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V | tail -n1)"
+  [ -z "$LATEST_TAG" ] && { echo "no stable release yet"; exit 1; }   # fail closed
+  TARGET_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
+else
+  git fetch origin main
+  TARGET_SHA="$(git rev-parse origin/main)"
+fi
+git reset --hard "$TARGET_SHA"
 bash "$SHIPIT_DIR/deployment/vps/deploy.sh"
 ```
 
-`deploy.sh` is unchanged: it already bakes `SHIPIT_BUILD_ID="$(git rev-parse
-HEAD)"`, which now points at the release commit on stable. No detached-HEAD
-concerns because we reset a (local) ref to track the remote, we don't `checkout`
-a tag.
+`deploy.sh` is unchanged: it bakes `SHIPIT_BUILD_ID="$(git rev-parse HEAD)"`,
+which now points at the release **tag's commit** on stable (or the `main` tip on
+edge). On stable HEAD is detached at the tag's commit — fine for build-id (a SHA)
+and `git describe --exact-match` names the tag. (The old design reset to the
+branch *ref*; Option A switched stable to the resolved tag's commit so the
+merge-before-publish window can't expose an un-released tip.)
 
 ### Version surfacing (`build-id.ts` + client)
 
@@ -286,13 +300,13 @@ alone). Add a separate human-facing version resolver:
   the next minor silently regresses it. This is a maintainer-discipline risk, not
   one CI can enforce here.
 - **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and `reset
-  --hard` to a ref. **Under Option A (docs/214), the stable channel resets to the
-  resolved tag's *commit*** (not the `stable` branch ref) — `reset --hard <sha>`
-  still leaves HEAD detached-but-normal for `build-id`; the version is the resolved
-  tag via `git describe`. (Edge channel still resets to the `origin/main` branch
-  ref.) The rest of this section describes the **as-built** branch-ref updater; the
-  Option-A tag-resolution change lands with docs/214 Phase 1, at which point this
-  section is rewritten to match.
+  --hard` to a commit. **Under Option A (docs/214, now built), the stable channel
+  resets to the resolved tag's *commit*** (not the `stable` branch ref) —
+  `reset --hard <sha>` leaves HEAD detached-but-normal for `build-id`; the version
+  is the resolved tag via `git describe --exact-match`. The edge channel still
+  resets to the `origin/main` branch tip. The tag resolution is a small semver
+  sort skipping prereleases (`update.sh` / `pickLatestFinalTag()`), added on top
+  of the previous one-line `reset --hard`.
 - **Inner dogfood / local mode.** `RUNTIME_MODE=local` dev instances and the
   dogfood path have no `/opt/shipit` host mount; channel logic must degrade
   gracefully (default edge, hide/disable the selector) exactly as the existing
@@ -302,8 +316,8 @@ alone). Add a separate human-facing version resolver:
 
 | File | Change |
 |------|--------|
-| `src/server/orchestrator/release-channel.ts` | **New** shared module: `.release-channel` read/write, `ReleaseChannel` type, `channelRef()`/`channelBranch()`, `DEFAULT_CHANNEL = "edge"`. Imported by `updates.ts` and `build-id.ts` to avoid coupling those modules to each other |
-| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()` + `getVersion()`; extend `UpdateStatus` with channel/version/`isDowngrade` fields |
+| `src/server/orchestrator/release-channel.ts` | **New** shared module: `.release-channel` read/write, `ReleaseChannel` type, `channelRef()`/`channelBranch()`, `DEFAULT_CHANNEL = "edge"`. docs/214: `pickLatestFinalTag()` + `NO_STABLE_RELEASE` for Option-A stable tag resolution. Imported by `updates.ts` and `build-id.ts` to avoid coupling those modules to each other |
+| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()` + `getVersion()`; extend `UpdateStatus` with channel/version/`isDowngrade` fields. docs/214: stable resolves the latest final tag reachable from `origin/stable` (`resolveLatestStableTag()`), fails closed when none |
 | `src/server/orchestrator/api-routes-updates.ts` | New `POST /api/updates/channel`; channel in check response |
 | `src/server/orchestrator/build-id.ts` | Add `resolveVersion()` — `git describe` against `/opt/shipit` (NOT the container cwd / `SHIPIT_BUILD_ID` env), with a short-SHA/`edge` fallback when the host repo is absent; keep `resolveBuildId()`'s SHA contract untouched |
 | `src/server/shared/types/domain-types.ts` | Version/channel types surfaced to client |
@@ -312,7 +326,7 @@ alone). Add a separate human-facing version resolver:
 | `deployment/vps/setup.sh` | Default new installs to `stable`; write `.release-channel`; clone/checkout `origin/stable`; **replace the re-run `git pull` (line 88) with a channel-aware `fetch --tags` + `reset --hard <ref>`** so a re-run never un-pins a stable box |
 | `deployment/vps/docker-compose.yml` | (no change — `/opt/shipit` mount already present at line 26) |
 | `.gitignore` | Add `.release-channel` |
-| `.github/workflows/release.yml` | On `v*` tag → CI gate (version-guard + check + test) → GitHub Release with notes. Does **not** move `stable` (maintenance branch). |
+| `.github/workflows/release.yml` | docs/214: triggers on `push: { branches: [stable], tags: ['v*'] }`. Branch path derives the tag from `package.json`, gates, tags the merged commit, publishes. Tag path gates + publishes a pushed tag. Still does **not** *move* `stable`. |
 | `package.json` | `version` becomes meaningful; bumped per release |
 | `deployment/README.md` | Document channels, switching, and the release process |
 | `RELEASING.md` (new) | Maintainer release ritual (cut from `stable`, cherry-pick hotfixes, tag) |

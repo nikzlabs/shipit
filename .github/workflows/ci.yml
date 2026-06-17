@@ -2,7 +2,14 @@ name: CI
 
 on:
   pull_request:
-    branches: [main]
+    # `main` is the integration branch; `stable` is the release maintenance
+    # branch (docs/162/214). Run the gates on PRs into either so a release-bump
+    # PR into `stable` gets a green check before merge — the same gates the
+    # post-merge release.yml run re-runs to gate the publish.
+    branches: [main, stable]
+    # Doc-only / markdown-only changes don't affect the build on EITHER branch,
+    # so they skip CI uniformly. A release-bump PR touches package.json /
+    # package-lock.json (not ignored), so it always runs the gates.
     paths-ignore:
       - 'docs/**'
       - '**.md'
