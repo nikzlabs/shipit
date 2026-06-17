@@ -128,7 +128,7 @@ src/
       repo-store.ts  RepoStore — persists repo metadata
       git-utils.ts   generateBranchPrefix(), parseGitHubRemote()
       git-config.ts  Global git config helpers
-      sessions.ts    SessionManager — persists session metadata to JSON
+      sessions.ts    SessionManager — persists session metadata to SQLite
       session-runner.ts   SessionRunner + SessionRunnerRegistry
       container-session-runner.ts  ContainerSessionRunner (proxy)
       session-container.ts  SessionContainerManager — Docker orchestration
