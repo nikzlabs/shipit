@@ -179,14 +179,16 @@ verify your work:
 - **browser_navigate** — open the preview URL. Do not assume
   `127.0.0.1:<port>` works from the browser: previews run in Compose service
   containers, so `localhost` is the agent's own container, not the dev server.
-  Inspect ShipIt's service registry and use the service's **`containerIp` +
-  `port`** — this is the route the agent's browser should use:
-  `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`,
-  then `browser_navigate` to `http://<containerIp>:<port>`. Do **not** use the
-  `{sessionId}--{port}.<host>` subdomain form — that origin is for the user's
-  preview pane (served by the orchestrator proxy) and does not resolve from the
-  agent's browser. (Egress containment allows the agent to reach its own
-  session's service containers by IP; reaching the dev server this way is
+  Inspect ShipIt's service registry and use the service's **`url`** field:
+  `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
+  Each running service carries a ready-to-use `url`
+  (e.g. `"url":"http://172.20.0.2:5173/"`) — `browser_navigate` to it, or `curl`
+  it directly. The `url` is the service's own `containerIp` + `port`; if it is
+  absent the service isn't running yet (no IP detected), so wait and re-query.
+  Do **not** use the `{sessionId}--{port}.<host>` subdomain form — that origin is
+  for the user's preview pane (served by the orchestrator proxy) and does not
+  resolve from the agent's browser. (Egress containment allows the agent to reach
+  its own session's service containers by IP; reaching the dev server this way is
   expected and supported.)
 - **browser_snapshot** — read page content as an accessibility tree (preferred
   for understanding layout)
@@ -211,8 +213,8 @@ If the project doesn't have a docker-compose.yml, see
   command and port. Verify the service is running with ShipIt's service
   registry:
   `curl -s http://${SHIPIT_HOST}:${SHIPIT_PORT}/api/sessions/${SHIPIT_SESSION_ID}/services`.
-  For browser verification, prefer the returned `containerIp` + `port` over
-  guessing `localhost`.
+  For browser verification, use each running service's returned `url` (its
+  `containerIp` + `port`) rather than guessing `localhost`.
 - **Port not detected**: Ensure `ports` is set in docker-compose.yml.
 - **Connection refused**: The dev server may need a moment to start. Ensure it
   binds to `0.0.0.0` (set `HOST=0.0.0.0` in the compose environment).

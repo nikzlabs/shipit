@@ -587,10 +587,24 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /**
    * Best-effort: open the agent's default-deny egress to the IPAM subnet(s) of a
    * session/compose network it just joined (docs/172 Gap 1, SHI-90). No-op unless
-   * the session was actually contained at start (`egressContainedAtStart`),
-   * enforcement is enabled, and the sidecar image is configured — i.e. only when
-   * there is a firewall to punch a hole in. Swallows all errors (logs a warning):
-   * preview reachability is a convenience, not a containment guarantee.
+   * the session is contained, enforcement is enabled, and the sidecar image is
+   * configured — i.e. only when there is a firewall to punch a hole in. Swallows
+   * all errors (logs a warning): preview reachability is a convenience, not a
+   * containment guarantee.
+   *
+   * Containment is read from `egressContainedAtStart` — the boot-time truth set
+   * only on *fresh* container creation. After an orchestrator restart the live
+   * container is *rediscovered* (container-discovery.ts) and *reconnected*
+   * WITHOUT that field, yet its netns firewall persisted with the still-running
+   * container, so the agent is STILL contained. Treating the unknown
+   * (`undefined`) value as "not contained" silently skipped the hole-punch on
+   * every post-restart compose (re)start — the agent could no longer reach its
+   * own preview (curl / Playwright ETIMEDOUT), the residual GH #1509 failure.
+   * So when the boot value is unknown we fall back to the resolved policy; an
+   * explicit `false` (booted in Open mode — no firewall) stays a hard skip. We
+   * derive locally and never write `egressContainedAtStart` back: the egress
+   * status API relies on `undefined` meaning "boot policy unknown" to avoid a
+   * false "pending · restart to apply" diff (api-routes-egress.ts).
    */
   private async allowEgressToSessionNetwork(
     agentContainerId: string,
@@ -599,8 +613,18 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   ): Promise<void> {
     const sc = this.containers.get(sessionId);
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
-    if (!egressEnforceEnabled() || sc?.egressContainedAtStart !== true || !sidecarImage) {
-      return; // No firewall in this session → nothing to re-open.
+    if (!egressEnforceEnabled() || !sidecarImage) {
+      return; // Enforcement off / no sidecar image → no firewall to re-open.
+    }
+    const contained =
+      sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
+    if (!contained) {
+      return; // Session is in Open mode → no firewall to punch a hole in.
+    }
+    if (sc?.egressContainedAtStart === undefined) {
+      console.log(
+        `[egress:${sessionId}] boot containment unknown (rediscovered container); derived contained=${contained} from resolved policy — re-opening preview egress`,
+      );
     }
     try {
       const info = await this.docker.getNetwork(networkName).inspect();

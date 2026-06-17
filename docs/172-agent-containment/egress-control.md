@@ -327,11 +327,54 @@ re-join is safe.
   gated upstream by the repo-trust boundary (Gap 3 — untrusted repos don't run compose)
   and the user having explicitly started the preview.
 
-No-op unless the session was actually contained at start
-(`SessionContainer.egressContainedAtStart`), enforcement is on, and the sidecar image is
-configured — i.e. only when there is a firewall to punch the hole in. Agent-facing
-guidance (`shipit-docs/preview.md`) is updated to tell the agent to reach previews from
-its browser at the service registry's `containerIp:port`.
+No-op unless the session is contained, enforcement is on, and the sidecar image is
+configured — i.e. only when there is a firewall to punch the hole in. Containment is read
+from `SessionContainer.egressContainedAtStart` when known, falling back to the resolved
+policy when that boot value is `undefined` (a rediscovered/adopted container — see the
+GH #1509 fix below). Agent-facing guidance (`shipit-docs/preview.md`) is updated to tell
+the agent to reach previews from its browser at the service registry's `url`
+(`containerIp:port`).
+
+### Services API now hands the agent a ready-to-use `url` (GH #1509)
+
+The agent and its in-netns Playwright browser still had to *construct*
+`http://<containerIp>:<port>` themselves from the services response, and the docs pointed
+them at the right pieces but not a usable address. `ManagedService` now carries a derived
+**`url`** field — `getServices()` computes `http://<containerIp>:<port>/` on read (never
+stored, so it can't go stale) for any service that is `running` with both an IP and a port.
+`GET /api/sessions/:id/services` surfaces it directly, and `shipit-docs/preview.md` tells
+the agent to `browser_navigate`/`curl` that `url`. This is purely the same direct-IP route
+this section already opens — it does not change routing or containment, it just stops the
+agent from hand-assembling the address (and gives one place to evolve the contract).
+
+> **Resolved — the hole-punch was silently skipped after an orchestrator restart (GH #1509).**
+> Live-host diagnosis (Docker access, an affected `auto`-preview session) ruled out the
+> iptables ordering, multi-homing, and the punch itself: with the session freshly created,
+> the agent **is** multi-homed (`172.18.0.x` bridge + `172.19.0.x` compose net), the
+> `ACCEPT … <compose-subnet>` rule sits above the `DROP` policy, and `curl <url>` from the
+> agent returns 200. The failure reproduced **only after an orchestrator restart**. Root
+> cause: `SessionContainer.egressContainedAtStart` — the gate
+> `allowEgressToSessionNetwork` keys off — is set **only on a fresh `create()`**. On restart
+> the still-running container is **rediscovered** (`container-discovery.ts`) and reconnected
+> with that field `undefined`, even though its netns firewall **persisted with the container**
+> (so the agent is still contained). The old gate `sc?.egressContainedAtStart !== true`
+> treated the unknown value as "not contained" and returned early — no `opened agent egress`
+> log line, no subnet `ACCEPT` rule — so every post-restart compose (re)start left the agent
+> firewalled out of its own preview (the orchestrator proxy, on the already-allowed bridge
+> subnet, kept working, which is why the user's Preview tab was unaffected).
+>
+> **Fix.** When the boot value is unknown (`undefined`, i.e. a rediscovered/adopted
+> container), `allowEgressToSessionNetwork` falls back to the **resolved** policy
+> (`resolveEgressConfig(sessionId).contained`) to decide whether to punch; an explicit
+> `false` (booted in Open mode — no firewall) stays a hard skip. The derivation is local —
+> it never writes `egressContainedAtStart` back, because the egress status API
+> (`api-routes-egress.ts`) relies on `undefined` meaning "boot policy unknown" to avoid a
+> false "pending · restart to apply" diff. Verified live: after a `tsx watch` reload that
+> rediscovered the agent, the orchestrator logged
+> `boot containment unknown (rediscovered container); derived contained=true … re-opening
+> preview egress` → `opened agent egress to session subnet(s) 172.19.0.0/16`, and `curl <url>`
+> from the agent netns again returned 200. Covered by
+> `session-container-egress-reopen.test.ts`.
 
 ### Scope: this hole is needed only where the agent is *multi-homed* (docker-access checked — no analogous bug)
 
