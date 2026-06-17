@@ -1,14 +1,16 @@
 name: Release
 
-# Cut a stable release: push an annotated tag `vX.Y.Z` to main, and this
-# workflow gates it on a green build, fast-forwards the `stable` branch to the
-# tagged commit, and publishes a GitHub Release with auto-generated notes.
-# Those notes are the changelog ShipIt surfaces inline in the update panel.
+# Publish a release: push an annotated tag `vX.Y.Z`, and this workflow gates it
+# on a green build (version-guard + check + test) and publishes a GitHub Release
+# with auto-generated notes. Those notes are the changelog ShipIt surfaces inline
+# in the update panel.
 #
-# A prerelease tag (`vX.Y.Z-rc.N` — any semver with a `-prerelease` suffix) is
-# published as a GitHub *prerelease* and does NOT fast-forward `stable`, so it
-# never reaches conservative operators. See docs/162-release-channels/plan.md
-# and RELEASING.md.
+# `stable` is a long-lived MAINTENANCE BRANCH, not a CI-moved pointer: releases
+# are cut FROM `stable`, and maintainers cherry-pick fixes onto it (see
+# RELEASING.md). CI never moves `stable` — the tag already sits on the stable
+# commit the maintainer pushed. A prerelease tag (`vX.Y.Z-rc.N` — any semver with
+# a `-prerelease` suffix) is published as a GitHub *prerelease*. See
+# docs/162-release-channels/plan.md and RELEASING.md.
 
 on:
   push:
@@ -77,21 +79,22 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # 2. On success, fast-forward `stable` (stable releases only) and publish the
-  # Release.
-  promote:
-    name: Promote to stable
+  # 2. On success, publish the GitHub Release. `stable` is a maintenance branch
+  # the maintainer already pushed alongside the tag — CI does NOT move it
+  # (see RELEASING.md). This job only classifies + publishes.
+  publish:
+    name: Publish GitHub Release
     needs: [version-guard, check, test]
-    # Pure git + gh-release I/O, no compute — 2vcpu (see version-guard note).
+    # Pure gh-release I/O, no compute — 2vcpu (see version-guard note).
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
         with:
-          # Full history so the FF check can verify ancestry.
+          # Full history so --generate-notes can diff against the previous tag.
           fetch-depth: 0
 
       # A semver prerelease suffix (the `-` in `vX.Y.Z-rc.N`) marks a release
-      # candidate: publish it, but never promote it to `stable`.
+      # candidate: publish it as a GitHub prerelease.
       - name: Classify release
         id: classify
         run: |
@@ -99,23 +102,10 @@ jobs:
           TAG="${{ github.ref_name }}"
           if [[ "$TAG" == *-* ]]; then
             echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG is a prerelease — will publish as a GitHub prerelease and skip the stable fast-forward."
+            echo "$TAG is a prerelease — publishing as a GitHub prerelease."
           else
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
           fi
-
-      # Fast-forward `stable` to the tagged commit. `--ff-only` semantics are
-      # enforced by pushing the SHA to refs/heads/stable: GitHub rejects a
-      # non-fast-forward push, so tagging off a commit that isn't an ancestor
-      # of current `stable` fails loudly here (never force-push stable).
-      # Skipped for prereleases — they must not move the stable pointer.
-      - name: Fast-forward stable to ${{ github.ref_name }}
-        if: steps.classify.outputs.prerelease == 'false'
-        run: |
-          set -euo pipefail
-          SHA="$(git rev-parse "${{ github.ref_name }}^{commit}")"
-          echo "Promoting $SHA to refs/heads/stable"
-          git push origin "$SHA:refs/heads/stable"
 
       # Publish a GitHub Release with auto-generated notes (PR titles since the
       # previous tag). These notes are the inline changelog. Prereleases get the

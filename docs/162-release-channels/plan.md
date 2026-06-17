@@ -84,14 +84,16 @@ identity and notes.
 
 ### Refs and conventions
 
-- **Final releases**: annotated tags `vX.Y.Z` (semver), cut from a commit on
-  `main`. These are the only things the stable channel will advance to.
+- **Final releases**: annotated tags `vX.Y.Z` (semver), cut from `stable`'s HEAD.
+  These are the only things the stable channel advances to.
 - **Pre-releases** (optional): `vX.Y.Z-rc.N`. Excluded from the stable channel.
-- **`stable` branch**: a fast-forward-only pointer that the release process moves
-  to each new `vX.Y.Z` tag commit. `origin/stable` is therefore "the latest
-  stable release," queryable with the exact same `git fetch` / `rev-parse`
-  machinery we already use for `main`.
+- **`stable` branch**: a long-lived **maintenance branch** with its own curated
+  history — the released code plus fixes cherry-picked onto it. Maintainers move
+  it (merge / cherry-pick from `main`, then bump + tag); CI never does.
+  `origin/stable` is therefore "the latest stable release," queryable with the
+  exact same `git fetch` / `rev-parse` machinery we already use for `main`.
 - **`main`**: unchanged — the integration branch, and the edge channel's target.
+  `main` and `stable` intentionally diverge (see RELEASING.md).
 
 Channel → tracking ref:
 
@@ -109,19 +111,20 @@ still what we display as the version (`git describe --tags --exact-match` on the
 
 ### Cutting a release (CI-driven)
 
-A new workflow `.github/workflows/release.yml` triggered on pushing a `v*` tag:
+A workflow `.github/workflows/release.yml` triggered on pushing a `v*` tag:
 
-1. Run the full `check` + `test` jobs (reuse `ci.yml` steps) against the tagged
+1. `version-guard`: the tag must equal `package.json` `version` (kept in lockstep
+   by `npm run release`), so the human-facing version and the tag never drift.
+2. Run the full `check` + `test` jobs (reuse `ci.yml` steps) against the tagged
    commit — a release must be green.
-2. On success, fast-forward `stable` to the tagged commit
-   (`git push origin <sha>:refs/heads/stable`). Fails loudly if it would not be a
-   fast-forward (guards against tagging off a non-`main` commit).
 3. Create a GitHub Release for the tag with auto-generated notes (PR titles since
    the previous tag). These notes are the changelog we surface inline.
 
-Maintainer's release ritual becomes: bump `package.json` `version`, commit to
-`main`, then `git tag -a vX.Y.Z -m … && git push origin vX.Y.Z`. CI does the rest.
-A short `docs/` note or `RELEASING.md` documents this.
+CI deliberately **does not move `stable`** — `stable` is a maintenance branch the
+maintainer pushes alongside the tag. The release ritual: from an up-to-date
+`stable`, bring in the work (merge or cherry-pick from `main`), then
+`npm run release -- vX.Y.Z` and push the branch and the tag. CI gates and
+publishes. `RELEASING.md` documents this in full.
 
 ## Where the channel preference lives
 
@@ -262,13 +265,15 @@ alone). Add a separate human-facing version resolver:
   stores are release-boundary events. A true "safe downgrade" guarantee is out
   of scope; the warning + docs are the v1 answer.
 - **Stable lags real bugfixes.** A conservative channel means security/critical
-  fixes need a way to reach stable fast. Convention: patch releases (`vX.Y.Z+1`)
-  cut from `main` (or a cherry-pick) on demand; stable users get them via the
-  normal check. Document the patch-release path in `RELEASING.md`.
-- **`stable` fast-forward invariant broken.** If someone tags off a branch that
-  isn't an ancestor of current `stable`, the release workflow's FF push fails —
-  this is the desired loud failure, not a silent force-push. Never force-push
-  `stable`.
+  fixes need a way to reach stable fast. Because `stable` is a maintenance
+  branch, the fix is cherry-picked onto it and shipped as a patch release
+  (`vX.Y.Z+1`) carrying *only* that fix — no unrelated `main` churn. Document the
+  patch-release path in `RELEASING.md`.
+- **`stable`/`main` divergence + forward-port discipline.** `stable` is no longer
+  constrained to be an ancestor chain of `main`; the cost is that a fix
+  cherry-picked onto `stable` must also exist on `main` (land it there first) or
+  the next minor silently regresses it. This is a maintainer-discipline risk, not
+  one CI can enforce here.
 - **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and only ever
   `reset --hard` a tracking branch ref, never `checkout` a tag, so HEAD stays on
   a branch and `build-id` stays a normal SHA.
@@ -291,10 +296,10 @@ alone). Add a separate human-facing version resolver:
 | `deployment/vps/setup.sh` | Default new installs to `stable`; write `.release-channel`; clone/checkout `origin/stable`; **replace the re-run `git pull` (line 88) with a channel-aware `fetch --tags` + `reset --hard <ref>`** so a re-run never un-pins a stable box |
 | `deployment/vps/docker-compose.yml` | (no change — `/opt/shipit` mount already present at line 26) |
 | `.gitignore` | Add `.release-channel` |
-| `.github/workflows/release.yml` | New: on `v*` tag → CI gate → FF `stable` → GitHub Release with notes |
+| `.github/workflows/release.yml` | On `v*` tag → CI gate (version-guard + check + test) → GitHub Release with notes. Does **not** move `stable` (maintenance branch). |
 | `package.json` | `version` becomes meaningful; bumped per release |
 | `deployment/README.md` | Document channels, switching, and the release process |
-| `RELEASING.md` (new) | Maintainer release ritual (tag, patch releases, stable FF) |
+| `RELEASING.md` (new) | Maintainer release ritual (cut from `stable`, cherry-pick hotfixes, tag) |
 | `src/server/shipit-docs/*` | Update if channel/version becomes agent-visible |
 
 ## Rollout phases

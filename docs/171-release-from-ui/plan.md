@@ -10,8 +10,9 @@ description: Generalize ShipIt's own release automation into a chat-initiated, a
 
 ShipIt already releases *itself* through a hand-built pipeline that lives only in
 this repo: a maintainer manually bumps `package.json`, commits, tags `vX.Y.Z`,
-and pushes; `.github/workflows/release.yml` then gates on `check` + `test`,
-fast-forwards `stable`, and runs `gh release create --generate-notes` (see
+and pushes; `.github/workflows/release.yml` then gates on `version-guard` +
+`check` + `test` and runs `gh release create --generate-notes` (`stable` is a
+maintenance branch the maintainer moves, not CI — see
 `RELEASING.md`, `.github/workflows/release.yml`, `.github/release.yml`, and
 `docs/162-release-channels/plan.md`). That machinery is invisible to a ShipIt
 *user* working on *their own* repo. If they want to cut a release of the project
@@ -410,7 +411,7 @@ auto-PR flow.
 gated, for repos that don't want a workflow or want instant Release creation.
 
 **Phase 5 — Channel promotion for arbitrary repos.**
-Generalize the stable/edge fast-forward-pointer model (`docs/162`) so a repo can
+Generalize the stable/edge maintenance-branch model (`docs/162`) so a repo can
 define promotion channels — well beyond the MVP, only if demand appears.
 
 ## Open questions & risks
