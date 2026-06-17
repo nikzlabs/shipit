@@ -18,6 +18,7 @@ import {
   agentCreatePr,
   planRelease,
   prepareRelease,
+  adoptReleaseBranch,
   editPullRequest,
   commentOnPullRequest,
   addIssueComment,
@@ -398,6 +399,25 @@ export async function registerGitHubRoutes(
               sha: result.sha,
             });
           }
+        }
+
+        // docs/214 — surface the release PR as the session's inline PR lifecycle
+        // card so the user can merge it from inside ShipIt (CLAUDE.md §1/§2). The
+        // release PR's head is `release/<version>`, not `session.branch`, so the
+        // PR poller can't match it until the session adopts that branch. Guard to
+        // the session's OWN repo: a sandbox `--repo` clone's PR lives in a
+        // different repo than the one the poller polls for this session, so
+        // repointing the branch there would point the poller at a phantom branch.
+        if (result.kind === "pr-opened" && remoteUrl && remoteUrl === session.remoteUrl) {
+          await adoptReleaseBranch({
+            deps: {
+              sessionManager,
+              prStatusPoller: deps.prStatusPoller,
+              sseBroadcast: deps.sseBroadcast,
+            },
+            sessionId: request.params.id,
+            releaseHeadBranch: `release/${result.version}`,
+          });
         }
         return result;
       } catch (err) {

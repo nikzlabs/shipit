@@ -46,3 +46,13 @@
 - [x] `--pick`/`--from` merge conflict → abort + actionable error, no broken commit
 - [x] Re-running `shipit release prepare` for the same version → updates the same PR (force-with-lease; refuses if branch has non-`prepare` commits)
 - [x] Release card persists across reload/switch in `pr_open`/`pr_merged`
+
+## Follow-up — surface + merge the release PR inside ShipIt
+Found exercising `shipit release prepare` end-to-end: the bump PR (head `release/<version>`)
+was never surfaced as the session's inline **PR lifecycle card**, so it couldn't be merged
+from inside ShipIt (CLAUDE.md §1/§2). The release-status-poller card narrated the release
+*outcome* but carried no merge button. Fix: the session **adopts** the `release/<version>`
+branch when `prepare` opens the PR, reusing the existing PR-card + merge plumbing.
+- [x] `services/release-branch-adopt.ts`: repoint `session.branch` → `release/<version>`, `reArm` + `forceRefreshSession` the PR poller, rebroadcast `session_list` (own-repo guard; no-op on re-run)
+- [x] Wire into the `/release/prepare` route's `pr-opened` branch (guarded to `remoteUrl === session.remoteUrl`)
+- [x] Tests: `release-branch-adopt.test.ts` (repoint + re-arm ordering, re-run no-op, missing session, no-poller degrade)

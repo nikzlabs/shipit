@@ -167,6 +167,21 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   orchestrator route drives the poller **directly** (`markPrOpened`) — the agent is
   out of the state-reporting loop.
 
+  **The session adopts the `release/<version>` branch when the PR opens.** The
+  release-status-poller card narrates the release *outcome*, but it carries no
+  merge button — and the inline **PR lifecycle card** (which does) is keyed by
+  `session.branch` in the PR poller, which still points at the session's own
+  branch (`shipit/xxxxx`), not the release head. So the bump PR was never surfaced
+  as a mergeable card and couldn't be merged from inside ShipIt (CLAUDE.md §1/§2).
+  Fix (`services/release-branch-adopt.ts`, called from the `pr-opened` branch of
+  the prepare route): repoint `session.branch` to `release/<version>`, `reArm` +
+  `forceRefreshSession` the PR poller so it rediscovers the release PR by its new
+  head, and rebroadcast `session_list`. Guarded to the session's own repo (a
+  sandbox `--repo` PR lives in a different repo than the one the poller polls) and
+  a no-op on a `prepare` re-run. The user then merges via the merge button they
+  already know — exactly the release-branch human-act gate — and the
+  release-status card continues to track publication.
+
 No `shipit release tag`/`publish`/`push` for final releases — publishing is CI's
 job (rejected subcommands). Errors surface as actionable messages from the
 orchestrator: dirty tree; **release branch absent** (offer to bootstrap it — see
@@ -321,6 +336,7 @@ path and the script as the fallback.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
 - `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`.
 - `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`).
+- `src/server/orchestrator/services/release-branch-adopt.ts` (new) — repoint `session.branch` to `release/<version>` + re-arm the PR poller so the bump PR surfaces as the inline (mergeable) PR lifecycle card.
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.
 - `release-types.ts`, `release-markers.ts`, `release-status-poller.ts`, `services/release-flow.ts` — `pr_open`/`pr_merged` lifecycle; `mechanism` on the card (resolved from `shipit.yaml` in `release-flow.ts`).
 - `src/client/utils/release-confirm-message.ts` (new) — pure, mechanism-aware builder for the "Confirm & publish" reply; consumed by `App.tsx` (`handleReleaseConfirm`), threaded via `ReleaseLifecycleCard` → `MessageList`/`MessageCards` `onReleaseConfirm(version, mechanism)`.
