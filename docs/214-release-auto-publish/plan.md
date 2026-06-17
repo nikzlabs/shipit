@@ -96,6 +96,47 @@ Properties: the tag is only created once the build is green; `stable` is never
 *moved* by CI — CI only reads HEAD's version, tags that commit, and publishes. The
 *trigger* moves from a hand-run `npm run release` to **merging the bump PR**.
 
+### Cold-start requirement — the merge-trigger workflow must already be on the branch
+
+**GitHub Actions evaluates a workflow file as it exists *on the branch that was
+pushed*.** So merge-publish only fires once the maintenance branch carries the
+merge-triggered `release.yml` (`on: push: { branches: [<branch>] }`). Two cold
+states run **nothing** when a bump PR merges — the PR merges cleanly, but no tag
+and no Release are produced:
+
+- the branch has **no** `.github/workflows/release.yml` (a brand-new repo), or
+- the branch still carries the **legacy tag-triggered** workflow
+  (`on: push: { tags: ['v*'] }`, no `branches:` trigger).
+
+This is a **bootstrap deadlock**: the very commit that *adds* the merge-trigger
+workflow is unreleased on `main`, and only reaches the maintenance branch by being
+released — which can't happen via merge-publish until the workflow is already
+there. It is exactly how this bug was found: a real merge into ShipIt's own
+`stable` (which still had the legacy tag-only `release.yml`) produced **no
+release** and warned nothing.
+
+**Remedies, both no-manual-git:**
+
+- **Branch absent (true first release):** `shipit release prepare --bootstrap`
+  seeds the maintenance branch off `main` — so it inherits main's merge-trigger
+  workflow — then opens the bump PR. Merging it then auto-publishes.
+- **Branch exists but carries the legacy / no workflow (migration):** cut **one**
+  release via the **tag path** — push a `vX.Y.Z` tag on a commit that already
+  carries the merge-trigger workflow (the legacy workflow on `stable` still fires
+  on a tag push; the new workflow at the tagged commit gates + publishes). After
+  that the workflow is on the branch and every future merge auto-publishes.
+
+**Detection / warning (the guard):** `shipit release plan|prepare` reads the
+maintenance branch's `release.yml` (`assessMergeAutoPublish` in
+`release-autopublish-check.ts` → `git show origin/<branch>:.github/workflows/release.yml`,
+parsed by the pure `workflowAutoPublishesOnMerge`) and attaches an **actionable
+warning** when a merge won't auto-publish — naming the remedy above. The prepare
+check runs *after* `prepare`'s fetch (and after a `--bootstrap` that just seeded
+the branch off `main`), so the post-bootstrap state is reflected: bootstrapping
+off a `main` that has the workflow yields **no** warning, while a stale `stable`
+warns. The guard never hard-blocks (a deliberate bootstrap is allowed), but a
+normal prepare can never *look* successful while the merge will silently no-op.
+
 ### Stable-channel safety — track the latest tag (Option A)
 
 The hard requirement: a stable instance must **only ever update to a vetted,
@@ -342,7 +383,8 @@ path and the script as the fallback.
   `release-channel.ts`) — resolve the latest final tag reachable from `origin/stable`.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
 - `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`.
-- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`).
+- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`, `showFileAtRef`).
+- `src/server/orchestrator/release-autopublish-check.ts` (new) — cold-start guard: detect whether merging into the maintenance branch will auto-publish (the branch's workflow has a push trigger for it) and build the actionable warning.
 - `src/server/orchestrator/services/release-branch-adopt.ts` (new) — repoint `session.branch` to `release/<version>` + re-arm the PR poller so the bump PR surfaces as the inline (mergeable) PR lifecycle card.
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.
 - `release-types.ts`, `release-markers.ts`, `release-status-poller.ts`, `services/release-flow.ts` — `pr_open`/`pr_merged` lifecycle; `mechanism` on the card (resolved from `shipit.yaml` in `release-flow.ts`).

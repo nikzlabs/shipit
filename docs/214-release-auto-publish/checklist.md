@@ -72,3 +72,16 @@ release identical to the previous one, version number aside. Nothing warned or s
 - [x] Tests: `release-prepare.test.ts` (bare refuse, `--from`/`--pick` succeed, already-merged `--from`
   refused, `--allow-empty` permits, `--bootstrap`/`--prerelease` not regressed) + shim flag mapping +
   content-free error surfacing in `shipit-release.test.ts`
+
+## Follow-up — cold-start guard: warn when a merge won't auto-publish
+Found when a real merge into ShipIt's own `stable` (still carrying the legacy tag-triggered
+`release.yml`) produced **no release and warned nothing**. GitHub evaluates a workflow as it
+exists *on the pushed branch*, so merge-publish silently no-ops until the merge-trigger
+workflow is on the maintenance branch — a bootstrap deadlock. See plan.md "Cold-start
+requirement".
+- [x] `release-autopublish-check.ts`: pure `workflowAutoPublishesOnMerge(yaml, branch)` (push-trigger / branch-filter detection) + `assessMergeAutoPublish(git, branch)` (reads `origin/<branch>:release.yml`, builds the actionable warning)
+- [x] `git.ts`: `showFileAtRef(ref, path)` (`git show ref:path`)
+- [x] Wire into `/release/{plan,prepare}` routes (release-branch mechanism; prepare check runs after the fetch so `--bootstrap` state is reflected); `warning?` on `ReleasePlan` + `pr-opened` result
+- [x] Shim (`shipit-release.ts`): surface the warning in `plan` + `prepare` output, leading the `pr-opened` output instead of the "merge to publish" line
+- [x] Tests: `release-autopublish-check.test.ts` — pure detector cases (merge-trigger / tag-only / missing / wildcards / branches-ignore / bare `on: push`) + git-backed legacy-warns / absent-warns / **cold-start bootstrap auto-publishes**
+- [x] Docs: plan.md cold-start section, `RELEASING.md`, `shipit-docs/release.md`, `prompts/releases.md`

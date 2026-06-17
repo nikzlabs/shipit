@@ -830,6 +830,20 @@ export class GitManager {
     }
   }
 
+  /**
+   * docs/214 — the text of `filePath` as it exists at `ref` (`git show ref:path`),
+   * or null when the ref or path can't be resolved. Used by the release cold-start
+   * guard to read `.github/workflows/release.yml` on the maintenance branch and
+   * decide whether merging a bump PR there will actually auto-publish.
+   */
+  async showFileAtRef(ref: string, filePath: string): Promise<string | null> {
+    try {
+      return await this.git.raw(["show", `${ref}:${filePath}`]);
+    } catch {
+      return null;
+    }
+  }
+
   /** Create an annotated tag at HEAD (or `ref`) and push it to `remote`. */
   async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];

@@ -45,6 +45,7 @@ import { getErrorMessage } from "./validation.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed } from "./pr-target.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { assessMergeAutoPublish } from "./release-autopublish-check.js";
 
 /**
  * docs/214 — read the release-branch fields from a workspace's shipit.yaml.
@@ -65,7 +66,7 @@ function readStringProp(obj: unknown, key: string): string | undefined {
   return undefined;
 }
 
-function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: string } {
+function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: string; mechanism?: string } {
   try {
     const config = resolveShipitConfig(dir);
     // The Phase-1 fields (`branch`, `version-source-path`) aren't on `ReleaseConfig`
@@ -74,9 +75,11 @@ function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: 
     const release: unknown = config.release;
     const branch = readStringProp(release, "branch");
     const versionSourcePath = readStringProp(release, "versionSourcePath");
+    const mechanism = readStringProp(release, "mechanism");
     return {
       ...(branch ? { branch } : {}),
       ...(versionSourcePath ? { versionSourcePath } : {}),
+      ...(mechanism ? { mechanism } : {}),
     };
   } catch {
     // A broken/absent shipit.yaml just means "use the defaults".
@@ -298,6 +301,17 @@ export async function registerGitHubRoutes(
           prerelease: request.body?.prerelease,
           versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
         });
+        // docs/214 cold-start guard: for a `release-branch` repo, warn at propose
+        // time when merging into the maintenance branch won't auto-publish yet
+        // (no / legacy workflow on the branch) — a merge would otherwise look
+        // successful while silently producing no tag and no Release. rc's go via
+        // the tag path, so they're exempt.
+        if (rel.mechanism === "release-branch" && !plan.prerelease) {
+          const branch = rel.branch ?? "stable";
+          await git.fetch("origin");
+          const assessment = await assessMergeAutoPublish(git, branch);
+          if (assessment.warning) plan.warning = assessment.warning;
+        }
         // Reflect a `proposed` card (informational for final releases; the rc
         // path's confirm gate also reads it). Requires a GitHub remote to poll.
         if (deps.releaseStatusPoller && remoteUrl) {
@@ -420,6 +434,17 @@ export async function registerGitHubRoutes(
             sessionId: request.params.id,
             releaseHeadBranch: `release/${result.version}`,
           });
+        }
+
+        // docs/214 cold-start guard: a bump PR can merge cleanly yet auto-publish
+        // nothing when the maintenance branch lacks the merge-triggered workflow
+        // (GitHub evaluates the workflow as it exists on the pushed branch). Read
+        // the branch's workflow *after* prepare's fetch — which also reflects a
+        // `--bootstrap` that just seeded the branch off `main` — and attach an
+        // actionable warning so the merge never looks successful while it no-ops.
+        if (result.kind === "pr-opened") {
+          const assessment = await assessMergeAutoPublish(git, result.releaseBranch);
+          if (assessment.warning) result.warning = assessment.warning;
         }
         return result;
       } catch (err) {
