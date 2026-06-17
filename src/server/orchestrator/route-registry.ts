@@ -42,7 +42,7 @@ import type { StartupMonitors } from "./startup-monitors.js";
  */
 export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntime): void {
   const {
-    sseClients, sessionManager, runnerRegistry, prStatusPoller, releaseStatusPoller,
+    sseClients, sessionManager, runnerRegistry, prStatusPoller,
     githubAuthManager, repoStore, agentRegistry, providerAccountManager, authManagers,
     dockerForStats, limitsRegistry,
     processStartedAt, buildId, version, updateMode,
@@ -121,10 +121,9 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const prStatuses = prStatusPoller.getAllStatuses();
     client.write(`event: pr_status\ndata: ${JSON.stringify({ updates: prStatuses, isSnapshot: true })}\n\n`);
 
-    // docs/171 — current release lifecycle cards so an inline release card
-    // survives a reconnect. Snapshot semantics mirror pr_status.
-    const releaseStatuses = releaseStatusPoller.getAllStatuses();
-    client.write(`event: release_status\ndata: ${JSON.stringify({ updates: releaseStatuses, isSnapshot: true })}\n\n`);
+    // docs/171 — the release lifecycle card is now a persisted transcript card
+    // (rehydrated from chat history on load, updated live via the `release_card`
+    // WS), so there is no longer a `release_status` SSE snapshot to send here.
 
     // GitHub rate-limit state — emit the banner immediately so a refreshed
     // tab knows polling is paused. The poller's normal transition broadcast

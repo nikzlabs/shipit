@@ -4,8 +4,10 @@
  * by the user on the card, then tagged + pushed by the agent; the repo's own
  * CI publishes the GitHub Release off the pushed tag (the MVP is tag-triggered,
  * option (a) in docs/171). The `ReleaseStatusPoller` reflects gate/CI + the
- * published Release inline via the `release_status` SSE event, mirroring the
- * PR lifecycle card (`PrStatusSummary` / `pr_status`).
+ * published Release, driving every phase transition through one sink that
+ * persists this summary to chat history (the card is a persisted transcript
+ * card) and emits a per-session `release_card` WS — so it survives a reload and
+ * an orchestrator restart.
  *
  * Phase 1 (MVP) only — the multi-ecosystem `release:` config, scaffolding, and
  * orchestrator-brokered `createRelease` are later phases and not represented
@@ -28,6 +30,9 @@ export type ReleaseBumpType = "major" | "minor" | "patch" | "prerelease";
  * - `deploying` — a downstream deploy is in flight for the tagged commit.
  * - `released`  — Release published AND (deploy succeeded OR no deploy target).
  * - `failed`    — gate failed / push rejected / API error.
+ * - `cancelled` — the user declined the proposal on the card (terminal). The
+ *   card collapses to a "Release cancelled" row and persists like any other
+ *   terminal state, rather than vanishing.
  */
 export type ReleasePhase =
   | "proposed"
@@ -36,7 +41,8 @@ export type ReleasePhase =
   | "published"
   | "deploying"
   | "released"
-  | "failed";
+  | "failed"
+  | "cancelled";
 
 /** CI/gate check rollup — same shape as the PR card's `checks`. */
 export interface ReleaseChecksSummary {
@@ -61,11 +67,19 @@ export interface PublishedReleaseInfo {
 }
 
 /**
- * One session's release lifecycle snapshot, broadcast over `release_status`.
- * Keyed by `sessionId` exactly like `PrStatusSummary`.
+ * One session's release lifecycle snapshot. Persisted to chat history and
+ * emitted over the per-session `release_card` WS (keyed by `cardId`).
  */
 export interface ReleaseStatusSummary {
   sessionId: string;
+  /**
+   * Stable transcript-card id, `release:${sessionId}:${tag}`. The release card
+   * is a persisted transcript card (docs/171, like the bug-report / issue-write
+   * cards): this id keys both the in-place chat-history upsert and the live
+   * `release_card` WS upsert, so every phase transition patches the SAME card
+   * rather than appending a duplicate.
+   */
+  cardId: string;
   phase: ReleasePhase;
   /** Proposed/published version (no leading `v`), e.g. "0.3.0". */
   version: string;

@@ -45,6 +45,8 @@ export function MessageList({
   onUndoIssueWrite,
   onOpenIssue,
   onResumeSession,
+  onReleaseConfirm,
+  onReleaseCancel,
 }: {
   messages: ChatMessage[];
   isLoading: boolean;
@@ -85,6 +87,10 @@ export function MessageList({
    * SHI-78).
    */
   onResumeSession?: (sessionId: string) => void;
+  /** docs/171 — confirm a proposed release from its inline card. */
+  onReleaseConfirm?: (version: string) => void;
+  /** docs/171 — cancel a proposed release from its inline card. */
+  onReleaseCancel?: (version: string) => void;
 }) {
   const hasRewindControls = !!onRewindAtGap;
 
@@ -284,6 +290,8 @@ export function MessageList({
           onUndoIssueWrite,
           onOpenIssue,
           onSendFollowUp,
+          onReleaseConfirm,
+          onReleaseCancel,
         });
         if (card) return <Fragment key={i}>{card}</Fragment>;
 

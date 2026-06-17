@@ -162,6 +162,16 @@ describe("Integration: release flow — propose → tag → publish", () => {
     expect(released.release?.htmlUrl).toContain("releases/tag/v0.3.0");
     expect(released.notes).toContain("Features");
 
+    // docs/171 — the card is a persisted transcript card now: a single
+    // `release_card` row, upserted across phases by `cardId`, must be in
+    // `/history` so it survives a reload + orchestrator restart.
+    const historyRes = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const history = historyRes.json() as { messages: { releaseCard?: { phase: string; cardId: string } }[] };
+    const releaseCards = history.messages.filter((m) => m.releaseCard);
+    expect(releaseCards).toHaveLength(1);
+    expect(releaseCards[0].releaseCard?.phase).toBe("released");
+    expect(releaseCards[0].releaseCard?.cardId).toBe(`release:${sessionId}:v0.3.0`);
+
     client.close();
   });
 

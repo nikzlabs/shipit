@@ -4,13 +4,17 @@
  *
  * Lifecycle: the agent proposes a release (card → `proposed`), the user confirms
  * on the card, the agent bumps + tags + pushes (card → `gating`), and this
- * poller reflects the gate/CI status and the published GitHub Release inline via
- * the `release_status` SSE event, reusing the PR poller's global poll gate and
- * fast/slow cadence.
+ * poller reflects the gate/CI status and the published GitHub Release inline.
+ * Every phase transition goes through `setCard → onCard`, the single injected
+ * hook the orchestrator wires to (a) upsert the card into chat history by
+ * `cardId` and (b) emit a per-session `release_card` WS message to the session's
+ * viewers (see `bootstrap-managers.ts`).
  *
- * Card state is in-memory only (a release is an ephemeral, per-turn flow), so
- * there is no persistence layer here — unlike `PrStatusSummary`, which the
- * session store persists across restarts.
+ * The card is a persisted transcript card (docs/171, like the bug-report /
+ * issue-write cards): in-memory `cards` here is the live state-machine, but
+ * durability lives in chat history (the `release_card` column), so the card
+ * survives a reload AND an orchestrator restart. This replaces the previous
+ * in-memory-only `release_status` SSE, which a restart lost entirely.
  *
  * Idempotency / dedup: a release is keyed by `{repoKey, tag}`. Once a tag is
  * observed as published/released, that `{repoKey, tag}` is remembered so a
@@ -36,7 +40,12 @@ const VIEWER_DETACH_GRACE_MS = 60_000;
 /** Phases that still need polling (a remote artifact may still change). */
 const ACTIVE_PHASES: ReadonlySet<ReleasePhase> = new Set(["gating", "deploying"]);
 /** Terminal phases — no further polling. */
-const TERMINAL_PHASES: ReadonlySet<ReleasePhase> = new Set(["released", "failed"]);
+const TERMINAL_PHASES: ReadonlySet<ReleasePhase> = new Set(["released", "failed", "cancelled"]);
+
+/** Stable transcript-card id for a release, shared across all its phases. */
+function cardIdFor(sessionId: string, tag: string): string {
+  return `release:${sessionId}:${tag}`;
+}
 
 interface TrackedRepo {
   owner: string;
@@ -63,7 +72,13 @@ export interface ReleaseTaggedInput {
 
 export class ReleaseStatusPoller {
   private githubAuth: GitHubAuthManager;
-  private sseBroadcast: (event: string, data: unknown) => void;
+  /**
+   * Single sink for every card transition: persist (chat-history upsert by
+   * `cardId`) + live emit (per-session `release_card` WS). Wired in
+   * `bootstrap-managers.ts`. Defaults to a no-op so unit tests can inspect cards
+   * via `getStatus` without wiring persistence.
+   */
+  private onCard: (card: ReleaseStatusSummary) => void;
   private runnerRegistry?: SessionRunnerRegistry;
 
   /** Single supervisor timer (one for the whole poller). */
@@ -81,11 +96,11 @@ export class ReleaseStatusPoller {
 
   constructor(opts: {
     githubAuth: GitHubAuthManager;
-    sseBroadcast: (event: string, data: unknown) => void;
+    onCard?: (card: ReleaseStatusSummary) => void;
     runnerRegistry?: SessionRunnerRegistry;
   }) {
     this.githubAuth = opts.githubAuth;
-    this.sseBroadcast = opts.sseBroadcast;
+    this.onCard = opts.onCard ?? (() => {});
     this.runnerRegistry = opts.runnerRegistry;
   }
 
@@ -162,6 +177,7 @@ export class ReleaseStatusPoller {
     this.resolveRepo(sessionId, repoUrl);
     const card: ReleaseStatusSummary = {
       sessionId,
+      cardId: cardIdFor(sessionId, input.tag),
       phase: "proposed",
       version: input.version,
       tag: input.tag,
@@ -186,13 +202,14 @@ export class ReleaseStatusPoller {
     if (repo) {
       const dedup = this.releasedByKey.get(`${repo.repoKey}#${input.tag}`);
       if (dedup) {
-        this.setCard({ ...dedup, sessionId, alreadyReleased: true });
+        this.setCard({ ...dedup, sessionId, cardId: cardIdFor(sessionId, input.tag), alreadyReleased: true });
         return;
       }
     }
 
     const card: ReleaseStatusSummary = {
       sessionId,
+      cardId: cardIdFor(sessionId, input.tag),
       phase: "gating",
       version: input.version,
       tag: input.tag,
@@ -222,6 +239,7 @@ export class ReleaseStatusPoller {
     const prev = this.cards.get(sessionId);
     const base: ReleaseStatusSummary = {
       sessionId,
+      cardId: cardIdFor(sessionId, input.tag),
       phase: "published",
       version: input.version ?? prev?.version ?? input.tag.replace(/^v/, ""),
       tag: input.tag,
@@ -262,29 +280,32 @@ export class ReleaseStatusPoller {
     this.releasedByKey.set(`${repo.repoKey}#${tag}`, next);
   }
 
-  /** Dismiss a session's release card (user cancelled). */
+  /**
+   * User declined the proposal on the card. Collapse the card to a terminal
+   * `cancelled` state (persisted + emitted via `setCard`) rather than removing
+   * it — the decision belongs in the transcript and must survive a reload. No-op
+   * if nothing was proposed for this session.
+   */
   cancel(sessionId: string): void {
-    if (!this.cards.has(sessionId)) return;
-    this.cards.delete(sessionId);
+    const prev = this.cards.get(sessionId);
+    if (!prev) return;
     this.lastPolledAt.delete(sessionId);
-    this.sseBroadcast("release_status", { updates: [], removals: [sessionId] });
+    this.setCard({ ...prev, phase: "cancelled" });
   }
 
-  /** Drop all state for a session (archive / untrack). */
+  /**
+   * Drop in-memory state for a session (archive / untrack). The persisted
+   * transcript card goes away with the session's chat history, so there's no
+   * card to retract — this just clears the poller's live maps.
+   */
   untrackSession(sessionId: string): void {
-    const had = this.cards.delete(sessionId);
+    this.cards.delete(sessionId);
     this.sessionRepos.delete(sessionId);
     this.lastPolledAt.delete(sessionId);
-    if (had) this.sseBroadcast("release_status", { updates: [], removals: [sessionId] });
   }
 
   getStatus(sessionId: string): ReleaseStatusSummary | undefined {
     return this.cards.get(sessionId);
-  }
-
-  /** All current cards — for the SSE snapshot on connect. */
-  getAllStatuses(): ReleaseStatusSummary[] {
-    return [...this.cards.values()];
   }
 
   destroy(): void {
@@ -299,7 +320,9 @@ export class ReleaseStatusPoller {
     if (prev && JSON.stringify(prev) === JSON.stringify(card)) return;
     this.cards.set(card.sessionId, card);
     if (TERMINAL_PHASES.has(card.phase)) this.lastPolledAt.delete(card.sessionId);
-    this.sseBroadcast("release_status", { updates: [card] });
+    // Single sink: persist (chat-history upsert by cardId) + live emit
+    // (per-session `release_card` WS). See `onCard` wiring in bootstrap-managers.
+    this.onCard(card);
   }
 
   private ensureSupervisor(): void {

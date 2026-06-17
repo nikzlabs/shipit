@@ -44,24 +44,24 @@ function makeFakeRegistry(viewerCount = 1): SessionRunnerRegistry {
   } as unknown as SessionRunnerRegistry;
 }
 
+interface CardSnapshot { phase: string; tag: string; cardId: string; alreadyReleased?: boolean }
+
 function makePoller() {
   const { gh, state } = makeFakeGitHub();
-  const events: { event: string; data: { updates: unknown[]; removals?: string[] } }[] = [];
+  // Every card transition is now routed through the single `onCard` sink (which
+  // the orchestrator wires to chat-history persist + the `release_card` WS).
+  const cards: CardSnapshot[] = [];
   const poller = new ReleaseStatusPoller({
     githubAuth: gh,
-    sseBroadcast: (event, data) => events.push({ event, data: data as { updates: unknown[] } }),
+    onCard: (card) => cards.push(card as unknown as CardSnapshot),
     runnerRegistry: makeFakeRegistry(),
   });
-  return { poller, state, events };
+  return { poller, state, cards };
 }
 
-/** Last release_status card broadcast (phases the test asserts on). */
-function lastCard(events: { event: string; data: { updates: unknown[] } }[]) {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const u = events[i].data.updates;
-    if (u.length > 0) return u[u.length - 1] as { phase: string; tag: string; alreadyReleased?: boolean };
-  }
-  return undefined;
+/** Last card emitted through `onCard` (the phases the tests assert on). */
+function lastCard(cards: CardSnapshot[]): CardSnapshot | undefined {
+  return cards.length > 0 ? cards[cards.length - 1] : undefined;
 }
 
 describe("ReleaseStatusPoller", () => {
@@ -79,7 +79,8 @@ describe("ReleaseStatusPoller", () => {
     poller = ctx.poller;
     poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false, bumpType: "minor" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(lastCard(ctx.events)?.phase).toBe("proposed");
+    expect(lastCard(ctx.cards)?.phase).toBe("proposed");
+    expect(lastCard(ctx.cards)?.cardId).toBe("release:s1:v0.3.0");
     expect(ctx.state.checkStatusCalls).toBe(0);
     expect(ctx.state.releaseCalls).toBe(0);
   });
@@ -163,13 +164,24 @@ describe("ReleaseStatusPoller", () => {
     expect(ctx.state.releaseCalls).toBe(releaseCallsBefore);
   });
 
-  it("cancel removes the card and broadcasts a removal", () => {
+  it("cancel collapses the card to a persisted `cancelled` state (not a removal)", () => {
     const ctx = makePoller();
     poller = ctx.poller;
     poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false });
     poller.cancel("s1");
+    // The card stays — collapsed to terminal `cancelled` — so the decision is
+    // persisted in the transcript and survives a reload, rather than vanishing.
+    expect(poller.getStatus("s1")?.phase).toBe("cancelled");
+    const last = lastCard(ctx.cards);
+    expect(last?.phase).toBe("cancelled");
+    expect(last?.cardId).toBe("release:s1:v0.3.0");
+  });
+
+  it("cancel is a no-op when nothing was proposed", () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    poller.cancel("s1");
     expect(poller.getStatus("s1")).toBeUndefined();
-    const last = ctx.events[ctx.events.length - 1];
-    expect(last.data.removals).toEqual(["s1"]);
+    expect(ctx.cards).toHaveLength(0);
   });
 });
