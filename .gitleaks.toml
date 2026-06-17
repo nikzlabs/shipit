@@ -1,0 +1,37 @@
+# Gitleaks configuration for ShipIt's diff-only secret scan (see
+# .github/workflows/secret-scan.yml). This extends gitleaks' built-in rule set
+# and adds an allowlist so known-fake and historical-but-revoked values don't
+# turn every build red.
+#
+# Scope note: the CI job scans only the *new commits* in a PR/push, never full
+# history — so the historical revoked PAT below is normally out of range anyway.
+# The regex allowlist is belt-and-suspenders in case it reappears in a diff
+# (e.g. someone edits an old doc line that quotes it).
+
+title = "ShipIt secret-scan config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Known-fake / revoked test values — never block a build over these"
+regexes = [
+  # Historical GitHub PAT surfaced during the public-readiness review. It has
+  # been REVOKED (inert), but it persists in old PR refs and two commit
+  # messages. Allowlisted so an incidental diff hit can't wedge CI.
+  '''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''',
+  # Obvious placeholder PATs used in tests/docs (all-x filler, named fakes).
+  '''ghp_x{6,}''',
+  '''ghp_super_secret_workspace_token''',
+  # Anthropic placeholder/test keys used in fixtures.
+  '''sk-ant-(test|valid|placeholder|example)[A-Za-z0-9_-]*''',
+]
+paths = [
+  # Test fixtures deliberately embed secret-shaped placeholders. Allowlisting
+  # these paths keeps CI green; the stronger net for real secrets in any path
+  # is the post-turn auto-commit guard (separate work). Non-test paths —
+  # including docs/, where the original leak lived — remain fully scanned.
+  '''.*\.test\.ts$''',
+  '''.*/integration_tests/.*''',
+  '''.*test-helpers.*''',
+]
