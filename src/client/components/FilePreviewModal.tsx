@@ -554,7 +554,7 @@ export function FilePreviewModal({
           </div>
           {showSiblingTabs && siblings && (
             <div
-              className="flex px-4 overflow-x-auto overscroll-x-contain"
+              className="flex px-4 overflow-x-auto overflow-y-hidden overscroll-x-contain"
               role="tablist"
               aria-label="Related docs"
             >
