@@ -146,28 +146,45 @@ describe("SettingsEgress (docs/172, SHI-90)", () => {
     expect(screen.queryByTestId("settings-egress-restore-defaults")).not.toBeInTheDocument();
   });
 
-  it("shows the per-session override + scope selector only when a session is active", async () => {
+  it("renders no per-session controls even when a session is active (Settings is global-only)", async () => {
+    // The per-session containment override + add-scope toggle moved out of the
+    // global Settings dialog onto the session's own menu (docs/172).
     useSessionStore.setState({ sessionId: "s1" });
     stubFetch([], { withSession: true });
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-session-override")).toBeInTheDocument());
-    expect(screen.getByTestId("settings-egress-add-scope")).toBeInTheDocument();
-  });
-
-  it("hides the per-session controls with no active session", async () => {
-    stubFetch([]);
-    render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-empty")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toBeInTheDocument());
     expect(screen.queryByTestId("settings-egress-session-override")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("settings-egress-override")).not.toBeInTheDocument();
     expect(screen.queryByTestId("settings-egress-add-scope")).not.toBeInTheDocument();
   });
 
-  it("forces this session Open via the override segmented control", async () => {
+  it("loads the GLOBAL allowlist (no ?session=) even when a session is active", async () => {
+    // The mechanism behind global-only: the effective view is fetched with no
+    // session in scope, so the server never returns "This session" rows.
     useSessionStore.setState({ sessionId: "s1" });
-    stubFetch([], { withSession: true });
+    const impl = stubFetch([], { withSession: true });
     render(<SettingsEgress />);
-    await waitFor(() => expect(screen.getByTestId("settings-egress-override")).toBeInTheDocument());
-    await userEvent.click(screen.getByTestId("settings-egress-override-open"));
-    await waitFor(() => expect(useEgressStore.getState().override).toBe(false));
+    await waitFor(() => expect(screen.getByTestId("settings-egress-contained")).toBeInTheDocument());
+    const allowlistGets = impl.mock.calls.filter(([url]) => url.startsWith("/api/egress/allowlist"));
+    expect(allowlistGets.length).toBeGreaterThan(0);
+    expect(allowlistGets.every(([url]) => !url.includes("session="))).toBe(true);
+  });
+
+  it("adds at global scope even when a session is active", async () => {
+    useSessionStore.setState({ sessionId: "s1" });
+    const impl = stubFetch([], { withSession: true });
+    render(<SettingsEgress />);
+    await waitFor(() => expect(screen.getByTestId("settings-egress-host-input")).toBeInTheDocument());
+    await userEvent.type(screen.getByTestId("settings-egress-host-input"), "internal.corp");
+    await userEvent.click(screen.getByTestId("settings-egress-host-add"));
+    await waitFor(() =>
+      expect(
+        impl.mock.calls.some(([url, init]) => {
+          if (url !== "/api/egress/hosts" || init?.method !== "POST") return false;
+          const body = init.body ? (JSON.parse(init.body as string) as Record<string, unknown>) : {};
+          return body.scope === "global";
+        }),
+      ).toBe(true),
+    );
   });
 });

@@ -209,7 +209,10 @@ describe("SessionSidebar", () => {
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s1" />);
       await user.click(screen.getByLabelText("Session actions"));
 
-      expect(await screen.findByRole("separator")).toBeTruthy();
+      // Current-session menus carry a second separator before the "Network
+      // access" group (the per-session egress override), so assert ≥1 rather
+      // than exactly one.
+      expect((await screen.findAllByRole("separator")).length).toBeGreaterThan(0);
       expect(screen.getByText("Download chat")).toBeTruthy();
       expect(screen.queryByText("Investigate in Ops session")).toBeNull();
     });
