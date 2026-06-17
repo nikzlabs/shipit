@@ -162,28 +162,30 @@ own" path **routes through the existing composer** (which already has voice):
    the **selected** set, so it's **disabled when nothing is checked** — there's
    nothing to send.
 2. **Add comment…** *(secondary — the "I agree, but…" / "actually…" path)*.
-   Instead of sending, this seeds the **main input box** with a **snapshot of the
-   whole card** — *every* action listed with a checkbox marker reflecting its
-   current state (`[x]` ticked / `[ ]` not) — then focuses the composer. Each
-   seeded line is the action's **`payload`** (the self-contained instruction),
-   **not** just its short display label, so the "Add comment…" path is
-   cold-context-safe in exactly the same way Submit is. *(Codex design review:
-   seeding labels would have left only the Submit path self-contained.)* The
-   **literal `[x]`/`[ ]` text is the chosen format** (decided): it parses cleanly
-   for the agent and reads clearly for a human, and the user can freely edit the
-   lines before sending. The user then appends their own words (typed **or
-   dictated** — the composer's voice button is right there) and sends normally.
-   The sent message is the snapshot **plus** the user's addition, so the agent
-   sees the full menu, what the user leaned toward, and the freeform note — all
-   self-contained. *(How that quote is visually **rendered** inside the composer —
-   plain text vs. a styled quote block — is a separate, composer-wide question;
-   being investigated in its own session, see SHI-153 thread.)*
+   Instead of sending, this seeds the **main input box** with a snapshot of the
+   **selected actions only** — each ticked action on its own line as a `- ` bullet,
+   with **unselected actions omitted entirely** (they are *not* filled into the
+   composer at all) — then focuses the composer. Each seeded line is the action's
+   **`payload`** (the self-contained instruction), **not** just its short display
+   label, so the "Add comment…" path is cold-context-safe in exactly the same way
+   Submit is. *(Codex design review: seeding labels would have left only the
+   Submit path self-contained.)* No `[x]`/`[ ]` checkbox marker is used: every
+   seeded line is selected by definition, so the ticked/unticked distinction is
+   gone — the lines are a plain bullet list that reads clearly for a human, parses
+   cleanly for the agent, and the user can freely edit before sending. The user then appends their
+   own words (typed **or dictated** — the composer's voice button is right there)
+   and sends normally. The sent message is the snapshot **plus** the user's
+   addition, so the agent sees what the user leaned toward and the freeform note —
+   all self-contained. *(How that quote is visually **rendered** inside the
+   composer — plain text vs. a styled quote block — is a separate, composer-wide
+   question; being investigated in its own session, see SHI-153 thread.)*
 
    **Add comment… is never disabled.** Unlike Submit, it doesn't require a
-   selection: commenting on the menu is valid with any subset, including none
-   (e.g. *"none of these — do X instead"*, with all boxes `[ ]` giving the agent
-   the context). This also makes the two buttons behave **identically across
-   single- and multi-action cards** — which was the goal.
+   selection: commenting is valid with any subset, including none (e.g. *"none of
+   these — do X instead"*). With no selection the composer is seeded with just the
+   `Re:` provenance header and no action lines, leaving the user a clean slate for
+   their note. This also makes the two buttons behave **identically across single-
+   and multi-action cards** — which was the goal.
 
 The two-button split is what resolves the single-action expressiveness gap. For a
 lone action there's nothing to *select*, so: **Do it** = unqualified agreement;

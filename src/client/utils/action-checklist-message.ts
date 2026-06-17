@@ -51,13 +51,16 @@ export function formatProposalMessage(
 }
 
 /**
- * The Add comment… snapshot seeded into the main composer: the WHOLE menu, each
- * action on its own line marked `[x]` (ticked) / `[ ]` (not), using the action
- * `payload` so the seeded path is cold-context-safe just like Submit. A trailing
- * blank line leaves the cursor where the user appends their own words (typed or
- * dictated). The literal `[x]`/`[ ]` text is the chosen format — it parses
- * cleanly for the agent and reads clearly for a human, and the user can edit the
- * lines freely before sending.
+ * The Add comment… snapshot seeded into the main composer: ONLY the selected
+ * actions, each on its own line as a `- ` bullet, using the action `payload` so
+ * the seeded path is cold-context-safe just like Submit. Unselected actions are
+ * omitted entirely — they are not filled into the composer at all, so the user
+ * starts from a clean slate of just what they leaned toward (plus, with no
+ * selection, only the `Re:` header). No `[x]`/`[ ]` checkbox marker is needed:
+ * every seeded line is by definition selected, so the ticked/unticked
+ * distinction is gone. A trailing blank line leaves the cursor where the user
+ * appends their own words (typed or dictated), and the lines are freely editable
+ * before sending.
  */
 export function formatCommentSnapshot(
   card: ActionChecklistCard,
@@ -65,8 +68,8 @@ export function formatCommentSnapshot(
 ): string {
   const heading = card.title ? `Re: ${card.title}` : "Re: proposed actions";
   const header = `${heading} (${provenanceClause(card)})`;
-  const lines = card.actions.map(
-    (a) => `${selectedIds.has(a.id) ? "[x]" : "[ ]"} ${a.payload}`,
-  );
+  const lines = card.actions
+    .filter((a) => selectedIds.has(a.id))
+    .map((a) => `- ${a.payload}`);
   return `${header}\n${lines.join("\n")}\n\n`;
 }

@@ -20,8 +20,9 @@
  * Two resolve paths, identical across single- and multi-action cards:
  *   • Submit / Do it — concatenate the selected payloads into one user turn.
  *     Disabled when nothing is selected (nothing to send).
- *   • Add comment… — seed the MAIN composer with a `[x]`/`[ ]` snapshot of the
- *     whole menu (so voice + free text apply), never disabled. There is no
+ *   • Add comment… — seed the MAIN composer with a bullet snapshot of the
+ *     SELECTED actions only (so voice + free text apply), never disabled.
+ *     Unselected actions are not filled into the composer at all. There is no
  *     card-local input on purpose: ShipIt's voice input lives in the composer.
  */
 

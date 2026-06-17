@@ -43,20 +43,27 @@ describe("formatProposalMessage", () => {
 });
 
 describe("formatCommentSnapshot", () => {
-  it("renders the WHOLE menu with [x]/[ ] payload lines and a Re: header", () => {
+  it("renders ONLY the selected actions as `- ` bullet lines with a Re: header", () => {
     const snapshot = formatCommentSnapshot(card, new Set(["a1", "a3"]));
     const lines = snapshot.split("\n");
     expect(lines[0]).toContain("Re: Optional follow-ups");
     expect(lines[0]).toContain("proposed 2026-06-15");
-    expect(snapshot).toContain("[x] Open a PR for this change.");
-    expect(snapshot).toContain("[ ] Update the API docs for the new route.");
-    expect(snapshot).toContain("[x] File a follow-up issue for the rate-limit case.");
+    expect(snapshot).toContain("- Open a PR for this change.");
+    expect(snapshot).toContain("- File a follow-up issue for the rate-limit case.");
+    // unselected actions are NOT filled into the composer at all
+    expect(snapshot).not.toContain("Update the API docs for the new route.");
+    // no checkbox markers — every seeded line is selected by definition
+    expect(snapshot).not.toContain("[x]");
+    expect(snapshot).not.toContain("[ ]");
   });
 
-  it("marks all unticked when the selection is empty", () => {
+  it("seeds no action lines when the selection is empty (only the Re: header)", () => {
     const snapshot = formatCommentSnapshot(card, new Set());
     expect(snapshot).not.toContain("[x]");
-    expect((snapshot.match(/\[ \]/g) ?? []).length).toBe(3);
+    expect(snapshot).not.toContain("[ ]");
+    expect(snapshot).toContain("Re: Optional follow-ups");
+    // header line, then the trailing blank lines — no action payloads
+    expect(snapshot).not.toContain("Open a PR for this change.");
   });
 
   it("ends with a trailing blank line so the user can append their own words", () => {
