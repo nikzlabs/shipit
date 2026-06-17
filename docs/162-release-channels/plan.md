@@ -98,17 +98,21 @@ identity and notes.
 
 Channel → tracking ref:
 
-| Channel  | Target ref      | Cadence            | Audience                         |
-|----------|-----------------|--------------------|----------------------------------|
-| `stable` | `origin/stable` | per release cut    | default; conservative operators  |
-| `edge`   | `origin/main`   | every merge        | early adopters, contributors     |
+| Channel  | Target ref                                  | Cadence            | Audience                         |
+|----------|---------------------------------------------|--------------------|----------------------------------|
+| `stable` | latest final tag reachable from `origin/stable` | per release cut | default; conservative operators  |
+| `edge`   | `origin/main`                               | every merge        | early adopters, contributors     |
 
-Why both a tag *and* a `stable` branch (rather than just tags): resolving "the
-latest non-prerelease tag" requires semver sorting and prerelease filtering in
-the updater. Pointing `stable` at the release commit lets `checkForUpdates()` and
-`update.sh` stay a one-line `ref` parametrization of today's code. The tag is
-still what we display as the version (`git describe --tags --exact-match` on the
-`stable` commit yields `vX.Y.Z`) and what GitHub Releases hangs notes off of.
+> **Update (docs/214 — Option A):** the stable channel resolves the **latest final
+> (non-prerelease) tag reachable from `origin/stable`**, not the branch tip. The
+> original design tracked `origin/stable` directly for a one-line
+> `reset --hard origin/stable` — fine in the FF-follower model where the tip was
+> always a tag. The maintenance-branch model advances `stable` on *merge* (before
+> CI tags/publishes), so the tip can transiently be an un-released commit; tracking
+> the tip would expose un-vetted code. Resolving the latest tag (modest semver-sort
+> + prerelease filter in `update.sh` / `checkForUpdates()`) keeps "stable advances
+> only to tagged releases" true. The tag is also what we display as the version
+> (`git describe --tags`) and what GitHub Releases hangs notes off of.
 
 ### Cutting a release (CI-driven)
 
