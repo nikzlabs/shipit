@@ -409,7 +409,9 @@ Stored orchestrator-side alongside MCP servers / secrets.
 Reuses `egress-allowlist.ts` (already merged on the SHI-90 branch):
 
 - Base list (`EGRESS_DEFAULT_ALLOWLIST`): agent APIs, `.github.com` / `.githubusercontent.com`,
-  npm/yarn/pypi.
+  npm/yarn/pypi, and `.nodejs.org` (node-gyp downloads the Node headers tarball there to
+  compile native modules such as `node-pty`; registry fetches alone don't need it, so only
+  native builds were affected by its absence).
 - Operator extras (`SESSION_EGRESS_ALLOWLIST`) + the browser-managed allowlist above.
 - **Live MCP hosts** from the credential store (configured HTTP servers + OAuth providers).
   Post-SHI-129 the agent can no longer add an MCP server from inside the container, so this
