@@ -285,9 +285,14 @@ alone). Add a separate human-facing version resolver:
   cherry-picked onto `stable` must also exist on `main` (land it there first) or
   the next minor silently regresses it. This is a maintainer-discipline risk, not
   one CI can enforce here.
-- **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and only ever
-  `reset --hard` a tracking branch ref, never `checkout` a tag, so HEAD stays on
-  a branch and `build-id` stays a normal SHA.
+- **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and `reset
+  --hard` to a ref. **Under Option A (docs/214), the stable channel resets to the
+  resolved tag's *commit*** (not the `stable` branch ref) — `reset --hard <sha>`
+  still leaves HEAD detached-but-normal for `build-id`; the version is the resolved
+  tag via `git describe`. (Edge channel still resets to the `origin/main` branch
+  ref.) The rest of this section describes the **as-built** branch-ref updater; the
+  Option-A tag-resolution change lands with docs/214 Phase 1, at which point this
+  section is rewritten to match.
 - **Inner dogfood / local mode.** `RUNTIME_MODE=local` dev instances and the
   dogfood path have no `/opt/shipit` host mount; channel logic must degrade
   gracefully (default edge, hide/disable the selector) exactly as the existing

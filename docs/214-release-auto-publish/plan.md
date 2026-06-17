@@ -69,15 +69,24 @@ arbitrary repos).
 with a `resolve` job:
 
 - **tag path** (existing rc / manual tags): `tag = ref_name`, don't create a tag.
-- **branch path** (new): `tag = v<version-from-source>`. If the tag already exists
-  → no-op (nothing new to release on this `stable` push). Else → new release. A
-  branch-path version with a prerelease suffix (`-rc.N`) is **rejected** — `stable`
-  is for final releases; rc's use the tag path.
-- `version-guard` + `check` + `test` run when proceeding (unchanged gate steps).
+- **branch path** (new): `tag = v<version-from-source>`. Cases:
+  - tag absent → new release, proceed.
+  - tag exists **but its GitHub Release is missing** → proceed to **repair** (a
+    prior run pushed the tag but `gh release create` failed); skip tag creation,
+    publish the Release. This is why the publish job checks Release existence, not
+    just tag existence.
+  - tag exists **and** its Release is published → no-op (nothing new).
+  - A branch-path version with a prerelease suffix (`-rc.N`) is **rejected** —
+    `stable` is for final releases; rc's use the tag path.
+- `check` + `test` run when proceeding. **`version-guard` runs on the tag path only**:
+  it compares `package.json` to `github.ref_name`, which is `stable` (not `vX.Y.Z`)
+  on a branch push — so on the branch path it is **skipped** (the tag is *derived
+  from* the version source, so they can't drift). This is a change from "unchanged
+  gate steps."
 - `publish`: **on green**, configure a CI git identity, create the annotated tag on
-  `$GITHUB_SHA` (branch path only), push it, **re-fetch tags**, then — if `gh release
-  view "$TAG"` shows none — `gh release create --generate-notes --verify-tag`. The
-  tag path passes `--prerelease` for a `-rc.N` suffix.
+  `$GITHUB_SHA` (branch path only, and only if absent), push it, **re-fetch tags**,
+  then — if `gh release view "$TAG"` shows none — `gh release create --generate-notes
+  --verify-tag`. The tag path passes `--prerelease` for a `-rc.N` suffix.
 - The `publish` job is serialized by `concurrency: { group: release-${{ needs.resolve.outputs.tag }}, cancel-in-progress: false }`
   (the resolved tag is a job output, so group at the job, not the workflow) — so a
   `stable` push and a manual `vX.Y.Z` tag push for the same version can't both
@@ -95,13 +104,28 @@ maintenance-branch model advances `origin/stable` on *merge*, **before** CI tags
 and publishes, so the branch tip is transiently (and, on a failed publish,
 permanently) an un-released commit. Tracking the branch tip would expose that.
 
-**Decision: the stable channel resolves the latest *final* tag reachable from
-`origin/stable`, not the branch tip.** The updater (`docs/162`) changes from
-"`reset --hard origin/stable`" to "`reset --hard` the newest `vX.Y.Z` (non-
-prerelease) tag reachable from `origin/stable`." Consequences:
+**Decision: the stable channel resolves the latest *final, published* tag reachable
+from `origin/stable`, not the branch tip.** The updater (`docs/162`) changes from
+`reset --hard origin/stable` to resolving that tag and resetting to its commit.
+
+**Exact resolution algorithm** (not `git describe` — that returns the *nearest tag
+by commit distance*, which is wrong on a branch carrying multiple tags):
+`git tag --merged origin/stable` → strict-SemVer-parse each → **filter out
+prereleases** → pick the **highest version** → that tag's commit is the target.
+The version display reuses the same resolved tag (not `describe --exact-match`,
+which assumes the tip is a tag).
+
+**Fail closed.** If no final tag is reachable (a freshly-created `stable`, or only
+`-rc.N` tags exist), the stable channel reports **"no stable release yet"** and
+does **not** update — it never falls back to the branch tip. The published-Release
+check (above) means the workflow's tag+Release pair is what makes a tag eligible;
+the updater selecting a tag whose Release later proves missing is prevented by the
+repair path (the next `stable` push republishes it).
+
+Consequences:
 
 - The merge-before-publish window is **invisible** to stable users — an un-tagged
-  tip is simply never selected. A failed publish strands nothing.
+  tip is simply never selected. A failed publish strands nothing (and self-repairs).
 - This **restores** `docs/162`'s own guarantee ("stable advances only to tagged
   releases"), which branch-tip tracking quietly broke.
 - It is the only enforcement that works for **any repo**: branch protection (below)
@@ -133,9 +157,15 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   didn't author — e.g. a hand-resolved conflict in the PR — it **refuses to reset**
   and surfaces that, rather than silently clobbering); `--pick` cherry-pick (hotfix)
   or merge `--from` (release from main); bump the version source (new
-  `writeVersionToSource` in `release-version.ts`); commit; open a PR with `base =
-  release branch` by **reusing `agentCreatePr`**. The orchestrator route drives the
-  poller **directly** (`markPrOpened`) — the agent is out of the state-reporting loop.
+  `writeVersionToSource` in `release-version.ts`); commit; open the PR with `base =
+  release branch`. **This needs new plumbing on `agentCreatePr`, not just a reuse:**
+  today it derives head from `getCurrentBranch()` and auto-detects base as
+  `main`/`master` (the only base override is the narrow `reArm.baseBranch`). So
+  `prepare` must (a) leave the clone with `release/<version>` checked out so
+  `getCurrentBranch()` resolves it, and (b) thread an explicit `base` override
+  (generalizing `reArm.baseBranch`) so the PR targets the release branch. The
+  orchestrator route drives the poller **directly** (`markPrOpened`) — the agent is
+  out of the state-reporting loop.
 
 No `shipit release tag`/`publish`/`push` for final releases — publishing is CI's
 job (rejected subcommands). Errors surface as actionable messages from the
@@ -151,6 +181,10 @@ cuts the rc by creating + pushing the `vX.Y.Z-rc.N` **tag** through the broker
 (`{n}` auto-increments from the highest existing rc) — the one case the agent
 "pushes a tag," but still via the command, never hand-run `git tag`. The tag path
 in CI publishes it as a GitHub prerelease. (Phase 2.)
+Because this path has **no PR-merge gate** (unlike final releases), the rc tag push
+is itself **confirmation-gated**: `prepare --prerelease` proposes (card/chat), and
+the tag is pushed only on explicit confirm — preserving `docs/171`'s "a tag push is
+always confirmation-gated" rule. The broker is plumbing, not the gate.
 
 **First-release bootstrap.** The very first release must *create* the release
 branch (`docs/162` "Bootstrapping"). When `release.branch` doesn't exist on the
@@ -187,7 +221,10 @@ flow — **not** the project-template grid (docs/171 Phase 3).
   the workflow re-derives the version with ad-hoc `grep`/`tomlq`, the two can
   disagree and CI tags the wrong version *silently*. So the scaffold ships a tiny
   version-read helper (the same logic as `release-version.ts`) that the workflow
-  invokes, keeping write-side and read-side identical across ecosystems.
+  invokes, keeping write-side and read-side identical across ecosystems. Since that
+  helper is Node (`release-version.ts` uses `node:fs`), the scaffolded workflow runs
+  `setup-node` to read the version **even in non-Node repos** (the read step is
+  ShipIt's, independent of the repo's own toolchain/gate).
 - `shipit-config.ts` gains a `"release-branch"` `mechanism` value and a `branch`
   field; `release.mechanism`/`branch`/`versionSource`/`gate` parameterize the
   render and select this template vs. the simpler tag-triggered one.
@@ -198,27 +235,40 @@ flow — **not** the project-template grid (docs/171 Phase 3).
   read). Tag-only / unresolved repos stay on the `tag-triggered` mechanism.
 - **Monorepo version source needs a path.** Today `release.versionSource` only
   holds an ecosystem identifier (`"package.json"`), not a path like
-  `packages/api/package.json`. Add a path-capable field (e.g. `version-source-path`)
-  so a monorepo can pin the authoritative file. When multiple version files are
-  detected the agent surfaces the options, the user picks, and the choice is
-  persisted (don't guess — `docs/171`).
+  `packages/api/package.json`. Add a path-capable field `version-source-path` that
+  **augments** (does not replace) `versionSource`: `versionSource` tells the reader
+  *how* to parse (which ecosystem), `version-source-path` tells it *where*. So a
+  monorepo sets `versionSource: package.json` + `version-source-path: packages/api/package.json`.
+  When multiple version files are detected the agent surfaces the options, the user
+  picks, and the choice is persisted (don't guess — `docs/171`).
 
 ## Phasing
 
-1. **Auto-publish CI + channel/config** (extends PR #1488). Rework
-   `.github/workflows/release.yml` to the two-trigger + `resolve` shape; **change
-   the stable-channel updater (`docs/162`) to resolve the latest final tag reachable
-   from `origin/stable` instead of the branch tip (Option A)**; add the
-   `release-branch` mechanism + `branch` field to `shipit-config.ts`; run CI on
-   `stable` PRs (add `stable` to `ci.yml`'s `pull_request: branches` + reconcile
-   `paths-ignore`); dogfood via a `release:` block in ShipIt's own `shipit.yaml`;
-   update `RELEASING.md`, `CLAUDE.md`, `docs/162`, `docs/171`.
+1. **Auto-publish CI + channel/config + agent-doc correction** (extends PR #1488).
+   Rework `.github/workflows/release.yml` to the two-trigger + `resolve` shape;
+   **change the stable-channel updater (`docs/162`) to resolve the latest final
+   published tag reachable from `origin/stable` instead of the branch tip
+   (Option A)**; add the `release-branch` mechanism + `branch` field to
+   `shipit-config.ts`; run CI on `stable` PRs (add `stable` to `ci.yml`'s
+   `pull_request: branches` + reconcile `paths-ignore`); dogfood via a `release:`
+   block in ShipIt's own `shipit.yaml`; update `RELEASING.md`, `CLAUDE.md`,
+   `docs/162`, `docs/171`. **Also correct the agent-facing docs now** —
+   `shipit-docs/release.md` + `prompts/releases.md` already exist and tell the agent
+   to hand-push tags (the old flow); for a `release-branch` repo that becomes wrong
+   the instant the CI flips, so the merge-triggered guidance lands in Phase 1.
 2. **`shipit release` command.** `writeVersionToSource`; `git.ts` `cherryPick` +
-   `createBranchFrom`; `services/release-prepare.ts`; routes + relay; shim handler
-   + dispatch; `pr_open`/`pr_merged` card phases **with `emitChatCard` persistence**;
-   `--prerelease` rc path; agent docs (`shipit-docs/release.md`, `prompts/releases.md`).
-3. **Scaffold into any repo.** `templates-release.ts` (+ the shared version-read
-   helper) + the agent detect/offer flow + the `version-source-path` config field.
+   `createBranchFrom`; `services/release-prepare.ts`; the `agentCreatePr`
+   base-override + checked-out-head plumbing; routes + relay; shim handler +
+   dispatch; `pr_open`/`pr_merged` card phases **with `emitChatCard` persistence**;
+   the confirmation-gated `--prerelease` rc path.
+3. **Scaffold into any repo.** `templates-release.ts` (+ the shared Node version-read
+   helper run via `setup-node`) + the agent detect/offer flow + the
+   `version-source-path` config field.
+
+**`scripts/release.ts` fate:** kept as the maintainer-on-`stable` fallback (local
+bump + tag) — still works, handy for manual/bootstrap cases — but once Phase 2
+lands, `RELEASING.md` documents `shipit release prepare` + merge as the *primary*
+path and the script as the fallback.
 
 ## Decisions (settled)
 
