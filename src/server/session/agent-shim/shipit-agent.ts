@@ -78,9 +78,13 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
   const payload: Record<string, unknown> = { agentId, prompt, depth: inheritedAgentDepth() };
   if (parsed.values.model) payload.model = parsed.values.model;
 
-  // No timeout: the spawn blocks until the sub-agent exits (30–120s typical, up
-  // to the worker's wall-clock cap). The orchestrator holds the request open.
-  const res = await deps.call("POST", "/agent-ops/agent/spawn", payload, deps.env);
+  // Unbounded (`timeoutMs: 0`): the spawn blocks until the sub-agent exits
+  // (30–120s typical, up to the 30-minute sub-agent wall-clock cap). The
+  // orchestrator holds the request open the whole time. Passing `0` routes this
+  // leg over Node's `http` instead of `fetch`, because undici's default 300s
+  // `headersTimeout` would abort a longer consult with an opaque "fetch failed"
+  // even though the run is still in flight (the contract is genuinely no timeout).
+  const res = await deps.call("POST", "/agent-ops/agent/spawn", payload, deps.env, 0);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Sub-agent spawn failed"), 1);
   }
