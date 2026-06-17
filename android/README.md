@@ -103,8 +103,9 @@ skips the production-track testing requirements.
    Google holds the real app-signing key and re-signs each upload. (An upload
    key can be reset via Play support if lost — unlike a pure sideload key.) The
    same four signing secrets are reused.
-3. Provide store metadata: icon (512×512), ≥2 screenshots, descriptions, a
-   privacy policy URL, content rating, and the Data Safety form.
+3. Provide store metadata: the app icon (`play/icon-512.png`, committed in this
+   repo), a feature graphic (1024×500), ≥2 screenshots, descriptions, a privacy
+   policy URL, content rating, and the Data Safety form. See `play/README.md`.
 4. **Seed the first build manually.** The Play API can only update an app that
    already has at least one uploaded build, so the very first AAB must be
    uploaded by hand: run **Android build** with `release: true`, download the
