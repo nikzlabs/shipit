@@ -218,6 +218,9 @@ harness:
 - **AI PR descriptions** — generated from the actual diff when you open a PR
 - **Chat-native AI review** — ask the session agent to review files or diffs and surface findings
   inline in the same conversation
+- **Cross-agent second opinions** — opt in to let the session's agent consult a *different* model for
+  a one-shot review or sub-task ("have Codex review this diff"); it runs inline in the same turn with
+  full context and returns its findings to the conversation, no separate session required
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments
   API
