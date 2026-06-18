@@ -146,12 +146,20 @@ export function PrLifecycleCard({
   // input) are ignored via the closest() guard, so toggling auto-fix, merging,
   // or copying the branch never also switches the tab — no per-control
   // stopPropagation needed. See docs/133.
+  //
+  // `[role="menu"]` is in the guard because the PR actions overflow menu is
+  // rendered through a Radix Portal: its items live in the DOM at <body>, but
+  // React still bubbles their synthetic click events up through the React tree
+  // to this onClick. Radix menu items are `div[role="menuitem"]` (not buttons),
+  // so without this the first click of the two-step "Close PR" confirm would
+  // bubble here and switch to the PR tab on mobile — navigating away before the
+  // user could confirm, so the PR never closed.
   const hasPr = !!card?.pr && (card.phase === "open" || card.phase === "merged" || card.phase === "closed");
   const clickable = hasPr && !!onOpenDetails;
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (!clickable) return;
-    if ((e.target as HTMLElement).closest("button, a, input, textarea")) return;
+    if ((e.target as HTMLElement).closest('button, a, input, textarea, [role="menu"], [role="menuitem"]')) return;
     onOpenDetails?.();
   };
 
