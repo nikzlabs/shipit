@@ -41,19 +41,35 @@ The client applies the sslip preview host **only** when **both** signals hold:
    This is exactly the case where previews built on the current host would land on
    `{id}--{port}.<node>.ts.net` and fail to resolve without the gated capability.
 
-When both hold → use `tailnetPreviewHost` for preview subdomains. Otherwise → keep
-today's behavior (`VITE_API_HOST || window.location.host`).
+When both hold → use `tailnetPreviewHost` for preview subdomains, **forcing the
+preview origin to `http:`** (the sslip host has no wildcard TLS cert). Otherwise →
+keep today's behavior (`VITE_API_HOST || window.location.host`, inheriting
+`window.location.protocol`).
+
+The helper therefore returns **host *and* protocol**, not just a host — preview URL
+construction must not inherit `window.location.protocol` blindly, or an HTTPS app
+origin would emit `https://{id}--{port}.<sslip>/`, which has no cert (see the
+mixed-content constraint under *Non-goals*).
 
 ```ts
-// resolvePreviewHost(locationHost, bootstrap): the host used to build
+// resolvePreviewHost(locationHost, bootstrap): the {host, protocol} used to build
 // {sessionId}--{port}.<host> preview URLs. Preview call sites ONLY.
-export function resolvePreviewHost(locationHost: string, bootstrap: Bootstrap): string {
-  if (import.meta.env.VITE_API_HOST) return import.meta.env.VITE_API_HOST; // dev/compose wins
+export function resolvePreviewHost(
+  locationHost: string,
+  bootstrap: Bootstrap,
+): { host: string; protocol: string } {
+  // VITE_API_HOST is a DEV-ONLY override (set only in docker/local/dev/compose.yml,
+  // unset in the VPS prod image — see "VITE_API_HOST is dev-only" below).
+  if (import.meta.env.VITE_API_HOST) {
+    return { host: import.meta.env.VITE_API_HOST, protocol: window.location.protocol };
+  }
   const hostname = locationHost.split(":")[0].toLowerCase();
   if (bootstrap.tailnetPreviewHost && hostname.endsWith(".ts.net")) {
-    return bootstrap.tailnetPreviewHost; // MagicDNS browsing → sslip previews
+    // MagicDNS browsing → sslip previews. Force http: — sslip has no TLS, and the
+    // MagicDNS app is itself HTTP, so there is no mixed-content downgrade here.
+    return { host: bootstrap.tailnetPreviewHost, protocol: "http:" };
   }
-  return locationHost;
+  return { host: locationHost, protocol: window.location.protocol };
 }
 ```
 
@@ -83,14 +99,28 @@ sites only**:
 
 - `PreviewFrame.tsx` (`apiHost`, currently `VITE_API_HOST || window.location.host`)
 - `PreviewServicesDrawer.tsx` (`API_HOST`)
-- `usePreviewHealthPoller.ts` receives `apiHost` as a param — no change there; it
-  already splits `host:port` and builds `{sessionId}--{port}.{apiHostname}` via
-  `buildSubdomainUrl()`, so a passed-through `host[:port]` works verbatim.
+- `usePreviewHealthPoller.ts` receives `apiHost` as a param and already splits
+  `host:port` to build `{sessionId}--{port}.{apiHostname}` via `buildSubdomainUrl()`,
+  so a passed-through `host[:port]` works verbatim. **One change is required**:
+  `buildSubdomainUrl()` currently hard-codes `window.location.protocol`; it must
+  instead accept the resolved `protocol` so the sslip override can force `http:`
+  (without it, an HTTPS app would emit an `https://…sslip…` URL with no cert).
 
 **`useSessionWebSocket.ts` and `useServerEvents.ts` are deliberately left
 unchanged** — the WS and SSE connections stay on `VITE_API_HOST ||
 window.location.host` (the MagicDNS name), so the live channel rides the native
 tailnet. This separation is the entire point of a preview-only override.
+
+> **Precondition — `VITE_API_HOST` is dev-only.** Both the "WS/SSE unchanged" claim
+> and the `VITE_API_HOST`-first precedence in `resolvePreviewHost()` are correct only
+> because `VITE_API_HOST` is **unset in the VPS prod image** — it is set solely in
+> `docker/local/dev/compose.yml` (`localhost:3001`) for the in-container dev loop. In
+> prod the `|| window.location.host` branch always wins, so WS/SSE land on the
+> MagicDNS host and the bootstrap override governs previews. **If any deployment ever
+> set `VITE_API_HOST`, it would override *both* surfaces** — pinning WS/SSE *and*
+> previews to that one host and bypassing `tailnetPreviewHost` entirely. The VPS prod
+> compose must therefore leave `VITE_API_HOST` unset for this feature to hold; that is
+> a hard precondition, not an incidental default.
 
 ### Edge cases
 
@@ -108,23 +138,34 @@ tailnet. This separation is the entire point of a preview-only override.
 ## Server — self-healing preview host (approach B)
 
 The advertised host derives from the node's **tailnet IP**, which is stable but can
-change (node re-add, tailnet move). The Tailscale forwarder already self-heals an IP
-change — its wrapper re-reads `tailscale ip -4` on every start (`tailscale.sh:139`).
-We extend that same self-heal to the advertised host so there is **no static
-snapshot to go stale and no rerun required**:
+change (node re-add, tailnet move). The advertised host must stay in lockstep with
+the live forwarding bind, so we close the staleness window **actively** rather than
+relying on a process restart.
 
-1. **Forwarder writes the live host.** The wrapper, after resolving `TS_IP`, writes
+> **Why a restart-only refresh is not enough.** Today's wrapper resolves `TS_IP`
+> once, then `exec socat …,bind=$TS_IP`, and the systemd unit is `Restart=always`.
+> But `Restart=always` only re-runs the wrapper if `socat` *exits* — a live tailnet
+> IP change does **not** reliably make a bound `socat` exit. So a one-shot
+> write-before-exec would leave both the old listener **and** a stale preview-host
+> file in place until something forces a restart. Approach B therefore makes the
+> forwarder a small **supervisor loop**, which also hardens the forwarding itself.
+
+1. **Forwarder supervises the live host.** The wrapper becomes a poll loop: read
+   `tailscale ip -4`; when it differs from the last seen IP, (a) write
    `${TS_IP//./-}.sslip.io` (+ `:PORT` when `LISTEN_PORT != 80`) to
-   `/opt/shipit/.tailnet-preview-host` before `exec socat`. An IP change rewrites
-   this file on the next forwarder restart — the same restart that already re-points
-   the forwarding. Untracked file under `/opt/shipit`, so it survives UI "Update
-   Now" (`git reset --hard`), exactly like `.release-channel`.
+   `/opt/shipit/.tailnet-preview-host`, and (b) restart the child `socat` bound to
+   the new IP; then `sleep` (e.g. 10s) and repeat. systemd keeps `Restart=always` on
+   the wrapper (now a long-lived supervisor, not an `exec`). This bounds staleness to
+   one poll interval and keeps the advertised host and the socat bind refreshed by
+   the **same** trigger, so they can never diverge. The file is untracked under
+   `/opt/shipit`, so it survives UI "Update Now" (`git reset --hard`), exactly like
+   `.release-channel`.
 2. **Orchestrator reads it per bootstrap.** The orchestrator already mounts
    `/opt/shipit:/opt/shipit`, so it reads `/opt/shipit/.tailnet-preview-host` (trim
    whitespace; missing/empty → `undefined`) when building `GET /api/bootstrap`, and
-   returns it as `tailnetPreviewHost`. Read at request time (cheap) so a forwarder
-   restart is reflected **without** an orchestrator restart — the self-healing
-   property end to end.
+   returns it as `tailnetPreviewHost`. Read at request time (cheap) so a refreshed
+   file is reflected **without** an orchestrator restart — the self-healing property
+   end to end.
 
 No `shipit.env` line and no Compose env passthrough are needed: the value travels
 through the existing `/opt/shipit` mount as a file, not through process env. This is
@@ -140,9 +181,9 @@ unaffected.
 - `src/client/utils/` — new `resolvePreviewHost()` helper (+ unit test).
 - `src/client/components/PreviewFrame/PreviewFrame.tsx` — use the helper for `apiHost`.
 - `src/client/components/PreviewServicesDrawer.tsx` — use the helper for `API_HOST`.
-- `src/client/hooks/usePreviewHealthPoller.ts` — `buildSubdomainUrl()` unchanged (consumes resolved host).
+- `src/client/hooks/usePreviewHealthPoller.ts` — `buildSubdomainUrl()` takes the resolved `protocol` (instead of reading `window.location.protocol`) so the sslip override can force `http:`.
 - Bootstrap route + `Bootstrap` type — add `tailnetPreviewHost?: string`, read from `/opt/shipit/.tailnet-preview-host`.
-- `deployment/vps/tailscale.sh` — forwarder wrapper writes the host file each start; printed instructions point the app at the MagicDNS name with previews via sslip.io.
+- `deployment/vps/tailscale.sh` — forwarder wrapper becomes a supervisor loop (polls `tailscale ip -4`, rewrites `/opt/shipit/.tailnet-preview-host` and rebinds `socat` on change); printed instructions point the app at the MagicDNS name with previews via sslip.io.
 - `docs/175-preview-subdomain-only` — cross-reference this hybrid.
 
 ## Non-goals / tradeoffs
@@ -153,5 +194,12 @@ unaffected.
 - **Previews remain HTTP** over the sslip host (no wildcard TLS for those names),
   same as today's sslip default. The app/WS gain nothing/lose nothing on TLS here —
   they were already HTTP over the tailnet on the MagicDNS name.
+- **The hybrid requires the app served over HTTP** (the default MagicDNS forwarder on
+  port 80). The sslip preview origin is forced to `http:`, and a browser **blocks an
+  HTTPS page from embedding an HTTP iframe** (mixed content). So this override is
+  incompatible with an HTTPS app origin (e.g. Tailscale Serve's node cert, or an
+  owned-domain HTTPS front): with HTTPS in front you must use the owned-wildcard-domain
+  HTTPS preview path (`docs/175`) instead, where app and previews are both HTTPS. The
+  `.ts.net` detection guard naturally scopes the override to the HTTP MagicDNS case.
 - **sslip.io stays in the preview resolution path** (DNS-trust caveat from `docs/175`
   still applies) — but now *only* for preview iframes, not the app/auth/WS surface.
