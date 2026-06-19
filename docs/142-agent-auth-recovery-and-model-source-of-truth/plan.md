@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-176
 description: Fix three coupled agent failures — a masked Claude 401, a stuck "Agent already running" state under live steering, and new sessions silently switching the user's model/agent.
 ---
 
@@ -236,12 +237,30 @@ mapping). Divergence becomes structurally impossible.
   persisted `session.model` over the query param. Integration-tested in
   `codex-agent.test.ts`.
 
+- **C4 (done)** — **Persist the auth-redirect, don't just display it.** On a
+  fresh Codex-only install the picker correctly *showed* GPT-5.5: the `agent_list`
+  handler ([useServerEvents.ts](../../src/client/hooks/useServerEvents.ts))
+  redirects the in-memory `activeAgentId` to the first authed agent when the
+  hydrated default (`claude`) isn't authed. But that redirect only touched the
+  in-memory store — it never wrote `vibe-agent-id`/`vibe-model-id`. Since the WS
+  connect derives its effective agent from the **saved model/agent** (C1), the
+  first turn still connected as `claude` and the server's auth gate rejected it
+  with "Claude is not authenticated", until the user round-tripped the selector
+  (which sends `set_model` live). Fix: the redirect now persists the authed
+  agent + its default model. The decision is a pure helper
+  ([resolve-authed-selection.ts](../../src/client/utils/resolve-authed-selection.ts),
+  unit-tested) that also overwrites a *stale* saved model owned by the unauthed
+  agent (which would otherwise pull the model→agent derivation back), while
+  preserving a saved model that already resolves to an authed agent.
+
 ### Key files
 - `src/client/utils/local-storage.ts` — model as source of truth; derive agent (C1)
 - `src/client/hooks/useSessionWebSocket.ts` — derive agent query param from saved model (C1)
 - `src/client/hooks/useConnectionSync.ts` — stop mirror feeding new-session agent (C2)
 - `src/client/stores/ui-store.ts` — initial `activeAgentId` derived from model (C1)
 - `src/client/App.tsx` — `handleModelChange` / `handleAgentChange` reconciliation (C1)
+- `src/client/hooks/useServerEvents.ts` — persist the auth-redirect to localStorage (C4)
+- `src/client/utils/resolve-authed-selection.ts` — pure redirect decision, unit-tested (C4)
 
 ---
 
