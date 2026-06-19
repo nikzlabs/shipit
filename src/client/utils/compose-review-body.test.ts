@@ -105,10 +105,14 @@ describe("composeReviewMessage — shared shape", () => {
     expect(msg).toContain('"No material issues found."');
   });
 
-  it("tells the reviewer to return markdown only with no tool calls", () => {
+  it("tells the reviewer to read with its own tools but return markdown (no submit_review)", () => {
     const msg = composeReviewMessage("a.ts", subagent);
     expect(msg).toContain("MARKDOWN ONLY");
-    expect(msg).toContain("Do NOT call any MCP tool");
+    // Reading the repo with read-only tools is explicitly allowed...
+    expect(msg).toContain("READ the file");
+    expect(msg).toContain("read-only tools");
+    // ...but the reviewer must not record the card itself.
+    expect(msg).toContain("Do NOT call the `submit_review`");
   });
 
   it("instructs the parent to apply fixes and re-review (patching the same card)", () => {

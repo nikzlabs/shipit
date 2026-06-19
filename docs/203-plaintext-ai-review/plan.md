@@ -118,7 +118,13 @@ The **review brief** (identical in both modes) asks the reviewer to return
 - a specific fix named for each finding, or omit it;
 - "No material issues found." when clean.
 
-No MCP tool call by the reviewer — it just returns text.
+The reviewer **reads the file (and related files) with its own read-only tools**
+— it runs in the same workspace, so reading is expected, not a brief violation.
+What it must NOT do is call the `submit_review` MCP tool (or any MCP tool): it
+returns markdown as its final message and the **parent** records the card. An
+early brief said "no tool calls," which a cross-agent reviewer (Codex) read as
+"can't even read the file" and refused; the brief now allows read-only repo
+tools and forbids only `submit_review`.
 
 ### 3. Parent applies fixes + re-reviews
 
