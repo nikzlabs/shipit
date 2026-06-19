@@ -9,8 +9,8 @@
 - [ ] Add `/persist` to the `docker/session-worker/entrypoint.sh` chown loop (uid 1000)
 - [ ] Test: a non-root worker can write + read back `/persist/foo`
 - [ ] Thread `scratchDir` through container creation (mirror `uploadsDir`)
-- [ ] Extend the `disk-janitor.ts` archived-session sweep to reclaim archived `scratch/` (+ `uploads/`)
-- [ ] Decide: archived `scratch/` sweep opt-in vs default
+- [ ] Ensure `disk-janitor.ts`'s archived-session sweep does NOT delete `scratch/` (only-copy, no git backup)
+- [ ] Decide: offer an explicit opt-in reclaim for archived `scratch/` (long TTL + heads-up) or retain-until-delete
 - [ ] Update `src/server/session/mcp-tools/present.ts` — point throwaways at `/persist` (new default)
 - [ ] Update `src/server/shipit-docs/present.md` (two-tier → three-tier model)
 - [ ] Update `src/server/shipit-docs/environment.md` (filesystem table + persistence rules)
