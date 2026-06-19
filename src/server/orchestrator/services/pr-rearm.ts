@@ -18,6 +18,7 @@
  * scope inside `emitPrLifecycleAfterCommit` (its deps only carry the WS `emit`).
  */
 
+import type { WsServerMessage } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionManager } from "../sessions.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -82,5 +83,83 @@ export async function detectAndReArmMergedSession(args: {
   });
   deps.prStatusPoller.reArm(sessionId, prior.prNumber);
   deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+  return true;
+}
+
+/**
+ * docs/216 — re-arm a MERGED session whose branch was reset back to a clean
+ * base (e.g. `git reset --hard origin/main` after the PR merged). The branch is
+ * now identical to the base with no commits ahead, so the lingering "merged" PR
+ * card no longer reflects the session's current state — it should show as a
+ * clean session with no current PR, ready to start fresh work.
+ *
+ * Distinct from {@link detectAndReArmMergedSession} (rebased + new work) on two
+ * axes:
+ *   - **Trigger.** A reset leaves a clean tree, so the turn produces no
+ *     auto-commit and the commit-gated post-turn PR flow never runs. This must
+ *     therefore be driven from an EVERY-turn hook (like the release flow), not
+ *     the commit-gated path.
+ *   - **Outcome.** There is no new work to open a PR from, so this emits a clean
+ *     "ready" card (0 diff) carrying the `previousMergedPr` breadcrumb instead
+ *     of auto-creating a PR. The breadcrumb is what lets the card override the
+ *     active viewer's stale terminal merged card in `pr-store.updateCard`'s
+ *     regress guard — re-arm broadcasts no destructive `pr_status` removal, so
+ *     this override is the sole path that clears the merged card live.
+ *
+ * The two detections are mutually exclusive: "at base" means zero commits ahead
+ * (empty two-dot diff), while "progressed" requires a non-empty diff. So the
+ * every-turn reset hook no-ops on a normal commit turn (HEAD is ahead of base).
+ *
+ * Returns true when the session was re-armed, false (no-op) for a non-merged
+ * session, one without a known prior base, or a branch not sitting at the base.
+ */
+export async function detectAndReArmResetSession(args: {
+  deps: ReArmDeps;
+  sessionId: string;
+  sessionDir: string;
+  emit: (msg: WsServerMessage) => void;
+}): Promise<boolean> {
+  const { deps, sessionId, sessionDir, emit } = args;
+  const session = deps.sessionManager.get(sessionId);
+  if (!session?.mergedAt) return false;
+
+  // The prior merged PR drives both the detection base and the breadcrumb.
+  const prior = deps.prStatusPoller.getStatus(sessionId);
+  const baseBranch = prior?.baseBranch;
+  if (!prior || !baseBranch) return false; // no known base — fail safe, stay merged
+
+  let atBase: boolean;
+  try {
+    atBase = await deps.createGitManager(sessionDir).headIsAtBase(baseBranch);
+  } catch {
+    return false; // workspace evicted / git error — fail safe, stay merged
+  }
+  if (!atBase) return false;
+
+  const previousMergedPr = {
+    number: prior.prNumber,
+    url: prior.prUrl,
+    title: prior.prTitle,
+    baseBranch,
+  };
+  deps.sessionManager.clearMerged(sessionId, previousMergedPr);
+  deps.prStatusPoller.reArm(sessionId, prior.prNumber);
+  deps.sseBroadcast("session_list", { sessions: deps.sessionManager.list() });
+
+  // Emit a clean "ready" card (0 diff, no auto-create — the branch is at the
+  // base with nothing to open a PR from). The `previousMergedPr` breadcrumb
+  // both renders the "Previously merged #N" note and overrides the active
+  // viewer's stale terminal merged card (the silent re-arm broadcasts no
+  // removal to clear it otherwise).
+  emit({
+    type: "pr_lifecycle_update",
+    sessionId,
+    cardId: `pr-card-${sessionId}`,
+    phase: "ready",
+    headBranch: session.branch ?? baseBranch,
+    totalInsertions: 0,
+    totalDeletions: 0,
+    previousMergedPr,
+  });
   return true;
 }

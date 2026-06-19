@@ -134,4 +134,34 @@ describe("GitManager.advancedBeyondMergedBase (docs/202 re-arm detection)", () =
     const git = setup({ merge: "regular", rebase: true, newWork: false });
     expect((await git.diffStatTwoDot("origin/main")).files).toBe(0);
   });
+
+  /**
+   * docs/216 — `headIsAtBase` drives the reset-to-clean-base re-arm: a MERGED
+   * session whose branch was `git reset --hard origin/main`'d sits exactly at
+   * the base tip (no commits of its own) and should drop its stale merged card.
+   */
+  describe("headIsAtBase (docs/216 reset-to-base re-arm detection)", () => {
+    it("true when the branch was reset --hard onto origin/<base>", async () => {
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      run("git reset --hard origin/main", workDir);
+      expect(await git.headIsAtBase("main")).toBe(true);
+    });
+
+    it("false for a just-merged branch still holding its own commits", async () => {
+      // Squash-merged, NOT reset: feature still points at its own commit, which
+      // is not in main's history — HEAD ≠ origin/main tip.
+      const git = setup({ merge: "squash", rebase: false, newWork: false });
+      expect(await git.headIsAtBase("main")).toBe(false);
+    });
+
+    it("false when the branch carries new work on top of the base", async () => {
+      const git = setup({ merge: "regular", rebase: true, newWork: true });
+      expect(await git.headIsAtBase("main")).toBe(false);
+    });
+
+    it("returns false when origin/<base> is missing (fail safe)", async () => {
+      const git = setup({ merge: "regular", rebase: false, newWork: false });
+      expect(await git.headIsAtBase("does-not-exist")).toBe(false);
+    });
+  });
 });
