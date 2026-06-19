@@ -47,6 +47,12 @@ LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-80}"
 BACKEND_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
+# docs/216 — the forwarder advertises the sslip preview host here; the
+# orchestrator reads it per /api/bootstrap (via its /opt/shipit mount) so the
+# client can route preview iframes through sslip.io while the app/WS stay on the
+# native MagicDNS host. Under /opt/shipit so it survives UI "Update Now", like
+# .release-channel.
+PREVIEW_HOST_FILE="/opt/shipit/.tailnet-preview-host"
 
 # --- Terminal colors (only when stdout is a TTY) ----------------------------
 # The access URL and the optional one-time ACL step are easy to scroll past, so
@@ -128,21 +134,70 @@ if ! command -v socat &>/dev/null; then
   apt-get install -y -qq socat
 fi
 
-# --- Forwarder: tailnet IP :LISTEN_PORT -> 127.0.0.1:4123 -------------------
-# A wrapper re-reads the tailnet IP at start so a re-auth that changes the IP
-# self-heals on the next restart. Bound to the tailnet IP specifically (NOT
-# 0.0.0.0) so the listener is never exposed on a public interface.
-echo "==> Installing tailnet forwarder (${LISTEN_PORT} -> 127.0.0.1:${BACKEND_PORT})..."
+# --- Forwarder: supervisor loop, tailnet IP :LISTEN_PORT -> 127.0.0.1:4123 ---
+# docs/216 — a supervisor loop, not a one-shot `exec socat`. It polls the live
+# tailnet IPv4 and, when it changes (or the socat child dies), (1) rewrites the
+# advertised sslip preview host file and (2) rebinds socat to the new IP. This
+# keeps the advertised host in lockstep with the live bind and bounds staleness
+# to one poll interval — a one-shot write + `Restart=always` would NOT refresh on
+# a live IP change because a bound socat needn't exit. Bound to the tailnet IP
+# specifically (NOT 0.0.0.0) so the listener is never exposed publicly.
+echo "==> Installing tailnet forwarder supervisor (${LISTEN_PORT} -> 127.0.0.1:${BACKEND_PORT})..."
 cat > "$FORWARD_WRAPPER" <<EOF
 #!/bin/bash
-set -euo pipefail
-# Resolve the current tailnet IPv4 at start (survives re-auth IP changes).
-TS_IP="\$(tailscale ip -4 2>/dev/null | head -n1)"
-if [ -z "\$TS_IP" ]; then
-  echo "shipit-tailscale-forward: no tailnet IPv4 yet; retrying shortly" >&2
-  exit 1
-fi
-exec socat TCP-LISTEN:${LISTEN_PORT},bind=\${TS_IP},fork,reuseaddr TCP:127.0.0.1:${BACKEND_PORT}
+# No -e: transient errors (e.g. tailscale not ready yet) must not kill the
+# supervisor; the loop retries. -u/pipefail still catch real bugs.
+set -uo pipefail
+PREVIEW_HOST_FILE="${PREVIEW_HOST_FILE}"
+LISTEN_PORT="${LISTEN_PORT}"
+BACKEND_PORT="${BACKEND_PORT}"
+
+mkdir -p "\$(dirname "\$PREVIEW_HOST_FILE")"
+
+socat_pid=""
+# Kill the whole socat process tree: its forked per-connection children first
+# (they survive killing only the listener), then the listener, then reap it.
+kill_socat() {
+  [ -n "\$socat_pid" ] || return 0
+  pkill -TERM -P "\$socat_pid" 2>/dev/null || true
+  kill "\$socat_pid" 2>/dev/null || true
+  wait "\$socat_pid" 2>/dev/null || true
+  socat_pid=""
+}
+# On a stop/restart signal, tear down socat and EXIT promptly — without the
+# explicit exit the trap returns into the loop and systemd waits out
+# TimeoutStopSec before SIGKILL. EXIT runs kill_socat for any other exit path.
+trap 'kill_socat; exit 0' INT TERM
+trap kill_socat EXIT
+
+prev_ip=""
+while true; do
+  ts_ip="\$(tailscale ip -4 2>/dev/null | head -n1)"
+
+  # Force a rebind if the bind IP changed OR the socat child has died.
+  if [ -n "\$socat_pid" ] && ! kill -0 "\$socat_pid" 2>/dev/null; then
+    socat_pid=""
+    prev_ip=""
+  fi
+
+  if [ -n "\$ts_ip" ] && { [ "\$ts_ip" != "\$prev_ip" ] || [ -z "\$socat_pid" ]; }; then
+    # Advertised preview host: dashed tailnet IP under sslip.io, ShipIt port
+    # appended only when it isn't 80. Write atomically so a concurrent bootstrap
+    # read never sees a half-written line.
+    host="\${ts_ip//./-}.sslip.io"
+    [ "\$LISTEN_PORT" != "80" ] && host="\${host}:\${LISTEN_PORT}"
+    tmp="\$(mktemp "\${PREVIEW_HOST_FILE}.XXXXXX")"
+    printf '%s\n' "\$host" > "\$tmp"
+    mv -f "\$tmp" "\$PREVIEW_HOST_FILE"
+
+    kill_socat
+    socat TCP-LISTEN:\${LISTEN_PORT},bind=\${ts_ip},fork,reuseaddr TCP:127.0.0.1:\${BACKEND_PORT} &
+    socat_pid="\$!"
+    prev_ip="\$ts_ip"
+  fi
+
+  sleep 10
+done
 EOF
 chmod +x "$FORWARD_WRAPPER"
 
@@ -214,16 +269,27 @@ echo "  Any existing Cloudflare tunnel access is unchanged."
 echo ""
 echo "  If a device's DNS refuses sslip.io (some resolvers block public names"
 echo "  that point into CGNAT 100.64/10 as DNS-rebinding protection), use one of"
-echo "  the two alternatives below."
+echo "  the alternatives below."
 echo ""
 echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
-echo "${C_BANNER}  OPTIONAL — a cleaner hostname (no third-party resolver)${C_RESET}"
+echo "${C_BANNER}  Cleaner app URL — native MagicDNS name, previews still via sslip${C_RESET}"
 echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
 echo ""
-echo "  The sslip.io URL above works today. If you'd rather use this node's"
-echo "  native MagicDNS name (http://${MAGICDNS_HOST}${PORT_SUFFIX}) and have"
-echo "  previews resolve at {sessionId}--{port}.${MAGICDNS_HOST}, grant this"
-echo "  node the MagicDNS wildcard capability in your tailnet policy file:"
+echo "  You can also open ShipIt at this node's native MagicDNS name:"
+echo "${C_PASTE}      http://${MAGICDNS_HOST}${PORT_SUFFIX}${C_RESET}"
+echo ""
+echo "  The app and its live connection then ride the pure tailnet (no third-party"
+echo "  resolver), and ShipIt automatically routes preview iframes through the"
+echo "  sslip host above — so previews work with NO tailnet policy grant (docs/216)."
+echo "  Only the preview frames touch sslip.io; auth, terminal, and secrets do not."
+echo ""
+echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
+echo "${C_BANNER}  OPTIONAL — put previews ON the .ts.net name too (drop sslip entirely)${C_RESET}"
+echo "${C_BANNER}-------------------------------------------------------------------------${C_RESET}"
+echo ""
+echo "  To have previews resolve at {sessionId}--{port}.${MAGICDNS_HOST}"
+echo "  (no sslip.io in the path at all), grant this node the MagicDNS wildcard"
+echo "  capability in your tailnet policy file:"
 echo ""
 echo "${C_STEP}    1. Open  https://login.tailscale.com/admin/acls${C_RESET}"
 echo "${C_STEP}    2. Click the 'JSON editor' toggle at the top of the page.${C_RESET}"

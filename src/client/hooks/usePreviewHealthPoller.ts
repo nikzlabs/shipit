@@ -18,6 +18,11 @@ function buildSubdomainUrl(
   sessionId: string,
   port: number,
   apiHost: string,
+  // Protocol for the preview origin. Defaults to the page's protocol, but the
+  // Tailscale sslip override (docs/216) passes "http:" explicitly because the
+  // sslip host has no TLS cert. Must not blindly inherit window.location.protocol
+  // or an HTTPS app would emit an https://…sslip… URL with no cert.
+  protocol: string = window.location.protocol,
 ): string | null {
   // IPv6 literal hosts arrive bracketed from `window.location.host`
   // ("[::1]:3000", "[2001:db8::1]:8080"). Handle them before the ":"-split
@@ -29,7 +34,7 @@ function buildSubdomainUrl(
   if (v6) {
     if (v6[1] === "::1") {
       const portSuffix = v6[2] ? `:${v6[2]}` : "";
-      return `${window.location.protocol}//${sessionId}--${port}.localhost${portSuffix}/`;
+      return `${protocol}//${sessionId}--${port}.localhost${portSuffix}/`;
     }
     return null;
   }
@@ -37,7 +42,7 @@ function buildSubdomainUrl(
   const apiHostname = /^(127\.\d+\.\d+\.\d+|::1)$/.test(rawHostname) ? "localhost" : rawHostname;
   if (/^\d+\.\d+\.\d+\.\d+$/.test(apiHostname) || apiHostname.includes(":")) return null;
   const portSuffix = apiPort ? `:${apiPort}` : "";
-  return `${window.location.protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
+  return `${protocol}//${sessionId}--${port}.${apiHostname}${portSuffix}/`;
 }
 
 /**
@@ -53,11 +58,12 @@ function computePreviewUrl(
   port: number,
   preview: PreviewStatus,
   apiHost: string,
+  apiProtocol: string = window.location.protocol,
 ): { url: string; containerMode: boolean } | null {
   if (!preview.running || !port) return null;
   const isContainer = preview.url?.startsWith("/preview/") ?? false;
   if (isContainer) {
-    const subdomain = buildSubdomainUrl(sessionId, port, apiHost);
+    const subdomain = buildSubdomainUrl(sessionId, port, apiHost, apiProtocol);
     if (!subdomain) return null;
     return { url: subdomain, containerMode: true };
   }
@@ -72,6 +78,8 @@ export interface UsePreviewHealthPollerParams {
   pollUrl: string | null;
   isContainerMode: boolean;
   apiHost: string;
+  /** Protocol for preview origins — `http:` for the Tailscale sslip override (docs/216), else the page protocol. */
+  apiProtocol: string;
   /** Shared with `useIframePool` — tracks slots that have already been created. */
   createdSlotsRef: React.RefObject<Set<string>>;
   /** Shared with `useIframePool` — tracks slots currently being polled. */
@@ -109,6 +117,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     pollUrl,
     isContainerMode,
     apiHost,
+    apiProtocol,
     createdSlotsRef,
     pollingRef,
     promoteSlot,
@@ -172,7 +181,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       pollingRef.current.delete(key);
 
       // Compute the URL and add the slot
-      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost);
+      const result = computePreviewUrl(sessionId ?? "_", activePort, preview, apiHost, apiProtocol);
       if (result) {
         createdSlotsRef.current.add(key);
         setSlot(key, { url: result.url, containerMode: result.containerMode });
@@ -184,7 +193,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
       state.cancelled = true;
       pollingRef.current.delete(key);
     };
-  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
+  }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);
 }
 
 // Re-export internal helpers for the consuming component, which also needs
