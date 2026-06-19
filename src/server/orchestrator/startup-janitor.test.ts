@@ -1094,19 +1094,24 @@ describe("runDiskJanitor", () => {
 
     const liveId = "live000000000000";
     const archivedId = "arch000000000000";
+    const evictedLiveId = "evic000000000000";
     const goneId = "gone000000000000";
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
     ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
-    // archivedId must be disk-evicted: the credential sweep keys off
-    // listArchived() = disk_tier 'evicted'.
+    // archivedId is USER-archived (also disk-evicted, as archive sets both).
     underlyingDb!.prepare(
       "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    // SHI-179: disk-evicted but NOT user-archived — still LIVE (re-clones on
+    // activation), so its credentials must be PRESERVED.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run(evictedLiveId, "Evicted live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
 
-    // Lay down per-session credential dirs for all three.
+    // Lay down per-session credential dirs for all four.
     const credentialsDir = path.join(tmpDir, "credentials");
-    for (const id of [liveId, archivedId, goneId]) {
+    for (const id of [liveId, archivedId, evictedLiveId, goneId]) {
       const dir = path.join(credentialsDir, "sessions", id);
       fs.mkdirSync(path.join(dir, ".claude"), { recursive: true });
       fs.writeFileSync(path.join(dir, ".claude", ".credentials.json"), "{}");
@@ -1120,11 +1125,90 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    // Live (tracked + not archived) is preserved; archived and untracked are reaped.
+    // Live and disk-evicted-but-live are preserved; user-archived and untracked are reaped.
     expect(fs.existsSync(path.join(credentialsDir, "sessions", liveId))).toBe(true);
+    expect(fs.existsSync(path.join(credentialsDir, "sessions", evictedLiveId))).toBe(true);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", archivedId))).toBe(false);
     expect(fs.existsSync(path.join(credentialsDir, "sessions", goneId))).toBe(false);
     expect(result.credentialDirsRemoved).toBe(2);
+  });
+
+  it("preserves per-session logs for disk-evicted-but-live sessions; reaps user-archived/untracked (SHI-179)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveId = "live000000000000";
+    const evictedLiveId = "evic000000000000";
+    const archivedId = "arch000000000000";
+    const goneId = "gone000000000000";
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived) VALUES (?, ?, ?, ?, ?, 0)",
+    ).run(liveId, "Live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run(evictedLiveId, "Evicted live", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run(archivedId, "Archived", "2026-05-12", "2026-05-12", "https://github.com/example/repo.git");
+
+    // Lay down per-session `logs/` dirs for all four.
+    const sessionsRoot = path.join(tmpDir, "sessions");
+    for (const id of [liveId, evictedLiveId, archivedId, goneId]) {
+      const dir = path.join(sessionsRoot, id, "logs");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, "container.log"), "x");
+    }
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      sessionsRoot,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(fs.existsSync(path.join(sessionsRoot, liveId, "logs"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionsRoot, evictedLiveId, "logs"))).toBe(true);
+    expect(fs.existsSync(path.join(sessionsRoot, archivedId, "logs"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionsRoot, goneId, "logs"))).toBe(false);
+    expect(result.logDirsRemoved).toBe(2);
+  });
+
+  it("archived-workspace sweep skips disk-evicted-but-live sessions (SHI-179)", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const liveDir = path.join(tmpDir, "sessions", "evicted-live", "workspace");
+    const archivedDir = path.join(tmpDir, "sessions", "user-archived", "workspace");
+    fs.mkdirSync(liveDir, { recursive: true });
+    fs.mkdirSync(archivedDir, { recursive: true });
+    fs.writeFileSync(path.join(liveDir, "file"), "content");
+    fs.writeFileSync(path.join(archivedDir, "file"), "content");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    const remote = "https://github.com/example/repo.git";
+    // Disk-evicted, NOT user-archived — workspace must be PRESERVED.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 'evicted')",
+    ).run("evicted-live", "Evicted live", old, old, liveDir, remote);
+    // User-archived — eligible for the safety-net reclaim.
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("user-archived", "User archived", old, old, archivedDir, remote);
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      archivedWorkspaceDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(liveDir)).toBe(true);
+    expect(fs.existsSync(archivedDir)).toBe(false);
   });
 
   it("credential-dir sweep is a no-op when credentialsDir is omitted", async () => {
