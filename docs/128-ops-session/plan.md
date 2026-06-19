@@ -329,6 +329,32 @@ independently.)
     the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
     by compose DNS.
 
+4c. **Agent network-attachment self-heal — stranded after a proxy/network
+    recreate.** Live-host finding: the agent joins `shipit-session-{id}`
+    *imperatively* (`SessionContainerManager.connectToNetwork`, called from
+    `ServiceManager.joinSessionNetwork`), and that attachment is re-established
+    **only on an orchestrator-driven `docker compose up`**. But the compose
+    network/bridge can be rebuilt out from under the long-lived agent *without*
+    the orchestrator running `compose up` — the `docker-socket-proxy` sibling is
+    recreated by its own `restart: unless-stopped` policy, a host/daemon restart
+    recreates the network, or the network is pruned and re-made. When that
+    happens the recreated proxy joins the **new** bridge while the agent stays
+    bolted to the **old, now-empty** bridge: same IPAM subnet (compose reuses it
+    per-project), different L2 segment → ARP blackhole + embedded-DNS failure, so
+    `DOCKER_HOST=tcp://docker-socket-proxy:2375` is permanently unreachable for
+    the rest of the session (the Docker pillar silently dies). Fix: a
+    condition-based heal driven by the existing service-poll heartbeat.
+    `SessionContainerManager.ensureConnectedToSessionNetwork` inspects the live
+    network and is **membership-gated** — a cheap `network inspect` no-op while
+    the agent is correctly attached; only when the agent is *missing* from the
+    live network does it force-disconnect any dangling endpoint (clearing
+    `connectToNetwork`'s "already exists" swallow) and reconnect, re-opening
+    egress to the recreated subnet. Wired via a new `ServicePoller.afterPoll`
+    hook → `ServiceManager.networkHealFn` → the container manager. Key files:
+    `session-container.ts`, `service-poller.ts`, `service-manager.ts`,
+    `service-manager-setup.ts`; tests in `session-container-network-heal.test.ts`
+    and `service-poller.test.ts`.
+
 4b. **Provisioning bugs found by the live audit (host `shipit-16gb`).** Running
     the embedded `prompts/verify-ops-access.md` recipe on a real host surfaced
     three regressions that the unit tests had missed:
