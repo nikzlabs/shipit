@@ -271,6 +271,20 @@ These were open questions; the following are the settled answers.
   a patch path. A subtle "proposed <date>" line may appear on older cards; that is
   static emit-time data, still immutable.
 
+- **Card-injected provenance marker on the Submit message** *(mirrors the release
+  card)*. The Submit message is templated by the button, not hand-typed, so it
+  leads with an explicit `[Action card → Submit]` marker and frames the body as
+  *intent* ("I approved these actions … this is intent, not a literal command;
+  re-check current state before acting"), exactly like
+  `release-confirm-message.ts`'s `[Release card → Confirm & publish]` marker. The
+  marker lets the agent tell a templated card submission from a typed instruction
+  and apply judgment instead of obeying the string verbatim — the same provenance
+  pattern, kept consistent across both confirmation cards. The **Add comment…**
+  snapshot is seeded into the user's *composer* to edit and send (not auto-injected
+  as an agent directive), so it keeps only the lighter `Re: <title>` provenance
+  header and carries **no** card marker — a marker would imply a directive the user
+  hasn't actually sent yet.
+
 - **A transient post-submit acknowledgment — client-only, never persisted.**
   Leaving the card visually unchanged after a Submit looked broken ("did my click
   do anything?"). So directly after a **Submit** (the direct path only), the card
