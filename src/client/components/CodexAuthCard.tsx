@@ -45,13 +45,18 @@ export interface CodexAuthCardProps {
 }
 
 /**
- * Settings → Agents card for Codex. Two-section layout:
+ * Settings → Agents card for Codex. Compact single-row layout that mirrors
+ * `ClaudeAuthCard` (status + action on one line; richer flows expand inline
+ * below only when needed), reused in the Settings tab + onboarding step 2:
  *
- *   1. **Sign in with ChatGPT** (primary) — drives `codex login --device-auth`
- *      via the orchestrator. When the verification URL + user code arrive,
- *      we render a Step 1 / Step 2 view with a button that opens the URL
- *      in a new tab and a copy-to-clipboard affordance for the code.
- *   2. **Use API key instead** (collapsed disclosure) — preserves the
+ *   1. **Status + action row** — status on one line with "Sign in" / "Sign out"
+ *      inline on the right.
+ *   2. **Sign in with ChatGPT** (expands inline) — "Sign in" drives
+ *      `codex login --device-auth` via the orchestrator. When the verification
+ *      URL + user code arrive, the row's button is replaced by a Step 1 /
+ *      Step 2 panel with a button that opens the URL in a new tab and a
+ *      copy-to-clipboard affordance for the code.
+ *   3. **Use API key instead** (collapsed disclosure, inline) — preserves the
  *      legacy `OPENAI_API_KEY` path for users without a subscription, but
  *      visually deprioritized. Bills against the OpenAI Platform account.
  *
@@ -134,8 +139,10 @@ export function CodexAuthCard({
   };
 
   return (
-    <div className="space-y-3" data-testid="codex-auth-card">
-      {/* Status badge */}
+    <div className="space-y-2" data-testid="codex-auth-card">
+      {/* Compact status + action row — mirrors ClaudeAuthCard: status badge and
+          the sign-in button share one line, with the device-auth flow and the
+          API-key input expanding inline below only when needed. */}
       <div className="flex items-center gap-3 p-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary)">
         <span
           className={`w-2.5 h-2.5 rounded-full shrink-0 ${
@@ -177,6 +184,22 @@ export function CodexAuthCard({
             {signingOut ? "Signing out..." : "Sign out"}
           </button>
         )}
+        {/* Sign in lives in the row at rest; clicking it expands the device-auth
+            panel below (which then hides this button). */}
+        {agent.installed && !agent.authConfigured && !isPending && (
+          <button
+            onClick={() => {
+              if (!onStartDeviceAuth || startingDeviceAuth) return;
+              setStartingDeviceAuth(true);
+              onStartDeviceAuth();
+            }}
+            disabled={!onStartDeviceAuth || startingDeviceAuth}
+            className="shrink-0 rounded-lg bg-(--color-accent) px-4 py-2 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            data-testid="codex-start-device-auth"
+          >
+            {startingDeviceAuth ? "Starting..." : "Sign in"}
+          </button>
+        )}
       </div>
 
       {/* "API key ignored" banner — shown when both a ChatGPT login and an
@@ -194,10 +217,10 @@ export function CodexAuthCard({
         </div>
       )}
 
-      {/* Sign-in panel — only shown when not yet authenticated. */}
+      {/* Sign-in expansions — only when not yet authenticated. */}
       {agent.installed && !agent.authConfigured && (
         <>
-          {/* Pending state: URL + user code */}
+          {/* Pending state: URL + user code, expanded inline. */}
           {isPending && deviceAuth && (
             <div
               className="space-y-3 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) p-3"
@@ -248,79 +271,59 @@ export function CodexAuthCard({
             </div>
           )}
 
-          {/* Idle state: pitch the subscription flow */}
+          {/* Idle helpers: device-auth error + API-key disclosure, inline. */}
           {!isPending && (
-            <div className="space-y-2 rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) p-3">
-              <p className="text-sm font-medium text-(--color-text-primary)">
-                Sign in with ChatGPT
-              </p>
-              <p className="text-xs text-(--color-text-secondary)">
-                Uses your existing ChatGPT subscription — recommended.
-              </p>
-              <button
-                onClick={() => {
-                  if (!onStartDeviceAuth || startingDeviceAuth) return;
-                  setStartingDeviceAuth(true);
-                  onStartDeviceAuth();
-                }}
-                disabled={!onStartDeviceAuth || startingDeviceAuth}
-                className="w-full rounded-lg bg-(--color-accent) px-4 py-2.5 text-sm font-medium text-(--color-accent-text) hover:bg-(--color-accent-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                data-testid="codex-start-device-auth"
-              >
-                {startingDeviceAuth ? "Starting..." : "Sign in"}
-              </button>
+            <div className="space-y-2">
               {deviceAuthError && (
                 <p
-                  className="text-xs text-(--color-error)"
+                  className="px-1 text-xs text-(--color-error)"
                   data-testid="codex-device-auth-error"
                 >
                   {deviceAuthError}
                 </p>
               )}
-            </div>
-          )}
 
-          {/* Disclosure: API key fallback. Collapsed by default to keep the
-              subscription flow as the primary affordance. */}
-          {!isPending && (
-            <div>
-              <button
-                onClick={() => setShowApiKeyPanel((v) => !v)}
-                className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors"
-                data-testid="codex-toggle-api-key"
-              >
-                {showApiKeyPanel ? "Hide API key option" : "Use API key instead"}
-              </button>
-              {showApiKeyPanel && (
-                <div className="mt-2 space-y-2">
-                  <p className="text-xs text-(--color-text-tertiary)">
-                    Bills against your API account, not your subscription.
-                  </p>
-                  <input
-                    type="password"
-                    value={codexKey}
-                    onChange={(e) => { setCodexKey(e.target.value); setCodexKeyError(""); }}
-                    onKeyDown={handleApiKeyKeyDown}
-                    placeholder="sk-..."
-                    className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
-                    disabled={codexKeyLoading}
-                    data-testid="codex-api-key-input"
-                  />
-                  {codexKeyError && (
-                    <p className="text-xs text-(--color-error)" data-testid="codex-api-key-error">
-                      {codexKeyError}
+              {/* Disclosure: API key fallback. Collapsed by default to keep the
+                  subscription flow as the primary affordance. */}
+              <div className="px-1">
+                <button
+                  onClick={() => setShowApiKeyPanel((v) => !v)}
+                  className="text-xs text-(--color-text-link) hover:text-(--color-accent) transition-colors"
+                  data-testid="codex-toggle-api-key"
+                >
+                  {showApiKeyPanel ? "Hide API key option" : "Use API key instead"}
+                </button>
+                {showApiKeyPanel && (
+                  <div className="mt-2 space-y-2">
+                    <p className="text-xs text-(--color-text-tertiary)">
+                      Bills against your API account, not your subscription.
                     </p>
-                  )}
-                  <button
-                    onClick={handleApiKeySubmit}
-                    disabled={!codexKey.trim() || codexKeyLoading}
-                    className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                    data-testid="codex-api-key-submit"
-                  >
-                    Save API key
-                  </button>
-                </div>
-              )}
+                    <input
+                      type="password"
+                      value={codexKey}
+                      onChange={(e) => { setCodexKey(e.target.value); setCodexKeyError(""); }}
+                      onKeyDown={handleApiKeyKeyDown}
+                      placeholder="sk-..."
+                      className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-3 text-sm text-(--color-text-primary) placeholder-gray-500 focus:outline-none focus:border-(--color-border-focus) font-mono"
+                      disabled={codexKeyLoading}
+                      data-testid="codex-api-key-input"
+                    />
+                    {codexKeyError && (
+                      <p className="text-xs text-(--color-error)" data-testid="codex-api-key-error">
+                        {codexKeyError}
+                      </p>
+                    )}
+                    <button
+                      onClick={handleApiKeySubmit}
+                      disabled={!codexKey.trim() || codexKeyLoading}
+                      className="w-full rounded-lg bg-(--color-bg-secondary) border border-(--color-border-secondary) px-4 py-2.5 text-sm font-medium text-(--color-text-primary) hover:bg-(--color-bg-hover) transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      data-testid="codex-api-key-submit"
+                    >
+                      Save API key
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </>

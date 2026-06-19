@@ -18,7 +18,6 @@ interface AuthOverlayContainerProps {
   // Onboarding props
   gitIdentityNeeded: boolean;
   agentList: AgentOption[];
-  onGitIdentitySubmit: (name: string, email: string) => void;
   onGitHubTokenSubmit: (token: string) => Promise<boolean>;
   onClaudeApiKeySubmit: (key: string) => Promise<boolean>;
   onCodexApiKeySubmit: (key: string) => Promise<boolean>;
@@ -38,7 +37,6 @@ export function AuthOverlayContainer({
   showOnboarding,
   gitIdentityNeeded,
   agentList,
-  onGitIdentitySubmit,
   onGitHubTokenSubmit,
   onClaudeApiKeySubmit,
   onCodexApiKeySubmit,
@@ -56,7 +54,6 @@ export function AuthOverlayContainer({
       {showOnboarding && (
         <OnboardingWizard
           initialStep={gitIdentityNeeded ? 1 : 2}
-          onGitIdentitySubmit={onGitIdentitySubmit}
           onGitHubTokenSubmit={onGitHubTokenSubmit}
           agents={agentList}
           onClaudeApiKeySubmit={onClaudeApiKeySubmit}
