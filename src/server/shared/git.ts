@@ -488,6 +488,37 @@ export class GitManager {
   }
 
   /**
+   * docs/214 — merge `ref` into the current branch while TAKING THE INCOMING TREE
+   * WHOLESALE: record a 2-parent merge commit (current tip + `ref`) whose tree is
+   * byte-for-byte `ref`'s, fully overriding the current branch's divergence.
+   *
+   * This is the release `--from` path. A `--from main` release should ship main's
+   * tree at the new version while remaining a descendant of `origin/<release-branch>`,
+   * so the bump PR still merges into stable with no conflict and history records
+   * the release point. Stable may carry cherry-picked hotfixes, but for a full
+   * `--from main` release those are forward-ported to main anyway — so the release
+   * takes main wholesale and ignores stable's divergence entirely. Because the tree
+   * is *replaced* (not three-way merged), this can NEVER conflict, even on real
+   * code divergence — which is the whole point: merges never need manual resolution.
+   *
+   * Built with plumbing rather than `git merge` so it's unconditional (no
+   * conflict path, no "already up to date" special-case): synthesize the commit
+   * with `commit-tree` (tree = `ref`'s tree, parents = [HEAD, ref]) then move the
+   * branch + working tree onto it with `reset --hard`. The first parent is HEAD,
+   * keeping the new commit a descendant of the release branch.
+   */
+  async mergeOverride(ref: string): Promise<void> {
+    const headSha = (await this.git.revparse(["HEAD"])).trim();
+    const refSha = (await this.git.revparse([ref])).trim();
+    const refTree = (await this.git.revparse([`${ref}^{tree}`])).trim();
+    const newCommit = (
+      await this.git.raw(["commit-tree", refTree, "-p", headSha, "-p", refSha, "-m", `Merge ${ref} (release override)`])
+    ).trim();
+    await this.git.reset(["--hard", newCommit]);
+    console.log("[git] merge-override (took incoming tree):", ref, "→", newCommit);
+  }
+
+  /**
    * Get the contents of a file at a specific commit.
    * Returns empty string if the file doesn't exist at that commit.
    */

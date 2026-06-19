@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import simpleGit from "simple-git";
 import { GitManager } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
@@ -110,6 +111,86 @@ describe("GitManager: release-prepare git ops", () => {
     const git = new GitManager(tmpDir);
     await git.init();
     expect(await git.cherryPick([])).toEqual({ success: true });
+  });
+
+  // ---- mergeOverride (docs/214 — take incoming tree wholesale, conflict-proof) ----
+
+  /** Read a worktree file (relative path), or "" if absent. */
+  function readFile(rel: string): string {
+    try {
+      return fs.readFileSync(path.join(tmpDir, rel), "utf8");
+    } catch {
+      return "";
+    }
+  }
+
+  /**
+   * Build a stable↔main divergence that WOULD conflict on a regular merge:
+   *   base → main commit (touches code.ts + package.json, adds new.txt)
+   *        → release/1.0.0 off stable (which independently touches the same files)
+   * Leaves the repo checked out on `release/1.0.0` with a `mainref` tag at main.
+   */
+  async function setupDivergence(git: GitManager): Promise<void> {
+    await git.init();
+    fs.writeFileSync(path.join(tmpDir, "code.ts"), "base\n");
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `${JSON.stringify({ version: "1.0.0" })}\n`);
+    await git.autoCommit("base");
+    const baseSha = await git.getHeadHash();
+
+    // main diverges: edits the shared source file, the version file, adds a file.
+    fs.writeFileSync(path.join(tmpDir, "code.ts"), "main-code\n");
+    fs.writeFileSync(path.join(tmpDir, "package.json"), `${JSON.stringify({ version: "1.0.0" })}\n`);
+    fs.writeFileSync(path.join(tmpDir, "main-only.ts"), "main-only\n");
+    await git.autoCommit("main change");
+    await tagLocal(tmpDir, "mainref");
+
+    // stable/release diverges off base: a hotfix that edits the SAME source file
+    // (real code conflict) plus a stale-only file main never had.
+    await git.createBranchFrom("release/1.0.0", baseSha!);
+    fs.writeFileSync(path.join(tmpDir, "code.ts"), "stable-hotfix\n");
+    fs.writeFileSync(path.join(tmpDir, "stable-only.ts"), "stable-only\n");
+    await git.autoCommit("stable hotfix");
+  }
+
+  it("mergeOverride takes the incoming tree wholesale through a real code conflict, no abort", async () => {
+    const git = new GitManager(tmpDir);
+    await setupDivergence(git);
+    const releaseTip = await git.getHeadHash();
+
+    // A plain merge here WOULD conflict on code.ts — prove that first.
+    const plain = await git.merge("mainref");
+    expect(plain.success).toBe(false);
+    expect(plain.conflicts).toContain("code.ts");
+
+    // mergeOverride never conflicts and yields main's tree exactly.
+    await git.mergeOverride("mainref");
+    expect(await git.isClean()).toBe(true);
+
+    // Tree == mainref's tree byte-for-byte: incoming content, main-only file
+    // present, stable-only file GONE (fully overridden).
+    expect(readFile("code.ts")).toBe("main-code\n");
+    expect(readFile("main-only.ts")).toBe("main-only\n");
+    expect(fs.existsSync(path.join(tmpDir, "stable-only.ts"))).toBe(false);
+
+    // 2-parent merge commit whose FIRST parent is the release tip (so the bump PR
+    // stays a clean descendant of stable) and second parent is main.
+    const sg = simpleGit(tmpDir);
+    const parents = (await sg.raw(["log", "-1", "--format=%P"])).trim().split(/\s+/);
+    expect(parents).toHaveLength(2);
+    expect(parents[0]).toBe(releaseTip);
+    const mainSha = (await sg.revparse(["mainref"])).trim();
+    expect(parents[1]).toBe(mainSha);
+  });
+
+  it("mergeOverride produces a tree identical to the incoming ref (full override)", async () => {
+    const git = new GitManager(tmpDir);
+    await setupDivergence(git);
+    await git.mergeOverride("mainref");
+
+    const sg = simpleGit(tmpDir);
+    const headTree = (await sg.raw(["rev-parse", "HEAD^{tree}"])).trim();
+    const refTree = (await sg.raw(["rev-parse", "mainref^{tree}"])).trim();
+    expect(headTree).toBe(refTree);
   });
 
   // ---- listTags ----

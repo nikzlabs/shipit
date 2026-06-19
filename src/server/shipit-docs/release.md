@@ -38,7 +38,12 @@ below** (those are kept only to explain what the command does and as a fallback)
     against the release branch. `--pick <sha>` cherry-picks a hotfix; `--from <branch>`
     brings a branch's content; `--bootstrap` creates the release branch on the
     first release. **Merging the PR is the release** — CI tags + publishes. You
-    stop at the open PR.
+    stop at the open PR. `--from` takes the incoming branch's tree **wholesale**
+    (a tree-override, not a three-way merge), so it ships exactly that branch's
+    content at the new version and **never stops on a merge conflict** — even when
+    the release branch carries a divergent hotfix (those are expected to be
+    forward-ported to the source branch anyway). `--pick`, which ships a selective
+    subset, can still conflict and aborts with the offending commit named.
     - **Content-free guard:** a bare `prepare` with no `--pick`/`--from` brings no
       new commits over the release branch, so it would ship only the version bump —
       a release identical to the previous one. This is **refused** with an error

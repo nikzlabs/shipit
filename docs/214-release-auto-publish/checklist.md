@@ -43,7 +43,7 @@
 - [x] Lockfile root-version bump applied alongside `package.json`
 - [x] Monorepo / multiple version sources → ambiguity surfaced, choice persisted to `version-source-path`
 - [x] Write-side (`prepare`) and read-side (scaffolded CI) parsers agree on the version
-- [x] `--pick`/`--from` merge conflict → abort + actionable error, no broken commit
+- [x] `--pick` cherry-pick conflict → abort + actionable error, no broken commit (`--from` is now conflict-proof — see the tree-override follow-up below)
 - [x] Re-running `shipit release prepare` for the same version → updates the same PR (force-with-lease; refuses if branch has non-`prepare` commits)
 - [x] Release card persists across reload/switch in `pr_open`/`pr_merged`
 
@@ -85,3 +85,31 @@ requirement".
 - [x] Shim (`shipit-release.ts`): surface the warning in `plan` + `prepare` output, leading the `pr-opened` output instead of the "merge to publish" line
 - [x] Tests: `release-autopublish-check.test.ts` — pure detector cases (merge-trigger / tag-only / missing / wildcards / branches-ignore / bare `on: push`) + git-backed legacy-warns / absent-warns / **cold-start bootstrap auto-publishes**
 - [x] Docs: plan.md cold-start section, `RELEASING.md`, `shipit-docs/release.md`, `prompts/releases.md`
+
+## Follow-up — `--from` takes the incoming tree wholesale (conflict-proof)
+Found because `shipit release prepare --from main` aborted with a merge conflict on **every**
+release after the first: `release/<version>` is built off `origin/stable`, which carries the
+prior `Release vX.Y.Z` bump (mutating `package.json` + `package-lock.json`) that `main` lacks,
+while `main` independently churns `package-lock.json` — so `git merge main` collides on exactly
+the files the version bump is about to overwrite (and on real source if `stable` carries a
+hotfix). "Resolve manually" is a dead end: the release runs on a sandbox-forbidden
+`release/<version>` branch via a brokered flow. The intended design is that a full `--from main`
+release **equals main's tree + the bump**, fully overriding stable's divergence (stable's
+hotfixes are forward-ported to main anyway), so conflicts must be structurally impossible.
+- [x] `git.ts`: `mergeOverride(ref)` — `commit-tree` (tree = `ref`'s tree, parents `[HEAD, ref]`)
+  then `reset --hard`: a 2-parent merge commit whose tree is byte-for-byte `ref`'s, kept a
+  descendant of `origin/<release-branch>` (first parent = release tip) so the bump PR still
+  merges cleanly. Plumbing-built so it's unconditional — no conflict path, no "already up to
+  date" special-case.
+- [x] `release-prepare.ts`: the `--from` path calls `git.mergeOverride(ref)` instead of
+  `git.merge(ref)` (drops the 409 conflict bail). `--pick` is **unchanged** (it ships a
+  selective subset, so it cherry-picks and can still conflict).
+- [x] Content-free guard for `--from` switches to a tree test: `mergeOverride` always adds a
+  commit, so `git.diffStatTwoDot(origin/<release-branch>).files === 0` (incoming tree == release
+  tree) replaces the commit count; `--pick`/bare keep `countCommitsAhead`.
+- [x] Tests: `git-release-ops.test.ts` (override through a real code conflict → no abort, tree ==
+  incoming, 2-parent commit with release tip as first parent; tree-identity); `release-prepare.test.ts`
+  (`--from` takes the override path not `merge`, opens the PR; tree-equal-to-stable `--from` refused
+  as content-free)
+- [x] Docs: plan.md (`--from` tree-override + tree-based guard, error-surface, rejected-alt),
+  `RELEASING.md` chat-driven section, `shipit-docs/release.md`

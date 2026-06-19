@@ -25,14 +25,18 @@ vi.mock("./github.js", () => ({ agentCreatePr: agentCreatePrMock }));
 interface GitOverrides {
   remoteBranches?: string[];
   commitsAhead?: number;
+  /** Two-dot diff file count `origin/<release-branch>..HEAD` — drives the `--from` content-free guard. */
+  diffFiles?: number;
   isClean?: boolean;
 }
 
 function makeGit(over: GitOverrides = {}) {
   const calls = {
     countCommitsAhead: vi.fn(async () => over.commitsAhead ?? 0),
+    diffStatTwoDot: vi.fn(async () => ({ insertions: 1, deletions: 0, files: over.diffFiles ?? 1 })),
     cherryPick: vi.fn(async () => ({ success: true })),
     merge: vi.fn(async () => ({ success: true })),
+    mergeOverride: vi.fn(async () => {}),
     createBranchFrom: vi.fn(async () => {}),
     commitPaths: vi.fn(async () => "deadbeefcafe"),
     forcePush: vi.fn(async () => ""),
@@ -80,7 +84,7 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
     ).rejects.toMatchObject({ statusCode: 400 });
     await expect(
       prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable" }),
-    ).rejects.toThrow(/no new commits/i);
+    ).rejects.toThrow(/no changes/i);
     // We bail BEFORE bumping/committing/pushing/opening a PR.
     expect(calls.commitPaths).not.toHaveBeenCalled();
     expect(calls.forcePush).not.toHaveBeenCalled();
@@ -94,8 +98,8 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
     ).rejects.toThrow(/--from <branch>.*--allow-empty/s);
   });
 
-  it("--from succeeds when it brings new commits (and opens the PR)", async () => {
-    const { git, calls } = makeGit({ commitsAhead: 3 });
+  it("--from overrides with the incoming tree (no merge, conflict-proof) and opens the PR", async () => {
+    const { git, calls } = makeGit({ diffFiles: 4 });
     const res = await prepareRelease(git, githubAuth, {
       dir,
       bump: "patch",
@@ -103,16 +107,23 @@ describe("prepareRelease — content-free guard (docs/214)", () => {
       from: "main",
     });
     expect(res.kind).toBe("pr-opened");
-    expect(calls.merge).toHaveBeenCalled();
-    expect(calls.countCommitsAhead).toHaveBeenCalledWith("origin/stable", "HEAD");
+    // It takes the override path, NOT a three-way merge (which could conflict).
+    expect(calls.mergeOverride).toHaveBeenCalledWith("origin/main");
+    expect(calls.merge).not.toHaveBeenCalled();
+    // The content-free guard for `--from` measures the tree diff, not commit count.
+    expect(calls.diffStatTwoDot).toHaveBeenCalledWith("origin/stable");
+    expect(calls.countCommitsAhead).not.toHaveBeenCalled();
     expect(agentCreatePrMock).toHaveBeenCalledOnce();
   });
 
-  it("--from that brings nothing (already merged) is still refused as content-free", async () => {
-    const { git } = makeGit({ commitsAhead: 0 });
+  it("--from whose tree equals stable (no real changes) is refused as content-free", async () => {
+    const { git, calls } = makeGit({ diffFiles: 0 });
     await expect(
       prepareRelease(git, githubAuth, { dir, bump: "patch", releaseBranch: "stable", from: "main" }),
-    ).rejects.toThrow(/no new commits/i);
+    ).rejects.toThrow(/no changes/i);
+    // We bail before committing/pushing/opening a PR.
+    expect(calls.commitPaths).not.toHaveBeenCalled();
+    expect(agentCreatePrMock).not.toHaveBeenCalled();
   });
 
   it("--pick succeeds when it brings new commits", async () => {
