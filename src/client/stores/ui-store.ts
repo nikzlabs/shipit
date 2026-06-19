@@ -78,8 +78,7 @@ interface UiState {
   cumulativeOutputTokens: number;
   settingsOpen: boolean;
   /** docs/211 — the Sandbox capability dialog. Hoisted here (rather than local
-   *  to SessionSidebar) so the no-GitHub on-ramp on the empty HomeScreen can
-   *  open it too. */
+   *  to SessionSidebar) so it can be opened from anywhere that needs it. */
   sandboxDialogOpen: boolean;
   quickCaptureOpen: boolean;
   /**

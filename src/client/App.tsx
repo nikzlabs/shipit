@@ -1168,7 +1168,6 @@ export default function App() {
       {showHomeScreen ? (
         <HomeScreen
           onAddRepo={() => useRepoStore.getState().setAddRepoDialogOpen(true)}
-          onCreateSandbox={() => useUiStore.getState().setSandboxDialogOpen(true)}
           githubAuthenticated={githubStatus.authenticated}
           hasRepos={repos.length > 0}
         />
