@@ -6,17 +6,16 @@ afterEach(cleanup);
 
 const baseProps = {
   onAddRepo: vi.fn(),
-  onCreateSandbox: vi.fn(),
   githubAuthenticated: true,
   hasRepos: false,
 };
 
 describe("HomeScreen", () => {
   describe("zero repos, GitHub connected", () => {
-    it("leads with Add Repository and offers a sandbox alternative", () => {
+    it("leads with Add Repository and offers no sandbox on-ramp", () => {
       render(<HomeScreen {...baseProps} githubAuthenticated={true} hasRepos={false} />);
       expect(screen.getByText("Add Repository")).toBeTruthy();
-      expect(screen.getByText("Start a sandbox session")).toBeTruthy();
+      expect(screen.queryByText("Start a sandbox session")).toBeNull();
     });
 
     it("calls onAddRepo when Add Repository is clicked", () => {
@@ -25,36 +24,22 @@ describe("HomeScreen", () => {
       fireEvent.click(screen.getByText("Add Repository"));
       expect(onAddRepo).toHaveBeenCalledTimes(1);
     });
-
-    it("calls onCreateSandbox when the sandbox button is clicked", () => {
-      const onCreateSandbox = vi.fn();
-      render(<HomeScreen {...baseProps} onCreateSandbox={onCreateSandbox} githubAuthenticated={true} hasRepos={false} />);
-      fireEvent.click(screen.getByText("Start a sandbox session"));
-      expect(onCreateSandbox).toHaveBeenCalledTimes(1);
-    });
   });
 
   describe("zero repos, GitHub NOT connected (manual identity)", () => {
-    it("leads with the sandbox on-ramp and offers Connect GitHub as secondary", () => {
+    it("leads with the Connect-GitHub on-ramp and offers no sandbox", () => {
       render(<HomeScreen {...baseProps} githubAuthenticated={false} hasRepos={false} />);
-      expect(screen.getByText("Start a sandbox session")).toBeTruthy();
       expect(screen.getByText("Connect GitHub to add repositories")).toBeTruthy();
-      // The bare "Add Repository" CTA (which would dead-end) is not the primary path here.
+      expect(screen.queryByText("Start a sandbox session")).toBeNull();
+      // The bare "Add Repository" CTA (which would dead-end) is not the path here.
       expect(screen.queryByText("Add Repository")).toBeNull();
     });
 
-    it("routes the secondary action through onAddRepo (which opens the Connect-GitHub prompt)", () => {
+    it("routes the primary action through onAddRepo (which opens the Connect-GitHub prompt)", () => {
       const onAddRepo = vi.fn();
       render(<HomeScreen {...baseProps} onAddRepo={onAddRepo} githubAuthenticated={false} hasRepos={false} />);
       fireEvent.click(screen.getByText("Connect GitHub to add repositories"));
       expect(onAddRepo).toHaveBeenCalledTimes(1);
-    });
-
-    it("starts a sandbox without requiring GitHub", () => {
-      const onCreateSandbox = vi.fn();
-      render(<HomeScreen {...baseProps} onCreateSandbox={onCreateSandbox} githubAuthenticated={false} hasRepos={false} />);
-      fireEvent.click(screen.getByText("Start a sandbox session"));
-      expect(onCreateSandbox).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -65,14 +50,12 @@ describe("HomeScreen", () => {
       expect(screen.getByText(/\+ New Session/)).toBeTruthy();
     });
 
-    it("renders add-another-repo and sandbox links", () => {
+    it("renders an add-another-repo link and no sandbox link", () => {
       const onAddRepo = vi.fn();
-      const onCreateSandbox = vi.fn();
-      render(<HomeScreen {...baseProps} onAddRepo={onAddRepo} onCreateSandbox={onCreateSandbox} hasRepos={true} />);
+      render(<HomeScreen {...baseProps} onAddRepo={onAddRepo} hasRepos={true} />);
       fireEvent.click(screen.getByText("+ Add another repository"));
       expect(onAddRepo).toHaveBeenCalledTimes(1);
-      fireEvent.click(screen.getByText("Sandbox session"));
-      expect(onCreateSandbox).toHaveBeenCalledTimes(1);
+      expect(screen.queryByText("Sandbox session")).toBeNull();
     });
   });
 });

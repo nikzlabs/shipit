@@ -73,10 +73,9 @@ export function SessionSidebar({
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
   // docs/211 — the capability dialog for a new Sandbox session is opened from the
-  // "+" advanced-session menu here AND the empty HomeScreen's no-GitHub on-ramp,
-  // so its open-state lives in ui-store and the dialog itself is rendered once at
-  // the App level (the mobile sidebar unmounts when the drawer closes, so a
-  // sidebar-local dialog would no-op from the home screen on mobile).
+  // "+" advanced-session menu here, so its open-state lives in ui-store and the
+  // dialog itself is rendered once at the App level (the mobile sidebar unmounts
+  // when the drawer closes, so a sidebar-local dialog would no-op on mobile).
   const setSandboxDialogOpen = useUiStore((s) => s.setSandboxDialogOpen);
 
   const handleCreateOps = useCallback(async () => {
