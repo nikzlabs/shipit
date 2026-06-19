@@ -1,6 +1,6 @@
 {
   "name": "shipit",
-  "version": "0.2.0",
+  "version": "0.2.2",
   "description": "Browser-based AI editor for building, reviewing, and shipping software through chat.",
   "private": false,
   "license": "Apache-2.0",
