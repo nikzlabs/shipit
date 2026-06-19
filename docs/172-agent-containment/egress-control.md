@@ -335,6 +335,83 @@ GH #1509 fix below). Agent-facing guidance (`shipit-docs/preview.md`) is updated
 the agent to reach previews from its browser at the service registry's `url`
 (`containerIp:port`).
 
+### Ordering: the subnet allow must land *after* the Tier-A install, not before
+
+> **Resolved — a startup race stranded ops/docker sessions off their `docker-socket-proxy`.**
+>
+> The `allow-subnet` re-open above (`connectToNetwork → allowEgressToSessionNetwork`) and
+> the Tier-A install (`createContainer → installEgressFirewall`) write into the **same**
+> agent netns but were **not ordered relative to each other**. Tier-A's `init-firewall.sh`
+> rebuilds the OUTPUT chain with `iptables -F OUTPUT` (flush) before re-adding its allow
+> rules; the per-session `allow-subnet.sh` only **appends** `iptables -A OUTPUT -d <subnet>
+> -j ACCEPT`. When the compose join won the race, the sequence was:
+>
+> 1. `allow-subnet.sh` appends the ACCEPT for the session/compose subnet (e.g. `172.20.0.0/16`).
+> 2. `init-firewall.sh`'s `iptables -F OUTPUT` runs **~1s later** and **flushes that ACCEPT away**.
+>
+> The agent was left **default-deny to its own compose subnet** → outbound to the
+> `docker-socket-proxy` (and preview servers) on that subnet was dropped. Inbound still
+> worked via conntrack, which masked it in every Docker metadata view (the agent looked
+> correctly attached). Proven on prod by orchestrator log timestamps: *"opened agent egress
+> to session subnet 172.20.0.0/16"* at `12:54:59.101`, then *"Tier A firewall installed"* at
+> `12:55:00.542` — the install landed last and wiped the hole.
+>
+> **Fix (structural, two parts):**
+>
+> 1. **Gate the re-open on a per-container readiness promise.** `createContainer` sets
+>    `SessionContainer.egressFirewallReady` the moment the egress policy is known and
+>    resolves it once `installEgressFirewall` (and its OUTPUT flush) has finished.
+>    `allowEgressToSessionNetwork` **awaits** it before launching the `allow-subnet` sidecar,
+>    so the ACCEPT is ordered strictly **after** the flush and can no longer be wiped. The
+>    promise is set only on a fresh `create()`; on a rediscovered/heal path it's absent and
+>    the await is a no-op (the netns firewall already persisted with the running container).
+>    It is also resolved in the create() catch so a failed create never hangs a concurrent
+>    join's best-effort await.
+> 2. **Re-apply on any future re-install.** `connectToNetwork` records each joined network in
+>    `SessionContainer.joinedSessionNetworks`; `reopenJoinedSessionEgress` re-opens egress to
+>    every recorded network and is invoked at the **end** of the Tier-A install (via
+>    `LifecycleDeps.reopenJoinedEgress`). So even if the firewall is ever rebuilt on a live
+>    container (its flush dropping the existing ACCEPTs), the holes are re-punched
+>    idempotently (`allow-subnet.sh` is `-C` before `-A`). A no-op on first boot, where the
+>    compose network is only joined later.
+>
+> Containment is unchanged: still only the specific session subnet, never broad RFC1918, and
+> the re-open stays best-effort (never fail-closed). Regression coverage:
+> `session-container-egress-reopen.test.ts` (the gate orders the allow after readiness; the
+> re-apply re-opens every joined network).
+
+### The Tier-B resolver must forward the ops `docker-socket-proxy` alias (a second, DNS root cause)
+
+> **Resolved — ops sessions still couldn't reach `docker-socket-proxy` after the L3 fix, because the Tier-B resolver REFUSED its name.**
+>
+> This is **independent** of the L3/ARP ordering race above. Ops/docker sessions run with
+> `DOCKER_HOST=tcp://docker-socket-proxy:2375` and their DNS is locked to the in-netns Tier-B
+> resolver (`buildResolverConfigB64` → dnsmasq). That config has `server=/<allowlisted-public>/…`
+> lines and `server=/shipit/127.0.0.11` for internal names — and, deliberately, **no default
+> server**, so any unmatched name is REFUSED (the anti-DNS-tunneling property). But the internal
+> names came only from `orchestratorInternalNames()` (the orchestrator host + fallback hosts),
+> which does **not** include the per-session `docker-socket-proxy` compose alias. So no
+> `server=/docker-socket-proxy/…` rule was emitted and the lookup was refused. Verified live: from
+> an ops agent `getent hosts shipit` succeeds but `getent hosts docker-socket-proxy` returns
+> REFUSED (rc=2); the orchestrator (plain Docker embedded DNS) resolves the alias fine — Docker's
+> 127.0.0.11 knows it, the Tier-B resolver just never forwarded it. Both this and the L3 fix are
+> needed for `DOCKER_HOST` by name to work under containment.
+>
+> **Fix.** A new `sessionInternalNames({ opsSession })` (`egress-dns-install.ts`) returns
+> `orchestratorInternalNames()` **plus** the `docker-socket-proxy` alias — but **only** when the
+> session is ops. The alias literal is single-sourced as `OPS_DOCKER_PROXY_DNS_NAME`, from which
+> `container-lifecycle.ts` also builds `OPS_DOCKER_HOST`, so the name the agent dials and the name
+> the resolver allowlists can't drift. dnsmasq maps it to the internal arm
+> (`server=/docker-socket-proxy/127.0.0.11`, no `ipset=` pin — it's a bridge IP Tier-A already
+> allows). Both config-build paths use it: the install path (`createContainer`, gated on
+> `config.opsSession`) and the live reload path (`reloadEgressSidecars`, gated on the
+> `SessionContainer.opsSession` recorded at create), so a durable-allowlist reload never drops the
+> rule. **Non-ops sessions get no proxy rule, and no default/catch-all server is ever emitted** —
+> the DNS-tunneling hole stays closed. Regression coverage: `egress-dns-install.test.ts`
+> (`sessionInternalNames` ops/non-ops gating; the `server=/docker-socket-proxy/127.0.0.11` rule
+> present for ops, absent + no bare `server=` for non-ops) and `egress-reload.test.ts` (the reload
+> re-emits the rule for an ops session, omits it otherwise).
+
 ### Services API now hands the agent a ready-to-use `url` (GH #1509)
 
 The agent and its in-netns Playwright browser still had to *construct*

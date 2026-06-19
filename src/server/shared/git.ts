@@ -416,6 +416,35 @@ export class GitManager {
   }
 
   /**
+   * docs/216 — true iff HEAD points at exactly the `origin/<baseBranch>` tip,
+   * i.e. the branch was reset/fast-forwarded back onto the base and carries no
+   * commits of its own (the counterpart to {@link advancedBeyondMergedBase}).
+   *
+   * Used to re-arm a MERGED session whose branch was reset to a clean base
+   * (e.g. `git reset --hard origin/main` after the PR merged): the branch is
+   * now identical to the base, so the stale "merged" PR state should be
+   * dropped and the session treated as clean with no current PR. A genuinely
+   * just-merged branch is NOT at the base tip (it still holds its own commits
+   * — for a squash merge the merge commit on the base isn't in the branch's
+   * history), so this stays false and the merged card correctly persists until
+   * the user resets.
+   *
+   * Local git only (no network). Fail-safe false (stay merged) on any
+   * resolution error or a missing `origin/<base>`.
+   */
+  async headIsAtBase(baseBranch: string): Promise<boolean> {
+    const baseRef = `origin/${baseBranch}`;
+    try {
+      const baseTip = (await this.git.revparse(["--verify", baseRef])).trim();
+      if (!baseTip) return false;
+      const head = (await this.git.revparse(["--verify", "HEAD"])).trim();
+      return head !== "" && head === baseTip;
+    } catch {
+      return false; // origin/<base> or HEAD unresolvable — fail safe, stay merged
+    }
+  }
+
+  /**
    * Get per-file diff summary (files changed with insertions/deletions).
    * `binary` is true when git reports `-\t-` in --numstat (the canonical
    * binary signal). It's NOT inferred from `insertions === 0 && deletions === 0`

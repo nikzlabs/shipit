@@ -185,6 +185,12 @@ export interface SessionContainer {
   hostWorkspaceDir: string;
   /** Whether this session has Docker access. */
   dockerAccess: boolean;
+  /**
+   * docs/128 — whether this is an "ops" session (reaches Docker via the read-only
+   * `docker-socket-proxy` compose sibling). Recorded so the live egress reload
+   * (`reloadEgress`) re-emits the Tier B resolver rule allowlisting that alias.
+   */
+  opsSession?: boolean;
   /** Session-specific bridge network name (only set when dockerAccess is true). */
   sessionNetworkName?: string;
   /** Resource limits for child containers created through the proxy. */
@@ -219,6 +225,29 @@ export interface SessionContainer {
    * rediscovered/re-adopted containers, where the booted policy isn't known.
    */
   egressContainedAtStart?: boolean;
+  /**
+   * docs/172 ordering fix — set on a freshly *created* container to a promise
+   * that resolves once the Tier-A egress firewall install
+   * (`installEgressFirewall`) for this container has completed (and immediately
+   * for the non-contained / enforcement-off path). `allowEgressToSessionNetwork`
+   * awaits it before appending the per-subnet ACCEPT, so a create-time compose
+   * join can't land its rule first only for `init-firewall.sh`'s
+   * `iptables -F OUTPUT` to flush it ~1s later — the race that stranded ops
+   * agents off their `docker-socket-proxy`. Absent on rediscovered/re-adopted
+   * containers (the install already ran with the previous incarnation and the
+   * netns firewall persisted with the running container), where the gate is a
+   * no-op.
+   */
+  egressFirewallReady?: Promise<void>;
+  /**
+   * docs/172 ordering fix — the per-session/compose network names the agent has
+   * joined (and to which egress was opened). Recorded so that if the Tier-A
+   * firewall is ever re-installed (its rebuild does `iptables -F OUTPUT`) the
+   * orchestrator can idempotently re-open egress to each (allow-subnet.sh is
+   * `-C` before `-A`), making it structurally impossible for an OUTPUT flush to
+   * permanently strand an already-joined subnet.
+   */
+  joinedSessionNetworks?: Set<string>;
 }
 
 export interface SessionContainerManagerEvents {
@@ -421,6 +450,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       agentContainerId: sc.id,
       sessionId,
       sidecarImage,
+      opsSession: sc.opsSession ?? false,
       extraHosts: cfg.extraHosts,
       ...(cfg.base ? { base: cfg.base } : {}),
       ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
@@ -478,6 +508,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       egressDns: egressDnsEnabled(),
       egressProxy: egressProxyEnabled(),
       ...(this.resolveEgressConfig ? { resolveEgressConfig: this.resolveEgressConfig } : {}),
+      // docs/172 ordering fix — re-open egress to already-joined session networks
+      // at the end of the Tier-A install so a future firewall rebuild can't strand
+      // them (no-op on first boot; nothing is joined until compose-up runs later).
+      reopenJoinedEgress: (sessionId: string) => this.reopenJoinedSessionEgress(sessionId),
       // docs/172 Gap 5 (SHI-97) — kernel-tier hardening, env-gated default-OFF.
       // gVisor via SESSION_RUNTIME; seccomp via SESSION_SECCOMP(_PROFILE);
       // read-only rootfs via SESSION_READONLY_ROOTFS. resolveSeccompSecurityOpt
@@ -570,6 +604,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("already exists")) throw err;
     }
+
+    // docs/172 ordering fix — remember this attachment so a later Tier-A firewall
+    // re-install (which flushes OUTPUT) can re-open egress to it idempotently
+    // (`reopenJoinedSessionEgress`). An already-joined subnet must never be left
+    // stranded by a flush.
+    (sc.joinedSessionNetworks ??= new Set()).add(networkName);
 
     // docs/172 Gap 1 (SHI-90) — the agent is now multi-homed: it has an interface
     // on this session/compose network in addition to the orchestrator bridge. The
@@ -697,6 +737,23 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         `[egress:${sessionId}] boot containment unknown (rediscovered container); derived contained=${contained} from resolved policy — re-opening preview egress`,
       );
     }
+    // docs/172 ordering fix — the load-bearing guarantee. The Tier-A firewall
+    // install (`installEgressFirewall`) rebuilds OUTPUT with `iptables -F OUTPUT`.
+    // If a create-time compose join appends its per-subnet ACCEPT *before* that
+    // flush lands (~1s later), the rule is wiped and the agent is left default-deny
+    // to its own session subnet — the docker-socket-proxy is unreachable (proven on
+    // prod by the install log landing after the egress-open log). Awaiting the
+    // boot-time readiness promise orders this allow strictly AFTER the flush.
+    // Best-effort: a freshly created contained container sets the promise; on a
+    // rediscovered/Open/heal path it's absent and this is a no-op. Never block or
+    // throw on it (an install failure tears the container down on its own path).
+    if (sc?.egressFirewallReady) {
+      try {
+        await sc.egressFirewallReady;
+      } catch {
+        /* install failed; the create() catch reaps the container */
+      }
+    }
     try {
       const info = await this.docker.getNetwork(networkName).inspect();
       const subnets = extractNetworkSubnets(info);
@@ -716,6 +773,24 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         `[egress:${sessionId}] failed to open egress to ${networkName} (preview may be unreachable from the agent browser):`,
         err instanceof Error ? err.message : String(err),
       );
+    }
+  }
+
+  /**
+   * docs/172 ordering fix — re-open the agent's egress to every session/compose
+   * network it has already joined. Invoked at the end of the Tier-A firewall
+   * install (via `LifecycleDeps.reopenJoinedEgress`) so that if the firewall is
+   * ever rebuilt (its `iptables -F OUTPUT` would otherwise drop the
+   * already-installed per-subnet ACCEPTs) the holes are re-punched. Idempotent
+   * (allow-subnet.sh runs `-C` before `-A`) and best-effort — `allowEgressToSessionNetwork`
+   * swallows its own errors. A no-op on a fresh boot (nothing joined yet) and on
+   * Open-mode / enforcement-off sessions.
+   */
+  async reopenJoinedSessionEgress(sessionId: string): Promise<void> {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.id || !sc.joinedSessionNetworks?.size) return;
+    for (const networkName of sc.joinedSessionNetworks) {
+      await this.allowEgressToSessionNetwork(sc.id, sessionId, networkName);
     }
   }
 

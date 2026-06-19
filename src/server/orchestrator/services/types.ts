@@ -103,6 +103,14 @@ export interface BootstrapData {
    * to `"containerized"` for every production deploy.
    */
   runtimeMode: RuntimeMode;
+  /**
+   * Host (optionally `host:port`) the VPS Tailscale forwarder advertises for
+   * preview subdomains (docs/216). Present only on a Tailscale VPS deploy where
+   * the forwarder has written `/opt/shipit/.tailnet-preview-host`. The client
+   * uses it to route preview iframes through sslip.io while the app/WS stay on
+   * the native MagicDNS host. Omitted on every other deploy.
+   */
+  tailnetPreviewHost?: string;
 }
 
 // ---- Error type for service-level errors with HTTP status codes ----

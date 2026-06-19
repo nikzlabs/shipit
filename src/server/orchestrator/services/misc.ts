@@ -32,6 +32,34 @@ export function getUsageStats(usageManager: UsageManager) {
   return usageManager.getStats();
 }
 
+/**
+ * Read the Tailscale sslip preview host advertised to the client (docs/216).
+ *
+ * Read at request time (not a boot snapshot) so a forwarder restart that
+ * re-derives the host on a tailnet IP change is reflected without restarting the
+ * orchestrator — the self-healing property. The file path is resolved per call
+ * (not cached at module load) so it honors an env override set after import.
+ * Missing file (the common, non-Tailscale case) → `undefined`. The file is
+ * root-written, but we still validate it is a bare `host[:port]` before handing
+ * it to the client to build preview origins.
+ */
+async function readTailnetPreviewHost(): Promise<string | undefined> {
+  const file =
+    process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE ?? "/opt/shipit/.tailnet-preview-host";
+  try {
+    const raw = await fs.readFile(file, "utf8");
+    const host = raw.split("\n")[0]?.trim() ?? "";
+    // Pin to the exact shape the forwarder advertises — a dashed tailnet IPv4
+    // under sslip.io with an optional port. This is defense-in-depth: the file
+    // is root-written, but a bad/misconfigured value must not be able to point
+    // .ts.net users' preview iframes at an arbitrary domain.
+    if (/^\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}\.sslip\.io(:\d{1,5})?$/.test(host)) return host;
+  } catch {
+    // ENOENT on a non-Tailscale deploy, or unreadable → no override.
+  }
+  return undefined;
+}
+
 /** Get all data needed for the initial bootstrap. */
 export async function getBootstrapData(deps: {
   sessionManager: SessionManager;
@@ -52,7 +80,7 @@ export async function getBootstrapData(deps: {
   // Each call is wrapped individually so a failure in one (e.g. expired
   // GitHub token causing listUserRepos to throw) doesn't kill the entire
   // bootstrap — the other data still loads.
-  const [sessions, settings] = await Promise.all([
+  const [sessions, settings, tailnetPreviewHost] = await Promise.all([
     listSessions(deps.sessionManager, deps.createGitManager).catch((err: unknown) => {
       console.error("[bootstrap] Failed to list sessions:", err);
       return [] as Awaited<ReturnType<typeof listSessions>>;
@@ -76,6 +104,7 @@ export async function getBootstrapData(deps: {
         providerAccounts: [],
       };
     }),
+    readTailnetPreviewHost(),
   ]);
 
   return {
@@ -86,6 +115,7 @@ export async function getBootstrapData(deps: {
     githubStatus: getGitHubStatus(deps.githubAuthManager),
     settings,
     runtimeMode: deps.runtimeMode ?? "containerized",
+    ...(tailnetPreviewHost ? { tailnetPreviewHost } : {}),
   };
 }
 

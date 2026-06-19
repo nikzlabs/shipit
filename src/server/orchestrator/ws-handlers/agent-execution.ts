@@ -13,7 +13,7 @@ import {
 } from "../session-agent-env.js";
 import { buildAgentRunParams } from "../session-agent-run-params.js";
 import { emitPrLifecycleAfterCommit } from "../services/pr-lifecycle.js";
-import { detectAndReArmMergedSession } from "../services/pr-rearm.js";
+import { detectAndReArmMergedSession, detectAndReArmResetSession } from "../services/pr-rearm.js";
 import { reactToReleaseMarkers } from "../services/release-flow.js";
 import { executeAgentTurn } from "../turn-executor.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "../prompt-assembly.js";
@@ -401,6 +401,21 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionId,
         sessionDir,
         commitHash,
+        emit,
+      });
+    },
+    postTurnReArmReset: async (sessionId, sessionDir, emit) => {
+      // docs/216 — re-arm a merged session whose branch was reset to a clean
+      // base (no commit, so the commit-gated postTurnPrFlow above misses it).
+      await detectAndReArmResetSession({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          createGitManager: ctx.createGitManager,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        sessionId,
+        sessionDir,
         emit,
       });
     },

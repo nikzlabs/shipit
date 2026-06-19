@@ -134,6 +134,14 @@ interface UiState {
    */
   runtimeMode: RuntimeMode;
 
+  /**
+   * Tailscale sslip preview host (docs/216), or `null` when not a Tailscale VPS
+   * deploy. When set and the page is browsed over a `.ts.net` MagicDNS host,
+   * preview iframes route through this host (forced HTTP) instead of the app
+   * host. See `resolvePreviewHost`.
+   */
+  tailnetPreviewHost: string | null;
+
   // Actions
   setRightTab: (tab: RightTab) => void;
   setMobilePanel: (panel: MobilePanel) => void;
@@ -168,6 +176,7 @@ interface UiState {
   setSubscriptionLimits: (limits: SubscriptionLimitsMap) => void;
   setBootstrapLoaded: (loaded: boolean) => void;
   setRuntimeMode: (mode: RuntimeMode) => void;
+  setTailnetPreviewHost: (host: string | null) => void;
   reset: () => void;
 
   // Async actions
@@ -205,6 +214,7 @@ const initialState = {
   updateMode: "manual" as "managed" | "manual",
   subscriptionLimits: {} as SubscriptionLimitsMap,
   runtimeMode: "containerized" as RuntimeMode,
+  tailnetPreviewHost: null as string | null,
 };
 
 export const useUiStore = create<UiState>((set) => ({
@@ -278,6 +288,7 @@ export const useUiStore = create<UiState>((set) => ({
   setBootstrapLoaded: (bootstrapLoaded) => set({ bootstrapLoaded }),
 
   setRuntimeMode: (runtimeMode) => set({ runtimeMode }),
+  setTailnetPreviewHost: (tailnetPreviewHost) => set({ tailnetPreviewHost }),
 
   reset: () =>
     set({

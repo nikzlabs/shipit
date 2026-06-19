@@ -28,7 +28,7 @@ import { setupServiceManager } from "./service-manager-setup.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { finalizeSessionAgentEnvironment, prepareSessionAgentEnvironment } from "./session-agent-env.js";
 import { emitPrLifecycleAfterCommit } from "./services/pr-lifecycle.js";
-import { detectAndReArmMergedSession } from "./services/pr-rearm.js";
+import { detectAndReArmMergedSession, detectAndReArmResetSession } from "./services/pr-rearm.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
@@ -463,6 +463,19 @@ export function createRunnerRegistry(
               sessionId,
               sessionDir,
               commitHash,
+              emit,
+            });
+          },
+          // docs/216 — re-arm a merged session whose branch was reset to a clean
+          // base. Fires on EVERY turn (commit or not) so spawned/CI/programmatic
+          // turns clear a stale merged card after a reset, not just the WS path.
+          postTurnReArmReset: async (sessionId, sessionDir, emit) => {
+            const prStatusPoller = getPrStatusPoller?.();
+            if (!prStatusPoller) return;
+            await detectAndReArmResetSession({
+              deps: { sessionManager, prStatusPoller, createGitManager, sseBroadcast },
+              sessionId,
+              sessionDir,
               emit,
             });
           },

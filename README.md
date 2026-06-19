@@ -13,12 +13,9 @@ and deploys, on your own Git, containers, and server.
   <img src="https://img.shields.io/badge/self--hosted-Docker-2496ED?logo=docker&logoColor=white" alt="Self-hosted via Docker">
 </p>
 
-<!-- TODO: hero screenshot or GIF — one frame showing chat + live preview + the inline PR card.
-     Drop it at docs/assets/hero.png (or .gif for the describe → preview → PR loop) and uncomment:
 <p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
--->
 
 <!-- TODO: 60-second demo video / live demo link. For a self-hosted app there's no `npm install`
      quick-win, so a video lets people evaluate without cloning + building Docker images. Host it

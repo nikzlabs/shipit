@@ -318,7 +318,7 @@ if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "    1. Open https://$DOMAIN in your browser"
 elif [ "$INSTALL_TAILSCALE" = "true" ]; then
   echo "    1. Open the Tailscale URL printed above by tailscale.sh"
-  echo "       (http://<dashed-tailnet-ip>.sslip.io:4123). Subdomain previews"
+  echo "       (http://<dashed-tailnet-ip>.sslip.io). Subdomain previews"
   echo "       resolve through that host with no further setup; the optional"
   echo "       MagicDNS-hostname upgrade is also printed there."
 else
