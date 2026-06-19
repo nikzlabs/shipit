@@ -106,6 +106,13 @@ ShipIt shows a **release lifecycle card** with **Confirm & publish** / **Cancel*
 The user confirms there, or replies "yes, ship it" in chat. **Do not bump,
 commit, tag, open a PR, or push in the proposal turn.**
 
+When the user clicks **Confirm & publish**, ShipIt injects a templated reply that
+leads with a provenance marker (`[Release card → Confirm & publish]`). Treat that
+marker as a signal: the message is the user's **intent** to publish this version,
+not a verbatim command to execute literally — follow the repo's release mechanism
+and **re-check the current repo state first**, especially the card's
+auto-publish/cold-start warning, adapting if a merge won't actually tag yet.
+
 ### 2. Idempotency — check before you act
 
 - **`release-branch`:** check whether the version's tag already exists

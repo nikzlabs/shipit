@@ -291,11 +291,26 @@ wording must match the repo's mechanism. `release-types.ts`'s `ReleaseStatusSumm
 carries a `mechanism` field (sourced authoritatively from `shipit.yaml`
 `release.mechanism` in `release-flow.ts`, with the propose marker as an optional
 override, defaulting to `tag-triggered`). For `release-branch` the reply tells the
-agent to bump + open/merge the version-bump PR and **explicitly NOT to create or
-push a tag** (CI owns tagging — a hand-pushed tag collides with the merge-triggered
-publish); for `tag-triggered` it keeps the bump + annotated-tag + push wording. The
-per-mechanism text lives in the pure `release-confirm-message.ts` builder so it's
-unit-tested independently of `App.tsx`.
+agent to bump + open/merge the version-bump PR and let CI tag on merge; for
+`tag-triggered` it keeps the bump + annotated-tag + push wording. The per-mechanism
+text lives in the pure `release-confirm-message.ts` builder so it's unit-tested
+independently of `App.tsx`.
+
+**Card-injected provenance + judgment framing.** The injected reply is templated,
+not hand-typed, but the agent receives it on the same surface as a real user
+instruction and so could mistake the canned wording for a deliberate directive.
+That was actively harmful for the old release-branch string ("Do NOT create or
+push a tag"): during a **cold start** the documented remedy is a one-time tag-path
+bootstrap — which the card already flags via its auto-publish/cold-start warning —
+so an absolute prohibition contradicted the very fix. The builder now mirrors
+`action-checklist-message.ts`: every variant leads with a provenance marker
+(`[Release card → Confirm & publish]`) and frames the body as *intent* ("I approved
+publishing this version") plus a "re-check current state before acting" clause. The
+release-branch variant keeps the safety intent (let CI tag on merge) but phrases it
+as "check the card's auto-publish/cold-start warning first, and adapt if a merge
+won't tag yet" rather than an absolute "never push a tag". The cold-start `warning`
+is not threaded into the builder (the card type carries no such field today); the
+message points the agent at the card's warning generically instead.
 
 **Card persistence.** The `release-status-poller` is in-memory only, and the
 `proposed`/`tagging`/`gating` phases are short-lived, so the card today is correctly
