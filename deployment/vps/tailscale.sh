@@ -99,15 +99,28 @@ fi
 # --- Authenticate -----------------------------------------------------------
 # The hostname is left entirely to Tailscale (Tailscale's own default on a fresh
 # node; unchanged on a rerun), so this script never renames the node.
+#
+# --accept-dns=false is load-bearing: this node SERVES the tailnet, it never
+# needs to resolve tailnet names itself. If we accept Tailscale DNS, tailscaled
+# rewrites /etc/resolv.conf to MagicDNS (100.100.100.100); Docker propagates that
+# to every container, and — unless the tailnet has a global nameserver configured
+# (it does not by default) — MagicDNS returns empty for public names. The
+# orchestrator and session containers then cannot resolve github.com, package
+# registries, etc., so GitHub connect and agent network calls fail. Previews
+# resolve via sslip.io (public DNS) on the CLIENT devices, so MagicDNS on this
+# node buys nothing. See docs/175-preview-subdomain-only.
 if tailscale ip -4 &>/dev/null; then
   echo "==> Tailscale is already authenticated; keeping its existing hostname."
+  # Re-assert on an already-authenticated node: an earlier run (or a manual
+  # `tailscale up`) may have left MagicDNS owning /etc/resolv.conf.
+  tailscale set --accept-dns=false 2>/dev/null || true
 else
   echo "==> Authenticating this server with Tailscale..."
   if [ -n "${SHIPIT_TAILSCALE_AUTHKEY:-}" ]; then
-    tailscale up --authkey="$SHIPIT_TAILSCALE_AUTHKEY"
+    tailscale up --accept-dns=false --authkey="$SHIPIT_TAILSCALE_AUTHKEY"
   else
     echo "    A login URL will appear below. Open it in a browser where you are logged into Tailscale."
-    tailscale up
+    tailscale up --accept-dns=false
   fi
 fi
 
