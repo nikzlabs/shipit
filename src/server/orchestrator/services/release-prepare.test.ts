@@ -16,7 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
-import { prepareRelease } from "./release-prepare.js";
+import { planRelease, prepareRelease } from "./release-prepare.js";
 
 const { agentCreatePrMock } = vi.hoisted(() => ({ agentCreatePrMock: vi.fn() }));
 
@@ -28,6 +28,12 @@ interface GitOverrides {
   /** Two-dot diff file count `origin/<release-branch>..HEAD` — drives the `--from` content-free guard. */
   diffFiles?: number;
   isClean?: boolean;
+  /**
+   * Version on `origin/<release-branch>`'s package.json — what `showFileAtRef`
+   * returns. `null`/omitted means the branch/file is absent (the anchor falls
+   * back to the working tree). Drives the release-branch version anchor tests.
+   */
+  stableVersion?: string | null;
 }
 
 function makeGit(over: GitOverrides = {}) {
@@ -48,6 +54,9 @@ function makeGit(over: GitOverrides = {}) {
     tipCommitMessage: vi.fn(async () => null),
     createAndPushTag: vi.fn(async () => {}),
     getHeadHash: vi.fn(async () => "abc123def456"),
+    showFileAtRef: vi.fn(async (_ref: string, _file: string) =>
+      over.stableVersion ? JSON.stringify({ name: "x", version: over.stableVersion }) : null,
+    ),
   };
   return { git: calls as unknown as GitManager, calls };
 }
@@ -194,5 +203,94 @@ describe("prepareRelease — prerelease path is unaffected by the guard (docs/21
     expect(res.kind).toBe("prerelease-tagged");
     expect(calls.createAndPushTag).toHaveBeenCalled();
     expect(calls.countCommitsAhead).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/214 bugfix — the release-branch version anchor. The version bump PR lands
+ * only on `stable` and is never merged back to `main`, so the session working
+ * tree (branched off `main`) lags every release. Computing the next version from
+ * the working tree therefore proposed a version AT OR BELOW what's published
+ * (e.g. working tree 0.2.0 + an already-released v0.2.2 → a regressed v0.2.1).
+ * The fix anchors the current version to `origin/<release-branch>` — what's
+ * released and exactly what CI reads off the merged commit.
+ */
+describe("release-branch version anchor (docs/214 bugfix)", () => {
+  it("planRelease bumps from the release branch version, not the lagging working tree", async () => {
+    // Working tree (off main) is 0.2.0 from the fixture; stable carries 0.2.2.
+    const { git, calls } = makeGit({ stableVersion: "0.2.2" });
+    const plan = await planRelease(git, {
+      dir,
+      bump: "patch",
+      mechanism: "release-branch",
+      releaseBranch: "stable",
+    });
+    expect(plan.currentVersion).toBe("0.2.2");
+    expect(plan.version).toBe("0.2.3");
+    expect(plan.tag).toBe("v0.2.3");
+    // It anchored by reading origin/stable's version source (after a fetch).
+    expect(calls.fetch).toHaveBeenCalled();
+    expect(calls.showFileAtRef).toHaveBeenCalledWith("origin/stable", "package.json");
+  });
+
+  it("prepareRelease --from main writes the anchored next version into the bump", async () => {
+    const { git } = makeGit({ stableVersion: "0.2.2", diffFiles: 4 });
+    const res = await prepareRelease(git, githubAuth, {
+      dir,
+      bump: "patch",
+      mechanism: "release-branch",
+      releaseBranch: "stable",
+      from: "main",
+    });
+    expect(res.kind).toBe("pr-opened");
+    if (res.kind !== "pr-opened") return;
+    expect(res.version).toBe("0.2.3");
+    expect(res.tag).toBe("v0.2.3");
+    // The version actually written to the source file is the anchored one.
+    const written = JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")) as { version: string };
+    expect(written.version).toBe("0.2.3");
+  });
+
+  it("falls back to the working tree when the release branch has no version file yet (bootstrap)", async () => {
+    // stableVersion omitted → showFileAtRef returns null → anchor falls back.
+    const { git } = makeGit({ diffFiles: 4 });
+    const plan = await planRelease(git, {
+      dir,
+      bump: "patch",
+      mechanism: "release-branch",
+      releaseBranch: "stable",
+    });
+    expect(plan.currentVersion).toBe("0.2.0");
+    expect(plan.version).toBe("0.2.1");
+  });
+
+  it("does NOT anchor for a non-release-branch mechanism (main is the release source)", async () => {
+    const { git, calls } = makeGit({ stableVersion: "0.2.2" });
+    const plan = await planRelease(git, {
+      dir,
+      bump: "patch",
+      mechanism: "tag-triggered",
+      releaseBranch: "stable",
+    });
+    // Reads the working tree (0.2.0), never consults origin/stable.
+    expect(plan.currentVersion).toBe("0.2.0");
+    expect(plan.version).toBe("0.2.1");
+    expect(calls.showFileAtRef).not.toHaveBeenCalled();
+  });
+
+  it("anchors the rc core to the release branch too (prerelease)", async () => {
+    const { git } = makeGit({ stableVersion: "0.2.2" });
+    const res = await prepareRelease(git, githubAuth, {
+      dir,
+      bump: "patch",
+      mechanism: "release-branch",
+      releaseBranch: "stable",
+      prerelease: true,
+    });
+    expect(res.kind).toBe("prerelease-proposed");
+    if (res.kind !== "prerelease-proposed") return;
+    // rc targets the patch above the released 0.2.2, not the working tree's 0.2.0.
+    expect(res.version).toBe("0.2.3-rc.1");
+    expect(res.tag).toBe("v0.2.3-rc.1");
   });
 });

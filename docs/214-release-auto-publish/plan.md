@@ -230,6 +230,25 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   divergence is intentionally ignored. (`--pick` is unchanged — it deliberately
   ships a *selective* subset, so it cherry-picks rather than overriding.)
 
+  **The current version is anchored to the release branch, NOT the working tree
+  (bugfix).** The version bump PR lands only on `<release-branch>` and is *never*
+  merged back to `main`, so a session working tree (branched off `main`) lags every
+  release. Computing the next version from the working tree therefore proposed a
+  version **at or below** what's already published — e.g. with the working tree at
+  `0.2.0` and `v0.2.2` already released, `plan patch` computed a regressed `0.2.1`,
+  and `prepare --from main` would have written `0.2.1` over stable's `0.2.2` in the
+  bump PR (CI then derives a *lower* tag than the live one; the stable channel,
+  which follows the highest reachable final tag, wouldn't even advance). The fix
+  (`resolveCurrentVersion` in `release-prepare.ts`) reads the current version from
+  the version source at `origin/<release-branch>` — what's actually released and
+  exactly what CI reads off the merged commit — and only falls back to the working
+  tree when that branch/file is absent (first release / bootstrap) or the mechanism
+  isn't `release-branch` (where `main` IS the release source). It applies to the rc
+  core too. Both `plan` and `prepare` fetch `origin` before reading the anchor. The
+  string-level `parseVersionFromContent` (in `release-version.ts`) lets the anchor
+  parse a version out of a file fetched at a git ref (`git show <ref>:<path>`)
+  without a working-tree checkout, mirroring the on-disk readers.
+
   **This needs new plumbing on `agentCreatePr`, not just a reuse:**
   today it derives head from `getCurrentBranch()` and auto-detects base as
   `main`/`master` (the only base override is the narrow `reArm.baseBranch`). So
@@ -424,8 +443,8 @@ path and the script as the fallback.
 - `docs/162` updater (`deployment/vps/update.sh`, `services/updates.ts`,
   `release-channel.ts`) — resolve the latest final tag reachable from `origin/stable`.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
-- `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`.
-- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`, `showFileAtRef`, `mergeOverride` — the conflict-proof `--from` tree override).
+- `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`; `parseVersionFromContent` + the `parse*(raw)` cores for reading a version out of a file fetched at a git ref (the release-branch anchor).
+- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`, `showFileAtRef`, `mergeOverride` — the conflict-proof `--from` tree override). `resolveCurrentVersion` anchors the current version to `origin/<release-branch>` rather than the lagging working tree.
 - `src/server/orchestrator/release-autopublish-check.ts` (new) — cold-start guard: detect whether merging into the maintenance branch will auto-publish (the branch's workflow has a push trigger for it) and build the actionable warning.
 - `src/server/orchestrator/services/release-branch-adopt.ts` (new) — repoint `session.branch` to `release/<version>` + re-arm the PR poller so the bump PR surfaces as the inline (mergeable) PR lifecycle card.
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.

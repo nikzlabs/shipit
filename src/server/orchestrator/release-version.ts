@@ -101,11 +101,16 @@ export interface DetectedVersionSource {
   version: string;
 }
 
-/** Read the `version` field from a workspace's `package.json`, or null. */
-export function readPackageJsonVersion(dir: string): string | null {
+// The read-from-disk helpers below split into a `parse*(raw)` core + a thin
+// `read*(dir)` wrapper. The parse cores let a caller resolve a version from file
+// content it already has in hand — e.g. a version file read at a git ref via
+// `git show <ref>:<path>` (docs/214 bugfix: the release-branch mechanism anchors
+// the current version to the maintenance branch, not the working tree) — while
+// keeping the on-disk readers as the single source of the parsing regexes.
+
+/** Parse the `version` field from raw `package.json` content, or null. */
+export function parsePackageJsonVersion(raw: string): string | null {
   try {
-    const pkgPath = path.join(dir, "package.json");
-    const raw = fs.readFileSync(pkgPath, "utf8");
     const parsed = JSON.parse(raw) as { version?: unknown };
     return typeof parsed.version === "string" && parsed.version.trim() ? parsed.version.trim() : null;
   } catch {
@@ -113,20 +118,50 @@ export function readPackageJsonVersion(dir: string): string | null {
   }
 }
 
+/** Read the `version` field from a workspace's `package.json`, or null. */
+export function readPackageJsonVersion(dir: string): string | null {
+  try {
+    return parsePackageJsonVersion(fs.readFileSync(path.join(dir, "package.json"), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
 /**
- * Read the version from a Cargo.toml `[package]` section via regex.
+ * Parse the version from a Cargo.toml `[package]` section via regex.
+ * Returns null when there's no `version` in `[package]`.
+ */
+export function parseCargoTomlVersion(raw: string): string | null {
+  const packageSection = /\[package\]([\s\S]*?)(?=\n\[|\s*$)/.exec(raw);
+  if (!packageSection) return null;
+  const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(packageSection[1] ?? "");
+  return m ? (m[1]?.trim() ?? null) : null;
+}
+
+/**
+ * Read the version from a Cargo.toml `[package]` section.
  * Returns null when the file is absent or has no `version` in `[package]`.
  */
 export function readCargoTomlVersion(dir: string): string | null {
   try {
-    const raw = fs.readFileSync(path.join(dir, "Cargo.toml"), "utf8");
-    const packageSection = /\[package\]([\s\S]*?)(?=\n\[|\s*$)/.exec(raw);
-    if (!packageSection) return null;
-    const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(packageSection[1] ?? "");
-    return m ? (m[1]?.trim() ?? null) : null;
+    return parseCargoTomlVersion(fs.readFileSync(path.join(dir, "Cargo.toml"), "utf8"));
   } catch {
     return null;
   }
+}
+
+/**
+ * Parse the version from pyproject.toml content.
+ * Tries the PEP 621 `[project]` section first, then Poetry's `[tool.poetry]`.
+ */
+export function parsePyprojectVersion(raw: string): string | null {
+  for (const sectionRe of [/\[project\]([\s\S]*?)(?=\n\[|\s*$)/, /\[tool\.poetry\]([\s\S]*?)(?=\n\[|\s*$)/]) {
+    const section = sectionRe.exec(raw);
+    if (!section) continue;
+    const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(section[1] ?? "");
+    if (m) return m[1]?.trim() ?? null;
+  }
+  return null;
 }
 
 /**
@@ -135,17 +170,16 @@ export function readCargoTomlVersion(dir: string): string | null {
  */
 export function readPyprojectVersion(dir: string): string | null {
   try {
-    const raw = fs.readFileSync(path.join(dir, "pyproject.toml"), "utf8");
-    for (const sectionRe of [/\[project\]([\s\S]*?)(?=\n\[|\s*$)/, /\[tool\.poetry\]([\s\S]*?)(?=\n\[|\s*$)/]) {
-      const section = sectionRe.exec(raw);
-      if (!section) continue;
-      const m = /^\s*version\s*=\s*"([^"]+)"/m.exec(section[1] ?? "");
-      if (m) return m[1]?.trim() ?? null;
-    }
-    return null;
+    return parsePyprojectVersion(fs.readFileSync(path.join(dir, "pyproject.toml"), "utf8"));
   } catch {
     return null;
   }
+}
+
+/** Parse the version from a `VERSION` file's content (plain semver, first line). */
+export function parseVersionFile(raw: string): string | null {
+  const line = raw.split("\n")[0]?.trim() ?? "";
+  return line || null;
 }
 
 /**
@@ -153,11 +187,30 @@ export function readPyprojectVersion(dir: string): string | null {
  */
 export function readVersionFile(dir: string): string | null {
   try {
-    const raw = fs.readFileSync(path.join(dir, "VERSION"), "utf8");
-    const line = raw.split("\n")[0]?.trim() ?? "";
-    return line || null;
+    return parseVersionFile(fs.readFileSync(path.join(dir, "VERSION"), "utf8"));
   } catch {
     return null;
+  }
+}
+
+/**
+ * Parse a version out of raw version-source content, dispatched by source type.
+ * The string-level counterpart of `detectVersionSource` — used to read the
+ * current version from a file fetched at a git ref. Returns null for the
+ * "tag" scheme (no file content) or when the field can't be located.
+ */
+export function parseVersionFromContent(source: VersionSourceType, raw: string): string | null {
+  switch (source) {
+    case "package.json":
+      return parsePackageJsonVersion(raw);
+    case "Cargo.toml":
+      return parseCargoTomlVersion(raw);
+    case "pyproject.toml":
+      return parsePyprojectVersion(raw);
+    case "VERSION":
+      return parseVersionFile(raw);
+    case "tag":
+      return null;
   }
 }
 

@@ -32,8 +32,9 @@ import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall
 import {
   buildResolverConfigB64,
   launchEgressResolver,
-  orchestratorInternalNames,
+  sessionInternalNames,
   orchestratorCallbackHost,
+  OPS_DOCKER_PROXY_DNS_NAME,
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
@@ -59,8 +60,10 @@ const DEFAULT_CPU_PERIOD = 100_000; // 100ms
  * mounts the real host socket and rejects mutating endpoints), reachable by
  * service name once the agent joins the session compose network. The ops agent
  * never mounts the real socket; all Docker access flows through this proxy.
+ * Built from {@link OPS_DOCKER_PROXY_DNS_NAME} so the alias the agent dials and
+ * the name the Tier B resolver allowlists (`sessionInternalNames`) stay in lockstep.
  */
-export const OPS_DOCKER_HOST = "tcp://docker-socket-proxy:2375";
+export const OPS_DOCKER_HOST = `tcp://${OPS_DOCKER_PROXY_DNS_NAME}:2375`;
 
 // ---------------------------------------------------------------------------
 // Internal types for dependency injection
@@ -116,6 +119,14 @@ export interface LifecycleDeps {
    * `{ contained: true, extraHosts: [] }` (byte-for-byte the env-only behavior).
    */
   resolveEgressConfig?: (sessionId: string) => ResolvedEgressConfig;
+  /**
+   * docs/172 ordering fix — re-open the agent's egress to every session/compose
+   * network it has already joined. Called at the end of the Tier-A firewall
+   * install so a rebuild's `iptables -F OUTPUT` can never permanently strand an
+   * already-joined subnet (idempotent; a no-op on first boot where nothing is
+   * joined yet). Wired from `SessionContainerManager.reopenJoinedSessionEgress`.
+   */
+  reopenJoinedEgress?: (sessionId: string) => Promise<void>;
   /**
    * docs/172 Gap 5 (SHI-97) — kernel-tier hardening, all env-gated default-OFF
    * (resolved in session-container.ts from `container-hardening.ts`). Omitted in
@@ -696,6 +707,9 @@ export async function createContainer(
     status: "starting",
     hostWorkspaceDir: config.sessionDir,
     dockerAccess: config.dockerAccess ?? false,
+    // docs/128/172 — recorded so the live egress reload path (`reloadEgress`)
+    // re-emits the docker-socket-proxy resolver rule for ops sessions.
+    opsSession: config.opsSession ?? false,
     sessionNetworkName,
     // Always record what the agent container actually booted with — the
     // claim-time refresh compares this against the now-current shipit.yaml
@@ -718,6 +732,12 @@ export async function createContainer(
   deps.containers.set(config.sessionId, sc);
 
   const shortId = config.sessionId.slice(0, 12);
+
+  // docs/172 ordering fix — resolver for `sc.egressFirewallReady`. Declared out
+  // here (assigned once the egress policy is known, below) so the catch can
+  // unblock any concurrent compose-join awaiter even on a failed create — a
+  // never-resolving gate would otherwise hang the join's egress re-open.
+  let signalEgressFirewallReady: () => void = () => {};
 
   try {
     // Self-heal worker ownership of the persisted workspace BEFORE the worker
@@ -857,6 +877,16 @@ export async function createContainer(
     // re-plumbed live, so this is the source of truth the egress API diffs
     // against the current policy to show "pending — restart to apply" (docs/172).
     sc.egressContainedAtStart = egressCfg.contained;
+    // docs/172 ordering fix — expose a readiness promise the moment we know the
+    // egress policy, resolved once the Tier-A install below has finished. A
+    // concurrent compose-network join (`allowEgressToSessionNetwork`) awaits it
+    // before appending its per-subnet ACCEPT, so the allow always lands AFTER
+    // `init-firewall.sh`'s `iptables -F OUTPUT` instead of being flushed by it.
+    // Resolved in every branch (including the non-contained path and the create()
+    // catch) so an awaiter never hangs.
+    sc.egressFirewallReady = new Promise<void>((resolve) => {
+      signalEgressFirewallReady = resolve;
+    });
     if (deps.egressEnforce && egressCfg.contained) {
       if (!deps.egressSidecarImage) {
         // Fail closed: this session is contained but the deployment can't run
@@ -890,7 +920,10 @@ export async function createContainer(
       // compose container and SIGKILL it (docs/172 Bug-2 fix, SHI-90).
       if (deps.egressDns) {
         const configB64 = buildResolverConfigB64({
-          internalDomains: orchestratorInternalNames(),
+          // Ops sessions additionally need their docker-socket-proxy compose
+          // alias forwarded to Docker's embedded DNS — without it the Tier B
+          // resolver REFUSES DOCKER_HOST by name (SHI-90 Tier B host verification).
+          internalDomains: sessionInternalNames({ opsSession: config.opsSession }),
           extraDomains: egressCfg.extraHosts,
           ...(egressCfg.base ? { base: egressCfg.base } : {}),
         });
@@ -928,7 +961,19 @@ export async function createContainer(
         `[egress:${config.sessionId}] Tier A firewall installed ` +
           `(${inputs.hosts.length} hosts, ${inputs.cidrs.length} CIDRs)${dnsNote}${proxyNote}`,
       );
+      // docs/172 ordering fix — the install (and its `iptables -F OUTPUT`) is
+      // done: (1) unblock any concurrent compose join waiting on the gate so its
+      // ACCEPT now lands AFTER the flush, then (2) re-open egress to any network
+      // the agent has ALREADY joined so this fresh OUTPUT chain can't have
+      // permanently stranded it. Idempotent; a no-op on first boot (compose-up
+      // joins the session network only later). Done before resolving the worker
+      // URL so the agent never observes a default-deny window to its own subnet.
+      signalEgressFirewallReady();
+      await deps.reopenJoinedEgress?.(config.sessionId);
     }
+    // Non-contained / enforcement-off path: there is no firewall to wait on, so
+    // resolve immediately. (Idempotent if already resolved above.)
+    signalEgressFirewallReady();
 
     // Wait for the worker process to be healthy before declaring the container ready.
     if (!deps.skipHealthCheck) {
@@ -975,6 +1020,10 @@ export async function createContainer(
     // them — the agent container itself isn't parent-session-labeled, so the
     // explicit stop/remove around the cleanup is still required.
     deps.containers.delete(config.sessionId);
+    // docs/172 ordering fix — unblock any concurrent compose-join awaiter; the
+    // container is being torn down, so resolving (not hanging) lets the join's
+    // best-effort egress re-open fall through to its "no container" no-op.
+    signalEgressFirewallReady();
     if (sc.id) {
       try {
         const c = deps.docker.getContainer(sc.id);

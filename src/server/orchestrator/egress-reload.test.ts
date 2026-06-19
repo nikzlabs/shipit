@@ -7,7 +7,7 @@
 import { describe, it, expect, vi } from "vitest";
 import type Docker from "dockerode";
 import { reloadEgressSidecars } from "./egress-reload.js";
-import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
+import { EGRESS_RESOLVER_LABEL, OPS_DOCKER_PROXY_DNS_NAME } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
 interface CreatedContainer {
@@ -62,6 +62,21 @@ describe("reloadEgressSidecars", () => {
     // The regenerated dnsmasq config (base64) embeds the new host's domain.
     const b64 = (cfg.Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
     expect(Buffer.from(b64, "base64").toString("utf-8")).toContain("new.example.com");
+  });
+
+  it("re-emits the docker-socket-proxy resolver rule for an ops session (SHI-90)", async () => {
+    const { docker, created } = fakeDocker([{ Id: "old-resolver" }]);
+    await reloadEgressSidecars({ docker, ...baseOpts, opsSession: true, reloadResolver: true, reloadProxy: false });
+    const b64 = (created[0].Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
+    const cfg = Buffer.from(b64, "base64").toString("utf-8");
+    expect(cfg).toContain(`server=/${OPS_DOCKER_PROXY_DNS_NAME}/127.0.0.11`);
+  });
+
+  it("does NOT emit the proxy rule for a non-ops reload", async () => {
+    const { docker, created } = fakeDocker([{ Id: "old-resolver" }]);
+    await reloadEgressSidecars({ docker, ...baseOpts, opsSession: false, reloadResolver: true, reloadProxy: false });
+    const b64 = (created[0].Env ?? []).find((e) => e.startsWith("EGRESS_DNSMASQ_CONFIG_B64="))?.split("=")[1] ?? "";
+    expect(Buffer.from(b64, "base64").toString("utf-8")).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
   });
 
   it("removes the old proxy + relaunches it with the new allowlist when reloadProxy", async () => {

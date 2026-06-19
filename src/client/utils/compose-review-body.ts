@@ -10,9 +10,11 @@
  *     genuine second-model opinion.
  *   - otherwise → **subagent**: the parent spawns one fresh same-model `Task`.
  *
- * In both modes the reviewer returns **markdown only** (no MCP tool call), the
- * parent calls the `submit_review` tool with that markdown to record one review
- * card, then applies fixes and runs one re-review (which patches the same card).
+ * In both modes the reviewer READS the file with its own read-only tools (it
+ * runs in the same workspace) and returns **markdown only** — it must not call
+ * the `submit_review` MCP tool itself. The parent calls `submit_review` with
+ * that markdown to record one review card, then applies fixes and runs one
+ * re-review (which patches the same card).
  *
  * Cross-agent failure is a first-class path: `runSubAgent` re-checks
  * enable/auth/pinned/cap at execution time, so `shipit agent run` can still exit
@@ -78,15 +80,18 @@ export function resolveReviewer(args: {
 
 function reviewBrief(filePath: string): string[] {
   return [
-    `Review brief for ${filePath} — return MARKDOWN ONLY, no tool calls:`,
-    "- Approach the file fresh; read related files in the repo for context.",
+    `Review brief for ${filePath} — your final answer is MARKDOWN ONLY:`,
+    "- You run in the same workspace. READ the file and any related files with",
+    "  your own read-only tools (Read/Grep/Glob/shell) — that is expected, not a",
+    "  violation of this brief. Approach the file fresh.",
     "- Report only MATERIAL issues: correctness, safety, completeness, or the",
     "  user's stated goal. Skip nits, style, and speculative concerns.",
     "- Order findings by severity. Write each as `path:line — issue` (line",
     "  optional), then a specific fix on the next line. Omit a finding if you",
     "  cannot name a concrete fix.",
     '- If the file is clean, return exactly: "No material issues found."',
-    "- Return the markdown as your final message. Do NOT call any MCP tool.",
+    "- Return the markdown as your final message. Do NOT call the `submit_review`",
+    "  tool or any other MCP tool — the parent records the review, not you.",
   ];
 }
 

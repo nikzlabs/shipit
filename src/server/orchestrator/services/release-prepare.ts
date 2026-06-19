@@ -39,6 +39,7 @@ import {
   computeNextVersion,
   detectAllVersionSources,
   parseSemVer,
+  parseVersionFromContent,
   readPackageJsonVersion,
   readCargoTomlVersion,
   readPyprojectVersion,
@@ -85,6 +86,44 @@ export interface PlanReleaseArgs {
   prerelease?: boolean;
   /** Monorepo override — path (relative to dir, or absolute) to the version file. */
   versionSourcePath?: string;
+  /**
+   * Release mechanism (from `shipit.yaml` `release.mechanism`). For
+   * `release-branch` the current version is anchored to the maintenance branch
+   * (`releaseBranch`) rather than the working tree — see `resolveCurrentVersion`.
+   */
+  mechanism?: string;
+  /** The release (maintenance) branch to anchor the current version to. */
+  releaseBranch?: string;
+}
+
+/**
+ * Resolve the version to bump FROM.
+ *
+ * For the `release-branch` mechanism the authoritative current version lives on
+ * the maintenance branch — it's what was last released, and exactly what CI reads
+ * off the merged commit to derive the tag. It is NOT the session working tree's
+ * version: the bump PR lands only on `<releaseBranch>` and is never merged back
+ * to `main`, so the working tree (branched off `main`) lags every release. Reading
+ * the next version from the working tree therefore computes a version at or below
+ * what's already published (docs/214 bugfix).
+ *
+ * Reads the version source at `origin/<releaseBranch>`; falls back to the
+ * working-tree version when that branch/file is absent (first release / bootstrap)
+ * or for any non-`release-branch` mechanism (where `main` IS the release source).
+ * The caller must have fetched `origin` first.
+ */
+async function resolveCurrentVersion(
+  git: GitManager,
+  detected: DetectedVersionSource,
+  dir: string,
+  mechanism: string | undefined,
+  releaseBranch: string | undefined,
+): Promise<string> {
+  if (mechanism !== "release-branch" || !releaseBranch) return detected.version;
+  const relPath = path.relative(dir, detected.path!);
+  const raw = await git.showFileAtRef(`origin/${releaseBranch}`, relPath);
+  if (!raw) return detected.version;
+  return parseVersionFromContent(detected.source, raw) ?? detected.version;
 }
 
 /**
@@ -144,12 +183,10 @@ function resolveSource(dir: string, versionSourcePath?: string): DetectedVersion
  */
 async function computePlan(
   git: GitManager,
-  detected: DetectedVersionSource,
+  current: string,
   bump: string | undefined,
   prerelease: boolean,
 ): Promise<{ version: string; bumpType: ReleaseBumpType | "explicit" }> {
-  const current = detected.version;
-
   // Explicit version literal (contains a dot and parses as semver).
   if (bump && bump.includes(".") && parseSemVer(bump)) {
     return { version: bump.replace(/^v/, ""), bumpType: "explicit" };
@@ -180,9 +217,17 @@ async function computePlan(
 /** Read-only release plan: detect source + compute next version (docs/214). */
 export async function planRelease(git: GitManager, args: PlanReleaseArgs): Promise<ReleasePlan> {
   const detected = resolveSource(args.dir, args.versionSourcePath);
-  const { version, bumpType } = await computePlan(git, detected, args.bump, args.prerelease ?? false);
+  // For the release-branch mechanism, anchor the current version to the
+  // maintenance branch (what's released) rather than the lagging working tree.
+  // Requires a fetch so `origin/<releaseBranch>` is fresh.
+  let current = detected.version;
+  if (args.mechanism === "release-branch" && args.releaseBranch) {
+    await git.fetch("origin");
+    current = await resolveCurrentVersion(git, detected, args.dir, args.mechanism, args.releaseBranch);
+  }
+  const { version, bumpType } = await computePlan(git, current, args.bump, args.prerelease ?? false);
   return {
-    currentVersion: detected.version,
+    currentVersion: current,
     version,
     tag: `v${version}`,
     bumpType,
@@ -267,7 +312,12 @@ export async function prepareRelease(
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const detected = resolveSource(args.dir, args.versionSourcePath);
-  const { version, bumpType } = await computePlan(git, detected, args.bump, args.prerelease ?? false);
+  // Fetch up front so `resolveCurrentVersion` reads a fresh `origin/<releaseBranch>`
+  // (the release-branch anchor) and the downstream branch resolution sees current
+  // refs. `prepareFinalRelease` relies on this fetch too.
+  await git.fetch("origin");
+  const current = await resolveCurrentVersion(git, detected, args.dir, args.mechanism, args.releaseBranch);
+  const { version, bumpType } = await computePlan(git, current, args.bump, args.prerelease ?? false);
   const tag = `v${version}`;
 
   if (args.prerelease) {
@@ -335,7 +385,7 @@ async function prepareFinalRelease(
     throw new ServiceError(409, "The working tree has uncommitted changes — commit or discard them first.");
   }
 
-  await git.fetch("origin");
+  // `origin` was already fetched in `prepareRelease` before the version anchor.
 
   const releaseBranch = args.releaseBranch;
   const headBranch = `release/${version}`;

@@ -94,6 +94,12 @@ interface BootstrapResponse {
   };
   /** Orchestrator runtime mode (feature 118). Defaults to "containerized". */
   runtimeMode?: RuntimeMode;
+  /**
+   * Tailscale sslip preview host (docs/216). Present only on a Tailscale VPS
+   * deploy; routes preview iframes through sslip.io while the app/WS stay on the
+   * native MagicDNS host.
+   */
+  tailnetPreviewHost?: string;
 }
 
 /**
@@ -300,5 +306,6 @@ export async function loadBootstrapData(): Promise<void> {
   if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
   if (data.settings.providerAccounts) useSettingsStore.getState().setProviderAccounts(data.settings.providerAccounts);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
+  useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
   useUiStore.getState().setBootstrapLoaded(true);
 }

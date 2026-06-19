@@ -10,6 +10,7 @@ import {
   readCargoTomlVersion,
   readPyprojectVersion,
   readVersionFile,
+  parseVersionFromContent,
   detectVersionSource,
   detectAllVersionSources,
   writeVersionToSource,
@@ -190,6 +191,28 @@ describe("VERSION file detection", () => {
   it("returns null for empty VERSION file", () => {
     fs.writeFileSync(path.join(dir, "VERSION"), "   \n");
     expect(readVersionFile(dir)).toBeNull();
+  });
+});
+
+describe("parseVersionFromContent", () => {
+  it("parses package.json content (string-level, no disk)", () => {
+    expect(parseVersionFromContent("package.json", JSON.stringify({ version: "1.4.2" }))).toBe("1.4.2");
+  });
+  it("parses Cargo.toml content", () => {
+    expect(parseVersionFromContent("Cargo.toml", '[package]\nname = "x"\nversion = "0.9.0"\n')).toBe("0.9.0");
+  });
+  it("parses pyproject.toml content", () => {
+    expect(parseVersionFromContent("pyproject.toml", '[project]\nname = "x"\nversion = "3.1.0"\n')).toBe("3.1.0");
+  });
+  it("parses VERSION content (first line)", () => {
+    expect(parseVersionFromContent("VERSION", "2.0.0\n")).toBe("2.0.0");
+  });
+  it("returns null for the tag scheme (no file content)", () => {
+    expect(parseVersionFromContent("tag", "whatever")).toBeNull();
+  });
+  it("returns null when the field is missing", () => {
+    expect(parseVersionFromContent("package.json", "{}")).toBeNull();
+    expect(parseVersionFromContent("package.json", "not json")).toBeNull();
   });
 });
 

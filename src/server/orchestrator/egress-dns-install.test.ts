@@ -8,6 +8,8 @@ import type Docker from "dockerode";
 import {
   egressDnsEnabled,
   orchestratorInternalNames,
+  sessionInternalNames,
+  OPS_DOCKER_PROXY_DNS_NAME,
   orchestratorCallbackHost,
   buildResolverConfigB64,
   launchEgressResolver,
@@ -54,6 +56,21 @@ describe("orchestratorInternalNames", () => {
   });
 });
 
+describe("sessionInternalNames", () => {
+  it("adds the docker-socket-proxy alias ONLY for ops sessions", () => {
+    const env = { SHIPIT_ORCHESTRATOR_HOST: "shipit-orch" } as NodeJS.ProcessEnv;
+    expect(sessionInternalNames({ opsSession: true }, env)).toContain(OPS_DOCKER_PROXY_DNS_NAME);
+    expect(sessionInternalNames({ opsSession: false }, env)).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
+    // Defaults (no flag) behave like a non-ops session — proxy alias absent.
+    expect(sessionInternalNames({}, env)).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
+  });
+  it("still includes the orchestrator host for ops sessions (superset of orchestratorInternalNames)", () => {
+    const env = { SHIPIT_ORCHESTRATOR_HOST: "shipit-orch" } as NodeJS.ProcessEnv;
+    const ops = sessionInternalNames({ opsSession: true }, env);
+    for (const n of orchestratorInternalNames(env)) expect(ops).toContain(n);
+  });
+});
+
 describe("buildResolverConfigB64", () => {
   it("encodes a dnsmasq config that allowlists the base domains + extras", () => {
     const b64 = buildResolverConfigB64({ extraDomains: ["internal-registry.corp"] });
@@ -66,6 +83,24 @@ describe("buildResolverConfigB64", () => {
     const cfg = Buffer.from(buildResolverConfigB64({ internalDomains: ["shipit-orch"] }), "base64").toString("utf-8");
     expect(cfg).toContain("server=/shipit-orch/127.0.0.11");
     expect(cfg).not.toContain("ipset=/shipit-orch/");
+  });
+  it("forwards the docker-socket-proxy alias to Docker DNS for an ops session (SHI-90)", () => {
+    const cfg = Buffer.from(
+      buildResolverConfigB64({ internalDomains: sessionInternalNames({ opsSession: true }) }),
+      "base64",
+    ).toString("utf-8");
+    expect(cfg).toContain(`server=/${OPS_DOCKER_PROXY_DNS_NAME}/127.0.0.11`);
+    expect(cfg).not.toContain(`ipset=/${OPS_DOCKER_PROXY_DNS_NAME}/`); // internal — not pinned
+  });
+  it("does NOT emit the proxy rule (nor any default server) for a non-ops session", () => {
+    const cfg = Buffer.from(
+      buildResolverConfigB64({ internalDomains: sessionInternalNames({ opsSession: false }) }),
+      "base64",
+    ).toString("utf-8");
+    expect(cfg).not.toContain(OPS_DOCKER_PROXY_DNS_NAME);
+    // The anti-tunneling invariant: only per-domain server= lines, never a bare default.
+    expect(cfg).not.toMatch(/^server=[^/]/m);
+    expect(cfg).toContain("no-resolv");
   });
 });
 
