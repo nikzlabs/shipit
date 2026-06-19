@@ -5,7 +5,6 @@ import { OnboardingWizard } from "./OnboardingWizard.js";
 afterEach(cleanup);
 
 const defaultProps = () => ({
-  onGitIdentitySubmit: vi.fn(),
   onGitHubTokenSubmit: vi.fn().mockResolvedValue(true),
   agents: [
     { id: "claude", name: "Claude Code", installed: true, authConfigured: true, models: ["claude-sonnet"], supportsReview: true },
@@ -21,16 +20,22 @@ const defaultProps = () => ({
 });
 
 describe("OnboardingWizard", () => {
-  describe("Step 1 — GitHub mode (default)", () => {
+  describe("Step 1 — Connect GitHub", () => {
     it("renders step 1 with GitHub heading and token form", () => {
       render(<OnboardingWizard {...defaultProps()} />);
       expect(screen.getByText("Connect GitHub")).toBeInTheDocument();
       expect(screen.getByTestId("github-token-form")).toBeInTheDocument();
     });
 
-    it("renders step dots with step 1 active", () => {
+    it("renders step dots", () => {
       render(<OnboardingWizard {...defaultProps()} />);
       expect(screen.getByTestId("step-dots")).toBeInTheDocument();
+    });
+
+    it("is GitHub-only — no manual / sandbox fallback door", () => {
+      render(<OnboardingWizard {...defaultProps()} />);
+      expect(screen.queryByTestId("switch-manual")).not.toBeInTheDocument();
+      expect(screen.queryByText("Set up manually instead")).not.toBeInTheDocument();
     });
 
     it("advances to step 2 on successful GitHub connect", async () => {
@@ -39,7 +44,7 @@ describe("OnboardingWizard", () => {
       fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "ghp_abc" } });
       fireEvent.click(screen.getByTestId("github-token-submit"));
       await waitFor(() => {
-        expect(screen.getByText("Agent Setup")).toBeInTheDocument();
+        expect(screen.getByText("Connect an agent")).toBeInTheDocument();
       });
       expect(props.onComplete).not.toHaveBeenCalled();
     });
@@ -54,63 +59,9 @@ describe("OnboardingWizard", () => {
       });
       expect(screen.getByText("Connect GitHub")).toBeInTheDocument();
     });
-
-    it("renders 'Set up manually instead' link", () => {
-      render(<OnboardingWizard {...defaultProps()} />);
-      expect(screen.getByTestId("switch-manual")).toBeInTheDocument();
-    });
-
-    it("switches to manual mode when link is clicked", () => {
-      render(<OnboardingWizard {...defaultProps()} />);
-      fireEvent.click(screen.getByTestId("switch-manual"));
-      expect(screen.getByText("Git Identity")).toBeInTheDocument();
-      expect(screen.getByPlaceholderText("Your Name")).toBeInTheDocument();
-    });
   });
 
-  describe("Step 1 — Manual mode", () => {
-    function renderManual(overrides = {}) {
-      const props = { ...defaultProps(), ...overrides };
-      const result = render(<OnboardingWizard {...props} />);
-      fireEvent.click(screen.getByTestId("switch-manual"));
-      return { ...result, ...props };
-    }
-
-    it("renders name and email inputs", () => {
-      renderManual();
-      expect(screen.getByPlaceholderText("Your Name")).toBeInTheDocument();
-      expect(screen.getByPlaceholderText("you@example.com")).toBeInTheDocument();
-    });
-
-    it("Save button is disabled when both inputs are empty", () => {
-      renderManual();
-      expect(screen.getByTestId("manual-save")).toBeDisabled();
-    });
-
-    it("Save button is enabled when both inputs have values", () => {
-      renderManual();
-      fireEvent.change(screen.getByPlaceholderText("Your Name"), { target: { value: "Test" } });
-      fireEvent.change(screen.getByPlaceholderText("you@example.com"), { target: { value: "a@b.com" } });
-      expect(screen.getByTestId("manual-save")).not.toBeDisabled();
-    });
-
-    it("calls onGitIdentitySubmit with trimmed values and advances to step 2", () => {
-      const { onGitIdentitySubmit } = renderManual();
-      fireEvent.change(screen.getByPlaceholderText("Your Name"), { target: { value: "  Test User  " } });
-      fireEvent.change(screen.getByPlaceholderText("you@example.com"), { target: { value: "  test@example.com  " } });
-      fireEvent.click(screen.getByTestId("manual-save"));
-      expect(onGitIdentitySubmit).toHaveBeenCalledWith("Test User", "test@example.com");
-      expect(screen.getByText("Agent Setup")).toBeInTheDocument();
-    });
-
-    it("switches back to GitHub mode when link is clicked", () => {
-      renderManual();
-      fireEvent.click(screen.getByTestId("switch-github"));
-      expect(screen.getByText("Connect GitHub")).toBeInTheDocument();
-    });
-  });
-
-  describe("Step 2 — Agent Setup", () => {
+  describe("Step 2 — Connect an agent", () => {
     function renderStep2(overrides = {}) {
       const props = { ...defaultProps(), ...overrides };
       const result = render(<OnboardingWizard {...props} />);
@@ -120,10 +71,10 @@ describe("OnboardingWizard", () => {
       return { result, props };
     }
 
-    it("renders Agent Setup heading", async () => {
+    it("renders the agent heading", async () => {
       renderStep2();
       await waitFor(() => {
-        expect(screen.getByText("Agent Setup")).toBeInTheDocument();
+        expect(screen.getByText("Connect an agent")).toBeInTheDocument();
       });
     });
 
@@ -178,19 +129,19 @@ describe("OnboardingWizard", () => {
   describe("initialStep", () => {
     it("starts at step 2 when initialStep is 2", () => {
       render(<OnboardingWizard {...defaultProps()} initialStep={2} />);
-      expect(screen.getByText("Agent Setup")).toBeInTheDocument();
+      expect(screen.getByText("Connect an agent")).toBeInTheDocument();
       expect(screen.queryByText("Connect GitHub")).not.toBeInTheDocument();
     });
 
     it("navigates back to step 1 when initialStep changes from 2 to 1", () => {
       const props = defaultProps();
       const { rerender } = render(<OnboardingWizard {...props} initialStep={2} />);
-      expect(screen.getByText("Agent Setup")).toBeInTheDocument();
+      expect(screen.getByText("Connect an agent")).toBeInTheDocument();
 
       // Simulate git_identity_required arriving after wizard already opened at step 2
       rerender(<OnboardingWizard {...props} initialStep={1} />);
       expect(screen.getByText("Connect GitHub")).toBeInTheDocument();
-      expect(screen.queryByText("Agent Setup")).not.toBeInTheDocument();
+      expect(screen.queryByText("Connect an agent")).not.toBeInTheDocument();
     });
   });
 
