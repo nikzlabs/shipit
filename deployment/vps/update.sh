@@ -3,7 +3,9 @@
 # Called by the shipit-updater systemd path unit when .update-requested appears.
 set -euo pipefail
 
-SHIPIT_DIR="/opt/shipit"
+# Override-able only so the test harness can point the whole script at a throwaway
+# git checkout + bare "origin"; defaults to the real install path in production.
+SHIPIT_DIR="${SHIPIT_DIR:-/opt/shipit}"
 TRIGGER_FILE="$SHIPIT_DIR/.update-requested"
 # Failure breadcrumb the orchestrator reads in checkForUpdates() to render a
 # "Update failed — still running <sha>" banner. Lives on the host repo next to
@@ -112,8 +114,12 @@ fi
 git reset --hard "$TARGET_SHA"
 
 # Build and restart. A non-zero exit here trips `set -e`, firing the cleanup
-# trap (rollback + failure marker) before the script aborts.
-bash "$SHIPIT_DIR/deployment/vps/deploy.sh"
+# trap (rollback + failure marker) before the script aborts. The deploy command
+# is override-able (SHIPIT_DEPLOY_SCRIPT) so the test harness can substitute a
+# stub for the Docker build that exercises both the success and failure paths;
+# production leaves it unset and runs the real deploy.sh.
+DEPLOY_SCRIPT="${SHIPIT_DEPLOY_SCRIPT:-$SHIPIT_DIR/deployment/vps/deploy.sh}"
+bash "$DEPLOY_SCRIPT"
 
 # Build + restart succeeded: keep the advanced checkout and let the trap drop
 # any failure marker.
