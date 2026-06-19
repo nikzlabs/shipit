@@ -165,10 +165,22 @@ export async function registerSessionReposRoutes(
         // Unblock the deferred setup for any already-open session of this
         // remote: re-run its compose/install setup now that trust is granted,
         // so the user doesn't have to restart the session to get a preview.
+        //
+        // Enumerate the runner registry, NOT `sessionManager.list()`: a
+        // just-claimed session stays warm (`warm = 1`) until its first turn
+        // graduates it, and `list()` filters out warm sessions (`WHERE warm =
+        // 0`). The session the user is *looking at* right after adding the repo
+        // is exactly that ungraduated warm one, so iterating `list()` skips it
+        // and its deferred install/compose never re-runs — leaving an empty
+        // preview that only a brand-new session recovers from. Any session with
+        // a live runner is "open" and may have setup to resume; sessions
+        // without a runner get fresh (now-trusted) setup on their next
+        // activation, so they need no nudge here. (docs/178)
         const key = canonicalRepoKey(url!);
-        for (const session of sessionManager.list()) {
-          if (session.remoteUrl && canonicalRepoKey(session.remoteUrl) === key) {
-            const runner = deps.runnerRegistry.get(session.id) as
+        for (const sessionId of deps.runnerRegistry.ids()) {
+          const session = sessionManager.get(sessionId);
+          if (session?.remoteUrl && canonicalRepoKey(session.remoteUrl) === key) {
+            const runner = deps.runnerRegistry.get(sessionId) as
               | { rerunServiceSetup?: () => void }
               | undefined;
             runner?.rerunServiceSetup?.();

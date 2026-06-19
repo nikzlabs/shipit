@@ -16,6 +16,7 @@
 - [x] Gate auto-preview compose `command:`/`build:` startup behind trust (same `setupServiceManager` early-return)
 - [x] Accept-trust action: `POST /api/repos/trust` that unblocks + runs deferred startup
 - [x] On acceptance: warm/pre-install (`warmSessionForRepo`), re-run deferred setup for open sessions (`runner.rerunServiceSetup`), broadcast updated repo list
+- [x] **Trust loop must enumerate the runner registry, not `sessionManager.list()`.** A just-claimed session stays warm (`warm = 1`) until its first turn graduates it, and `list()` filters warm out (`WHERE warm = 0`) — so a user who trusts *before* sending a first turn (the common case) had their open session skipped: `rerunServiceSetup` never fired, the deferred install/compose never ran, and the preview stayed empty (no service list AND no `compose_not_configured` "add shipit.yaml" hint) until a brand-new session was opened. Fixed by iterating `runnerRegistry.ids()` (warm sessions still have a live runner) and resolving each via `sessionManager.get(id)`. Regression test in `repos.test.ts`.
 
 ## Client
 - [x] Inline trust consent (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered as the Preview tab's restricted empty state: a centered card overlaying the (empty) preview frame, visible only on the Preview tab
