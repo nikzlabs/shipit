@@ -179,14 +179,20 @@ describe("POST /api/repos/trust (docs/178)", () => {
     repoStore.add(url);
     repoStore.setReady(url);
 
+    // A just-claimed warm session, with a valid clone dir (tmpDir exists) and
+    // registered as the repo's warm session — so the startup zombie-warm sweep
+    // (`startup-tasks.ts`) keeps it instead of deleting it as a stale orphan.
     const warmId = "warm-session-1";
-    sessionManager.track(warmId);
+    sessionManager.track(warmId, undefined, tmpDir);
     sessionManager.setRemoteUrl(warmId, url);
     sessionManager.setWarm(warmId, true); // ungraduated → excluded from list()
+    repoStore.setWarmSessionId(url, warmId);
     expect(sessionManager.list().some((s) => s.id === warmId)).toBe(false);
 
     let reran = 0;
-    // Inject a minimal stub runner so trust's loop has something to nudge.
+    // Inject a minimal stub runner so trust's loop has something to nudge. A
+    // warm session keeps its runner in the registry even though `list()` hides
+    // it — that is exactly the case the fix must cover.
     (app.runnerRegistry as unknown as { runners: Map<string, unknown> }).runners.set(
       warmId,
       { disposed: false, rerunServiceSetup: () => { reran += 1; }, dispose: () => {} },
