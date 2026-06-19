@@ -10,9 +10,48 @@
  */
 
 import { readFile, writeFile } from "node:fs/promises";
+import { parseSemVer } from "./release-version.js";
 
 /** Path to the host repo, bind-mounted into the orchestrator container. */
 export const HOST_REPO_DIR = "/opt/shipit";
+
+/**
+ * Sentinel `latestVersion` for the stable channel when no final release tag is
+ * reachable from `origin/stable` yet (a freshly-created branch, or only `-rc.N`
+ * tags). The updater **fails closed** here — it never falls back to the branch
+ * tip (docs/214 Option A). Not a `vX.Y.Z` string, so the release-URL/version
+ * regexes correctly skip it.
+ */
+export const NO_STABLE_RELEASE = "no stable release yet";
+
+/**
+ * Pick the highest **final** (non-prerelease) release tag from a list of tag
+ * names — the stable channel's target under docs/214 Option A.
+ *
+ * The stable channel resolves the latest final tag *reachable from*
+ * `origin/stable` (the caller passes `git tag --merged origin/stable`), NOT the
+ * branch tip and NOT `git describe` (which returns the nearest tag by commit
+ * distance — wrong on a branch carrying multiple tags). Each candidate is
+ * strict-SemVer-parsed; non-semver tags and prereleases are dropped; the highest
+ * remaining version wins. Returns null when none qualify (caller fails closed).
+ */
+export function pickLatestFinalTag(tags: readonly string[]): string | null {
+  let best: { tag: string; major: number; minor: number; patch: number } | null = null;
+  for (const tag of tags) {
+    const v = parseSemVer(tag);
+    if (!v) continue; // not strict SemVer
+    if (v.prerelease.length > 0) continue; // exclude prereleases from stable
+    if (
+      !best ||
+      v.major > best.major ||
+      (v.major === best.major && v.minor > best.minor) ||
+      (v.major === best.major && v.minor === best.minor && v.patch > best.patch)
+    ) {
+      best = { tag, major: v.major, minor: v.minor, patch: v.patch };
+    }
+  }
+  return best?.tag ?? null;
+}
 
 /** Untracked file holding the one-word channel preference. */
 export const CHANNEL_FILE = `${HOST_REPO_DIR}/.release-channel`;

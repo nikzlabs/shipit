@@ -1,4 +1,5 @@
 ---
+issue: https://linear.app/shipit-ai/issue/SHI-171
 description: Add stable/edge release channels so self-hosters can pin to vetted, low-frequency releases instead of always tracking main.
 ---
 
@@ -84,44 +85,57 @@ identity and notes.
 
 ### Refs and conventions
 
-- **Final releases**: annotated tags `vX.Y.Z` (semver), cut from a commit on
-  `main`. These are the only things the stable channel will advance to.
+- **Final releases**: annotated tags `vX.Y.Z` (semver), cut from `stable`'s HEAD.
+  These are the only things the stable channel advances to.
 - **Pre-releases** (optional): `vX.Y.Z-rc.N`. Excluded from the stable channel.
-- **`stable` branch**: a fast-forward-only pointer that the release process moves
-  to each new `vX.Y.Z` tag commit. `origin/stable` is therefore "the latest
-  stable release," queryable with the exact same `git fetch` / `rev-parse`
-  machinery we already use for `main`.
+- **`stable` branch**: a long-lived **maintenance branch** with its own curated
+  history — the released code plus fixes cherry-picked onto it. Maintainers move
+  it (merge / cherry-pick from `main`, then bump + tag); CI never does.
+  `origin/stable` is therefore "the latest stable release," queryable with the
+  exact same `git fetch` / `rev-parse` machinery we already use for `main`.
 - **`main`**: unchanged — the integration branch, and the edge channel's target.
+  `main` and `stable` intentionally diverge (see RELEASING.md).
 
 Channel → tracking ref:
 
-| Channel  | Target ref      | Cadence            | Audience                         |
-|----------|-----------------|--------------------|----------------------------------|
-| `stable` | `origin/stable` | per release cut    | default; conservative operators  |
-| `edge`   | `origin/main`   | every merge        | early adopters, contributors     |
+| Channel  | Target ref                                  | Cadence            | Audience                         |
+|----------|---------------------------------------------|--------------------|----------------------------------|
+| `stable` | latest final tag reachable from `origin/stable` | per release cut | default; conservative operators  |
+| `edge`   | `origin/main`                               | every merge        | early adopters, contributors     |
 
-Why both a tag *and* a `stable` branch (rather than just tags): resolving "the
-latest non-prerelease tag" requires semver sorting and prerelease filtering in
-the updater. Pointing `stable` at the release commit lets `checkForUpdates()` and
-`update.sh` stay a one-line `ref` parametrization of today's code. The tag is
-still what we display as the version (`git describe --tags --exact-match` on the
-`stable` commit yields `vX.Y.Z`) and what GitHub Releases hangs notes off of.
+> **Update (docs/214 — Option A):** the stable channel resolves the **latest final
+> (non-prerelease) tag reachable from `origin/stable`**, not the branch tip. The
+> original design tracked `origin/stable` directly for a one-line
+> `reset --hard origin/stable` — fine in the FF-follower model where the tip was
+> always a tag. The maintenance-branch model advances `stable` on *merge* (before
+> CI tags/publishes), so the tip can transiently be an un-released commit; tracking
+> the tip would expose un-vetted code. Resolving the latest tag (modest semver-sort
+> + prerelease filter in `update.sh` / `checkForUpdates()`) keeps "stable advances
+> only to tagged releases" true. The tag is also what we display as the version
+> (`git describe --tags`) and what GitHub Releases hangs notes off of.
 
 ### Cutting a release (CI-driven)
 
-A new workflow `.github/workflows/release.yml` triggered on pushing a `v*` tag:
+A workflow `.github/workflows/release.yml` triggered on pushing a `v*` tag:
 
-1. Run the full `check` + `test` jobs (reuse `ci.yml` steps) against the tagged
+1. `version-guard`: the tag must equal `package.json` `version` (kept in lockstep
+   by `npm run release`), so the human-facing version and the tag never drift.
+2. Run the full `check` + `test` jobs (reuse `ci.yml` steps) against the tagged
    commit — a release must be green.
-2. On success, fast-forward `stable` to the tagged commit
-   (`git push origin <sha>:refs/heads/stable`). Fails loudly if it would not be a
-   fast-forward (guards against tagging off a non-`main` commit).
 3. Create a GitHub Release for the tag with auto-generated notes (PR titles since
    the previous tag). These notes are the changelog we surface inline.
 
-Maintainer's release ritual becomes: bump `package.json` `version`, commit to
-`main`, then `git tag -a vX.Y.Z -m … && git push origin vX.Y.Z`. CI does the rest.
-A short `docs/` note or `RELEASING.md` documents this.
+CI deliberately **does not move `stable`** — `stable` is a maintenance branch the
+maintainer pushes alongside the tag. The release ritual: from an up-to-date
+`stable`, bring in the work (merge or cherry-pick from `main`), then
+`npm run release -- vX.Y.Z` and push the branch and the tag. CI gates and
+publishes. `RELEASING.md` documents this in full.
+
+> **Auto-publish (docs/214):** `docs/214-release-auto-publish` removes the manual
+> `npm run release` + push step. The agent opens a version-bump PR into `stable`;
+> on merge, CI derives the tag, gates, tags, and publishes — so the channel model
+> here stays identical, but the *trigger* becomes merging the bump PR instead of a
+> hand-run release. `stable` is still never moved by CI.
 
 ## Where the channel preference lives
 
@@ -146,18 +160,21 @@ is introduced.
 
 ### `checkForUpdates()` (`services/updates.ts`)
 
-Becomes channel-aware:
+Becomes channel-aware (docs/214 Option A — as built):
 
 1. Read `/opt/shipit/.release-channel` (default per Migration rules).
-2. Resolve the target ref: `stable` → `origin/stable`, `edge` → `origin/main`.
-3. `git fetch origin <branch> --tags` (tags needed so we can name the stable
-   version).
-4. Compare `HEAD` vs the target ref as today. Extend the returned
-   `UpdateStatus` with:
+2. Resolve the target **commit**: `edge` → `origin/main` (branch tip); `stable` →
+   the commit of the latest final tag reachable from `origin/stable`
+   (`git tag --merged origin/stable` → strict-SemVer, drop prereleases, highest —
+   `pickLatestFinalTag()` in `release-channel.ts`). When stable has no final tag,
+   **fail closed**: `available: false`, `latestVersion: "no stable release yet"`,
+   never the branch tip.
+3. `git fetch origin <branch> --tags`.
+4. Compare `HEAD` vs the target commit. Extend the returned `UpdateStatus` with:
    - `channel: "stable" | "edge"`
    - `currentVersion: string` — `git describe --tags --exact-match HEAD` if on a
-     tag, else `main @ <short-sha>`.
-   - `latestVersion: string` — same for the target ref (`vX.Y.Z` on stable).
+     tag (true on a stable box, which sits on the tag's commit), else `main @ <short-sha>`.
+   - `latestVersion: string` — the resolved tag (`vX.Y.Z`) on stable, `main @ <sha>` on edge.
    - keep `behindBy` / `commitMessages` (commit list between current and target,
      rendered inline as the changelog).
 5. Handle the **direction** correctly: when a user switches edge→stable, `HEAD`
@@ -175,24 +192,35 @@ implies.
 
 ### `update.sh`
 
-Reads the channel and resets to the right ref:
+Reads the channel and resets to the right **commit** (docs/214 Option A — as
+built). Edge resets to the `origin/main` branch tip; stable resolves the latest
+final tag reachable from `origin/stable` and resets to *its commit* (fail closed
+if none):
 
 ```sh
 CHANNEL="$(cat "$SHIPIT_DIR/.release-channel" 2>/dev/null || echo edge)"
-case "$CHANNEL" in
-  stable) REF="origin/stable" ;;
-  *)      REF="origin/main" ;;
-esac
 git fetch origin --tags --prune
-git fetch origin "${REF#origin/}"
-git reset --hard "$REF"
+if [ "$CHANNEL" = "stable" ]; then
+  git fetch origin stable
+  LATEST_TAG="$(git tag --merged origin/stable \
+    | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+    | sort -V | tail -n1)"
+  [ -z "$LATEST_TAG" ] && { echo "no stable release yet"; exit 1; }   # fail closed
+  TARGET_SHA="$(git rev-parse "${LATEST_TAG}^{commit}")"
+else
+  git fetch origin main
+  TARGET_SHA="$(git rev-parse origin/main)"
+fi
+git reset --hard "$TARGET_SHA"
 bash "$SHIPIT_DIR/deployment/vps/deploy.sh"
 ```
 
-`deploy.sh` is unchanged: it already bakes `SHIPIT_BUILD_ID="$(git rev-parse
-HEAD)"`, which now points at the release commit on stable. No detached-HEAD
-concerns because we reset a (local) ref to track the remote, we don't `checkout`
-a tag.
+`deploy.sh` is unchanged: it bakes `SHIPIT_BUILD_ID="$(git rev-parse HEAD)"`,
+which now points at the release **tag's commit** on stable (or the `main` tip on
+edge). On stable HEAD is detached at the tag's commit — fine for build-id (a SHA)
+and `git describe --exact-match` names the tag. (The old design reset to the
+branch *ref*; Option A switched stable to the resolved tag's commit so the
+merge-before-publish window can't expose an un-released tip.)
 
 ### Version surfacing (`build-id.ts` + client)
 
@@ -262,16 +290,23 @@ alone). Add a separate human-facing version resolver:
   stores are release-boundary events. A true "safe downgrade" guarantee is out
   of scope; the warning + docs are the v1 answer.
 - **Stable lags real bugfixes.** A conservative channel means security/critical
-  fixes need a way to reach stable fast. Convention: patch releases (`vX.Y.Z+1`)
-  cut from `main` (or a cherry-pick) on demand; stable users get them via the
-  normal check. Document the patch-release path in `RELEASING.md`.
-- **`stable` fast-forward invariant broken.** If someone tags off a branch that
-  isn't an ancestor of current `stable`, the release workflow's FF push fails —
-  this is the desired loud failure, not a silent force-push. Never force-push
-  `stable`.
-- **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and only ever
-  `reset --hard` a tracking branch ref, never `checkout` a tag, so HEAD stays on
-  a branch and `build-id` stays a normal SHA.
+  fixes need a way to reach stable fast. Because `stable` is a maintenance
+  branch, the fix is cherry-picked onto it and shipped as a patch release
+  (`vX.Y.Z+1`) carrying *only* that fix — no unrelated `main` churn. Document the
+  patch-release path in `RELEASING.md`.
+- **`stable`/`main` divergence + forward-port discipline.** `stable` is no longer
+  constrained to be an ancestor chain of `main`; the cost is that a fix
+  cherry-picked onto `stable` must also exist on `main` (land it there first) or
+  the next minor silently regresses it. This is a maintainer-discipline risk, not
+  one CI can enforce here.
+- **Tag fetch cost / detached HEAD.** We `git fetch --tags` (cheap) and `reset
+  --hard` to a commit. **Under Option A (docs/214, now built), the stable channel
+  resets to the resolved tag's *commit*** (not the `stable` branch ref) —
+  `reset --hard <sha>` leaves HEAD detached-but-normal for `build-id`; the version
+  is the resolved tag via `git describe --exact-match`. The edge channel still
+  resets to the `origin/main` branch tip. The tag resolution is a small semver
+  sort skipping prereleases (`update.sh` / `pickLatestFinalTag()`), added on top
+  of the previous one-line `reset --hard`.
 - **Inner dogfood / local mode.** `RUNTIME_MODE=local` dev instances and the
   dogfood path have no `/opt/shipit` host mount; channel logic must degrade
   gracefully (default edge, hide/disable the selector) exactly as the existing
@@ -281,8 +316,8 @@ alone). Add a separate human-facing version resolver:
 
 | File | Change |
 |------|--------|
-| `src/server/orchestrator/release-channel.ts` | **New** shared module: `.release-channel` read/write, `ReleaseChannel` type, `channelRef()`/`channelBranch()`, `DEFAULT_CHANNEL = "edge"`. Imported by `updates.ts` and `build-id.ts` to avoid coupling those modules to each other |
-| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()` + `getVersion()`; extend `UpdateStatus` with channel/version/`isDowngrade` fields |
+| `src/server/orchestrator/release-channel.ts` | **New** shared module: `.release-channel` read/write, `ReleaseChannel` type, `channelRef()`/`channelBranch()`, `DEFAULT_CHANNEL = "edge"`. docs/214: `pickLatestFinalTag()` + `NO_STABLE_RELEASE` for Option-A stable tag resolution. Imported by `updates.ts` and `build-id.ts` to avoid coupling those modules to each other |
+| `src/server/orchestrator/services/updates.ts` | Channel-aware `checkForUpdates()`; new `setChannel()` + `getVersion()`; extend `UpdateStatus` with channel/version/`isDowngrade` fields. docs/214: stable resolves the latest final tag reachable from `origin/stable` (`resolveLatestStableTag()`), fails closed when none |
 | `src/server/orchestrator/api-routes-updates.ts` | New `POST /api/updates/channel`; channel in check response |
 | `src/server/orchestrator/build-id.ts` | Add `resolveVersion()` — `git describe` against `/opt/shipit` (NOT the container cwd / `SHIPIT_BUILD_ID` env), with a short-SHA/`edge` fallback when the host repo is absent; keep `resolveBuildId()`'s SHA contract untouched |
 | `src/server/shared/types/domain-types.ts` | Version/channel types surfaced to client |
@@ -291,10 +326,10 @@ alone). Add a separate human-facing version resolver:
 | `deployment/vps/setup.sh` | Default new installs to `stable`; write `.release-channel`; clone/checkout `origin/stable`; **replace the re-run `git pull` (line 88) with a channel-aware `fetch --tags` + `reset --hard <ref>`** so a re-run never un-pins a stable box |
 | `deployment/vps/docker-compose.yml` | (no change — `/opt/shipit` mount already present at line 26) |
 | `.gitignore` | Add `.release-channel` |
-| `.github/workflows/release.yml` | New: on `v*` tag → CI gate → FF `stable` → GitHub Release with notes |
+| `.github/workflows/release.yml` | docs/214: triggers on `push: { branches: [stable], tags: ['v*'] }`. Branch path derives the tag from `package.json`, gates, tags the merged commit, publishes. Tag path gates + publishes a pushed tag. Still does **not** *move* `stable`. |
 | `package.json` | `version` becomes meaningful; bumped per release |
 | `deployment/README.md` | Document channels, switching, and the release process |
-| `RELEASING.md` (new) | Maintainer release ritual (tag, patch releases, stable FF) |
+| `RELEASING.md` (new) | Maintainer release ritual (cut from `stable`, cherry-pick hotfixes, tag) |
 | `src/server/shipit-docs/*` | Update if channel/version becomes agent-visible |
 
 ## Rollout phases

@@ -1348,6 +1348,19 @@ Implementation started:
   credential checks are file-only (env-var auth belongs to reserved routes, so
   it cannot make a half-finished scoped login look complete). The singleton
   flow (no `accountId`/`credentialDir`) is unchanged.
+- **Re-auth wipes the scope's credential files at flow start.**
+  `startOAuthFlow` calls `removeCredentialFiles(configDir)` (the same removal
+  loop `signOut` uses) before spawning `claude /login`. `claude /login` only
+  runs the full OAuth code-paste flow from a clean slate; an expired
+  `.credentials.json` left on disk makes it short-circuit (treats the account
+  as already logged in) and never write a fresh token, so the login silently
+  no-ops. This was the "must Clear saved credentials before re-authenticating"
+  bug — the wipe now does that automatically. It complements the #1406
+  baseline-mtime gate (which prevents a *premature* success on a stale file);
+  the wipe is what makes a fresh login actually start, and leaves the baseline
+  at 0 so any write the flow produces counts as fresh. Regression test:
+  `auth-manager.test.ts` → "wipes a stale/expired credential file before
+  spawning the login CLI".
 - `ProviderAccountManager` gained `attachAuthManagers` + `startAccountAuth` /
   `cancelAccountAuth` / `submitAccountCode` / `signOutAccount` /
   `setAccountStatus`, and is wired to the auth-manager map in `index.ts` after

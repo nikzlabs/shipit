@@ -40,12 +40,12 @@ export function ReadyPhase({
         {hasDiffStats && <DiffStats ins={ins} del={del} onClick={openDiff} />}
         {hasDiffStats && (
           <Button
-            size="md"
+            size="sm"
             onClick={onCreatePr}
             disabled={creating || !onCreatePr}
-            className="shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
+            className="h-6 shrink-0 bg-(--color-success) hover:bg-(--color-success) hover:opacity-90 text-(--color-text-inverse)"
           >
-            {creating && <CircleNotchIcon size={14} className="animate-spin" />}
+            {creating && <CircleNotchIcon size={12} className="animate-spin" />}
             {creating ? "Creating PR..." : "Create PR"}
           </Button>
         )}

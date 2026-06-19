@@ -12,6 +12,23 @@ import type { SessionManager } from "../sessions.js";
 import type { ReleaseStatusPoller } from "../release-status-poller.js";
 import { parseReleaseMarkers } from "../release-markers.js";
 import { detectVersionSource } from "../release-version.js";
+import { resolveShipitConfig } from "../../shared/shipit-config.js";
+import type { ReleaseMechanism } from "../../shared/types/release-types.js";
+
+/**
+ * Resolve the repo's release mechanism from `shipit.yaml` (the authoritative
+ * source). Returns undefined when the file is absent/unparseable or no
+ * `release.mechanism` is set — the card consumer then treats it as the platform
+ * default (`tag-triggered`). Never throws: a malformed shipit.yaml must not break
+ * the release card.
+ */
+function resolveMechanism(sessionDir: string): ReleaseMechanism | undefined {
+  try {
+    return resolveShipitConfig(sessionDir).release?.mechanism;
+  } catch {
+    return undefined;
+  }
+}
 
 export interface ReleaseFlowDeps {
   releaseStatusPoller: ReleaseStatusPoller;
@@ -46,10 +63,33 @@ export async function reactToReleaseMarkers(args: {
         // Fill the version source from local detection when the agent omitted
         // it, so the card always names where the version came from.
         const versionSource = marker.versionSource ?? detectVersionSource(sessionDir)?.source;
+        // Mechanism drives the card's confirm wording (release-branch opens/merges
+        // a bump PR — CI tags; tag-triggered pushes the tag). Authoritative source
+        // is shipit.yaml; the marker can override; absent → card treats as default.
+        const mechanism = marker.mechanism ?? resolveMechanism(sessionDir);
         deps.releaseStatusPoller.propose(sessionId, repoUrl, {
           version: marker.version,
           tag: marker.tag,
           prerelease: marker.prerelease,
+          ...(marker.bumpType ? { bumpType: marker.bumpType } : {}),
+          ...(versionSource ? { versionSource } : {}),
+          ...(mechanism ? { mechanism } : {}),
+          ...(marker.notes ? { notes: marker.notes } : {}),
+        });
+        break;
+      }
+      case "pr-opened": {
+        // docs/214 — normally driven directly from the prepare route
+        // (`markPrOpened`); handled here too so a marker-driven emit stays
+        // supported. Fill the version source from local detection when omitted.
+        const versionSource = marker.versionSource ?? detectVersionSource(sessionDir)?.source;
+        deps.releaseStatusPoller.markPrOpened(sessionId, repoUrl, {
+          version: marker.version,
+          tag: marker.tag,
+          prerelease: marker.prerelease ?? marker.tag.includes("-"),
+          prNumber: marker.prNumber,
+          prUrl: marker.prUrl,
+          releaseBranch: marker.releaseBranch,
           ...(marker.bumpType ? { bumpType: marker.bumpType } : {}),
           ...(versionSource ? { versionSource } : {}),
           ...(marker.notes ? { notes: marker.notes } : {}),

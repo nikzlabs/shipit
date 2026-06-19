@@ -15,12 +15,20 @@
  *
  *   <!--shipit:release {"action":"propose","version":"0.3.0","bumpType":"minor",
  *     "tag":"v0.3.0","prerelease":false,"notes":"..."}-->
+ *   <!--shipit:release {"action":"pr-opened","version":"0.3.0","tag":"v0.3.0",
+ *     "prNumber":42,"prUrl":"https://github.com/o/r/pull/42","releaseBranch":"stable"}-->
  *   <!--shipit:release {"action":"tagged","tag":"v0.3.0","version":"0.3.0","sha":"abc123"}-->
  *   <!--shipit:release {"action":"already-released","tag":"v0.3.0","version":"0.3.0"}-->
  *   <!--shipit:release {"action":"cancelled"}-->
+ *
+ * Note: in the docs/214 release-branch flow the orchestrator drives the poller
+ * DIRECTLY from the `shipit release prepare` route (`markPrOpened`), so the
+ * `pr-opened` marker isn't normally emitted by the agent. It is parsed here for
+ * completeness / parity with the other actions and so a marker-driven path
+ * (Codex, or a manual emit) stays supported.
  */
 
-import type { ReleaseBumpType } from "../shared/types/release-types.js";
+import type { ReleaseBumpType, ReleaseMechanism } from "../shared/types/release-types.js";
 
 export interface ReleaseProposeMarker {
   action: "propose";
@@ -29,6 +37,12 @@ export interface ReleaseProposeMarker {
   prerelease: boolean;
   bumpType?: ReleaseBumpType;
   versionSource?: string;
+  /**
+   * Release mechanism, if the agent stated it. Usually omitted — the orchestrator
+   * authoritatively resolves it from `shipit.yaml` (`reactToReleaseMarkers`),
+   * defaulting to `tag-triggered`. Accepted here for parity / marker-driven paths.
+   */
+  mechanism?: ReleaseMechanism;
   notes?: string;
 }
 
@@ -38,6 +52,19 @@ export interface ReleaseTaggedMarker {
   version?: string;
   sha?: string;
   prerelease?: boolean;
+  notes?: string;
+}
+
+export interface ReleasePrOpenedMarker {
+  action: "pr-opened";
+  version: string;
+  tag: string;
+  prNumber: number;
+  prUrl: string;
+  releaseBranch: string;
+  prerelease?: boolean;
+  bumpType?: ReleaseBumpType;
+  versionSource?: string;
   notes?: string;
 }
 
@@ -53,6 +80,7 @@ export interface ReleaseCancelledMarker {
 
 export type ReleaseMarker =
   | ReleaseProposeMarker
+  | ReleasePrOpenedMarker
   | ReleaseTaggedMarker
   | ReleaseAlreadyReleasedMarker
   | ReleaseCancelledMarker;
@@ -64,6 +92,7 @@ function asString(v: unknown): string | undefined {
 }
 
 const BUMP_TYPES: ReadonlySet<string> = new Set(["major", "minor", "patch", "prerelease"]);
+const MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered", "release-branch"]);
 
 /**
  * Parse all release markers from a block of turn text, in document order.
@@ -90,11 +119,33 @@ export function parseReleaseMarkers(text: string): ReleaseMarker[] {
       const tag = asString(raw.tag);
       if (!version || !tag) continue;
       const bump = asString(raw.bumpType);
+      const mechanism = asString(raw.mechanism);
       out.push({
         action: "propose",
         version,
         tag,
         prerelease: raw.prerelease === true,
+        ...(bump && BUMP_TYPES.has(bump) ? { bumpType: bump as ReleaseBumpType } : {}),
+        ...(asString(raw.versionSource) ? { versionSource: asString(raw.versionSource)! } : {}),
+        ...(mechanism && MECHANISMS.has(mechanism) ? { mechanism: mechanism as ReleaseMechanism } : {}),
+        ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),
+      });
+    } else if (action === "pr-opened") {
+      const version = asString(raw.version);
+      const tag = asString(raw.tag);
+      const prUrl = asString(raw.prUrl);
+      const releaseBranch = asString(raw.releaseBranch);
+      const prNumber = typeof raw.prNumber === "number" ? raw.prNumber : Number(asString(raw.prNumber));
+      if (!version || !tag || !prUrl || !releaseBranch || !Number.isInteger(prNumber) || prNumber <= 0) continue;
+      const bump = asString(raw.bumpType);
+      out.push({
+        action: "pr-opened",
+        version,
+        tag,
+        prNumber,
+        prUrl,
+        releaseBranch,
+        ...(typeof raw.prerelease === "boolean" ? { prerelease: raw.prerelease } : {}),
         ...(bump && BUMP_TYPES.has(bump) ? { bumpType: bump as ReleaseBumpType } : {}),
         ...(asString(raw.versionSource) ? { versionSource: asString(raw.versionSource)! } : {}),
         ...(asString(raw.notes) ? { notes: asString(raw.notes)! } : {}),

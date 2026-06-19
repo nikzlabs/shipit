@@ -24,6 +24,8 @@ function stubFetch(initial: { entries: EgressAllowlistEntry[]; globalEnabled?: b
       effectiveContained: override ?? globalEnabled,
       globalEnabled,
       enforcementActive: true,
+      startedContained: null,
+      pendingRestart: false,
     },
     defaultsCustomized: false,
   });

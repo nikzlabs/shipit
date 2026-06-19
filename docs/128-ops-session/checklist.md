@@ -28,7 +28,9 @@
 
 - [x] Pinned "Host / Ops" sidebar group keyed off `kind === "ops"` (separate from repo/orphan).
 - [x] `ops` badge on ops session rows.
-- [x] Settings → advanced "Create ops session for this host" affordance.
+- [x] ~~Settings → advanced "Create ops session for this host" affordance.~~ Removed —
+      the sidebar `+` menu (`handleCreateOps`) and the per-row `⋯` "Investigate in Ops
+      session" entry are the ops-creation surfaces; the redundant Settings button is gone.
 - [x] Per-session `⋯` menu "Investigate in Ops session" entry point (any non-ops row);
       seeds the new session's composer draft with a target-scoped investigation prompt.
 - [x] `createOpsSession(targetSessionId?)` store action centralizing ops creation

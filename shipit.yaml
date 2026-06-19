@@ -17,3 +17,12 @@ agent:
 # `setupServiceManager` short-circuits on the missing `compose:` key and the
 # inner UI never boots. See docs/118-shipit-ui-local/plan.md.
 compose: docker-compose.yml
+# Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
+# PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
+# derives the tag `v<package.json version>`, gates on a green build, tags the
+# merged commit, and publishes the GitHub Release — no hand-pushed tags. See
+# RELEASING.md.
+release:
+  mechanism: release-branch
+  branch: stable
+  version-source: package.json

@@ -45,9 +45,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # docs/150 — the base image now drops to the unprivileged `shipit` user. Host
 # journal files (read-only mounts for docs/128 ops sessions) are group-readable
-# by `systemd-journal`/`adm`, not world-readable, so add `shipit` to those
-# groups or `journalctl -D /var/log/journal` would EACCES post-migration. The
-# `systemd-journal` group is created by the systemd install above; `adm` exists
-# in the Debian base. Best-effort (`|| true`) so an image variant lacking a
-# group never fails the build.
-RUN usermod -aG systemd-journal,adm shipit || true
+# by `systemd-journal`/`adm` (mode 0640 root:systemd-journal), not
+# world-readable, so `shipit` must join those groups or `journalctl -D
+# /var/log/journal` would EACCES post-migration.
+#
+# `usermod -aG a,b user` is ATOMIC: if ANY listed group is missing, usermod
+# errors and adds the user to NONE of them. The `systemd` install above does not
+# reliably create the `systemd-journal` group at build time in this base, so the
+# old combined `usermod -aG systemd-journal,adm shipit || true` failed as a whole
+# and `|| true` swallowed it — shipping `shipit` in no supplementary groups
+# (`groups=1000(shipit)`) with the journal unreadable. Fix: ensure both groups
+# exist first (`groupadd -rf` is a no-op if present), add membership per-group so
+# one missing group can't drop the other, and assert the result so a regression
+# fails the build loudly instead of silently disabling the journal pillar.
+RUN groupadd -rf systemd-journal \
+ && groupadd -rf adm \
+ && usermod -aG systemd-journal shipit \
+ && usermod -aG adm shipit \
+ && id -nG shipit | tr ' ' '\n' | grep -qx systemd-journal \
+ && id -nG shipit | tr ' ' '\n' | grep -qx adm

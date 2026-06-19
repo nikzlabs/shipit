@@ -167,6 +167,46 @@ describe("POST /api/repos/trust (docs/178)", () => {
     expect(repoStore.isTrusted("https://github.com/owner/repo.git")).toBe(true);
   });
 
+  it("re-runs deferred setup for a still-WARM open session of the remote", async () => {
+    // Regression: clicking Trust right after adding a repo — before the first
+    // turn graduates the session — left the preview empty forever. The trust
+    // endpoint enumerated `sessionManager.list()`, which filters out warm
+    // sessions (`WHERE warm = 0`), so the just-claimed (still warm=1) session
+    // the user was looking at was skipped and its deferred install/compose
+    // never re-ran. It must enumerate the runner registry instead, which
+    // includes warm sessions that have a live runner. (docs/178)
+    const url = "https://github.com/owner/repo.git";
+    repoStore.add(url);
+    repoStore.setReady(url);
+
+    // A just-claimed warm session, with a valid clone dir (tmpDir exists) and
+    // registered as the repo's warm session — so the startup zombie-warm sweep
+    // (`startup-tasks.ts`) keeps it instead of deleting it as a stale orphan.
+    const warmId = "warm-session-1";
+    sessionManager.track(warmId, undefined, tmpDir);
+    sessionManager.setRemoteUrl(warmId, url);
+    sessionManager.setWarm(warmId, true); // ungraduated → excluded from list()
+    repoStore.setWarmSessionId(url, warmId);
+    expect(sessionManager.list().some((s) => s.id === warmId)).toBe(false);
+
+    let reran = 0;
+    // Inject a minimal stub runner so trust's loop has something to nudge. A
+    // warm session keeps its runner in the registry even though `list()` hides
+    // it — that is exactly the case the fix must cover.
+    (app.runnerRegistry as unknown as { runners: Map<string, unknown> }).runners.set(
+      warmId,
+      { disposed: false, rerunServiceSetup: () => { reran += 1; }, dispose: () => {} },
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/repos/trust",
+      payload: { url },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(reran).toBe(1);
+  });
+
   it("returns 404 for an unknown remote", async () => {
     const res = await app.inject({
       method: "POST",

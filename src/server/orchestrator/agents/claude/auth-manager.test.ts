@@ -431,6 +431,31 @@ describe("AuthManager / scoped spawn (docs/150)", () => {
     expect(mgr.getActiveAccountId()).toBeNull();
     mgr.kill();
   });
+
+  it("wipes a stale/expired credential file before spawning the login CLI", () => {
+    // The fix for the "must Clear saved credentials before re-authenticating"
+    // bug: `claude /login` only runs the full code-paste flow from a clean
+    // slate. An expired `.credentials.json` left on disk makes it short-circuit
+    // and never write a fresh token, so the login silently no-ops. Starting the
+    // flow must remove the scope's credential files first — automatically doing
+    // what the user previously had to do by hand.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-claude-wipe-"));
+    try {
+      const credPath = path.join(tmp, ".claude", ".credentials.json");
+      fs.mkdirSync(path.dirname(credPath), { recursive: true });
+      fs.writeFileSync(credPath, '{"expired":true}');
+
+      const mgr = new AuthManager();
+      mgr.startOAuthFlow({ accountId: "acct-reauth", credentialDir: tmp });
+
+      // Stale file gone, yet the CLI was still spawned to start a fresh login.
+      expect(fs.existsSync(credPath)).toBe(false);
+      expect(ptyHoisted.calls).toHaveLength(1);
+      mgr.kill();
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("AuthManager / fresh-credential completion gate", () => {

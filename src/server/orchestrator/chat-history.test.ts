@@ -106,6 +106,27 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     reReviewed: true,
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  releaseCard: {
+    sessionId: "sess-1",
+    cardId: "release:sess-1:v0.3.0",
+    phase: "released",
+    version: "0.3.0",
+    tag: "v0.3.0",
+    prerelease: false,
+    bumpType: "minor",
+    versionSource: "package.json",
+    notes: "## Features\n- x",
+    commitSha: "abc123",
+    checks: { state: "success", total: 2, passed: 2, failed: 0, pending: 0 },
+    release: {
+      name: "v0.3.0",
+      body: "## Features\n- x",
+      htmlUrl: "https://github.com/o/r/releases/tag/v0.3.0",
+      prerelease: false,
+      publishedAt: "2026-06-05T00:00:00.000Z",
+      tagName: "v0.3.0",
+    },
+  },
   userReview: { filePaths: ["a.ts", "b.ts"], commentCount: 3 },
   noticeId: "notice-1",
   subagentEvents: [],
@@ -299,6 +320,58 @@ describe("ChatHistoryManager", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.append("sess-1", draftCard("bug-card-1"));
       expect(mgr.updateBugReportCard("sess-1", "missing", { phase: "filed" })).toBe(false);
+    });
+  });
+
+  describe("upsertReleaseCard (docs/171)", () => {
+    const proposed = (cardId = "release:sess-1:v0.3.0") => ({
+      sessionId: "sess-1",
+      cardId,
+      phase: "proposed" as const,
+      version: "0.3.0",
+      tag: "v0.3.0",
+      prerelease: false,
+      bumpType: "minor" as const,
+    });
+
+    it("appends a carrier message on first upsert (propose)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("sess-1", { role: "assistant", text: "Proposing a release." });
+      mgr.upsertReleaseCard("sess-1", proposed());
+
+      const loaded = mgr.load("sess-1");
+      expect(loaded).toHaveLength(2);
+      // Lands after the agent's turn (append-at-end), like a post-turn notice.
+      expect(loaded[1].releaseCard?.phase).toBe("proposed");
+      expect(loaded[1].text).toBe("");
+    });
+
+    it("patches the same row in place on later transitions (no duplicate)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.upsertReleaseCard("sess-1", proposed());
+      mgr.upsertReleaseCard("sess-1", { ...proposed(), phase: "gating", commitSha: "abc" });
+      mgr.upsertReleaseCard("sess-1", { ...proposed(), phase: "released" });
+
+      const cards = mgr.load("sess-1").filter((m) => m.releaseCard);
+      expect(cards).toHaveLength(1);
+      expect(cards[0].releaseCard?.phase).toBe("released");
+    });
+
+    it("survives a reload (fresh manager rebuilds from the DB)", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.upsertReleaseCard("sess-1", { ...proposed(), phase: "cancelled" });
+
+      const reloaded = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(reloaded[0].releaseCard?.phase).toBe("cancelled");
+    });
+
+    it("keeps distinct releases (different tag → different cardId) separate", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.upsertReleaseCard("sess-1", { ...proposed("release:sess-1:v0.3.0"), phase: "released" });
+      mgr.upsertReleaseCard("sess-1", { ...proposed("release:sess-1:v0.4.0"), tag: "v0.4.0", version: "0.4.0" });
+
+      const cards = mgr.load("sess-1").filter((m) => m.releaseCard);
+      expect(cards).toHaveLength(2);
     });
   });
 

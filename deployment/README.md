@@ -76,9 +76,12 @@ Self-host ShipIt on any Linux VPS with Cloudflare Tunnel plus required Zero Trus
 
 ## Step 2: Provision the server
 
+The script must run as root (it installs packages, configures Docker, and writes systemd units). The
+command runs it via `sudo` — a harmless no-op if you SSH in as `root`.
+
 ```bash
-ssh root@<server-ip>
-bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
+ssh root@<server-ip>   # or: ssh <user>@<server-ip> for a sudo-capable user
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
 The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
@@ -87,7 +90,7 @@ The script will ask whether to install Cloudflare, Tailscale, both, or neither, 
 - Configure host limits needed for session containers and file watching
 - Install the selected access path:
   - Cloudflare: install `cloudflared`, authenticate, create a Zero Trust Access application + policy via the Cloudflare API, create a tunnel, configure DNS routes, and lock down the firewall
-  - Tailscale: install Tailscale, authenticate the VPS, and expose ShipIt with Tailscale Serve
+  - Tailscale: install Tailscale, authenticate the VPS, run a Host-preserving forwarder on the node's tailnet IP, and print an sslip.io access URL (app + subdomain previews) that works with no further setup
 - Build and start ShipIt
 
 You can also run either access setup later:
@@ -178,15 +181,22 @@ ssh root@<server-ip>
 bash /opt/shipit/deployment/vps/tailscale.sh
 ```
 
-The script installs Tailscale if needed, authenticates the VPS, sets the node hostname to `shipit` by default, and forwards the node's tailnet IP to ShipIt's localhost listener so you reach it at `http://shipit.tailnet.ts.net:4123`. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
+The script installs Tailscale if needed, authenticates the VPS, and forwards the node's tailnet IP to ShipIt's localhost listener. It then prints an **sslip.io** access URL (see below) you can use immediately. It leaves the node's Tailscale hostname entirely to Tailscale, so rerunning it never renames your node. Any Cloudflare tunnel you configured separately continues to serve `https://shipit.example.com` and `*.shipit.example.com`.
 
 ### Subdomain previews over Tailscale
 
-ShipIt previews are served on subdomains (`{sessionId}--{port}.shipit.tailnet.ts.net`). Tailscale Serve can't carry those (it binds only the node's own name), so the script instead runs a Host-preserving TCP forwarder bound to the node's tailnet IP and relies on **native MagicDNS wildcard resolution** so `*.shipit.tailnet.ts.net` resolves to the node.
+ShipIt previews are served on subdomains (`{sessionId}--{port}.<host>`). Tailscale Serve can't carry those (it binds only the node's own name), so the script runs a Host-preserving TCP forwarder bound to the node's tailnet IP and needs a host whose wildcard resolves back to that IP.
 
-That wildcard is an opt-in capability you grant once. After running the script, add the `nodeAttrs`
-block it prints (with your node's tailnet IP already filled in) to your
-[tailnet policy file](https://login.tailscale.com/admin/acls):
+**Default — sslip.io (zero setup, works today).** The script prints an access URL built from the node's tailnet IP in dash notation, e.g. `http://100-70-78-74.sslip.io:4123`. [sslip.io](https://sslip.io/) is a public wildcard DNS resolver that maps any `<dashed-ip>.sslip.io` name straight back to that IP, so previews resolve at `{sessionId}--{port}.100-70-78-74.sslip.io:4123` with **no tailnet policy edit and no owned domain**. As long as it answers honestly, the connection then rides the WireGuard-encrypted tailnet. HTTP only (there is no wildcard TLS cert for these names).
+
+Two caveats with this default:
+
+- **DNS trust.** sslip.io sits in the resolution path. It serves a fixed IP-to-name mapping, but because the connection is HTTP (no cert pinning the server's identity), a resolver outage, a bad/cached answer, or DNS tampering could point your browser at a non-tailnet endpoint under the same host. If that dependency isn't acceptable, use the native MagicDNS hostname or owned-domain options below — or self-host the open-source sslip.io resolver on the node.
+- **DNS-rebinding protection.** A device whose resolver refuses public names that point into CGNAT `100.64/10` space (some routers, Pi-hole, NextDNS) won't resolve sslip.io — sslip.io serves these, but a hardened local resolver may block it; use one of the alternatives below on such a device.
+
+#### Optional — a cleaner hostname via native MagicDNS
+
+If you'd rather use the node's native MagicDNS name (`http://<node>.<tailnet>.ts.net:4123`, previews at `{sessionId}--{port}.<node>.<tailnet>.ts.net` — the script prints the actual name) and drop the third-party resolver, grant the node Tailscale's MagicDNS wildcard capability once. After running the script, add the `nodeAttrs` block it prints (with your node's tailnet IP already filled in) to your [tailnet policy file](https://login.tailscale.com/admin/acls):
 
 1. Open the [Access controls page](https://login.tailscale.com/admin/acls).
 2. Click the **JSON editor** toggle at the top (Tailscale defaults to the Visual editor, which has
@@ -213,11 +223,13 @@ paste-it-in path.
 
 Requirements and caveats:
 
-- **Tailscale v1.96+** on the VPS *and* on the devices you browse from (the capability is GA in current releases; it is not in older clients).
+- **Tailscale v1.96+** on the VPS *and* on the devices you browse from (the capability landed in v1.96; it is not in older clients).
+- **The capability is gated per-tailnet at Tailscale's control plane** and is still rolling out. If saving the policy is rejected with `tailnet is not permitted to use the "dns-subdomain-resolve" node attribute`, your tailnet doesn't have it enabled yet — request access from Tailscale (support / feature preview). The sslip.io URL keeps working in the meantime.
 - **HTTP only** — there is no wildcard TLS cert for `*.ts.net` ([tailscale/tailscale#7081](https://github.com/tailscale/tailscale/issues/7081)). This is safe because tailnet traffic is already WireGuard-encrypted end to end.
-- Until the grant is added, the app works over Tailscale but previews won't resolve.
 
-If you'd rather not edit the tailnet policy, you can instead point a wildcard DNS record you control (`*.shipit-tail.example.com`) at the node's Tailscale IP and open ShipIt through that hostname — that path also gives you real HTTPS, at the cost of owning a domain. The setup script automates only the native-MagicDNS path.
+#### Optional — an owned wildcard domain (real HTTPS)
+
+For HTTPS instead of HTTP, point a wildcard DNS record you control (`*.shipit-tail.example.com`) at the node's Tailscale IP and open ShipIt through that hostname — real wildcard TLS via DNS-01, at the cost of owning a domain and a DNS provider.
 
 For unattended setup, provide an auth key:
 

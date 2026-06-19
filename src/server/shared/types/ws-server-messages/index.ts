@@ -98,6 +98,7 @@ import type {
   WsIssueRefCard,
   WsCompactionStatus,
   WsCompactionCard,
+  WsReleaseCard,
   WsSubAgentConsultCard,
   WsActionChecklistCard,
 } from "./cards.js";
@@ -128,6 +129,7 @@ export type WsServerMessage =
   | WsVoiceNote
   | WsCompactionStatus
   | WsCompactionCard
+  | WsReleaseCard
   | WsSubAgentConsultCard
   | WsActionChecklistCard
   | WsBugReportCard

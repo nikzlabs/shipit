@@ -75,6 +75,14 @@ export interface ServicePollerOptions {
    * retry / OOM retry / terminal error) — the poller just dispatches.
    */
   onExitedWithError: (name: string, exitCode: number) => void;
+  /**
+   * Optional hook invoked at the end of each successful poll. Used to run the
+   * agent network-attachment self-heal on the poll heartbeat (docs/128 —
+   * stranded ops agent after a proxy/network recreate). Best-effort — its
+   * errors are swallowed so a heal failure never disrupts polling. Omitted in
+   * tests / non-container setups.
+   */
+  afterPoll?: () => void | Promise<void>;
 }
 
 export class ServicePoller {
@@ -91,6 +99,7 @@ export class ServicePoller {
   private readonly onLeftRunning: (name: string) => void;
   private readonly onExitedCleanly: (name: string) => void;
   private readonly onExitedWithError: (name: string, exitCode: number) => void;
+  private readonly afterPoll?: () => void | Promise<void>;
 
   private pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -108,6 +117,7 @@ export class ServicePoller {
     this.onLeftRunning = opts.onLeftRunning;
     this.onExitedCleanly = opts.onExitedCleanly;
     this.onExitedWithError = opts.onExitedWithError;
+    this.afterPoll = opts.afterPoll;
   }
 
   /**
@@ -188,6 +198,18 @@ export class ServicePoller {
         }
       } else if (state === "restarting") {
         if (prev !== "starting") this.updateServiceStatus(name, "starting");
+      }
+    }
+
+    // Self-heal the agent's compose-network attachment on the poll heartbeat
+    // (docs/128). Membership-gated inside the hook, so the steady state is a
+    // single cheap `network inspect`. Best-effort — never let a heal failure
+    // disrupt the poll loop.
+    if (this.afterPoll) {
+      try {
+        await this.afterPoll();
+      } catch (err) {
+        console.warn(`[compose:${this.sessionId}] afterPoll hook failed:`, (err as Error).message);
       }
     }
   }

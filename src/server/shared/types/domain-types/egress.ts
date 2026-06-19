@@ -43,6 +43,24 @@ export interface EgressSessionSettings {
    * deployment": policy says contain but the container would fail closed at start.
    */
   enforcementActive: boolean;
+  /**
+   * docs/172 — the resolved containment the session's LIVE container actually
+   * started with (the egress topology — firewall/resolver/proxy sidecars — is
+   * installed into the netns at container *creation*; flipping the mode on a
+   * running session only persists the override, it does not re-plumb the live
+   * container). `null` when no running container exists (nothing to compare /
+   * restart). The client compares this against `effectiveContained` to know a
+   * mode change is pending a restart.
+   */
+  startedContained: boolean | null;
+  /**
+   * docs/172 — true when `startedContained` is known and differs from
+   * `effectiveContained`: the selected mode resolves to a different containment
+   * outcome than the running container was started with, so it applies only on
+   * the next container start. Drives the dialog's "Pending · applies on next
+   * container start" indicator + "Restart to apply now" action.
+   */
+  pendingRestart: boolean;
 }
 
 /**

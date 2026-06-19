@@ -149,6 +149,8 @@ describe("buildEgressAllowlist", () => {
     expect(al.isAllowed("codeload.github.com")).toBe(true);
     expect(al.isAllowed("registry.npmjs.org")).toBe(true);
     expect(al.isAllowed("api.openai.com")).toBe(true);
+    // Node headers tarball for node-gyp native-module builds (node-pty, etc.)
+    expect(al.isAllowed("nodejs.org")).toBe(true);
   });
 
   it("DENIES an arbitrary attacker host (the core acceptance criterion)", () => {

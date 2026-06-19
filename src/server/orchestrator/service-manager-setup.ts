@@ -507,6 +507,17 @@ export function setupServiceManager(
           }
         }
       : undefined,
+    // docs/128 — periodic self-heal of the agent's compose-network attachment.
+    // The agent (unlike the orchestrator, re-attached via networkJoinFn on every
+    // compose op) can be stranded on a dead bridge when the ops docker-socket-proxy
+    // is recreated by its own restart policy without the orchestrator running
+    // `compose up`. This re-attaches it on the poll heartbeat; membership-gated so
+    // it's a cheap no-op while the agent is correctly attached.
+    networkHealFn: containerManager
+      ? async (networkName: string) => {
+          await containerManager.ensureConnectedToSessionNetwork(runner.sessionId, networkName);
+        }
+      : undefined,
   });
 
   serviceManagers.set(runner.sessionId, mgr);

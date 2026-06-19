@@ -234,6 +234,38 @@ tracker as separate issues. None implemented yet.
         container id + StartedAt); `https://example.com` then returned 200 with no restart.
         The reload also carried `identityRules` through — the relaunched proxy kept `1 identity
         rule(s)` and still denied `attacker.s3.amazonaws.com` (rc=35).
+- [x] **Gap 1 — intra-session preview reachability (GH #1495).** The multi-homed agent's
+      compose/preview subnet is attached *after* the Tier A install, so default-deny dropped
+      the agent's (and its in-netns Playwright browser's) traffic to its own dev server —
+      breaking "open the preview and screenshot to verify". Fix: on network join,
+      `connectToNetwork` inspects the joined network's IPAM subnet (`extractNetworkSubnets`)
+      and runs a short-lived `allow-subnet.sh` NET_ADMIN sidecar (`allowEgressToSubnets`) that
+      appends an `OUTPUT ... ACCEPT` for **that one subnet** (never broad RFC1918 — which the
+      host would forward into its own VPC/LAN). Best-effort (logs, never fail-closed; only
+      degrades preview convenience), no-op unless the session was contained at start.
+      Agent-facing `shipit-docs/preview.md` updated to point the browser at `containerIp:port`.
+      Unit-tested (`egress-firewall.test.ts`, `egress-firewall-install.test.ts`); the netns
+      rule application is verified on a live host like the other tiers.
+    - [ ] **Verify on a live host:** a contained session with an `auto` Vite preview —
+          `browser_navigate` to the dev container's `containerIp:5173` renders the real app
+          (no timeout); a non-allowlisted internet host is still blocked; reconnect-after-recreate
+          re-opens the subnet (idempotent).
+    - [x] **docker-access sessions checked — no analogous bug (Refs #1495).** Traced whether
+          the per-session **docker-access** network `shipit-session-<shortId>`
+          (`sessionId.slice(0,12)`, created early in `container-lifecycle.ts` under
+          `config.dockerAccess`) reproduces the multi-homing drop. It does **not**: that
+          network is for **child** containers (the docker-proxy injects it as the *child's*
+          `NetworkMode`, `docker-proxy-sanitize.ts`); the **agent** is created with only
+          `NetworkMode: deps.networkName` and **no code path attaches it to the `<shortId>`
+          network** (`SHIPIT_SESSION_NETWORK` is set in the agent env but never read back to
+          connect; the only `connectToNetwork`/`NetworkingConfig`/`network.connect` calls
+          target the full-id **compose** network). Keeping children off the agent/orchestrator
+          network is the deliberate SHI-135 isolation property — the agent drives children via
+          the Docker API proxy (`DOCKER_HOST`), not by IP — so the agent is never multi-homed
+          onto that subnet and there is nothing to re-open. `allowEgressToSubnets` /
+          `extractNetworkSubnets` stay scoped to the compose-network join (the only real hole).
+          No code change. See egress-control.md → "Scope: this hole is needed only where the
+          agent is *multi-homed*".
 - [ ] **Gap 1 — identity-validating proxy (Phase 2)** for allowlisted multi-tenant hosts so
       an approved API can't be used to upload into an attacker's account. Builds on the
       Tier C proxy hook.
@@ -295,11 +327,26 @@ tracker as separate issues. None implemented yet.
           populated by `api-routes-egress.ts` from `egressEnforcementActive()` (threaded via
           `ApiDeps.egressEnforcementActive`) and re-broadcast on `egress_settings`. Settings →
           Network egress shows a "Contained — NOT enforced on this deployment" warning when
-          policy is Contained but `enforcementActive` is false. The per-session sidebar menu
-          (`SessionEgressMode`) shows the condensed equivalent when this session would resolve to
-          Contained (live off the selected mode) but enforcement is inactive. The fail-closed
+          policy is Contained but `enforcementActive` is false. The per-session Session settings
+          dialog (`SessionSettingsDialog`) shows the equivalent warning when this session would
+          resolve to Contained (live off the selected mode) but enforcement is inactive. The fail-closed
           session-start error reaches the user via the existing `recordCreateError` → health →
           SessionHealthStrip channel (the reworded egress-specific message is what's shown).
+    - [x] **Per-session control → Session settings dialog + pending/restart-to-apply.** The
+          containment override (Inherit / Contained / Open) moved off the bare radio group at the
+          bottom of the session overflow menu into a styled **Session settings** dialog
+          (`SessionSettingsDialog.tsx`), opened from a menu item that matches the other rows.
+          Because egress is a creation-time topology choice, the dialog now surfaces the
+          deferred-to-next-start semantics that were previously invisible: container creation
+          records `SessionContainer.egressContainedAtStart`, the egress API derives
+          `startedContained` + `pendingRestart` onto `EgressSessionSettings` (read via
+          `containerManager.get`, browser-only surface preserved), and the dialog shows
+          "Pending · applies on next container start" with a **"Restart to apply now"** action that
+          reuses `POST /api/sessions/:id/container/restart` (+ `shipit:reconnect-ws` bridge).
+          Restart is explicit-only and disabled during an active turn (`isLoading`) so it never
+          kills a running agent. Tests: `api-routes-egress.test.ts` (pending diff),
+          `SessionSettingsDialog.test.tsx` (pending shown only on real delta, restart disabled
+          while running, no auto-restart on toggle).
     - [x] **Cross-agent (Codex) review fixes.** (1) `deployment/vps/restart.sh` now sources
           `/etc/shipit/shipit.env` like `deploy.sh`, so a persisted `SESSION_EGRESS_ENFORCE=0`
           opt-out survives "Just Restart" instead of silently flipping enforcement back on.

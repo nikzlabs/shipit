@@ -8,6 +8,13 @@
 - [x] Setup-script Tailscale recipe: **Option A (native MagicDNS wildcard) only**
       — native wildcard is GA (stable v1.98.5). Drop Serve from the preview path;
       no sslip.io / owned-domain automation. HTTP over the tailnet. — approved
+- [x] **Revised 2026-06:** Option A's `dns-subdomain-resolve` attr turned out to
+      be **gated per-tailnet at the control plane** (Save → "tailnet is not
+      permitted to use the 'dns-subdomain-resolve' node attribute"), so it can't
+      be the zero-touch default. Script now **defaults to sslip.io** (Option B):
+      `http://<dashed-tailnet-ip>.sslip.io:<port>`, previews resolve with no
+      policy edit; Option A demoted to optional "cleaner hostname" upgrade,
+      Option C (owned domain) the HTTPS path. No client/proxy changes needed.
 
 ## Client
 - [x] `usePreviewHealthPoller.ts`: drop `?? preview.url`; return `null` when
@@ -43,9 +50,18 @@
       (targeting the node IP) + admin-console link; note the v1.96+ requirement.
 - [x] `deployment/README.md` + `setup.sh` closing message: document Option A;
       mention the owned-domain alternative as a manual HTTPS option.
-- [ ] Manual verification on a real tailnet: add the grant, open
-      `http://shipit.tailnet.ts.net:4123`, confirm a preview subdomain resolves
-      and renders. (Cannot be done from this container.)
+- [x] `tailscale.sh` + `deployment/README.md`: pivot to **sslip.io default**
+      (dashed-tailnet-IP host); demote the `nodeAttrs` grant to an optional
+      upgrade; colorize the printed banner/steps/paste-block (TTY-guarded).
+- [x] `plan.md`: revise the decision + wiring sections for the sslip.io default.
+- [x] `tailscale.sh`: make the script idempotent for reruns — **removed** the
+      `SHIPIT_TAILSCALE_HOSTNAME` override entirely. The script never passes
+      `--hostname` (first `up` or rerun), so the node keeps Tailscale's own
+      default name and a rerun never renames it.
+- [ ] Manual verification on a real tailnet: open
+      `http://<dashed-tailnet-ip>.sslip.io:4123`, confirm a preview subdomain
+      resolves and renders. Separately, if the tailnet has the grant, confirm the
+      MagicDNS hostname path too. (Cannot be done from this container.)
 
 ## Review pass (4 parallel reviewers)
 - [x] Fixed: `buildSubdomainUrl` mangled bracketed IPv6 hosts (`[::1]:3000` →

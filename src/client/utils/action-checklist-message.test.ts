@@ -16,6 +16,14 @@ const card: ActionChecklistCard = {
 };
 
 describe("formatProposalMessage", () => {
+  it("leads with the card-injected marker + intent framing", () => {
+    const msg = formatProposalMessage(card, [card.actions[0]]);
+    // explicit card-injected provenance marker, at the very start
+    expect(msg.startsWith("[Action card → Submit]")).toBe(true);
+    // framed as intent, not a literal command
+    expect(msg).toMatch(/intent, not a literal command/i);
+  });
+
   it("uses the payloads (not labels) and stamps provenance + an adapt/decline guard", () => {
     const msg = formatProposalMessage(card, [card.actions[0], card.actions[2]]);
     // payloads, numbered, in order
@@ -27,18 +35,18 @@ describe("formatProposalMessage", () => {
     expect(msg).toContain("proposed 2026-06-15");
     expect(msg).toContain("shipit/apobab");
     expect(msg).toContain("abc12345");
-    // obsolete-guard framing
+    // re-check-state / obsolete-guard framing
     expect(msg).toMatch(/adapt or decline/i);
   });
 
   it("uses singular phrasing for one action", () => {
     const msg = formatProposalMessage(card, [card.actions[0]]);
-    expect(msg).toContain("This action was proposed");
+    expect(msg).toMatch(/approved this action/i);
   });
 
   it("uses plural phrasing for several", () => {
     const msg = formatProposalMessage(card, card.actions);
-    expect(msg).toContain("These 3 actions were proposed");
+    expect(msg).toMatch(/approved these 3 actions/i);
   });
 });
 

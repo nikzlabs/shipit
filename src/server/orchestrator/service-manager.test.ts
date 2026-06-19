@@ -400,6 +400,45 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     expect(web?.containerIp).toBe("172.20.0.2");
   });
 
+  it("getServices derives an agent-reachable url for running services with a known IP+port (GH #1509)", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    const psOutput = JSON.stringify({
+      Service: "web", ID: "abc123", State: "running", ExitCode: 0,
+    });
+    const inspectOutput = JSON.stringify([{
+      NetworkSettings: {
+        Networks: { "shipit-session-test-session": { IPAddress: "172.20.0.2" } },
+      },
+    }]);
+
+    const mgr = createMockedManager(dir, { ps: psOutput, inspect: inspectOutput });
+    await mgr.start();
+
+    // Running + IP + port → ready-to-use direct URL the agent's curl/browser can hit.
+    const running = mgr.getServices().find((s) => s.name === "web");
+    expect(running?.url).toBe("http://172.20.0.2:5173/");
+
+    // `url` is derived on read, never stored on the internal model.
+    expect(mgr.getService("web")).not.toHaveProperty("url");
+  });
+
+  it("getServices omits url when a service has a port but no detected IP (GH #1509)", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+
+    // start() registers the service (with its declared port) but, with empty
+    // docker query responses, it never reaches `running` with a container IP.
+    const mgr = createMockedManager(dir, {});
+    try { await mgr.start(); } catch { /* no real docker — registration is enough */ }
+
+    const web = mgr.getServices().find((s) => s.name === "web");
+    expect(web?.port).toBe(5173);
+    expect(web?.status).not.toBe("running");
+    expect(web?.url).toBeUndefined();
+  });
+
   it("pollStatus maps exited with non-zero to error", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");

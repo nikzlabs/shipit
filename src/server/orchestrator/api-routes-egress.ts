@@ -43,19 +43,30 @@ function globalSettings(store: EgressAllowlistStore, enforcementActive: boolean)
   };
 }
 
-/** Snapshot a session's egress view (override + per-session hosts + resolution). */
+/**
+ * Snapshot a session's egress view (override + per-session hosts + resolution).
+ *
+ * `startedContained` is the containment the session's LIVE container was created
+ * with (`null` when none is running); the view exposes it plus a `pendingRestart`
+ * flag — true when the now-resolved containment differs — so the client can show
+ * "pending · restart to apply" without re-deriving the live topology (docs/172).
+ */
 function sessionSettings(
   store: EgressAllowlistStore,
   sessionId: string,
   enforcementActive: boolean,
+  startedContained: boolean | null,
 ): EgressSessionSettings {
+  const effectiveContained = store.resolveContained(sessionId);
   return {
     sessionId,
     override: store.getSessionOverride(sessionId),
     hosts: store.listHosts(sessionId),
-    effectiveContained: store.resolveContained(sessionId),
+    effectiveContained,
     globalEnabled: store.getGlobalEnabled(),
     enforcementActive,
+    startedContained,
+    pendingRestart: startedContained !== null && startedContained !== effectiveContained,
   };
 }
 
@@ -69,6 +80,7 @@ function allowlistView(
   credentialStore: CredentialStore | undefined,
   sessionId: string | undefined,
   enforcementActive: boolean,
+  startedContained: boolean | null,
 ): EgressAllowlistView {
   const entries = buildEffectiveAllowlist({
     credentialStore,
@@ -80,7 +92,7 @@ function allowlistView(
     entries,
     globalEnabled: store.getGlobalEnabled(),
     enforcementActive,
-    session: sessionId ? sessionSettings(store, sessionId, enforcementActive) : null,
+    session: sessionId ? sessionSettings(store, sessionId, enforcementActive, startedContained) : null,
     defaultsCustomized: store.hasSuppressedDefaults(),
   };
 }
@@ -92,6 +104,18 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // function of the process env. The honest signal the browser uses to
   // distinguish containment policy from enforcement (docs/172, SHI-90).
   const enforcementActive = deps.egressEnforcementActive ?? false;
+
+  // The containment a session's LIVE container was actually started with — the
+  // source of truth for "pending · restart to apply" (docs/172). `null` when no
+  // running container exists (nothing plumbed to diff against, nothing to
+  // restart). Reads the in-memory container record (the egress sidecars are a
+  // creation-time topology choice recorded there), never the agent's netns, so
+  // this stays on the browser-only surface (SHI-129).
+  const liveContained = (sessionId: string): boolean | null => {
+    const sc = deps.containerManager?.get(sessionId);
+    if (sc?.status !== "running") return null;
+    return sc.egressContainedAtStart ?? null;
+  };
 
   // ---- Browser-only egress settings (docs/172, SHI-90) ------------------
   // NO `containerAccessible` flag: SHI-129's default-deny keeps the contained
@@ -109,7 +133,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       async (request) => {
         const sessionId =
           typeof request.query.session === "string" && request.query.session ? request.query.session : undefined;
-        return allowlistView(store, deps.credentialStore, sessionId, enforcementActive);
+        return allowlistView(store, deps.credentialStore, sessionId, enforcementActive, sessionId ? liveContained(sessionId) : null);
       },
     );
 
@@ -150,7 +174,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         // A per-session add can take effect immediately on a running session.
         if (scope !== EGRESS_GLOBAL_SCOPE) {
           void deps.containerManager?.reloadEgress(scope).catch(() => {});
-          return sessionSettings(store, scope, enforcementActive);
+          return sessionSettings(store, scope, enforcementActive, liveContained(scope));
         }
         return globalSettings(store, enforcementActive);
       },
@@ -177,7 +201,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         return scope === EGRESS_GLOBAL_SCOPE
           ? globalSettings(store, enforcementActive)
-          : sessionSettings(store, scope, enforcementActive);
+          : sessionSettings(store, scope, enforcementActive, liveContained(scope));
       },
     );
 
@@ -185,13 +209,13 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     app.post("/api/egress/defaults/restore", async () => {
       store.restoreDefaults();
       deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
-      return allowlistView(store, deps.credentialStore, undefined, enforcementActive);
+      return allowlistView(store, deps.credentialStore, undefined, enforcementActive, null);
     });
 
     // Read a session's egress view (override + per-session hosts + resolution).
     app.get<{ Params: { id: string } }>(
       "/api/egress/session/:id",
-      async (request) => sessionSettings(store, request.params.id, enforcementActive),
+      async (request) => sessionSettings(store, request.params.id, enforcementActive, liveContained(request.params.id)),
     );
 
     // Set/clear a session's containment override (null = inherit global).
@@ -202,7 +226,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         if (override === true || override === false || override === null) {
           store.setSessionOverride(request.params.id, override);
         }
-        return sessionSettings(store, request.params.id, enforcementActive);
+        return sessionSettings(store, request.params.id, enforcementActive, liveContained(request.params.id));
       },
     );
   }

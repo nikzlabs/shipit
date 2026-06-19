@@ -11,7 +11,9 @@ import { CompactionCard } from "../../CompactionCard.js";
 import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
+import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
+import type { ReleaseMechanism } from "../../../../server/shared/types.js";
 import { SubAgentConsultCardRow } from "./SubAgentCards.js";
 
 /** Callbacks the inline transcript cards may invoke. */
@@ -36,6 +38,10 @@ export interface MessageCardCallbacks {
     anchorCommentId?: string;
   }) => void;
   onSendFollowUp?: (text: string) => void;
+  /** docs/171 — confirm a proposed release (sends the "yes, ship it" reply). */
+  onReleaseConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
+  /** docs/171 — cancel a proposed release (sends the cancel reply). */
+  onReleaseCancel?: (version: string) => void;
 }
 
 /**
@@ -235,6 +241,25 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <ActionChecklistCard card={msg.actionChecklist} onSubmit={cb.onSendFollowUp} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/171 — release lifecycle card. Carries no chat text of its own; renders
+  // the inline `ReleaseLifecycleCard` straight from the message snapshot (no
+  // store — the `release_card` WS upserts this field by cardId, and reload
+  // rehydrates it from history). `proposed` shows Confirm/Cancel; every later
+  // phase collapses to a compact row.
+  if (msg.releaseCard) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <ReleaseLifecycleCard
+            card={msg.releaseCard}
+            {...(cb.onReleaseConfirm ? { onConfirm: cb.onReleaseConfirm } : {})}
+            {...(cb.onReleaseCancel ? { onCancel: cb.onReleaseCancel } : {})}
+          />
         </div>
       </div>
     );

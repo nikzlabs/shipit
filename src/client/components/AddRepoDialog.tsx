@@ -1,11 +1,12 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: auto-close on async repo clone completion (reacts to external process finishing)
 import { useState, useRef, useEffect } from "react";
-import { XIcon, CircleNotchIcon } from "@phosphor-icons/react";
+import { XIcon, CircleNotchIcon, GithubLogoIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import type { RepoInfo } from "../../server/shared/types.js";
 import { Badge } from "./ui/badge.js";
 import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
+import { GitHubTokenForm } from "./GitHubTokenForm.js";
 
 interface AddRepoDialogProps {
   open: boolean;
@@ -18,9 +19,14 @@ interface AddRepoDialogProps {
   onSearch: (query: string) => void | Promise<void>;
   /** Current repos from the store — used to track clone progress. */
   repos: RepoInfo[];
+  /** Whether GitHub is connected. Adding/creating repos is GitHub-backed, so
+   *  when false we show a connect prompt instead of the search/add form. */
+  githubAuthenticated: boolean;
+  /** Submit a GitHub PAT to connect. Returns false on an invalid token. */
+  onGitHubTokenSubmit: (token: string) => Promise<boolean | undefined>;
 }
 
-export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, searchResults, onSearch, repos }: AddRepoDialogProps) {
+export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, searchResults, onSearch, repos, githubAuthenticated, onGitHubTokenSubmit }: AddRepoDialogProps) {
   const [query, setQuery] = useState("");
   const [submitting, setSubmitting] = useState(false);
   /** URL of the repo we just added — tracked for clone progress. */
@@ -35,8 +41,9 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
   if (open && !prevOpenRef.current) {
     setQuery("");
     setPendingUrl(null);
-    // Lazy-load the user's GitHub repos on first open
-    if (searchResults.length === 0) {
+    // Lazy-load the user's GitHub repos on first open (only when connected —
+    // the search endpoint is GitHub-backed and 401s otherwise).
+    if (githubAuthenticated && searchResults.length === 0) {
       setLoadingRepos(true);
       queueMicrotask(() => {
         // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form for loading state
@@ -112,6 +119,21 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
           </Button>
         </div>
 
+        {!githubAuthenticated ? (
+          <div className="p-4 space-y-4">
+            <div className="flex flex-col items-center gap-3 text-center">
+              <GithubLogoIcon size={40} weight="fill" className="text-(--color-text-primary)" />
+              <div className="space-y-1">
+                <p className="text-sm font-medium text-(--color-text-primary)">Connect GitHub to add repositories</p>
+                <p className="text-xs text-(--color-text-secondary)">
+                  Importing and creating repositories is backed by GitHub. Connect an account to search your
+                  repos, add by URL, and create new ones from a template.
+                </p>
+              </div>
+            </div>
+            <GitHubTokenForm onSubmit={onGitHubTokenSubmit} />
+          </div>
+        ) : (
         <div className="p-4">
           {/* Clone progress indicator */}
           {isCloning && (
@@ -176,16 +198,21 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
             </p>
           )}
         </div>
+        )}
 
         <div className="flex justify-between border-t border-(--color-border-secondary) px-4 py-3">
-          <Button
-            variant="ghost"
-            size="md"
-            onClick={onCreateNew}
-            className="text-(--color-text-link) hover:text-(--color-accent)"
-          >
-            Create new repository
-          </Button>
+          {githubAuthenticated ? (
+            <Button
+              variant="ghost"
+              size="md"
+              onClick={onCreateNew}
+              className="text-(--color-text-link) hover:text-(--color-accent)"
+            >
+              Create new repository
+            </Button>
+          ) : (
+            <span />
+          )}
           <div className="flex gap-2">
             <Button
               variant="ghost"
@@ -194,13 +221,15 @@ export function AddRepoDialog({ open, onClose, onAdd, onCreateNew, onRepoReady, 
             >
               Cancel
             </Button>
-            <Button
-              size="md"
-              onClick={handleSubmitUrl}
-              disabled={!query.trim() || submitting || isCloning}
-            >
-              {submitting ? "Adding..." : "Add"}
-            </Button>
+            {githubAuthenticated && (
+              <Button
+                size="md"
+                onClick={handleSubmitUrl}
+                disabled={!query.trim() || submitting || isCloning}
+              >
+                {submitting ? "Adding..." : "Add"}
+              </Button>
+            )}
           </div>
         </div>
       </DialogContent>

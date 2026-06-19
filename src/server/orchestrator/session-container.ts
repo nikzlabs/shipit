@@ -50,7 +50,8 @@ import {
   type OverlayProvisionerDeps,
 } from "./container-overlay-provisioner.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
-import { egressEnforceEnabled } from "./egress-firewall-install.js";
+import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
+import { extractNetworkSubnets } from "./egress-firewall.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
@@ -209,6 +210,15 @@ export interface SessionContainer {
    * re-deriving eligibility. Absent for non-overlay sessions.
    */
   overlayVolumeNames?: string[];
+  /**
+   * docs/172 — the resolved egress containment (`ResolvedEgressConfig.contained`)
+   * this container was actually created with. The egress topology is installed
+   * into the netns at creation, so this is the source of truth for "what is the
+   * live container running"; the egress API compares it against the now-resolved
+   * policy to surface a "pending — restart to apply" indicator. Absent on
+   * rediscovered/re-adopted containers, where the booted policy isn't known.
+   */
+  egressContainedAtStart?: boolean;
 }
 
 export interface SessionContainerManagerEvents {
@@ -559,6 +569,153 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       if (!msg.includes("already exists")) throw err;
+    }
+
+    // docs/172 Gap 1 (SHI-90) — the agent is now multi-homed: it has an interface
+    // on this session/compose network in addition to the orchestrator bridge. The
+    // Tier A egress firewall (installed at container creation) default-denies
+    // OUTPUT and only allowed the *default-gateway* subnet, so traffic to preview
+    // service containers on THIS subnet is dropped — the agent (and its in-netns
+    // Playwright browser) can't reach the live preview to verify its work. Re-open
+    // egress to this one session subnet via the short-lived allow-subnet sidecar.
+    // The agent gains no route to any other network, so cross-session isolation is
+    // unchanged. Best-effort: a failure only degrades preview reachability, it
+    // never weakens containment, so we log and continue (never fail the join).
+    await this.allowEgressToSessionNetwork(sc.id, sessionId, networkName);
+  }
+
+  /**
+   * Self-heal the agent's attachment to a session/compose network it was
+   * stranded off (docs/128 — stranded ops agent after a proxy/network recreate).
+   *
+   * The agent joins `shipit-session-<id>` imperatively (see
+   * {@link connectToNetwork}), and that attachment is normally only re-established
+   * on an orchestrator-driven `docker compose up` (ServiceManager.joinSessionNetwork).
+   * But the compose network/bridge can be rebuilt out from under the long-lived
+   * agent WITHOUT the orchestrator issuing a `compose up`: the ops
+   * `docker-socket-proxy` sibling is recreated by its own `restart: unless-stopped`
+   * policy, a host/daemon restart recreates the network, or the network is pruned
+   * and re-made. When that happens the new service joins the NEW bridge while the
+   * agent stays bolted to the OLD, now-empty bridge — same IPAM subnet (compose
+   * reuses it per-project), different L2 segment → ARP blackhole + embedded-DNS
+   * failure, so `DOCKER_HOST=tcp://docker-socket-proxy:2375` is permanently
+   * unreachable for the rest of the session.
+   *
+   * This is the condition-based heal that closes that gap. Driven by the service
+   * poller's heartbeat, it is **membership-gated** so the steady state is a single
+   * cheap `network inspect`: if the agent is already a member of the live network
+   * it returns immediately (no sidecar churn). Only when the agent is MISSING from
+   * the live network does it force-disconnect any dangling endpoint Docker still
+   * tracks under that name (so we don't trip {@link connectToNetwork}'s
+   * "already exists" swallow) and reconnect — which also re-opens egress to the
+   * subnet. Returns true iff it actually re-attached.
+   *
+   * No-op (returns false) when there's no container record or the network isn't
+   * present yet (a later `joinSessionNetwork` creates the attachment). Never
+   * throws — a heal failure must never disrupt the poll loop that drives it.
+   */
+  async ensureConnectedToSessionNetwork(sessionId: string, networkName: string): Promise<boolean> {
+    const sc = this.containers.get(sessionId);
+    if (!sc?.id) return false;
+
+    let info: Docker.NetworkInspectInfo;
+    try {
+      info = await this.docker.getNetwork(networkName).inspect();
+    } catch {
+      // Network not present (not yet created, or torn down) — nothing to heal.
+      return false;
+    }
+
+    const members = info.Containers ?? {};
+    if (Object.prototype.hasOwnProperty.call(members, sc.id)) {
+      return false; // Already attached to the live network — cheap no-op.
+    }
+
+    // The agent is NOT on the live network: a network/bridge recreate stranded it
+    // on the old, now-dead segment. Force-disconnect any endpoint Docker still
+    // tracks under this name, then reconnect (+ re-open egress) onto the live bridge.
+    console.warn(
+      `[network:${sessionId}] agent container not attached to live network ${networkName} ` +
+        "(likely a proxy/network recreate) — reconnecting",
+    );
+    try {
+      await this.docker.getNetwork(networkName).disconnect({ Container: sc.id, Force: true });
+    } catch {
+      // No dangling endpoint to clear — fine.
+    }
+    try {
+      await this.connectToNetwork(sessionId, networkName);
+      return true;
+    } catch (err) {
+      console.warn(
+        `[network:${sessionId}] reconnect to ${networkName} failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+  }
+
+  /**
+   * Best-effort: open the agent's default-deny egress to the IPAM subnet(s) of a
+   * session/compose network it just joined (docs/172 Gap 1, SHI-90). No-op unless
+   * the session is contained, enforcement is enabled, and the sidecar image is
+   * configured — i.e. only when there is a firewall to punch a hole in. Swallows
+   * all errors (logs a warning): preview reachability is a convenience, not a
+   * containment guarantee.
+   *
+   * Containment is read from `egressContainedAtStart` — the boot-time truth set
+   * only on *fresh* container creation. After an orchestrator restart the live
+   * container is *rediscovered* (container-discovery.ts) and *reconnected*
+   * WITHOUT that field, yet its netns firewall persisted with the still-running
+   * container, so the agent is STILL contained. Treating the unknown
+   * (`undefined`) value as "not contained" silently skipped the hole-punch on
+   * every post-restart compose (re)start — the agent could no longer reach its
+   * own preview (curl / Playwright ETIMEDOUT), the residual GH #1509 failure.
+   * So when the boot value is unknown we fall back to the resolved policy; an
+   * explicit `false` (booted in Open mode — no firewall) stays a hard skip. We
+   * derive locally and never write `egressContainedAtStart` back: the egress
+   * status API relies on `undefined` meaning "boot policy unknown" to avoid a
+   * false "pending · restart to apply" diff (api-routes-egress.ts).
+   */
+  private async allowEgressToSessionNetwork(
+    agentContainerId: string,
+    sessionId: string,
+    networkName: string,
+  ): Promise<void> {
+    const sc = this.containers.get(sessionId);
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    if (!egressEnforceEnabled() || !sidecarImage) {
+      return; // Enforcement off / no sidecar image → no firewall to re-open.
+    }
+    const contained =
+      sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
+    if (!contained) {
+      return; // Session is in Open mode → no firewall to punch a hole in.
+    }
+    if (sc?.egressContainedAtStart === undefined) {
+      console.log(
+        `[egress:${sessionId}] boot containment unknown (rediscovered container); derived contained=${contained} from resolved policy — re-opening preview egress`,
+      );
+    }
+    try {
+      const info = await this.docker.getNetwork(networkName).inspect();
+      const subnets = extractNetworkSubnets(info);
+      if (subnets.length === 0) {
+        console.warn(`[egress:${sessionId}] no IPAM subnet found for ${networkName}; preview may be unreachable from the agent browser`);
+        return;
+      }
+      const allowed = await allowEgressToSubnets(this.docker, {
+        agentContainerId,
+        sidecarImage,
+        subnets,
+        labels: { ...this.baseLabels(), "shipit-parent-session": sessionId },
+      });
+      console.log(`[egress:${sessionId}] opened agent egress to session subnet(s) ${allowed.join(", ")} (${networkName})`);
+    } catch (err) {
+      console.warn(
+        `[egress:${sessionId}] failed to open egress to ${networkName} (preview may be unreachable from the agent browser):`,
+        err instanceof Error ? err.message : String(err),
+      );
     }
   }
 

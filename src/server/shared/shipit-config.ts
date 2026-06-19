@@ -22,6 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import type { ReleaseMechanism } from "./types/release-types.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,8 +70,19 @@ export interface ComposeConfig {
 /** Allowed version-source identifiers for the `release:` block (docs/171 Phase 2). */
 export type ReleaseVersionSource = "package.json" | "Cargo.toml" | "pyproject.toml" | "VERSION" | "tag";
 
-/** Release mechanism: tag-triggered (option a) or orchestrator-brokered (option b, Phase 4). */
-export type ReleaseMechanism = "tag-triggered" | "brokered";
+/**
+ * Release mechanism — defined in `types/release-types.ts` (it rides on the
+ * release card through the shared types barrel) and re-exported here so the
+ * `release:` config parser keeps a single source of truth:
+ * - `tag-triggered` (option a) — the agent pushes a `vX.Y.Z` tag and the repo's
+ *   own `on: push: tags` workflow gates + publishes.
+ * - `brokered` (option b, Phase 4) — orchestrator-brokered Release creation.
+ * - `release-branch` (docs/214) — a release is cut by merging a version-bump PR
+ *   into a long-lived maintenance branch; CI derives the tag from the version
+ *   source on the merged commit, gates, tags, and publishes. Requires a non-tag
+ *   version source (a branch push has no tag to read the version from).
+ */
+export type { ReleaseMechanism } from "./types/release-types.js";
 
 /**
  * Optional `release:` block in shipit.yaml — overrides auto-detection for
@@ -80,6 +92,20 @@ export type ReleaseMechanism = "tag-triggered" | "brokered";
 export interface ReleaseConfig {
   /** Which file holds the authoritative version. Auto-detected when absent. */
   versionSource?: ReleaseVersionSource;
+  /**
+   * Path (relative to the repo root) to the file holding the authoritative
+   * version, for monorepos where the version source isn't at the root (docs/214).
+   * **Augments** `versionSource`: `versionSource` says *how* to parse (which
+   * ecosystem), `versionSourcePath` says *where* (e.g.
+   * `packages/api/package.json`). Absent → the version source is at the root.
+   */
+  versionSourcePath?: string;
+  /**
+   * The long-lived maintenance branch a `release-branch` release is cut from by
+   * merging a version-bump PR into it (docs/214). Default: `"stable"`. Only
+   * meaningful when `mechanism` is `"release-branch"`.
+   */
+  branch?: string;
   /** Tag name pattern. Must contain `{version}`. Default: `"v{version}"`. */
   tagPattern?: string;
   /** Tag pattern for release candidates. Default: `"v{version}-rc.{n}"`. */
@@ -465,6 +491,8 @@ function parseInstallList(val: unknown): string[] {
 
 const KNOWN_RELEASE_KEYS = new Set([
   "version-source",
+  "version-source-path",
+  "branch",
   "tag-pattern",
   "prerelease-pattern",
   "notes",
@@ -479,7 +507,7 @@ const RELEASE_VERSION_SOURCES: ReadonlySet<string> = new Set([
   "VERSION",
   "tag",
 ]);
-const RELEASE_MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered"]);
+const RELEASE_MECHANISMS: ReadonlySet<string> = new Set(["tag-triggered", "brokered", "release-branch"]);
 
 function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | undefined {
   if (raw === undefined || raw === null) return undefined;
@@ -504,6 +532,22 @@ function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | u
       throw new ShipitConfigError(`\`release.version-source\` must be one of: ${allowed}`);
     }
     result.versionSource = vs as ReleaseVersionSource;
+  }
+
+  if ("version-source-path" in obj) {
+    const vsp = obj["version-source-path"];
+    if (typeof vsp !== "string" || !vsp.trim()) {
+      throw new ShipitConfigError("`release.version-source-path` must be a non-empty string");
+    }
+    result.versionSourcePath = vsp.trim();
+  }
+
+  if ("branch" in obj) {
+    const b = obj.branch;
+    if (typeof b !== "string" || !b.trim()) {
+      throw new ShipitConfigError("`release.branch` must be a non-empty string");
+    }
+    result.branch = b.trim();
   }
 
   if ("tag-pattern" in obj) {
@@ -553,6 +597,17 @@ function parseReleaseConfig(raw: unknown, warnings: string[]): ReleaseConfig | u
       throw new ShipitConfigError("`release.workflow` must be a string");
     }
     result.workflow = w;
+  }
+
+  // docs/214 — `release-branch` derives the tag from a version file on the
+  // merged commit, so it needs an authoritative file-backed version source. A
+  // `tag` source has no file to read on a branch push, so it's invalid here.
+  // (An absent `versionSource` is allowed: it falls back to auto-detection,
+  // which a `release-branch` repo must resolve to a file at use time.)
+  if (result.mechanism === "release-branch" && result.versionSource === "tag") {
+    throw new ShipitConfigError(
+      "`release.mechanism: release-branch` requires a file-backed `version-source` (package.json, Cargo.toml, pyproject.toml, or VERSION) — not `tag`.",
+    );
   }
 
   return result;

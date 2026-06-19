@@ -17,10 +17,50 @@ describe("useTheme", () => {
     document.documentElement.classList.remove(...ALL_THEME_CLASSES);
   });
 
-  it("defaults to dark theme when no stored preference", () => {
+  it("defaults to dark when no stored preference and OS prefers dark", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("dark"),
+      media: query,
+    }));
+
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe("dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to light when no stored preference and OS prefers light", () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("light"),
+      media: query,
+    }));
+
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+
+    vi.unstubAllGlobals();
+  });
+
+  it("defaults to light when no stored preference and matchMedia is unavailable", () => {
+    // jsdom has no window.matchMedia, so this exercises the catch fallback.
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe("light");
+    expect(document.documentElement.classList.contains("dark")).toBe(false);
+  });
+
+  it("stored preference wins over OS color-scheme", () => {
+    localStorage.setItem("shipit-theme", "midnight");
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query.includes("light"),
+      media: query,
+    }));
+
+    const { result } = renderHook(() => useTheme());
+    expect(result.current.theme).toBe("midnight");
+
+    vi.unstubAllGlobals();
   });
 
   it("reads stored theme from localStorage", () => {
@@ -46,6 +86,7 @@ describe("useTheme", () => {
   });
 
   it("toggles from dark to light", () => {
+    localStorage.setItem("shipit-theme", "dark");
     const { result } = renderHook(() => useTheme());
     expect(result.current.theme).toBe("dark");
 
@@ -69,6 +110,7 @@ describe("useTheme", () => {
   });
 
   it("persists theme to localStorage on change", () => {
+    localStorage.setItem("shipit-theme", "dark");
     const { result } = renderHook(() => useTheme());
 
     act(() => result.current.toggle());
@@ -87,12 +129,12 @@ describe("useTheme", () => {
     });
 
     const { result } = renderHook(() => useTheme());
-    // Should default to dark and not throw
-    expect(result.current.theme).toBe("dark");
+    // Should default to light (matchMedia unavailable in jsdom) and not throw
+    expect(result.current.theme).toBe("light");
 
     act(() => result.current.toggle());
     // Should toggle without throwing
-    expect(result.current.theme).toBe("light");
+    expect(result.current.theme).toBe("dark");
 
     getItemSpy.mockRestore();
     setItemSpy.mockRestore();

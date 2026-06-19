@@ -466,7 +466,7 @@ describe("parseShipitConfig", () => {
     });
 
     it("accepts all valid mechanism values", () => {
-      for (const mech of ["tag-triggered", "brokered"]) {
+      for (const mech of ["tag-triggered", "brokered", "release-branch"]) {
         const config = parseShipitConfig({ release: { mechanism: mech } });
         expect(config.release?.mechanism).toBe(mech);
       }
@@ -474,6 +474,54 @@ describe("parseShipitConfig", () => {
 
     it("does not warn on the release top-level key", () => {
       const config = parseShipitConfig({ release: {} });
+      expect(config.warnings).toEqual([]);
+    });
+
+    // ---- docs/214: release-branch mechanism + branch + version-source-path ----
+
+    it("parses the release-branch mechanism with branch + version source", () => {
+      const config = parseShipitConfig({
+        release: { mechanism: "release-branch", branch: "stable", "version-source": "package.json" },
+      });
+      expect(config.release).toEqual({
+        mechanism: "release-branch",
+        branch: "stable",
+        versionSource: "package.json",
+      });
+    });
+
+    it("parses version-source-path for a monorepo", () => {
+      const config = parseShipitConfig({
+        release: { "version-source": "package.json", "version-source-path": "packages/api/package.json" },
+      });
+      expect(config.release?.versionSource).toBe("package.json");
+      expect(config.release?.versionSourcePath).toBe("packages/api/package.json");
+    });
+
+    it("rejects release-branch with a tag version source", () => {
+      expect(() =>
+        parseShipitConfig({ release: { mechanism: "release-branch", "version-source": "tag" } }),
+      ).toThrow(ShipitConfigError);
+    });
+
+    it("allows release-branch with no explicit version source (deferred to detection)", () => {
+      const config = parseShipitConfig({ release: { mechanism: "release-branch", branch: "stable" } });
+      expect(config.release?.mechanism).toBe("release-branch");
+      expect(config.release?.versionSource).toBeUndefined();
+    });
+
+    it("throws for an empty branch", () => {
+      expect(() => parseShipitConfig({ release: { branch: "   " } })).toThrow(ShipitConfigError);
+    });
+
+    it("throws for a non-string version-source-path", () => {
+      expect(() => parseShipitConfig({ release: { "version-source-path": 3 } })).toThrow(ShipitConfigError);
+    });
+
+    it("does not warn on the branch / version-source-path keys", () => {
+      const config = parseShipitConfig({
+        release: { branch: "stable", "version-source-path": "packages/api/package.json" },
+      });
       expect(config.warnings).toEqual([]);
     });
   });

@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { DatabaseManager } from "../shared/database.js";
 import type { SubagentEvent } from "./session-runner.js";
 import type { IssueWriteCard, IssueRefCard, CompactionCard, ChildMergedCard, SubAgentConsultCard, AiReviewCard, ActionChecklistCard } from "../shared/types.js";
+import type { ReleaseStatusSummary } from "../shared/types/release-types.js";
 
 export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
 
@@ -243,6 +244,17 @@ export interface PersistedMessage {
    */
   childMerged?: ChildMergedCard;
   /**
+   * docs/171 — when set, this message renders an inline `ReleaseLifecycleCard`.
+   * A release is proposed by the agent (a marker in its turn text) and reflected
+   * by the `ReleaseStatusPoller`, which drives every phase transition through
+   * one sink that persists here (upsert by `cardId`) and emits a `release_card`
+   * WS. Carrying the full snapshot makes the card a normal persisted transcript
+   * card: it survives a reconnect, switch, reload, AND an orchestrator restart,
+   * and collapses to its terminal state (`released`/`failed`/`cancelled`) in
+   * place. Patched via `upsertReleaseCard`, keyed by `cardId`.
+   */
+  releaseCard?: ReleaseStatusSummary;
+  /**
    * docs/117 Phase 2 — when set, this message renders an inline
    * `SpawnedSessionCard` for a child the agent spawned via `shipit session
    * create`. Emitted off the agent-event stream (the session-create HTTP
@@ -347,6 +359,7 @@ interface MessageRow {
   sub_agent_consult: string | null;
   action_checklist: string | null;
   child_merged: string | null;
+  release_card: string | null;
   spawned_session: string | null;
   spawn_failed: string | null;
   /** Legacy pre-docs/203 structured agent-review breadcrumb. Read-only — mapped
@@ -369,8 +382,8 @@ interface MessageRow {
 }
 
 const INSERT_SQL = `
-  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, child_merged, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
-  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @child_merged, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
+  INSERT INTO messages (session_id, role, content, tool_use, images, files, is_error, commit_hash, parent_commit_hash, in_progress, tool_results, upload_paths, turn_usage, subagent_events, rolled_back, notice, notice_level, fork_child, code_rollback_hash, voice_note, bug_report, permission_prompt, egress_prompt, issue_write, issue_ref, compaction, sub_agent_consult, action_checklist, child_merged, release_card, spawned_session, spawn_failed, agent_review, ai_review, user_review, notice_id)
+  VALUES (@session_id, @role, @content, @tool_use, @images, @files, @is_error, @commit_hash, @parent_commit_hash, @in_progress, @tool_results, @upload_paths, @turn_usage, @subagent_events, @rolled_back, @notice, @notice_level, @fork_child, @code_rollback_hash, @voice_note, @bug_report, @permission_prompt, @egress_prompt, @issue_write, @issue_ref, @compaction, @sub_agent_consult, @action_checklist, @child_merged, @release_card, @spawned_session, @spawn_failed, @agent_review, @ai_review, @user_review, @notice_id)
 `;
 
 const UPDATE_SQL = `
@@ -379,7 +392,7 @@ const UPDATE_SQL = `
     in_progress=@in_progress, tool_results=@tool_results, upload_paths=@upload_paths,
     turn_usage=@turn_usage, subagent_events=@subagent_events, rolled_back=@rolled_back,
     notice=@notice, notice_level=@notice_level, fork_child=@fork_child, code_rollback_hash=@code_rollback_hash,
-    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, child_merged=@child_merged,
+    voice_note=@voice_note, bug_report=@bug_report, permission_prompt=@permission_prompt, egress_prompt=@egress_prompt, issue_write=@issue_write, issue_ref=@issue_ref, compaction=@compaction, sub_agent_consult=@sub_agent_consult, action_checklist=@action_checklist, child_merged=@child_merged, release_card=@release_card,
     spawned_session=@spawned_session, spawn_failed=@spawn_failed, agent_review=@agent_review, ai_review=@ai_review, user_review=@user_review, notice_id=@notice_id
   WHERE id = @id
 `;
@@ -447,6 +460,7 @@ export class ChatHistoryManager {
       sub_agent_consult: msg.subAgentConsult ? JSON.stringify(msg.subAgentConsult) : null,
       action_checklist: msg.actionChecklist ? JSON.stringify(msg.actionChecklist) : null,
       child_merged: msg.childMerged ? JSON.stringify(msg.childMerged) : null,
+      release_card: msg.releaseCard ? JSON.stringify(msg.releaseCard) : null,
       spawned_session: msg.spawnedSession ? JSON.stringify(msg.spawnedSession) : null,
       spawn_failed: msg.spawnFailed ? JSON.stringify(msg.spawnFailed) : null,
       // Legacy `agent_review` column — never written after docs/203 (the card is
@@ -489,6 +503,7 @@ export class ChatHistoryManager {
     if (row.sub_agent_consult) msg.subAgentConsult = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
     if (row.action_checklist) msg.actionChecklist = JSON.parse(row.action_checklist) as ActionChecklistCard;
     if (row.child_merged) msg.childMerged = JSON.parse(row.child_merged) as ChildMergedCard;
+    if (row.release_card) msg.releaseCard = JSON.parse(row.release_card) as ReleaseStatusSummary;
     if (row.spawned_session) msg.spawnedSession = JSON.parse(row.spawned_session) as PersistedMessage["spawnedSession"];
     if (row.spawn_failed) msg.spawnFailed = JSON.parse(row.spawn_failed) as PersistedMessage["spawnFailed"];
     if (row.ai_review) {
@@ -589,6 +604,33 @@ export class ChatHistoryManager {
         return true;
       }
       return false;
+    })();
+  }
+
+  /**
+   * docs/171 — upsert a release lifecycle card, keyed by `cardId`. The
+   * `ReleaseStatusPoller` drives every phase transition through one sink (see
+   * `onCard`): the first transition (propose) has no row yet, so this APPENDS a
+   * carrier message; every later transition (tagged → gating → released/failed,
+   * cancelled) PATCHES that same row in place so the card advances and collapses
+   * without duplicating. Append-at-end is the correct transcript position: the
+   * proposal lands after the agent's turn (mirrors `emitNoticePostTurn`). Unlike
+   * the bug-report/egress patches this can run outside a turn (an async poll
+   * transition), which is exactly why a finalized-row patch is safe.
+   */
+  upsertReleaseCard(sessionId: string, card: ReleaseStatusSummary): void {
+    this.db.transaction(() => {
+      const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+      for (const row of rows) {
+        if (!row.release_card) continue;
+        const existing = JSON.parse(row.release_card) as ReleaseStatusSummary;
+        if (existing.cardId !== card.cardId) continue;
+        const msg = this.fromRow(row);
+        msg.releaseCard = card;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        return;
+      }
+      this.append(sessionId, { role: "assistant", text: "", releaseCard: card });
     })();
   }
 

@@ -7,6 +7,7 @@ import type {
   AiReviewCard,
   ActionChecklistCard,
 } from "../domain-types.js";
+import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
 
 /**
@@ -205,6 +206,23 @@ export interface WsCompactionCard {
   type: "compaction_card";
   sessionId: string;
   card: CompactionCard;
+}
+
+/**
+ * docs/171 — the release lifecycle card as a persisted transcript card. The
+ * `ReleaseStatusPoller` emits this through `runner.emitMessage` (so it broadcasts
+ * to the session's viewers and buffers into the turn-event log) on every phase
+ * transition — propose, tagged, gating → released/failed, and cancelled. The
+ * client upserts it into the transcript keyed by `card.cardId`, so a later
+ * transition patches the SAME inline card in place rather than appending a
+ * duplicate. Durability is the chat-history `release_card` column (upserted by
+ * the same `cardId`), so the card survives a reconnect, switch, reload, AND an
+ * orchestrator restart — unlike the previous in-memory `release_status` SSE.
+ */
+export interface WsReleaseCard {
+  type: "release_card";
+  sessionId: string;
+  card: ReleaseStatusSummary;
 }
 
 /**

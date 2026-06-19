@@ -16,10 +16,12 @@
 - [x] Gate auto-preview compose `command:`/`build:` startup behind trust (same `setupServiceManager` early-return)
 - [x] Accept-trust action: `POST /api/repos/trust` that unblocks + runs deferred startup
 - [x] On acceptance: warm/pre-install (`warmSessionForRepo`), re-run deferred setup for open sessions (`runner.rerunServiceSetup`), broadcast updated repo list
+- [x] **Trust loop must enumerate the runner registry, not `sessionManager.list()`.** A just-claimed session stays warm (`warm = 1`) until its first turn graduates it, and `list()` filters warm out (`WHERE warm = 0`) — so a user who trusts *before* sending a first turn (the common case) had their open session skipped: `rerunServiceSetup` never fired, the deferred install/compose never ran, and the preview stayed empty (no service list AND no `compose_not_configured` "add shipit.yaml" hint) until a brand-new session was opened. Fixed by iterating `runnerRegistry.ids()` (warm sessions still have a live runner) and resolving each via `sessionManager.get(id)`. Regression test in `repos.test.ts`.
 
 ## Client
 - [x] Inline trust consent (`RepoTrustBanner`) for untrusted remotes (no link-out, no modal escape) — rendered as the Preview tab's restricted empty state: a centered card overlaying the (empty) preview frame, visible only on the Preview tab
 - [x] Wire accept action (`trustRepo` store action); reflect trusted state from the repo's `trusted` flag; persists in RepoStore so it doesn't recur per session
+- [x] Show the banner *before the first turn* on a freshly-added/claimed repo. `App.tsx` keyed the banner off `currentSession?.remoteUrl`, but a just-claimed session stays **warm** (`warm=1`) until its first turn graduates it, and `SessionManager.list()` excludes warm sessions — so `currentSession` (and thus `currentRepoUrl`) was undefined and the banner silently bailed, leaving only the misleading "Installing dependencies" startup overlay until the first agent turn. Fixed by falling back to the `/{slug}/new` route's repo: `currentRepoUrl = currentSession?.remoteUrl ?? newSessionRepoUrl`.
 
 ## Tests
 - [x] Untrusted clone does NOT run `agent.install` / start compose on activation (`setupServiceManager` gate unit test)

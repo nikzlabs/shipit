@@ -15,6 +15,7 @@ import {
   fetchGitHubMetaCidrs,
   buildTierAEgressInputs,
   installEgressFirewall,
+  allowEgressToSubnets,
   _resetEgressCidrCache,
 } from "./egress-firewall-install.js";
 import { EGRESS_GITHUB_CIDRS_FALLBACK, EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
@@ -172,6 +173,67 @@ describe("installEgressFirewall", () => {
     const { docker, container } = fakeDocker(1);
     await expect(
       installEgressFirewall(docker, { agentContainerId: "a", sidecarImage: "egress:1", inputs }),
+    ).rejects.toThrow(/exited 1/);
+    expect(container.remove).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// allowEgressToSubnets (fake Docker) — SHI-90 preview reachability
+// ---------------------------------------------------------------------------
+
+describe("allowEgressToSubnets", () => {
+  it("launches the allow-subnet sidecar in the agent netns with NET_ADMIN + the subnet env", async () => {
+    const { docker, container, calls } = fakeDocker(0);
+    const allowed = await allowEgressToSubnets(docker, {
+      agentContainerId: "agent123",
+      sidecarImage: "egress:1",
+      subnets: ["172.19.0.0/16"],
+    });
+
+    const cfg = calls.create as {
+      Image: string;
+      Entrypoint: string[];
+      HostConfig: { NetworkMode: string; CapAdd: string[] };
+      Env: string[];
+    };
+    expect(cfg.Image).toBe("egress:1");
+    expect(cfg.Entrypoint).toEqual(["/usr/local/bin/allow-subnet.sh"]);
+    expect(cfg.HostConfig.NetworkMode).toBe("container:agent123");
+    expect(cfg.HostConfig.CapAdd).toEqual(["NET_ADMIN"]);
+    expect(cfg.Env).toContain("EGRESS_ALLOW_SUBNETS=172.19.0.0/16");
+    expect(allowed).toEqual(["172.19.0.0/16"]);
+    expect(container.start).toHaveBeenCalled();
+    expect(container.remove).toHaveBeenCalled();
+  });
+
+  it("validates + joins multiple subnets and drops garbage", async () => {
+    const { docker, calls } = fakeDocker(0);
+    const allowed = await allowEgressToSubnets(docker, {
+      agentContainerId: "a",
+      sidecarImage: "egress:1",
+      subnets: [" 172.19.0.0/16 ", "fd00::/64", "not-a-cidr", "10.0.0.0/99"],
+    });
+    const cfg = calls.create as { Env: string[] };
+    expect(cfg.Env).toContain("EGRESS_ALLOW_SUBNETS=172.19.0.0/16 fd00::/64");
+    expect(allowed).toEqual(["172.19.0.0/16", "fd00::/64"]);
+  });
+
+  it("is a no-op (no sidecar launched) when no valid subnet is passed", async () => {
+    const { docker } = fakeDocker(0);
+    const allowed = await allowEgressToSubnets(docker, {
+      agentContainerId: "a",
+      sidecarImage: "egress:1",
+      subnets: ["garbage", ""],
+    });
+    expect(allowed).toEqual([]);
+    expect(docker.createContainer).not.toHaveBeenCalled();
+  });
+
+  it("throws when the sidecar exits non-zero, and still removes it (caller swallows)", async () => {
+    const { docker, container } = fakeDocker(1);
+    await expect(
+      allowEgressToSubnets(docker, { agentContainerId: "a", sidecarImage: "egress:1", subnets: ["172.19.0.0/16"] }),
     ).rejects.toThrow(/exited 1/);
     expect(container.remove).toHaveBeenCalled();
   });

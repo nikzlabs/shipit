@@ -124,7 +124,8 @@ git(["tag", "-a", tag, "-m", tag]);
 console.log(`
 Created commit "Release ${tag}" and annotated tag ${tag}.
 
-Next — push both (the tag push triggers .github/workflows/release.yml):
+Next — push the current branch and the tag (the tag push triggers
+.github/workflows/release.yml). Cut releases from \`stable\` (see RELEASING.md):
 
   git push origin HEAD
   git push origin ${tag}
@@ -132,6 +133,6 @@ Next — push both (the tag push triggers .github/workflows/release.yml):
 
 if (prerelease) {
   console.log(
-    "This is a prerelease: the workflow publishes it as a GitHub prerelease and does NOT fast-forward `stable`.",
+    "This is a prerelease: the workflow publishes it as a GitHub prerelease. CI never moves `stable`.",
   );
 }
