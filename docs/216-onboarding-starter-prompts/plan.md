@@ -1,7 +1,7 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-175
 title: Onboarding starter prompts (empty-session launchpad)
-description: Clickable example prompts on every empty session that seed the composer, teaching first-time users how to drive ShipIt.
+description: Clickable chips on every empty session that seed the composer with ShipIt-specific capability prompts, surfacing integrated features new users wouldn't discover.
 ---
 
 # Onboarding starter prompts
@@ -29,30 +29,54 @@ the chat. Rejected on two grounds:
 
 ## Design
 
-A lightweight **empty-state launchpad**: a short lead-in line plus a few
-clickable example-prompt chips, rendered in front of the rocket in the same
-empty chat area.
+A lightweight **discoverability launchpad**: a short lead-in line plus a few
+clickable chips, anchored to the **top** of the empty chat area.
 
+- **The chips teach hard-to-discover, ShipIt-specific capabilities** — not
+  generic "build an app" tasks. Each chip seeds a prompt that exercises an
+  integrated feature the user would otherwise never know to ask for in chat:
+  opening a PR, deploying, getting a second opinion from another agent backend
+  (Codex), planning with a rendered diagram, and filing a ShipIt bug report.
+  The example itself is the discovery mechanism.
 - **Clicking a chip seeds the composer** via `useSessionStore.setPrefillText()`
   — the sanctioned edit-then-send pattern (the chip fills the textarea, focuses
   it, drops the cursor at the end). The user reviews and presses Enter. This
   teaches the actual input surface rather than acting as a shell-shaped button
-  (§5-aligned). It does **not** auto-send.
-- **Context-aware prompts** keyed on `currentRepoUrl` (App.tsx): repo-backed
-  sessions get "work on existing code" prompts (explain the project, find & fix
-  a bug + open a PR, add a feature, write tests); scratch/sandbox sessions get
-  "build from zero" prompts (landing page, portfolio, to-do app, browser game).
-  Each prompt is a real end-to-end task, so the example itself communicates that
-  ShipIt is integrated.
+  (§5-aligned). It does **not** auto-send. Every seeded prompt is sendable as a
+  *first* message — nothing assumes prior work in the session.
+- **Context-aware prompts** keyed on `currentRepoUrl` (App.tsx). Both sets are
+  ShipIt-specific; they differ only in framing:
+  - *Scratch/sandbox* (no repo): build an app + open a PR, build + deploy to
+    Vercel, plan with a diagram, second opinion from another agent, report a
+    ShipIt bug.
+  - *Repo-backed*: explain the project, find a bug + fix it + open a PR, second
+    opinion from another agent, write tests for weak spots, report a ShipIt bug.
 - **Shown on every empty session**, gated on the **same condition as the rocket**
   (`showRocket` = `messages.length === 0 && !isLoading && (historyLoaded ||
   showNewSessionView)`). It therefore appears on every empty session and
   disappears the instant the first message lands — nothing to dismiss, no
   first-run flag, no persisted state.
-- **Coexists with the rocket.** The launchpad layer is `pointer-events-none`
-  (only the chips re-enable pointer events) and renders in normal stacking
-  context; the rocket sits at `z-index: -1` behind it. Chips have a translucent
-  blurred background so they stay legible while the rocket launches behind them.
+- **Top placement, clear of the rocket.** The rocket rests at the *bottom* of
+  the empty chat area for its first ~7s and only then lifts off upward. Anchoring
+  the chips to the **top** keeps them out of the rocket's resting position (an
+  earlier bottom-anchored version visually collided with it). The launchpad
+  layer is also `pointer-events-none` (only the chips re-enable pointer events)
+  and the rocket sits at `z-index: -1` behind it; chips have a translucent
+  blurred background so they stay legible.
+
+## Feature inventory (chip source material)
+
+The chips are drawn from a survey of ShipIt-specific, agent-reachable
+capabilities documented in `src/server/shipit-docs/` — the ones a user would not
+discover on their own. The fuller menu (for rotating chip sets later): open/label
+a PR from chat, consult another agent backend (`shipit agent run`), run a code/
+security review, tracker-neutral issue create/view/edit (`shipit issue`), link an
+issue to a PR (`Closes`), write design docs + mockups, live preview + compose
+service control, declare secrets, deploy to Vercel/Cloudflare, propose & cut a
+release (`shipit release`), spawn & coordinate parallel sessions, sandbox/ops
+sessions, present visual artifacts, voice summaries, and file a ShipIt bug
+(`report_shipit_bug`). The initial five-per-variant set above picks the ones that
+are both high-value and sendable as a first message.
 
 ## Key files
 
@@ -68,8 +92,8 @@ empty chat area.
 
 ## Visual reference
 
-`mockup.html` (this directory) — both variants side by side, showing chip
-placement above the composer and the rocket glow layered behind.
+`mockup.html` (this directory) — both variants side by side, showing the chips
+anchored to the top of the chat area with the rocket glow layered behind/below.
 
 ## Rejected alternatives
 

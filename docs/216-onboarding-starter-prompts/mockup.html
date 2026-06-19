@@ -58,10 +58,11 @@
      composer is a SIBLING after this, so the launchpad's bottom edge sits
      directly above the composer — no overlap. */
   .messages { flex: 1; position: relative; isolation: isolate; }
-  /* launchpad layer: anchored to the bottom of the message area, in front of rocket */
+  /* launchpad layer: anchored to the TOP of the message area, clear of the
+     rocket (which rests at the bottom and lifts off later) */
   .launchpad {
-    position: absolute; left: 0; right: 0; bottom: 0;
-    display: flex; justify-content: center; padding: 0 16px 12px;
+    position: absolute; left: 0; right: 0; top: 0;
+    display: flex; justify-content: center; padding: 16px 16px 0;
     pointer-events: none;
   }
   .launchpad-inner { width: 100%; max-width: 360px; }
@@ -99,7 +100,7 @@
 </head>
 <body>
   <h1>Starter prompts — empty-session launchpad</h1>
-  <p class="sub">Clickable example prompts sit just above the composer, in front of the decorative rocket (z-index&nbsp;-1). They seed the composer for review &amp; send, and vanish the instant the first message lands.</p>
+  <p class="sub">ShipIt-specific discoverability chips anchored to the top of the empty chat area, clear of the decorative rocket (z-index&nbsp;-1) resting at the bottom. Each seeds the composer with a prompt that exercises an integrated capability; they vanish the instant the first message lands.</p>
   <div class="row">
     <!-- Scratch / sandbox variant -->
     <div>
@@ -109,12 +110,13 @@
           <div class="rocket"></div>
           <div class="launchpad">
             <div class="launchpad-inner">
-              <p class="lead">Just describe what you want — I'll write the code and show you a live preview as I build. Try:</p>
+              <p class="lead">Tell me what to build — I'll write the code and preview it live, and can open a PR or deploy when you're ready. Try:</p>
               <div class="chips">
-                <span class="chip"><span class="ic">🏪</span> Landing page for a coffee shop</span>
-                <span class="chip"><span class="ic">👤</span> Personal portfolio site</span>
-                <span class="chip"><span class="ic">✅</span> A to-do app I can use</span>
-                <span class="chip"><span class="ic">🎮</span> A game to play in the browser</span>
+                <span class="chip"><span class="ic">🔀</span> Build an app, then open a PR</span>
+                <span class="chip"><span class="ic">☁️</span> Build &amp; deploy to Vercel</span>
+                <span class="chip"><span class="ic">🌳</span> Plan it with a diagram first</span>
+                <span class="chip"><span class="ic">🤖</span> Second opinion from another agent</span>
+                <span class="chip"><span class="ic">🛟</span> Report a ShipIt bug</span>
               </div>
             </div>
           </div>
@@ -130,12 +132,13 @@
           <div class="rocket"></div>
           <div class="launchpad">
             <div class="launchpad-inner">
-              <p class="lead">Tell me what to change — I'll edit the code, run the live preview, and open a pull request when it's ready. Try:</p>
+              <p class="lead">Tell me what to change — I can explain the code, fix bugs, open a pull request, or get a second opinion from another agent. Try:</p>
               <div class="chips">
                 <span class="chip"><span class="ic">📖</span> Explain this project</span>
-                <span class="chip"><span class="ic">🐛</span> Find and fix a bug, open a PR</span>
-                <span class="chip"><span class="ic">✨</span> Add a feature</span>
+                <span class="chip"><span class="ic">🐛</span> Find a bug, fix it, open a PR</span>
+                <span class="chip"><span class="ic">🤖</span> Second opinion from another agent</span>
                 <span class="chip"><span class="ic">🧪</span> Write tests for weak spots</span>
+                <span class="chip"><span class="ic">🛟</span> Report a ShipIt bug</span>
               </div>
             </div>
           </div>
