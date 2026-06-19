@@ -181,7 +181,11 @@ export function OnboardingWizard({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm p-4">
-      <div className="w-full max-w-3xl max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
+      {/* Fixed height on desktop so the modal never resizes when an agent's
+          OAuth / device-auth flow or API-key field expands — the right pane
+          scrolls internally instead (see the pane's overflow-y-auto + min-h-0).
+          Height is auto on mobile (single column), capped by max-h-[92vh]. */}
+      <div className="w-full max-w-3xl md:h-[600px] max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
         {step === 1 ? (
           <WizardHero
             title={
@@ -204,8 +208,9 @@ export function OnboardingWizard({
           />
         )}
 
-        {/* Right pane */}
-        <div className="p-8 overflow-y-auto flex flex-col gap-6">
+        {/* Right pane — min-h-0 lets overflow-y-auto actually scroll inside the
+            fixed-height grid cell instead of stretching the modal. */}
+        <div className="p-8 overflow-y-auto min-h-0 flex flex-col gap-6">
           <StepDots current={step} />
 
           {step === 1 ? (
