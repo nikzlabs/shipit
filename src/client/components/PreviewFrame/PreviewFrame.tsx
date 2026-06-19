@@ -5,6 +5,8 @@ import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { resolvePreviewHost } from "../../utils/preview-host.js";
 import { StartupSteps } from "../StartupSteps.js";
 import { useIframePool } from "../../hooks/useIframePool.js";
 import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePreviewHealthPoller.js";
@@ -78,8 +80,11 @@ export function PreviewFrame({
   // Compute active port early so hooks can reference it (0 when not running)
   const activePort = preview?.running ? (selectedPort ?? preview.port) : 0;
 
-  // API host for container-mode subdomain URLs (e.g. "localhost:3001")
-  const apiHost = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
+  // Host + protocol for container-mode subdomain URLs (e.g. "localhost:3001").
+  // On a Tailscale MagicDNS deploy this routes previews through the sslip host
+  // over http: while the app/WS stay on the native .ts.net host (docs/216).
+  const tailnetPreviewHost = useUiStore((s) => s.tailnetPreviewHost);
+  const { host: apiHost, protocol: apiProtocol } = resolvePreviewHost(window.location.host, tailnetPreviewHost);
 
   // ---- Iframe pool: one iframe per (session, port) ----
   // Slots are keyed by "sessionId:port". Only the active slot is visible.
@@ -109,6 +114,7 @@ export function PreviewFrame({
     pollUrl,
     isContainerMode,
     apiHost,
+    apiProtocol,
     createdSlotsRef,
     pollingRef,
     promoteSlot,
@@ -196,7 +202,7 @@ export function PreviewFrame({
   }, [iframeRefs]);
 
   const isLocalPreview = /^(localhost|127\.\d+\.\d+\.\d+|::1)(:|$)/i.test(apiHost);
-  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost) : null;
+  const previewSubdomainUrl = isContainerMode && sessionId ? buildSubdomainUrl(sessionId, activePort, apiHost, apiProtocol) : null;
 
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {

@@ -82,6 +82,33 @@ describe("Integration: GET /api/bootstrap", () => {
     // Feature 118: runtimeMode defaults to "containerized" when neither
     // the RUNTIME_MODE env var nor a deps override is set.
     expect(body.runtimeMode).toBe("containerized");
+    // docs/216: no Tailscale forwarder file → field omitted.
+    expect(body.tailnetPreviewHost).toBeUndefined();
+  });
+
+  it("surfaces tailnetPreviewHost when the forwarder file is present, omits/ignores otherwise (docs/216)", async () => {
+    const hostFile = path.join(tmpDir, ".tailnet-preview-host");
+    const prev = process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE;
+    process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE = hostFile;
+    try {
+      // Present + valid → surfaced verbatim (read at request time, not boot).
+      fs.writeFileSync(hostFile, "100-64-1-2.sslip.io\n");
+      let res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      expect(res.json().tailnetPreviewHost).toBe("100-64-1-2.sslip.io");
+
+      // Garbage content (defensive validation) → omitted, not forwarded.
+      fs.writeFileSync(hostFile, "not a host!! rm -rf\n");
+      res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      expect(res.json().tailnetPreviewHost).toBeUndefined();
+
+      // File removed → omitted.
+      fs.rmSync(hostFile);
+      res = await app.inject({ method: "GET", url: "/api/bootstrap" });
+      expect(res.json().tailnetPreviewHost).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE;
+      else process.env.SHIPIT_TAILNET_PREVIEW_HOST_FILE = prev;
+    }
   });
 
   it("returns sessions when they exist", async () => {

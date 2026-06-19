@@ -18,11 +18,10 @@ import { ServiceList } from "./ServiceList.js";
 import { LogView } from "./LogView.js";
 import { buildSubdomainUrl } from "../hooks/usePreviewHealthPoller.js";
 import { usePreviewStore, type ManagedServiceState } from "../stores/preview-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import { resolvePreviewHost } from "../utils/preview-host.js";
 import { useLogStore } from "../stores/log-store.js";
 import type { WsClientMessage } from "../../server/shared/types.js";
-
-/** API host for container-mode subdomain URLs (e.g. "localhost:3001"). */
-const API_HOST = (import.meta.env.VITE_API_HOST as string | undefined) || window.location.host;
 
 /** Maximum number of plain-text lines kept for "Send to Agent". */
 const MAX_PLAIN_LINES = 200;
@@ -268,6 +267,7 @@ export function PreviewServicesDrawer({
 }: PreviewServicesDrawerProps) {
   const expanded = usePreviewStore((s) => s.servicesDrawerExpanded);
   const setExpanded = usePreviewStore((s) => s.setServicesDrawerExpanded);
+  const tailnetPreviewHost = useUiStore((s) => s.tailnetPreviewHost);
   const [height, setHeight] = useState(loadHeight);
   const [selectedService, setSelectedService] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -325,8 +325,9 @@ export function PreviewServicesDrawer({
 
   const externalUrlFor = useCallback((svc: ManagedServiceState): string | null => {
     if (!sessionId || !svc.port || svc.status !== "running") return null;
-    return buildSubdomainUrl(sessionId, svc.port, API_HOST);
-  }, [sessionId]);
+    const { host, protocol } = resolvePreviewHost(window.location.host, tailnetPreviewHost);
+    return buildSubdomainUrl(sessionId, svc.port, host, protocol);
+  }, [sessionId, tailnetPreviewHost]);
 
   // --- Bulk actions over the whole stack ---
   const startable = services.filter((s) => s.status === "stopped" || s.status === "error");

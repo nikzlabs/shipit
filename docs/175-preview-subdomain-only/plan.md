@@ -141,6 +141,12 @@ Previews need `{sessionId}--{port}.{host}` to resolve. Bare Tailscale MagicDNS
 gives you `host.tailnet.ts.net` but historically **no** `*.host`. The options,
 in rough order of "least setup" → "most robust":
 
+> **See also `docs/216-tailnet-magicdns-preview-host`** — the hybrid where the app
+> + WS run on the native MagicDNS name while preview iframes route through the
+> sslip host (no `dns-subdomain-resolve` grant needed). It builds on Option B's
+> sslip path below, scoping it to preview frames via a client `resolvePreviewHost`
+> override keyed off a server-advertised `tailnetPreviewHost`.
+
 ### Option A — Native MagicDNS wildcard (new, cleanest long-term)
 
 Tailscale merged wildcard subdomain resolution into MagicDNS

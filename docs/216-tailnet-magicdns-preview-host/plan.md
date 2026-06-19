@@ -203,3 +203,13 @@ unaffected.
   `.ts.net` detection guard naturally scopes the override to the HTTP MagicDNS case.
 - **sslip.io stays in the preview resolution path** (DNS-trust caveat from `docs/175`
   still applies) — but now *only* for preview iframes, not the app/auth/WS surface.
+- **Client picks up a changed host on its next bootstrap, not live.** The server
+  self-heals at request time, but the SPA reads `tailnetPreviewHost` once per
+  `GET /api/bootstrap` (page load / reconnect) and keys preview slots by
+  `sessionId:port`. An *already-open* tab would keep the old host until its next
+  bootstrap. This is acceptable and not worth an SSE push + slot invalidation: a
+  tailnet IP change tears down the very WireGuard path the open tab is using
+  (the browser was talking to the old `100.x`), so the user reconnects over the
+  new IP — a fresh load that re-bootstraps — as a direct consequence of the
+  change. The window where the tab is open *and* still reachable *and* stale does
+  not occur in practice.

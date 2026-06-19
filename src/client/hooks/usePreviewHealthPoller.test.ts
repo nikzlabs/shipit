@@ -62,6 +62,17 @@ describe("buildSubdomainUrl", () => {
       "http://session-a--3000.localhost/",
     );
   });
+
+  it("uses the explicit protocol when provided (docs/216 sslip override forces http:)", () => {
+    // The Tailscale sslip override passes "http:" so previews never inherit an
+    // https: app origin onto a host with no TLS cert.
+    expect(buildSubdomainUrl("session-a", 3000, "100-64-1-2.sslip.io", "http:")).toBe(
+      "http://session-a--3000.100-64-1-2.sslip.io/",
+    );
+    expect(buildSubdomainUrl("session-a", 3000, "100-64-1-2.sslip.io:4123", "http:")).toBe(
+      "http://session-a--3000.100-64-1-2.sslip.io:4123/",
+    );
+  });
 });
 
 describe("computePreviewUrl", () => {
