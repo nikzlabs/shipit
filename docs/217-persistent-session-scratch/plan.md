@@ -57,9 +57,10 @@ per-session, host-persisted, non-git directory that the next container re-mounts
 `uploadsDir` is derived as a sibling of the session dir:
 `path.join(opts.sessionDir, "uploads")` (`container-lifecycle.ts`).
 
-**The fix is to add a third sibling** — a persistent scratch dir — and route
-presented artifacts onto it so they survive a restart. Two mechanisms (§2); the
-recommended one has the worker snapshot each presented artifact there.
+**The fix is to add a third sibling** — a general, agent-**writable** persistent
+scratch dir, mounted at `/persist`. The agent writes throwaway-but-keep files
+there instead of `/tmp` (presented artifacts being the motivating case), and they
+survive a restart for free, exactly like `uploads/` does.
 
 ## Design
 
@@ -111,46 +112,35 @@ rotation). Mirror the existing nuances:
 Writable under a read-only rootfs (it's a mount, like `/workspace` and `/tmp`),
 so it composes with the docs/172 Gap 5 hardening with no special case.
 
-### 2. Getting present artifacts onto `/persist` — two mechanisms
+### 2. `present` writes throwaway artifacts to `/persist`, not `/tmp`
 
-There are two ways to make presented artifacts land on the persistent mount, and
-**they are coupled to the disk-safety decision in §3** — that coupling is the
-crux of this design, so it's spelled out rather than hidden:
+The agent writes throwaway present files (and any other keep-but-don't-commit
+scratch) to `/persist` instead of `/tmp`. That's the whole change to the present
+flow — and it is **guidance only, with zero byte-path code**:
 
-- **Variant 1 — guidance only (agent writes to `/persist`).** Tell the agent to
-  write throwaway present files to `/persist` instead of `/tmp`. The orchestrator
-  already persists `resolvedPath` and re-registers it with a freshly-started
-  worker (`/present/register`), which re-reads the bytes from disk; if
-  `resolvedPath` is under `/persist` the re-read just succeeds after a restart.
-  **Zero byte-path code** — no changes to `present-store.ts`,
-  `present-registry.ts`, `present-view.ts`, or `proxyPresentRaw`. But it makes
-  `/persist` a **general, agent-written, unbounded** dir, so it is only safe paired
-  with the §3 disk budget (option b).
+- The orchestrator already persists `resolvedPath` and re-registers it with a
+  freshly-started worker (`/present/register`), which re-reads the bytes from
+  disk. Once `resolvedPath` points into `/persist` (host-backed) instead of `/tmp`
+  (ephemeral), **the re-read just succeeds** after a restart. No changes to
+  `present-store.ts`, `present-registry.ts`, `present-view.ts`, or
+  `proxyPresentRaw` — the existing serve + re-register path works unchanged the
+  moment the file lives on a surviving mount.
 
-- **Variant 2 — worker-managed snapshot (RECOMMENDED MVP).** Leave the agent's
-  workflow unchanged (it keeps writing throwaways to `/tmp`). On `present` submit,
-  the worker **copies** the submitted artifact into
-  `/persist/<presentId>.<ext>` and records *that* as `resolvedPath`. Because every
-  byte that reaches `/persist` came through `present`, the existing **~1 MB submit
-  cap bounds it automatically** — no janitor change, no agent guidance change, and
-  no dependence on the agent picking the right path. The cost is a small code
-  change in the submit broker (the copy + path rewrite); it stays entirely on the
-  session volume, with **no orchestrator byte-shipping** (the distinction from the
-  rejected snapshot-to-orchestrator alternative below).
+This is the simplest possible design and gives everyone the same mental model:
+`/persist` is "the place for files that should outlive the container but stay out
+of git." The agent already understands `/tmp` (ephemeral) and `/workspace`
+(committed); `/persist` slots in as the third, obvious option. The present model
+becomes three clear tiers:
 
-**Recommended: Variant 2.** It fixes the user's concrete complaint (presented
-`/tmp` artifacts vanishing) with a bounded, self-contained change and no reliance
-on agent path discipline. Under it the agent-facing model is *unchanged* — `/tmp`
-throwaway vs `/workspace` tracked — except that `/tmp` throwaways **now survive a
-restart** because the worker snapshotted them:
-
-| Intent | Agent writes to | In git? | Survives restart? |
+| Intent | Write to | In git? | Survives restart? |
 |---|---|---|---|
-| Throwaway (default) | `/tmp` → worker snapshots to `/persist` | no | **yes** |
+| Persistent throwaway (default) | `/persist` | no | **yes** |
 | Tracked deliverable | `/workspace` | yes | yes |
+| Truly ephemeral | `/tmp` | no | no |
 
-Variant 1 is the path to the broader "general non-git scratch" vision and is
-revisited in §3 / Open questions.
+`/persist` becomes the **recommended default** for `present` throwaways: the user
+keeps seeing the artifact the next day without it ever entering the repo. `/tmp`
+stays available for genuinely disposable scratch.
 
 ### 3. Lifecycle
 
@@ -158,36 +148,39 @@ revisited in §3 / Open questions.
   like `uploads/` and the git clone. The next container re-mounts it. ✅ the whole
   point.
 - **Session delete / full reset** — the session dir is removed wholesale, taking
-  `scratch/` with it. No separate cleanup path, no orphan-volume sweep needed
-  (`disk-janitor.ts` is untouched).
-- **Disk — bounded by construction under the recommended Variant 2.** The present
-  submit cap (`~1 MB/artifact`, enforced in `mcp-tools/present.ts`) bounds only the
-  bytes that arrive *through `present`*. Variant 2 routes **every** byte on
-  `/persist` through that submit path (the worker is the only writer), so the cap
-  is the enforced bound and **`disk-janitor.ts` stays untouched** — no new disk
-  machinery, the unbounded state never exists.
+  `scratch/` with it. Covered by the existing teardown; no extra work.
+- **Per-session disk — deliberately unbounded, and that's fine.** No per-session
+  size cap or eviction. The agent can *already* write arbitrarily large files to
+  `/workspace` (which also persists — the host clone survives between containers,
+  and committed bytes live in git forever), so a writable `/persist` adds no new
+  failure mode the platform doesn't already tolerate. Bounding `/persist` while
+  `/workspace` stays unbounded would be inconsistent for no real safety gain. We
+  do **not** add a quota or LRU sweep.
+- **Cross-session disk — old/stale sessions need a reclaim path (the one real gap).**
+  The leak isn't one session writing a lot; it's `scratch/` dirs piling up across
+  **many** sessions that are no longer active. The cleanup keys on session
+  *lifecycle*, not file size:
+  - **Active session** — `scratch/` persists. The whole point; never swept.
+  - **Deleted / full-reset session** — gone with the session dir (above).
+  - **Archived / long-idle session** — reclaimed by `disk-janitor.ts`'s startup
+    sweep. `scratch/` is a sibling of `workspace/` in the session dir, so the
+    existing **opt-in archived-workspace sweep** is extended to drop the archived
+    session's `scratch/` (and `uploads/`) alongside it — same trigger, same
+    age/archived gate, no new policy surface. An archived session's scratch is
+    dead weight by definition; reclaiming it is safe.
 
-  Variant 1 (and the broader "general non-git scratch" vision) is the opposite:
-  the agent writes directly, so `/persist` is **unbounded and survives every
-  restart**. It **must not ship without an enforced budget** — a per-session size
-  cap (reject/evict past N MB) and/or an LRU sweep in `disk-janitor.ts` keyed on
-  the `scratch/` dirs, plus tests. That is deliberately deferred so the unbounded
-  state is never the default; the MVP ships the bounded Variant 2.
-
-  The earlier "out of scope" hand-wave was wrong: a persistent writable mount must
-  ship with its disk story. Here it's "Variant 2 is bounded by the present cap;
-  general agent-write (Variant 1) is gated behind a budget."
+  This matches the repo's disk principle — *prune where the leak happens*: the
+  leak is stale-session accumulation, so the fix lives in the startup janitor
+  keyed on archived state, not in a per-write budget.
 
 ### 4. Security / containment
 
-- The mount is `:rw` because the worker writes presented artifacts there
-  (Variant 2), per-session isolated. This grants no new capability — the worker
-  already reads/writes the agent's files under `/tmp` and `/workspace`; `/persist`
-  just makes a slice survive. It does **not** weaken the `uploads` `:ro` protection
-  (docs/172 Gap 6), which exists to stop a prompt-injected agent tampering with the
-  *user's* files — a different directory with a different threat model. (Under
-  Variant 1 the agent writes `/persist` directly, the same capability it already
-  has for `/tmp`/`/workspace`; still no new reach.)
+- The mount is `:rw` because it's the **agent's own** scratch, per-session
+  isolated. This grants no new capability — the agent can already write freely to
+  `/tmp` and `/workspace`; `/persist` just makes a slice of that survive. It does
+  **not** weaken the `uploads` `:ro` protection (docs/172 Gap 6), which exists to
+  stop a prompt-injected agent tampering with the *user's* files — a different
+  directory with a different threat model.
 - Nothing here is network-routable; present artifacts are still served only
   through the worker-local screenshot URL and the orchestrator's authenticated
   session API, unchanged.
@@ -220,12 +213,17 @@ untrusted-input envelope guidance, agent habit). Not worth the churn. Keep
 
 - **Ship present bytes to the orchestrator and snapshot them there** (the
   "complete docs/093" approach). Works, and decouples persistence from the
-  container entirely — but it adds a byte-transfer + blob-store +
-  serve-from-snapshot path on the orchestrator. Variant 2 also snapshots the
-  artifact, but **onto the session's own `/persist` mount**, so the existing
-  worker-local serve path (`readArtifactContent`) and re-register flow are reused
-  unchanged and no bytes cross to the orchestrator. The mount mechanism (and the
-  general non-git tier it opens up) reuses exactly what `uploads` already proves.
+  container entirely — but it only solves `present`, adds a byte-transfer +
+  blob-store + serve-from-snapshot path on the orchestrator, and introduces
+  snapshot-vs-disk staleness questions. The scratch mount solves the *general*
+  "non-git persistence" gap with no new byte plumbing — the agent writes the file
+  and the existing serve path reads it — reusing exactly what `uploads` proves.
+- **A worker-managed copy-on-submit into `/persist`** (snapshot each presented
+  artifact server-side rather than having the agent write there). Considered and
+  dropped as overengineering: it adds a copy + path-rewrite in the submit broker
+  to buy a `present`-only size bound we decided we don't need (per-session disk is
+  intentionally unbounded, §3). The guidance-only approach is simpler and gives
+  the agent a general scratch tier for free.
 - **A dedicated Docker named volume per session for present.** Heavier: a separate
   volume lifecycle to create and clean up, and it still leaves bytes in
   container-attached storage rather than the session dir the rest of the
@@ -243,33 +241,40 @@ untrusted-input envelope guidance, agent habit). Not worth the churn. Keep
   `chownToSessionWorker(scratchDir)` after `mkdirSync`, gated on the same UID var.
 - `src/server/orchestrator/session-container.ts` — `ContainerConfig.scratchDir`
   field + thread it through container creation (mirror `uploadsDir`).
-- `src/server/session/present-view.ts` (and the `/agent-ops/present/submit`
-  broker in `session-worker.ts`) — **Variant 2 only**: on submit, copy the
-  artifact into `/persist/<presentId>.<ext>` and record that as `resolvedPath`.
-  The existing serve path (`readArtifactContent`) and the orchestrator re-register
-  (`/present/register`, `proxyPresentRaw`) then work unchanged, now reading from a
-  surviving mount. `present-store.ts` / `present-registry.ts` are untouched.
-- `src/server/orchestrator/disk-janitor.ts` — untouched under Variant 2 (bounded
-  by the present cap); only touched if Variant 1 / general scratch is later adopted.
+- `src/server/orchestrator/disk-janitor.ts` — extend the existing archived-session
+  sweep to also reclaim the archived session's `scratch/` (and `uploads/`) sibling
+  (§3, cross-session cleanup). No new per-write budget.
 - `src/server/shipit-docs/environment.md` — add `/persist` to the filesystem
   layout table (writable, non-git, persistent) and update the persistence rule
   ("only `/workspace` persists" → "`/workspace` and `/persist` persist").
-- `src/server/shipit-docs/present.md` — note that `/tmp` throwaways now survive a
-  restart (the worker snapshots them); under Variant 2 the agent's `/tmp`-vs-
-  `/workspace` guidance is otherwise unchanged.
-- `src/server/session/mcp-tools/present.ts` — only if Variant 1 is chosen (point
-  throwaways at `/persist`); no change under Variant 2.
+- `src/server/shipit-docs/present.md` — document `/persist` as the persistent
+  throwaway tier; update the two-tier model to three.
+- `src/server/session/mcp-tools/present.ts` — update the tool description /
+  instructions to point throwaway artifacts at `/persist` (the new default).
+- No changes to `present-store.ts`, `present-registry.ts`, `present-view.ts`, or
+  `container-session-runner.ts` (`proxyPresentRaw`): the existing re-read +
+  re-register path works unchanged once `resolvedPath` lives on a surviving mount.
 
-## Open questions
+## Decisions (settled) and open questions
 
-- **Mount path name.** `/persist` is proposed (clear, parallel to `/workspace`,
-  `/uploads`). Alternatives: `/session-data`, `~/.shipit/persist`. Decide before
-  implementing — it becomes agent-facing surface.
-- **Mechanism — Variant 1 (guidance) vs Variant 2 (worker snapshot), §2.**
-  Recommended: **Variant 2** — bounded by the present cap, no agent-path
-  dependence, small self-contained code change. Confirm before implementing; it
-  decides whether there's a byte-path change and whether the agent docs change.
-- **General non-git scratch — defer.** Promoting `/persist` to a tier the agent
-  writes to directly (the user's original "everything not under git" framing) is
-  Variant 1 + a disk budget (§3). Worth doing, but a separate decision so the
-  unbounded state is never shipped as the default. Tracked, not in this MVP.
+Settled:
+
+- **Mount path name: `/persist`.** Approved — clear and parallel to `/workspace`,
+  `/uploads`.
+- **Mechanism: agent writes directly (guidance only).** No worker-managed
+  copy-on-submit — that was dropped as overengineering (§2 / alternatives).
+- **`/persist` is a general non-git scratch tier**, not present-only. The agent
+  writes throwaway-but-keep files there; `present` is the motivating case. Simpler,
+  consistent mental model.
+- **No per-session disk budget** — parity with `/workspace` (§3).
+
+Open:
+
+- **Archived-session sweep: opt-in vs default.** The cross-session reclaim (§3)
+  rides the existing archived-workspace sweep in `disk-janitor.ts`, which is
+  currently **opt-in**. Decide whether reclaiming archived `scratch/` should follow
+  that opt-in flag or run by default (scratch is lower-value than an archived
+  workspace, so defaulting it on is defensible).
+- **Default `present` location.** Recommended: make `/persist` the default
+  throwaway location in the `present` guidance so the fix lands with no per-call
+  action; `/tmp` stays the explicit "truly ephemeral" choice.
