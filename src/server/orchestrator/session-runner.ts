@@ -312,6 +312,19 @@ export interface SystemTurnDeps {
     emit: (msg: WsServerMessage) => void,
   ) => Promise<void>;
   /**
+   * docs/216 — re-arm a merged session whose branch was reset back to a clean
+   * base (e.g. `git reset --hard origin/main` after the PR merged). Like
+   * `postTurnReleaseFlow` this fires on EVERY turn (commit or not): a
+   * branch-pointer reset leaves a clean tree, produces no auto-commit, and so is
+   * invisible to the commit-gated `postTurnPrFlow`. No-op unless the session is
+   * merged AND its branch now sits exactly at the base tip. Optional.
+   */
+  postTurnReArmReset?: (
+    sessionId: string,
+    sessionDir: string,
+    emit: (msg: WsServerMessage) => void,
+  ) => Promise<void>;
+  /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix

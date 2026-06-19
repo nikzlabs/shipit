@@ -399,6 +399,17 @@ export async function executeAgentTurn(
         console.error("[turn] pr-lifecycle flow failed:", err);
       }
     }
+    // docs/216 — re-arm a merged session whose branch was reset to a clean base.
+    // Fires regardless of whether the turn committed: a `git reset --hard` leaves
+    // a clean tree, so `commitHash` is null and the PR flow above is skipped, yet
+    // the stale merged card must still be cleared. No-op unless merged + at base.
+    if (runner && deps.postTurnReArmReset) {
+      try {
+        await deps.postTurnReArmReset(sessionId, runner.sessionDir, emit);
+      } catch (err) {
+        console.error("[turn] pr re-arm (reset) flow failed:", err);
+      }
+    }
     // docs/171 — react to release markers in the turn text. Fires regardless of
     // whether the turn committed: a release *proposal* turn makes no commit.
     if (runner && deps.postTurnReleaseFlow) {
