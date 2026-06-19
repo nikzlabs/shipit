@@ -143,9 +143,9 @@ export function OnboardingWizard({
 }: OnboardingWizardProps) {
   const [step, setStep] = useState<1 | 2>(initialStep);
 
-  // If initialStep changes to 1 after mount (e.g. git_identity_required
-  // arrives via WS after the wizard was already triggered by agent_list
-  // via SSE), jump back to step 1.
+  // If initialStep changes to 1 after mount (e.g. GitHub status flips to
+  // not-connected after the wizard was already triggered by the agent list),
+  // jump back to step 1.
   const prevInitialStepRef = useRef(initialStep);
   if (prevInitialStepRef.current !== initialStep) {
     prevInitialStepRef.current = initialStep;

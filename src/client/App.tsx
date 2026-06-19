@@ -281,7 +281,14 @@ export default function App() {
   const liveSteeringActive = liveSteering && (agentList.find((a) => a.id === activeAgentId)?.supportsSteering ?? false);
 
   const noAgentReady = agentList.length > 0 && !agentList.some(a => a.installed && a.authConfigured);
-  const needsOnboarding = gitIdentityNeeded || noAgentReady;
+  // GitHub is the only onboarding door — the manual git-identity / sandbox
+  // fallback was removed, so gate step 1 on GitHub auth rather than git
+  // identity. A user with a legacy/manual identity (set in Settings) but no
+  // GitHub token must still pass Connect-GitHub. Gate on `bootstrapLoaded` so
+  // the default `githubStatus.authenticated: false` can't flash the wizard
+  // before the real status arrives from bootstrap.
+  const githubNeeded = bootstrapLoaded && !githubStatus.authenticated;
+  const needsOnboarding = githubNeeded || noAgentReady;
   // Latch: once onboarding is triggered, it stays active until the user
   // clicks "Get Started". This prevents the dialog from closing reactively
   // when e.g. Claude auth completes and noAgentReady flips to false mid-wizard.
@@ -1241,7 +1248,7 @@ export default function App() {
       <AuthOverlayContainer
         authUrl={authUrl}
         showOnboarding={showOnboarding}
-        gitIdentityNeeded={gitIdentityNeeded}
+        githubNeeded={githubNeeded}
         agentList={agentList}
         onGitHubTokenSubmit={async (token: string) => { const result = await useSettingsStore.getState().submitGitHubToken(token); if (result) { usePrStore.getState().setImportSearchResults(result.repos); return true; } return false; }}
         onClaudeApiKeySubmit={async (key: string) => { try { await apiPost("/api/auth/api-key", { key }); const data = await apiGet<{ agents: AgentOption[] }>("/api/bootstrap"); useUiStore.getState().setAgentList(data.agents); return true; } catch { return false; } }}
