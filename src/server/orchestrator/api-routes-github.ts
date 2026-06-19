@@ -300,6 +300,8 @@ export async function registerGitHubRoutes(
           bump: request.body?.bump,
           prerelease: request.body?.prerelease,
           versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
+          mechanism: rel.mechanism,
+          releaseBranch: rel.branch ?? "stable",
         });
         // docs/214 cold-start guard: for a `release-branch` repo, warn at propose
         // time when merging into the maintenance branch won't auto-publish yet
@@ -373,6 +375,7 @@ export async function registerGitHubRoutes(
           pick: request.body?.pick,
           from: request.body?.from,
           releaseBranch: request.body?.releaseBranch ?? rel.branch ?? "stable",
+          mechanism: rel.mechanism,
           bootstrap: request.body?.bootstrap,
           allowEmpty: request.body?.allowEmpty,
           confirm: request.body?.confirm,
