@@ -84,7 +84,7 @@ npm install
 - **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
 - `npm run lint` — full ESLint on `src/` (cached; warm re-run near-instant). Sparingly — when you suspect a cross-file rule (e.g. `no-deprecated`) tripped elsewhere.
 - `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
-- `npm run dev` — dev server (tsx). `npm run build` — Vite client build.
+- `npm run build` — Vite client build. (`npm run dev` is the Vite/tsx dev server, but **don't start it in bash to preview** — ShipIt serves the preview via the `dev` Compose service in `docker-compose.yml`, which runs `npm run dev` itself; see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit). A bash-started server is also reaped when the container goes idle.)
 
 **Inside a session container, the full suite (`npm test`) and integration tests OOM the box.** When developing ShipIt *in* ShipIt, verify with `npm run typecheck`, `npm run lint:dev`, and affected co-located unit tests only; leave the heavy suites to CI.
 
