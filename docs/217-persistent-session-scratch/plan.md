@@ -129,6 +129,30 @@ stays available for genuinely disposable scratch.
   through the worker-local screenshot URL and the orchestrator's authenticated
   session API, unchanged.
 
+## Relationship to `/uploads` — share the volume, keep the mounts separate
+
+A natural question is whether `/uploads` should be folded under the new mount so
+there's "one volume for everything not under git." The answer is **no at the
+mount layer, but it's already yes at the storage layer**:
+
+- **Storage layer — already one volume.** `uploads/` and the new `scratch/` are
+  siblings in the same session host dir, and in the volume-backed deployment both
+  are `Subpath`s of the *same* workspace named volume. The bytes already live in
+  one place; there is nothing to consolidate.
+- **Mount layer — must stay two mounts.** `/uploads` is `:ro` deliberately
+  (docs/172 Gap 6 / SHI-45): the agent must not write or delete the *user's*
+  uploaded files — a prompt-injection containment boundary. `/persist` is `:rw`
+  (the agent's *own* scratch). A single mount can't be both read-only and
+  writable. Folding them means either dropping uploads to `:rw` (a security
+  regression) or nesting a `:ro` sub-mount under a `:rw` parent (still two mounts,
+  plus over-mount ordering fragility).
+
+The only available "fold" is cosmetic — a shared parent path like `/data/uploads`
+(ro) + `/data/scratch` (rw). It doesn't reduce the mount count and costs a rename
+of `/uploads`, which is established agent-facing surface (shipit-docs, the
+untrusted-input envelope guidance, agent habit). Not worth the churn. Keep
+`/uploads` where it is.
+
 ## Why not the alternatives
 
 - **Ship present bytes to the orchestrator and snapshot them there** (the
