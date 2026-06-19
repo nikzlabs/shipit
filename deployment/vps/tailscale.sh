@@ -39,10 +39,11 @@
 #
 # Optional environment:
 #   SHIPIT_TAILSCALE_AUTHKEY=tskey-auth-...
-#   SHIPIT_TAILSCALE_PORT=4123        # tailnet-facing port for ShipIt
+#   SHIPIT_TAILSCALE_PORT=80          # tailnet-facing port for ShipIt (default 80;
+#                                     # set e.g. 4123 to avoid the privileged port)
 set -euo pipefail
 
-LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-4123}"
+LISTEN_PORT="${SHIPIT_TAILSCALE_PORT:-80}"
 BACKEND_PORT=4123
 FORWARD_WRAPPER="/usr/local/bin/shipit-tailscale-forward.sh"
 FORWARD_UNIT="/etc/systemd/system/shipit-tailscale-preview.service"
