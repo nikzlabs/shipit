@@ -189,7 +189,7 @@ describe("POST /api/repos/trust (docs/178)", () => {
     // Inject a minimal stub runner so trust's loop has something to nudge.
     (app.runnerRegistry as unknown as { runners: Map<string, unknown> }).runners.set(
       warmId,
-      { disposed: false, rerunServiceSetup: () => { reran += 1; } },
+      { disposed: false, rerunServiceSetup: () => { reran += 1; }, dispose: () => {} },
     );
 
     const res = await app.inject({
