@@ -76,6 +76,34 @@ export function orchestratorInternalNames(env: NodeJS.ProcessEnv = process.env):
     .filter((n) => n && !/^\d+\.\d+\.\d+\.\d+$/.test(n)); // skip IP literals (no DNS needed)
 }
 
+/**
+ * docs/128 — compose service alias an ops/docker-capable session's agent dials
+ * for read-only Docker (`DOCKER_HOST=tcp://docker-socket-proxy:2375`). Single
+ * source of truth: `container-lifecycle.ts` builds `OPS_DOCKER_HOST` from this,
+ * and the Tier B resolver allowlists it via {@link sessionInternalNames}.
+ */
+export const OPS_DOCKER_PROXY_DNS_NAME = "docker-socket-proxy";
+
+/**
+ * Internal names a session must resolve under Tier B — {@link orchestratorInternalNames}
+ * plus, for an ops/docker-capable session, its `docker-socket-proxy` compose sibling.
+ *
+ * Docker's embedded DNS (127.0.0.11) knows the per-session proxy alias, but the
+ * Tier B resolver REFUSES any name not on its allowlist (the deliberate
+ * anti-DNS-tunneling design — no default server), so without this rule an ops
+ * agent's `DOCKER_HOST` lookup is refused even though L3 connectivity is fine
+ * (SHI-90 Tier B host verification: `getent hosts docker-socket-proxy` → REFUSED).
+ * Added ONLY for ops sessions so ordinary sessions still can't resolve it.
+ */
+export function sessionInternalNames(
+  opts: { opsSession?: boolean } = {},
+  env: NodeJS.ProcessEnv = process.env,
+): string[] {
+  const names = orchestratorInternalNames(env);
+  if (opts.opsSession) names.push(OPS_DOCKER_PROXY_DNS_NAME);
+  return names;
+}
+
 export interface ResolverConfigOpts {
   /** Operator extra allowlisted domains (e.g. SESSION_EGRESS_ALLOWLIST). */
   extraDomains?: string[];

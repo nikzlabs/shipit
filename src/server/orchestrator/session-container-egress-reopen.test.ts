@@ -158,3 +158,88 @@ describe("connectToNetwork — re-open preview egress after rediscover (GH #1509
     expect(docker._connect).toHaveBeenCalledWith({ Container: "agent-container-1" });
   });
 });
+
+/**
+ * Ordering regression (docs/172) — the bug that stranded ops/docker sessions off
+ * their `docker-socket-proxy`. The Tier-A firewall install rebuilds OUTPUT with
+ * `iptables -F OUTPUT`. If a create-time compose join appends its per-subnet
+ * ACCEPT BEFORE that flush lands (~1s later on prod), the rule is wiped and the
+ * agent is left default-deny to its own session subnet. The fix gates the subnet
+ * allow on `sc.egressFirewallReady`, so the allow is ordered strictly AFTER the
+ * flush; and records joined networks so a future firewall re-install can re-open
+ * them idempotently (`reopenJoinedSessionEgress`).
+ */
+describe("connectToNetwork — egress allow ordered after the Tier-A install (docs/172)", () => {
+  let savedEnv: NodeJS.ProcessEnv;
+  beforeEach(() => {
+    savedEnv = { ...process.env };
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    process.env.SESSION_EGRESS_SIDECAR_IMAGE = "shipit-egress-sidecar:test";
+    allowEgressToSubnets.mockClear();
+  });
+  afterEach(() => {
+    process.env = savedEnv;
+  });
+
+  // Drain pending microtasks (and any setTimeout-0) so connectToNetwork advances
+  // to its `await sc.egressFirewallReady` gate without us resolving it.
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it("does NOT apply the subnet allow until the firewall-install readiness resolves, then applies it once", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+
+    // Simulate a freshly *created* contained container whose Tier-A install is
+    // still in flight: a pending readiness promise the join must wait on.
+    let signalInstallDone!: () => void;
+    const installing = new Promise<void>((resolve) => { signalInstallDone = resolve; });
+    manager.get(SESSION_ID)!.egressFirewallReady = installing;
+
+    // Fire the join (compose-up wins the race) but DON'T await it yet.
+    const joinP = manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+    await flush();
+
+    // The hole-punch is gated: appending the ACCEPT now would be flushed by the
+    // install's `iptables -F OUTPUT` landing later. So it must not have run.
+    expect(allowEgressToSubnets).not.toHaveBeenCalled();
+
+    // The Tier-A install (and its OUTPUT flush) completes...
+    signalInstallDone();
+    await joinP;
+
+    // ...only now does the subnet allow land — after the flush, so it survives.
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentContainerId: "agent-container-1", subnets: ["172.19.0.0/16"] }),
+    );
+  });
+
+  it("records the joined network so a firewall re-install can re-open it", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+    expect(manager.get(SESSION_ID)?.joinedSessionNetworks?.has(COMPOSE_NETWORK)).toBe(true);
+  });
+
+  it("reopenJoinedSessionEgress re-applies the allow for every joined network (idempotent re-open after an OUTPUT flush)", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.connectToNetwork(SESSION_ID, COMPOSE_NETWORK);
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    allowEgressToSubnets.mockClear();
+
+    // Simulate a Tier-A firewall rebuild having flushed OUTPUT: the orchestrator
+    // re-punches the hole for the already-joined network.
+    await manager.reopenJoinedSessionEgress(SESSION_ID);
+
+    expect(allowEgressToSubnets).toHaveBeenCalledTimes(1);
+    expect(allowEgressToSubnets).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ agentContainerId: "agent-container-1", subnets: ["172.19.0.0/16"] }),
+    );
+  });
+
+  it("reopenJoinedSessionEgress is a no-op when no network has been joined", async () => {
+    const { manager } = await buildRediscoveredManager(() => ({ contained: true, extraHosts: [] }));
+    await manager.reopenJoinedSessionEgress(SESSION_ID);
+    expect(allowEgressToSubnets).not.toHaveBeenCalled();
+  });
+});

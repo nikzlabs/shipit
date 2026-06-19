@@ -34,7 +34,7 @@ import { buildProxyAllowed, launchEgressProxy, EGRESS_PROXY_LABEL } from "./egre
 import {
   buildResolverConfigB64,
   launchEgressResolver,
-  orchestratorInternalNames,
+  sessionInternalNames,
   orchestratorCallbackHost,
   EGRESS_RESOLVER_LABEL,
 } from "./egress-dns-install.js";
@@ -45,6 +45,12 @@ export interface ReloadEgressOpts {
   agentContainerId: string;
   sessionId: string;
   sidecarImage: string;
+  /**
+   * docs/128 — ops/docker-capable session. When true the regenerated resolver
+   * config also allowlists the `docker-socket-proxy` compose alias, so a live
+   * allowlist reload doesn't drop the rule that lets the agent resolve DOCKER_HOST.
+   */
+  opsSession?: boolean;
   /** Composed extra-host allowlist (env + MCP + durable) for this session. */
   extraHosts: string[];
   /** Effective built-in base (defaults minus user-removed). Defaults to the full base. */
@@ -92,7 +98,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
   if (opts.reloadResolver) {
     await removeByLabel(docker, `${EGRESS_RESOLVER_LABEL}=${sessionId}`);
     const configB64 = buildResolverConfigB64({
-      internalDomains: orchestratorInternalNames(),
+      internalDomains: sessionInternalNames({ opsSession: opts.opsSession }),
       extraDomains: extraHosts,
       ...(base ? { base } : {}),
     });
