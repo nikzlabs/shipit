@@ -197,16 +197,40 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
   rather than spawning a second; if `release/<version>` carries commits `prepare`
   didn't author — e.g. a hand-resolved conflict in the PR — it **refuses to reset**
   and surfaces that, rather than silently clobbering); `--pick` cherry-pick (hotfix)
-  or merge `--from` (release from main); bump the version source (new
-  `writeVersionToSource` in `release-version.ts`); commit; open the PR with `base =
-  release branch`. **Content-free guard:** after the payload is applied and BEFORE
-  the bump commit, `prepare` counts the new commits over `origin/<branch>`
-  (`git.countCommitsAhead`); if zero — a bare `prepare` with no `--pick`/`--from`,
-  or a `--from` whose branch is already merged — it **refuses** (a release identical
-  to the previous one, version number aside) and names the fix (`--from <branch>`,
-  or `--allow-empty` to opt into a bump-only release). `--bootstrap` is exempt (the
-  first release legitimately ships the whole new branch); the prerelease path never
-  reaches the guard. **This needs new plumbing on `agentCreatePr`, not just a reuse:**
+  or **`--from` tree-override** (release from main — see below); bump the version
+  source (new `writeVersionToSource` in `release-version.ts`); commit; open the PR
+  with `base = release branch`. **Content-free guard:** after the payload is applied
+  and BEFORE the bump commit, `prepare` refuses an empty payload (a release identical
+  to the previous one, version number aside) and names the fix (`--from <branch>`, or
+  `--allow-empty` to opt into a bump-only release). The emptiness test differs by
+  path: `--pick`/bare count new commits over `origin/<branch>` (`git.countCommitsAhead`);
+  `--from` always synthesizes an override commit, so a commit count is meaningless —
+  it instead measures the **two-dot tree diff** `origin/<branch>..HEAD`
+  (`git.diffStatTwoDot`) and refuses when the incoming tree equals the release
+  branch's. `--bootstrap` is exempt (the first release legitimately ships the whole
+  new branch); the prerelease path never reaches the guard.
+
+  **`--from` takes the incoming tree WHOLESALE (conflict-proof), it does NOT
+  three-way merge.** A `--from main` release should ship exactly main's tree at the
+  new version. A plain `git merge main` into `release/<version>` (built off
+  `origin/stable`) conflicts on *every non-first* release: `stable` carries the
+  prior `Release vX.Y.Z` bump that `main` lacks, while `main` independently churns
+  `package-lock.json` — and can conflict on real source too if `stable` carries a
+  hotfix. Bailing to "resolve manually" is a dead end: the release runs on a
+  `release/<version>` branch the sandbox forbids hand-editing, and the flow is
+  brokered. So `git.mergeOverride(ref)` (plumbing: `commit-tree` with tree = `ref`'s
+  tree and parents `[HEAD, ref]`, then `reset --hard`) records a **2-parent merge
+  commit whose tree is byte-for-byte the incoming ref's**, fully overriding stable's
+  divergence, while keeping the new commit a **descendant of `origin/<branch>`** (first
+  parent = release-branch tip) so the bump PR still merges into stable cleanly.
+  Because the tree is *replaced* rather than merged, this **can never conflict** — a
+  release `--from` never bails to manual resolution. Rationale: `stable` may carry
+  cherry-picked hotfixes, but for a full `--from main` release those are
+  forward-ported to `main` anyway, so `main` is the source of truth and stable's
+  divergence is intentionally ignored. (`--pick` is unchanged — it deliberately
+  ships a *selective* subset, so it cherry-picks rather than overriding.)
+
+  **This needs new plumbing on `agentCreatePr`, not just a reuse:**
   today it derives head from `getCurrentBranch()` and auto-detects base as
   `main`/`master` (the only base override is the narrow `reArm.baseBranch`). So
   `prepare` must (a) leave the clone with `release/<version>` checked out so
@@ -233,9 +257,11 @@ shim handler → worker relay → orchestrator service) wraps the deterministic 
 No `shipit release tag`/`publish`/`push` for final releases — publishing is CI's
 job (rejected subcommands). Errors surface as actionable messages from the
 orchestrator: dirty tree; **release branch absent** (offer to bootstrap it — see
-below); no version source / ambiguous (monorepo) version sources; and
-`--pick`/`--from` **merge conflict** (abort, name the conflicting commit, ask the
-user to resolve rather than committing a broken tree).
+below); no version source / ambiguous (monorepo) version sources; and a **`--pick`
+cherry-pick conflict** (abort, name the conflicting commit, ask the user to resolve
+rather than committing a broken tree). Note `--from` has **no** conflict error: it
+takes the incoming tree wholesale (`git.mergeOverride`), so it is structurally
+conflict-proof — only `--pick` can conflict.
 
 **Prereleases (rc) keep a deterministic path too.** rc's don't go through `stable`
 (they must not advance the stable channel, and with Option A a `-rc.N` tag is
@@ -367,9 +393,10 @@ path and the script as the fallback.
 
 - **Lockfile bump** for Node: best-effort root-version string edit vs. running the
   package manager (heavier, non-deterministic). Lean best-effort.
-- **Release-from-main default**: merge `origin/main` (can conflict on a truly
-  diverged branch) vs. require explicit `--from`/`--pick`. Leaning: require an
-  explicit `--from`/`--pick` so the PR's payload is never a surprise.
+- **Release-from-main default**: require an explicit `--from`/`--pick` so the PR's
+  payload is never a surprise (resolved). The conflict concern is moot: `--from`
+  now takes the incoming tree wholesale (`git.mergeOverride`) instead of a
+  three-way merge, so a diverged branch can never conflict.
 - **Tag-resolution cost in the updater**: resolving "latest final tag reachable
   from `origin/stable`" needs a tag fetch + semver sort skipping prereleases —
   cheap, but a small addition to today's one-line `reset --hard`. Confirm it fits
@@ -383,7 +410,7 @@ path and the script as the fallback.
   `release-channel.ts`) — resolve the latest final tag reachable from `origin/stable`.
 - `src/server/shared/shipit-config.ts` — `release-branch` mechanism + `branch` + `version-source-path`.
 - `src/server/orchestrator/release-version.ts` — reuse detection/semver; add `writeVersionToSource`.
-- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`, `showFileAtRef`).
+- `src/server/orchestrator/services/release-prepare.ts` (new), `services/github.ts` (`agentCreatePr`), `src/server/shared/git.ts` (`cherryPick`, `showFileAtRef`, `mergeOverride` — the conflict-proof `--from` tree override).
 - `src/server/orchestrator/release-autopublish-check.ts` (new) — cold-start guard: detect whether merging into the maintenance branch will auto-publish (the branch's workflow has a push trigger for it) and build the actionable warning.
 - `src/server/orchestrator/services/release-branch-adopt.ts` (new) — repoint `session.branch` to `release/<version>` + re-arm the PR poller so the bump PR surfaces as the inline (mergeable) PR lifecycle card.
 - `src/server/session/agent-shim/shipit.ts` + `shipit-release.ts` (new), `agent-ops-routes.ts`, `api-routes-github.ts`.

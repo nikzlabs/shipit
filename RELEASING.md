@@ -92,7 +92,15 @@ anything the path rules miss so it lands in the right release-notes section.
 
 The supported, hands-off path is **chat-driven**: in a ShipIt session on this
 repo, ask the agent to cut the release. It opens a version-bump PR into `stable`;
-you review and merge it; CI tags and publishes. Manually, the same steps are:
+you review and merge it; CI tags and publishes. Under the hood the agent runs
+`shipit release prepare <bump> --from main`, which takes `main`'s tree **wholesale**
+(`git.mergeOverride` — a 2-parent merge commit whose tree equals `main`, kept a
+descendant of `stable`), so the release ships exactly `main`'s content at the new
+version and **never** stops on a merge conflict — even when `stable` carries a
+divergent hotfix. (Stable's hotfixes are expected to be forward-ported to `main`
+anyway, so `main` is the source of truth.) The manual steps below use a plain
+`git merge`, which **can** conflict and is the hand-operator's to resolve; the
+chat-driven path is conflict-proof:
 
 1. Create a release branch off `stable` and bring in what you're shipping:
    ```sh

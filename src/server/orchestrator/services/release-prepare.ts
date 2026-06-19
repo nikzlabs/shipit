@@ -390,29 +390,40 @@ async function prepareFinalRelease(
     }
   } else if (args.from) {
     const ref = remoteBranches.includes(args.from) ? `origin/${args.from}` : args.from;
-    const merge = await git.merge(ref);
-    if (!merge.success) {
-      throw new ServiceError(
-        409,
-        `Merging ${args.from} hit a conflict (${(merge.conflicts ?? []).join(", ")}) — aborted (nothing committed). ` +
-          "Resolve it manually, then re-run.",
-      );
-    }
+    // docs/214 — take the incoming branch's tree WHOLESALE, overriding the release
+    // branch's divergence. A `--from main` release should ship exactly main's tree
+    // at the new version: stable may carry cherry-picked hotfixes, but for a full
+    // release those are forward-ported to main anyway, so the release takes main as
+    // the source of truth and ignores stable's divergence. The result is a 2-parent
+    // merge commit (release-branch tip + incoming ref) whose tree == the incoming
+    // ref's, kept a descendant of `origin/<release-branch>` so the bump PR still
+    // merges cleanly. Because the tree is replaced rather than three-way merged,
+    // this can NEVER conflict — so a release `--from` never bails to manual conflict
+    // resolution (impossible inside the brokered, sandbox-forbidden release branch).
+    await git.mergeOverride(ref);
   }
 
   // Content-free guard (docs/214): a bare `prepare` (no --pick/--from) resets the
   // head branch to `origin/<release-branch>` and adds only a bump commit, so the
   // release would ship the version number with zero code changes — identical to
-  // what's already released. Measure the payload's commits over the release
-  // branch (BEFORE the bump commit) and refuse an empty one unless it's a
-  // bootstrap (first release legitimately ships everything on the new branch) or
-  // the caller explicitly opted in with --allow-empty.
+  // what's already released. Refuse an empty payload unless it's a bootstrap
+  // (first release legitimately ships everything on the new branch) or the caller
+  // explicitly opted in with --allow-empty.
+  //
+  // The emptiness test differs by path: `--from` always synthesizes an override
+  // commit (so a commit count is meaningless — it's always ≥1), and a release is
+  // content-free iff the incoming tree *equals* the release branch's tree, so we
+  // measure the two-dot file diff `origin/<release-branch>..HEAD` (HEAD now carries
+  // the incoming tree). The `--pick` and bare paths add real commits (or none), so
+  // they keep counting commits.
   if (!args.bootstrap && !args.allowEmpty) {
-    const newCommits = await git.countCommitsAhead(startPoint, "HEAD");
-    if (newCommits === 0) {
+    const empty = args.from
+      ? (await git.diffStatTwoDot(startPoint)).files === 0
+      : (await git.countCommitsAhead(startPoint, "HEAD")) === 0;
+    if (empty) {
       throw new ServiceError(
         400,
-        `This release would contain no new commits — it would ship only the version bump, ` +
+        `This release would contain no changes — it would ship only the version bump, ` +
           `identical to what's already released on "${releaseBranch}". ` +
           `Pass --from <branch> (e.g. --from main) to bring content into the release, ` +
           `or --allow-empty to cut a bump-only release on purpose.`,
