@@ -115,15 +115,15 @@ the inotify limits session containers need, and optionally puts ShipIt behind a
 (with required Zero Trust SSO by default) and/or exposes it over [Tailscale](https://tailscale.com/)
 — no open inbound ports required.
 
-**Run it as root.** The script installs system packages, configures Docker, and sets up systemd
-units, so it needs root — run it as the `root` user (as below) or via `sudo`.
+**Run it as root** — the script installs system packages, configures Docker, and sets up systemd
+units. The command runs it via `sudo` (a harmless no-op if you're already `root`):
 
 **Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own
 container (agent CLI plus the session's Compose services — optional, but usually at least a dev
 server), so headroom matters once you have a few sessions open at once.
 
 ```bash
-bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)
+sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
 The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
@@ -218,6 +218,9 @@ harness:
 - **AI PR descriptions** — generated from the actual diff when you open a PR
 - **Chat-native AI review** — ask the session agent to review files or diffs and surface findings
   inline in the same conversation
+- **Cross-agent second opinions** — opt in to let the session's agent consult a *different* model for
+  a one-shot review or sub-task ("have Codex review this diff"); it runs inline in the same turn with
+  full context and returns its findings to the conversation, no separate session required
 - **Inline diffs** — file changes displayed as collapsible red/green diff blocks in the chat
 - **Auto-deploy on push** — deploy status surfaces inline on the PR card via the GitHub Deployments
   API

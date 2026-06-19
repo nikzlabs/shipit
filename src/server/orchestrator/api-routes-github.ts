@@ -16,6 +16,9 @@ import {
   createPullRequest,
   quickCreatePr,
   agentCreatePr,
+  planRelease,
+  prepareRelease,
+  adoptReleaseBranch,
   editPullRequest,
   commentOnPullRequest,
   addIssueComment,
@@ -41,6 +44,48 @@ import {
 import { getErrorMessage } from "./validation.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolvePrTarget, gitCredentialAllowed } from "./pr-target.js";
+import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { assessMergeAutoPublish } from "./release-autopublish-check.js";
+
+/**
+ * docs/214 — read the release-branch fields from a workspace's shipit.yaml.
+ *
+ * `release.branch` (the maintenance branch) and `release.version-source-path`
+ * (monorepo) are added by Phase 1 (`shipit-config.ts`). Until that lands on
+ * main these fields aren't on `ReleaseConfig`, so we read them through a narrow
+ * cast: the runtime parser simply leaves them `undefined` (the documented
+ * defaults — `branch` → "stable", path → auto-detect), and once Phase 1
+ * populates them the same access returns the real values with no change here.
+ */
+/** Read a string-valued property off an unknown value, or undefined. */
+function readStringProp(obj: unknown, key: string): string | undefined {
+  if (obj && typeof obj === "object" && key in obj) {
+    const value = (obj as Record<string, unknown>)[key];
+    if (typeof value === "string") return value;
+  }
+  return undefined;
+}
+
+function readReleaseConfig(dir: string): { branch?: string; versionSourcePath?: string; mechanism?: string } {
+  try {
+    const config = resolveShipitConfig(dir);
+    // The Phase-1 fields (`branch`, `version-source-path`) aren't on `ReleaseConfig`
+    // yet, so read them off the value as `unknown` via a runtime guard rather than a
+    // type assertion (a structural assertion would be flagged as unnecessary).
+    const release: unknown = config.release;
+    const branch = readStringProp(release, "branch");
+    const versionSourcePath = readStringProp(release, "versionSourcePath");
+    const mechanism = readStringProp(release, "mechanism");
+    return {
+      ...(branch ? { branch } : {}),
+      ...(versionSourcePath ? { versionSourcePath } : {}),
+      ...(mechanism ? { mechanism } : {}),
+    };
+  } catch {
+    // A broken/absent shipit.yaml just means "use the defaults".
+    return {};
+  }
+}
 
 export async function registerGitHubRoutes(
   app: FastifyInstance,
@@ -219,6 +264,195 @@ export async function registerGitHubRoutes(
           return;
         }
         reply.code(500).send({ error: `Failed to create PR: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // ---- Release (docs/214) ----
+  //
+  // The deterministic release mechanics behind `shipit release {plan,prepare}`.
+  // Both are containerAccessible (the shim relays through the worker broker).
+  // `plan` is read-only and reflects a `proposed` card; `prepare` opens the bump
+  // PR (final release) or cuts the rc tag (prerelease), driving the release
+  // poller directly so the agent is out of the state-reporting loop.
+
+  // POST /api/sessions/:id/release/plan
+  app.post<{
+    Params: { id: string };
+    Body: { bump?: string; prerelease?: boolean; versionSourcePath?: string; cwd?: string; repo?: string };
+  }>(
+    "/api/sessions/:id/release/plan",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
+        const rel = readReleaseConfig(gitDir);
+        const plan = await planRelease(git, {
+          dir: gitDir,
+          bump: request.body?.bump,
+          prerelease: request.body?.prerelease,
+          versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
+        });
+        // docs/214 cold-start guard: for a `release-branch` repo, warn at propose
+        // time when merging into the maintenance branch won't auto-publish yet
+        // (no / legacy workflow on the branch) — a merge would otherwise look
+        // successful while silently producing no tag and no Release. rc's go via
+        // the tag path, so they're exempt.
+        if (rel.mechanism === "release-branch" && !plan.prerelease) {
+          const branch = rel.branch ?? "stable";
+          await git.fetch("origin");
+          const assessment = await assessMergeAutoPublish(git, branch);
+          if (assessment.warning) plan.warning = assessment.warning;
+        }
+        // Reflect a `proposed` card (informational for final releases; the rc
+        // path's confirm gate also reads it). Requires a GitHub remote to poll.
+        if (deps.releaseStatusPoller && remoteUrl) {
+          deps.releaseStatusPoller.propose(request.params.id, remoteUrl, {
+            version: plan.version,
+            tag: plan.tag,
+            prerelease: plan.prerelease,
+            ...(plan.bumpType !== "explicit" ? { bumpType: plan.bumpType } : {}),
+            versionSource: plan.versionSource,
+          });
+        }
+        return plan;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to plan release: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // POST /api/sessions/:id/release/prepare
+  app.post<{
+    Params: { id: string };
+    Body: {
+      bump?: string;
+      prerelease?: boolean;
+      pick?: string[];
+      from?: string;
+      releaseBranch?: string;
+      bootstrap?: boolean;
+      allowEmpty?: boolean;
+      confirm?: boolean;
+      versionSourcePath?: string;
+      notes?: string;
+      cwd?: string;
+      repo?: string;
+    };
+  }>(
+    "/api/sessions/:id/release/prepare",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      const dir = resolveSessionDir(sessionManager, request.params.id, reply);
+      if (!dir) return;
+      try {
+        const { gitDir, remoteUrl } = resolvePrTarget(session, dir, request.body ?? {});
+        const git = createGitManager(gitDir);
+        const rel = readReleaseConfig(gitDir);
+        const result = await prepareRelease(git, deps.githubAuthManager, {
+          dir: gitDir,
+          bump: request.body?.bump,
+          prerelease: request.body?.prerelease,
+          pick: request.body?.pick,
+          from: request.body?.from,
+          releaseBranch: request.body?.releaseBranch ?? rel.branch ?? "stable",
+          bootstrap: request.body?.bootstrap,
+          allowEmpty: request.body?.allowEmpty,
+          confirm: request.body?.confirm,
+          versionSourcePath: request.body?.versionSourcePath ?? rel.versionSourcePath,
+          notes: request.body?.notes,
+          remoteUrl,
+          sessionId: request.params.id,
+          runnerRegistry: deps.runnerRegistry,
+          chatHistory: deps.chatHistoryManager,
+        });
+
+        // Drive the release poller directly off the result (server-side, no
+        // agent-echoed marker — docs/214).
+        const poller = deps.releaseStatusPoller;
+        if (poller && remoteUrl) {
+          if (result.kind === "pr-opened") {
+            poller.markPrOpened(request.params.id, remoteUrl, {
+              version: result.version,
+              tag: result.tag,
+              prerelease: false,
+              prNumber: result.prNumber,
+              prUrl: result.prUrl,
+              releaseBranch: result.releaseBranch,
+              ...(result.bumpType !== "explicit" ? { bumpType: result.bumpType } : {}),
+              versionSource: result.versionSource,
+              ...(request.body?.notes ? { notes: request.body.notes } : {}),
+            });
+          } else if (result.kind === "prerelease-proposed") {
+            poller.propose(request.params.id, remoteUrl, {
+              version: result.version,
+              tag: result.tag,
+              prerelease: true,
+              versionSource: result.versionSource,
+            });
+          } else {
+            poller.markTagged(request.params.id, remoteUrl, {
+              tag: result.tag,
+              version: result.version,
+              prerelease: true,
+              sha: result.sha,
+            });
+          }
+        }
+
+        // docs/214 — surface the release PR as the session's inline PR lifecycle
+        // card so the user can merge it from inside ShipIt (CLAUDE.md §1/§2). The
+        // release PR's head is `release/<version>`, not `session.branch`, so the
+        // PR poller can't match it until the session adopts that branch. Guard to
+        // the session's OWN repo: a sandbox `--repo` clone's PR lives in a
+        // different repo than the one the poller polls for this session, so
+        // repointing the branch there would point the poller at a phantom branch.
+        if (result.kind === "pr-opened" && remoteUrl && remoteUrl === session.remoteUrl) {
+          await adoptReleaseBranch({
+            deps: {
+              sessionManager,
+              prStatusPoller: deps.prStatusPoller,
+              sseBroadcast: deps.sseBroadcast,
+            },
+            sessionId: request.params.id,
+            releaseHeadBranch: `release/${result.version}`,
+          });
+        }
+
+        // docs/214 cold-start guard: a bump PR can merge cleanly yet auto-publish
+        // nothing when the maintenance branch lacks the merge-triggered workflow
+        // (GitHub evaluates the workflow as it exists on the pushed branch). Read
+        // the branch's workflow *after* prepare's fetch — which also reflects a
+        // `--bootstrap` that just seeded the branch off `main` — and attach an
+        // actionable warning so the merge never looks successful while it no-ops.
+        if (result.kind === "pr-opened") {
+          const assessment = await assessMergeAutoPublish(git, result.releaseBranch);
+          if (assessment.warning) result.warning = assessment.warning;
+        }
+        return result;
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply.code(500).send({ error: `Failed to prepare release: ${getErrorMessage(err)}` });
       }
     },
   );

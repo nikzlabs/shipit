@@ -318,8 +318,9 @@ if [ -n "${DOMAIN:-}" ] && [ "$INSTALL_CLOUDFLARE" = "true" ]; then
   echo "    1. Open https://$DOMAIN in your browser"
 elif [ "$INSTALL_TAILSCALE" = "true" ]; then
   echo "    1. Open the Tailscale URL printed above by tailscale.sh"
-  echo "       (http://<your-shipit-host>:4123), and add the one-time ACL"
-  echo "       grant it prints so subdomain previews resolve."
+  echo "       (http://<dashed-tailnet-ip>.sslip.io:4123). Subdomain previews"
+  echo "       resolve through that host with no further setup; the optional"
+  echo "       MagicDNS-hostname upgrade is also printed there."
 else
   echo "    1. Run cloudflare.sh or tailscale.sh when you're ready to expose ShipIt"
 fi

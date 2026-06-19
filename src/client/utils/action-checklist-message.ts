@@ -9,12 +9,31 @@
  * immutable, emit-time provenance (when proposed + branch/HEAD) so the agent can
  * inspect current state and adapt or decline an action that is now obsolete.
  *
+ * The Submit message is **card-injected** (templated by the Submit button, not
+ * hand-typed by the user), so — mirroring `release-confirm-message.ts` — it leads
+ * with an explicit provenance marker (`[Action card → Submit]`) and frames the
+ * body as *intent* ("I approved these actions … re-check current state before
+ * acting") rather than a literal command. The marker lets the agent tell a
+ * templated button-press from a typed instruction and apply judgment instead of
+ * obeying the string verbatim. The Add comment… snapshot is seeded into the
+ * user's *composer* for them to edit and send — not auto-injected as an agent
+ * instruction — so it carries the lighter `Re: <title>` provenance header and no
+ * card marker (a marker would imply an agent directive the user hasn't sent yet).
+ *
  * Kept as pure functions (no React, no store) so they're trivially unit-tested
  * and shared by Submit (concatenate selected payloads → one turn) and Add
  * comment (snapshot the whole menu as `[x]`/`[ ]` payload lines → seed composer).
  */
 
 import type { ActionChecklistCard } from "../../server/shared/types.js";
+
+/**
+ * Provenance marker stamped on the card-injected Submit message so the agent can
+ * tell a templated card submission from a hand-typed instruction and apply
+ * judgment instead of obeying the literal string. Mirrors
+ * `release-confirm-message.ts`'s `CARD_MARKER`.
+ */
+const CARD_MARKER = "[Action card → Submit]";
 
 /** Human "proposed <date>" stamp from the immutable `createdAt`. */
 function proposedDate(card: ActionChecklistCard): string {
@@ -32,8 +51,11 @@ function provenanceClause(card: ActionChecklistCard): string {
 
 /**
  * The Submit message: the selected actions' payloads concatenated into ONE
- * coherent instruction, framed so the agent re-checks current state first. The
- * caller guarantees `selected` is non-empty (Submit is disabled otherwise).
+ * coherent instruction, framed so the agent re-checks current state first. Leads
+ * with the `CARD_MARKER` provenance prefix and intent framing (mirroring
+ * `release-confirm-message.ts`) so the agent treats it as card-injected intent —
+ * not a hand-typed directive — and applies judgment. The caller guarantees
+ * `selected` is non-empty (Submit is disabled otherwise).
  */
 export function formatProposalMessage(
   card: ActionChecklistCard,
@@ -41,11 +63,11 @@ export function formatProposalMessage(
 ): string {
   const lead =
     selected.length === 1
-      ? `This action was ${provenanceClause(card)}.`
-      : `These ${selected.length} actions were ${provenanceClause(card)}.`;
+      ? `${CARD_MARKER} I approved this action (${provenanceClause(card)}).`
+      : `${CARD_MARKER} I approved these ${selected.length} actions (${provenanceClause(card)}).`;
   const guard =
-    "Before acting, check the current state and adapt or decline anything now obsolete " +
-    "(branch merged, PR already exists, files moved).";
+    "This is intent, not a literal command: before acting, check the current state and " +
+    "adapt or decline anything now obsolete (branch merged, PR already exists, files moved).";
   const body = selected.map((a, i) => `${i + 1}. ${a.payload}`).join("\n");
   return `${lead} ${guard}\n\n${body}`;
 }

@@ -16,6 +16,12 @@ Tracks remaining work for docs/142. See `plan.md` for design and rationale.
       owner lookup), so even an incoherent client pair (stale `agent=codex` +
       `model=opus`) runs Claude. Pinned sessions stay agent-authoritative (model
       conforms). Integration test in `codex-agent.test.ts`.
+- [x] C4 — **persist the auth-redirect** so a fresh Codex-only install doesn't
+      connect the first turn as the unauthed `claude` ("Claude is not
+      authenticated") despite the picker showing GPT-5.5. `useServerEvents`'
+      `agent_list` redirect now writes `vibe-agent-id`/`vibe-model-id` via the
+      pure `resolveAuthedSelection` helper (unit-tested), overwriting a stale
+      model owned by the unauthed agent.
 
 ## B — stuck-state recovery (done; shipped in PR #576)
 

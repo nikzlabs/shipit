@@ -385,6 +385,50 @@ describe("PrLifecycleCard", () => {
     });
   });
 
+  describe("overflow menu clicks do not open PR details", () => {
+    // Regression: the overflow menu is portalled, so React still bubbles its
+    // synthetic click events up to the card's onClick. Radix items are
+    // `div[role="menuitem"]`, which the card's interactive-control guard didn't
+    // catch — so clicking a menu item also fired onOpenDetails. On mobile the
+    // first click of the two-step "Close PR" confirm switched to the PR tab,
+    // navigating away before the user could confirm, so the PR never closed.
+    it("clicking the Close PR confirm item never fires onOpenDetails", async () => {
+      const user = userEvent.setup();
+      mockMatchMedia(true); // mobile, where the symptom was reported
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      setCard("s1", openPrCard);
+      const onOpenDetails = vi.fn();
+
+      render(<PrLifecycleCard sessionId="s1" canAutoMerge onOpenDetails={onOpenDetails} />);
+      await user.click(screen.getByLabelText("Pull request actions"));
+
+      // First select arms the confirm and keeps the menu open.
+      await act(async () => {
+        await user.click(screen.getByRole("menuitem", { name: /Close (pull request|PR)/i }));
+      });
+      // The menu stayed open (still showing a now-armed close item) and the
+      // card did NOT switch tabs.
+      expect(onOpenDetails).not.toHaveBeenCalled();
+    });
+
+    it("clicking Copy branch name does not fire onOpenDetails", async () => {
+      const user = userEvent.setup();
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      });
+      setCard("s1", openPrCard);
+      const onOpenDetails = vi.fn();
+
+      render(<PrLifecycleCard sessionId="s1" onOpenDetails={onOpenDetails} />);
+      await user.click(screen.getByLabelText("Pull request actions"));
+      await act(async () => {
+        await user.click(screen.getByRole("menuitem", { name: "Copy branch name" }));
+      });
+      expect(onOpenDetails).not.toHaveBeenCalled();
+    });
+  });
+
   it("keeps ready phase create button idle while a normal agent turn is running", () => {
     useSessionStore.setState({ isLoading: true, activity: { label: "Thinking..." } });
     setCard("s1", {

@@ -349,6 +349,13 @@ What shipped, and where it diverged from the sketch above:
   Preview/PR tabs **removed** for sandbox in `App.tsx`; and `SandboxBanner` —
   derived chrome computed from `kind`/`capabilities`, **not** a chat card — in the
   chat panel's PR-card slot.
+  `SandboxDialog`'s open-state lives in `ui-store` (`sandboxDialogOpen` /
+  `setSandboxDialogOpen`, mirroring the repo-dialog flags) so the sidebar menu
+  opens the one dialog. (The empty `HomeScreen` formerly carried a second
+  "Start a sandbox session" on-ramp; it was removed so the front page leads only
+  with the GitHub repo flow. The repo *dialogs* themselves (`AddRepoDialog`)
+  independently show an inline `GitHubTokenForm` connect prompt when
+  unauthenticated rather than a generic failure toast.)
 
 Phase 2 (building on the stable
 `kind`/`capabilities`/`POST /api/sessions/sandbox` contract) shipped as two

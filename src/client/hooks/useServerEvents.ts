@@ -4,13 +4,14 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { usePrStore } from "../stores/pr-store.js";
-import { useReleaseStore } from "../stores/release-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, ReleaseStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, ProviderAccount, AgentId, EgressSettings } from "../../server/shared/types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
+import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
+import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
 
 let reloadingForClientUpdate = false;
 
@@ -279,18 +280,24 @@ export function useServerEvents(): void {
         supportedPermissionModes: a.supportedPermissionModes,
       }));
       useUiStore.getState().setAgentList(agents);
-      // If the currently selected agent isn't installed-and-authed, redirect
-      // the picker to the first agent that is. Avoids the home-screen picker
-      // sitting on "claude" by default on a Codex-only install (the picker
-      // initially hydrates from localStorage with a "claude" fallback, which
-      // is wrong if Claude isn't authed).
-      const activeAgentId = useUiStore.getState().activeAgentId;
-      const active = agents.find((a) => a.id === activeAgentId);
-      if (!active || !active.installed || !active.authConfigured) {
-        const firstAuthed = agents.find((a) => a.installed && a.authConfigured);
-        if (firstAuthed && firstAuthed.id !== activeAgentId) {
-          useUiStore.getState().setActiveAgentId(firstAuthed.id as AgentId);
-        }
+      // If the currently selected agent isn't installed-and-authed, redirect the
+      // picker to the first agent that is — AND persist it. The picker hydrates
+      // from localStorage (default `agent = "claude"` / no model), which is wrong
+      // on a Codex-only install. Persisting matters because the per-session WS
+      // connection derives its effective agent from the saved model/agent at
+      // connect time: without it the picker would *show* the authed agent while
+      // the first turn still connected as the unauthed one and got rejected by
+      // the server's auth gate, until the user round-tripped the selector. See
+      // resolveAuthedSelection / docs/142.
+      const redirect = resolveAuthedSelection(
+        agents,
+        useUiStore.getState().activeAgentId,
+        getSavedModelId(),
+      );
+      if (redirect) {
+        useUiStore.getState().setActiveAgentId(redirect.agentId);
+        saveAgentId(redirect.agentId);
+        if (redirect.modelId) saveModelId(redirect.modelId);
       }
     });
 
@@ -327,16 +334,9 @@ export function useServerEvents(): void {
       usePrStore.getState().applyPrStatusUpdates(data.updates, data.removals, data.isSnapshot);
     });
 
-    // docs/171 — release lifecycle card updates. Same snapshot/removal
-    // semantics as pr_status; drives the inline ReleaseLifecycleCard.
-    es.addEventListener("release_status", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as {
-        updates: ReleaseStatusSummary[];
-        removals?: string[];
-        isSnapshot?: boolean;
-      };
-      useReleaseStore.getState().applyReleaseStatusUpdates(data.updates, data.removals, data.isSnapshot);
-    });
+    // docs/171 — the release lifecycle card is a persisted transcript card now
+    // (delivered over the per-session WS as `release_card` and rehydrated from
+    // chat history), so there is no longer a `release_status` SSE to handle here.
 
     // GitHub API rate-limit state. The server pauses GraphQL polling while
     // limited and pushes these transitions; the UI surfaces a non-error

@@ -84,7 +84,9 @@ npm install
 - **`npm run lint:dev`** — **dev default.** ESLint over files changed vs `origin/main` + uncommitted (`-- --list` to dry-run). The full lint loads all ~700 TS files (~50 s, ~2.85 GiB); CI runs it, so this is the inner loop.
 - `npm run lint` — full ESLint on `src/` (cached; warm re-run near-instant). Sparingly — when you suspect a cross-file rule (e.g. `no-deprecated`) tripped elsewhere.
 - `npm run typecheck` — `tsc --noEmit`, incremental (warm ~5 s). Whole-project by design, no per-file variant.
-- `npm run dev` — dev server (tsx). `npm run build` — Vite client build.
+- `npm run build` — Vite client build. (`npm run dev` is the Vite/tsx dev server, but **don't start it in bash to preview** — ShipIt serves the preview via the `dev` Compose service in `docker-compose.yml`, which runs `npm run dev` itself; see [Dogfooding ShipIt in ShipIt](#dogfooding-shipit-in-shipit). A bash-started server is also reaped when the container goes idle.)
+
+**Inside a session container, the full suite (`npm test`) and integration tests OOM the box.** When developing ShipIt *in* ShipIt, verify with `npm run typecheck`, `npm run lint:dev`, and affected co-located unit tests only; leave the heavy suites to CI.
 
 ## Debugging the UI
 
@@ -96,129 +98,39 @@ When the ShipIt repo is opened in production ShipIt, the outer orchestrator surf
 
 ## Project structure
 
+Directory map only — the per-file detail lives in the architecture skills below and in the files themselves. Entry point is `src/server/orchestrator/index.ts` (`buildApp()`).
+
 ```
 src/
   server/
     session/         Code that runs inside a session container
-      terminal.ts    TerminalProcess — interactive PTY
-      file-watcher.ts     FileWatcher — recursive fs.watch, debounced change events
-      session-worker.ts   Fastify server that runs inside each container
-      agents/        Agent process adapters (docs/155)
-        agent-process.ts   Base agent interface
-        agent-registry.ts  Registry of available agents
-        tool-map.ts        Canonical tool-name mapping (merges per-agent slices)
-        index.ts           Barrel export
-        claude/      Claude-specific session-side code
-          adapter.ts       ClaudeAdapter — implements AgentProcess
-          process.ts       ClaudeProcess — spawns CLI, parses NDJSON, emits events
-          tool-map.ts      Claude → canonical tool-name slice
-        codex/       Codex-specific session-side code
-          adapter.ts       CodexAdapter — implements AgentProcess
-          tool-map.ts      Codex → canonical tool-name slice
-
+      session-worker.ts   Fastify server inside each container
+      terminal.ts · file-watcher.ts
+      agents/        Agent process adapters (docs/155): claude/, codex/, tool-map.ts
     orchestrator/    Code that runs in the main process
-      index.ts       Entry point — buildApp()
-      app-di.ts      Dependency injection setup
-      app-lifecycle.ts  Server startup/shutdown hooks
-      api-routes.ts  Route registration dispatcher
-      api-routes-*.ts  Domain-specific HTTP routes (bootstrap, files,
-                       git, github, preview, secrets, session)
-      validation.ts  Input validation, error formatting
-      repo-git.ts    RepoGit — bare cache, per-session local-clone lifecycle, branch deletion
-      repo-store.ts  RepoStore — persists repo metadata
-      git-utils.ts   generateBranchPrefix(), parseGitHubRemote()
-      git-config.ts  Global git config helpers
-      sessions.ts    SessionManager — persists session metadata to SQLite
-      session-runner.ts   SessionRunner + SessionRunnerRegistry
-      container-session-runner.ts  ContainerSessionRunner (proxy)
-      session-container.ts  SessionContainerManager — Docker orchestration
-      container-lifecycle.ts  Container start/stop/restart logic
-      service-manager.ts  ServiceManager — Docker Compose lifecycle per session
-      compose-generator.ts  Compose override generation, volume rewriting
-      container-discovery.ts  Find running containers
-      container-health.ts     Container health checks
-      preview-proxy.ts     Reverse proxy for container previews
-      docker-proxy.ts      Docker socket proxy for container access
-      agents/        Per-agent orchestrator-side code (docs/155)
-        index.ts           buildAgentRuntime() — assembles per-agent maps
-        types.ts           LimitsProvider interface (and future runtime types)
-        claude/      AuthManager (OAuth), ClaudeOAuthRefresher, ClaudeLimitsProvider,
-                     prepareClaudeRunParams, CLAUDE_PARALLEL_SESSIONS_SECTION
-        codex/       CodexAuthManager (device flow), CodexLimitsProvider,
-                     prepareCodexRunParams, CODEX_PARALLEL_SESSIONS_SECTION
-      agent-auth-manager.ts   Shared AgentAuthManager interface
-      agent-run-params-prep.ts  PrepareRunParamsFn type + identity fallback
-      limits-registry.ts   LimitsRegistry — broadcasts subscription pills
-      github-auth.ts GitHubAuthManager — GitHub token + API
-      github-auth-checks.ts, github-auth-prs.ts, github-auth-repos.ts
-      credential-store.ts  CredentialStore — unified credentials
-      secret-store.ts      SecretStore — user secrets
-      features.ts    FeatureManager — scans docs/ for feature status
-      session-namer.ts  AI-powered session naming
-      chat-history.ts  ChatHistoryManager — per-session message persistence
-      usage.ts       UsageManager — per-session cost tracking
-      pr-status-poller.ts  Polls GitHub for PR/CI status updates
-      proxy-agent-process.ts  Proxies agent commands to session containers
-      agent-instructions.ts   Generates system prompts for agents
-      templates.ts   Project scaffolding templates
-      templates-backend.ts, templates-frontend.ts, templates-fullstack.ts
-      markdown.ts    findMarkdownFiles() — docs discovery
-      sse-client.ts  SSE client for container event streams
-      worker-http.ts HTTP client for session worker endpoints
-      terminal-buffer.ts  Server-side terminal output buffering
-      ws-handlers/   WebSocket-only message handlers (streaming, per-connection state)
-        types.ts     HandlerContext interface shared by all handlers
-        send-message.ts    send_message, answer_question, home_send_with_repo
-        agent-execution.ts   Agent process lifecycle management
-        agent-listeners.ts   Agent event stream listeners
-        post-turn.ts         Post-turn actions (auto-commit, auto-push)
-        rollback-handlers.ts Git rollback via WS
-        terminal-handlers.ts, misc-handlers.ts
-      services/      Business logic layer — pure functions consumed by routes and WS handlers
-        session.ts, git.ts, github.ts, github-ci-fix.ts,
-        settings.ts, templates.ts, files.ts, misc.ts, repos.ts,
-        replay.ts, types.ts, index.ts
-      integration_tests/  Integration tests — one file per feature area
-        test-helpers.ts   Shared stubs (TestClient, FakeClaudeProcess, etc.)
-
-    shipit-docs/     Platform docs for the agent inside containers (copied to /shipit-docs/)
-
-    shared/          Code used by both session and orchestrator
-      types/         All type definitions
-        index.ts, ws-client-messages.ts, ws-server-messages.ts, domain-types.ts,
-        claude-types.ts, agent-types.ts, attachment-types.ts, deployment-types.ts,
-        github-types.ts, terminal-types.ts, usage-types.ts
-      types.ts       Barrel re-export of types/
+      index.ts       buildApp() entry point; app-di.ts, app-lifecycle.ts
+      api-routes*.ts validation.ts   HTTP routes (→ server-architecture skill)
+      repo-git.ts · repo-store.ts · git-utils.ts · git-config.ts   (→ git-architecture)
+      sessions.ts · session-runner.ts · session-container.ts · container-*.ts
+      service-manager.ts · compose-generator.ts · preview-proxy.ts · docker-proxy.ts
+      agents/        Per-agent orchestrator code (docs/155): claude/, codex/, auth, limits
+      github-auth*.ts · credential-store.ts · secret-store.ts
+      chat-history.ts · usage.ts · pr-status-poller.ts · features.ts · session-namer.ts
+      agent-instructions.ts · templates*.ts · sse-client.ts · worker-http.ts
+      ws-handlers/   WebSocket-only handlers (→ server-architecture skill)
+      services/      Business-logic layer — pure fns over domain types
+      integration_tests/   One file per feature area; test-helpers.ts has the stubs
+    shipit-docs/     Platform docs for the in-container agent (copied to /shipit-docs/)
+    shared/          Used by both layers
+      types/         All type defs (ws-*-messages.ts, domain-types.ts, …); types.ts re-exports
       git.ts         GitManager — init, autoCommit, log, push, pull, diff, rollback
-      file-tree.ts   scanFileTree() — workspace directory listing
-      agent-registry.ts  Shared agent registry (used by both layers)
-      session-config.ts  Session configuration parsing
-      database.ts    Database abstraction
-      utils.ts       Shared utility functions
-      strip-ansi.ts  ANSI escape code stripping
-      fs-constants.ts  Filesystem path constants
-
-  client/          React 19 frontend (Vite + Tailwind CSS v4)
-    App.tsx        Root component — routing, provider setup
-    AppLayout.tsx  Main layout — panels, sidebar, WebSocket dispatch
-    main.tsx       Vite entry point
-    components/    UI components (MessageList, FileTree, PreviewFrame, etc.)
-    hooks/         Custom hooks (useWebSocket, useSearch, useResizablePanel, etc.)
-    stores/        Zustand state stores
-      session-store.ts, ui-store.ts, git-store.ts, pr-store.ts,
-      preview-store.ts, file-store.ts, terminal-store.ts,
-      settings-store.ts, repo-store.ts
-      actions/     Store action creators (session-actions.ts)
-    themes/        Theme CSS files (dark.css, light.css)
-    utils/         Client utilities (dates, local-storage, repo-label, session-data)
-    design-tokens.ts  Icon sizes, spacing, and design constants
-    index.css      Tailwind imports + custom animations
-    test-setup.ts  Imports @testing-library/jest-dom/vitest
-
-android/         Standalone Android WebView wrapper (separate Gradle build).
-                 Built manually via the "Android build" GitHub Actions workflow.
-                 Node tooling ignores this directory. See android/README.md
-                 and docs/116-android-webview-app/.
+      file-tree.ts · agent-registry.ts · session-config.ts · database.ts · utils.ts
+  client/          React 19 frontend (Vite + Tailwind CSS v4) — see client-architecture skill
+    App.tsx · AppLayout.tsx · main.tsx
+    components/ · hooks/ · stores/ (+ actions/) · themes/ · utils/
+    design-tokens.ts   Icon sizes, spacing, design constants
+android/           Standalone Android WebView wrapper (separate Gradle build).
+                   Node tooling ignores it. See android/README.md, docs/116.
 ```
 
 ## Architecture
@@ -298,25 +210,19 @@ The established pattern for a **side-channel card** (one arriving outside the ag
 
 ### Preview routing
 
-Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` (primary, avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` (fallback), HMR-URL patching so hot-reload works through the proxy, config-driven restarts (`shipit.yaml` immediate; lockfiles debounced 30s to avoid npm-install loops). Full detail: `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
+Reverse proxy (`preview-proxy.ts`): subdomain routing `{sessionId}--{port}.localhost` is primary (avoids Vite path-prefix conflicts), path-based `/preview/:sessionId/:port/*` is the fallback, with HMR-URL patching so hot-reload survives the proxy. Full detail: `docs/009-preview-system`, `docs/175-preview-subdomain-only`.
 
 ### Disk cleanup
 
-Orthogonal surfaces, each prune where the leak happens:
-- **Per-session teardown** drops named volumes — `ServiceManager.stop({ removeVolumes: true })` (signaled by `removeVolumesOnDispose = true`), used by `archiveSession`/`fullReset` but **not** idle eviction/restart/reconcile (those preserve build state for resume).
-- **`deployment/vps/deploy.sh`** owns build-time image/builder prunes (BuildKit cache only grows from builds, so the prune is causal there). `FORCE_REBUILD=1` for a clean rebuild; agent CLIs install via `npm ci` from `docker/agent-cli/package-lock.json`.
-- **`disk-janitor.ts`** runs once at orchestrator startup (no timer — see docstring) for leaks the deploy prune can't see: orphan `shipit-managed=true` compose volumes, unreferenced `repo-cache`/`dep-cache`, and an opt-in archived-workspace sweep (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`) that drops only the checkout + `node_modules`, never chat/usage/metadata.
-- **Overlay dep store** (docs/183, `OVERLAY_DEP_STORE`, default off): N per-dep-dir `type=overlay` volumes + immutable shared base generations, with three N-aware reclaim paths (per-session teardown, crash-orphan prefix sweep, superseded-generation reaping).
-
-Full detail: `docs/183-overlay-dep-store` (overlay store), the `disk-janitor.ts` docstring (janitor), `deployment/vps/deploy.sh` (build-time prune); the per-session container-teardown path is in the **session-containers** skill.
+Principle: each surface prunes **where the leak happens** — per-session teardown drops named volumes (`ServiceManager.stop({ removeVolumes: true })`, archive/fullReset only, never idle/restart), `deployment/vps/deploy.sh` owns build-time image/builder prunes, and `disk-janitor.ts` runs once at startup (no timer) for the rest (orphan compose volumes, unreferenced caches, opt-in archived-workspace sweep). Full detail: the `disk-janitor.ts` docstring, `docs/183-overlay-dep-store` (overlay store), `deployment/vps/deploy.sh`, and the **session-containers** skill (teardown path).
 
 ### Client communication & stores
 
-Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`, agent output/diffs/preview via `useWebSocket`, backoff 2s→30s) and global **SSE** (`/api/events` via `useServerEvents`: session list, repo/auth/PR status). Stores cross-reference via `useXStore.getState()` (not subscriptions, avoids cycles); resets are centralized in `stores/actions/session-actions.ts`; hydration is HTTP bootstrap → WS `loadSessionHistory()` → live WS, with `sessionId` stale-message guards. See the **client-architecture** skill.
+Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global **SSE** (`/api/events`: session list, repo/auth/PR status). Stores cross-reference via `useXStore.getState()` (not subscriptions, avoids cycles); resets centralized in `stores/actions/session-actions.ts`; hydration is HTTP bootstrap → WS `loadSessionHistory()` → live WS, guarded by `sessionId` against stale messages. See the **client-architecture** skill.
 
 ### Integration test patterns
 
-`TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes (`FakeClaudeProcess`, `StubGitHubAuthManager`) expose injection methods (`setPrData()`, …). See the **testing-and-quality** skill.
+`TestClient` buffers WS messages from connect (no send-before-listen races); `isTestMode` in `buildApp()` enables `POST /api/_test/sessions` (no Docker); fakes (`FakeClaudeProcess`, `StubGitHubAuthManager`) expose injection methods. See the **testing-and-quality** skill.
 
 ## Workflow
 
@@ -359,6 +265,10 @@ Two rules govern what goes into `package.json`. Both are enforced by `npm run ch
 
 When bumping a dependency, edit `package.json` to the new exact version, run `npm install` to refresh the lockfile, then run `npm run check-deps` before opening the PR.
 
+## Releasing
+
+ShipIt's own repo uses the **`release-branch`** mechanism (`shipit.yaml` `release:` block, docs/214): releases are **merge-triggered**. Cut one by opening a version-bump PR into `stable` and merging it — `.github/workflows/release.yml` then derives the tag `v<package.json version>` from the merged commit, gates on a green build, and **creates + pushes the tag and Release itself**. **Never hand-push a final `vX.Y.Z` tag** — CI owns that. rc's are the exception: cut via the tag path (push `vX.Y.Z-rc.N`), never by merging into `stable`. Use the **`shipit release`** command (`plan` to propose, `prepare` to open/update the PR, `--prerelease --confirm` for an rc), not a hand-rolled bump + `gh pr create`. The stable channel follows the latest **final** tag reachable from `origin/stable` (not the branch tip), failing closed if none exists. Full ritual: `RELEASING.md`; agent-facing copy: `src/server/shipit-docs/release.md` + `prompts/releases.md`.
+
 ## Docs structure
 
 ```
@@ -369,7 +279,7 @@ docs/
     mockup.html    — Optional UI prototype committed as reference (or mockup.svg / mocks/)
 ```
 
-Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Features are numbered by creation order; read a feature's `plan.md` first, check its `checklist.md` for remaining work, create `docs/NNN-new-feature/plan.md` for a new one. Frontmatter fields `issue`/`title`/`description` are all optional (a `plan.md` with none still lists). The docs list groups structurally: **tracked** = a feature-dir `plan.md`/`checklist.md`, an `issue:` pointer, or a `checklist.md` sibling; within Tracked, a 100%-complete `checklist.md` folds into collapsed **Done**, else **Active**. `issue:` is tracker-inferred from its shape — **Linear = full URL without the title slug** (`https://linear.app/<workspace>/issue/TRACKER-28`, a bare `TRACKER-28` is rejected), **GitHub = `owner/repo#123`** or a full URL; ShipIt renders a jump-to-issue chip.
+Docs are **reference material** — what a feature is, why, and how (including planned-but-unimplemented designs); work tracking lives in the issue tracker. Features are numbered by creation order; read a feature's `plan.md` first, check its `checklist.md` for remaining work, create `docs/NNN-new-feature/plan.md` for a new one. Frontmatter (`issue`/`title`/`description`) is optional. A 100%-complete `checklist.md` folds the doc into collapsed **Done**, else **Active**. `issue:` shape selects the tracker — **Linear = full URL without the title slug** (a bare `TRACKER-28` is rejected), **GitHub = `owner/repo#123`** or a full URL.
 
 ### Keep the tracker in sync when you touch a design doc
 

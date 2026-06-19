@@ -1,17 +1,27 @@
 /**
- * ReleaseLifecycleCard (docs/171 Phase 1) — the inline card for a chat-initiated
- * release, modeled on PrLifecycleCard. It renders the release state machine
- * (`proposed | tagging | gating | published | deploying | released | failed`)
- * entirely inside ShipIt: version, bump type, gate/CI checks, the tag, grouped
- * notes, a prerelease badge, deploy status, and an overflow-only "View on
- * GitHub" escape hatch.
+ * ReleaseLifecycleCard (docs/171) — the inline card for a chat-initiated release.
+ * It is a **persisted transcript card**: the full `ReleaseStatusSummary` rides on
+ * the chat message (upserted by the `release_card` WS, rehydrated from history),
+ * so it survives a reconnect, switch, reload, AND an orchestrator restart — and
+ * it renders inline at the point in scrollback where the release was proposed,
+ * not as top chrome.
+ *
+ * Two shapes, driven by `phase`:
+ *   - `proposed` → expanded: version, bump, gate/CI, tag, grouped notes, a
+ *     prerelease badge, and the Confirm & publish / Cancel controls.
+ *   - every other phase (`tagging | gating | published | deploying | released |
+ *     failed | cancelled`) → a compact collapsed row — the card "collapses to
+ *     that state" the moment the user decides, then keeps advancing to the
+ *     terminal `released`/`failed` in place.
  *
  * The confirmation control is NOT a shell-shaped affordance (CLAUDE.md §5): it
  * answers the agent's proposal by sending a chat message through the same
- * user-message surface as any other reply — it never runs a command. The
- * orchestrator's release flow reacts to the agent's follow-up turn.
+ * user-message surface as any other reply. A one-shot guard (`acted`) hides the
+ * buttons after the first click so a proposal can't be confirmed twice while the
+ * agent's follow-up turn is still in flight.
  */
 
+import { useState } from "react";
 import {
   TagIcon,
   RocketLaunchIcon,
@@ -21,21 +31,32 @@ import {
   SealCheckIcon,
   ArrowSquareOutIcon,
   GlobeIcon,
+  ProhibitIcon,
 } from "@phosphor-icons/react";
-import { useReleaseStore } from "../stores/release-store.js";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Button } from "./ui/button.js";
 import { Badge } from "./ui/badge.js";
 import { OverflowMenu } from "./ui/overflow-menu.js";
 import { DropdownMenuItem } from "./ui/dropdown-menu.js";
-import type { ReleaseChecksSummary, GitHubDeploymentStatus } from "../../server/shared/types.js";
+import type {
+  ReleaseStatusSummary,
+  ReleaseChecksSummary,
+  ReleaseMechanism,
+  GitHubDeploymentStatus,
+} from "../../server/shared/types.js";
 
 export interface ReleaseLifecycleCardProps {
-  sessionId: string;
-  /** Confirm & publish — sends the "yes, ship it" chat message to the agent. */
-  onConfirm: (version: string) => void;
-  /** Cancel — sends the cancel chat message and dismisses the card. */
-  onCancel: (version: string) => void;
+  /** Full release snapshot — the card renders straight from this (no store). */
+  card: ReleaseStatusSummary;
+  /**
+   * Confirm & publish — sends the "yes, ship it" chat message to the agent. The
+   * mechanism (defaulted to `tag-triggered` when the card omits it) lets the
+   * handler word the message correctly: a `release-branch` repo opens/merges a
+   * version-bump PR (CI tags), while `tag-triggered` pushes the tag.
+   */
+  onConfirm?: (version: string, mechanism: ReleaseMechanism) => void;
+  /** Cancel — sends the cancel chat message to the agent. */
+  onCancel?: (version: string) => void;
 }
 
 function GateIndicator({ checks }: { checks?: ReleaseChecksSummary }) {
@@ -101,64 +122,116 @@ function Notes({ notes }: { notes?: string }) {
   );
 }
 
-export function ReleaseLifecycleCard({ sessionId, onConfirm, onCancel }: ReleaseLifecycleCardProps) {
-  const card = useReleaseStore((s) => s.cardBySession[sessionId]);
-  const dismiss = useReleaseStore((s) => s.dismiss);
-  if (!card) return null;
+const STATUS_LABEL: Record<ReleaseStatusSummary["phase"], string> = {
+  proposed: "Release proposed",
+  tagging: "Tagging…",
+  pr_open: "Release PR open — merge to publish",
+  pr_merged: "Release PR merged — publishing…",
+  gating: "Publishing release…",
+  published: "Release published",
+  deploying: "Deploying…",
+  released: "Released",
+  failed: "Release failed",
+  cancelled: "Release cancelled",
+};
+
+function headerIconFor(phase: ReleaseStatusSummary["phase"]) {
+  if (phase === "released") {
+    return <SealCheckIcon size={ICON_SIZE.SM} weight="fill" className="text-(--color-success)" />;
+  }
+  if (phase === "failed") {
+    return <XCircleIcon size={ICON_SIZE.SM} weight="fill" className="text-(--color-error)" />;
+  }
+  if (phase === "cancelled") {
+    return <ProhibitIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />;
+  }
+  if (phase === "tagging" || phase === "pr_merged" || phase === "gating" || phase === "deploying") {
+    return <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />;
+  }
+  return <RocketLaunchIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />;
+}
+
+export function ReleaseLifecycleCard({ card, onConfirm, onCancel }: ReleaseLifecycleCardProps) {
+  // One-shot guard: a proposal answered once must not be answerable again while
+  // the agent's follow-up turn is still in flight (the card stays `proposed`
+  // until the agent emits the tagged/cancelled marker). Local state — on reload
+  // the persisted card has either advanced (collapsed) or, if the agent never
+  // acted, comes back `proposed` and correctly actionable again.
+  const [acted, setActed] = useState(false);
 
   const { phase, version, tag, prerelease, bumpType, versionSource } = card;
   const releaseUrl = card.release?.htmlUrl;
+  const prUrl = card.prUrl;
+  const label = phase === "released" && card.alreadyReleased ? "Already released" : STATUS_LABEL[phase];
 
-  const headerIcon =
-    phase === "released" ? (
-      <SealCheckIcon size={ICON_SIZE.SM} weight="fill" className="text-(--color-success)" />
-    ) : phase === "failed" ? (
-      <XCircleIcon size={ICON_SIZE.SM} weight="fill" className="text-(--color-error)" />
-    ) : phase === "tagging" || phase === "gating" || phase === "deploying" ? (
-      <CircleNotchIcon size={ICON_SIZE.SM} className="animate-spin text-(--color-warning)" />
-    ) : (
-      <RocketLaunchIcon size={ICON_SIZE.SM} className="text-(--color-accent)" />
+  const meta = (
+    <>
+      <span className="flex items-center gap-1 text-xs text-(--color-text-secondary)">
+        <TagIcon size={ICON_SIZE.XS} /> {tag}
+      </span>
+      {prerelease && (
+        <Badge variant="warning" className="text-[10px] uppercase tracking-wider">
+          Prerelease
+        </Badge>
+      )}
+    </>
+  );
+
+  const actions = (
+    <div className="ml-auto flex items-center gap-2">
+      <GateIndicator checks={card.checks} />
+      {(releaseUrl || prUrl) && (
+        <OverflowMenu label="Release actions" triggerClassName="h-auto w-auto p-1">
+          {prUrl && (
+            <DropdownMenuItem onSelect={() => window.open(prUrl, "_blank", "noopener,noreferrer")}>
+              <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+              View release PR on GitHub
+            </DropdownMenuItem>
+          )}
+          {releaseUrl && (
+            <DropdownMenuItem onSelect={() => window.open(releaseUrl, "_blank", "noopener,noreferrer")}>
+              <ArrowSquareOutIcon size={ICON_SIZE.SM} />
+              View release on GitHub
+            </DropdownMenuItem>
+          )}
+        </OverflowMenu>
+      )}
+    </div>
+  );
+
+  // Collapsed: every phase past the decision. A compact single row (+ an error
+  // line for `failed`), so a confirmed/cancelled/released card sits quietly in
+  // the transcript.
+  if (phase !== "proposed") {
+    return (
+      <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-2.5">
+        <div className="flex items-center gap-2">
+          {headerIconFor(phase)}
+          <span className="text-sm font-medium text-(--color-text-primary)">{label}</span>
+          {meta}
+          <span className="text-xs text-(--color-text-tertiary)">{version}</span>
+          {actions}
+        </div>
+        {card.errorMessage && phase === "failed" && (
+          <div className="mt-1.5 text-xs text-(--color-error)">{card.errorMessage}</div>
+        )}
+      </div>
     );
+  }
 
-  const statusLabel: Record<typeof phase, string> = {
-    proposed: "Release proposed",
-    tagging: "Tagging…",
-    gating: "Publishing release…",
-    published: "Release published",
-    deploying: "Deploying…",
-    released: card.alreadyReleased ? "Already released" : "Released",
-    failed: "Release failed",
-  };
-
+  // Proposed: the expanded, interactive card.
   return (
     <div className="mt-2 rounded-lg border border-(--color-border-secondary) bg-(--color-bg-secondary)/80 overflow-hidden p-3">
       <div className="flex items-center gap-2">
-        {headerIcon}
-        <span className="text-sm font-medium text-(--color-text-primary)">{statusLabel[phase]}</span>
-        <span className="flex items-center gap-1 text-xs text-(--color-text-secondary)">
-          <TagIcon size={ICON_SIZE.XS} /> {tag}
-        </span>
-        {prerelease && (
-          <Badge variant="warning" className="text-[10px] uppercase tracking-wider">
-            Prerelease
-          </Badge>
-        )}
-        {bumpType && phase === "proposed" && (
+        {headerIconFor(phase)}
+        <span className="text-sm font-medium text-(--color-text-primary)">{label}</span>
+        {meta}
+        {bumpType && (
           <Badge variant="info" className="text-[10px] uppercase tracking-wider">
             {bumpType}
           </Badge>
         )}
-        <div className="ml-auto flex items-center gap-2">
-          <GateIndicator checks={card.checks} />
-          {releaseUrl && (
-            <OverflowMenu label="Release actions" triggerClassName="h-auto w-auto p-1">
-              <DropdownMenuItem onSelect={() => window.open(releaseUrl, "_blank", "noopener,noreferrer")}>
-                <ArrowSquareOutIcon size={ICON_SIZE.SM} />
-                View release on GitHub
-              </DropdownMenuItem>
-            </OverflowMenu>
-          )}
-        </div>
+        {actions}
       </div>
 
       <div className="mt-1 text-xs text-(--color-text-tertiary)">
@@ -166,31 +239,36 @@ export function ReleaseLifecycleCard({ sessionId, onConfirm, onCancel }: Release
         {versionSource ? ` · ${versionSource}` : ""}
       </div>
 
-      {card.errorMessage && phase === "failed" && (
-        <div className="mt-2 text-xs text-(--color-error)">{card.errorMessage}</div>
-      )}
-
       <Notes notes={card.notes} />
       <DeploymentRow deployments={card.deployments} />
 
-      {phase === "proposed" && (
-        <div className="mt-3 flex items-center gap-2">
-          <Button variant="primary" size="md" onClick={() => onConfirm(version)}>
-            <RocketLaunchIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
-            Confirm &amp; publish {version}
-          </Button>
-          <Button
-            variant="ghost"
-            size="md"
-            onClick={() => {
-              onCancel(version);
-              dismiss(sessionId);
-            }}
-          >
-            Cancel
-          </Button>
-        </div>
-      )}
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          variant="primary"
+          size="md"
+          disabled={acted}
+          onClick={() => {
+            if (acted) return;
+            setActed(true);
+            onConfirm?.(version, card.mechanism ?? "tag-triggered");
+          }}
+        >
+          <RocketLaunchIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
+          Confirm &amp; publish {version}
+        </Button>
+        <Button
+          variant="ghost"
+          size="md"
+          disabled={acted}
+          onClick={() => {
+            if (acted) return;
+            setActed(true);
+            onCancel?.(version);
+          }}
+        >
+          Cancel
+        </Button>
+      </div>
     </div>
   );
 }

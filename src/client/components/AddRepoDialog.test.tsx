@@ -14,6 +14,8 @@ const defaultProps = {
   searchResults: [] as { fullName: string; description: string | null; private: boolean; cloneUrl: string }[],
   onSearch: vi.fn(),
   repos: [] as RepoInfo[],
+  githubAuthenticated: true,
+  onGitHubTokenSubmit: vi.fn().mockResolvedValue(true),
 };
 
 describe("AddRepoDialog", () => {
@@ -157,6 +159,32 @@ describe("AddRepoDialog", () => {
     await waitFor(() => {
       expect(onClose).toHaveBeenCalled();
       expect(onRepoReady).toHaveBeenCalledWith("https://github.com/test/repo.git");
+    });
+  });
+
+  describe("when GitHub is not connected", () => {
+    it("shows a connect prompt instead of the search/add form", () => {
+      render(<AddRepoDialog {...defaultProps} githubAuthenticated={false} />);
+      expect(screen.getByText("Connect GitHub to add repositories")).toBeTruthy();
+      expect(screen.getByTestId("github-token-form")).toBeTruthy();
+      // The search input and add/create affordances are hidden.
+      expect(screen.queryByPlaceholderText("Search GitHub repos or paste a URL...")).toBeNull();
+      expect(screen.queryByText("Create new repository")).toBeNull();
+      expect(screen.queryByText("Add")).toBeNull();
+    });
+
+    it("does not lazy-load the GitHub repo list when unauthenticated", () => {
+      const onSearch = vi.fn();
+      render(<AddRepoDialog {...defaultProps} githubAuthenticated={false} onSearch={onSearch} />);
+      expect(onSearch).not.toHaveBeenCalled();
+    });
+
+    it("submits the token via onGitHubTokenSubmit", async () => {
+      const onGitHubTokenSubmit = vi.fn().mockResolvedValue(true);
+      render(<AddRepoDialog {...defaultProps} githubAuthenticated={false} onGitHubTokenSubmit={onGitHubTokenSubmit} />);
+      fireEvent.change(screen.getByTestId("github-token-input"), { target: { value: "ghp_abc123" } });
+      fireEvent.click(screen.getByTestId("github-token-submit"));
+      await waitFor(() => expect(onGitHubTokenSubmit).toHaveBeenCalledWith("ghp_abc123"));
     });
   });
 

@@ -1,10 +1,9 @@
 import { useState } from "react";
-import { WrenchIcon, ArrowSquareOutIcon } from "@phosphor-icons/react";
+import { ArrowSquareOutIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { Button } from "../../ui/button.js";
 import { useUiStore } from "../../../stores/ui-store.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
-import { useSessionStore } from "../../../stores/session-store.js";
 import { ToggleSwitch } from "../ToggleSwitch.js";
 
 /** Shape of the /api/updates/check and /api/updates/channel responses. */
@@ -203,70 +202,14 @@ function MultiAgentSettings() {
   );
 }
 
-/**
- * docs/128 — gated "Ops / Host" section. The create button is the operator
- * gate's UI surface; the route enforces the same gate server-side (v1: host
- * operator == ShipIt user). Creating an ops session POSTs the ops template to
- * a fresh session, which sets the server-authoritative `kind: "ops"`.
- */
-function OpsSessionSettings({ onClose, onResumeSession }: { onClose: () => void; onResumeSession?: (sessionId: string) => void }) {
-  const [creating, setCreating] = useState(false);
-
-  const handleCreate = async () => {
-    setCreating(true);
-    try {
-      const id = await useSessionStore.getState().createOpsSession();
-      if (id) {
-        onClose();
-        onResumeSession?.(id);
-      } else {
-        useUiStore.getState().setToast({ message: "Failed to create ops session" });
-      }
-    } finally {
-      setCreating(false);
-    }
-  };
-
-  return (
-    <div className="space-y-3">
-      <h3 className="text-sm font-medium text-(--color-text-primary) flex items-center gap-2">
-        <WrenchIcon size={ICON_SIZE.SM} weight="fill" />
-        Ops / Host
-      </h3>
-      <p className="text-sm text-(--color-text-secondary)">
-        Create a privileged session for debugging this ShipIt host. The agent gets
-        <strong className="text-(--color-text-primary)"> read-only </strong>
-        Docker access (via a hardened proxy) and read-only systemd journal mounts —
-        enough to investigate stuck containers, OOMs, and restart loops without
-        leaving ShipIt. No write access to Docker, no other host paths.
-      </p>
-      <Button
-        variant="primary"
-        size="md"
-        onClick={() => void handleCreate()}
-        disabled={creating}
-        className="rounded-md gap-1.5"
-        data-testid="settings-create-ops-session"
-      >
-        <WrenchIcon size={ICON_SIZE.SM} />
-        {creating ? "Creating…" : "Create ops session for this host"}
-      </Button>
-    </div>
-  );
-}
-
 export function AdvancedTab({
   onFullReset,
   maxIdleContainers,
   onMaxIdleContainersSave,
-  onClose,
-  onResumeSession,
 }: {
   onFullReset?: () => void;
   maxIdleContainers: number;
   onMaxIdleContainersSave: (n: number) => void;
-  onClose: () => void;
-  onResumeSession?: (sessionId: string) => void;
 }) {
   const [confirmingReset, setConfirmingReset] = useState(false);
   const [resetting, setResetting] = useState(false);
@@ -595,10 +538,6 @@ export function AdvancedTab({
           </Button>
         </div>
       </div>
-
-      <div className="border-t border-(--color-border-secondary)" />
-
-      <OpsSessionSettings onClose={onClose} onResumeSession={onResumeSession} />
 
       <div className="border-t border-(--color-border-secondary)" />
 

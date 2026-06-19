@@ -64,6 +64,12 @@ for cidr in ${EGRESS_ALLOWED_CIDRS:-}; do add_member "$cidr"; done
 # session's own control channel, so allow it explicitly (mirrors Anthropic's
 # init-firewall.sh HOST_NETWORK rule). Cross-session isolation is handled
 # separately (per-session networks / source-IP id with NET_RAW dropped).
+#
+# NOTE: this allows ONLY the agent's *default-gateway* subnet. A session's
+# compose/preview network is attached to the agent LATER (after `docker compose
+# up`), so its subnet is opened separately, at join time, by the companion
+# allow-subnet.sh sidecar (SHI-90, GH #1495) — that's how the agent's browser
+# reaches the live preview.
 default_gw="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}')"
 local_subnet=""
 if [[ -n "$default_gw" ]]; then

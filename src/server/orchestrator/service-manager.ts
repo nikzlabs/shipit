@@ -87,6 +87,20 @@ export interface ManagedService {
   dependsOnInstall: boolean;
   /** Container IP on the session network (populated by status polling). */
   containerIp?: string;
+  /**
+   * Direct, agent-reachable URL for this service's dev server
+   * (`http://<containerIp>:<port>/`). Populated by {@link getServices} only when
+   * the service is running and both its container IP and port are known.
+   *
+   * This is the address the agent's own tooling — `curl` and the in-container
+   * Playwright browser — should hit to reach the live preview. docs/172 Gap 1
+   * (SHI-90) opens the agent's egress to its session subnet so this IP is
+   * routable from the agent's netns. It is deliberately NOT the user's
+   * Preview-tab origin, which is the orchestrator's `{sessionId}--{port}.<host>`
+   * subdomain proxy and does not resolve from inside the agent container. See
+   * GH #1509.
+   */
+  url?: string;
 }
 
 /**
@@ -124,6 +138,15 @@ export interface ServiceManagerOptions {
   opsSession?: boolean;
   /** Called during start() to join the agent container to the compose network. */
   networkJoinFn?: (networkName: string) => Promise<void>;
+  /**
+   * docs/128 — periodic self-heal: re-attach the agent container to the compose
+   * network if a network/bridge recreate (e.g. the ops `docker-socket-proxy`
+   * restarting under its `restart: unless-stopped` policy) stranded it on a dead
+   * bridge. Invoked on the poll heartbeat and membership-gated inside the hook,
+   * so it's a cheap `network inspect` no-op while the agent is correctly
+   * attached. Omitted in tests / non-container setups.
+   */
+  networkHealFn?: (networkName: string) => Promise<void>;
   /**
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
@@ -244,6 +267,8 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
+  /** docs/128 — periodic agent network-attachment self-heal (see options). */
+  private readonly networkHealFn?: (networkName: string) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir?: string;
   /**
@@ -325,6 +350,7 @@ export class ServiceManager extends EventEmitter {
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
+    this.networkHealFn = opts.networkHealFn;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.logStore = opts.logStore;
@@ -399,7 +425,26 @@ export class ServiceManager extends EventEmitter {
       onExitedWithError: (name, exitCode) => {
         this.handleNonZeroExit(name, exitCode);
       },
+      afterPoll: () => this.healSessionNetwork(),
     });
+  }
+
+  /**
+   * docs/128 — re-attach the agent container to the compose network if a
+   * network/bridge recreate stranded it. Called on the poll heartbeat via the
+   * poller's `afterPoll` hook. Membership-gated inside `networkHealFn`, so this
+   * is a cheap `network inspect` no-op while the agent is correctly attached.
+   * Best-effort: a heal failure is logged and swallowed so it never disrupts
+   * the poll loop.
+   */
+  private async healSessionNetwork(): Promise<void> {
+    if (!this.networkHealFn) return;
+    const networkName = `shipit-session-${this.sessionId}`;
+    try {
+      await this.networkHealFn(networkName);
+    } catch (err) {
+      console.warn(`[compose:${this.sessionId}] network heal failed:`, (err as Error).message);
+    }
   }
 
   /**
@@ -563,7 +608,14 @@ export class ServiceManager extends EventEmitter {
 
   /** Get all managed services. */
   getServices(): ManagedService[] {
-    return [...this.services.values()];
+    // Derive `url` on read (never stored) so it can't go stale: the agent-facing
+    // direct URL exists only while the service is running with a known IP+port.
+    // See GH #1509 and the `url` field doc on ManagedService.
+    return [...this.services.values()].map((svc) =>
+      svc.status === "running" && svc.containerIp && svc.port
+        ? { ...svc, url: `http://${svc.containerIp}:${svc.port}/` }
+        : { ...svc },
+    );
   }
 
   /** Get a specific service by name. */

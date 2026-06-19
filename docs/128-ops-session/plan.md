@@ -185,14 +185,20 @@ The ops session is a genuinely different kind of session, not a
 normal repo-backed one, so the UI treats it as its own thing rather
 than blending it into the list. Three decisions:
 
-**1. Created from Settings, not from a phantom list card.** Before
+**1. Created from the sidebar, not from a phantom list card.** Before
 the ops session exists there is nothing to render in the sidebar, so
-a placeholder card would just be confusing. The create affordance
-lives in a gated **"Ops / Host"** section in Settings
-(`Settings.tsx`) — a short explanation plus a single "Create ops
-session for this host" button. This is also the natural home for the
-operator gate (the button is only shown/enabled for the host
-operator; see "Auth gate"). Creation calls the existing
+a placeholder card would just be confusing.
+
+> **Update:** the original gated **"Ops / Host"** section in Settings
+> (`AdvancedTab.tsx`) with a "Create ops session for this host" button
+> has been **removed** — it duplicated capability already reachable from
+> the sidebar. The create affordances now live in the sidebar: the `+`
+> menu (`SessionSidebar.tsx` → `handleCreateOps`) for a blank ops
+> session, and the per-row `⋯` "Investigate in Ops session" entry
+> (`SessionItem.tsx`) for a target-scoped one. Both route through the
+> `createOpsSession(targetSessionId?)` store action.
+
+Creation calls the existing
 `POST /api/sessions/:id/template` route with `:id = "new"` and body
 `{ templateId: "ops" }` (implementation step 2).
 
@@ -322,6 +328,32 @@ independently.)
     `shipit-session-{id}` network; the existing network join hook then attaches
     the agent container so `DOCKER_HOST=tcp://docker-socket-proxy:2375` resolves
     by compose DNS.
+
+4c. **Agent network-attachment self-heal — stranded after a proxy/network
+    recreate.** Live-host finding: the agent joins `shipit-session-{id}`
+    *imperatively* (`SessionContainerManager.connectToNetwork`, called from
+    `ServiceManager.joinSessionNetwork`), and that attachment is re-established
+    **only on an orchestrator-driven `docker compose up`**. But the compose
+    network/bridge can be rebuilt out from under the long-lived agent *without*
+    the orchestrator running `compose up` — the `docker-socket-proxy` sibling is
+    recreated by its own `restart: unless-stopped` policy, a host/daemon restart
+    recreates the network, or the network is pruned and re-made. When that
+    happens the recreated proxy joins the **new** bridge while the agent stays
+    bolted to the **old, now-empty** bridge: same IPAM subnet (compose reuses it
+    per-project), different L2 segment → ARP blackhole + embedded-DNS failure, so
+    `DOCKER_HOST=tcp://docker-socket-proxy:2375` is permanently unreachable for
+    the rest of the session (the Docker pillar silently dies). Fix: a
+    condition-based heal driven by the existing service-poll heartbeat.
+    `SessionContainerManager.ensureConnectedToSessionNetwork` inspects the live
+    network and is **membership-gated** — a cheap `network inspect` no-op while
+    the agent is correctly attached; only when the agent is *missing* from the
+    live network does it force-disconnect any dangling endpoint (clearing
+    `connectToNetwork`'s "already exists" swallow) and reconnect, re-opening
+    egress to the recreated subnet. Wired via a new `ServicePoller.afterPoll`
+    hook → `ServiceManager.networkHealFn` → the container manager. Key files:
+    `session-container.ts`, `service-poller.ts`, `service-manager.ts`,
+    `service-manager-setup.ts`; tests in `session-container-network-heal.test.ts`
+    and `service-poller.test.ts`.
 
 4b. **Provisioning bugs found by the live audit (host `shipit-16gb`).** Running
     the embedded `prompts/verify-ops-access.md` recipe on a real host surfaced

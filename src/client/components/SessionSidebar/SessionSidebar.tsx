@@ -7,13 +7,12 @@ import { WithTooltip } from "../ui/tooltip.js";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel } from "../ui/dropdown-menu.js";
 import { RepoSwitcher } from "../RepoSwitcher.js";
 import { RemoveRepoDialog } from "../RemoveRepoDialog.js";
-import { SandboxDialog } from "../SandboxDialog.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useRepoStore } from "../../stores/repo-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useMediaQuery } from "../../hooks/useMediaQuery.js";
-import type { SessionInfo, RepoInfo, SessionCapabilities } from "../../../server/shared/types.js";
+import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { useSidebarResize } from "./useSidebarResize.js";
 import { computeRepoGroups } from "./useSessionGrouping.js";
 import { OpsSessionGroup, OrphanSessionGroup, RepoGroup, SandboxSessionGroup } from "./SessionGroup.js";
@@ -73,27 +72,11 @@ export function SessionSidebar({
   const toggleSandboxCollapsed = useRepoStore((s) => s.toggleSandboxCollapsed);
   const reorderRepos = useRepoStore((s) => s.reorderRepos);
 
-  // docs/211 — the capability dialog for a new Sandbox session, opened from the
-  // "+" advanced-session menu above the session list. `creatingSandbox` disables
-  // the dialog's controls while the create POST is in flight.
-  const [sandboxDialogOpen, setSandboxDialogOpen] = useState(false);
-  const [creatingSandbox, setCreatingSandbox] = useState(false);
-
-  const handleCreateSandbox = useCallback(async (capabilities: SessionCapabilities) => {
-    setCreatingSandbox(true);
-    try {
-      const newId = await useSessionStore.getState().createSandboxSession(capabilities);
-      if (newId) {
-        setSandboxDialogOpen(false);
-        onResume(newId);
-        if (mobile) onClose?.();
-      } else {
-        useUiStore.getState().setToast({ message: "Failed to create sandbox session" });
-      }
-    } finally {
-      setCreatingSandbox(false);
-    }
-  }, [mobile, onClose, onResume]);
+  // docs/211 — the capability dialog for a new Sandbox session is opened from the
+  // "+" advanced-session menu here, so its open-state lives in ui-store and the
+  // dialog itself is rendered once at the App level (the mobile sidebar unmounts
+  // when the drawer closes, so a sidebar-local dialog would no-op on mobile).
+  const setSandboxDialogOpen = useUiStore((s) => s.setSandboxDialogOpen);
 
   const handleCreateOps = useCallback(async () => {
     const newId = await useSessionStore.getState().createOpsSession();
@@ -508,13 +491,6 @@ export function SessionSidebar({
         className={`resize-handle shrink-0 -ml-2 ${isDragging ? "resize-handle--active" : ""}`}
       />
     )}
-    {/* docs/211 — sandbox capability dialog (Radix portal, placement here is fine) */}
-    <SandboxDialog
-      open={sandboxDialogOpen}
-      onOpenChange={setSandboxDialogOpen}
-      onCreate={handleCreateSandbox}
-      creating={creatingSandbox}
-    />
     {/* Repo-removal confirmation (Radix portals, so placement here is fine) */}
     <RemoveRepoDialog
       open={removeRepoTarget !== null}

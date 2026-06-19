@@ -54,8 +54,6 @@ export interface SettingsProps {
   onToggleAgentSystemInstructions: (enabled: boolean) => void;
   hasActiveSession: boolean;
   onClose: () => void;
-  /** docs/128 — resume/navigate to a session (e.g. a freshly created ops session). */
-  onResumeSession?: (sessionId: string) => void;
 }
 
 export function Settings({
@@ -86,7 +84,6 @@ export function Settings({
   onToggleAgentSystemInstructions,
   hasActiveSession,
   onClose,
-  onResumeSession,
 }: SettingsProps) {
   const activeTab = useUiStore((s) => s.settingsTab) ?? "agent-claude";
   const setActiveTab = useUiStore((s) => s.setSettingsTab);
@@ -268,8 +265,6 @@ export function Settings({
               onFullReset={onFullReset}
               maxIdleContainers={maxIdleContainers}
               onMaxIdleContainersSave={onMaxIdleContainersSave}
-              onClose={onClose}
-              onResumeSession={onResumeSession}
             />
           </TabsContent>
 

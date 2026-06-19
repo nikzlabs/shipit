@@ -27,12 +27,16 @@ describe("egress settings routes", () => {
   let store: EgressAllowlistStore;
   let reloadEgress: ReturnType<typeof vi.fn>;
   let broadcasts: { event: string; data: unknown }[];
+  // Mutable map of live container records, so a test can simulate "this session
+  // has a running container that started Contained" for the pending-restart diff.
+  let liveContainers: Map<string, { status: string; egressContainedAtStart?: boolean }>;
 
   beforeEach(async () => {
     db = new DatabaseManager(":memory:");
     store = new EgressAllowlistStore(db);
     reloadEgress = vi.fn(async () => true);
     broadcasts = [];
+    liveContainers = new Map();
     app = Fastify();
     const deps = {
       egressAllowlistStore: store,
@@ -40,7 +44,7 @@ describe("egress settings routes", () => {
       // This deployment can enforce (enforcement on + sidecar image configured).
       egressEnforcementActive: true,
       sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
-      containerManager: { reloadEgress } as unknown,
+      containerManager: { reloadEgress, get: (id: string) => liveContainers.get(id) } as unknown,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: {},
     } as unknown as ApiDeps;
@@ -194,6 +198,9 @@ describe("egress settings routes", () => {
       effectiveContained: true,
       globalEnabled: true,
       enforcementActive: true,
+      // No running container in this test → nothing to diff/restart.
+      startedContained: null,
+      pendingRestart: false,
     });
   });
 
@@ -206,6 +213,7 @@ describe("egress settings routes", () => {
       credentialStore: stubCredentialStore,
       egressEnforcementActive: false,
       sseBroadcast: () => {},
+      containerManager: { reloadEgress, get: () => undefined } as unknown,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: {},
     } as unknown as ApiDeps);
@@ -237,5 +245,49 @@ describe("egress settings routes", () => {
     });
     expect(res.json<EgressSessionSettings>().override).toBeNull();
     expect(res.json<EgressSessionSettings>().effectiveContained).toBe(true);
+  });
+
+  // docs/172 — pending-restart diff: the resolved containment vs what the LIVE
+  // container was actually created with. Egress topology is a creation-time
+  // choice, so a mode change only takes effect on the next container start.
+  describe("pendingRestart (live container started with a different mode)", () => {
+    it("is false when no container is running (nothing to diff/restart)", async () => {
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+      const view = res.json<EgressSessionSettings>();
+      expect(view.startedContained).toBeNull();
+      expect(view.pendingRestart).toBe(false);
+    });
+
+    it("is false when the running container's mode matches the resolved mode", async () => {
+      // Live container started Contained; global is Contained, no override → match.
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+      const view = res.json<EgressSessionSettings>();
+      expect(view.startedContained).toBe(true);
+      expect(view.effectiveContained).toBe(true);
+      expect(view.pendingRestart).toBe(false);
+    });
+
+    it("flips to pending when the override resolves differently than the live container", async () => {
+      // Live container started Contained; user forces Open → pending a restart.
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      const res = await app.inject({
+        method: "PUT",
+        url: "/api/egress/session/session-1",
+        payload: { override: false }, // force Open
+      });
+      const view = res.json<EgressSessionSettings>();
+      expect(view.effectiveContained).toBe(false);
+      expect(view.startedContained).toBe(true);
+      expect(view.pendingRestart).toBe(true);
+    });
+
+    it("ignores a container that isn't running (startedContained stays null)", async () => {
+      liveContainers.set("session-1", { status: "stopped", egressContainedAtStart: true });
+      const res = await app.inject({ method: "GET", url: "/api/egress/session/session-1" });
+      const view = res.json<EgressSessionSettings>();
+      expect(view.startedContained).toBeNull();
+      expect(view.pendingRestart).toBe(false);
+    });
   });
 });

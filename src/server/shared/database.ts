@@ -692,6 +692,16 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN capabilities TEXT");
   },
+  // docs/171 — persist the release lifecycle card so it survives a session
+  // switch / full reload AND an orchestrator restart. The card was previously
+  // in-memory only on the `ReleaseStatusPoller` (broadcast over the transient
+  // `release_status` SSE), so a restart lost it entirely. It is now a normal
+  // persisted transcript card: the poller drives every phase transition through
+  // one sink that upserts the full `ReleaseStatusSummary` JSON here (keyed by
+  // `cardId`) and emits a `release_card` WS. NULL = ordinary (non-card) message.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN release_card TEXT");
+  },
 ];
 
 export class DatabaseManager {

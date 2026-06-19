@@ -852,6 +852,11 @@ export async function createContainer(
     // Default (no resolver wired): contained, no extra hosts — unchanged env-only
     // behavior.
     const egressCfg = deps.resolveEgressConfig?.(config.sessionId) ?? { contained: true, extraHosts: [] };
+    // Record the resolved containment this container is actually being created
+    // with — the egress sidecars are plumbed into the netns below and can't be
+    // re-plumbed live, so this is the source of truth the egress API diffs
+    // against the current policy to show "pending — restart to apply" (docs/172).
+    sc.egressContainedAtStart = egressCfg.contained;
     if (deps.egressEnforce && egressCfg.contained) {
       if (!deps.egressSidecarImage) {
         // Fail closed: this session is contained but the deployment can't run

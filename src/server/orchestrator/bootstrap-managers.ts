@@ -485,7 +485,17 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // shape (viewers / detach grace / active release).
   const releaseStatusPoller = new ReleaseStatusPoller({
     githubAuth: githubAuthManager,
-    sseBroadcast,
+    // Single sink for every release-card transition: persist it to chat history
+    // (upsert by cardId — append on propose, patch on every later phase) so it
+    // survives reload + restart, and emit a `release_card` WS to the session's
+    // viewers so the inline transcript card updates live. Replaces the prior
+    // in-memory-only `release_status` SSE (docs/171).
+    onCard: (card) => {
+      chatHistoryManager.upsertReleaseCard(card.sessionId, card);
+      runnerRegistry
+        .get(card.sessionId)
+        ?.emitMessage({ type: "release_card", sessionId: card.sessionId, card });
+    },
     runnerRegistry,
   });
 

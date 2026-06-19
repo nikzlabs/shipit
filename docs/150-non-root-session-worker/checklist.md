@@ -16,7 +16,7 @@ behavior until the var is set.
 - [x] Move credential symlinks to `/home/shipit`; npm global prefix → `~/.npm-global` (§6); Playwright browsers pinned to `/opt/playwright-browsers` (§8).
 - [x] Orchestrator-side ownership handoff gated on `SHIPIT_SESSION_WORKER_UID` (§7): per-session credentials (incl. `provisionRepoMemory` so auto-memory stays writable), container gitconfig, user uploads, CI-fix logs.
 - [x] Keep local/dogfood mode on root with `AGENT_HOME=/root` (§9).
-- [x] Ops `.docker` image: add `shipit` to `systemd-journal`/`adm` so host journal reads survive.
+- [x] Ops `.docker` image: add `shipit` to `systemd-journal`/`adm` so host journal reads survive. **Fixed (post-deploy):** the original `usermod -aG systemd-journal,adm shipit || true` shipped `shipit` in *no* supplementary groups (`groups=1000(shipit)`), killing the journal pillar in every ops session. `usermod -aG a,b` is atomic — the `systemd` install doesn't reliably create the `systemd-journal` group at build time, so the whole add failed and `|| true` masked it. Now `groupadd -rf` both groups first, add membership per-group, and assert the result so a regression fails the build instead of silently disabling journal reads.
 - [x] Enumerate the writable paths the worker needs (groundwork for SHI-97 ReadonlyRootfs/seccomp) — see `plan.md` "Writable paths".
 - [x] Hide the `.shipit-uid-1000` chown sentinel from the file tree/watcher.
 - [x] Update `src/server/shipit-docs/environment.md`.

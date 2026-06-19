@@ -17,8 +17,10 @@ function makeFakeGitHub() {
     authenticated: true,
     checks: { state: "none", total: 0, passed: 0, failed: 0, pending: 0 } as Checks,
     release: null as ReleaseByTag | null,
+    pr: null as { state: "open" | "closed"; merged: boolean } | null,
     checkStatusCalls: 0,
     releaseCalls: 0,
+    prCalls: 0,
   };
   const gh = {
     get authenticated() {
@@ -32,6 +34,10 @@ function makeFakeGitHub() {
       state.releaseCalls++;
       return state.release;
     },
+    async viewPullRequest() {
+      state.prCalls++;
+      return state.pr;
+    },
   } as unknown as GitHubAuthManager;
   return { gh, state };
 }
@@ -44,24 +50,24 @@ function makeFakeRegistry(viewerCount = 1): SessionRunnerRegistry {
   } as unknown as SessionRunnerRegistry;
 }
 
+interface CardSnapshot { phase: string; tag: string; cardId: string; alreadyReleased?: boolean; mechanism?: string }
+
 function makePoller() {
   const { gh, state } = makeFakeGitHub();
-  const events: { event: string; data: { updates: unknown[]; removals?: string[] } }[] = [];
+  // Every card transition is now routed through the single `onCard` sink (which
+  // the orchestrator wires to chat-history persist + the `release_card` WS).
+  const cards: CardSnapshot[] = [];
   const poller = new ReleaseStatusPoller({
     githubAuth: gh,
-    sseBroadcast: (event, data) => events.push({ event, data: data as { updates: unknown[] } }),
+    onCard: (card) => cards.push(card as unknown as CardSnapshot),
     runnerRegistry: makeFakeRegistry(),
   });
-  return { poller, state, events };
+  return { poller, state, cards };
 }
 
-/** Last release_status card broadcast (phases the test asserts on). */
-function lastCard(events: { event: string; data: { updates: unknown[] } }[]) {
-  for (let i = events.length - 1; i >= 0; i--) {
-    const u = events[i].data.updates;
-    if (u.length > 0) return u[u.length - 1] as { phase: string; tag: string; alreadyReleased?: boolean };
-  }
-  return undefined;
+/** Last card emitted through `onCard` (the phases the tests assert on). */
+function lastCard(cards: CardSnapshot[]): CardSnapshot | undefined {
+  return cards.length > 0 ? cards[cards.length - 1] : undefined;
 }
 
 describe("ReleaseStatusPoller", () => {
@@ -79,9 +85,18 @@ describe("ReleaseStatusPoller", () => {
     poller = ctx.poller;
     poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false, bumpType: "minor" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(lastCard(ctx.events)?.phase).toBe("proposed");
+    expect(lastCard(ctx.cards)?.phase).toBe("proposed");
+    expect(lastCard(ctx.cards)?.cardId).toBe("release:s1:v0.3.0");
     expect(ctx.state.checkStatusCalls).toBe(0);
     expect(ctx.state.releaseCalls).toBe(0);
+  });
+
+  it("propose carries the mechanism onto the card (docs/214)", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false, mechanism: "release-branch" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(lastCard(ctx.cards)?.mechanism).toBe("release-branch");
   });
 
   it("markTagged → gating → released once the Release is published", async () => {
@@ -98,6 +113,53 @@ describe("ReleaseStatusPoller", () => {
     expect(card?.phase).toBe("released");
     expect(card?.release?.htmlUrl).toContain("releases/tag/v0.3.0");
     expect(card?.notes).toContain("Features");
+  });
+
+  it("markPrOpened sets a pr_open card and polls the PR (docs/214)", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "open", merged: false };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    const card = poller.getStatus("s1");
+    expect(card?.phase).toBe("pr_open");
+    expect(card?.prNumber).toBe(42);
+    expect(card?.releaseBranch).toBe("stable");
+    expect(ctx.state.prCalls).toBeGreaterThan(0);
+    // No Release polling while the PR is still open.
+    expect(ctx.state.releaseCalls).toBe(0);
+  });
+
+  it("pr_open → pr_merged → released once the PR merges and CI publishes", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "open", merged: true }; // already merged when first polled
+    ctx.state.release = {
+      name: "v0.3.0", body: "notes", htmlUrl: "https://github.com/owner/repo/releases/tag/v0.3.0",
+      prerelease: false, publishedAt: "2026-06-03T00:00:00Z", tagName: "v0.3.0",
+    };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    // merge detected → immediate re-poll picks up the published Release.
+    expect(poller.getStatus("s1")?.phase).toBe("released");
+  });
+
+  it("pr_open → failed when the PR is closed without merging", async () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    ctx.state.pr = { state: "closed", merged: false };
+    poller.markPrOpened("s1", REPO, {
+      version: "0.3.0", tag: "v0.3.0", prerelease: false,
+      prNumber: 42, prUrl: "https://github.com/owner/repo/pull/42", releaseBranch: "stable",
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(poller.getStatus("s1")?.phase).toBe("failed");
   });
 
   it("markTagged → failed when the gate fails and no Release exists", async () => {
@@ -163,13 +225,24 @@ describe("ReleaseStatusPoller", () => {
     expect(ctx.state.releaseCalls).toBe(releaseCallsBefore);
   });
 
-  it("cancel removes the card and broadcasts a removal", () => {
+  it("cancel collapses the card to a persisted `cancelled` state (not a removal)", () => {
     const ctx = makePoller();
     poller = ctx.poller;
     poller.propose("s1", REPO, { version: "0.3.0", tag: "v0.3.0", prerelease: false });
     poller.cancel("s1");
+    // The card stays — collapsed to terminal `cancelled` — so the decision is
+    // persisted in the transcript and survives a reload, rather than vanishing.
+    expect(poller.getStatus("s1")?.phase).toBe("cancelled");
+    const last = lastCard(ctx.cards);
+    expect(last?.phase).toBe("cancelled");
+    expect(last?.cardId).toBe("release:s1:v0.3.0");
+  });
+
+  it("cancel is a no-op when nothing was proposed", () => {
+    const ctx = makePoller();
+    poller = ctx.poller;
+    poller.cancel("s1");
     expect(poller.getStatus("s1")).toBeUndefined();
-    const last = ctx.events[ctx.events.length - 1];
-    expect(last.data.removals).toEqual(["s1"]);
+    expect(ctx.cards).toHaveLength(0);
   });
 });

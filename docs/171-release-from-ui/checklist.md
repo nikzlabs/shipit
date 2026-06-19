@@ -11,22 +11,29 @@ remain.
       confirmation control is not a shell-shaped affordance). *(Process item — the
       implementation follows the stance; explicit sign-off is still pending.)*
 - [x] `ReleaseStatusPoller` (new) modeled on `pr-status-poller.ts`: supervisor
-      tick, fast/slow cadence, global poll gate reuse, `release_status` SSE event.
+      tick, fast/slow cadence, global poll gate reuse. Every phase transition
+      flows through one injected `onCard` sink (persist + per-session
+      `release_card` WS) — NOT a `release_status` SSE.
       → `src/server/orchestrator/release-status-poller.ts`, constructed in
-      `buildApp()` and snapshotted on `/api/events`.
-- [x] `release-store.ts` (new) on the client, modeled on `pr-store.ts`; card state
-      machine `proposed | tagging | gating | published | deploying | released | failed`.
-      → `src/client/stores/release-store.ts`, wired to the `release_status` SSE
-      event in `useServerEvents.ts`.
+      `buildApp()` with `onCard` wired in `bootstrap-managers.ts`.
+- [x] **Persisted transcript card** (docs/188 recipe): `PersistedMessage.releaseCard`
+      + `release_card` column + migration + `upsertReleaseCard` (append on propose,
+      patch by `cardId` after) in `chat-history.ts`; `releaseCard` registered in
+      `CARD_MESSAGE_FIELDS`; client `release_card` handler upserts by `cardId` into
+      the transcript. Survives reload + orchestrator restart. The old in-memory
+      `release-store.ts` + `release_status` SSE were retired.
 - [x] Release lifecycle card UI: version, bump type, gate/CI checks, tag, grouped
-      notes, prerelease badge, deploy status, overflow "View on GitHub".
-      → `src/client/components/ReleaseLifecycleCard.tsx` (Phosphor icons +
-      `ICON_SIZE` tokens), rendered in `App.tsx` next to the PR card.
+      notes, prerelease badge, deploy status, overflow "View on GitHub". `proposed`
+      is expanded + interactive; every later phase (incl. `cancelled`) collapses to
+      a compact row that keeps advancing to `released`/`failed` in place.
+      → `src/client/components/ReleaseLifecycleCard.tsx`, rendered inline in the
+      chat transcript via `MessageCards.tsx` (no longer top chrome in `App.tsx`).
 - [x] Confirmation control on the card (`Confirm & publish` / `Cancel`) + chat
-      "yes ship it" path; wire to the same answer-question surface as PR confirms.
-      → card buttons send a chat message via `sendUserMessage` (App.tsx
-      `handleReleaseConfirm`/`handleReleaseCancel`) — answers the agent's
-      proposal, not a shell command (CLAUDE.md §5).
+      "yes ship it" path. Card buttons send a chat message via `sendUserMessage`
+      (App.tsx `handleReleaseConfirm`/`handleReleaseCancel`) — answers the agent's
+      proposal, not a shell command (CLAUDE.md §5). A one-shot guard fires the
+      confirm exactly once (fixes the double-send), and `cancel` collapses the card
+      to a persisted `cancelled` state rather than dismissing it.
 - [x] Agent instruction block "How to cut a release" in `agent-instructions.ts`
       (shared section): read version source, compute next version, **never push a
       tag without confirmation**, use `git tag -a`, never run `gh release`.
@@ -45,11 +52,17 @@ remain.
       `github-auth-releases.ts` (NO write-side `createRelease` — that's Phase 4).
 - [x] `/shipit-docs/release.md` baked into the session image; referenced from the
       platform-docs section of the instructions.
-- [x] Tests: poller unit tests (cadence, dedup, state transitions), card store
-      tests, integration test for the confirm → tag → publish flow with a fake
-      GitHub auth manager. → `release-status-poller.test.ts`,
-      `release-markers.test.ts`, `release-version.test.ts`,
-      `release-store.test.ts`, `integration_tests/release-flow.test.ts`.
+- [x] Tests: poller unit tests (cadence, dedup, state transitions, `cardId`
+      stamping, cancel-collapses-to-cancelled), persistence round-trip +
+      `upsertReleaseCard` (append vs patch) in `chat-history.test.ts`, the
+      `release_card` client handler (upsert-by-cardId, no-dup-on-replay), the
+      `ReleaseLifecycleCard` render (proposed vs collapsed, confirm-once), and the
+      integration confirm → tag → publish flow now asserting the card persists to
+      `/history`. → `release-status-poller.test.ts`, `release-markers.test.ts`,
+      `release-version.test.ts`, `chat-history.test.ts`,
+      `hooks/message-handlers/release-card.test.ts`,
+      `components/ReleaseLifecycleCard.test.tsx`,
+      `integration_tests/release-flow.test.ts`.
 
 ### How the agent ↔ orchestrator seam works (Phase 1)
 
@@ -100,7 +113,7 @@ parses it (`release-markers.ts`) and drives the poller via
 
 ## Phase 5 — Channel promotion for arbitrary repos (only if demand)
 
-- [ ] Generalize the stable/edge fast-forward-pointer model (`docs/162`) so a repo
+- [ ] Generalize the stable/edge maintenance-branch model (`docs/162`) so a repo
       can define promotion channels.
 
 ## Deferred / out of scope

@@ -283,6 +283,134 @@ proxy launch omits the var → no identity scoping (Tier C host-allowlist behavi
 operator-global env, so every contained session currently gets the same rules. A per-session
 Settings editor would feed `durableRules` (the seam is in place).
 
+## Intra-session preview reachability (SHI-90 follow-up)
+
+Tier A's installer (`init-firewall.sh`) runs at **agent-container creation** and, for
+local destinations, allows only the agent's **default-gateway bridge subnet** (the
+orchestrator network — needed for the orchestrator API + docker proxy). But the agent
+is **multi-homed**: a session's compose/preview network (`shipit-session-<id>`) is
+created later by `docker compose up` and the agent is attached to it *after the fact*
+(`connectToNetwork`, after the worker is ready and the stack is up). That second subnet
+is **not** in the install-time allow-set, so the default-deny `OUTPUT DROP` policy
+silently dropped the agent's traffic to its own dev server. The visible symptom
+(GH #1495): the agent's built-in **Playwright browser** — which shares the agent's netns
+and is therefore subject to the same firewall — **could not reach the live preview** to
+screenshot/verify its work (`curl`/navigation to the dev container's `containerIp:port`
+timed out), even though the user's preview pane worked fine (that routes through the
+orchestrator's `preview-proxy`, which is on the already-allowed orchestrator subnet).
+
+**Fix:** when the agent joins a session network, re-open egress to **that one subnet**.
+`SessionContainerManager.connectToNetwork` inspects the joined network's `IPAM.Config`
+subnet(s) (`extractNetworkSubnets`) and runs a short-lived `allow-subnet.sh` sidecar
+(`--network container:<agent> --cap-add NET_ADMIN`, mirroring the Tier A installer) that
+appends `iptables -A OUTPUT -d <subnet> -j ACCEPT` into the agent's netns
+(`allowEgressToSubnets`). Idempotent (`-C` before `-A`) so the reconnect-after-recreate
+re-join is safe.
+
+**Why this doesn't weaken containment:**
+- It allows **only the specific session subnet**, never broad RFC1918. A broad
+  `10/8 + 172.16/12 + 192.168/16` allow would be simpler but unsafe: the agent's
+  default route is the Docker host, which *would* forward those packets into the host's
+  own VPC/LAN (an SSRF surface). The exact-subnet rule grants the agent **no route to
+  any other network** — only its own session's containers become reachable, so
+  cross-session isolation (per-session networks + source-IP id, NET_RAW dropped) is
+  unchanged.
+- It is **best-effort, never fail-closed.** Unlike the Tier A install (whose failure
+  tears the container down), a failure here is logged and swallowed: failing to open the
+  preview subnet only degrades the agent's *own* browser convenience — it never opens
+  internet egress, so there is nothing to fail closed about.
+- The residual it *does* admit — a compose service container has unrestricted egress, so
+  an agent that can reach it could exfiltrate *through* it as a relay — is **inherent to
+  the feature** (the agent reaching the preview at all) and is **not** specific to this
+  mechanism: routing the agent's browser through the orchestrator `preview-proxy` instead
+  would forward agent→orchestrator→compose-container and leave the same relay open. It is
+  gated upstream by the repo-trust boundary (Gap 3 — untrusted repos don't run compose)
+  and the user having explicitly started the preview.
+
+No-op unless the session is contained, enforcement is on, and the sidecar image is
+configured — i.e. only when there is a firewall to punch the hole in. Containment is read
+from `SessionContainer.egressContainedAtStart` when known, falling back to the resolved
+policy when that boot value is `undefined` (a rediscovered/adopted container — see the
+GH #1509 fix below). Agent-facing guidance (`shipit-docs/preview.md`) is updated to tell
+the agent to reach previews from its browser at the service registry's `url`
+(`containerIp:port`).
+
+### Services API now hands the agent a ready-to-use `url` (GH #1509)
+
+The agent and its in-netns Playwright browser still had to *construct*
+`http://<containerIp>:<port>` themselves from the services response, and the docs pointed
+them at the right pieces but not a usable address. `ManagedService` now carries a derived
+**`url`** field — `getServices()` computes `http://<containerIp>:<port>/` on read (never
+stored, so it can't go stale) for any service that is `running` with both an IP and a port.
+`GET /api/sessions/:id/services` surfaces it directly, and `shipit-docs/preview.md` tells
+the agent to `browser_navigate`/`curl` that `url`. This is purely the same direct-IP route
+this section already opens — it does not change routing or containment, it just stops the
+agent from hand-assembling the address (and gives one place to evolve the contract).
+
+> **Resolved — the hole-punch was silently skipped after an orchestrator restart (GH #1509).**
+> Live-host diagnosis (Docker access, an affected `auto`-preview session) ruled out the
+> iptables ordering, multi-homing, and the punch itself: with the session freshly created,
+> the agent **is** multi-homed (`172.18.0.x` bridge + `172.19.0.x` compose net), the
+> `ACCEPT … <compose-subnet>` rule sits above the `DROP` policy, and `curl <url>` from the
+> agent returns 200. The failure reproduced **only after an orchestrator restart**. Root
+> cause: `SessionContainer.egressContainedAtStart` — the gate
+> `allowEgressToSessionNetwork` keys off — is set **only on a fresh `create()`**. On restart
+> the still-running container is **rediscovered** (`container-discovery.ts`) and reconnected
+> with that field `undefined`, even though its netns firewall **persisted with the container**
+> (so the agent is still contained). The old gate `sc?.egressContainedAtStart !== true`
+> treated the unknown value as "not contained" and returned early — no `opened agent egress`
+> log line, no subnet `ACCEPT` rule — so every post-restart compose (re)start left the agent
+> firewalled out of its own preview (the orchestrator proxy, on the already-allowed bridge
+> subnet, kept working, which is why the user's Preview tab was unaffected).
+>
+> **Fix.** When the boot value is unknown (`undefined`, i.e. a rediscovered/adopted
+> container), `allowEgressToSessionNetwork` falls back to the **resolved** policy
+> (`resolveEgressConfig(sessionId).contained`) to decide whether to punch; an explicit
+> `false` (booted in Open mode — no firewall) stays a hard skip. The derivation is local —
+> it never writes `egressContainedAtStart` back, because the egress status API
+> (`api-routes-egress.ts`) relies on `undefined` meaning "boot policy unknown" to avoid a
+> false "pending · restart to apply" diff. Verified live: after a `tsx watch` reload that
+> rediscovered the agent, the orchestrator logged
+> `boot containment unknown (rediscovered container); derived contained=true … re-opening
+> preview egress` → `opened agent egress to session subnet(s) 172.19.0.0/16`, and `curl <url>`
+> from the agent netns again returned 200. Covered by
+> `session-container-egress-reopen.test.ts`.
+
+### Scope: this hole is needed only where the agent is *multi-homed* (docker-access checked — no analogous bug)
+
+The fix above keys off the one fact that makes the bug real: the agent **gains a second
+network interface** onto a subnet that the Tier A install-time allow-set never saw. That
+only happens for the **compose/preview** network (`shipit-session-<full-sessionId>`), which
+`docker compose up` creates and `connectToNetwork` attaches the agent to after the fact. A
+natural follow-up worry is whether **docker-access** sessions (`config.dockerAccess`, the
+agent driving a Docker-socket proxy) have the same class of bug via *their* per-session
+network `shipit-session-<shortId>` (`config.sessionId.slice(0, 12)`, created early in
+`container-lifecycle.ts`). **They do not** — traced and confirmed:
+
+- The `shipit-session-<shortId>` network is created for child containers, and the
+  docker-proxy injects it as the **child's** `NetworkMode`
+  (`docker-proxy-sanitize.ts`). The **agent** container is created with only
+  `NetworkMode: deps.networkName` (the orchestrator bridge); no code path connects the
+  agent to the `<shortId>` network. `SHIPIT_SESSION_NETWORK` is *set* in the agent env but
+  the orchestrator never reads it back to attach the agent, and no `NetworkingConfig`/
+  `network.connect`/`connectToNetwork` targets the short-id network (the only such calls
+  target the full-id **compose** network).
+- This is **by design, not an oversight.** Keeping child containers off the agent's /
+  orchestrator's network is the SHI-135 isolation property (`docker-proxy-sanitize.ts`): a
+  child on the orchestrator network would present an unknown IP that the API trust boundary
+  would mis-classify as a trusted browser origin. The agent operates its children through
+  the **Docker API proxy** (`DOCKER_HOST` → docker-socket-proxy), not by direct IP, so it
+  needs no interface on the `<shortId>` subnet. (Ops sessions force `dockerAccess: false`
+  and reach their docker-socket-proxy over the *compose* network, already covered above.)
+
+So there is **no multi-homing of the agent onto the `<shortId>` subnet** and therefore no
+dropped-traffic bug to fix — adding an `allow-subnet` rule for a subnet the agent has no
+interface on would be a dead no-op rule. The `allowEgressToSubnets` / `extractNetworkSubnets`
+mechanism stays scoped to the multi-homed compose-network join, which is the only place the
+hole is real. (If a future change *did* attach the agent to the `<shortId>` network, the
+same `connectToNetwork` hook would cover it — the fix is at the attach point, not per
+network kind.)
+
 ## Settings & UX (browser-only, SHI-129-protected)
 
 All egress configuration is mutated **only from the browser**. SHI-129's guard is
@@ -353,14 +481,49 @@ Stored orchestrator-side alongside MCP servers / secrets.
   (`load(null)`), so per-session ("This session") rows never render there and every editable
   row is global; adds from the dialog are always global. The one *session-scoped* control —
   the **containment override** (Inherit / Contained / Open) — lives on the session's own
-  overflow menu in the sidebar instead (`SessionEgressMode.tsx`, current session only, wired
-  by direct `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`).
+  overflow menu in the sidebar instead, behind a **Session settings** item that opens a
+  dialog (`SessionSettingsDialog.tsx`, current session only, wired by direct
+  `GET /api/egress/allowlist?session=` + `PUT /api/egress/session/:id`). It was originally a
+  bare Radix radio group rendered inline at the bottom of the menu (`SessionEgressMode.tsx`),
+  but those `text-sm`, icon-less rows broke the menu's visual rhythm; it now matches the other
+  menu rows and lives in a styled dialog with room for future per-session settings.
   - **Note on per-session *hosts*.** The blocked-egress card's "Add to allowlist" persists to
     the **global** scope (`egress-handlers.ts`), and the Settings add-scope toggle was removed,
     so the UI no longer creates per-session host entries — `user-session` remains a valid store
     scope (durable model + `PUT /api/egress/session/:id` override), just without a host-add
     surface. If a per-session host editor is ever wanted, it belongs on a session surface, not
     this global dialog.
+
+- **Pending change + "Restart to apply now" (the deferred-to-next-start signal made visible).**
+  Egress is a **creation-time** topology choice — the Tier A firewall, Tier B resolver and
+  Tier C proxy are plumbed into the agent netns when the container is *created*
+  (`container-lifecycle.ts`). Flipping the per-session mode on a **running** session persists
+  the override (`PUT /api/egress/session/:id`) but does **not** re-plumb the live container, so
+  the change is invisible until the next container start. Previously the menu gave zero
+  indication of this; the dialog now makes it explicit:
+  - **Live-mode source of truth.** Container creation records the resolved containment it
+    actually started with on the in-memory container record — `SessionContainer.egressContainedAtStart`
+    (set from `ResolvedEgressConfig.contained` right where the sidecars are installed). This is
+    the only authoritative "what is the live container running" value; the resolved policy
+    (`store.resolveContained`) is "what the *next* container would run".
+  - **The diff rides the existing view.** `EgressSessionSettings` (the body the dialog already
+    GETs via `/api/egress/allowlist?session=` and gets back from the `PUT`) gains
+    `startedContained` (the live value, `null` when no running container) and a derived
+    `pendingRestart` = `startedContained !== null && startedContained !== effectiveContained`.
+    The route reads the live value via `deps.containerManager.get(sessionId)` — an in-memory
+    record lookup, **not** the agent's netns — so the value stays on the browser-only egress
+    surface (SHI-129); no new container-reachable route. When pending, the dialog shows
+    "Pending · applies on next container start".
+  - **Restart reuses the existing lifecycle control.** "Restart to apply now" calls the
+    existing `POST /api/sessions/:id/container/restart` (the same `services/recovery.ts`
+    `restartContainer` already surfaced as "Rescue session" in the SessionHealthStrip — breaker
+    + loop-detector resets included), then dispatches the `shipit:reconnect-ws` window event so
+    App's WS re-handshakes and the worker reattaches to the fresh container (bridged in
+    `useAppBootstrap`, mirroring the rewind-restore bridge). This is **not** a new
+    shell-shaped task-runner button (CLAUDE.md §5) — it is "apply the pending change" framed on
+    an existing lifecycle action. Restart is **never** automatic on mode selection, and is
+    **disabled while an agent turn is running** (`useSessionStore.isLoading`) with an explanatory
+    tooltip — restarting would kill the agent (CLAUDE.md never-kill-running-agent rule).
 - **Allow-once / add-to-allowlist on block.** When the gateway denies a host, **deny fast**
   (no held sockets) and surface an inline **blocked-egress card** (`host`, allow-once /
   add-to-allowlist / dismiss); the agent retries once the host is permitted. We deliberately
@@ -374,7 +537,9 @@ Stored orchestrator-side alongside MCP servers / secrets.
 Reuses `egress-allowlist.ts` (already merged on the SHI-90 branch):
 
 - Base list (`EGRESS_DEFAULT_ALLOWLIST`): agent APIs, `.github.com` / `.githubusercontent.com`,
-  npm/yarn/pypi.
+  npm/yarn/pypi, and `.nodejs.org` (node-gyp downloads the Node headers tarball there to
+  compile native modules such as `node-pty`; registry fetches alone don't need it, so only
+  native builds were affected by its absence).
 - Operator extras (`SESSION_EGRESS_ALLOWLIST`) + the browser-managed allowlist above.
 - **Live MCP hosts** from the credential store (configured HTTP servers + OAuth providers).
   Post-SHI-129 the agent can no longer add an MCP server from inside the container, so this
@@ -399,6 +564,11 @@ as an operator default / fail-secure floor).
   + gateway attachment).
 - `egress-gateway.*` (new) — the middlebox: iptables/ipset setup, controlled resolver,
   transparent proxy. NET_ADMIN lives here, never in the agent container.
+- Intra-session preview reachability (SHI-90 follow-up, GH #1495) —
+  `docker/egress-sidecar/allow-subnet.sh` (the netns rule-adder),
+  `allowEgressToSubnets` + `extractNetworkSubnets` (orchestrator-side, unit-tested in
+  `egress-firewall-install.test.ts` / `egress-firewall.test.ts`), wired in
+  `SessionContainerManager.connectToNetwork` (`session-container.ts`).
 - `egress-allowlist.ts` (reused) — host matcher + `composeEgressExtraHosts` composition.
 - `egress-allowlist-store.ts` (durable allowlist + containment toggle, SQLite) +
   `egress-reload.ts` (live resolver/proxy relaunch on a durable add).
@@ -407,10 +577,15 @@ as an operator default / fail-secure floor).
   unit-tested in `sni-proxy/main_test.go`.
 - Browser-only routes (default-protected by *not* setting `containerAccessible`; golden
   route-table unchanged — no new container route) — `api-routes-egress.ts`,
-  `api-container-guard.ts`.
+  `api-container-guard.ts`. The pending-restart diff is computed here from the live record.
+- Live-mode source of truth — `SessionContainer.egressContainedAtStart` (`session-container.ts`),
+  recorded at container creation in `container-lifecycle.ts` from `ResolvedEgressConfig.contained`;
+  exposed as `startedContained` + `pendingRestart` on `EgressSessionSettings`.
 - Client: `stores/egress-store.ts` + `components/SettingsEgress.tsx` (Settings → Network,
-  **global-only**) + `components/SessionSidebar/SessionEgressMode.tsx` (the per-session
-  containment override on the session's overflow menu) + `egress_settings` SSE sync in
+  **global-only**) + `components/SessionSidebar/SessionSettingsDialog.tsx` (the per-session
+  containment override + pending/"Restart to apply now", opened from the **Session settings**
+  item on the session's overflow menu; restart reuses `POST /api/sessions/:id/container/restart`
+  via the `shipit:reconnect-ws` bridge in `useAppBootstrap.ts`) + `egress_settings` SSE sync in
   `useServerEvents.ts`.
 - Blocked-egress card — persisted transcript card (see CLAUDE.md side-channel-card rule):
   `chat-card-persistence.ts`, `chat-history.ts`, client `visual-elements.ts`.

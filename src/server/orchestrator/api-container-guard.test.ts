@@ -236,6 +236,9 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/ready",
   "POST /api/sessions/:id/pr/:number/close",
   "POST /api/sessions/:id/pr/:number/reopen",
+  // release — shipit release plan/prepare (docs/214)
+  "POST /api/sessions/:id/release/plan",
+  "POST /api/sessions/:id/release/prepare",
   // issues — shipit issue
   "GET /api/sessions/:id/issue/view",
   "GET /api/sessions/:id/issue/list",

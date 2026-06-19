@@ -1,17 +1,24 @@
 name: Release
 
-# Cut a stable release: push an annotated tag `vX.Y.Z` to main, and this
-# workflow gates it on a green build, fast-forwards the `stable` branch to the
-# tagged commit, and publishes a GitHub Release with auto-generated notes.
-# Those notes are the changelog ShipIt surfaces inline in the update panel.
+# Auto-publish releases. Two triggers, one self-publishing workflow (docs/214):
 #
-# A prerelease tag (`vX.Y.Z-rc.N` — any semver with a `-prerelease` suffix) is
-# published as a GitHub *prerelease* and does NOT fast-forward `stable`, so it
-# never reaches conservative operators. See docs/162-release-channels/plan.md
-# and RELEASING.md.
+#   - push to `stable` (the maintenance branch) — a release is cut by MERGING a
+#     version-bump PR into `stable`. CI derives the tag `v<package.json version>`
+#     from the merged commit, gates on a green build, creates + pushes the tag,
+#     and publishes the GitHub Release. The agent never hand-pushes a tag.
+#   - push of a `v*` tag — the rc / manual path. CI gates the existing tag and
+#     publishes it (prereleases as GitHub prereleases).
+#
+# A tag pushed by THIS workflow (using GITHUB_TOKEN) does NOT re-trigger the
+# `on: push: tags` path — so the branch path must gate, tag, AND publish in the
+# same run. It does. `stable` is never *moved* by CI: CI only reads HEAD's
+# version, tags that commit, and publishes. See docs/214-release-auto-publish and
+# docs/162-release-channels, and RELEASING.md.
 
 on:
   push:
+    branches:
+      - stable
     tags:
       - 'v*'
 
@@ -22,16 +29,92 @@ permissions:
   contents: write
 
 jobs:
-  # 0. The tag must match package.json — a release tag is only ever cut via
-  # `npm run release`, which bumps package.json and tags in lockstep. This guard
-  # fails loudly if a tag is ever pushed without the matching bump, so the
-  # human-facing version and the tag can never silently drift.
+  # 0. Resolve the release tag + whether to proceed. Two ref shapes:
+  #   - tag path  (`github.ref_type == tag`): tag = ref_name; never create a tag.
+  #   - branch path (`stable` push): tag = v<version-from-package.json>. Decide:
+  #       tag absent                       → new release, proceed.
+  #       tag exists but Release missing   → repair (a prior run pushed the tag
+  #                                          but `gh release create` failed) — proceed.
+  #       tag exists AND Release present   → no-op (nothing new).
+  #     A `-rc.N` version on the branch path is rejected — `stable` is for final
+  #     releases; rc's use the tag path.
+  resolve:
+    name: Resolve release tag
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      is_branch: ${{ steps.resolve.outputs.is_branch }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      proceed: ${{ steps.resolve.outputs.proceed }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # Full history + tags so we can check tag existence and diff notes.
+          fetch-depth: 0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - name: Resolve tag and proceed decision
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+        run: |
+          set -euo pipefail
+
+          if [ "$REF_TYPE" = "tag" ]; then
+            # Tag path — gate + publish the pushed tag, never create one.
+            TAG="$REF_NAME"
+            if [[ "$TAG" == *-* ]]; then PRERELEASE=true; else PRERELEASE=false; fi
+            {
+              echo "is_branch=false"
+              echo "tag=$TAG"
+              echo "prerelease=$PRERELEASE"
+              echo "proceed=true"
+            } >> "$GITHUB_OUTPUT"
+            echo "Tag path: $TAG (prerelease=$PRERELEASE)"
+            exit 0
+          fi
+
+          # Branch path (`stable`) — derive the tag from the version source.
+          VERSION="$(node -p "require('./package.json').version")"
+          TAG="v$VERSION"
+          echo "is_branch=true" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+          # `stable` carries final releases only; rc's go through the tag path.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "::error::package.json version ($VERSION) is a prerelease. The release branch is for final releases — cut release candidates via the tag path (a vX.Y.Z-rc.N tag)."
+            exit 1
+          fi
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            # Tag already exists — proceed ONLY to repair a missing Release.
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "Tag $TAG and its GitHub Release already exist — nothing to do."
+              echo "proceed=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Tag $TAG exists but its GitHub Release is missing — repairing."
+              echo "proceed=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No tag $TAG yet — new release from the branch path."
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # 1. The tag must match package.json. Tag path ONLY: a manual / rc tag is the
+  # one case where the version source and the tag can drift, so we guard it. On
+  # the branch path the tag is DERIVED from package.json (they can't drift), and
+  # `github.ref_name` is `stable` (not vX.Y.Z), so this guard is skipped.
   version-guard:
     name: Tag matches package.json
+    needs: [resolve]
+    if: needs.resolve.outputs.proceed == 'true' && needs.resolve.outputs.is_branch != 'true'
     # Trivial job (one `node -p`): a 2vcpu runner is plenty. Blacksmith free
     # minutes scale inversely with vcpu (2vcpu costs half the quota per wall-
-    # minute of 4vcpu), and a bigger machine gives no speedup here — so the
-    # near-zero-compute jobs run at 2vcpu to conserve the free tier.
+    # minute of 4vcpu), and a bigger machine gives no speedup here.
     runs-on: blacksmith-2vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
@@ -39,19 +122,22 @@ jobs:
         with:
           node-version: 24
       - name: Verify package.json version equals the tag
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
           PKG="v$(node -p "require('./package.json').version")"
-          TAG="${{ github.ref_name }}"
           if [ "$PKG" != "$TAG" ]; then
-            echo "::error::package.json version ($PKG) does not match tag ($TAG). Cut releases with 'npm run release -- <version>' — see RELEASING.md."
+            echo "::error::package.json version ($PKG) does not match tag ($TAG). For a release-branch repo, releases are cut by merging a version-bump PR into the branch — see RELEASING.md."
             exit 1
           fi
           echo "OK: package.json $PKG matches tag $TAG"
 
-  # 1. A release must be green — reuse the same gates as ci.yml.
+  # 2. A release must be green — reuse the same gates as ci.yml.
   check:
     name: Lint, Type Check & Build
+    needs: [resolve]
+    if: needs.resolve.outputs.proceed == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
@@ -67,6 +153,8 @@ jobs:
 
   test:
     name: Test
+    needs: [resolve]
+    if: needs.resolve.outputs.proceed == 'true'
     runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@v5
@@ -77,61 +165,79 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # 2. On success, fast-forward `stable` (stable releases only) and publish the
-  # Release.
-  promote:
-    name: Promote to stable
-    needs: [version-guard, check, test]
-    # Pure git + gh-release I/O, no compute — 2vcpu (see version-guard note).
+  # 3. On green: (branch path) create the annotated tag on $GITHUB_SHA and push
+  # it, then publish the GitHub Release. The publish step checks RELEASE existence
+  # (not just tag existence) so a prior run that pushed the tag but failed to
+  # publish self-repairs. Serialized per resolved tag so a `stable` push and a
+  # manual `vX.Y.Z` tag push for the same version can't both create the tag.
+  publish:
+    name: Publish GitHub Release
+    needs: [resolve, version-guard, check, test]
+    # version-guard is skipped on the branch path; `always()` + explicit result
+    # checks let publish run when it was skipped (not failed). check/test must
+    # have passed; resolve must have said proceed.
+    if: >-
+      always() &&
+      needs.resolve.outputs.proceed == 'true' &&
+      (needs.version-guard.result == 'success' || needs.version-guard.result == 'skipped') &&
+      needs.check.result == 'success' &&
+      needs.test.result == 'success'
+    # Pure git + gh I/O, no compute — 2vcpu (see resolve note).
     runs-on: blacksmith-2vcpu-ubuntu-2404
+    concurrency:
+      group: release-${{ needs.resolve.outputs.tag }}
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v5
         with:
-          # Full history so the FF check can verify ancestry.
+          # Full history so --generate-notes can diff against the previous tag.
           fetch-depth: 0
 
-      # A semver prerelease suffix (the `-` in `vX.Y.Z-rc.N`) marks a release
-      # candidate: publish it, but never promote it to `stable`.
-      - name: Classify release
-        id: classify
+      # Branch path: create the annotated tag on the merged commit (only if it
+      # doesn't already exist — a repair run reuses the prior tag). CI uses a
+      # bot identity; the tag is the canonical release artifact.
+      - name: Create and push the release tag
+        if: needs.resolve.outputs.is_branch == 'true'
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
         run: |
           set -euo pipefail
-          TAG="${{ github.ref_name }}"
-          if [[ "$TAG" == *-* ]]; then
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
-            echo "$TAG is a prerelease — will publish as a GitHub prerelease and skip the stable fast-forward."
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "Tag $TAG already exists — repair run, not re-tagging."
           else
-            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git tag -a "$TAG" -m "Release $TAG" "$GITHUB_SHA"
+            git push origin "$TAG"
+            echo "Created and pushed $TAG on $GITHUB_SHA."
           fi
 
-      # Fast-forward `stable` to the tagged commit. `--ff-only` semantics are
-      # enforced by pushing the SHA to refs/heads/stable: GitHub rejects a
-      # non-fast-forward push, so tagging off a commit that isn't an ancestor
-      # of current `stable` fails loudly here (never force-push stable).
-      # Skipped for prereleases — they must not move the stable pointer.
-      - name: Fast-forward stable to ${{ github.ref_name }}
-        if: steps.classify.outputs.prerelease == 'false'
-        run: |
-          set -euo pipefail
-          SHA="$(git rev-parse "${{ github.ref_name }}^{commit}")"
-          echo "Promoting $SHA to refs/heads/stable"
-          git push origin "$SHA:refs/heads/stable"
+      # Re-fetch tags so `--verify-tag` sees a tag this run just pushed (and any
+      # tag from a racing run on the tag path).
+      - name: Re-fetch tags
+        run: git fetch origin --tags --force
 
-      # Publish a GitHub Release with auto-generated notes (PR titles since the
-      # previous tag). These notes are the inline changelog. Prereleases get the
-      # `--prerelease` flag so the updater and operators can tell them apart.
-      - name: Create GitHub Release
+      # Publish a GitHub Release with auto-generated, label-grouped notes (PR
+      # titles since the previous tag). These notes are the inline changelog.
+      # Skip if a Release already exists (idempotent repair / no-op). Prereleases
+      # get the `--prerelease` flag.
+      - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ steps.classify.outputs.prerelease }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
           set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already published — nothing to do."
+            exit 0
+          fi
           PRERELEASE_FLAG=""
           if [ "$PRERELEASE" = "true" ]; then
             PRERELEASE_FLAG="--prerelease"
           fi
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$TAG" \
+            --title "$TAG" \
             --generate-notes \
             --verify-tag \
             $PRERELEASE_FLAG

@@ -2,9 +2,9 @@
 
 ## Phase 1 — Foundations
 - [x] Decide initial version number — `v0.1.0` (matches the plan's bootstrap release; `package.json` already `0.1.0`)
-- [x] Add `.github/workflows/release.yml` (CI gate → FF `stable` → GitHub Release notes)
-- [x] Cut the first release tag (`v0.1.0`) and verify `stable` is created/advanced — `origin/stable` points at the `v0.1.0` tag commit (`dbf5a77`)
-- [x] Add `RELEASING.md` (tag ritual, patch releases, FF-only invariant)
+- [x] Add `.github/workflows/release.yml` (CI gate → GitHub Release notes; `stable` is a maintenance branch CI does not move)
+- [x] Cut the first release tag (`v0.1.0`) and verify `stable` exists — `origin/stable` points at the release commit
+- [x] Add `RELEASING.md` (cut from `stable`, cherry-pick hotfixes, tag ritual)
 
 ## Phase 2 — Channel-aware updater
 - [x] `.gitignore` add `.release-channel` (and `.restart-requested`)

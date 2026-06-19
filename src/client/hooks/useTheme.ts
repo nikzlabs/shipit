@@ -39,6 +39,13 @@ const KNOWN_THEMES = THEME_DEFS.filter((t) => t.id !== "light").map((t) => t.id)
 
 const STORAGE_KEY = "shipit-theme";
 
+/**
+ * Defaults used when the user has no saved preference, picked from THEME_DEFS
+ * by the OS/browser color-scheme. Each must be an id present in the list above.
+ */
+const DEFAULT_LIGHT_THEME: Theme = "light";
+const DEFAULT_DARK_THEME: Theme = "dark";
+
 function getInitialTheme(): Theme {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
@@ -46,7 +53,14 @@ function getInitialTheme(): Theme {
   } catch {
     // localStorage unavailable
   }
-  return "dark";
+  // No saved preference: follow the OS/browser color-scheme.
+  try {
+    if (window.matchMedia("(prefers-color-scheme: dark)").matches) return DEFAULT_DARK_THEME;
+  } catch {
+    // matchMedia unavailable → fall through to the light default below
+  }
+  // OS prefers light/has no preference, or matchMedia unavailable.
+  return DEFAULT_LIGHT_THEME;
 }
 
 function applyTheme(theme: Theme): void {
