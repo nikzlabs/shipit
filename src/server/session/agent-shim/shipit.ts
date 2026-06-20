@@ -442,7 +442,7 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
     fail(
       io,
       `${SHIM_NAME} does not support \`shipit source ${sub}\` — source access is read-only.\n` +
-        "To change ShipIt source, spawn a fix session: shipit session create --shipit-source --prompt-file - <<'EOF' ... EOF.\n" +
+        "To change ShipIt source, spawn a fix session: shipit session create --shipit-source --title \"...\" --prompt-file - <<'EOF' ... EOF.\n" +
         "See /shipit-docs/sessions.md.",
     );
   }

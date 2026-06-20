@@ -325,7 +325,7 @@ running. Secrets (\`.env\`, keys, \`.git\` internals) are redacted.
 Write a tight diagnosis: the symptom, the suspected root cause, the candidate
 files/symbols, what to preserve, and what tests to run. Then:
 \`\`\`
-shipit session create --shipit-source --prompt-file - <<'EOF'
+shipit session create --shipit-source --title "Fix <short symptom>" --prompt-file - <<'EOF'
 Symptom: <one line>
 Root cause: <your hypothesis>
 Candidate files: <paths/symbols you inspected>
