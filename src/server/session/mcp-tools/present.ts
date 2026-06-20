@@ -1,7 +1,9 @@
 /**
- * present tool — `present` (docs/093). Pure transport: POSTs the artifact to the
- * worker's `/agent-ops/present/submit` broker, which persists the bytes, emits
- * the `present_content` SSE event, and returns `{ presentId, viewUrl }`.
+ * present tool — `present` (docs/093). Pure transport: POSTs the artifact PATH to
+ * the worker's `/agent-ops/present/submit` broker, which records its metadata,
+ * emits the `present_content` SSE event, and returns `{ presentId, viewUrl }`.
+ * The broker's `presentId` is internal (derived from the path) — the agent never
+ * passes it back, so the tool surfaces only `{ status, viewUrl }` to the agent.
  * Extracted from the former standalone `mcp-present-bridge.ts` for the
  * consolidated bridge; its server-level guidance becomes part of the merged
  * `shipit` server instructions.
@@ -29,7 +31,7 @@ const TOOL_DESCRIPTION = [
   "in the Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
-  "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
+  "Returns `{ status, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
   "the file directly, because `viewUrl` applies the same rendering the user",
   "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
@@ -100,7 +102,6 @@ export const presentTool: ToolDescriptor = {
       });
       const body = (await res.json().catch(() => ({}))) as {
         error?: string;
-        presentId?: string;
         status?: string;
         viewUrl?: string;
       };
@@ -111,15 +112,16 @@ export const presentTool: ToolDescriptor = {
           isError: true,
         };
       }
+      // The agent acts only on `viewUrl` (to screenshot the rendered artifact)
+      // and re-presents by the same file PATH to update an entry — it never
+      // passes an id back, so we don't echo `presentId` (it's internal).
       return {
         content: [
           {
             type: "text",
             text: JSON.stringify({
               status: body.status ?? "presented",
-              presentId: body.presentId,
               ...(body.viewUrl !== undefined ? { viewUrl: body.viewUrl } : {}),
-              ...(a.title !== undefined ? { title: a.title } : {}),
             }),
           },
         ],

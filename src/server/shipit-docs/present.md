@@ -91,10 +91,10 @@ different artifact, it *replaces* the previous one rather than adding alongside.
   Optional — without it the header uses the file's name — but helpful when you
   present multiple artifacts in a session.
 
-`present` returns `{ presentId, viewUrl }`. `presentId` is derived from the file
-path (stable across re-presents), and `viewUrl` serves the rendered artifact
-for the screenshot loop below — you don't pass either back in; re-presenting the
-same path is all it takes to update an entry.
+`present` returns `{ status, viewUrl }`. `viewUrl` serves the rendered artifact
+for the screenshot loop below. There is no id to track: re-presenting the same
+path is all it takes to update an entry, so the tool surfaces only the URL you
+screenshot.
 
 ## Behavior
 
@@ -108,7 +108,7 @@ same path is all it takes to update an entry.
 
 ## Iterating on visual artifacts (screenshot loop)
 
-`present` returns `{ presentId, viewUrl }`. `viewUrl` is a worker-local URL
+`present` returns `{ status, viewUrl }`. `viewUrl` is a worker-local URL
 (e.g. `http://127.0.0.1:9100/present-files/pres_abc...`) that serves the exact
 rendered artifact. Use it to *see your own output* and fix it before the user
 has to:
@@ -120,7 +120,7 @@ has to:
    catch by looking at the pixels.
 4. Edit the file and call `present` again **with the same `file` path** to
    update it in place — because the path is the identity, the carousel entry
-   refreshes and keeps its slot (no `presentId` to pass back, no version flag).
+   refreshes and keeps its slot (no id to pass back, no version flag).
    The user sees each revision land in the Present tab as you iterate.
    **Re-presenting is also how you reload** — there is no live file watcher;
    call `present` again after editing the file.
@@ -167,7 +167,7 @@ what the user sees and would defeat the point of the check.
 // Throwaway diagram — write to /tmp, present, never touches git
 // (after Write to /tmp/component-graph.svg)
 present({ file: "/tmp/component-graph.svg", title: "Component graph" })
-// → { presentId: "pres_abc...", status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
+// → { status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
 ```
 
 ```
