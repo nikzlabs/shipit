@@ -147,15 +147,19 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
     ctx.send({ type: "error", message: "No active session" });
     return;
   }
-  const runner = resolveRunner(ctx, sessionId);
-  if (runner?.running) {
-    ctx.send({ type: "error", message: "Cannot rewind while a turn is running." });
-    return;
-  }
-
   const { action, gapPosition } = msg;
   if (!Number.isInteger(gapPosition) || gapPosition < 0 || !["chat", "code", "both", "fork"].includes(action)) {
     ctx.send({ type: "error", message: "Invalid rewind parameters" });
+    return;
+  }
+
+  // Fork spins off a NEW session from an already-committed SHA — it does not
+  // mutate the current workspace, so a running turn is no reason to block it
+  // (SHI-182). In-place rewind (chat/code/both) DOES mutate this session and
+  // conflicts with an agent that's editing the workspace, so keep it gated.
+  const runner = resolveRunner(ctx, sessionId);
+  if (runner?.running && action !== "fork") {
+    ctx.send({ type: "error", message: "Cannot rewind while a turn is running." });
     return;
   }
 
@@ -178,7 +182,11 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
   }
 
   try {
-    clearQueuedMessages(ctx, sessionId);
+    // Fork leaves the parent session intact (it only appends a breadcrumb), so
+    // the parent's queued messages must survive — only in-place rewind, which
+    // truncates this session, clears them. This matters now that fork can run
+    // mid-turn (SHI-182), the one time a queue actually exists.
+    if (action !== "fork") clearQueuedMessages(ctx, sessionId);
 
     if (action === "chat") {
       const truncated = allMessages.slice(0, gapPosition);
@@ -201,12 +209,92 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
       return;
     }
 
-    const rollbackHash = action === "fork"
-      ? gapPosition === allMessages.length
+    // Fork spins off a NEW session from a committed SHA — it neither mutates the
+    // current session nor needs a per-message commit, so it's handled before the
+    // code/both base guard below (which is terminal for a null base).
+    if (action === "fork") {
+      if (!sessionDir) {
+        ctx.send({ type: "error", message: "No active session directory" });
+        return;
+      }
+      // The base is a concrete committed SHA: HEAD for a current-state fork, or
+      // the most recent commit before the gap for a past-point fork. A session
+      // with no auto-commits has no per-message commit (findCommitBeforeGap →
+      // null), so fall back to HEAD rather than erroring (SHI-184). Resolving up
+      // front pins the base so a concurrent end-of-turn auto-commit can't shift
+      // it under the clone (SHI-182). A null base (no HEAD at all) is tolerated
+      // by forkSession, which then forks at the clone's HEAD.
+      const forkBase = gapPosition === allMessages.length
         ? await ctx.getActiveGitManager().getHeadHash()
-        : findCommitBeforeGap(allMessages, gapPosition)
-      : findCommitBeforeGap(allMessages, gapPosition);
+        : findCommitBeforeGap(allMessages, gapPosition) ?? (await ctx.getActiveGitManager().getHeadHash());
 
+      // Derive the fork branch from the active session's branch by swapping the
+      // random slug (or generating a fresh `shipit/<slug>` if the current branch
+      // doesn't follow that convention). The user names the session, not the branch.
+      const parentBranch = ctx.sessionManager.get(sessionId)?.branch;
+      const branchName = parentBranch?.startsWith("shipit/")
+        ? `shipit/${generateBranchSlug()}`
+        : parentBranch
+          ? `${parentBranch}-${generateBranchSlug()}`
+          : generateBranchPrefix();
+      const result = await forkSession(
+        ctx.sessionManager,
+        ctx.createRepoGit,
+        ctx.getSharedRepoDir,
+        ctx.sessionsRoot,
+        ctx.githubAuthManager,
+        { init: () => {} },
+        sessionId,
+        sessionDir,
+        branchName,
+        forkBase ?? undefined,
+        trimmedSessionName,
+        {
+          sessionManager: ctx.sessionManager,
+          runnerRegistry: ctx.getRunnerRegistry(),
+          repoStore: ctx.repoStore,
+          createGitManager: ctx.createGitManager,
+          prStatusPoller: ctx.prStatusPoller,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+      );
+      const truncatedMessages = allMessages.slice(0, gapPosition);
+      ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);
+      await copyUploadsForFork(truncatedMessages, path.join(path.dirname(sessionDir), "uploads"), path.join(ctx.sessionsRoot, result.session.id, "uploads"));
+      const replay = buildConversationReplay(truncatedMessages);
+      if (replay) ctx.sessionManager.setConversationReplay(result.session.id, replay);
+
+      const breadcrumb: PersistedMessage = {
+        role: "assistant",
+        text: "",
+        forkChild: { childSessionId: result.session.id, title: result.session.title, branch: branchName },
+      };
+      const breadcrumbMessageId = ctx.chatHistoryManager.append(sessionId, breadcrumb);
+      const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
+        action: "fork",
+        childSessionId: result.session.id,
+        breadcrumbMessageId,
+      });
+      ctx.getRunnerRegistry().get(sessionId)?.emitMessage({ type: "fork_breadcrumb", parentSessionId: sessionId, message: breadcrumb });
+      // The session_list SSE broadcast that used to live here is now owned by
+      // graduateSession (docs/156 "Removing the duplicate session_list broadcasts").
+      // Do NOT re-add — it would double-fire on every rewind-driven fork.
+      ctx.send({
+        type: "session_forked",
+        parentSessionId: sessionId,
+        childSessionId: result.session.id,
+        title: result.session.title,
+        branch: branchName,
+        snapshotSessionId: snapshot.sessionId,
+        snapshotExpiresAt: snapshot.expiresAt,
+        sessionId: result.session.id,
+        sessionName: result.session.title,
+      });
+      emitSnapshotAvailable(ctx, snapshot);
+      return;
+    }
+
+    const rollbackHash = findCommitBeforeGap(allMessages, gapPosition);
     if (!rollbackHash) {
       // "both" degrades to chat-only when there's nothing on the code side
       // to undo (session has had no auto-commits). The user asked to rewind
@@ -231,7 +319,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         emitSnapshotAvailable(ctx, snapshot);
         return;
       }
-      ctx.send({ type: "error", message: action === "fork" ? "No code state available to fork." : "No code changes to rewind from this point." });
+      ctx.send({ type: "error", message: "No code changes to rewind from this point." });
       return;
     }
 
@@ -295,76 +383,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         snapshotExpiresAt: snapshot.expiresAt,
       });
       emitSnapshotAvailable(ctx, snapshot);
-      return;
     }
-
-    if (!sessionDir) {
-      ctx.send({ type: "error", message: "No active session directory" });
-      return;
-    }
-    // Derive the fork branch from the active session's branch by swapping the
-    // random slug (or generating a fresh `shipit/<slug>` if the current branch
-    // doesn't follow that convention). The user names the session, not the branch.
-    const parentBranch = ctx.sessionManager.get(sessionId)?.branch;
-    const branchName = parentBranch?.startsWith("shipit/")
-      ? `shipit/${generateBranchSlug()}`
-      : parentBranch
-        ? `${parentBranch}-${generateBranchSlug()}`
-        : generateBranchPrefix();
-    const result = await forkSession(
-      ctx.sessionManager,
-      ctx.createRepoGit,
-      ctx.getSharedRepoDir,
-      ctx.sessionsRoot,
-      ctx.githubAuthManager,
-      { init: () => {} },
-      sessionId,
-      sessionDir,
-      branchName,
-      rollbackHash,
-      trimmedSessionName,
-      {
-        sessionManager: ctx.sessionManager,
-        runnerRegistry: ctx.getRunnerRegistry(),
-        repoStore: ctx.repoStore,
-        createGitManager: ctx.createGitManager,
-        prStatusPoller: ctx.prStatusPoller,
-        sseBroadcast: ctx.sseBroadcast,
-      },
-    );
-    const truncatedMessages = allMessages.slice(0, gapPosition);
-    ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);
-    await copyUploadsForFork(truncatedMessages, path.join(path.dirname(sessionDir), "uploads"), path.join(ctx.sessionsRoot, result.session.id, "uploads"));
-    const replay = buildConversationReplay(truncatedMessages);
-    if (replay) ctx.sessionManager.setConversationReplay(result.session.id, replay);
-
-    const breadcrumb: PersistedMessage = {
-      role: "assistant",
-      text: "",
-      forkChild: { childSessionId: result.session.id, title: result.session.title, branch: branchName },
-    };
-    const breadcrumbMessageId = ctx.chatHistoryManager.append(sessionId, breadcrumb);
-    const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, {
-      action: "fork",
-      childSessionId: result.session.id,
-      breadcrumbMessageId,
-    });
-    ctx.getRunnerRegistry().get(sessionId)?.emitMessage({ type: "fork_breadcrumb", parentSessionId: sessionId, message: breadcrumb });
-    // The session_list SSE broadcast that used to live here is now owned by
-    // graduateSession (docs/156 "Removing the duplicate session_list broadcasts").
-    // Do NOT re-add — it would double-fire on every rewind-driven fork.
-    ctx.send({
-      type: "session_forked",
-      parentSessionId: sessionId,
-      childSessionId: result.session.id,
-      title: result.session.title,
-      branch: branchName,
-      snapshotSessionId: snapshot.sessionId,
-      snapshotExpiresAt: snapshot.expiresAt,
-      sessionId: result.session.id,
-      sessionName: result.session.title,
-    });
-    emitSnapshotAvailable(ctx, snapshot);
   } catch (err) {
     const label = action === "fork" ? "Fork failed" : "Rewind failed";
     ctx.send({ type: "error", message: `${label}: ${getErrorMessage(err)}` });

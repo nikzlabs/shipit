@@ -24,6 +24,13 @@ interface RewindPointProps {
   currentState?: boolean;
   disabled?: boolean;
   /**
+   * A turn is currently running. In-place rewind (chat/code/both) mutates this
+   * session's workspace and conflicts with the running agent, so it's hidden.
+   * Fork is independent — it spins off a NEW session from an already-committed
+   * SHA without touching this one — so it stays available (SHI-182).
+   */
+  turnRunning?: boolean;
+  /**
    * Horizontal alignment of the rewind handle within the row. Mirrors the
    * bubble of the turn that just finished: "right" after a user turn,
    * "left" after an agent turn, "center" when the side is unknown.
@@ -91,6 +98,7 @@ export function RewindPoint({
   gapPosition,
   currentState = false,
   disabled = false,
+  turnRunning = false,
   align = "center",
   defaultSessionName,
   previews,
@@ -100,7 +108,11 @@ export function RewindPoint({
   const [pendingAction, setPendingAction] = useState<Exclude<RewindGapAction, "chat"> | null>(null);
   const [sessionName, setSessionName] = useState(defaultSessionName);
   const [menuOpen, setMenuOpen] = useState(false);
-  const availableActions = currentState ? (["fork"] as RewindGapAction[]) : ACTIONS;
+  // currentState and a running turn both restrict the menu to fork only: the
+  // former has no past state to rewind to, the latter must not mutate the
+  // workspace while the agent owns it. Fork stays in both cases.
+  const forkOnly = currentState || turnRunning;
+  const availableActions = forkOnly ? (["fork"] as RewindGapAction[]) : ACTIONS;
   const modalPreview = pendingAction ? previews?.[pendingAction] : undefined;
 
   const modalSummary = useMemo<ReactNode>(() => {
@@ -155,8 +167,8 @@ export function RewindPoint({
             type="button"
             disabled={disabled}
             className={`flex h-full w-8 items-center justify-center focus:outline-none ${interactive ? "cursor-pointer" : "pointer-events-none"}`}
-            title={disabled ? "Wait for the current turn to finish" : currentState ? "Fork current state" : "Rewind options"}
-            aria-label={currentState ? "Fork current state" : "Rewind options"}
+            title={disabled ? "Wait for the current turn to finish" : currentState ? "Fork current state" : forkOnly ? "Fork as new session" : "Rewind options"}
+            aria-label={currentState ? "Fork current state" : forkOnly ? "Fork as new session" : "Rewind options"}
           >
             <span
               aria-hidden="true"
@@ -169,7 +181,7 @@ export function RewindPoint({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="center" side="top" className="w-64">
-          {!currentState && (
+          {!forkOnly && (
             <>
               <DropdownMenuItem onSelect={() => chooseAction("chat")} className="flex-col items-start">
                 <div className="font-medium text-(--color-text-primary)">Rewind chat to here</div>
