@@ -120,14 +120,21 @@ seeds new sessions from localStorage.
    and hold the value in per-connection state for the turn.
 3. **User-turn run-params** — `session-agent-run-params.ts` `buildAgentRunParams`: set
    `reasoningEffort` from the per-connection / per-session reasoning value (agent already resolved here).
-4. **Agent-switch self-heal** — pre-pin, if the stored value isn't valid for the newly-selected
-   agent's options, reset to default (same self-heal model selection already does).
+4. **Agent-switch self-heal** — reasoning is per-agent, so a value from the previous agent must
+   never ride a different agent's spawn. Reset to default when the stored value isn't in the new
+   agent's options, in **both** the `set_agent` handler **and** the `set_model` handler's
+   cross-agent auto-switch branch (the picker fires both, but they can race / QuickCapture sends
+   `set_model` alone). The connect-time seed applies the same validity check.
 5. **Composer UI** — new `components/ReasoningSelector.tsx` placed **next to** `ModelAgentSelector`
    in the composer toolbar. Reads the active agent the same way `ModelAgentSelector` does, renders
    that agent's `reasoning.options` (+ "Default"), shows the current per-session value, sends
    `set_reasoning` on change, and seeds new sessions from a per-agent localStorage key
    (`shipit-reasoning-<agentId>`) so switching agents restores each agent's last composer pick.
    Hidden when the active agent has no `reasoning` capability.
+6. **First-turn seed correctness** — the per-agent localStorage seed is also sent as a `?reasoning=`
+   WS connect query param (mirroring `?model=`); the server applies it only for an unpinned session
+   with no persisted value, after validating it against the resolved agent's options. Without this
+   the composer would *display* the seed while a brand-new session's first turn ran with no flag.
 
 ## Notes / known limitation
 

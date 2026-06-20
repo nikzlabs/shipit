@@ -421,7 +421,7 @@ export async function registerRoutes(
   // ---- Per-session WebSocket route ----
   // Session-scoped WS: auto-activates the session on connect, no activate_session needed.
   // The session ID is in the URL path. Agent preference via ?agent= query param.
-  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string } }>(
+  app.get<{ Params: { sessionId: string }; Querystring: { agent?: string; model?: string; reasoning?: string } }>(
     "/ws/sessions/:sessionId",
     { websocket: true },
     (socket, request) => {
@@ -502,10 +502,17 @@ export async function registerRoutes(
       if (selectedModel && selectedModel !== session.model) {
         try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
       }
-      // docs/217 — per-session reasoning effort (Control B). Seed from the row,
-      // dropping it if it isn't valid for the resolved agent's option set (e.g. a
-      // pre-pin agent switch left a stale value). undefined = pass no CLI flag.
-      let selectedReasoning: string | undefined = session.reasoningEffort ?? undefined;
+      // docs/217 — per-session reasoning effort (Control B). Prefer the persisted
+      // row; for an as-yet-unpinned (new/warm) session with none, fall back to the
+      // client's per-agent localStorage seed sent as `?reasoning=` — this mirrors
+      // model seeding (`session.model ?? requestedModel`) so the composer's
+      // displayed seed actually applies to the very first turn instead of silently
+      // running with no flag. Dropped if invalid for the resolved agent.
+      const requestedReasoning =
+        !session.agentPinned && typeof request.query.reasoning === "string"
+          ? request.query.reasoning
+          : undefined;
+      let selectedReasoning: string | undefined = session.reasoningEffort ?? requestedReasoning;
       {
         const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
         if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
@@ -1100,6 +1107,19 @@ export async function registerRoutes(
                 ctx.setActiveAgentId(owner.id);
                 if (activeAppSessionId) {
                   sessionManager.setAgentId(activeAppSessionId, owner.id);
+                }
+                // docs/217 — `set_model` can cross an agent boundary on its own
+                // (the picker fires set_agent + set_model, but they can race or
+                // set_agent's guard can bail, and QuickCapture sends set_model
+                // alone). Reasoning is per-agent, so self-heal it here too —
+                // otherwise a stale Claude `max` could ride a Codex spawn as
+                // `-c model_reasoning_effort=max`. Mirrors the set_agent path.
+                const currentReasoning = ctx.getSelectedReasoning();
+                if (currentReasoning && !owner.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+                  ctx.setSelectedReasoning(undefined);
+                  if (activeAppSessionId) {
+                    sessionManager.setReasoning(activeAppSessionId, null);
+                  }
                 }
               }
             }

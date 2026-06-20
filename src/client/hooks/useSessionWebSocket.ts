@@ -1,6 +1,6 @@
 import { useMemo } from "react";
 import { useWebSocket, type UseWebSocketReturn } from "./useWebSocket.js";
-import { getSavedAgentId, getSavedModelId } from "../utils/local-storage.js";
+import { getSavedAgentId, getSavedModelId, getSavedReasoning } from "../utils/local-storage.js";
 import { agentIdForModel } from "../utils/agent-for-model.js";
 import { useUiStore } from "../stores/ui-store.js";
 
@@ -25,6 +25,12 @@ export function useSessionWebSocket(sessionId: string | undefined): UseWebSocket
       agentIdForModel(model, useUiStore.getState().agentList) ?? getSavedAgentId();
     const params = new URLSearchParams({ agent });
     if (model) params.set("model", model);
+    // docs/217 — seed the per-session reasoning effort from this agent's saved
+    // composer pick so a brand-new session's first turn actually runs with the
+    // value the selector displays (the server validates + applies it only when
+    // the session is unpinned and has no persisted value).
+    const reasoning = getSavedReasoning(agent);
+    if (reasoning) params.set("reasoning", reasoning);
     return `${proto}//${host}/ws/sessions/${sessionId}?${params.toString()}`;
   }, [sessionId]);
 
