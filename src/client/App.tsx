@@ -8,7 +8,6 @@ import { useServerEvents } from "./hooks/useServerEvents.js";
 import { useResizablePanel } from "./hooks/useResizablePanel.js";
 import { useSearch } from "./hooks/useSearch.js";
 import { useIsMobile } from "./hooks/useMediaQuery.js";
-import { useVisualViewportHeight } from "./hooks/useVisualViewportHeight.js";
 import { useNotification } from "./hooks/useNotification.js";
 import { useAttentionNotifications } from "./hooks/useAttentionNotifications.js";
 import { useTheme } from "./hooks/useTheme.js";
@@ -311,7 +310,6 @@ export default function App() {
     storageKey: "vibe-panel-split",
   });
   const isMobile = useIsMobile();
-  useVisualViewportHeight();
   const { searchOpen, setSearchOpen, shortcutsOpen, setShortcutsOpen, githubOrgs, setGithubOrgs } = useAppModals();
   // Derive the repo URL from the /{slug}/new URL pattern (replaces useState)
   const newSessionRepoUrl = useMemo(() => {
@@ -1253,16 +1251,7 @@ export default function App() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div
-      className={`flex flex-col bg-(--color-bg-primary) text-(--color-text-primary) ${isMobile ? "" : "h-[100dvh]"}`}
-      // On mobile the shell tracks the visual viewport so the on-screen keyboard
-      // doesn't leave a white gap below the content (dvh ignores the keyboard).
-      // The transform pins it to the visible region on iOS, where the layout
-      // viewport scrolls under the keyboard (offsetTop > 0). Gated to mobile so
-      // desktop keeps plain 100dvh — a translate (even translateY(0)) would
-      // otherwise make this a containing block for fixed-position overlays.
-      style={isMobile ? { height: "var(--app-vh, 100dvh)", transform: "translateY(var(--app-vv-top, 0))" } : undefined}
-    >
+    <div className="flex flex-col h-[100dvh] bg-(--color-bg-primary) text-(--color-text-primary)">
       <AuthOverlayContainer
         authUrl={authUrl}
         showOnboarding={showOnboarding}
