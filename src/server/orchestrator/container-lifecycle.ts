@@ -270,6 +270,28 @@ export function buildMounts(
     }
   }
 
+  // docs/217 — Mount the persistent scratch directory at /persist **read-write**.
+  // Unlike /uploads (the user's files, :ro), this is the agent's OWN scratch: a
+  // non-git tier that survives container teardown so presented artifacts (and any
+  // keep-but-don't-commit files) don't vanish from the ephemeral /tmp on restart.
+  // It's a sibling of workspace/, so the disk-reclaim paths (which rm workspace/
+  // only) leave it intact — exactly right for this only-copy data. Worker-UID
+  // ownership is handled by the entrypoint chown loop (see docs/217 §1a).
+  if (config.scratchDir) {
+    if (workspaceVolume) {
+      const scratchRelPath = config.scratchDir.replace(/^\/workspace\//, "");
+      mounts.push({
+        Type: "volume",
+        Source: workspaceVolume,
+        Target: "/persist",
+        ReadOnly: false,
+        VolumeOptions: { Subpath: scratchRelPath },
+      });
+    } else {
+      binds.push(`${config.scratchDir}:/persist:rw`);
+    }
+  }
+
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
   // packages across all sessions for the same repository.
   if (config.depCacheDir) {
@@ -591,6 +613,13 @@ export async function createContainer(
   // Ensure the uploads directory exists on the host before mounting.
   if (config.uploadsDir) {
     fs.mkdirSync(config.uploadsDir, { recursive: true });
+  }
+
+  // docs/217 — Ensure the persistent scratch directory exists before mounting.
+  // The entrypoint chown loop hands /persist to the worker UID so the non-root
+  // worker can write to it.
+  if (config.scratchDir) {
+    fs.mkdirSync(config.scratchDir, { recursive: true });
   }
 
   // Ensure the dep cache directory exists on the host before mounting.
@@ -1233,6 +1262,8 @@ export function buildContainerConfig(
     /** docs/197 Part 2 — shared per-runtime pnpm store host dir; absent for non-pnpm / flag-off sessions. */
     pnpmStoreDir?: string;
     uploadsDir?: string;
+    /** docs/217 — persistent scratch host dir; defaults to a `sessionDir` sibling. */
+    scratchDir?: string;
     env?: Record<string, string>;
     memoryLimit?: number;
     cpuQuota?: number;
@@ -1254,6 +1285,7 @@ export function buildContainerConfig(
     depCacheDir: opts.depCacheDir,
     pnpmStoreDir: opts.pnpmStoreDir,
     uploadsDir: opts.uploadsDir ?? path.join(opts.sessionDir, "uploads"),
+    scratchDir: opts.scratchDir ?? path.join(opts.sessionDir, "scratch"),
     imageName: deps.imageName,
     memoryLimit: opts.memoryLimit ?? deps.defaultMemoryLimit,
     cpuQuota: opts.cpuQuota ?? deps.defaultCpuQuota,

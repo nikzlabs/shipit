@@ -26,9 +26,10 @@ const TOOL_DESCRIPTION = [
   "the file and re-present it, no version flag needed).",
   "Workflow: write a self-contained file with the Write tool, then call `present`",
   "with its path; repeat for each additional artifact.",
-  "Write the file under /tmp for a throwaway artifact (it never enters git), or",
-  "into the workspace if you want it tracked and committed — either way it renders",
-  "in the Present tab; the path's location is the only difference.",
+  "Write the file under /persist for a throwaway artifact (it never enters git but",
+  "survives container restarts, so the user still sees it tomorrow), or into the",
+  "workspace if you want it tracked and committed — either way it renders in the",
+  "Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
   "Returns `{ status, viewUrl }`. To verify how the artifact actually",
@@ -47,7 +48,7 @@ const inputSchema = {
     file: {
       type: "string",
       description:
-        "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /tmp/chart.html) are read as-is. Write the file first, then present it.",
+        "Path to the file to present. Relative paths resolve against the workspace; absolute paths (e.g. /persist/chart.html) are read as-is. Write the file first, then present it.",
     },
     mimeType: {
       type: "string",
@@ -72,10 +73,11 @@ const INSTRUCTIONS = [
   "tab without a dev server: a diagram, chart, graph, mockup, wireframe, rendered",
   "markdown doc, comparison view, or HTML/SVG prototype. Reach for it whenever you",
   "create something visual for the user to look at, rather than only describing",
-  "it. Write a self-contained file (to /tmp for a throwaway, or into the",
-  "workspace to keep it tracked), then call `present` with the file path. Each",
-  "call presents one file and multiple presentations coexist in the tab, so to",
-  "show several artifacts at once call `present` once per file.",
+  "it. Write a self-contained file (to /persist for a throwaway that still",
+  "survives a restart, or into the workspace to keep it tracked), then call",
+  "`present` with the file path. Each call presents one file and multiple",
+  "presentations coexist in the tab, so to show several artifacts at once call",
+  "`present` once per file.",
 ].join(" ");
 
 export const presentTool: ToolDescriptor = {

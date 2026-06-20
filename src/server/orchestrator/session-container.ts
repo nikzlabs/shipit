@@ -130,6 +130,14 @@ export interface ContainerConfig {
   pnpmStoreDir?: string;
   /** Host path: /workspace/sessions/{uuid}/uploads (uploaded files) */
   uploadsDir?: string;
+  /**
+   * docs/217 — Host path: /workspace/sessions/{uuid}/scratch. Mounted **rw** at
+   * `/persist`: a persistent, non-git, agent-writable scratch tier that survives
+   * container teardown (sibling of `workspace/`, like `uploads/`). The agent
+   * writes throwaway-but-keep files here (presented artifacts being the motivating
+   * case) instead of the ephemeral `/tmp`.
+   */
+  scratchDir?: string;
   /** Host path: /credentials (Claude CLI auth, GitHub token) */
   credentialsDir: string;
   /** Container image name. */

@@ -273,6 +273,40 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(wsDir)).toBe(false);
   });
 
+  // docs/217 — eviction must remove `workspace/` ONLY and spare the sibling
+  // `scratch/` (mounted at /persist). Scratch is an only-copy with no git backup,
+  // so an evicting reclaim path that took the session root with it would be
+  // irreversible data loss. This pins the structural guarantee the design relies
+  // on (scratch is a sibling of workspace, never inside it; nothing rm's the root).
+  it("light → evicted wipes workspace/ but spares the sibling scratch/ (docs/217)", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const sessionRoot = path.join(tmpDir, "sess-evict-scratch");
+    const wsDir = path.join(sessionRoot, "workspace");
+    await initRepo(wsDir);
+    // The persistent scratch the agent's /persist files live in.
+    const scratchFile = path.join(sessionRoot, "scratch", "kept.txt");
+    fs.mkdirSync(path.dirname(scratchFile), { recursive: true });
+    fs.writeFileSync(scratchFile, "survives eviction");
+    insertSession({
+      id: "evict-scratch",
+      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(fs.existsSync(wsDir)).toBe(false); // workspace/ wiped
+    expect(fs.existsSync(scratchFile)).toBe(true); // sibling scratch/ spared
+  });
+
   it("blocks light → evicted when a dirty tree can't be pushed (keeps at light)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
