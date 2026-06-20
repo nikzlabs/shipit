@@ -1,9 +1,19 @@
-# Present tool — render a file in the Present tab
+# Present tool — render files in the Present tab
 
-The `present` tool displays a single self-contained file to the user in
-ShipIt's dedicated **Present** tab — an HTML page, an SVG diagram, a rendered
-markdown doc, a chart, or an image. You **write the file first** (with the
-`Write` tool), then call `present` with its path.
+The `present` tool displays self-contained files to the user in ShipIt's
+dedicated **Present** tab — an HTML page, an SVG diagram, a rendered markdown
+doc, a chart, or an image. You **write the file first** (with the `Write`
+tool), then call `present` with its path.
+
+**Each call presents one file, but multiple presentations coexist in the tab.**
+The Present tab is a carousel: every `present` call (without `replaceId`)
+*appends* a new entry, and they all stay visible together. So when you produce
+several artifacts the user should compare — three landing-page variants, a
+before/after pair, a set of charts — **present them all**: write each file and
+call `present` once per file. Don't show a single variant and point the user
+elsewhere for the rest; that limitation doesn't exist. Use `replaceId` only
+when you mean to *revise one existing entry in place* (v1 → v2), not to swap
+between artifacts you want shown side by side.
 
 ## Ephemeral vs. tracked — it's just where you write the file
 
@@ -29,6 +39,27 @@ There is no separate flag — pick the directory that matches your intent.
   configuration, tests, plain documentation. These are deliverables; they
   don't belong in the Present tab.
 
+## Presenting multiple artifacts at once
+
+There is **no one-at-a-time limit**. Each `present` call shows one file, and
+every call appends to the carousel, so showing N artifacts is just N calls:
+
+```
+// Three design variants, all shown together in the Present tab
+// (after writing each file)
+present({ file: "/tmp/variant-a.html", title: "Variant A — minimal" })
+present({ file: "/tmp/variant-b.html", title: "Variant B — bold" })
+present({ file: "/tmp/variant-c.html", title: "Variant C — playful" })
+// → three entries the user can flip between, no replaceId on any of them
+```
+
+Give each a distinct `title` so the carousel headings tell them apart. The two
+flows are orthogonal:
+
+- **Add** another artifact → call `present` with no `replaceId` (new entry).
+- **Replace** one artifact in place → call `present` with `replaceId` set to its
+  `presentId` (revise v1 → v2, see below).
+
 ## Parameters
 
 ```json
@@ -53,8 +84,12 @@ There is no separate flag — pick the directory that matches your intent.
   Optional — without it the header uses the file's name — but helpful when you
   present multiple artifacts in a session.
 - **`replaceId`** — pass a previous `present` call's `presentId` to revise that
-  entry in place. Edit the file, then call `present` again with the same
-  `replaceId` so the user isn't flipping between stale versions.
+  one entry in place. Edit the file, then call `present` again with the same
+  `replaceId` so the user isn't flipping between stale versions. **Omit it** to
+  add a new entry alongside the existing ones — that's how you present several
+  artifacts at once (one call per file, none of them carrying `replaceId`).
+  Reach for `replaceId` only when superseding a version of the *same* artifact,
+  never to switch between artifacts you want shown together.
 
 ## Behavior
 

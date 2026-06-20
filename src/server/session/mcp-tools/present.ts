@@ -10,21 +10,26 @@
 import type { ToolDescriptor } from "./types.js";
 
 const TOOL_DESCRIPTION = [
-  "Show the user a visual artifact — a diagram, chart, graph, mockup, wireframe,",
-  "rendered markdown doc, comparison view, or HTML/SVG prototype — rendered in",
-  "ShipIt's dedicated Present tab, with no dev server. Reach for this proactively",
-  "whenever you produce something visual for the user to look at, instead of only",
-  "describing it in chat or writing a file you never surface.",
-  "Workflow: write a single self-contained file with the Write tool, then call",
-  "`present` with its path.",
+  "Show the user one or more visual artifacts — diagrams, charts, graphs, mockups,",
+  "wireframes, rendered markdown docs, comparison views, or HTML/SVG prototypes —",
+  "rendered in ShipIt's dedicated Present tab, with no dev server. Reach for this",
+  "proactively whenever you produce something visual for the user to look at,",
+  "instead of only describing it in chat or writing a file you never surface.",
+  "Each call presents one file, but multiple presentations coexist in the Present",
+  "tab — so to show several artifacts at once (e.g. three design variants), write",
+  "each file and call `present` once per file. Every call without `replaceId`",
+  "appends a new entry; nothing is replaced, so don't show one variant and point",
+  "the user elsewhere for the rest — present them all.",
+  "Workflow: write a self-contained file with the Write tool, then call `present`",
+  "with its path; repeat for each additional artifact.",
   "Write the file under /tmp for a throwaway artifact (it never enters git), or",
   "into the workspace if you want it tracked and committed — either way it renders",
   "in the Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
-  "Pass `replaceId` with a prior call's `presentId` to revise an existing",
+  "Pass `replaceId` with a prior call's `presentId` to revise that one existing",
   "presentation in-place (e.g. mockup v1 → v2) — edit the file and call again;",
-  "omit it for a brand-new entry.",
+  "omit it to add a brand-new entry alongside the others.",
   "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
   "the file directly, because `viewUrl` applies the same rendering the user",
@@ -56,7 +61,7 @@ const inputSchema = {
     replaceId: {
       type: "string",
       description:
-        "When set to a previous call's `presentId`, replaces that entry in-place (revision flow). Omit to append a new entry.",
+        "When set to a previous call's `presentId`, replaces that one entry in-place (revision flow, e.g. mockup v1 → v2). Omit to append a new entry alongside any existing ones — that's how you present several artifacts at once: one call per file, each without `replaceId`.",
     },
   },
   required: ["file"],
@@ -71,8 +76,10 @@ const INSTRUCTIONS = [
   "tab without a dev server: a diagram, chart, graph, mockup, wireframe, rendered",
   "markdown doc, comparison view, or HTML/SVG prototype. Reach for it whenever you",
   "create something visual for the user to look at, rather than only describing",
-  "it. Write a single self-contained file (to /tmp for a throwaway, or into the",
-  "workspace to keep it tracked), then call `present` with the file path.",
+  "it. Write a self-contained file (to /tmp for a throwaway, or into the",
+  "workspace to keep it tracked), then call `present` with the file path. Each",
+  "call presents one file and multiple presentations coexist in the tab, so to",
+  "show several artifacts at once call `present` once per file.",
 ].join(" ");
 
 export const presentTool: ToolDescriptor = {
