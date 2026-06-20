@@ -112,35 +112,34 @@ rotation). Mirror the existing nuances:
 Writable under a read-only rootfs (it's a mount, like `/workspace` and `/tmp`),
 so it composes with the docs/172 Gap 5 hardening with no special case.
 
-### 2. `present` writes throwaway artifacts to `/persist`, not `/tmp`
+### 2. `present` writes throwaway artifacts to `/persist` — and `/tmp` leaves the agent's vocabulary
 
-The agent writes throwaway present files (and any other keep-but-don't-commit
-scratch) to `/persist` instead of `/tmp`. That's the whole change to the present
-flow — and it is **guidance only, with zero byte-path code**:
+`/persist` is the **default** location for `present` throwaways, and the
+agent-facing instructions **stop mentioning `/tmp` entirely**. That's the whole
+change to the present flow — and it is **guidance only, with zero byte-path code**:
 
 - The orchestrator already persists `resolvedPath` and re-registers it with a
   freshly-started worker (`/present/register`), which re-reads the bytes from
-  disk. Once `resolvedPath` points into `/persist` (host-backed) instead of `/tmp`
-  (ephemeral), **the re-read just succeeds** after a restart. No changes to
-  `present-store.ts`, `present-registry.ts`, `present-view.ts`, or
-  `proxyPresentRaw` — the existing serve + re-register path works unchanged the
-  moment the file lives on a surviving mount.
+  disk. Once `resolvedPath` points into `/persist` (host-backed), **the re-read
+  just succeeds** after a restart. No changes to `present-store.ts`,
+  `present-registry.ts`, `present-view.ts`, or `proxyPresentRaw` — the existing
+  serve + re-register path works unchanged the moment the file lives on a
+  surviving mount.
 
-This is the simplest possible design and gives everyone the same mental model:
-`/persist` is "the place for files that should outlive the container but stay out
-of git." The agent already understands `/tmp` (ephemeral) and `/workspace`
-(committed); `/persist` slots in as the third, obvious option. The present model
-becomes three clear tiers:
+This is the simplest possible mental model — **two tiers, not three**:
 
-| Intent | Write to | In git? | Survives restart? |
+| Intent | Agent writes to | In git? | Survives restart? |
 |---|---|---|---|
-| Persistent throwaway (default) | `/persist` | no | **yes** |
+| Keep, but don't commit (default) | `/persist` | no | **yes** |
 | Tracked deliverable | `/workspace` | yes | yes |
-| Truly ephemeral | `/tmp` | no | no |
 
-`/persist` becomes the **recommended default** for `present` throwaways: the user
-keeps seeing the artifact the next day without it ever entering the repo. `/tmp`
-stays available for genuinely disposable scratch.
+`/persist` is a strict improvement over `/tmp` for anything the agent produces:
+it persists, it's still non-git, and it's reclaimed by full reset. So there's no
+reason to ever steer the agent to `/tmp` — **agent instructions must not refer to
+`/tmp` at all** (present tool description, `present.md`, the system prompt, and the
+`environment.md` / untrusted-input "copy it somewhere writable" guidance all say
+`/persist`, never `/tmp`). `/tmp` still physically exists on the rootfs; we simply
+stop surfacing it as a place to put files.
 
 ### 3. Lifecycle
 
@@ -262,12 +261,19 @@ untrusted-input envelope guidance, agent habit). Not worth the churn. Keep
   endpoint) currently `fs.rm`s only `workspaceDir`, so it spares `scratch/`.
   Touch only if the open-question answer is "archive should also drop scratch".
 - `src/server/shipit-docs/environment.md` — add `/persist` to the filesystem
-  layout table (writable, non-git, persistent) and update the persistence rule
-  ("only `/workspace` persists" → "`/workspace` and `/persist` persist").
-- `src/server/shipit-docs/present.md` — document `/persist` as the persistent
-  throwaway tier; update the two-tier model to three.
+  layout table (writable, non-git, persistent), update the persistence rule
+  ("only `/workspace` persists" → "`/workspace` and `/persist` persist"), and
+  **replace `/tmp` scratch guidance with `/persist`** (agent-facing; §2).
+- `src/server/shipit-docs/present.md` — document `/persist` as the default
+  throwaway tier; the agent-facing model is two tiers (`/persist`, `/workspace`),
+  with **no `/tmp` references**.
 - `src/server/session/mcp-tools/present.ts` — update the tool description /
-  instructions to point throwaway artifacts at `/persist` (the new default).
+  instructions to point throwaway artifacts at `/persist` (the default); remove
+  the `/tmp` mentions.
+- **Audit agent-facing prompts/docs for residual `/tmp` guidance** — the system
+  prompt and `src/server/shipit-docs/untrusted-input.md` ("copy it into
+  `/workspace` or `/tmp`") must say `/persist`, not `/tmp` (§2 decision: the agent
+  is never told to use `/tmp`).
 - No changes to `present-store.ts`, `present-registry.ts`, `present-view.ts`, or
   `container-session-runner.ts` (`proxyPresentRaw`): the existing re-read +
   re-register path works unchanged once `resolvedPath` lives on a surviving mount.
@@ -292,7 +298,9 @@ Settled:
   node_modules trees the janitor targets). Revisit only if real disk pressure
   appears in practice.
 
-Open:
-- **Default `present` location.** Make `/persist` the default throwaway location in
-  the `present` guidance (so the fix lands with no per-call action), with `/tmp` as
-  the explicit "truly ephemeral" choice? *Pending decision.*
+- **`/persist` is the default `present` location, and `/tmp` leaves the agent's
+  vocabulary.** Throwaways default to `/persist`; agent-facing instructions stop
+  mentioning `/tmp` altogether (§2). Two-tier model: `/persist` (keep, non-git) ·
+  `/workspace` (keep, in git).
+
+Open: none — all resolved.
