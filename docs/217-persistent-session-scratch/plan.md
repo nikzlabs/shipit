@@ -287,13 +287,12 @@ Settled:
 - **Archive retains `scratch/`.** Archive only hides a session from the sidebar —
   it is not a discard — so its scratch is kept. `scratch/` is reclaimed only by a
   full reset (the deliberate nuke-everything action).
+- **No host-disk pressure valve.** No TTL sweep, no opt-in reclaim. Retain until
+  full reset, full stop — scratch is small (throwaway artifacts, not the
+  node_modules trees the janitor targets). Revisit only if real disk pressure
+  appears in practice.
 
 Open:
-
-- **Any opt-in reclaim for long-archived `scratch/` under disk pressure?** Default
-  is retain-until-full-reset (above). Do we also want an explicit, opt-in TTL sweep
-  (archived > N days, with a heads-up) as a host-disk pressure valve — or is
-  retain-until-full-reset enough? *Pending decision.*
 - **Default `present` location.** Make `/persist` the default throwaway location in
   the `present` guidance (so the fix lands with no per-call action), with `/tmp` as
   the explicit "truly ephemeral" choice? *Pending decision.*
