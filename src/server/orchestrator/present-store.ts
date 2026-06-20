@@ -18,9 +18,11 @@
  * restart; a `/tmp` throwaway whose file is gone serves a graceful 404 (the
  * Present tab shows a "no longer available" placeholder).
  *
- * Ordering: rows sort by the insertion-order `id` rowid. A `replaceId` revision
- * (mockup v1 → v2) updates the superseded row IN PLACE so it keeps its carousel
- * slot, mirroring the client store's reducer and the runner's `cachePresentation`.
+ * Ordering: rows sort by the insertion-order `id` rowid. `present_id` is
+ * content-addressed by the file path, so re-presenting the same file upserts the
+ * existing row IN PLACE (`ON CONFLICT(present_id)`), keeping its carousel slot;
+ * a different file inserts a new row. This mirrors the client store's reducer
+ * and the runner's `cachePresentation`.
  */
 
 import type { DatabaseManager } from "../shared/database.js";
@@ -65,43 +67,17 @@ export class PresentStore {
   }
 
   /**
-   * Record (or revise) a presentation's metadata, mirroring the runner's
-   * `cachePresentation` reducer:
-   *  - `replaceId` points at a known row (revision) → update that row in place,
-   *    swapping in the new `present_id` + fields, keeping its insertion-order id
-   *    (so the carousel slot is preserved).
-   *  - the new `present_id` already exists (idempotent re-delivery) → update it.
-   *  - otherwise → insert a new row (appends to the end).
+   * Record a presentation's metadata, mirroring the runner's `cachePresentation`
+   * reducer. `present_id` is content-addressed by the file path, so:
+   *  - re-presenting the same file (same `present_id`) → `ON CONFLICT` updates
+   *    the existing row in place, keeping its insertion-order id (carousel slot).
+   *  - a different file (new `present_id`) → inserts a new row (appends).
    */
-  record(entry: PersistedPresentation, replaceId?: string): void {
+  record(entry: PersistedPresentation): void {
     const titleValue = entry.title ?? null;
 
-    if (replaceId) {
-      const existing = this.db
-        .prepare("SELECT id FROM presentations WHERE present_id = ? AND session_id = ?")
-        .get(replaceId, entry.sessionId) as { id: number } | undefined;
-      if (existing) {
-        this.db
-          .prepare(
-            `UPDATE presentations
-               SET present_id = ?, file_path = ?, resolved_path = ?, mime_type = ?, title = ?, created_at = ?
-             WHERE id = ?`,
-          )
-          .run(
-            entry.presentId,
-            entry.filePath,
-            entry.resolvedPath,
-            entry.mimeType,
-            titleValue,
-            entry.createdAt,
-            existing.id,
-          );
-        return;
-      }
-    }
-
     // Upsert by the natural unique key. ON CONFLICT keeps the existing row's id
-    // (insertion order) while refreshing its fields — the idempotent-redelivery
+    // (insertion order) while refreshing its fields — the same-file re-present
     // path — and a brand-new id otherwise appends.
     this.db
       .prepare(
@@ -126,7 +102,7 @@ export class PresentStore {
       );
   }
 
-  /** Drop one presentation (a revision superseding an id), or all for a session. */
+  /** Drop one presentation by id, or all for a session (session switch / full clear). */
   clear(sessionId: string, presentId?: string): void {
     if (presentId === undefined) {
       this.db.prepare("DELETE FROM presentations WHERE session_id = ?").run(sessionId);

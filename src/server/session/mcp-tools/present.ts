@@ -15,11 +15,13 @@ const TOOL_DESCRIPTION = [
   "rendered in ShipIt's dedicated Present tab, with no dev server. Reach for this",
   "proactively whenever you produce something visual for the user to look at,",
   "instead of only describing it in chat or writing a file you never surface.",
-  "Each call presents one file, but multiple presentations coexist in the Present",
-  "tab — so to show several artifacts at once (e.g. three design variants), write",
-  "each file and call `present` once per file. Every call without `replaceId`",
-  "appends a new entry; nothing is replaced, so don't show one variant and point",
-  "the user elsewhere for the rest — present them all.",
+  "Multiple presentations coexist in the Present tab. Each call presents one file,",
+  "so to show several artifacts at once (e.g. three design variants) write each",
+  "file and call `present` once per file — they all stay visible together. Don't",
+  "show one variant and point the user elsewhere for the rest; present them all.",
+  "Identity is the file PATH: presenting a new path adds an entry, and presenting",
+  "the SAME path again updates that entry in place (that's how you iterate — edit",
+  "the file and re-present it, no version flag needed).",
   "Workflow: write a self-contained file with the Write tool, then call `present`",
   "with its path; repeat for each additional artifact.",
   "Write the file under /tmp for a throwaway artifact (it never enters git), or",
@@ -27,15 +29,12 @@ const TOOL_DESCRIPTION = [
   "in the Present tab; the path's location is the only difference.",
   "The MIME type is inferred from the file extension (.html, .svg, .md, .png,",
   ".jpg, .gif, .webp); pass `mimeType` only to override it.",
-  "Pass `replaceId` with a prior call's `presentId` to revise that one existing",
-  "presentation in-place (e.g. mockup v1 → v2) — edit the file and call again;",
-  "omit it to add a brand-new entry alongside the others.",
   "Returns `{ presentId, viewUrl }`. To verify how the artifact actually",
   "renders, navigate your browser to `viewUrl` and screenshot it — do NOT open",
   "the file directly, because `viewUrl` applies the same rendering the user",
   "sees (markdown→HTML, SVG/image wrapping) and the raw file does not. Then fix",
   "any layout/contrast/clipping defects, edit the file, and call `present` again",
-  "with `replaceId` set to the same `presentId` to revise in place.",
+  "with the same path to update it in place.",
   "The file is capped at ~1 MB; larger artifacts will be rejected.",
   "Full guide (screenshot loop, MIME inference, limits): /shipit-docs/present.md.",
 ].join(" ");
@@ -57,11 +56,6 @@ const inputSchema = {
       type: "string",
       description:
         "Short human-friendly name for the artifact, shown as the heading in the Present tab above the file path (e.g. 'Architecture Diagram', 'Sales Chart v2'). Optional — without it the header falls back to the file's name.",
-    },
-    replaceId: {
-      type: "string",
-      description:
-        "When set to a previous call's `presentId`, replaces that one entry in-place (revision flow, e.g. mockup v1 → v2). Omit to append a new entry alongside any existing ones — that's how you present several artifacts at once: one call per file, each without `replaceId`.",
     },
   },
   required: ["file"],
@@ -93,7 +87,6 @@ export const presentTool: ToolDescriptor = {
       file?: string;
       mimeType?: string;
       title?: string;
-      replaceId?: string;
     };
     try {
       const res = await fetch(`${workerUrl}/agent-ops/present/submit`, {
@@ -103,7 +96,6 @@ export const presentTool: ToolDescriptor = {
           file: a.file,
           mimeType: a.mimeType,
           title: a.title,
-          replaceId: a.replaceId,
         }),
       });
       const body = (await res.json().catch(() => ({}))) as {
@@ -128,7 +120,6 @@ export const presentTool: ToolDescriptor = {
               presentId: body.presentId,
               ...(body.viewUrl !== undefined ? { viewUrl: body.viewUrl } : {}),
               ...(a.title !== undefined ? { title: a.title } : {}),
-              ...(a.replaceId !== undefined ? { replaceId: a.replaceId } : {}),
             }),
           },
         ],

@@ -5,10 +5,12 @@
  * agent showed via the `present` MCP tool, with a single "active" entry shown
  * at a time. Entries are METADATA only — the artifact bytes (`content`) are
  * fetched lazily by the Present pane from the authenticated session API and
- * cached back onto the entry via `setContent`. New `present_content` messages
- * append + activate (or replace in-place when `replaceId` matches).
- * `present_cleared` drops one entry (a revision superseding an id) or wipes the
- * list (session switch / full clear).
+ * cached back onto the entry via `setContent`. `presentId` is content-addressed
+ * by the file path, so a `present_content` whose id is already known means the
+ * same file was re-presented (the screenshot iteration loop) → refresh that
+ * entry in place and drop its cached bytes so the pane refetches; a new id
+ * appends + activates. `present_cleared` drops one entry by id or wipes the list
+ * (session switch / full clear).
  *
  * Nothing is persisted across browser refresh — the list rehydrates from the
  * orchestrator's `present_state` replay (metadata), and the pane re-fetches the
@@ -35,7 +37,6 @@ export interface Presentation {
 /** The metadata carried by a `present_content` / `present_state` message. */
 interface PresentationMeta {
   presentId: string;
-  replaceId?: string;
   mimeType: string;
   title?: string;
   filePath: string;
@@ -60,7 +61,7 @@ interface PresentState {
    * or auto-switching the panel (it's a silent sync). Already-fetched `content`
    * is preserved for ids that survive, so a reconnect doesn't refetch.
    */
-  hydrate: (presentations: Omit<PresentationMeta, "replaceId">[]) => void;
+  hydrate: (presentations: PresentationMeta[]) => void;
   /** Cache fetched bytes onto an entry (no-op if the id is gone). */
   setContent: (presentId: string, content: string) => void;
   /** Apply a `present_cleared` WS message. `presentId` undefined → wipe all. */
@@ -98,31 +99,20 @@ export const usePresentStore = create<PresentState>((set) => ({
 
   addOrReplace: (p) =>
     set((s) => {
-      // Revision flow: replace in-place if replaceId points at a known entry.
-      // It's a new file version, so drop any cached bytes — the pane refetches.
-      if (p.replaceId) {
-        const idx = s.presentations.findIndex((q) => q.presentId === p.replaceId);
-        if (idx >= 0) {
-          const next = [...s.presentations];
-          next[idx] = toEntry(p);
-          return {
-            presentations: next,
-            activePresentIndex: idx,
-            unseenCount: s.unseenCount + 1,
-          };
-        }
-      }
-
-      // Idempotent re-delivery: a `present_state` hydrate may overlap with a
-      // live `present_content` for the same id. Replace in place, preserving
-      // any already-fetched bytes (same id → same file).
-      const dupeIdx = s.presentations.findIndex((q) => q.presentId === p.presentId);
-      if (dupeIdx >= 0) {
+      // Known id → the same file (presentId is content-addressed by path).
+      // Refresh in place, keeping its carousel slot. Drop cached bytes so the
+      // pane refetches the edited file — UNLESS this is a true re-delivery of the
+      // same event (identical createdAt, e.g. a WS reconnect replay), where the
+      // bytes are unchanged and worth preserving to avoid a needless refetch.
+      const idx = s.presentations.findIndex((q) => q.presentId === p.presentId);
+      if (idx >= 0) {
+        const prior = s.presentations[idx];
+        const isReplay = prior.createdAt === p.createdAt;
         const next = [...s.presentations];
-        next[dupeIdx] = toEntry(p, s.presentations[dupeIdx].content);
+        next[idx] = toEntry(p, isReplay ? prior.content : undefined);
         return {
           presentations: next,
-          activePresentIndex: dupeIdx,
+          activePresentIndex: idx,
           unseenCount: s.unseenCount + 1,
         };
       }

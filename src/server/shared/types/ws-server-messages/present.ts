@@ -4,9 +4,10 @@
  * no files were created in the workspace, so the user can save it explicitly
  * or dismiss it without leaving stray bytes on disk.
  *
- * If `replaceId` is set and matches a previous presentation's `presentId`, the
- * client replaces that entry in-place (revision flow); otherwise the entry is
- * appended and auto-selected.
+ * `presentId` is content-addressed by the file path (docs/093). If it matches a
+ * presentation the client already holds, that file was re-presented (the
+ * screenshot iteration loop) and the client refreshes that entry in place;
+ * otherwise it's a new file and the entry is appended and auto-selected.
  *
  * Metadata only — it carries NO artifact bytes. The client fetches the bytes on
  * demand from `GET /api/sessions/:id/present/:presentId/content` (a one-time
@@ -15,10 +16,8 @@
 export interface WsPresentContentMessage {
   type: "present_content";
   sessionId: string;
-  /** Unique id for this presentation, returned to the agent as the tool result. */
+  /** Deterministic id (derived from the file path), returned to the agent as the tool result. */
   presentId: string;
-  /** When set, replaces the entry with this id in-place. */
-  replaceId?: string;
   /** "text/html", "image/svg+xml", "text/markdown", "image/png", etc. */
   mimeType: string;
   /** Optional display title (the artifact's name) for the carousel header. */
@@ -32,8 +31,11 @@ export interface WsPresentContentMessage {
 /**
  * Server → Client: drop one or all presentations (docs/093).
  *
- * `presentId` set → drop just that entry (a revision superseding an old id).
- * `presentId` omitted → wipe the whole list (session switch, full clear).
+ * `presentId` set → drop just that entry (full reset of a single artifact).
+ * `presentId` omitted → wipe the whole list (session switch, full clear). The
+ * present flow no longer emits a per-id clear (identity is the file path, so
+ * re-presenting updates in place rather than superseding an id); the optional
+ * `presentId` is retained for explicit single-entry removal.
  */
 export interface WsPresentClearedMessage {
   type: "present_cleared";

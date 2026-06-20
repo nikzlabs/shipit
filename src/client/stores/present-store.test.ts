@@ -34,36 +34,43 @@ describe("present-store", () => {
     expect(usePresentStore.getState().presentations[0].filePath).toBe("docs/mockups/landing.html");
   });
 
-  it("replaces in-place when replaceId matches an existing entry", () => {
+  it("re-presenting the same id refreshes in place and keeps the carousel slot", () => {
     usePresentStore.getState().addOrReplace(makePresent());
+    // Same file re-presented (presentId is content-addressed by path) with a
+    // newer timestamp = an edit during the iteration loop.
     usePresentStore.getState().addOrReplace(
-      makePresent({ presentId: "p2", title: "Hi v2", replaceId: "p1" }),
+      makePresent({ title: "Hi v2", createdAt: "2026-05-29T00:01:00.000Z" }),
     );
     const { presentations, activePresentIndex } = usePresentStore.getState();
     expect(presentations).toHaveLength(1);
-    expect(presentations[0].presentId).toBe("p2");
+    expect(presentations[0].presentId).toBe("p1");
     expect(presentations[0].title).toBe("Hi v2");
     expect(activePresentIndex).toBe(0);
   });
 
-  it("appends when replaceId does not match any entry", () => {
+  it("a genuine re-present (newer createdAt) drops cached bytes so the pane refetches", () => {
     usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().setContent("p1", "<p>old</p>");
     usePresentStore.getState().addOrReplace(
-      makePresent({ presentId: "p2", replaceId: "missing" }),
+      makePresent({ createdAt: "2026-05-29T00:01:00.000Z" }),
     );
+    expect(usePresentStore.getState().presentations[0].content).toBeUndefined();
+  });
+
+  it("a true re-delivery (identical createdAt) preserves cached bytes — no needless refetch", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().setContent("p1", "<p>cached</p>");
+    // Same event replayed (e.g. a WS reconnect) — same id AND same timestamp.
+    usePresentStore.getState().addOrReplace(makePresent());
+    expect(usePresentStore.getState().presentations[0].content).toBe("<p>cached</p>");
+  });
+
+  it("distinct ids (distinct files) append as separate entries", () => {
+    usePresentStore.getState().addOrReplace(makePresent());
+    usePresentStore.getState().addOrReplace(makePresent({ presentId: "p2", filePath: "/tmp/b.html" }));
     const { presentations } = usePresentStore.getState();
     expect(presentations).toHaveLength(2);
     expect(presentations[1].presentId).toBe("p2");
-  });
-
-  it("dedupes by presentId — re-delivery replaces in place rather than appending", () => {
-    usePresentStore.getState().addOrReplace(makePresent());
-    // Same id arrives again (e.g. live present_content overlapping a hydrate).
-    usePresentStore.getState().addOrReplace(makePresent({ title: "Hi again" }));
-    const { presentations, activePresentIndex } = usePresentStore.getState();
-    expect(presentations).toHaveLength(1);
-    expect(presentations[0].title).toBe("Hi again");
-    expect(activePresentIndex).toBe(0);
   });
 
   it("hydrate replaces the whole list without bumping the unseen count", () => {

@@ -654,8 +654,9 @@ const MIGRATIONS: Migration[] = [
   // including the container-internal `resolved_path` so the orchestrator can
   // re-register a presentation with a freshly-started worker and serve its bytes
   // again. Bytes are never stored; they're re-read from disk on demand. `id` is
-  // the insertion-order rowid the carousel sorts by; a `replaceId` revision
-  // updates the superseded row in place so it keeps its slot. `present_id` is the
+  // the insertion-order rowid the carousel sorts by; re-presenting the same file
+  // upserts the existing row in place (present_id is content-addressed by the
+  // file path) so it keeps its slot. `present_id` is the
   // natural unique key shared end-to-end with the worker, runner cache, and
   // client store.
   (db) => {
