@@ -147,8 +147,6 @@ stays available for genuinely disposable scratch.
 - **Idle eviction / restart** — `scratch/` is host-backed, so it persists exactly
   like `uploads/` and the git clone. The next container re-mounts it. ✅ the whole
   point.
-- **Session delete / full reset** — the session dir is removed wholesale, taking
-  `scratch/` with it. Covered by the existing teardown; no extra work.
 - **Per-session disk — deliberately unbounded, and that's fine.** No per-session
   size cap or eviction. The agent can *already* write arbitrarily large files to
   `/workspace` (which also persists — the host clone survives between containers,
@@ -156,26 +154,33 @@ stays available for genuinely disposable scratch.
   failure mode the platform doesn't already tolerate. Bounding `/persist` while
   `/workspace` stays unbounded would be inconsistent for no real safety gain. We
   do **not** add a quota or LRU sweep.
-- **Cross-session disk — `/persist` is an only-copy, so it is NOT swept like the
-  workspace.** This is the subtle part. `disk-janitor.ts` can safely evict an
-  archived session's `workspace/` clone because that clone is a *cache* of a git
-  remote — a later `git clone` reconstructs it byte-for-byte. `/persist` has **no
-  remote**: it is never committed or pushed, so it is the origin copy of its bytes.
-  Deleting an archived session's `scratch/` is **irreversible data loss**, the
-  opposite of the workspace case. So:
-  - **Active session** — `scratch/` persists. The whole point; never swept.
-  - **Deleted / full reset** — removed with the session dir. The *only* automatic
-    deletion, and only because the user explicitly chose to discard the session.
-  - **Archived / long-idle session** — `scratch/` is **retained by default**. It
-    must NOT ride the archived-workspace sweep, whose safety rests on git-backed
-    reclaimability that scratch doesn't have. If host disk pressure ever forces
-    reclaiming archived scratch, that path must be **explicit / opt-in, with a long
-    TTL and ideally a user heads-up** — never a silent default, because nothing
-    else holds those bytes.
+- **Cross-session disk — what the real teardown paths remove (verified against the
+  code).** The key fact: every automatic reclaim path `fs.rm`s the
+  **`workspace/` subdir specifically**, never the session root — and `scratch/` is
+  a *sibling* of `workspace/`, so it survives all of them for free. `/persist` is
+  an **only-copy** (never committed or pushed; unlike the `workspace/` clone, which
+  the janitor can safely wipe because `git clone` reconstructs it), so this
+  spares-by-default behavior is exactly what we want:
+  - **Active session** — `scratch/` persists. The whole point.
+  - **Idle eviction** (`tier-escalation.ts`, `light → evicted` at 14d / 2d-merged)
+    — `fs.rm(session.workspaceDir)`. **Spares `scratch/`.** (It also
+    auto-commits+pushes the checkout before wiping — the git-backed safety net
+    scratch doesn't need and can't have.)
+  - **User "delete" / archive** (`archiveSession`, the `DELETE` endpoint) — also
+    `fs.rm(session.workspaceDir)` only (remote-backed sessions). **Spares
+    `scratch/`.**
+  - **Full reset** — removes the whole sessions tree, `scratch/` included. The
+    *only* automatic path that drops scratch.
+
+  So no new "spare scratch" janitor logic is needed — the existing paths already
+  target `workspace/`. The only requirement is structural: keep `scratchDir` a
+  sibling of `workspaceDir` and never `fs.rm(path.dirname(workspaceDir))` in a
+  reclaim path. The flip side (see Open questions): because archive spares scratch,
+  a user "delete" currently leaves `scratch/` on disk until a full reset.
 
   In practice the disk cost of retention is small: `scratch/` holds throwaway
   artifacts (presented files and the like), not the node_modules-heavy trees the
-  janitor targets. The reclaimable dead weight is the workspace clone, not scratch.
+  janitor targets.
 
 ### 4. Security / containment
 
@@ -245,11 +250,16 @@ untrusted-input envelope guidance, agent habit). Not worth the churn. Keep
   `chownToSessionWorker(scratchDir)` after `mkdirSync`, gated on the same UID var.
 - `src/server/orchestrator/session-container.ts` — `ContainerConfig.scratchDir`
   field + thread it through container creation (mirror `uploadsDir`).
-- `src/server/orchestrator/disk-janitor.ts` — **ensure the archived-session sweep
-  does NOT delete `scratch/`** (§3): it's an only-copy with no git backup, unlike
-  the reclaimable `workspace/` clone the sweep targets. If the sweep currently
-  removes whole archived session dirs, scope it to spare `scratch/` (and only
-  reclaim it behind an explicit opt-in + long TTL). No per-write budget.
+- `src/server/orchestrator/tier-escalation.ts` (steady-state `hot → light →
+  evicted` ladder, docs/161) and `src/server/orchestrator/startup-janitor.ts`
+  (startup orphan sweeps) — the real reclaim paths behind the `disk-janitor.ts`
+  facade. **No change needed to spare `scratch/`**: both target
+  `session.workspaceDir`, and `scratch/` is a sibling. Add a test asserting
+  eviction removes `workspace/` and leaves `scratch/` intact, and that no path
+  `fs.rm`s `path.dirname(workspaceDir)`.
+- `src/server/orchestrator/services/session.ts` — `archiveSession` (the `DELETE`
+  endpoint) currently `fs.rm`s only `workspaceDir`, so it spares `scratch/`.
+  Touch only if the open-question answer is "archive should also drop scratch".
 - `src/server/shipit-docs/environment.md` — add `/persist` to the filesystem
   layout table (writable, non-git, persistent) and update the persistence rule
   ("only `/workspace` persists" → "`/workspace` and `/persist` persist").
@@ -276,12 +286,15 @@ Settled:
 
 Open:
 
-- **If/when to reclaim archived `scratch/` at all.** Default is **retain** (§3) —
-  it's an only-copy with no git backup, so it can't ride the archived-workspace
-  sweep. The open question is only whether to offer an *explicit opt-in* reclaim
-  for genuine disk pressure, and at what TTL (e.g. archived > N days), with a
-  heads-up before deletion. Retain-forever-until-explicit-delete is the safe
-  default and may be all we need.
-- **Default `present` location.** Recommended: make `/persist` the default
-  throwaway location in the `present` guidance so the fix lands with no per-call
-  action; `/tmp` stays the explicit "truly ephemeral" choice.
+- **Should a user "delete" (archive) also remove `scratch/`?** Verified behavior:
+  archive `fs.rm`s only `workspace/`, so today `scratch/` would persist after a
+  user delete until a full reset. Options: (a) **retain** — safe, but scratch for
+  deleted sessions lingers; (b) **archive also drops `scratch/`** — the user chose
+  to discard, so reclaim its only-copy bytes too. *Pending decision.*
+- **Any opt-in reclaim for long-archived `scratch/` under disk pressure?** If we
+  keep (a) above, do we also want an explicit, opt-in TTL sweep (archived > N days,
+  with a heads-up) as a pressure valve — or is retain-until-full-reset enough?
+  *Pending decision.*
+- **Default `present` location.** Make `/persist` the default throwaway location in
+  the `present` guidance (so the fix lands with no per-call action), with `/tmp` as
+  the explicit "truly ephemeral" choice? *Pending decision.*
