@@ -166,17 +166,18 @@ stays available for genuinely disposable scratch.
     — `fs.rm(session.workspaceDir)`. **Spares `scratch/`.** (It also
     auto-commits+pushes the checkout before wiping — the git-backed safety net
     scratch doesn't need and can't have.)
-  - **User "delete" / archive** (`archiveSession`, the `DELETE` endpoint) — also
-    `fs.rm(session.workspaceDir)` only (remote-backed sessions). **Spares
-    `scratch/`.**
+  - **Archive** (`archiveSession`, the `DELETE` endpoint) — archive only **hides
+    the session from the sidebar**; it is *not* a discard. It `fs.rm`s only
+    `workspace/` (remote-backed sessions, recoverable from git). **Spares
+    `scratch/`** — correctly, since the session isn't being thrown away.
   - **Full reset** — removes the whole sessions tree, `scratch/` included. The
-    *only* automatic path that drops scratch.
+    *only* path that drops scratch, and it's the deliberate nuke-everything action.
 
   So no new "spare scratch" janitor logic is needed — the existing paths already
   target `workspace/`. The only requirement is structural: keep `scratchDir` a
   sibling of `workspaceDir` and never `fs.rm(path.dirname(workspaceDir))` in a
-  reclaim path. The flip side (see Open questions): because archive spares scratch,
-  a user "delete" currently leaves `scratch/` on disk until a full reset.
+  reclaim path. Scratch persists for the life of the session (archived or not) and
+  is reclaimed only by a full reset — exactly right for only-copy data.
 
   In practice the disk cost of retention is small: `scratch/` holds throwaway
   artifacts (presented files and the like), not the node_modules-heavy trees the
@@ -283,18 +284,16 @@ Settled:
   writes throwaway-but-keep files there; `present` is the motivating case. Simpler,
   consistent mental model.
 - **No per-session disk budget** — parity with `/workspace` (§3).
+- **Archive retains `scratch/`.** Archive only hides a session from the sidebar —
+  it is not a discard — so its scratch is kept. `scratch/` is reclaimed only by a
+  full reset (the deliberate nuke-everything action).
 
 Open:
 
-- **Should a user "delete" (archive) also remove `scratch/`?** Verified behavior:
-  archive `fs.rm`s only `workspace/`, so today `scratch/` would persist after a
-  user delete until a full reset. Options: (a) **retain** — safe, but scratch for
-  deleted sessions lingers; (b) **archive also drops `scratch/`** — the user chose
-  to discard, so reclaim its only-copy bytes too. *Pending decision.*
-- **Any opt-in reclaim for long-archived `scratch/` under disk pressure?** If we
-  keep (a) above, do we also want an explicit, opt-in TTL sweep (archived > N days,
-  with a heads-up) as a pressure valve — or is retain-until-full-reset enough?
-  *Pending decision.*
+- **Any opt-in reclaim for long-archived `scratch/` under disk pressure?** Default
+  is retain-until-full-reset (above). Do we also want an explicit, opt-in TTL sweep
+  (archived > N days, with a heads-up) as a host-disk pressure valve — or is
+  retain-until-full-reset enough? *Pending decision.*
 - **Default `present` location.** Make `/persist` the default throwaway location in
   the `present` guidance (so the fix lands with no per-call action), with `/tmp` as
   the explicit "truly ephemeral" choice? *Pending decision.*
