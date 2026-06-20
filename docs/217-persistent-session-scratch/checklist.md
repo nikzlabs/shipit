@@ -22,8 +22,9 @@ Implementation (done in this PR):
 - [x] Audit system prompt (`prompts/skeleton.md`) + shipit-docs for residual `/tmp` guidance → `/persist` (only the Playwright screenshot path, a hard MCP-allowlist constraint, remains)
 - [x] Unit tests: `buildMounts` emits the `/persist` mount (both deployment forms) + `buildContainerConfig` default derivation — 53 pass; typecheck + lint:dev clean
 
+- [x] Regression test: eviction (`tier-escalation.ts`) wipes `workspace/` only and spares the sibling `scratch/` (`disk-tier-escalation.test.ts`)
+
 Deferred to CI / manual (container-level, OOM in-session):
 
 - [ ] Integration/manual: a non-root worker can write + read back `/persist/foo`
 - [ ] Integration/manual: a `/persist`-backed present artifact re-renders after a real container restart
-- [ ] Regression test that eviction (`tier-escalation.ts`) rm's `workspace/` only and leaves `scratch/` intact (verified by inspection: eviction `fs.rm`s `session.workspaceDir`, a sibling of `scratch/`)

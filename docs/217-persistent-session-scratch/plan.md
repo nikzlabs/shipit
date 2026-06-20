@@ -146,13 +146,21 @@ stop surfacing it as a place to put files.
 - **Idle eviction / restart** — `scratch/` is host-backed, so it persists exactly
   like `uploads/` and the git clone. The next container re-mounts it. ✅ the whole
   point.
-- **Per-session disk — deliberately unbounded, and that's fine.** No per-session
-  size cap or eviction. The agent can *already* write arbitrarily large files to
-  `/workspace` (which also persists — the host clone survives between containers,
-  and committed bytes live in git forever), so a writable `/persist` adds no new
-  failure mode the platform doesn't already tolerate. Bounding `/persist` while
-  `/workspace` stays unbounded would be inconsistent for no real safety gain. We
-  do **not** add a quota or LRU sweep.
+- **Per-session disk — deliberately unbounded (accepted tradeoff, not a free
+  lunch).** No per-session size cap or eviction. The agent can *already* write
+  arbitrarily large files to `/workspace`, so `/persist` introduces no *new* write
+  capability. But be honest about the asymmetry: `/workspace` is **auto-reclaimable
+  under pressure** — the `tier-escalation.ts` ladder can auto-commit+push a stale
+  checkout and then delete it — whereas `/persist` is an only-copy and is
+  **deliberately spared** by every reclaim path (see below), so a large `/persist`
+  is *not* automatically recoverable and can hold host disk until a full reset.
+  That is a real, **accepted** tradeoff: the whole point is that this data
+  survives, and per the product decision there is **no quota, LRU, or pressure
+  valve** — retain until full reset. Mitigations that keep it acceptable: scratch
+  holds small throwaway artifacts (not node_modules trees), and it's per-session
+  isolated. Revisit (byte accounting + an agent/UI-visible warning, or an opt-in
+  pressure sweep) only if real host-disk pressure from scratch shows up in
+  practice.
 - **Cross-session disk — what the real teardown paths remove (verified against the
   code).** The key fact: every automatic reclaim path `fs.rm`s the
   **`workspace/` subdir specifically**, never the session root — and `scratch/` is
