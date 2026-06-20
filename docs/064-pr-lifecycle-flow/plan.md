@@ -484,6 +484,20 @@ absent or already matches, so the steady-state path is unchanged. Key files:
 `pr-status-parser.ts` (query + `GraphQLResponse.nameWithOwner`),
 `pr-status-poller.ts` (`canonicalApiTarget`).
 
+The same retarget is needed by the **post-merge fast path** (SHI-159). After
+ShipIt merges a PR, `forceVerifySessionPrState` runs a one-shot REST any-state
+probe — it deliberately bypasses `pollRepo` because the bulk query is
+`states: [OPEN]` and GitHub's GraphQL view can still report a just-merged PR as
+open for a beat (eventual consistency); going through `pollRepo` would match it
+on the open path and never reach `verifyMissingPr`, reintroducing the staleness
+the fast path exists to prevent. Bypassing `pollRepo` means it does **not**
+inherit the canonical retarget, so on a transferred repo it filtered
+`head=<old-owner>:<branch>` and matched nothing — the merge showed stale until
+the next regular poll recovered it. Fix: `forceVerifySessionPrState` resolves
+the canonical owner itself via `resolveCanonicalApiTarget` (a lightweight
+`repository { nameWithOwner }` probe → `canonicalApiTarget`) before the REST
+probe, falling back to the polled owner when the probe yields nothing.
+
 (If ShipIt ever wants the *repo record itself* to follow a transfer — so the
 sidebar shows the new owner — that is a separate, deliberate migration of all
 three identity layers together: `repos` row, every session `remoteUrl`, and the
