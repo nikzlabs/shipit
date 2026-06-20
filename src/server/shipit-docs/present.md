@@ -1,9 +1,22 @@
-# Present tool — render a file in the Present tab
+# Present tool — render files in the Present tab
 
-The `present` tool displays a single self-contained file to the user in
-ShipIt's dedicated **Present** tab — an HTML page, an SVG diagram, a rendered
-markdown doc, a chart, or an image. You **write the file first** (with the
-`Write` tool), then call `present` with its path.
+The `present` tool displays self-contained files to the user in ShipIt's
+dedicated **Present** tab — an HTML page, an SVG diagram, a rendered markdown
+doc, a chart, or an image. You **write the file first** (with the `Write`
+tool), then call `present` with its path.
+
+**Each call presents one file, but multiple presentations coexist in the tab.**
+The Present tab is a carousel, and **the file path is the identity**:
+
+- Present a **new path** → a new entry is appended.
+- Present the **same path again** → that entry updates in place (this is how you
+  iterate — edit the file and re-present it; no version flag).
+
+So when you produce several artifacts the user should compare — three
+landing-page variants, a before/after pair, a set of charts — **present them
+all**: write each to its own file and call `present` once per file. Don't show a
+single variant and point the user elsewhere for the rest; that limitation
+doesn't exist.
 
 ## Ephemeral vs. tracked — it's just where you write the file
 
@@ -29,19 +42,44 @@ There is no separate flag — pick the directory that matches your intent.
   configuration, tests, plain documentation. These are deliverables; they
   don't belong in the Present tab.
 
+## Presenting multiple artifacts at once
+
+There is **no one-at-a-time limit**. Each `present` call shows one file, and a
+new path appends to the carousel, so showing N distinct artifacts is just N
+calls — each to its own file:
+
+```
+// Three design variants, all shown together in the Present tab
+// (after writing each file)
+present({ file: "/tmp/variant-a.html", title: "Variant A — minimal" })
+present({ file: "/tmp/variant-b.html", title: "Variant B — bold" })
+present({ file: "/tmp/variant-c.html", title: "Variant C — playful" })
+// → three entries the user can flip between
+```
+
+Give each a distinct `title` so the carousel headings tell them apart. Add vs.
+update is decided entirely by the path:
+
+- **Add** another artifact → present a **different file path** (new entry).
+- **Update** an artifact in place → present the **same file path** again after
+  editing it (the iteration loop; the entry refreshes and keeps its slot).
+
+So make distinct artifacts distinct files. If you reuse one path for a genuinely
+different artifact, it *replaces* the previous one rather than adding alongside.
+
 ## Parameters
 
 ```json
 {
   "file": "/tmp/architecture.html",
-  "title": "Architecture Diagram",
-  "replaceId": "pres_abc123"
+  "title": "Architecture Diagram"
 }
 ```
 
 - **`file`** (required) — path to the file to present. Relative paths resolve
   against the workspace (your cwd); absolute paths (e.g. `/tmp/chart.html`)
-  are read as-is. Write the file before calling `present`.
+  are read as-is. Write the file before calling `present`. **The path is the
+  identity**: re-presenting the same path updates that entry; a new path adds one.
 - **`mimeType`** — optional override. By default the MIME type is **inferred
   from the file extension**: `.html`/`.htm` → `text/html`, `.svg` →
   `image/svg+xml`, `.md`/`.markdown` → `text/markdown`, `.png` → `image/png`,
@@ -52,9 +90,11 @@ There is no separate flag — pick the directory that matches your intent.
   shows the **full file path** beneath it; `title` is the friendly name on top.
   Optional — without it the header uses the file's name — but helpful when you
   present multiple artifacts in a session.
-- **`replaceId`** — pass a previous `present` call's `presentId` to revise that
-  entry in place. Edit the file, then call `present` again with the same
-  `replaceId` so the user isn't flipping between stale versions.
+
+`present` returns `{ status, viewUrl }`. `viewUrl` serves the rendered artifact
+for the screenshot loop below. There is no id to track: re-presenting the same
+path is all it takes to update an entry, so the tool surfaces only the URL you
+screenshot.
 
 ## Behavior
 
@@ -68,7 +108,7 @@ There is no separate flag — pick the directory that matches your intent.
 
 ## Iterating on visual artifacts (screenshot loop)
 
-`present` returns `{ presentId, viewUrl }`. `viewUrl` is a worker-local URL
+`present` returns `{ status, viewUrl }`. `viewUrl` is a worker-local URL
 (e.g. `http://127.0.0.1:9100/present-files/pres_abc...`) that serves the exact
 rendered artifact. Use it to *see your own output* and fix it before the user
 has to:
@@ -78,16 +118,19 @@ has to:
 3. Look for layout breaks, clipped SVG `viewBox`, overflow, low contrast, or a
    chart that rendered empty because its inline JS threw — defects you only
    catch by looking at the pixels.
-4. Edit the file and call `present` again with `replaceId` set to the same
-   `presentId` to revise in place. The user sees each revision land in the
-   Present tab as you iterate. **Re-presenting is also how you reload** — there
-   is no live file watcher; call `present` again after editing the file.
+4. Edit the file and call `present` again **with the same `file` path** to
+   update it in place — because the path is the identity, the carousel entry
+   refreshes and keeps its slot (no id to pass back, no version flag).
+   The user sees each revision land in the Present tab as you iterate.
+   **Re-presenting is also how you reload** — there is no live file watcher;
+   call `present` again after editing the file.
 5. Re-navigate to the same `viewUrl` and screenshot again to confirm the fix.
+   (`viewUrl` is stable across re-presents of the same path, so it stays valid.)
 
 This is the same browser you use for live previews — nothing new to set up. The
 artifact renders in real Chromium, so what you screenshot is what the user sees.
-If a navigate returns 404, the `presentId` is unknown or its file is no longer
-on disk — just call `present` again to get a fresh URL.
+If a navigate returns 404, the file is no longer on disk — just call `present`
+again to get a fresh URL.
 
 **Always screenshot `viewUrl`, never the file directly** (no `file://`, no
 opening the path in the browser). `viewUrl` runs the same renderer as the user's
@@ -124,7 +167,7 @@ what the user sees and would defeat the point of the check.
 // Throwaway diagram — write to /tmp, present, never touches git
 // (after Write to /tmp/component-graph.svg)
 present({ file: "/tmp/component-graph.svg", title: "Component graph" })
-// → { presentId: "pres_abc...", status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
+// → { status: "presented", viewUrl: "http://127.0.0.1:9100/present-files/pres_abc..." }
 ```
 
 ```
@@ -134,7 +177,14 @@ present({ file: "docs/mockups/release-notes.md", title: "Draft release notes" })
 ```
 
 ```
-// Revise an earlier mockup in-place: edit the file, then re-present
+// Update a mockup in place: edit the SAME file, then re-present it.
+// Same path → same entry refreshes (no replaceId, no version flag).
 // (after editing /tmp/landing.html)
-present({ file: "/tmp/landing.html", title: "Landing page v2", replaceId: "pres_abc..." })
+present({ file: "/tmp/landing.html", title: "Landing page v2" })
+```
+
+```
+// Show several distinct artifacts at once: one call per file (distinct paths).
+present({ file: "/tmp/variant-a.html", title: "Variant A" })
+present({ file: "/tmp/variant-b.html", title: "Variant B" })
 ```

@@ -6,7 +6,8 @@
  * The `present` MCP tool records only a path in {@link PresentRegistry}; these
  * routes read the bytes from disk on demand — nothing is retained. The agent
  * drives its Playwright browser at `127.0.0.1:${WORKER_PORT}/present-files/...`
- * to *see* what it produced and iterate via `replaceId`.
+ * to *see* what it produced and iterate by re-presenting the same file (its
+ * `presentId` is content-addressed by path, so the entry updates in place).
  *
  * Everything is wrapped into an HTML document (except raw image bytes) so a
  * screenshot captures the full artifact edge-to-edge rather than a

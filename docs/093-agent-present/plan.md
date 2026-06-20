@@ -5,6 +5,26 @@ description: Let the agent display visual artifacts (HTML, SVG, charts, markdown
 
 # Agent Present — lightweight content display without full preview
 
+> **Update (path-based identity — supersedes the `replaceId` design below):**
+> the `presentId` is now **derived deterministically from the file path**
+> (`derivePresentId(sessionId, resolvedPath)` in `present-registry.ts`), so the
+> file path IS the identity. There is **no `replaceId` parameter** anymore.
+> - Present a **new path** → a new carousel entry is appended.
+> - Present the **same path again** → the same id is derived, so the entry
+>   updates **in place** at every layer (worker registry `Map.set`, orchestrator
+>   `ON CONFLICT(present_id) DO UPDATE`, client store dedupe-by-id) — keeping its
+>   slot. This is the screenshot iteration loop: edit the file, re-present it.
+> - Because the id is stable across re-presents *and container restarts*,
+>   re-presenting a committed workspace file after a restart updates the existing
+>   persisted row instead of duplicating it — and `viewUrl` stays valid.
+> - The present flow no longer emits a per-id `present_cleared`; the only clear is
+>   a full wipe on session switch. The client drops cached bytes on a genuine
+>   re-present (newer `createdAt`) but preserves them on a true event replay
+>   (identical `createdAt`, e.g. a WS reconnect). Motivation: GitHub issue #1543 —
+>   the old `replaceId` framing implied a one-artifact-at-a-time limit and the
+>   agent misused it; deriving identity from the path removes the knob entirely.
+> Mentions of `replaceId` / "revision flow" below are the prior design.
+>
 > **Update (docs/188):** the `present` tool is now **file-based** — the agent
 > writes a file and presents it by path (`present({ file })`), instead of passing
 > an inline `content` string. The MIME type is inferred from the extension. A

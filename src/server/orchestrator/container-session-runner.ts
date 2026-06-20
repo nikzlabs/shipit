@@ -429,18 +429,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
 
   /**
    * Apply a present_content entry to the local cache, mirroring the client
-   * store's reducer: when `replaceId` points at a known entry (revision flow)
-   * replace it in place; when the new `presentId` already exists replace that
-   * (idempotent re-delivery); otherwise append.
+   * store's reducer. `presentId` is content-addressed by the file path, so a
+   * known id means the same file was re-presented → replace it in place
+   * (keeping its carousel slot); a new id → append.
    */
-  private cachePresentation(entry: PresentStateEntry, replaceId?: string): void {
-    if (replaceId) {
-      const idx = this._presentations.findIndex((p) => p.presentId === replaceId);
-      if (idx >= 0) {
-        this._presentations[idx] = entry;
-        return;
-      }
-    }
+  private cachePresentation(entry: PresentStateEntry): void {
     const existing = this._presentations.findIndex((p) => p.presentId === entry.presentId);
     if (existing >= 0) {
       this._presentations[existing] = entry;
@@ -1613,7 +1606,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         case "present_content": {
           const evt = data as {
             presentId?: string;
-            replaceId?: string;
             mimeType?: string;
             title?: string;
             filePath?: string;
@@ -1636,29 +1628,25 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               filePath: evt.filePath,
               createdAt: evt.createdAt ?? new Date().toISOString(),
             };
-            this.cachePresentation(entry, evt.replaceId);
+            this.cachePresentation(entry);
             // Persist durably so the Present tab survives a container restart.
             // resolvedPath is required to re-serve bytes later; skip persistence
             // if a (legacy) worker didn't send it — the in-memory cache still works.
             if (this._presentStore && typeof evt.resolvedPath === "string") {
-              this._presentStore.record(
-                {
-                  presentId: entry.presentId,
-                  sessionId: this.sessionId,
-                  filePath: entry.filePath,
-                  resolvedPath: evt.resolvedPath,
-                  mimeType: entry.mimeType,
-                  createdAt: entry.createdAt,
-                  ...(entry.title !== undefined ? { title: entry.title } : {}),
-                },
-                evt.replaceId,
-              );
+              this._presentStore.record({
+                presentId: entry.presentId,
+                sessionId: this.sessionId,
+                filePath: entry.filePath,
+                resolvedPath: evt.resolvedPath,
+                mimeType: entry.mimeType,
+                createdAt: entry.createdAt,
+                ...(entry.title !== undefined ? { title: entry.title } : {}),
+              });
             }
             this.emitMessage({
               type: "present_content",
               sessionId: this.sessionId,
               presentId: entry.presentId,
-              ...(evt.replaceId !== undefined ? { replaceId: evt.replaceId } : {}),
               mimeType: entry.mimeType,
               ...(entry.title !== undefined ? { title: entry.title } : {}),
               filePath: entry.filePath,

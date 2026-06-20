@@ -4,7 +4,7 @@
  * The store is the orchestrator-side persistence that lets the Present tab
  * survive a session-container restart: a fresh runner seeds its cache from
  * here, and `proxyPresentRaw` re-registers a persisted entry with the new
- * worker. These assert the record/replace/clear reducer and the round-trip.
+ * worker. These assert the record/update-in-place/clear reducer and round-trip.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -81,22 +81,16 @@ describe("PresentStore", () => {
     expect(store.list("s1").map((p) => p.presentId)).toEqual(["a", "b", "c"]);
   });
 
-  it("replaceId replaces in place, preserving carousel slot", () => {
+  it("re-presenting the same file (same id) updates in place, preserving carousel slot", () => {
     store.record(makeEntry({ presentId: "a" }));
     store.record(makeEntry({ presentId: "b" }));
     store.record(makeEntry({ presentId: "c" }));
-    // Revise the middle one (b → b2). It must keep slot 1, not jump to the end.
-    store.record(makeEntry({ presentId: "b2", title: "B v2" }), "b");
+    // The same file re-presented derives the same id; the middle entry must keep
+    // slot 1 (not jump to the end) and refresh its fields in place.
+    store.record(makeEntry({ presentId: "b", title: "B v2" }));
     const ids = store.list("s1").map((p) => p.presentId);
-    expect(ids).toEqual(["a", "b2", "c"]);
-    expect(store.get("b2")?.title).toBe("B v2");
-    expect(store.get("b")).toBeUndefined();
-  });
-
-  it("appends when replaceId does not match any row", () => {
-    store.record(makeEntry({ presentId: "a" }));
-    store.record(makeEntry({ presentId: "b" }), "missing");
-    expect(store.list("s1").map((p) => p.presentId)).toEqual(["a", "b"]);
+    expect(ids).toEqual(["a", "b", "c"]);
+    expect(store.get("b")?.title).toBe("B v2");
   });
 
   it("idempotent re-delivery of the same presentId updates in place", () => {

@@ -6,6 +6,15 @@
  * read on demand, plus the display path, MIME, title, and timestamp. It never
  * holds the artifact bytes.
  *
+ * Identity is the file path. `presentId` is derived deterministically from
+ * (sessionId, resolvedPath) via {@link derivePresentId}, so re-presenting the
+ * SAME file yields the SAME id and {@link PresentRegistry.put} overwrites that
+ * entry in place (keeping its insertion-order/carousel slot), while a DIFFERENT
+ * file yields a different id and appends. This is how the agent shows several
+ * artifacts at once (distinct files) yet iterates one in place during the
+ * screenshot loop (same file, re-presented) — no explicit "replace" flag, the
+ * path is the key. See docs/093, docs/170.
+ *
  * Bytes are read from disk lazily, every time an artifact is served:
  *  - the agent's screenshot loop hits `GET /present-files/:presentId` (rendered),
  *  - the user's Present tab fetches `GET /present/:presentId/raw` (raw bytes)
@@ -14,10 +23,25 @@
  * Because nothing large is retained, there are no size, count, or memory caps
  * and no eviction. The container's `/tmp` (or the workspace) is the single
  * source of truth; if the agent overwrites or deletes the file, the next read
- * reflects that (an accepted, rare staleness window — see docs/093). The only
- * `present_cleared` paths are a revision superseding an id and a full clear on
+ * reflects that (an accepted, rare staleness window — see docs/093). A
+ * per-entry `present_cleared` is never emitted; the only clear is a full wipe on
  * session switch.
  */
+
+import { createHash } from "node:crypto";
+
+/**
+ * Deterministic `presentId` for a presented file, content-addressed by
+ * (sessionId, resolvedPath). Stable across re-presents and container restarts,
+ * so the same file always maps to the same carousel entry at every layer
+ * (worker registry, orchestrator DB upsert, client store). sessionId is mixed
+ * in because `presentId` is globally unique in the orchestrator's store, so two
+ * sessions presenting the same path must not collide.
+ */
+export function derivePresentId(sessionId: string, resolvedPath: string): string {
+  const digest = createHash("sha1").update(`${sessionId}\0${resolvedPath}`).digest("hex");
+  return `pres_${digest.slice(0, 32)}`;
+}
 
 export interface PresentMeta {
   presentId: string;
@@ -40,9 +64,11 @@ export class PresentRegistry {
   }
 
   /**
-   * Record (or revise) a presentation's metadata. Returns the ids the caller
-   * must broadcast `present_cleared` for — only the superseded id in the
-   * revision flow (when `replaceId` differs from the new id); otherwise empty.
+   * Record a presentation's metadata, keyed by its deterministic `presentId`.
+   * Re-presenting the same file (same id) overwrites the entry in place — a
+   * `Map.set` on an existing key keeps its insertion position, so the carousel
+   * slot is preserved during the screenshot iteration loop. A new file (new id)
+   * appends. Returns the stored metadata.
    */
   put(
     presentId: string,
@@ -52,9 +78,8 @@ export class PresentRegistry {
       mimeType: string;
       title?: string;
       createdAt: string;
-      replaceId?: string;
     },
-  ): { meta: PresentMeta; evicted: string[] } {
+  ): PresentMeta {
     const meta: PresentMeta = {
       presentId,
       resolvedPath: input.resolvedPath,
@@ -63,17 +88,8 @@ export class PresentRegistry {
       ...(input.title !== undefined ? { title: input.title } : {}),
       createdAt: input.createdAt,
     };
-
-    // Revision flow — drop the superseded id, insert the new one.
-    if (input.replaceId && this.entries.has(input.replaceId)) {
-      this.entries.delete(input.replaceId);
-      this.entries.set(presentId, meta);
-      const evicted = input.replaceId !== presentId ? [input.replaceId] : [];
-      return { meta, evicted };
-    }
-
     this.entries.set(presentId, meta);
-    return { meta, evicted: [] };
+    return meta;
   }
 
   get(presentId: string): PresentMeta | undefined {
