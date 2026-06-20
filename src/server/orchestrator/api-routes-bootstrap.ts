@@ -72,6 +72,8 @@ export async function registerBootstrapRoutes(
     autoFixCi?: boolean;
     /** docs/144 — global gate for sub-agent spawning. */
     enableSubAgents?: boolean;
+    /** docs/217 — per-agent sub-agent defaults patch, keyed by agent id. */
+    agentSubAgentDefaults?: Record<string, { reasoningEffort?: string | null }>;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
   } }>(
@@ -104,6 +106,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
           ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
+          ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),
         });
       } catch (err) {

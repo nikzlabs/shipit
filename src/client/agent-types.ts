@@ -42,4 +42,14 @@ export interface AgentOption {
    * payloads / test fixtures — defaults to `/` when absent. (docs/155)
    */
   skillInvocationPrefix?: string;
+  /**
+   * docs/217 — reasoning/effort options this agent exposes (or absent). Drives
+   * the composer's reasoning control and the per-agent "Sub-agent defaults"
+   * section on the agent's Settings tab. The CLI knob and value set differ per
+   * agent (Claude `--effort`: low…max; Codex `model_reasoning_effort`: none…xhigh).
+   */
+  reasoning?: {
+    label: string;
+    options: { value: string; label: string }[];
+  };
 }

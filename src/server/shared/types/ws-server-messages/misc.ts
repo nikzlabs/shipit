@@ -47,6 +47,8 @@ export interface WsGlobalSettings {
   autoFixCi?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
+  /** docs/217 — per-agent sub-agent defaults (Control A), keyed by agent id. */
+  agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>;
 }
 
 // ---- Template messages ----

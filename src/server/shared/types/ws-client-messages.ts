@@ -78,6 +78,15 @@ export interface WsSetModelMessage {
   model: string;
 }
 
+/**
+ * docs/217 — Client → Server: set the per-session reasoning effort for the
+ * active agent's own turns (Control B). `effort: null` clears it (CLI default).
+ */
+export interface WsSetReasoningMessage {
+  type: "set_reasoning";
+  effort: string | null;
+}
+
 // ---- Interrupt messages ----
 
 /** Client → Server: interrupt the currently running agent process. */
@@ -222,6 +231,7 @@ export type WsClientMessage =
   | WsAnswerQuestion
   | WsSetAgentMessage
   | WsSetModelMessage
+  | WsSetReasoningMessage
   | WsTerminalStart
   | WsTerminalInput
   | WsTerminalResize

@@ -1,4 +1,4 @@
-import type { AgentId, AgentEvent } from "../agent-types.js";
+import type { AgentId, AgentEvent, AgentReasoningCapability } from "../agent-types.js";
 import type { PermissionMode } from "../attachment-types.js";
 
 export interface WsAgentEvent {
@@ -96,6 +96,11 @@ export interface WsAgentListMessage {
      * array includes it. Codex reports `[]` (no permission modes).
      */
     supportedPermissionModes: PermissionMode[];
+    /**
+     * docs/217 — reasoning/effort options this agent exposes (or absent). Drives
+     * the composer's reasoning control and the per-agent Settings tab default.
+     */
+    reasoning?: AgentReasoningCapability;
   }[];
 }
 

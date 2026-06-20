@@ -328,6 +328,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
           sessionManager: ctx.sessionManager,
           readSystemPrompt: ctx.readSystemPrompt,
           getSelectedModel: ctx.getSelectedModel,
+          getSelectedReasoning: ctx.getSelectedReasoning,
           ...(ctx.runParamsPreps ? { runParamsPreps: ctx.runParamsPreps } : {}),
         },
         sessionId,

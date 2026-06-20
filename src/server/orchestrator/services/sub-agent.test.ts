@@ -75,7 +75,10 @@ function makeDeps(opts: {
       get: vi.fn((id: string) => (session?.id === id ? session : undefined)),
       list: vi.fn(() => opts.sessions ?? []),
     } as never,
-    credentialStore: { getEnableSubAgents: () => opts.enableSubAgents ?? true } as never,
+    credentialStore: {
+      getEnableSubAgents: () => opts.enableSubAgents ?? true,
+      getAgentSubAgentDefaults: () => ({}),
+    } as never,
     agentRegistry: {
       refreshAuth: vi.fn(),
       get: vi.fn(() => (opts.agentKnown === false ? undefined : { name: "Codex", authConfigured: opts.authConfigured ?? true })),

@@ -67,14 +67,16 @@ class FakeChildProcess extends EventEmitter {
 // docs/119-codex-subscription-auth/plan.md.
 let fakeProc: FakeChildProcess;
 let lastSpawnEnv: NodeJS.ProcessEnv | undefined;
+let lastSpawnArgs: string[] | undefined;
 
 vi.mock("node:child_process", () => ({
   execFile: (_cmd: string, _args: string[], cb: (error: Error | null, stdout: string, stderr: string) => void) => {
     cb(null, "/usr/local/bin/codex\n", "");
   },
-  spawn: (_cmd: string, _args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
+  spawn: (_cmd: string, args: string[], options: { env?: NodeJS.ProcessEnv } = {}) => {
     fakeProc = new FakeChildProcess();
     lastSpawnEnv = options.env;
+    lastSpawnArgs = args;
     return fakeProc;
   },
   execFileSync: () => {
@@ -144,6 +146,22 @@ describe("CodexAdapter", () => {
   it("has agentId 'codex'", () => {
     adapter = new CodexAdapter(() => false);
     expect(adapter.agentId).toBe("codex");
+  });
+
+  // docs/217 — reasoning effort rides a `-c model_reasoning_effort=` global
+  // override placed BEFORE the `app-server` subcommand, at spawn time.
+  describe("reasoning effort (docs/217)", () => {
+    it("passes -c model_reasoning_effort= when reasoningEffort is set", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace", reasoningEffort: "high" });
+      expect(lastSpawnArgs).toEqual(["-c", "model_reasoning_effort=high", "app-server"]);
+    });
+
+    it("omits the override (default) when reasoningEffort is unset", () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.run({ prompt: "hi", cwd: "/workspace" });
+      expect(lastSpawnArgs).toEqual(["app-server"]);
+    });
   });
 
   it("reports Codex capabilities", () => {

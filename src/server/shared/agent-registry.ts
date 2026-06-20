@@ -132,6 +132,19 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
       supportedPermissionModes: CLAUDE_PERMISSION_MODES,
       toolNames: [...CLAUDE_TOOL_NAMES],
       models: CLAUDE_MODELS,
+      // Claude Code CLI `--effort <level>`. Verified valid values by running
+      // `claude --effort __bogus__`: "low, medium, high, xhigh, max". Omitting
+      // the flag uses the model's adaptive default. See docs/217-per-agent-reasoning.
+      reasoning: {
+        label: "Reasoning",
+        options: [
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" },
+          { value: "xhigh", label: "Extra high" },
+          { value: "max", label: "Max" },
+        ],
+      },
       supportsReview: true,
       supportsSteering: true,
       supportsCompaction: true,
@@ -163,6 +176,22 @@ const AGENT_DEFS: { id: AgentId; name: string; binary: string; capabilities: Age
         "gpt-5.3-codex",
         "gpt-5.2",
       ],
+      // Codex CLI config `model_reasoning_effort`. Verified valid values by
+      // running `codex -c model_reasoning_effort=__bogus__`: "none, minimal,
+      // low, medium, high, xhigh". Omitting the override uses Codex's own
+      // default. Passed at app-server spawn as `-c model_reasoning_effort=…`.
+      // See docs/217-per-agent-reasoning.
+      reasoning: {
+        label: "Reasoning effort",
+        options: [
+          { value: "none", label: "None" },
+          { value: "minimal", label: "Minimal" },
+          { value: "low", label: "Low" },
+          { value: "medium", label: "Medium" },
+          { value: "high", label: "High" },
+          { value: "xhigh", label: "Extra high" },
+        ],
+      },
       // docs/125 — Codex now ships subagents (model-invoked via the
       // `spawn_agent` collab tool, triggered by explicit instruction) AND MCP
       // servers (`[mcp_servers.*]` in config.toml). The worker writes the

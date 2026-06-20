@@ -91,6 +91,46 @@ export function saveModelId(modelId: string | undefined): void {
   }
 }
 
+// docs/217 — composer reasoning seed, keyed PER AGENT so switching agents
+// restores each one's last composer pick. One JSON blob `{ [agentId]: effort }`.
+// This is only the SEED for a new session; the per-session value is server-
+// persisted (the session row) and authoritative once chosen.
+const REASONING_BY_AGENT_KEY = "shipit-reasoning-by-agent";
+
+function readReasoningByAgent(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(REASONING_BY_AGENT_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [k, v] of Object.entries(parsed)) {
+      if (typeof v === "string" && v) out[k] = v;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function getSavedReasoning(agentId: string): string | undefined {
+  return readReasoningByAgent()[agentId];
+}
+
+export function saveReasoning(agentId: string, effort: string | null): void {
+  try {
+    const map = readReasoningByAgent();
+    // Rebuild rather than `delete map[agentId]` (no dynamic-delete).
+    const next: Record<string, string> = {};
+    for (const [id, v] of Object.entries(map)) {
+      if (id !== agentId) next[id] = v;
+    }
+    if (effort) next[agentId] = effort;
+    localStorage.setItem(REASONING_BY_AGENT_KEY, JSON.stringify(next));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function getSavedActiveRepo(): string | undefined {
   try {
     return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;

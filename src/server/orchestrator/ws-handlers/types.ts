@@ -74,6 +74,9 @@ export interface RunnerCtx {
   setActiveAgentId: (id: AgentId) => void;
   getSelectedModel: () => string | undefined;
   setSelectedModel: (model: string | undefined) => void;
+  /** docs/217 — per-session reasoning effort for the active agent's own turns. */
+  getSelectedReasoning: () => string | undefined;
+  setSelectedReasoning: (effort: string | undefined) => void;
 
   // Runner lookup — the ONLY supported way to access runner state.
   /** Get the runner attached to this connection (if any). Prefer

@@ -56,6 +56,14 @@ interface CredentialData {
    */
   enableSubAgents?: boolean;
   /**
+   * docs/217 — per-agent defaults applied when this agent is invoked as a
+   * SUB-agent (`shipit agent run --agent <id>` from inside another session).
+   * Keyed by agent id. A per-agent object (not a scalar) so the group can grow
+   * — a default `model` for the sub-agent invocation is the planned next member.
+   * Absent / `reasoningEffort` unset ⇒ pass no flag (the CLI's native default).
+   */
+  agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>;
+  /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
    * the `mcp__<server>__<KEY>` namespace, not here.
@@ -558,6 +566,42 @@ export class CredentialStore {
 
   setEnableSubAgents(enabled: boolean): void {
     this.data.enableSubAgents = enabled;
+    this.save();
+  }
+
+  // ---- Sub-agent defaults (docs/217) ----
+
+  /** Read the per-agent sub-agent defaults (empty object when unset). */
+  getAgentSubAgentDefaults(agentId: string): { reasoningEffort?: string } {
+    return this.data.agentSubAgentDefaults?.[agentId] ?? {};
+  }
+
+  /** Read the full per-agent sub-agent-defaults map (for the settings payload). */
+  getAllAgentSubAgentDefaults(): Record<string, { reasoningEffort?: string }> {
+    return { ...(this.data.agentSubAgentDefaults ?? {}) };
+  }
+
+  /**
+   * Merge a partial sub-agent-defaults patch for one agent. An explicit `null`
+   * (or `undefined`) for a key clears it, falling back to the CLI's own default.
+   */
+  setAgentSubAgentDefaults(
+    agentId: string,
+    patch: { reasoningEffort?: string | null },
+  ): void {
+    const current = { ...(this.data.agentSubAgentDefaults?.[agentId] ?? {}) };
+    if ("reasoningEffort" in patch) {
+      if (patch.reasoningEffort) current.reasoningEffort = patch.reasoningEffort;
+      else delete current.reasoningEffort;
+    }
+    // Rebuild the map (rather than `delete map[agentId]`) so a now-empty entry
+    // drops out without a dynamic-delete.
+    const next: Record<string, { reasoningEffort?: string }> = {};
+    for (const [id, value] of Object.entries(this.data.agentSubAgentDefaults ?? {})) {
+      if (id !== agentId) next[id] = value;
+    }
+    if (Object.keys(current).length > 0) next[agentId] = current;
+    this.data.agentSubAgentDefaults = next;
     this.save();
   }
 

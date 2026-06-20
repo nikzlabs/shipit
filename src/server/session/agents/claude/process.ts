@@ -65,6 +65,12 @@ export interface ClaudeRunOptions {
   /** Model alias or ID to use (e.g., "sonnet", "opus"). */
   model?: string;
   /**
+   * docs/217 — reasoning effort passed as `--effort <level>`. Valid levels:
+   * low, medium, high, xhigh, max (validated server-side against the agent's
+   * option set). Omitted → the model's adaptive default.
+   */
+  reasoningEffort?: string;
+  /**
    * Path to a Claude Code settings file (passed as `--settings`). The
    * orchestrator always points this at /etc/shipit/managed-settings.json for
    * the `claude` agent so the PreToolUse branch-block hook is active. See
@@ -110,7 +116,7 @@ export class ClaudeProcess extends EventEmitter {
    * they're saved to the host uploads directory and referenced in the prompt.
    */
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // `Skill` is allowlisted in both modes — including plan — so an explicit
     // `/my-skill` invocation is honored in every permission mode. This accepts
@@ -196,6 +202,10 @@ export class ClaudeProcess extends EventEmitter {
 
     if (model) {
       args.push("--model", model);
+    }
+
+    if (reasoningEffort) {
+      args.push("--effort", reasoningEffort);
     }
 
     if (settingsPath) {
@@ -389,7 +399,7 @@ export class StreamingClaudeProcess extends EventEmitter {
   private requestIdCounter = 0;
 
   run(opts: ClaudeRunOptions): void {
-    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
+    const { prompt, sessionId, systemPrompt, cwd, permissionMode, mcpConfigPath, mcpServerNames, model, reasoningEffort, settingsPath, autoCreatePr, sandbox, permissionPromptTool } = opts;
 
     // See ClaudeProcess.run above for why the named `mcp__shipit__*` tools join
     // `mcp__playwright__*` in both lists (SHI-128; docs/125, docs/149).
@@ -421,6 +431,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     // mode too; routes the sensitive-file gate to ShipIt's approve/deny card.
     if (permissionPromptTool) args.push("--permission-prompt-tool", permissionPromptTool);
     if (model) args.push("--model", model);
+    if (reasoningEffort) args.push("--effort", reasoningEffort);
     if (settingsPath) args.push("--settings", settingsPath);
     if (systemPrompt) {
       // See the PTY-spawn branch above for why we use --append-system-prompt
