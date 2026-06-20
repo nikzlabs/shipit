@@ -234,7 +234,7 @@ export function MessageList({
         gapPosition={gapPosition}
         currentState={currentState}
         align={align}
-        disabled={!currentState && isLoading}
+        turnRunning={!currentState && isLoading}
         defaultSessionName={forkDefaultName}
         previews={getPreviewsForGap(gapPosition)}
         onRequestPreview={onRequestRewindPreview}
