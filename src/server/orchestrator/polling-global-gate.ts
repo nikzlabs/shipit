@@ -8,9 +8,12 @@
  * The gate is open when ANY of these is true:
  *   - a browser viewer is attached to any runner;
  *   - we're inside the disconnect grace window after the last viewer left;
- *   - an autonomous action is in flight on any tracked session (auto-fix
- *     running, ShipIt-managed auto-merge enabled, or a viewerless runner
- *     that's mid-turn — the headless flow).
+ *   - an autonomous action is in flight or armed on any tracked session
+ *     (auto-fix enabled and not yet exhausted, ShipIt-managed auto-merge
+ *     enabled, or a viewerless runner that's mid-turn — the headless flow).
+ *     Auto-fix counts while merely *armed* (not just while running) so a
+ *     viewerless session can detect and fix a CI failure that lands after the
+ *     browser closes — otherwise the loop could never fire headlessly.
  * When all three are false, the supervisor is stopped.
  *
  * This decision is intentionally distinct from the per-repo cadence decision
@@ -77,8 +80,9 @@ export class PollingGlobalGate {
 
   /**
    * True when an autonomous action that depends on PR/CI status updates is in
-   * flight: an auto-fix loop, a managed auto-merge, or a headless agent turn
-   * (running runner with no viewer — e.g. a child session spawned from chat).
+   * flight or armed: an armed auto-fix loop (enabled, budget not exhausted), a
+   * managed auto-merge, or a headless agent turn (running runner with no viewer
+   * — e.g. a child session spawned from chat).
    */
   private anyAutonomousActionInFlight(): boolean {
     for (const sessionId of this.tracker.sessionRepos.keys()) {
@@ -86,6 +90,15 @@ export class PollingGlobalGate {
 
       const fix = this.autoFix.get(sessionId);
       if (fix?.status === "running") return true;
+      // Auto-fix doesn't need a viewer to do its job — if it's armed (the
+      // global setting is on and this session isn't paused), keep polling so a
+      // CI failure is detected and fired even with no browser attached. Gating
+      // only on `status === "running"` (above) is a chicken-and-egg: a
+      // viewerless session can never reach "running" because the poll that
+      // would fire the loop is itself viewer-gated. Stop once the per-head
+      // budget is exhausted — nothing fires again until a new head lands, which
+      // arrives with a viewer reattach or a headless turn (both gated below).
+      if (fix?.status !== "exhausted" && this.autoFix.isEnabledFor(sessionId)) return true;
 
       const merge = this.autoMerge.get(sessionId);
       // ShipIt-managed auto-merge needs the poller to detect CI-success → merge.

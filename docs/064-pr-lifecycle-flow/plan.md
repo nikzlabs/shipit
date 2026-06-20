@@ -334,10 +334,23 @@ polls.
   `SessionRunnerRegistry`);
 - a viewer detached within the last 60 s (grace window for reloads /
   brief network blips);
-- an autonomous flow is in flight: `AutoFixManager` has a session in
-  `status: "running"`, `AutoMergeManager` has a session in
-  `managed + enabled`, or a runner is `running` with `viewerCount === 0`
+- an autonomous flow is in flight or *armed*: `AutoFixManager` is enabled
+  for a tracked session (global setting on, session not paused) and that
+  session's per-head budget isn't `exhausted` — armed, not just
+  `status: "running"`; `AutoMergeManager` has a session in
+  `managed + enabled`; or a runner is `running` with `viewerCount === 0`
   (headless turn).
+
+  Auto-fix counts while merely *armed* because it must run **without** a
+  viewer: a CI failure that lands after the browser closes has to be detected
+  and fixed autonomously. Gating only on `status: "running"` was a
+  chicken-and-egg bug — a viewerless session could never reach `"running"`,
+  because the poll that fires the loop was itself viewer-gated, so auto-fix
+  only ever worked while a browser was connected. The exhaustion guard stops
+  the open-forever case: once the per-head budget is spent nothing fires again
+  until a new head lands, which arrives with a viewer reattach or a headless
+  turn (both already keep the gate open). The armed read is
+  `AutoRemediationManager.isEnabledFor(sessionId)`.
 
 Closed otherwise. A closed gate stops the single supervisor timer entirely
 — *zero* GraphQL polls until the gate reopens.
