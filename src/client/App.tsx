@@ -1422,7 +1422,7 @@ export default function App() {
           if (session?.remoteUrl) useRepoStore.getState().setActiveRepoUrl(session.remoteUrl);
           handleSessionResume(sid, navigate);
         }}
-        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { const repoUrl = sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl; if (repoUrl) void handleNewSessionForRepo(repoUrl); } }}
+        onArchiveSession={async (sid: string) => { await useSessionStore.getState().archiveSession(sid); if (sid === useSessionStore.getState().sessionId) { const repoUrl = sessions.find((s) => s.id === sid)?.remoteUrl ?? activeRepoUrl; if (repoUrl) void handleNewSessionForRepo(repoUrl, { preserveMobileView: true }); } }}
         onNewSessionForRepo={handleNewSessionForRepo}
         onToggleSidebarCollapse={() => useUiStore.getState().setSidebarCollapsed(!sidebarCollapsed)}
         repos={repos}

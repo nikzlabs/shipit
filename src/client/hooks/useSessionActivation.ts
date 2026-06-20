@@ -28,7 +28,7 @@ export function useSessionActivation(params: {
   disableAutoFix: () => void;
   navigate: NavigateFunction;
 }): {
-  handleNewSessionForRepo: (repoUrl: string) => Promise<void>;
+  handleNewSessionForRepo: (repoUrl: string, opts?: { preserveMobileView?: boolean }) => Promise<void>;
   handleNewSessionShortcut: () => void;
   handleQuickSessionCreated: (session: SessionInfo) => void;
 } {
@@ -111,7 +111,7 @@ export function useSessionActivation(params: {
   }, [isNewSessionRoute, newSessionRepoUrl, bootstrapLoaded, reposLength, navigate]);
 
   const handleNewSessionForRepo = useCallback(
-    async (repoUrl: string) => {
+    async (repoUrl: string, opts?: { preserveMobileView?: boolean }) => {
       // Abort any in-flight claim from a previous "New Session" click
       claimAbortRef.current?.abort();
       const ac = new AbortController();
@@ -124,8 +124,14 @@ export function useSessionActivation(params: {
       // On mobile, a new session must land in the chat panel — otherwise the
       // session-list drawer (or the Workspace panel) stays in front of the
       // fresh session. No-op on desktop, where these states are unused.
-      useUiStore.getState().setMobileSidebarOpen(false);
-      useUiStore.getState().setMobilePanel("chat");
+      //
+      // EXCEPT when archiving the active session: the user is in the session-list
+      // drawer and wants to stay there (to archive more / switch sessions), so the
+      // caller passes preserveMobileView to keep the drawer and current panel.
+      if (!opts?.preserveMobileView) {
+        useUiStore.getState().setMobileSidebarOpen(false);
+        useUiStore.getState().setMobilePanel("chat");
+      }
 
       // 2. Navigate instantly (before API call) — user sees /{owner}/{repo}/new
       void navigate(repoLabelToNewPath(repoUrl));
