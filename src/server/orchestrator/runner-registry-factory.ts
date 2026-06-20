@@ -289,6 +289,7 @@ export function createRunnerRegistry(
         broadcastLog: (source: LogSource, text: string) =>
           broadcastLog(runner.sessionId, source, text),
         getSelectedModel: () => sessionManager.get(runner.sessionId)?.model,
+        getSelectedReasoning: () => sessionManager.get(runner.sessionId)?.reasoningEffort,
         ...(authManagers ? { authManagers } : {}),
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
@@ -377,6 +378,7 @@ export function createRunnerRegistry(
               sessionManager,
               readSystemPrompt: readSystemPrompt ?? (() => Promise.resolve(undefined)),
               getSelectedModel: () => session?.model,
+              getSelectedReasoning: () => session?.reasoningEffort,
               ...(runParamsPreps ? { runParamsPreps } : {}),
             },
             sessionId,

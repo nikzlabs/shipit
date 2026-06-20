@@ -18,6 +18,43 @@ describe("CredentialStore", () => {
     return tmpDir;
   }
 
+  // ---- Sub-agent defaults (docs/217) ----
+
+  describe("agentSubAgentDefaults", () => {
+    it("returns an empty object for an unset agent", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
+    });
+
+    it("set/get round-trips and persists across reloads", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
+
+      const reloaded = new CredentialStore(dir);
+      expect(reloaded.getAgentSubAgentDefaults("codex")).toEqual({ reasoningEffort: "high" });
+    });
+
+    it("keeps per-agent entries independent", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setAgentSubAgentDefaults("claude", { reasoningEffort: "xhigh" });
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "low" });
+      expect(store.getAllAgentSubAgentDefaults()).toEqual({
+        claude: { reasoningEffort: "xhigh" },
+        codex: { reasoningEffort: "low" },
+      });
+    });
+
+    it("clears the entry when reasoningEffort is set to null", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: "high" });
+      store.setAgentSubAgentDefaults("codex", { reasoningEffort: null });
+      expect(store.getAgentSubAgentDefaults("codex")).toEqual({});
+      expect(store.getAllAgentSubAgentDefaults()).toEqual({});
+    });
+  });
+
   // ---- Agent env ----
 
   describe("agentEnv", () => {

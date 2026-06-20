@@ -32,6 +32,8 @@ interface SessionRow {
   merged_at: string | null;
   closed_at: string | null;
   model: string | null;
+  /** docs/217 — per-session reasoning effort (Control B); NULL = CLI default. */
+  reasoning_effort: string | null;
   agent_id: string | null;
   /** docs/138 — set once the session has taken its first turn (agent pinned). */
   agent_pinned: number;
@@ -260,6 +262,7 @@ export class SessionManager {
     if (row.merged_at) info.mergedAt = row.merged_at;
     if (row.closed_at) info.closedAt = row.closed_at;
     if (row.model) info.model = row.model;
+    if (row.reasoning_effort) info.reasoningEffort = row.reasoning_effort;
     if (row.agent_id === "claude" || row.agent_id === "codex") info.agentId = row.agent_id;
     if (row.agent_pinned) info.agentPinned = true;
     if ((row.provider_route_kind === "account" || row.provider_route_kind === "reserved") && row.provider_route_id) {
@@ -655,6 +658,14 @@ export class SessionManager {
   /** Store the selected model for a session. */
   setModel(id: string, model: string): void {
     this.db.prepare("UPDATE sessions SET model = ? WHERE id = ?").run(model, id);
+  }
+
+  /**
+   * docs/217 — store the per-session reasoning effort (Control B). `null` clears
+   * it (back to the CLI default).
+   */
+  setReasoning(id: string, effort: string | null): void {
+    this.db.prepare("UPDATE sessions SET reasoning_effort = ? WHERE id = ?").run(effort, id);
   }
 
   /** Store the selected agent (provider) for a session. */

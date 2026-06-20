@@ -33,6 +33,7 @@ export function listAgents(agentRegistry: AgentRegistry): AgentInfo[] {
     supportsCompaction: a.capabilities.supportsCompaction,
     supportedPermissionModes: a.capabilities.supportedPermissionModes,
     skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
+    ...(a.capabilities.reasoning ? { reasoning: a.capabilities.reasoning } : {}),
   }));
 }
 
@@ -68,6 +69,7 @@ export async function getGlobalSettings(
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
   const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
+  const agentSubAgentDefaults = credentialStore?.getAllAgentSubAgentDefaults() ?? {};
   // Settings page renders the per-agent "Parallel sessions" guidance as a
   // preview. Pick the first installed-and-authed agent so a Codex-only host
   // shows Codex's variant, not Claude's. Fall back to the first registered
@@ -79,7 +81,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -132,6 +134,12 @@ export interface SaveGlobalSettingsOptions {
   autoFixCi?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
+  /**
+   * docs/217 — per-agent sub-agent defaults patch, keyed by agent id. Each entry
+   * is merged into the stored value; `reasoningEffort: null` clears it. Validated
+   * against the agent's registered reasoning options.
+   */
+  agentSubAgentDefaults?: Record<string, { reasoningEffort?: string | null }>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
 }
@@ -144,7 +152,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, enableSubAgents, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -197,6 +205,26 @@ export async function saveGlobalSettings(
   // docs/144 — save sub-agent spawning gate if provided
   if (enableSubAgents !== undefined) {
     credentialStore.setEnableSubAgents(enableSubAgents);
+  }
+
+  // docs/217 — merge per-agent sub-agent defaults. Validate each agent id and
+  // reasoning value against the registry before persisting; a bad value is a
+  // 400 (the picker only ever sends in-set values, so this guards API misuse).
+  if (agentSubAgentDefaults !== undefined) {
+    for (const [agentId, patch] of Object.entries(agentSubAgentDefaults)) {
+      const info = agentRegistry.get(agentId as AgentId);
+      if (!info) throw new ServiceError(400, `Unknown agent: ${agentId}`);
+      if ("reasoningEffort" in patch) {
+        const value = patch.reasoningEffort;
+        if (value !== null && value !== undefined) {
+          const allowed = info.capabilities.reasoning?.options.some((o) => o.value === value);
+          if (!allowed) {
+            throw new ServiceError(400, `Invalid reasoning effort "${value}" for ${info.name}`);
+          }
+        }
+        credentialStore.setAgentSubAgentDefaults(agentId, { reasoningEffort: value ?? null });
+      }
+    }
   }
 
   // docs/163 — save voice-note delivery mode if provided

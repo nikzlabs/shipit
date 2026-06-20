@@ -18,6 +18,21 @@ export const CLAUDE_PERMISSION_MODES: PermissionMode[] = ["auto", "plan", "guard
 
 // ---- Agent capabilities ----
 
+/**
+ * Reasoning/effort options an agent exposes. The control's name and value set
+ * differ per agent (Claude Code `--effort`: low…max; Codex
+ * `model_reasoning_effort`: none…xhigh), so the registry owns the per-agent
+ * values and the client renders them. A stored selection absent from this set —
+ * or no stored selection at all — means "pass no flag", i.e. the CLI's native
+ * default. See docs/217-per-agent-reasoning.
+ */
+export interface AgentReasoningCapability {
+  /** Control label, e.g. "Reasoning" (claude) or "Reasoning effort" (codex). */
+  label: string;
+  /** Selectable effort levels. Does NOT include the implicit "Default"/no-flag entry. */
+  options: { value: string; label: string }[];
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;
@@ -33,6 +48,11 @@ export interface AgentCapabilities {
   toolNames: string[];
   /** Known model identifiers for this agent. */
   models: string[];
+  /**
+   * Reasoning/effort options this agent exposes, if any. Absent for agents with
+   * no reasoning knob. See docs/217-per-agent-reasoning.
+   */
+  reasoning?: AgentReasoningCapability;
   /**
    * Whether the agent backend can run the chat-native AI review flow
    * (docs/125-chat-native-ai-review). The feature requires both a subagent
@@ -443,6 +463,13 @@ export interface AgentRunParams {
   mcpServers?: McpServerConfig[];
   /** Model alias or ID to use (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * Reasoning/effort level for this run, an agent-specific token from the
+   * agent's `reasoning.options` (Claude: low…max via `--effort`; Codex:
+   * none…xhigh via `model_reasoning_effort`). Undefined = pass no flag (the
+   * CLI's native default). See docs/217-per-agent-reasoning.
+   */
+  reasoningEffort?: string;
   /**
    * Path to a Claude Code settings file (passed as `--settings`). The
    * orchestrator always points this at /etc/shipit/managed-settings.json for

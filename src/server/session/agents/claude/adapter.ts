@@ -334,6 +334,7 @@ export class ClaudeAdapter
         ?.filter((s) => s.enabled)
         .map((s) => s.name),
       model: params.model,
+      reasoningEffort: params.reasoningEffort,
       settingsPath: params.settingsPath,
       autoCreatePr: params.autoCreatePr,
       // docs/211 — sets SHIPIT_SANDBOX=1 so the branch-block hook self-gates off.

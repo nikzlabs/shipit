@@ -135,10 +135,10 @@ export class AgentController {
     // and the per-turn cap; the worker just runs the adapter. Two CLI processes
     // are alive during the spawn window (the primary, blocked on the caller's
     // `shipit agent` shell call, and this sub-agent).
-    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; timeoutMs?: number; maxOutputChars?: number } }>(
+    app.post<{ Body: { agentId: AgentId; prompt: string; spawnId: string; depth?: number; model?: string; reasoningEffort?: string; timeoutMs?: number; maxOutputChars?: number } }>(
       "/agent/spawn",
       async (request, reply) => {
-        const { agentId, prompt, spawnId, depth, model, timeoutMs, maxOutputChars } = request.body ?? {};
+        const { agentId, prompt, spawnId, depth, model, reasoningEffort, timeoutMs, maxOutputChars } = request.body ?? {};
         if (!agentId || typeof prompt !== "string" || !spawnId) {
           return reply.code(400).send({ error: "agentId, prompt, and spawnId are required" });
         }
@@ -153,6 +153,7 @@ export class AgentController {
           prompt,
           cwd: this.deps.workspaceDir,
           ...(model !== undefined ? { model } : {}),
+          ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
           ...(timeoutMs !== undefined ? { timeoutMs } : {}),
           ...(maxOutputChars !== undefined ? { maxOutputChars } : {}),
         };

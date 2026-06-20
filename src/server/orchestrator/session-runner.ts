@@ -828,6 +828,7 @@ export class SessionRunner extends EventEmitter<SessionRunnerEvents> implements 
       prompt: req.prompt,
       cwd: this.sessionDir,
       ...(req.model !== undefined ? { model: req.model } : {}),
+      ...(req.reasoningEffort !== undefined ? { reasoningEffort: req.reasoningEffort } : {}),
       ...(req.timeoutMs !== undefined ? { timeoutMs: req.timeoutMs } : {}),
       ...(req.maxOutputChars !== undefined ? { maxOutputChars: req.maxOutputChars } : {}),
     };

@@ -703,6 +703,12 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN release_card TEXT");
   },
+  // docs/217 — per-session reasoning effort (Control B). Persists the composer's
+  // reasoning pick for the active agent's own turns so it survives reconnects,
+  // the warm pool, and an orchestrator restart. NULL = the CLI's own default.
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT");
+  },
 ];
 
 export class DatabaseManager {

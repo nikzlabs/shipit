@@ -342,6 +342,32 @@ describe("ClaudeProcess", () => {
       expect(args).not.toContain("--mcp-config");
     });
 
+    // docs/217 — reasoning effort via --effort.
+    it("includes --effort when reasoningEffort is provided", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test", reasoningEffort: "xhigh" });
+
+      expect(mockPtySpawn).toHaveBeenCalledWith(
+        "claude",
+        expect.arrayContaining(["--effort", "xhigh"]),
+        expect.any(Object),
+      );
+    });
+
+    it("does not include --effort when reasoningEffort is absent (CLI default)", () => {
+      const mockProc = createMockPty();
+      mockPtySpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+
+      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--effort");
+    });
+
     it("includes --permission-prompt-tool when permissionPromptTool is provided (docs/193)", () => {
       const mockProc = createMockPty();
       mockPtySpawn.mockReturnValue(mockProc as any);

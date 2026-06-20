@@ -502,6 +502,19 @@ export async function registerRoutes(
       if (selectedModel && selectedModel !== session.model) {
         try { sessionManager.setModel(sessionId, selectedModel); } catch { /* ignore */ }
       }
+      // docs/217 — per-session reasoning effort (Control B). Seed from the row,
+      // dropping it if it isn't valid for the resolved agent's option set (e.g. a
+      // pre-pin agent switch left a stale value). undefined = pass no CLI flag.
+      let selectedReasoning: string | undefined = session.reasoningEffort ?? undefined;
+      {
+        const reasoningOpts = agentRegistry.get(perConnectionAgentId)?.capabilities.reasoning?.options;
+        if (selectedReasoning && !reasoningOpts?.some((o) => o.value === selectedReasoning)) {
+          selectedReasoning = undefined;
+        }
+        if (selectedReasoning !== (session.reasoningEffort ?? undefined)) {
+          try { sessionManager.setReasoning(sessionId, selectedReasoning ?? null); } catch { /* ignore */ }
+        }
+      }
       let attachedRunner: SessionRunnerInterface | null = null;
       let runnerMessageListener: ((msg: WsServerMessage) => void) | null = null;
       let previewRetryListener: ((msg: WsServerMessage) => void) | null = null;
@@ -869,6 +882,8 @@ export async function registerRoutes(
         },
         getSelectedModel: () => selectedModel,
         setSelectedModel: (m) => { selectedModel = m; },
+        getSelectedReasoning: () => selectedReasoning,
+        setSelectedReasoning: (r) => { selectedReasoning = r; },
         clearLogBuffer: () => { clearLogBuffer(sessionId); },
         getRunner: () => attachedRunner,
         getRunnerRegistry: () => runnerRegistry,
@@ -1027,6 +1042,16 @@ export async function registerRoutes(
                 sessionManager.setModel(activeAppSessionId, fallbackModel);
               }
             }
+            // docs/217 — reasoning is per-agent; a stale value from the previous
+            // agent can't apply to the new one. Drop it (back to default) when it
+            // isn't in the new agent's option set.
+            const currentReasoning = ctx.getSelectedReasoning();
+            if (currentReasoning && !info.capabilities.reasoning?.options.some((o) => o.value === currentReasoning)) {
+              ctx.setSelectedReasoning(undefined);
+              if (activeAppSessionId) {
+                sessionManager.setReasoning(activeAppSessionId, null);
+              }
+            }
             // Persist per-session so reconnects don't pick up the global
             // localStorage agent from another session.
             if (activeAppSessionId) {
@@ -1082,6 +1107,26 @@ export async function registerRoutes(
             // Persist to session metadata so it survives reconnects and warm pool
             if (activeAppSessionId) {
               sessionManager.setModel(activeAppSessionId, msg.model);
+            }
+            return;
+          }
+          case "set_reasoning": {
+            // docs/217 — Control B: per-session reasoning effort for the active
+            // agent's own turns. `effort: null` clears it (back to the CLI
+            // default). Validate against the active agent's option set so a bad
+            // value can't reach the spawn; the picker only sends in-set values.
+            const reasoningAgent = agentRegistry.get(ctx.getActiveAgentId());
+            const effort = msg.effort;
+            if (effort !== null) {
+              const allowed = reasoningAgent?.capabilities.reasoning?.options.some((o) => o.value === effort);
+              if (!allowed) {
+                send({ type: "error", message: `Invalid reasoning effort "${effort}" for ${reasoningAgent?.name ?? "this agent"}` });
+                return;
+              }
+            }
+            ctx.setSelectedReasoning(effort ?? undefined);
+            if (activeAppSessionId) {
+              sessionManager.setReasoning(activeAppSessionId, effort);
             }
             return;
           }

@@ -147,6 +147,11 @@ export interface SessionInfo {
   closedAt?: string;
   /** Model alias or ID selected for this session (e.g., "sonnet", "opus", "gpt-5.4"). */
   model?: string;
+  /**
+   * docs/217 — reasoning effort selected for this session's own turns (Control B),
+   * an agent-specific token (e.g. "high"). Absent ⇒ the CLI's default.
+   */
+  reasoningEffort?: string;
   /** Agent (provider) selected for this session. Locked in on first WS connect. */
   agentId?: AgentId;
   /**

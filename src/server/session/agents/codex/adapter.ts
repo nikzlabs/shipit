@@ -257,7 +257,14 @@ export class CodexAdapter
       this.emit("log", "codex", "using OPENAI_API_KEY (Platform API billing)");
     }
 
-    const args = ["app-server"];
+    // docs/217 — reasoning effort is a startup config, not a per-turn param, so
+    // it rides a `-c model_reasoning_effort=…` global override placed BEFORE the
+    // `app-server` subcommand. Omitted entirely when unset so Codex uses its own
+    // default. The value is validated server-side against the agent's option set
+    // before it reaches here.
+    const args = params.reasoningEffort
+      ? ["-c", `model_reasoning_effort=${params.reasoningEffort}`, "app-server"]
+      : ["app-server"];
 
     this.emit("log", "codex", `spawning: codex ${args.join(" ")} | cwd: ${cwd}`);
 

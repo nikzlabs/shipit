@@ -7,6 +7,7 @@ import { PlusIcon, StopIcon, ArrowUpIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import { PermissionModeSelector } from "../PermissionModeSelector.js";
 import { ModelAgentSelector } from "../ModelAgentSelector.js";
+import { ReasoningSelector } from "../ReasoningSelector.js";
 import { FileAutoComplete } from "../FileAutoComplete.js";
 import { SkillAutoComplete, type SlashCommand } from "../SkillAutoComplete.js";
 import { FileAttachmentChips } from "../FileAttachmentChips.js";
@@ -77,6 +78,8 @@ export function MessageInput({
   activeAgentId = "claude",
   onAgentChange,
   onModelChange,
+  onReasoningChange,
+  sessionReasoning,
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
@@ -110,6 +113,10 @@ export function MessageInput({
   activeAgentId?: AgentId;
   onAgentChange?: (agentId: AgentId) => void;
   onModelChange?: (model: string) => void;
+  /** docs/217 — per-session reasoning effort change; `null` clears to default. */
+  onReasoningChange?: (effort: string | null) => void;
+  /** docs/217 — the active session's persisted reasoning effort, if any. */
+  sessionReasoning?: string;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
@@ -756,6 +763,19 @@ export function MessageInput({
                   onModelChange={onModelChange}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
+                  disabled={disabled || isLoading}
+                />
+              </div>
+            )}
+
+            {/* docs/217 — Control B: per-session reasoning effort, beside the
+                model selector. Self-hides when the active agent has no knob. */}
+            {onReasoningChange && (
+              <div className="flex items-center shrink-0" style={{ order: isMobile ? 41 : 61 }}>
+                <ReasoningSelector
+                  agent={agents.find((a) => a.id === activeAgentId)}
+                  sessionReasoning={sessionReasoning}
+                  onChange={onReasoningChange}
                   disabled={disabled || isLoading}
                 />
               </div>

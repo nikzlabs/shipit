@@ -182,8 +182,19 @@ export async function runSubAgent(
     );
   };
 
+  // docs/217 — a sub-agent runs with the invoked agent's OWN global reasoning
+  // default (set on its Settings tab), independent of the caller's session
+  // composer value. Resolved per spawn so a Settings change applies next time.
+  const reasoningEffort = deps.credentialStore.getAgentSubAgentDefaults(subAgentId).reasoningEffort;
+
   try {
-    const result = await runner.spawnSubAgent({ agentId: subAgentId, prompt, spawnId, depth });
+    const result = await runner.spawnSubAgent({
+      agentId: subAgentId,
+      prompt,
+      spawnId,
+      depth,
+      ...(reasoningEffort !== undefined ? { reasoningEffort } : {}),
+    });
 
     // §5 — attribute the sub-agent's cost AND token usage to subAgentId, not the
     // pinned agentId. A subscription backend (Codex) reports tokens but $0 cost,
