@@ -258,6 +258,14 @@ export class PrStatusPoller {
       tracker: this.tracker,
       autoFix: this.autoFix,
       autoMerge: this.autoMerge,
+      // Armed auto-resolve keeps the supervisor alive headlessly, same as
+      // auto-fix. Undefined in degraded setups that skip wiring the manager
+      // (no runner registry) — the gate treats that as "feature inactive."
+      autoConflictResolve: this.autoConflictResolveManager,
+      // docs/196 — a pending notify-on-merge watch must keep polling so the
+      // child's human merge is observed and the parent woken, even with no
+      // viewer anywhere. Read lazily per gate check (only when no viewer).
+      hasPendingMergeWatch: () => this.sessionManager.listPendingMergeWatches().length > 0,
     });
     this.supervisor = new PrPollingSupervisor({
       gate: this.gate,

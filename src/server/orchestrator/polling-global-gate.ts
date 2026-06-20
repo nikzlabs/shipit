@@ -9,12 +9,17 @@
  *   - a browser viewer is attached to any runner;
  *   - we're inside the disconnect grace window after the last viewer left;
  *   - an autonomous action is in flight or armed on any tracked session
- *     (auto-fix enabled and not yet exhausted, ShipIt-managed auto-merge
- *     enabled, or a viewerless runner that's mid-turn — the headless flow).
- *     Auto-fix counts while merely *armed* (not just while running) so a
- *     viewerless session can detect and fix a CI failure that lands after the
- *     browser closes — otherwise the loop could never fire headlessly.
- * When all three are false, the supervisor is stopped.
+ *     (auto-fix or auto-resolve-conflicts enabled and not yet exhausted,
+ *     ShipIt-managed auto-merge enabled, or a viewerless runner that's mid-turn
+ *     — the headless flow). Auto-fix and auto-resolve both count while merely
+ *     *armed* (not just while running) so a viewerless session can detect and
+ *     remediate a CI failure or a merge conflict that lands after the browser
+ *     closes — otherwise the loop could never fire headlessly;
+ *   - any session carries a pending notify-on-merge watch (docs/196): the watch
+ *     fires only when the child PR's terminal state is *observed by a poll*, so
+ *     a viewerless child waiting on a human merge needs the supervisor alive to
+ *     ever wake its parent.
+ * When all are false, the supervisor is stopped.
  *
  * This decision is intentionally distinct from the per-repo cadence decision
  * (which lives in the supervisor): the gate decides whether polling runs at
@@ -25,6 +30,7 @@
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { AutoFixManager } from "./auto-fix-manager.js";
 import type { AutoMergeManager } from "./auto-merge-manager.js";
+import type { AutoConflictResolveManager } from "./auto-conflict-resolve-manager.js";
 import type { PrSessionTracker } from "./pr-session-tracker.js";
 
 /**
@@ -41,6 +47,18 @@ export class PollingGlobalGate {
   private readonly tracker: PrSessionTracker;
   private readonly autoFix: AutoFixManager;
   private readonly autoMerge: AutoMergeManager;
+  /**
+   * Optional — undefined in the degraded setups that skip wiring it (no runner
+   * registry; see `pr-status-poller.ts`). When present, an armed auto-resolve
+   * loop keeps the gate open exactly like auto-fix.
+   */
+  private readonly autoConflictResolve?: AutoConflictResolveManager;
+  /**
+   * Optional — returns true when at least one session carries a non-terminal
+   * notify-on-merge watch (docs/196). Lets the supervisor stay alive for a
+   * viewerless child whose human merge would otherwise never be observed.
+   */
+  private readonly hasPendingMergeWatch?: () => boolean;
 
   /**
    * Timestamp when the last viewer detached. `0` means "currently has viewers
@@ -54,11 +72,15 @@ export class PollingGlobalGate {
     tracker: PrSessionTracker;
     autoFix: AutoFixManager;
     autoMerge: AutoMergeManager;
+    autoConflictResolve?: AutoConflictResolveManager;
+    hasPendingMergeWatch?: () => boolean;
   }) {
     this.runnerRegistry = opts.runnerRegistry;
     this.tracker = opts.tracker;
     this.autoFix = opts.autoFix;
     this.autoMerge = opts.autoMerge;
+    this.autoConflictResolve = opts.autoConflictResolve;
+    this.hasPendingMergeWatch = opts.hasPendingMergeWatch;
   }
 
   /**
@@ -85,6 +107,15 @@ export class PollingGlobalGate {
    * — e.g. a child session spawned from chat).
    */
   private anyAutonomousActionInFlight(): boolean {
+    // A pending notify-on-merge watch keeps the supervisor alive globally: the
+    // watch is keyed on the CHILD session and fires only when that child's PR
+    // terminal state is observed by a poll. A child waiting on a human merge
+    // has no viewer and no armed remediation of its own, so without this the
+    // poll stops and the parent's wake-turn never fires. Cheap (a single DB
+    // read of the rare merge-watch rows) and only reached when no viewer is
+    // attached, since `isOpen` short-circuits on `anyViewersConnected` first.
+    if (this.hasPendingMergeWatch?.()) return true;
+
     for (const sessionId of this.tracker.sessionRepos.keys()) {
       if (this.tracker.mergedSessions.has(sessionId)) continue;
 
@@ -99,6 +130,21 @@ export class PollingGlobalGate {
       // budget is exhausted — nothing fires again until a new head lands, which
       // arrives with a viewer reattach or a headless turn (both gated below).
       if (fix?.status !== "exhausted" && this.autoFix.isEnabledFor(sessionId)) return true;
+
+      // Auto-resolve-conflicts is the exact same shape as auto-fix (docs/146):
+      // an armed, poller-driven remediation. It was missing here, so a
+      // viewerless session with a merge conflict and auto-resolve enabled
+      // never got polled — the conflict was never observed and the rebase
+      // never fired. Same armed-vs-running chicken-and-egg, same fix.
+      const resolve = this.autoConflictResolve?.get(sessionId);
+      if (resolve?.status === "running") return true;
+      if (
+        this.autoConflictResolve
+        && resolve?.status !== "exhausted"
+        && this.autoConflictResolve.isEnabledFor(sessionId)
+      ) {
+        return true;
+      }
 
       const merge = this.autoMerge.get(sessionId);
       // ShipIt-managed auto-merge needs the poller to detect CI-success → merge.
