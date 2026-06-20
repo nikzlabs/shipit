@@ -25,6 +25,31 @@ description: Decouple session *visibility* in the sidebar from *disk reclamation
 > tests (reopened-reappears-in-`list()`, and `evicted`-restore-cut-from-fresh-
 > `origin/main`) are now in place too — see `checklist.md`.
 
+> **SHI-179 follow-up (workspace-lost recovery + invariant):** an `evicted`
+> session is a **live, non-user-archived** session — its workspace was reclaimed
+> but it must always be **recoverable**. Two gaps let an evicted session become
+> permanently unrecoverable (observed live 2026-06-19): (1) `activateSession`
+> assumed `evicted` sessions are always restored via `unarchiveSession` first, so
+> a direct WS activation booted a container against the wiped workspace →
+> `connect → create → 404 → dispose` loop; (2) the startup janitor's
+> credential/logs/archived-workspace sweeps keyed reclamation off
+> `listArchived()` (= `disk_tier = 'evicted'`), so they reaped a live
+> evicted-but-not-user-archived session's dirs. Fixes:
+>
+> - **Recovery on activation** — `restoreSessionWorkspace` (`services/session.ts`)
+>   re-clones a missing workspace from the bare cache, **preserving the committed
+>   branch** (unlike `unarchiveSession`, which cuts a fresh branch for a
+>   *user*-archived restore). `activateSession` calls it before `getOrCreate`; on
+>   an unrecoverable workspace it surfaces a terminal `session_status` error
+>   instead of looping.
+> - **Fail-fast at container create** — `createContainerForRunner`
+>   (`app-lifecycle.ts`) stats the workspace before building the bind-mount and
+>   throws a clear, greppable error rather than the cryptic Docker 404.
+> - **Invariant: the workspace lifecycle is tied to USER-archive state, not disk
+>   tier** — the credential, logs, and archived-workspace sweeps
+>   (`startup-janitor.ts`) now key off `userArchived`, never reaping a live
+>   disk-evicted session.
+
 ## Problem
 
 Today a single boolean, `archived`, does three unrelated jobs at once:

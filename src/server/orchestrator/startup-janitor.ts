@@ -397,11 +397,13 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
  * tracked in the DB. These hold copies of the pinned agent's credentials
  * (provisioned on first turn); they should not outlive the session.
  *
- * Preserved: dirs for **active, non-archived** sessions — i.e. sessions still
- * in `allIds()` and NOT in `listArchived()`. This keeps warm and idle-evicted
- * sessions intact (their containers may resume) while reaping archived,
- * deleted, and full-reset sessions. An archived session that's later
- * unarchived simply re-provisions on its next first turn / container create.
+ * Preserved: dirs for **live, non-user-archived** sessions — i.e. sessions
+ * still in `allIds()` and NOT user-archived. SHI-179: a disk-EVICTED session
+ * (`listArchived()` = `disk_tier = 'evicted'`) is NOT eligible — it is still
+ * live state the user can return to (its workspace re-clones from the bare
+ * cache on activation), so its credentials must survive. Only genuinely-gone
+ * (untracked) or USER-archived sessions are reaped. An archived session that's
+ * later unarchived simply re-provisions on its next first turn / container create.
  *
  * Returns the count of subtrees removed.
  */
@@ -419,7 +421,13 @@ async function sweepOrphanCredentialDirs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  // SHI-179: key off USER-archive state, not `disk_tier = 'evicted'`. A
+  // disk-evicted but non-user-archived session is live and must keep its
+  // credentials; only an explicit user-archive (or a deleted/untracked row)
+  // makes them reclaimable.
+  const userArchived = new Set(
+    sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
+  );
   // docs/110 — defense-in-depth: never sweep a pinned (persistent) session's
   // credentials. Such a session is already tracked-and-not-archived, so the
   // check below keeps it; this makes the persistence invariant explicit.
@@ -428,8 +436,8 @@ async function sweepOrphanCredentialDirs(
   let removed = 0;
   for (const entry of entries) {
     if (pinned.has(entry)) continue;
-    // Keep dirs for sessions that are still tracked AND not archived.
-    if (tracked.has(entry) && !archived.has(entry)) continue;
+    // Keep dirs for sessions that are still tracked AND not user-archived.
+    if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const full = path.join(root, entry);
     try {
       await sleep(paceMs);
@@ -502,9 +510,11 @@ async function sweepOrphanedRepoMemory(
  * never the only copy of the user's work). An archived session that is later
  * unarchived simply starts a fresh log backlog.
  *
- * Preserved: dirs for active, non-archived sessions (still in `allIds()` and
- * NOT in `listArchived()`), and pinned sessions — mirrors the credential-dir
- * sweep so warm / idle-evicted sessions keep their logs for resume.
+ * Preserved: dirs for live, non-user-archived sessions (still in `allIds()` and
+ * NOT user-archived), and pinned sessions — mirrors the credential-dir sweep so
+ * warm / disk-evicted sessions keep their logs for resume. SHI-179: a
+ * disk-evicted (`listArchived()`) but non-user-archived session is live, so it
+ * is NOT eligible for reaping.
  *
  * Returns the count of `logs/` dirs removed.
  */
@@ -521,13 +531,17 @@ async function sweepOrphanSessionLogs(
   }
 
   const tracked = new Set(sessionManager.allIds());
-  const archived = new Set(sessionManager.listArchived().map((s) => s.id));
+  // SHI-179 — key off USER-archive state, not disk eviction (see the
+  // credential-dir sweep): a disk-evicted but non-user-archived session is live.
+  const userArchived = new Set(
+    sessionManager.listAll().filter((s) => s.userArchived).map((s) => s.id),
+  );
   const pinned = new Set(sessionManager.listAll().filter((s) => s.pinnedAt).map((s) => s.id));
 
   let removed = 0;
   for (const entry of entries) {
     if (pinned.has(entry)) continue;
-    if (tracked.has(entry) && !archived.has(entry)) continue;
+    if (tracked.has(entry) && !userArchived.has(entry)) continue;
     const logsDir = path.join(sessionsRoot, entry, "logs");
     try {
       // Only count it if there was actually a logs dir to remove.
@@ -721,10 +735,16 @@ async function sweepOrphanSessionNetworks(
 }
 
 /**
- * Delete `workspaceDir` for archived sessions whose `last_used_at` is
+ * Delete `workspaceDir` for USER-archived sessions whose `last_used_at` is
  * older than `days`. Chat history, usage, and session metadata are
  * preserved — `unarchiveSession` re-clones from the bare cache when the
  * user restores the session.
+ *
+ * SHI-179: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
+ * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
+ * Those remain live (re-cloned on activation), so the loop skips any session
+ * the user did not explicitly archive — the workspace lifecycle is tied to
+ * user-archive state, not disk tier.
  *
  * In the current product all sessions have a `remoteUrl`, and
  * `archiveSession` already removes the workspace at archive time, so on
@@ -751,6 +771,13 @@ async function sweepArchivedWorkspaces(
   let removed = 0;
   for (const session of archived) {
     if (!session.workspaceDir) continue;
+    // SHI-179 — `listArchived()` is `disk_tier = 'evicted'`, which includes
+    // non-user-archived sessions reclaimed by the docs/161 disk ladder. Those
+    // are LIVE state the user can return to (workspace re-clones from the bare
+    // cache on activation), so this safety-net sweep must never reclaim them.
+    // Only a session the user explicitly archived is eligible — its workspace
+    // is re-cloned by `unarchiveSession` on restore.
+    if (!session.userArchived) continue;
     // docs/110 — defensive: never sweep a pinned (persistent) session. Archive
     // clears the pin, so a pinned session is never in `listArchived()` to begin
     // with; this guard states the invariant in code rather than relying on it.

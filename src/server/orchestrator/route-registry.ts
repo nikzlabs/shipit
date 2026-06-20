@@ -28,6 +28,7 @@ import type { GitManager } from "../shared/git.js";
 import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
+import { restoreSessionWorkspace } from "./services/session.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
@@ -756,10 +757,37 @@ export async function registerRoutes(
           // dropped; booting the runner re-materializes node_modules via the
           // normal `agent.install` / dep-cache path, so selecting it IS the
           // restore. Flip the tier back to `hot` now that we're bringing it up.
-          // (`evicted` is restored separately by `unarchiveSession`, which
-          // re-clones — it never reaches this branch with a live workspace.)
           if (s?.diskTier === "light") {
             sessionManager.setDiskTier(sid, "hot");
+          } else if (s?.remoteUrl) {
+            // docs/161 / SHI-179 — a non-archived session whose workspace is
+            // missing (disk-evicted, or lost to a real fs failure) must be
+            // re-materialized from the bare cache BEFORE we boot a container,
+            // or the workspace bind-mount source 404s and the connect → create
+            // → 404 → dispose cycle loops forever. This preserves the committed
+            // branch (unlike user-archive restore). `restoreSessionWorkspace`
+            // is a fast no-op when the checkout is already present.
+            try {
+              await restoreSessionWorkspace(
+                sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sid,
+              );
+            } catch (err) {
+              // Recovery is genuinely impossible (no remote / bare cache also
+              // gone). Surface a terminal, user-visible state instead of
+              // booting a doomed container — do NOT getOrCreate.
+              const errMsg = getErrorMessage(err);
+              console.error(`[activate] workspace restore failed for ${sid}:`, errMsg);
+              broadcastLog(sid, "server", `Session workspace could not be restored: ${errMsg}`);
+              send({
+                type: "session_status",
+                sessionId: sid,
+                running: false,
+                error: "This session's workspace was lost and could not be restored from the repository.",
+              });
+              detachFromRunner();
+              if (dir !== activeSessionDir) activeSessionDir = dir;
+              return;
+            }
           }
           const runner = runnerRegistry.getOrCreate(sid, dir, sessionAgentId);
           attachToRunner(runner);

@@ -9,6 +9,7 @@
  */
 
 import fs from "node:fs/promises";
+import path from "node:path";
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
@@ -21,6 +22,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
+import { chownTreeToSessionWorker } from "../session-worker-uid.js";
 import { ServiceError } from "./types.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
@@ -229,6 +231,174 @@ export async function unarchiveSession(
   const updated = sessionManager.get(sessionId);
   if (!updated) throw new ServiceError(404, "Session not found");
   return { session: updated, sessions: sessionManager.list() };
+}
+
+/**
+ * docs/161 / SHI-179 — re-materialize a LIVE (non-user-archived) session's
+ * workspace that is missing on disk, so activating it boots a container against
+ * a real bind-mount source instead of 404-looping.
+ *
+ * A workspace can be legitimately absent for a non-archived session: it was
+ * disk-evicted (`diskTier === "evicted"`, the docs/161 reclaim) or lost to a
+ * real fs failure. Unlike {@link unarchiveSession} — which restores a
+ * USER-archived session and deliberately cuts a FRESH branch off origin/main —
+ * this PRESERVES the session's committed branch: the user is returning to live
+ * work, so the branch, its pushed commits, and its PR association must survive.
+ * Only uncommitted working-tree edits made since the last auto-commit are
+ * unrecoverable, and the eviction path auto-commits + pushes before wiping, so
+ * in the common case nothing is lost.
+ *
+ * Cheap to call on every activation: returns `false` immediately when the
+ * workspace is already present and the session is not evicted. Throws
+ * `ServiceError` when recovery is genuinely impossible (no remote / no bare
+ * cache to clone from) so the caller can surface a terminal "workspace lost"
+ * state rather than retry-looping a doomed container create.
+ *
+ * Returns `true` when it (re-)materialized the workspace from the bare cache.
+ *
+ * Concurrency-safe: a session can be activated from two places at once — the
+ * fire-and-forget `void activateSession` on WS connect AND an awaited
+ * `activateSession` from the first send-message. Both would otherwise race
+ * (`rm -rf` clobbering the other's in-flight clone), so calls for the same
+ * session are de-duped onto a single in-flight promise.
+ */
+const inFlightRestores = new Map<string, Promise<boolean>>();
+
+export function restoreSessionWorkspace(
+  sessionManager: SessionManager,
+  createRepoGit: (dir: string) => RepoGit,
+  getBareCacheDir: (url: string) => string,
+  githubAuthManager: GitHubAuthManager,
+  repoStore: RepoStore,
+  sessionId: string,
+): Promise<boolean> {
+  const existing = inFlightRestores.get(sessionId);
+  if (existing) return existing;
+  const p = restoreSessionWorkspaceImpl(
+    sessionManager, createRepoGit, getBareCacheDir, githubAuthManager, repoStore, sessionId,
+  ).finally(() => inFlightRestores.delete(sessionId));
+  inFlightRestores.set(sessionId, p);
+  return p;
+}
+
+async function restoreSessionWorkspaceImpl(
+  sessionManager: SessionManager,
+  createRepoGit: (dir: string) => RepoGit,
+  getBareCacheDir: (url: string) => string,
+  githubAuthManager: GitHubAuthManager,
+  repoStore: RepoStore,
+  sessionId: string,
+): Promise<boolean> {
+  const session = sessionManager.get(sessionId);
+  if (!session) return false;
+
+  // Standalone / template sessions (no remote) can't be re-cloned. If such a
+  // session's checkout exists there's nothing to do; if it's gone, it's
+  // genuinely unrecoverable — surface a terminal error rather than boot a
+  // container against a missing dir.
+  if (!session.remoteUrl || !session.workspaceDir) {
+    if (session.workspaceDir) {
+      // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom (matches the rest of this codebase)
+      const present = await fs.stat(session.workspaceDir).then(() => true, () => false);
+      if (!present) {
+        throw new ServiceError(410, "Session workspace is gone and has no remote to restore from.");
+      }
+    }
+    return false;
+  }
+
+  const evicted = session.diskTier === "evicted";
+  const gitDir = path.join(session.workspaceDir, ".git");
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom (matches the rest of this codebase)
+  const workspacePresent = await fs.stat(gitDir).then((s) => s.isDirectory(), () => false);
+
+  // Healthy + present → nothing to do (the overwhelmingly common path).
+  if (workspacePresent && !evicted) return false;
+  // Evicted bookkeeping but the checkout somehow survived (a failed eviction
+  // `rm`): just flip the tier back — booting the runner re-installs deps.
+  if (workspacePresent && evicted) {
+    sessionManager.setDiskTier(sessionId, "hot");
+    return false;
+  }
+
+  // Workspace is genuinely missing — re-clone from the bare cache, preserving
+  // the session's branch. Mirrors `unarchiveSession`'s clone block.
+  const cacheDir = getBareCacheDir(session.remoteUrl);
+  const { git: cacheGit, recovered } = await ensureBareCache(cacheDir, session.remoteUrl, createRepoGit);
+  if (recovered) {
+    repoStore.add(session.remoteUrl);
+    repoStore.setReady(session.remoteUrl);
+  }
+  if (githubAuthManager.authenticated) {
+    await cacheGit.setRemoteUrl(session.remoteUrl);
+  }
+
+  // Clear any stale remnant (partial clone from a previous failed attempt).
+  await fs.rm(session.workspaceDir, { recursive: true, force: true });
+
+  // Refresh the cache (ttl 0) so the session's pushed branch is present locally
+  // before the `--local` clone. Non-fatal — fall back to whatever the cache has.
+  try {
+    await cacheGit.fetchCache(0);
+  } catch (fetchErr) {
+    console.warn(
+      `[restoreSessionWorkspace] fetchCache failed for ${session.remoteUrl}; restoring from stale cache:`,
+      fetchErr,
+    );
+  }
+
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await cacheGit.cloneFromCache(session.workspaceDir, session.remoteUrl);
+      break;
+    } catch (cloneErr) {
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 500 * (attempt + 1)));
+      } else {
+        throw cloneErr;
+      }
+    }
+  }
+
+  // Check out the session's committed branch (preserving its work). The branch
+  // is in the `--local` clone iff it was pushed — the eviction durability gate
+  // pushes before wiping, so the common path finds it. If it's genuinely
+  // unrecoverable (never pushed, cache too stale), (re-)create it off the
+  // default branch so the session is at least usable rather than dead.
+  if (session.branch) {
+    const wsGit = simpleGit(session.workspaceDir);
+    try {
+      await wsGit.raw(["checkout", session.branch]);
+    } catch {
+      let startPoint: string | undefined;
+      try {
+        const defaultBranch = await cacheGit.getDefaultBranch();
+        if (defaultBranch && !defaultBranch.includes("(")) startPoint = `origin/${defaultBranch}`;
+      } catch {
+        // Fall back to letting git use HEAD.
+      }
+      const branchArgs = ["checkout", "-B", session.branch];
+      if (startPoint) branchArgs.push(startPoint);
+      await wsGit.raw(branchArgs);
+      console.warn(
+        `[restoreSessionWorkspace] branch ${session.branch} not recoverable for ${sessionId} — `
+        + `recreated off ${startPoint ?? "HEAD"}; unpushed commits (if any) were lost`,
+      );
+    }
+    // `git checkout` rewrote the worktree as the root orchestrator; hand it back
+    // to the worker uid so the non-root agent can edit tracked files (docs/150 §7).
+    chownTreeToSessionWorker(session.workspaceDir);
+  }
+
+  if (githubAuthManager.authenticated) {
+    githubAuthManager.configureGitCredentials(session.workspaceDir);
+  }
+
+  sessionManager.setDiskTier(sessionId, "hot");
+  console.log(
+    `[restoreSessionWorkspace] re-materialized workspace for ${sessionId} at ${session.workspaceDir}`,
+  );
+  return true;
 }
 
 // ---- Mutation operations ----

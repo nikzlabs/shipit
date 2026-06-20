@@ -1,4 +1,5 @@
 import path from "node:path";
+import fs from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import { SessionContainerManager, resolveAgentDockerLimits } from "./session-container.js";
@@ -336,6 +337,22 @@ async function createContainerForRunner(opts: {
 
   try {
     if (opts.destroyExisting) await mgr.destroy(sessionId);
+    // SHI-179 — fail fast with a clear, terminal message if the workspace clone
+    // is missing. The activation path (route-registry `activateSession`)
+    // re-materializes an evicted/missing workspace from the bare cache before
+    // reaching here, so this only trips when recovery was impossible (no remote,
+    // bare cache also gone) or a non-activation path reached creation with a
+    // reclaimed workspace. Without it the Docker bind-mount 404s with a cryptic
+    // "no such file or directory" and the connect → create → 404 → dispose cycle
+    // repeats; this turns it into a single greppable error the health strip shows.
+    try {
+      await fs.stat(opts.workspaceDir);
+    } catch {
+      throw new Error(
+        `Session workspace is missing at ${opts.workspaceDir} — it could not be restored from the `
+        + `repository (the clone may have been reclaimed and no recoverable copy remains).`,
+      );
+    }
     // docs/183 dep-dir design — resolve per-dep-dir overlay specs (flag-gated;
     // [] when off / ineligible / nothing overlay-worthy). The byte-for-byte
     // unchanged path returns [], so non-overlay sessions are untouched.
