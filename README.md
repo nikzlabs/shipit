@@ -3,9 +3,10 @@
   <span>&nbsp;ShipIt</span>
 </h1>
 
-**The glass box for coding agents.** Run Claude Code or Codex in an environment where every diff,
-command, and check stays on screen — then ship the way real software does: branches, reviews, CI,
-and deploys, on your own Git, containers, and server.
+**Give every coding agent a self-hosted environment of its own — your whole app running, live to
+preview.** Run Claude Code or Codex on your own infrastructure, as many as you like side by side,
+each in an isolated container that boots your whole stack — then ship what they build through real
+branches, PRs, CI, and deploys, without leaving the chat.
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
@@ -22,18 +23,22 @@ and deploys, on your own Git, containers, and server.
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a browser-based AI dev environment built on one idea: an agent you can follow is an agent
-you can trust. Most AI tools go dark while they work and hand back a result; ShipIt keeps the work
-legible — reasoning, file edits, terminal output, diffs, and CI checks stay on screen as they
-happen, so you steer turn by turn instead of cleaning up after. It has the ease of prompt-to-app
-builders, but that work runs through a real engineering loop — branches, pull requests, CI, and
-deploys — on _your_ repo, _your_ Git, and _your_ infrastructure. A few choices make that possible:
+ShipIt is a chat-driven dev environment for developers who want to ship faster. Point Claude Code or
+Codex at your project and run as many as you like at once — each session gets its own isolated
+container with its own branch, chat history, and a full running copy of your app, so agents work in
+parallel without colliding and each one can exercise its change against your real services instead of
+just writing code. The whole engineering loop comes with it: live preview, diffs, terminal, pull
+requests, CI checks, and deploy status all render inline, so you can follow exactly what each agent
+did, steer it turn by turn, and merge with confidence. Seeing every diff, command, and check as it
+happens is what turns an agent you can follow into an agent you can trust. A few choices make that
+possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, chat
   history, and workspace, so concurrent agents can't step on each other's files, processes, or
   installed dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
-- **Self-hostable on a VPS** — ShipIt is Docker-based end to end. Run it on a remote server and your
-  laptop doesn't need to stay open for agents, previews, or CI follow-up work to continue.
+- **Self-hosted, local or remote** — ShipIt is Docker-based end to end: run it on your own machine,
+  or on a server you control so your laptop doesn't need to stay open for agents, previews, or CI
+  follow-up work to continue.
 - **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other
   app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual
   previews inside the app.
