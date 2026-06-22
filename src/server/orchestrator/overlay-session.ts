@@ -77,14 +77,23 @@ export function isOverlayEligible(
  * container's own libc/Node ABI), this must be computable BEFORE the container
  * exists, because the base scope picks the overlay `lowerdir` at create time.
  *
- * The session-worker image is fixed per deployment, and an image digest pins its
- * libc and Node ABI — so `<imageId>|<arch>` is an ABI-correct fingerprint without
- * needing the container's runtime introspection. A worker-image rebuild changes
- * `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST`, rotating the scope for free.
+ * Keyed on the **pinned base-image digest** (`BASE_IMAGE_DIGEST`), not the full
+ * worker-image id (SHI-194). The worker is `FROM node:24-slim@sha256:…`, a
+ * digest-pinned base, so the base digest captures the libc + Node ABI exactly
+ * while staying constant across app-code-only rebuilds — the scope rolls only on
+ * a deliberate base bump, instead of minting a fresh ~500 MB base every deploy.
+ * The orchestrator learns the worker image's `BASE_IMAGE_DIGEST` at startup
+ * (`resolveWorkerBaseDigest` → `app-lifecycle.ts` publishes it into the env this
+ * reads). `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST` remain as a fallback for a
+ * worker image built before `BASE_IMAGE_DIGEST` existed.
+ *
+ * This key only governs *which base dir to reuse* (efficiency); the worker-side
+ * install marker (`install-marker.ts`) is the ABI corruption gate, so a stale
+ * scope can at worst trigger a safe reinstall, never load an incompatible tree.
  */
 export function overlayRuntimeKey(env: NodeJS.ProcessEnv = process.env): string {
-  const imageId = env.SESSION_WORKER_IMAGE_ID ?? env.IMAGE_DIGEST ?? "unknown";
-  return `${imageId}|${process.arch}`;
+  const base = env.BASE_IMAGE_DIGEST ?? env.SESSION_WORKER_IMAGE_ID ?? env.IMAGE_DIGEST ?? "unknown";
+  return `${base}|${process.arch}`;
 }
 
 /** The `(repo, runtime)` base scope for an eligible session, or null if ineligible. */

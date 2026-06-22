@@ -72,17 +72,30 @@ agent:
 ### Per-dir base + mount model
 
 - **Scope:** one rolling base per `(repo, runtime fingerprint, dep-dir relpath)`. The runtime
-  fingerprint is the orchestrator-side `overlayRuntimeKey` (worker image digest + arch — pins libc +
-  Node ABI). The publish compare-and-swap, depth-cap flatten, force-push lineage reset, and the
+  fingerprint is the orchestrator-side `overlayRuntimeKey` (pinned base-image digest + arch — pins
+  libc + Node ABI). The publish compare-and-swap, depth-cap flatten, force-push lineage reset, and the
   `.shipit/.install-done` stamped marker all carry over unchanged, scoped per dep dir.
-  - **Worker-image id is resolved at runtime, not hardcoded.** `overlayRuntimeKey` reads
-    `SESSION_WORKER_IMAGE_ID`. `SessionContainerManager.resolveWorkerImageId()` inspects the
-    session-worker base image once (cached) and `setupContainerManager` publishes its `.Id` into the
-    orchestrator's `process.env.SESSION_WORKER_IMAGE_ID` at startup (gated on the flag, operator value
-    wins) — so both the orchestrator scope AND `buildEnv`'s forwarded copy (which feeds the worker's
-    `install-runtime.ts:runtimeKey()`) rotate when the worker image is rebuilt, never reusing an
-    ABI-stale base. Resolving at runtime means a self-update rotates too. No Docker → `"unknown"`
-    fallback (no rotation), unchanged from before.
+  - **Keyed on the pinned base-image digest, not the full worker-image id (SHI-194).** The worker-image
+    id changed on *every* rebuild — app-code layers, npm tooling, cache busts — none of which move the
+    native-addon ABI, so each deploy minted a fresh ~500 MB base and forced a cold reinstall (the root
+    of the `overlay-base` churn SHI-193 reclaims). The worker is `FROM node:24-slim@sha256:…`, a
+    digest-pinned base, so the base digest captures the libc + crypto/C++ ABI exactly while staying
+    constant across app-code-only rebuilds. The worker Dockerfiles bake the `FROM` digest into
+    `ENV BASE_IMAGE_DIGEST`; `SessionContainerManager.resolveWorkerBaseDigest()` reads it back out of
+    the image's `Config.Env` (cached) and `setupContainerManager` publishes it into
+    `process.env.BASE_IMAGE_DIGEST` at startup (gated on the flag, operator value wins). Both the
+    orchestrator scope (`overlayRuntimeKey`) AND `buildEnv`'s forwarded copy (feeding the worker's
+    `install-runtime.ts:runtimeKey()`) now read it, so the scope rolls **only** on a deliberate base
+    bump. `SESSION_WORKER_IMAGE_ID`/`IMAGE_DIGEST` (still resolved + forwarded) remain the fallback for
+    a pre-SHI-194 image; no Docker → `"unknown"` (no rotation), unchanged from before.
+  - **Safety: narrowing biases toward reuse, so the worker marker is the corruption gate.** A stale
+    scope can at worst reuse a base whose ABI no longer fits — but the worker-side install marker
+    (`install-marker.ts:markerMatches`, comparing `install-runtime.ts:runtimeKey()` = base digest +
+    arch + libc + `process.versions.modules`) forces a reinstall on any ABI mismatch *before* the tree
+    is trusted, so the failure mode is a safe slow reinstall, never an incompatible-addon crash. A base
+    bump is guaranteed to change `BASE_IMAGE_DIGEST` (it is the `FROM` content sha), and two guard tests
+    lock it in: a no-op app rebuild preserves the key; a base-digest bump changes it
+    (`install-runtime.test.ts`, `overlay-session.test.ts`).
 - **Mount targets at create time.** Because this design keeps the **pre-container host clone**, the
   orchestrator resolves the declared dep dirs against the real checked-out source before creating
   mounts. Cold start → empty `lowerdir` → install populates the `upperdir`.
@@ -380,7 +393,8 @@ base and always run the install on top of it:
   result becomes the next base.
 
 The base is scoped per **`(repo, runtime fingerprint)`** — not per lockfile. The runtime
-fingerprint must describe ABI compatibility, not just broad language families: image digest,
+fingerprint must describe ABI compatibility, not just broad language families: pinned base-image
+digest (SHI-194 — not the full worker-image id),
 arch, libc, and each relevant runtime ABI/version (for example Node's native module ABI,
 Python implementation + major.minor / ABI tag, and equivalent compiled-extension boundaries
 for other runtimes). That prevents a base with compiled native addons/wheels from being reused

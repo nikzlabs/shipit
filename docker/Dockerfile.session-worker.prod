@@ -27,6 +27,17 @@ RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
 # ---- Production image ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
 
+# SHI-194 — bake the pinned base-image digest into the runtime env. The overlay
+# dep store keys its rolling base scope on THIS (the native-addon ABI surface),
+# not the full worker-image id, so an app-code-only rebuild no longer rotates the
+# scope (no per-deploy ~500 MB base churn, post-deploy installs stay warm).
+# install-runtime.ts:runtimeKey() and overlay-session.ts:overlayRuntimeKey() read
+# it; the orchestrator reads it back out of this image's env at startup. The ARG
+# default MUST track the `FROM` digest above — a base bump changes both together,
+# which is exactly what (and only what) rolls the scope. Keep them in sync.
+ARG BASE_IMAGE_DIGEST=sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d
+ENV BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}
+
 # Runtime tools: git + curl for user projects, python3/make/g++ for native npm addons
 # in user sessions (npm install inside /workspace may compile C/C++ addons),
 # ripgrep (rg) because agents (Codex, Claude Code) prefer it for fast code search,
