@@ -17,6 +17,8 @@ import {
 } from "./test-helpers.js";
 import { DatabaseManager } from "../../shared/database.js";
 import type { ChatHistoryManager, PersistedBugReport } from "../chat-history.js";
+import type { SessionRunnerInterface } from "../session-runner.js";
+import { buildTurnMessages } from "../chat-card-persistence.js";
 import type { FastifyInstance } from "fastify";
 import type { CredentialStore } from "../credential-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
@@ -221,6 +223,54 @@ describe("Integration: user bug filing", () => {
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueNumber).toBe(1234);
     expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
+
+    client.close();
+  });
+
+  it("(b/d) keeps a filed transition through finalize when the proposing turn is still in flight", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    // Simulate the proposing turn STILL running — the agent filed a bug then
+    // kept working, so `recordedCards` holds the draft snapshot and the turn has
+    // NOT finalized. This is the window a DB-only patch lost: the rebuild at
+    // finalize would clobber `filed` back to `draft`.
+    const runner = (app as unknown as {
+      runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
+    }).runnerRegistry.get(sessionId)!;
+    runner.running = true;
+
+    // User confirms mid-turn → filed.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    // The proposing turn now finalizes (mirrors the `agent_result` path):
+    // rebuild the permanent rows from `recordedCards`. Because the recorded card
+    // was patched in place, this carries `filed` rather than reverting to draft.
+    runner.running = false;
+    histMgr.replaceInProgress(
+      sessionId,
+      buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, { inProgress: false }),
+    );
+    histMgr.finalizeInProgress(sessionId);
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    // The terminal state survives finalize — no revert to the editable draft.
+    expect(cardsAfter).toHaveLength(1);
+    expect(cardsAfter[0]?.phase).toBe("filed");
+    expect(cardsAfter[0]?.issueNumber).toBe(1234);
 
     client.close();
   });
