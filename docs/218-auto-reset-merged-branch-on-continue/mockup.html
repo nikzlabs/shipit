@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>docs/218 — auto-reset merged branch · mockup</title>
+<style>
+  :root {
+    --bg: #08090c;
+    --panel: #0d0f14;
+    --panel-2: #111419;
+    --border: #1f2530;
+    --border-soft: #171b22;
+    --text: #e6e8ec;
+    --text-dim: #9aa3b2;
+    --text-faint: #6b7280;
+    --violet: #a855f7;
+    --violet-dim: #7c3aed;
+    --indigo: #6366f1;
+    --green: #34d399;
+    --accent: #5b8def;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #0e1118 0%, var(--bg) 60%);
+    color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Inter, sans-serif;
+    padding: 40px 20px 80px;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 0 0 4px; }
+  .sub { color: var(--text-dim); font-size: 13px; margin: 0 0 32px; }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; align-items: start; }
+  @media (max-width: 880px) { .cols { grid-template-columns: 1fr; } }
+  .stage-label {
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-faint); font-weight: 600; margin: 0 0 10px 2px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .stage-label .num {
+    width: 18px; height: 18px; border-radius: 5px; background: var(--panel-2);
+    border: 1px solid var(--border); color: var(--text-dim);
+    display: grid; place-items: center; font-size: 11px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    overflow: hidden;
+    box-shadow: 0 20px 50px -30px rgba(0,0,0,0.9);
+  }
+  .panel-head {
+    padding: 10px 14px; border-bottom: 1px solid var(--border-soft);
+    display: flex; align-items: center; gap: 8px; color: var(--text-dim); font-size: 12px;
+    background: linear-gradient(to bottom, rgba(255,255,255,0.015), transparent);
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; }
+  .body { padding: 16px 14px; display: flex; flex-direction: column; gap: 14px; }
+
+  /* chat rows */
+  .row { display: flex; gap: 10px; }
+  .av {
+    width: 26px; height: 26px; border-radius: 7px; flex: none; display: grid; place-items: center;
+    font-size: 12px; font-weight: 600;
+  }
+  .av.user { background: #1b2433; color: #93b4ff; border: 1px solid #243049; }
+  .av.agent { background: #1d172b; color: #c4a0ff; border: 1px solid #2e2342; }
+  .bubble { flex: 1; min-width: 0; }
+  .name { font-size: 12px; color: var(--text-faint); margin-bottom: 3px; }
+  .msg { color: var(--text); font-size: 13.5px; }
+
+  /* merged PR card (context) */
+  .pr-card {
+    border: 1px solid #2c2140; border-radius: 11px; overflow: hidden;
+    background: linear-gradient(to bottom, rgba(168,85,247,0.06), rgba(168,85,247,0.02));
+  }
+  .pr-top { display: flex; align-items: center; gap: 10px; padding: 11px 13px; }
+  .pr-icon {
+    width: 26px; height: 26px; border-radius: 7px; flex: none; display: grid; place-items: center;
+    background: rgba(168,85,247,0.14); color: var(--violet);
+  }
+  .pr-title { font-size: 13px; font-weight: 600; }
+  .pr-meta { font-size: 12px; color: var(--text-dim); }
+  .badge {
+    margin-left: auto; font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
+    background: rgba(168,85,247,0.16); color: #d8b4fe; border: 1px solid rgba(168,85,247,0.3);
+  }
+
+  /* the "branch updated" transcript card (the deliverable) */
+  .branch-card {
+    border: 1px solid var(--border); border-radius: 11px; overflow: hidden;
+    background: linear-gradient(to bottom, rgba(91,141,239,0.05), rgba(91,141,239,0.015));
+  }
+  .bc-top { display: flex; align-items: flex-start; gap: 11px; padding: 12px 13px; }
+  .bc-icon {
+    width: 28px; height: 28px; border-radius: 8px; flex: none; display: grid; place-items: center;
+    background: rgba(91,141,239,0.13); color: #8fb4ff; border: 1px solid rgba(91,141,239,0.22);
+  }
+  .bc-title { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 7px; }
+  .bc-title code { background: rgba(255,255,255,0.06); padding: 1px 6px; border-radius: 5px; font-size: 12px; color: #cdd6e4; }
+  .bc-text { font-size: 12.5px; color: var(--text-dim); margin-top: 3px; }
+  .bc-text a { color: #8fb4ff; text-decoration: none; }
+  .bc-refline {
+    display: flex; gap: 14px; padding: 8px 13px 11px 52px; font-size: 11.5px; color: var(--text-faint);
+    border-top: 1px solid var(--border-soft); margin-top: 2px;
+  }
+  .bc-refline .k { color: var(--text-faint); }
+  .bc-refline .sha { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9aa3b2; }
+  .arrow { color: var(--text-faint); }
+
+  /* composer + the reset control */
+  .composer-wrap { padding: 14px; display: flex; flex-direction: column; gap: 0; }
+  .reset-ctl {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 10px 12px; border: 1px solid #283449; border-bottom: none;
+    border-radius: 11px 11px 0 0;
+    background: linear-gradient(to bottom, rgba(91,141,239,0.08), rgba(91,141,239,0.03));
+  }
+  .chk {
+    width: 17px; height: 17px; border-radius: 5px; flex: none; margin-top: 1px;
+    background: var(--accent); display: grid; place-items: center; color: #06122b;
+    box-shadow: 0 0 0 1px rgba(91,141,239,0.5);
+  }
+  .ctl-text { flex: 1; min-width: 0; }
+  .ctl-title { font-size: 12.5px; font-weight: 600; color: #dbe4f4; }
+  .ctl-sub { font-size: 11.5px; color: var(--text-dim); margin-top: 2px; }
+  .ctl-sub code { background: rgba(255,255,255,0.06); padding: 0 5px; border-radius: 4px; font-size: 11px; }
+  .ctl-why { font-size: 11px; color: var(--text-faint); white-space: nowrap; margin-top: 1px; }
+  .textarea {
+    border: 1px solid #283449; border-radius: 0 0 11px 11px; background: var(--panel-2);
+    padding: 12px 14px; color: var(--text); min-height: 70px; display: flex; flex-direction: column; justify-content: space-between;
+  }
+  .ta-ph { color: var(--text-faint); }
+  .ta-foot { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
+  .pill { font-size: 11px; color: var(--text-dim); border: 1px solid var(--border); border-radius: 7px; padding: 3px 8px; }
+  .send {
+    margin-left: auto; background: var(--accent); color: #04122e; font-weight: 600; font-size: 12px;
+    border: none; border-radius: 8px; padding: 6px 14px;
+  }
+  .caption {
+    margin-top: 12px; font-size: 12px; color: var(--text-dim); line-height: 1.55;
+    border-left: 2px solid var(--border); padding-left: 12px;
+  }
+  .caption b { color: var(--text); font-weight: 600; }
+  svg { display: block; }
+  .legend { margin-top: 34px; font-size: 12.5px; color: var(--text-dim); }
+  .legend h2 { font-size: 13px; color: var(--text); margin: 0 0 8px; }
+  .legend li { margin-bottom: 6px; }
+  .legend code { background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; font-size: 11.5px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Auto-update a merged branch when you continue</h1>
+  <p class="sub">docs/218 · mockup of the pre-send control (intent) and the persisted transcript card (record)</p>
+
+  <div class="cols">
+    <!-- ───────────── BEFORE: composer control ───────────── -->
+    <div>
+      <p class="stage-label"><span class="num">1</span> Before you send · the opt-out control</p>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="dot" style="background:#7c3aed"></span>
+          Fix login redirect · <span style="color:var(--text-faint)">merged</span>
+        </div>
+        <div class="body">
+          <!-- context: the merged PR card already in the transcript -->
+          <div class="pr-card">
+            <div class="pr-top">
+              <div class="pr-icon">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5a1.5 1.5 0 1 0-2 1.415V11.1a1.5 1.5 0 1 0 1 0V7.6c.5.3 1.1.4 1.7.4H8a3 3 0 0 0 2.9-2.2 1.5 1.5 0 1 0-1-.04A2 2 0 0 1 8 7H6.7c-.9 0-1.7-.5-1.7-1.5v-1Z"/></svg>
+              </div>
+              <div>
+                <div class="pr-title">Fix login redirect loop</div>
+                <div class="pr-meta">#482 · merged into main</div>
+              </div>
+              <span class="badge">Merged</span>
+            </div>
+          </div>
+
+          <!-- composer with the reset control above the input -->
+          <div class="composer-wrap" style="padding:0">
+            <div class="reset-ctl">
+              <div class="chk">
+                <svg width="11" height="11" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.2 3.2L13 5"/></svg>
+              </div>
+              <div class="ctl-text">
+                <div class="ctl-title">Start from the latest <code style="background:rgba(255,255,255,0.06);padding:0 5px;border-radius:4px;font-size:11px">main</code></div>
+                <div class="ctl-sub">Your PR merged — this branch will reset to <code>origin/main</code> before your message runs, so the agent builds on current code.</div>
+              </div>
+            </div>
+            <div class="textarea">
+              <span class="ta-ph">Add a "remember me" checkbox to the login form…</span>
+              <div class="ta-foot">
+                <span class="pill">@ files</span>
+                <span class="pill">auto</span>
+                <button class="send">Send ↑</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="caption">
+        Appears <b>only</b> when a reset would actually fire (merged · branch still at the merged tip · clean tree).
+        <b>Checked by default</b> (global setting); unticking is a one-time skip that doesn't stick — the next
+        merged continue shows it checked again. Untick → no reset, no card, the turn runs on the un-moved branch.
+      </p>
+    </div>
+
+    <!-- ───────────── AFTER: the transcript card ───────────── -->
+    <div>
+      <p class="stage-label"><span class="num">2</span> After sending · the persisted record</p>
+      <div class="panel">
+        <div class="panel-head">
+          <span class="dot" style="background:#34d399"></span>
+          Fix login redirect · <span style="color:var(--text-faint)">active</span>
+        </div>
+        <div class="body">
+          <!-- user message -->
+          <div class="row">
+            <div class="av user">N</div>
+            <div class="bubble">
+              <div class="name">You</div>
+              <div class="msg">Add a "remember me" checkbox to the login form.</div>
+            </div>
+          </div>
+
+          <!-- the deliverable: persisted branch-updated card -->
+          <div class="branch-card">
+            <div class="bc-top">
+              <div class="bc-icon">
+                <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="4" cy="4" r="1.6"/><circle cx="4" cy="12" r="1.6"/><circle cx="12" cy="8" r="1.6"/><path d="M4 5.6v4.8M5.5 4H9a2.5 2.5 0 0 1 2.5 2.5v0" stroke-linecap="round"/></svg>
+              </div>
+              <div>
+                <div class="bc-title">Branch updated to latest <code>main</code></div>
+                <div class="bc-text">Your previous PR <a href="#">#482</a> merged, so this branch was automatically reset to the latest <code style="background:rgba(255,255,255,0.06);padding:0 5px;border-radius:4px">main</code> before continuing.</div>
+              </div>
+            </div>
+            <div class="bc-refline">
+              <span><span class="k">was</span> <span class="sha">a1f3c9d</span></span>
+              <span class="arrow">→</span>
+              <span><span class="k">now</span> <span class="sha">7e02b48</span> <span style="color:var(--text-faint)">(origin/main)</span></span>
+            </div>
+          </div>
+
+          <!-- agent starts working -->
+          <div class="row">
+            <div class="av agent">◇</div>
+            <div class="bubble">
+              <div class="name">Agent</div>
+              <div class="msg" style="color:var(--text-dim)">Starting from the latest <code style="background:rgba(255,255,255,0.06);padding:0 5px;border-radius:4px;font-size:12px">main</code>. I'll add the “remember me” checkbox to the login form…</div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <p class="caption">
+        The card is <b>persisted transcript content</b> — it survives reload, reconnect, and session switch
+        (the composer control is transient and saves nothing). The <span class="sha" style="color:#9aa3b2">was → now</span> SHAs
+        make the move concrete and auditable.
+      </p>
+    </div>
+  </div>
+
+  <div class="legend">
+    <h2>Notes</h2>
+    <ul>
+      <li>The agent also receives an invisible per-turn prompt prefix (not shown in chat) telling it the branch moved and <b>not</b> to re-apply the merged work.</li>
+      <li>Default-on is governed by a global setting (sibling of <code>autoResolveConflicts</code> / <code>autoFixCi</code>); the composer checkbox is the per-turn override.</li>
+      <li>Colors are indicative only — final styling uses ShipIt design tokens + Phosphor icons.</li>
+    </ul>
+  </div>
+</div>
+</body>
+</html>
