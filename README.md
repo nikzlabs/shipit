@@ -4,9 +4,9 @@
 </h1>
 
 **Give every coding agent a self-hosted environment of its own — your whole app running, live to
-preview.** Run Claude Code or Codex on your own infrastructure, as many as you like side by side,
-each in an isolated container that boots your whole stack — then ship what they build through real
-branches, PRs, CI, and deploys, without leaving the chat.
+preview.** Run Claude Code or Codex on your own infrastructure (local or an always-on VPS), as many
+as you like side by side, each in an isolated container that boots your whole stack — then ship what
+they build through real branches, PRs, CI, and deploys, no GitHub tab required.
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
@@ -24,18 +24,17 @@ branches, PRs, CI, and deploys, without leaving the chat.
      or a clickable thumbnail right under the hero image. -->
 
 ShipIt is a chat-driven dev environment for developers who want to ship faster. Point Claude Code or
-Codex at your project and run as many as you like at once — each session gets its own isolated
-container with its own branch, chat history, and a full running copy of your app, so agents work in
-parallel without colliding and each one can exercise its change against your real services instead of
-just writing code. The whole engineering loop comes with it: live preview, diffs, terminal, pull
-requests, CI checks, and deploy status all render inline, so you can follow exactly what each agent
-did, steer it turn by turn, and merge with confidence. Seeing every diff, command, and check as it
-happens is what turns an agent you can follow into an agent you can trust. A few choices make that
-possible:
+Codex at your project — each session gets its own isolated container with its own branch and a full
+running copy of your app, so agents work in parallel without colliding and each one can exercise its
+change against your real services instead of just writing code. The whole engineering loop comes with
+it: live preview, diffs, terminal, pull requests, CI checks, deploy status, and your Linear or GitHub
+issues all render inline, so you steer each agent and ship its work right from the chat — for most
+work you never open a GitHub or Linear tab at all. Seeing every diff, command, and check as it happens
+is what turns an agent you can follow into an agent you can trust. A few choices make that possible:
 
-- **Container-isolated sessions** — each session gets its own Docker container, branch, chat
-  history, and workspace, so concurrent agents can't step on each other's files, processes, or
-  installed dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
+- **Container-isolated sessions** — each session gets its own Docker container, branch, and
+  workspace, so concurrent agents can't step on each other's files, processes, or installed
+  dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
 - **Self-hosted, local or remote** — ShipIt is Docker-based end to end: run it on your own machine,
   or on a server you control so your laptop doesn't need to stay open for agents, previews, or CI
   follow-up work to continue.
