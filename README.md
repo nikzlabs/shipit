@@ -3,10 +3,10 @@
   <span>&nbsp;ShipIt</span>
 </h1>
 
-**Give every coding agent a self-hosted environment of its own — your whole app running, live to
-preview.** Run Claude Code or Codex on your own infrastructure (local or an always-on VPS), as many
-as you like side by side, each in an isolated container that boots your whole stack — then ship what
-they build through real GitHub PRs with proper CI checks, all integrated within ShipIt.
+**Give every coding agent a self-hosted environment of its own — your whole app running, ready to
+preview.** Run Claude Code or Codex on your own infrastructure, local or an always-on VPS, as many as
+you like side by side. Each works in an isolated container that boots your whole stack, then ships
+what it builds through real GitHub PRs with proper CI checks — all integrated within ShipIt.
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
@@ -26,35 +26,36 @@ they build through real GitHub PRs with proper CI checks, all integrated within 
 ShipIt is a chat-driven dev environment for developers who want to ship faster. Point Claude Code or
 Codex at your project — each session gets its own isolated container with its own branch and a full
 running copy of your app, so agents work in parallel without colliding and each one can exercise its
-change against your real services instead of just writing code. The whole engineering loop comes with
-it: live preview, diffs, terminal, pull requests, CI checks, deploy status, and your Linear or GitHub
-issues all render inline, so you steer each agent and ship its work right from the chat — for most
-work you never open a GitHub or Linear tab at all. Seeing every diff, command, and check as it happens
-is what turns an agent you can follow into an agent you can trust. A few choices make that possible:
+change against your real services instead of just writing code.
+
+The whole engineering loop comes with it: live preview, diffs, terminal, pull requests, CI checks,
+deploy status, and your Linear or GitHub issues all render inline, so you steer each agent and ship
+its work right from the chat — for most work you never open a GitHub or Linear tab at all. Seeing
+every diff, command, and check as it happens is what turns an agent you can follow into an agent you
+can trust. A few choices make that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, and
   workspace, so concurrent agents can't step on each other's files, processes, or installed
   dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
-- **Self-hosted, local or remote** — ShipIt is Docker-based end to end: run it on your own machine,
-  or on a server you control so your laptop doesn't need to stay open for agents, previews, or CI
-  follow-up work to continue.
+- **Self-hosted, local or on your VPS** — ShipIt is Docker-based end to end: run it on your own
+  machine, or on a server you control so your laptop doesn't need to stay open for agents, previews,
+  or CI follow-up work to continue.
 - **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other
   app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual
   previews inside the app.
-- **Tight GitHub integration** — branches, auto-commits, pushes, PR creation, CI checks, deploy
-  status, review comments, issues, and merge state are surfaced inline instead of punting you to
+- **Inline GitHub ship loop** — branches, auto-commits, pushes, PR creation, CI checks, deploy
+  status, review comments, issues, and merge state all render inline instead of punting you to
   GitHub.
 - **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
   tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
   panels on desktop. Voice runs both ways — dictate prompts hands-free and hear spoken summaries
   when the agent finishes a turn or needs you, so you can kick off, review, and ship on the go.
-- **One surface — you never leave it** — chat, file tree, terminal, live preview, diffs, CI logs,
-  deploy status, session history, issue trackers, and the PR lifecycle all render inline. Reviewing,
-  shipping, and debugging happen here, not in a GitHub tab, a CI dashboard, or a local terminal.
+- **One surface — you never leave it** — chat, file tree, terminal, live preview, diffs, and session
+  history all live alongside the GitHub loop above, so reviewing, shipping, and debugging happen in
+  one place, not across a GitHub tab, a CI dashboard, and a local terminal.
 
-That adds up to one promise: **the build, review, ship, and debug loop stays in the conversation.**
-You describe intent, watch the preview update, and refine with the agent turn by turn while ShipIt
-runs commands, edits files, opens PRs, watches checks, and brings the results back into chat.
+You describe intent, watch the preview update, and refine turn by turn while ShipIt runs the
+commands, edits the files, opens the PRs, watches the checks, and brings the results back into chat.
 
 ## Status
 
@@ -149,28 +150,28 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 
 ## Why not just use the Claude or Codex app?
 
-You probably already have Claude Code or Codex, and their apps have grown — parallel sessions, git
-worktrees, a preview pane, even laptop-off cloud runs. ShipIt runs those same agents as its backend
-and adds the layer they still leave out:
+You probably already have Claude Code or Codex, and their desktop apps now cover more of the coding
+workflow — parallel sessions, git worktrees, a preview pane, even laptop-off cloud runs. ShipIt runs
+those same agents as its backend and adds the layer they still leave out:
 
 - **Stronger isolation than worktrees.** The native apps isolate parallel sessions with git
   worktrees — separate files, but a shared machine, OS, ports, and dependencies. ShipIt gives every
-  session its own Docker container: separate filesystem, processes, ports, deps, and network, so
-  concurrent agents genuinely can't collide.
-- **A live environment per session, automatically.** The apps can show a preview, but you wire up and
-  run a dev server per session by hand — cumbersome once several agents are going, and the servers
-  fight over ports. ShipIt boots your whole Compose stack — dev server, database, queues — in each
-  session's container on its own ports, automatically, so every parallel agent has a running app to
-  test its change against from the start.
+  session its own Docker container — separate filesystem, processes, ports, dependencies, and
+  network — so concurrent agents don't step on each other the way worktrees sharing one machine can.
+- **A live environment per session, automatically.** Native previews still tend to lean on a
+  per-session dev server you start yourself, sharing one machine's ports and resources. ShipIt treats
+  the environment as part of the session: it boots your whole Compose stack — dev server, database,
+  queues — in each session's container on its own ports, automatically, so every parallel agent has a
+  running app to test its change against from the start.
 - **Your infrastructure, not someone else's cloud.** Cloud sessions and laptop-off automations run on
   the vendor's cloud, with your code on their machines. ShipIt is self-hosted — your own machine or a
-  server you control — so the agents, previews, and CI run on infrastructure and data you own, and
-  keep running after you close the lid.
+  server you control — so the agents and previews run on infrastructure and data you own and keep
+  running after you close the lid, while ShipIt tracks your CI and deploy status inline.
 - **Any agent, in one place.** The Claude app runs Claude; the Codex app runs Codex. ShipIt runs
   both — pick per session, and have one agent review another's work inline, no separate tool.
 - **The whole ship loop comes to you.** PRs, CI checks, review threads, diffs, deploy status, and
-  issue trackers all render in the chat. The vendor apps still send you off to a GitHub tab; ShipIt
-  keeps the loop in one place.
+  issue trackers all render in the chat, so the review-and-ship loop stays inside the IDE instead of
+  scattering across a GitHub tab and a CI dashboard.
 - **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
   merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile, with
   two-way voice.
