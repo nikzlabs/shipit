@@ -1,8 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
+import { SecretCipher, isEncrypted } from "./secret-cipher.js";
 
 describe("CredentialStore", () => {
   let tmpDir: string;
@@ -392,6 +394,87 @@ describe("CredentialStore", () => {
       store.setMcpOAuthClient("notion_oauth", { clientId: "n", registeredAt: 1 });
       store.clear();
       expect(store.getMcpOAuthClient("notion_oauth")).toBeUndefined();
+    });
+  });
+
+  // ---- At-rest encryption (docs/220) ----
+
+  describe("encryption", () => {
+    it("encrypts the on-disk file but round-trips through the API", () => {
+      const dir = createTmpDir();
+      const cipher = new SecretCipher(crypto.randomBytes(32));
+      const store = new CredentialStore(dir, cipher);
+      store.setGithubToken("ghp_secret");
+      store.setAgentEnv("OPENAI_API_KEY", "sk-secret");
+
+      // The raw file is opaque ciphertext — no plaintext token survives.
+      const raw = fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8");
+      expect(isEncrypted(raw.trim())).toBe(true);
+      expect(raw).not.toContain("ghp_secret");
+      expect(raw).not.toContain("sk-secret");
+
+      // A new instance with the SAME cipher reads it back.
+      const reloaded = new CredentialStore(dir, cipher);
+      expect(reloaded.getGithubToken()).toBe("ghp_secret");
+      expect(reloaded.getAgentEnv("OPENAI_API_KEY")).toBe("sk-secret");
+    });
+
+    it("keeps mode 0600 on the encrypted file", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
+      store.setGithubToken("ghp_secret");
+      const stat = fs.statSync(path.join(dir, "shipit-credentials.json"));
+      expect(stat.mode & 0o777).toBe(0o600);
+    });
+
+    it("reads a legacy plaintext file and re-encrypts it on construction", () => {
+      const dir = createTmpDir();
+      // Seed a legacy plaintext credentials file.
+      fs.writeFileSync(
+        path.join(dir, "shipit-credentials.json"),
+        JSON.stringify({ githubToken: "ghp_legacy" }),
+      );
+
+      const cipher = new SecretCipher(crypto.randomBytes(32));
+      const store = new CredentialStore(dir, cipher);
+      // Value reads through transparently...
+      expect(store.getGithubToken()).toBe("ghp_legacy");
+      // ...and the file is now encrypted at rest (one-shot migration).
+      const raw = fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf-8");
+      expect(isEncrypted(raw.trim())).toBe(true);
+      expect(raw).not.toContain("ghp_legacy");
+    });
+
+    it("fails closed (throws) on a wrong key rather than wiping data", () => {
+      const dir = createTmpDir();
+      new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32))).setGithubToken(
+        "ghp_secret",
+      );
+      // A different key must not silently reset the store (which would let the
+      // next save overwrite the real encrypted file with an empty one).
+      expect(() => new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)))).toThrow();
+    });
+
+    it("fails closed (throws) when the file is encrypted but no cipher is configured", () => {
+      const dir = createTmpDir();
+      new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32))).setGithubToken(
+        "ghp_secret",
+      );
+      // Encryption turned off (or key missing) over an encrypted file must not
+      // be misread as corrupt JSON → reset → overwritten with an empty file.
+      expect(() => new CredentialStore(dir)).toThrow(/encrypted/);
+    });
+
+    it("repairs a pre-existing looser file mode to 0600 on save", () => {
+      const dir = createTmpDir();
+      const file = path.join(dir, "shipit-credentials.json");
+      // Simulate a legacy plaintext file written with a permissive mode.
+      fs.writeFileSync(file, JSON.stringify({ githubToken: "ghp_legacy" }), { mode: 0o644 });
+      fs.chmodSync(file, 0o644);
+
+      // Constructing with a cipher re-encrypts (one-shot migration) and chmods.
+      new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     });
   });
 });

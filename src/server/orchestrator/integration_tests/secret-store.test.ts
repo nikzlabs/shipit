@@ -3,7 +3,9 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import crypto from "node:crypto";
 import { SecretStore } from "../secret-store.js";
+import { SecretCipher, isEncrypted } from "../secret-cipher.js";
 import { createTestDatabaseManager } from "./test-helpers.js";
 import type { DatabaseManager } from "../../shared/database.js";
 
@@ -105,5 +107,58 @@ describe("Integration: SecretStore", () => {
 
     expect(store.loadSecrets(repo1)).toEqual({});
     expect(store.loadSecrets(repo2)).toEqual({ B: "2" });
+  });
+
+  // ---- At-rest encryption (docs/220) ----
+
+  describe("encryption", () => {
+    const repoUrl = "https://github.com/org/repo";
+
+    it("encrypts values at rest but round-trips through the API", () => {
+      const cipher = new SecretCipher(crypto.randomBytes(32));
+      const enc = new SecretStore(dbManager, cipher);
+      enc.saveSecrets(repoUrl, { STRIPE_KEY: "sk_live_123" });
+
+      // Raw column is ciphertext — no plaintext value in the DB.
+      const row = dbManager.db
+        .prepare("SELECT value FROM secrets WHERE repo_url = ? AND key = 'STRIPE_KEY'")
+        .get(repoUrl) as { value: string };
+      expect(isEncrypted(row.value)).toBe(true);
+      expect(row.value).not.toContain("sk_live_123");
+
+      // loadSecrets transparently decrypts.
+      expect(enc.loadSecrets(repoUrl)).toEqual({ STRIPE_KEY: "sk_live_123" });
+    });
+
+    it("reads legacy plaintext rows and re-encrypts on construction", () => {
+      // Seed a plaintext row via a plaintext store.
+      store.saveSecrets(repoUrl, { LEGACY: "plain-value" });
+
+      const cipher = new SecretCipher(crypto.randomBytes(32));
+      const enc = new SecretStore(dbManager, cipher); // migrateToEncrypted runs
+      const row = dbManager.db
+        .prepare("SELECT value FROM secrets WHERE repo_url = ? AND key = 'LEGACY'")
+        .get(repoUrl) as { value: string };
+      expect(isEncrypted(row.value)).toBe(true);
+      expect(enc.loadSecrets(repoUrl)).toEqual({ LEGACY: "plain-value" });
+    });
+
+    it("fails closed (throws at construction) under the wrong key", () => {
+      new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
+        K: "v",
+      });
+      // A wrong key is rejected when the store is built (decrypt-validation of
+      // existing ciphertext), not lazily on the first loadSecrets.
+      expect(() => new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32)))).toThrow();
+    });
+
+    it("fails closed (throws) when encrypted rows exist but no cipher is configured", () => {
+      new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
+        K: "v",
+      });
+      // Disabling encryption (no cipher) over encrypted data must not silently
+      // hand ciphertext back as a plaintext value.
+      expect(() => new SecretStore(dbManager)).toThrow(/encrypted secrets/);
+    });
   });
 });

@@ -172,6 +172,36 @@ from the *code that runs in the service container*. See the plan in
 `docs/087-reusable-preview-secrets/plan.md` under "Security" for the full
 threat model.
 
+## At-rest encryption (self-hosters)
+
+The values ShipIt persists — per-repo secrets (SQLite) and account-wide
+credentials (`shipit-credentials.json`: GitHub token, Linear token, voice
+provider keys, MCP secrets and OAuth tokens) — are **encrypted at rest** with
+AES-256-GCM (`docs/220`). This protects the persisted bytes if they are copied
+*without* the running system (a leaked DB dump, a credentials-file backup, a
+value pasted into a log). It does **not** protect against an attacker who can
+read the whole credentials volume — with the default key location the key file
+lives on that same volume.
+
+By default the orchestrator needs **no configuration**: on first boot it
+generates a 32-byte key, writes it to `<credentials-dir>/secret-key` (mode
+0600), and uses it. **Back up that key file** — losing it makes the encrypted
+secrets unrecoverable.
+
+To control key management, set these on the orchestrator:
+
+| Variable | Purpose |
+|----------|---------|
+| `SHIPIT_SECRET_KEY` | Use this 32-byte key instead of a key file (64 hex chars, or base64, optionally `hex:` / `base64:` prefixed). Lets you keep the key **off** the credentials volume (Docker secret / KMS-injected). A malformed value fails the boot loudly — it never silently falls back to plaintext. |
+| `SHIPIT_SECRET_KEY_FILE` | Path to the key file. Defaults to `<credentials-dir>/secret-key`. A present-but-unreadable / wrong-size file fails the boot rather than regenerating over it (which would orphan existing ciphertext). |
+| `SHIPIT_SECRET_ENCRYPTION` | Set to `0` / `false` / `off` to disable encryption and store plaintext (explicit opt-out). |
+
+Existing plaintext installs upgrade transparently: values are read whether or
+not they're encrypted and re-encrypted on the next write (and once on startup).
+A wrong or missing key surfaces as a clear error — ShipIt never wipes data to
+recover. Provider OAuth CLI credential files (`provider-accounts/<provider>/…`,
+written by the `claude` / `codex` CLIs) are out of scope for this encryption.
+
 ## Security note: agent-container egress
 
 Agent containers are **network-contained by default** (SHI-90,
