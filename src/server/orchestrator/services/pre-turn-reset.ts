@@ -25,6 +25,7 @@
 import type { SessionInfo } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
+import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
 
 export interface PreTurnResetDeps {
   getSession: (id: string) => SessionInfo | undefined;
@@ -125,6 +126,26 @@ export async function isResetEligible(
   } catch {
     return false;
   }
+}
+
+/**
+ * Recompute the safety-only eligibility signal and push it to a session's
+ * attached viewers via the runner's broadcast transport. Used by the
+ * merge-detection path (`onMergeDetectedCb`): a PR that merges while the user is
+ * sitting ON the session — never re-activating it — makes the session newly
+ * reset-eligible, but neither the activation nor the post-turn recompute fires,
+ * so the "start from latest base" composer control would stay hidden until they
+ * switched away and back. This is transient + emit-only (recomputed on every
+ * activation), so a bare `emitMessage` is the right transport — nothing to
+ * persist. Fail-safe: `isResetEligible` already swallows its own errors.
+ */
+export async function emitResetEligibleSignal(
+  deps: ResetEligibleSignalDeps,
+  runner: { sessionDir: string; emitMessage: (msg: WsServerMessage) => void },
+  sessionId: string,
+): Promise<void> {
+  const eligible = await isResetEligible(deps, sessionId, runner.sessionDir);
+  runner.emitMessage({ type: "reset_eligible", sessionId, eligible });
 }
 
 export async function autoResetMergedBranchOnContinue(

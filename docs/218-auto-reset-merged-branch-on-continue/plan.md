@@ -409,11 +409,18 @@ broadcast flows (`broadcastAllSnapshots` skips `mergedSessions`), and `attachAut
 is synchronous on the poll path — so computing a git-derived boolean there would mean an
 async refactor of the poll loop AND fighting the merged-session exclusion. Instead the
 signal is a dedicated transient WS message (`reset_eligible`), computed by `isResetEligible`
-(safety-only) and pushed at exactly the two points the design names: **session activation**
-(`route-registry.ts`, mirroring the existing `pr_notable_files` git-derived re-seed) and
-**post-turn** (the `postTurnReArmReset` every-turn closure). Client stores it in
-`pr-store.resetEligibleBySession`; the composer ANDs it with the `autoResetMergedBranch`
-setting. Transient, never persisted — recomputed on each (re)connect, so it self-heals.
+(safety-only) and pushed at three points: **session activation**
+(`route-registry.ts`, mirroring the existing `pr_notable_files` git-derived re-seed),
+**post-turn** (the `postTurnReArmReset` every-turn closure), and **merge detection while the
+user is viewing the session** (the poller's `onMergeDetectedCb` in `app-lifecycle.ts`, via
+`emitResetEligibleSignal`). The third point closes a gap: a PR that merges while the user
+sits ON the session — never re-activating it and never taking a turn — sets `mergedAt` +
+`mergedHeadSha` but would otherwise leave the composer control hidden until a switch-away-and-
+back, because only activation and post-turn recomputed. The merge callback now recomputes and
+pushes the signal to the attached runner's viewers (skipped when no live runner — activation
+covers reattach). Client stores it in `pr-store.resetEligibleBySession`; the composer ANDs it
+with the `autoResetMergedBranch` setting. Transient, never persisted — recomputed on each
+(re)connect, so it self-heals.
 
 **Phase 3 — per-send intent.** `WsSendMessage.resetMergedBranch` (`false` = unticked →
 skip; `true`/absent = follow the setting) threads `send-message.ts` → `runAgentWithMessage`
