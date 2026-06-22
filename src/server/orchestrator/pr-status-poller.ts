@@ -1209,20 +1209,28 @@ export class PrStatusPoller {
       });
     }
 
+    // docs/218 — record/backfill the merged PR's head-branch tip as the session's
+    // auto-reset safety anchor. We deliberately store the PR's `head.sha` rather
+    // than the session's current local HEAD: a turn that ran between the GitHub
+    // merge and this detection would have advanced local HEAD onto unmerged work,
+    // and anchoring on that would later let the pre-turn reset discard it.
+    //
+    // This runs on EVERY verify of a merged session (not just the fresh-merge
+    // `!alreadyTerminal` transition below) but only WRITES when the anchor is
+    // currently missing — so it idempotently backfills sessions whose merge was
+    // first observed before this capture shipped, or that were already terminal
+    // when the orchestrator restarted (the fresh-merge branch is skipped then).
+    // Without this backfill those sessions stay permanently ineligible — the
+    // control never appears even though the branch sits untouched at the merged
+    // tip. Fail closed when the SHA is absent (leaving it NULL → no auto-reset).
+    if (isMerged && pr.head_sha) {
+      const existingAnchor = this.sessionManager.get(sessionId)?.mergedHeadSha;
+      if (!existingAnchor) this.sessionManager.setMergedHeadSha(sessionId, pr.head_sha);
+    } else if (isMerged && !alreadyTerminal) {
+      console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
+    }
+
     if (isMerged && !alreadyTerminal) {
-      // docs/218 — record the merged PR's head-branch tip as the session's
-      // auto-reset safety anchor, BEFORE the merge side effects (archive,
-      // issue-lifecycle close, notify-on-merge) fire. We deliberately store the
-      // PR's `head.sha` rather than the session's current local HEAD: a turn
-      // that ran between the GitHub merge and this detection would have advanced
-      // local HEAD onto unmerged work, and anchoring on that would later let the
-      // pre-turn reset discard it. Fail closed when the SHA is absent (malformed
-      // REST response) — leaving `mergedHeadSha` NULL means the reset can't fire.
-      if (pr.head_sha) {
-        this.sessionManager.setMergedHeadSha(sessionId, pr.head_sha);
-      } else {
-        console.warn(`[pr-poller] merged PR #${pr.number} for ${sessionId} had no head.sha — auto-reset anchor not recorded`);
-      }
       if (this.onMergeDetectedCb) {
         this.onMergeDetectedCb(sessionId).catch((err: unknown) => {
           console.error(`[pr-poller] Post-merge archive error for ${sessionId}:`, err);
