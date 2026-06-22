@@ -40,8 +40,6 @@ import type {
  *   - `streamingActive` — the resident process is actually a streaming process
  *     (the static capability can be true while the resident process is a
  *     one-shot PTY — e.g. the toggle was flipped on mid-turn).
- *   - `isReviewTurn` — a chat-native review turn (docs/125) must own its own
- *     turn so the per-turn review-tool allow-list is established; never steer.
  *   - `systemTurnInProgress` — a system-driven turn (rebase resolution, etc.)
  *     is running; steering an unrelated message into it would derail it.
  *
@@ -53,7 +51,6 @@ export interface SteerDecisionInputs {
   steeringCapable: boolean;
   liveSteering: boolean;
   streamingActive: boolean;
-  isReviewTurn: boolean;
   systemTurnInProgress: boolean;
 }
 
@@ -66,7 +63,6 @@ export function shouldSteerMessage(i: SteerDecisionInputs): boolean {
     i.steeringCapable &&
     i.liveSteering &&
     i.streamingActive &&
-    !i.isReviewTurn &&
     !i.systemTurnInProgress
   );
 }
@@ -97,7 +93,6 @@ export function trySteerDispatch(
       steeringCapable,
       liveSteering,
       streamingActive: runner.isStreamingActive,
-      isReviewTurn: opts.reviewFilePath !== undefined,
       systemTurnInProgress: runner.systemTurnInProgress,
     })
   ) {

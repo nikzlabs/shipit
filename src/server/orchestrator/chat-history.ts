@@ -304,12 +304,12 @@ export interface PersistedMessage {
     failedAt: string;
   };
   /**
-   * docs/203 — when set, renders an inline plain-text `ReviewCard`. One card per
-   * review run, keyed by `reviewId`; the parent's re-review patches the same
-   * card (the patch lands by replacing the recorded card in `recordedCards`
-   * mid-turn — see `emitOrReplaceChatCard` — not via a finalized-row update).
-   * Legacy pre-docs/203 `agent_review` rows are mapped to a degraded `AiReviewCard`
-   * (`legacy: true`) on read so old transcript cards still render.
+   * docs/203 — when set, renders an inline plain-text `ReviewCard`, keyed by
+   * `reviewId`. **Legacy read path only (docs/220):** the `submit_review` write
+   * path was removed, so no new rows set this field (cross-agent reviews surface
+   * in the consult card, same-model reviews are narrated as prose). Retained so
+   * rows persisted before docs/220 — and degraded pre-docs/203 `agent_review`
+   * rows mapped to a `legacy: true` `AiReviewCard` — still render on read.
    */
   aiReview?: AiReviewCard;
   /**

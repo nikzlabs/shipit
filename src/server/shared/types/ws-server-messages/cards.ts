@@ -4,27 +4,11 @@ import type {
   IssueRefCard,
   CompactionCard,
   SubAgentConsultCard,
-  AiReviewCard,
   ActionChecklistCard,
   BranchAutoResetCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
-
-/**
- * Server → Client: a plain-text AI review card was added to (or patched in) the
- * chat transcript (docs/203). Emitted via `emitChatCard` on the first
- * `submit_review`, and re-emitted (as an upsert keyed by `reviewId`) when the
- * parent's re-review patches the same card. Carries the full `AiReviewCard`
- * payload — the reviewer's markdown renders verbatim in the card; there is no
- * snapshot, no anchoring, and no lazy fetch. Idempotent by `reviewId` so the
- * turn-event buffer replay on reconnect doesn't double-render.
- */
-export interface WsAiReviewAdded {
-  type: "ai_review_added";
-  sessionId: string;
-  card: AiReviewCard;
-}
 
 /**
  * docs/163 — the Native sink of a voice note. Emitted via `runner.emitMessage`

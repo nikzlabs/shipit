@@ -36,7 +36,6 @@ export async function registerAgentRoutes(
       images?: ImageAttachment[];
       files?: FileContextRef[];
       uploads?: UploadRef[];
-      reviewFilePath?: string;
     };
   }>(
     "/api/sessions/:id/agent/dispatch",
@@ -58,7 +57,6 @@ export async function registerAgentRoutes(
             ...(body.images !== undefined ? { images: body.images } : {}),
             ...(body.files !== undefined ? { files: body.files } : {}),
             ...(body.uploads !== undefined ? { uploads: body.uploads } : {}),
-            ...(body.reviewFilePath !== undefined ? { reviewFilePath: body.reviewFilePath } : {}),
           },
         );
         reply.send(result);

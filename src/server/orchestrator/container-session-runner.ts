@@ -103,8 +103,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   // false or on dispose.
   private _streamingProxy: ProxyAgentProcess | null = null;
   private _appliedPermissionMode: PermissionMode | undefined = undefined;
-  private _activeReviewFilePath: string | null = null;
-  private _activeReviewId: string | null = null;
 
   // Per-runner mutex for `_startAgentViaProxy`. Concurrent callers chain on
   // this promise so docs/142's B2 kill+restart cannot interleave with another
@@ -296,10 +294,6 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
   get appliedPermissionMode(): PermissionMode | undefined { return this._appliedPermissionMode; }
   set appliedPermissionMode(v: PermissionMode | undefined) { this._appliedPermissionMode = v; }
-  get activeReviewFilePath(): string | null { return this._activeReviewFilePath; }
-  set activeReviewFilePath(v: string | null) { this._activeReviewFilePath = v; }
-  get activeReviewId(): string | null { return this._activeReviewId; }
-  set activeReviewId(v: string | null) { this._activeReviewId = v; }
 
   get accumulatedText(): string { return this.turn.accumulatedText; }
   set accumulatedText(s: string) { this.turn.accumulatedText = s; }

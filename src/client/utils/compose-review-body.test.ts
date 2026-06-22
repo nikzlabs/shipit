@@ -105,21 +105,23 @@ describe("composeReviewMessage — shared shape", () => {
     expect(msg).toContain('"No material issues found."');
   });
 
-  it("tells the reviewer to read with its own tools but return markdown (no submit_review)", () => {
+  it("tells the reviewer to read with its own tools but return markdown — and call NO tool (docs/220)", () => {
     const msg = composeReviewMessage("a.ts", subagent);
     expect(msg).toContain("MARKDOWN ONLY");
     // Reading the repo with read-only tools is explicitly allowed...
     expect(msg).toContain("READ the file");
     expect(msg).toContain("read-only tools");
-    // ...but the reviewer must not record the card itself.
-    expect(msg).toContain("Do NOT call the `submit_review`");
+    // ...but the reviewer must not call any MCP tool, and `submit_review` is gone.
+    expect(msg).toContain("Do NOT call any MCP tool");
+    expect(msg).not.toContain("submit_review");
   });
 
-  it("instructs the parent to apply fixes and re-review (patching the same card)", () => {
+  it("instructs the parent to apply fixes — no card-patching tool involved (docs/220)", () => {
     const msg = composeReviewMessage("a.ts", subagent);
     expect(msg).toContain("Apply fixes for the material findings");
-    expect(msg).toContain("patches the SAME card");
     expect(msg).toContain("describe the fixes you applied");
+    expect(msg).not.toContain("submit_review");
+    expect(msg).not.toContain("patches the SAME card");
   });
 
   it("embeds NO draft comments (decoupled from the user-comment system)", () => {
@@ -129,28 +131,35 @@ describe("composeReviewMessage — shared shape", () => {
   });
 });
 
-describe("composeReviewMessage — subagent mode", () => {
-  it("delegates to a fresh Task subagent and submits under the self label", () => {
+describe("composeReviewMessage — subagent mode (same-model → prose, docs/220)", () => {
+  it("delegates to a fresh Task subagent and presents findings as prose, no tool", () => {
     const msg = composeReviewMessage("a.ts", subagent);
     expect(msg).toContain("fresh Task subagent");
     expect(msg).toContain("do not review it");
-    expect(msg).toContain('reviewer_label: "Reviewed by Claude"');
+    // same-model review is narrated as prose — no card, no tool, no cross-agent spawn
+    expect(msg).toContain("present");
+    expect(msg).toContain("prose");
+    expect(msg).not.toContain("submit_review");
     expect(msg).not.toContain("shipit agent run");
   });
 });
 
-describe("composeReviewMessage — cross-agent mode", () => {
-  it("delegates to the other agent via shipit agent run and labels the card by reviewer", () => {
+describe("composeReviewMessage — cross-agent mode (consult card, docs/220)", () => {
+  it("delegates to the other agent via shipit agent run and relies on the consult card", () => {
     const msg = composeReviewMessage("a.ts", crossAgent);
     expect(msg).toContain("shipit agent run --agent codex --prompt-file -");
-    expect(msg).toContain('reviewer_label: "Reviewed by Codex"');
+    // ShipIt surfaces the reviewer's output in the consult card; the parent records nothing
+    expect(msg).toContain("consult card");
+    expect(msg).not.toContain("submit_review");
+    expect(msg).not.toContain("reviewer_label");
   });
 
-  it("makes cross-agent failure a first-class fallback to a same-model Task review", () => {
+  it("makes cross-agent failure a first-class fallback to a same-model Task review (prose)", () => {
     const msg = composeReviewMessage("a.ts", crossAgent);
     expect(msg).toContain("exits non-zero");
     expect(msg).toContain("do NOT abort");
-    expect(msg).toContain("fresh same-model");
-    expect(msg).toContain('reviewer_label: "Reviewed by Claude (Codex unavailable)"');
+    expect(msg).toContain("fresh same-model Task");
+    expect(msg).toContain("prose");
+    expect(msg).toContain("Codex was unavailable");
   });
 });

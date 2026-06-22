@@ -86,10 +86,9 @@ describe("precompiled MCP bridge bundle (docs/199, SHI-128)", () => {
       fs.copyFileSync(built, bundle);
 
       // Claude's tool subset — exercises every tool module in the bundle.
-      const out = await handshake(bundle, runDir, "review,present,voice,bug,permission");
-      // Single `shipit` server (from initialize serverInfo), all five tools listed.
+      const out = await handshake(bundle, runDir, "present,voice,bug,permission");
+      // Single `shipit` server (from initialize serverInfo), all selected tools listed.
       expect(out).toContain("shipit");
-      expect(out).toContain("submit_review");
       expect(out).toContain("present");
       expect(out).toContain("voice_note");
       expect(out).toContain("report_shipit_bug");

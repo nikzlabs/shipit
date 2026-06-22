@@ -47,13 +47,13 @@ function firstText(result: unknown): string {
 
 describe("selectTools", () => {
   it("parses a comma-separated spec into the matching descriptors, in order", () => {
-    const ids = selectTools("review,voice,permission").map((t) => t.id);
-    expect(ids).toEqual(["review", "voice", "permission"]);
+    const ids = selectTools("voice,permission,present").map((t) => t.id);
+    expect(ids).toEqual(["voice", "permission", "present"]);
   });
 
   it("trims whitespace and drops unknown / empty ids", () => {
-    const ids = selectTools(" review , bogus ,, present ").map((t) => t.id);
-    expect(ids).toEqual(["review", "present"]);
+    const ids = selectTools(" voice , bogus ,, present ").map((t) => t.id);
+    expect(ids).toEqual(["voice", "present"]);
   });
 
   it("returns an empty list for an undefined or empty spec", () => {
@@ -63,7 +63,7 @@ describe("selectTools", () => {
 
   it("registers all internal tools", () => {
     expect(Object.keys(TOOL_REGISTRY).sort()).toEqual(
-      ["ask", "bug", "permission", "present", "propose_actions", "review", "voice"],
+      ["ask", "bug", "permission", "present", "propose_actions", "voice"],
     );
   });
 });
@@ -76,17 +76,17 @@ describe("createShipitBridgeServer — ListTools", () => {
   });
 
   it("advertises exactly the selected tools under their MCP names", async () => {
-    bridge = await connect(selectTools("review,present,voice,bug,permission,propose_actions"));
+    bridge = await connect(selectTools("present,voice,bug,permission,propose_actions"));
     const { tools } = await bridge.client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual(
-      ["permission_prompt", "present", "propose_actions", "report_shipit_bug", "submit_review", "voice_note"],
+      ["permission_prompt", "present", "propose_actions", "report_shipit_bug", "voice_note"],
     );
     // ask was not selected.
     expect(tools.find((t) => t.name === "AskUserQuestion")).toBeUndefined();
   });
 
   it("exposes a different subset for Codex (ask, no permission)", async () => {
-    bridge = await connect(selectTools("review,present,voice,ask,bug,propose_actions"));
+    bridge = await connect(selectTools("present,voice,ask,bug,propose_actions"));
     const names = (await bridge.client.listTools()).tools.map((t) => t.name);
     expect(names).toContain("AskUserQuestion");
     expect(names).toContain("propose_actions");

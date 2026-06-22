@@ -1102,8 +1102,8 @@ describe("CodexAdapter", () => {
       item: {
         type: "mcpToolCall",
         id: "call-other-1",
-        tool: "shipit__submit_review",
-        arguments: JSON.stringify({ file_path: "a.ts", markdown: "No material issues found." }),
+        tool: "shipit__present",
+        arguments: JSON.stringify({ file: "/persist/diagram.html" }),
       },
     });
 
@@ -1112,7 +1112,7 @@ describe("CodexAdapter", () => {
     });
     expect(events[0]).toMatchObject({
       type: "agent_assistant",
-      content: [{ type: "tool_use", id: "call-other-1", name: "shipit__submit_review" }],
+      content: [{ type: "tool_use", id: "call-other-1", name: "shipit__present" }],
     });
   });
 

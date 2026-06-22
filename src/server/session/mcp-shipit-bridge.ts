@@ -28,7 +28,6 @@ import {
 } from "@modelcontextprotocol/sdk/types.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
-import { reviewTool } from "./mcp-tools/review.js";
 import { presentTool } from "./mcp-tools/present.js";
 import { voiceTool } from "./mcp-tools/voice.js";
 import { bugTool } from "./mcp-tools/bug.js";
@@ -39,7 +38,6 @@ import type { ToolDeps, ToolDescriptor } from "./mcp-tools/types.js";
 
 /** Every internal tool, keyed by its `SHIPIT_MCP_TOOLS` id. */
 export const TOOL_REGISTRY: Record<string, ToolDescriptor> = {
-  [reviewTool.id]: reviewTool,
   [presentTool.id]: presentTool,
   [voiceTool.id]: voiceTool,
   [bugTool.id]: bugTool,

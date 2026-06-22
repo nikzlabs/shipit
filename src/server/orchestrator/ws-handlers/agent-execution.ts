@@ -146,7 +146,6 @@ export async function drainNextQueuedMessage(
       permissionMode: next.permissionMode,
       isNewSession: false,
       uploadPaths: nextUploadRefs?.map((u) => u.path),
-      reviewFilePath: next.reviewFilePath,
     });
   } catch (err) {
     console.error("[queue] Error processing queued message:", getErrorMessage(err));
@@ -185,13 +184,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * plain text bubble on reload. The prompt text remains the source of truth.
    */
   userReview?: { filePaths: string[]; commentCount: number };
-  /**
-   * docs/125 — when this turn is a chat-native review, the file the
-   * `submit_review` tool is authorized to write on. Set on the runner
-   * at turn start (here, which is also the dequeue point for queued turns) and
-   * cleared when the turn ends.
-   */
-  reviewFilePath?: string;
   /**
    * docs/178 — this turn is a context-compaction request (`/compact`). The
    * prompt is `/compact`; for Claude the CLI honors it as a slash command, and
@@ -562,7 +554,6 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     prompt,
     userText,
     ...(effectivePermissionMode !== undefined ? { permissionMode: effectivePermissionMode } : {}),
-    ...(opts.reviewFilePath !== undefined ? { reviewFilePath: opts.reviewFilePath } : {}),
     // The client already rendered an optimistic bubble — don't echo.
     emitUserEcho: false,
     persistUserMessage,
