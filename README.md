@@ -24,8 +24,7 @@ what it builds through real GitHub PRs with proper CI checks — all integrated 
      or a clickable thumbnail right under the hero image. -->
 
 ShipIt is a chat-driven dev environment for developers who want to ship faster — run Claude Code or
-Codex in parallel and take each change from prompt to merged PR without leaving the IDE. A few choices
-make that possible:
+Codex in parallel and take each change from prompt to merged PR without leaving the IDE:
 
 - **Container-isolated sessions** — every session runs in its own Docker container with its own
   branch and workspace, so parallel agents never collide on files, ports, or dependencies — and an
@@ -39,17 +38,6 @@ make that possible:
   all render in the chat, so you ship without bouncing to a GitHub tab.
 - **Mobile-first, with two-way voice** — built for real use from a phone, not a shrunk-down desktop.
   Dictate prompts and hear a spoken note when an agent needs you, so you can review and ship on the go.
-
-## Status
-
-ShipIt is in an early public release state. The supported install paths are local Docker and a
-self-hosted Docker install on an Ubuntu VPS; the VPS path is the intended always-on setup when you
-want agents and previews to keep running after you close your laptop. The core loop is live: create
-isolated sessions, work against real repositories, run Compose-backed previews, open PRs, track CI
-and deploy status from GitHub, and continue from desktop or mobile.
-
-The project is public source, but not yet open to outside pull requests. Bug reports, feature
-requests, and design discussion are welcome as GitHub issues.
 
 ## Quickstart
 
@@ -75,53 +63,31 @@ Use local Docker when you want to run ShipIt on your own machine — Linux, macO
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 ```
 
-This clones ShipIt to `~/.shipit`, builds the orchestrator and session-worker images, and starts
-ShipIt **detached** at [http://localhost:4123](http://localhost:4123). Installing a fork or picking a
-different install location? See [`deployment/README.md`](deployment/README.md) for the
-`SHIPIT_REPO_URL` and `SHIPIT_HOME` overrides.
-
-Updating and stopping a local install — `update.sh`, `stop.sh`, release-channel behavior, and the
-`--purge` flag — are covered in [`deployment/README.md`](deployment/README.md).
-
-After the app opens, sign in to Claude Code or Codex from the in-app provider flow; credentials are
-stored in a persistent Docker volume so you only need to do this once per provider.
+This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
+[http://localhost:4123](http://localhost:4123). Sign in to Claude Code or Codex once from the in-app
+provider flow. Fork installs, custom paths, updates, and stop/uninstall are in
+[`deployment/README.md`](deployment/README.md).
 
 ### Run it on a VPS
 
 Use the VPS path for the intended always-on setup: agents, previews, and CI follow-up work keep
 running even when your laptop is closed.
 
-ShipIt ships with a one-command provisioning script for Ubuntu VPS hosts. It installs Docker, raises
-the inotify limits session containers need, and optionally puts ShipIt behind a
+ShipIt ships with a one-command provisioning script for Ubuntu hosts. It installs Docker, raises the
+inotify limits sessions need, and can put ShipIt behind a
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
-(with required Zero Trust SSO by default) and/or exposes it over [Tailscale](https://tailscale.com/)
-— no open inbound ports required.
-
-**Run it as root** — the script installs system packages, configures Docker, and sets up systemd
-units. The command runs it via `sudo` (a harmless no-op if you're already `root`):
-
-**Recommended sizing:** 8 GB RAM minimum, 16 GB recommended. Each active session runs its own
-container (agent CLI plus the session's Compose services — optional, but usually at least a dev
-server), so headroom matters once you have a few sessions open at once.
+(with Zero Trust SSO) or [Tailscale](https://tailscale.com/) — no open inbound ports. Plan for 8 GB
+RAM minimum (16 GB recommended), since each active session runs its own container. Run it as root
+(`sudo` is a no-op if you already are):
 
 ```bash
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
-The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
-everything else: installing git and Docker, cloning ShipIt to `/opt/shipit`, configuring host
-limits, building the images, installing the self-updater + restarter systemd units, and bringing
-ShipIt up. Installing a fork instead? See [`deployment/README.md`](deployment/README.md) for the
-fork-install command.
-
-Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** —
-which fetches your release channel, rebuilds, and restarts. To update from the host instead, follow
-the channel-aware steps in [`deployment/README.md`](deployment/README.md);
-`deployment/vps/deploy.sh` on its own only rebuilds and restarts the current checkout, so it won't
-pull a new release.
-
-See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations,
-Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
+It asks which access path you want, then handles the rest — Docker, clone, host limits, image builds,
+and the self-update systemd units. Updates land from the UI (**Settings → Advanced → Software
+Updates**). Fork installs, host-side updates, sizing, access policies, and troubleshooting are all in
+[`deployment/README.md`](deployment/README.md).
 
 ### After first boot
 
@@ -131,14 +97,24 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
    workspace for that session.
 
-## Why not just use the Claude or Codex app?
+## Status
 
-You probably already have one — and ShipIt runs it as the backend. Their desktop apps now do parallel
-sessions, git worktrees, a preview pane, even laptop-off cloud runs; what ShipIt adds is the layer
-they don't. Real container isolation instead of shared-machine worktrees, with your **whole stack
-running in every session** so each agent can test its own change. **Claude and Codex together** under
-one roof, with cross-agent review. And the **entire GitHub ship loop** — PRs, CI, deploys, issues —
-rendered in chat, on infrastructure **you own** and can reach from your phone.
+ShipIt is in an early public release state. The supported install paths are local Docker and a
+self-hosted Docker install on an Ubuntu VPS; the VPS path is the intended always-on setup when you
+want agents and previews to keep running after you close your laptop. The core loop is live: create
+isolated sessions, work against real repositories, run Compose-backed previews, open PRs, track CI
+and deploy status from GitHub, and continue from desktop or mobile.
+
+The project is public source, but not yet open to outside pull requests. Bug reports, feature
+requests, and design discussion are welcome as GitHub issues.
+
+## Why ShipIt exists
+
+Coding agents are the easy part — you already have Claude Code or Codex. The hard part is everything
+around them: an isolated environment per agent, a live app to test against, parallel work that doesn't
+collide, and the full PR → CI → deploy → review loop on real repos. ShipIt wraps the agents you
+already use in that shipping loop — container-isolated, with your whole stack running per session,
+both Claude and Codex under one roof, on infrastructure you own and can reach from your phone.
 
 ## Agents
 
@@ -183,10 +159,8 @@ per provider. The agent harness is pluggable:
 
 ### Review & ship
 
-- **Inline PR lifecycle card** — title, description, CI checks, deploy status, and merge state all
-  render in chat; no GitHub tab required
-- **GitHub without leaving ShipIt** — create PRs, follow CI, read review threads, track deploys, and
-  merge from the browser IDE
+- **Inline PR lifecycle card** — create PRs and watch title, description, CI checks, review threads,
+  deploy status, and merge state, all in chat with no GitHub tab required
 - **AI PR descriptions** — generated from the actual diff when you open a PR
 - **Chat-native AI review** — ask the session agent to review files or diffs and surface findings
   inline in the same conversation
@@ -224,21 +198,18 @@ per provider. The agent harness is pluggable:
 
 ### Everywhere
 
-- **Mobile-first layout** — a focused tab-based view on small screens, resizable split panels on
-  desktop; built and polished for real day-to-day use from a phone
-- **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, hear a
-  spoken note when the agent needs your input, and tap play to hear any completed turn read aloud, so
-  you can work hands-free
+- **Mobile-first layout** — a focused tab view on phones, resizable split panels on desktop
+- **Voice in and out** — dictate prompts, hear a spoken note when an agent needs you, and tap play to
+  hear a completed turn read aloud
 - **Background notifications** — optional browser notification/sound when the agent finishes
 - **Quick capture** — a global hotkey opens an overlay that captures a prompt and spawns a new
   session in the background, without leaving what you're doing
 - **Software updates** — VPS installs can update and restart from Settings → Advanced; local Docker
   installs choose the channel there, then apply updates by running `deployment/local/update.sh`
 
-### Comes standard
+### Also included
 
-The baseline conveniences you'd expect from any agent tool — present and polished, just not where
-ShipIt is trying to stand out:
+The everyday essentials you'd expect from a serious agent IDE:
 
 - **Context compaction & history editing** — trigger `/compact`, delete messages, or compact a long
   conversation into a summarized fork to genuinely shrink the agent's context window
@@ -266,37 +237,21 @@ ShipIt is trying to stand out:
 ## Security
 
 ShipIt runs AI-agent-written code on your repos and infrastructure, so it treats the agent as a
-powerful but only semi-trusted actor and defends the boundaries around it. The headline measures:
+powerful but only semi-trusted actor. The headline defenses:
 
-- **Container-isolated agents** — each session runs in its own Docker container on an isolated
-  network; sessions can't reach each other. Containers get no Docker socket, only a proxy that
-  enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every process
-  it spawns run as an unprivileged user (not root), with capabilities trimmed to the minimum, so a
-  prompt-injected command has a smaller blast radius inside the box.
-- **Built-in per-agent firewall (default-deny egress)** — every agent container runs behind its own
-  network firewall **by default** on every instance: outbound traffic is restricted to an allowlist
-  of known hosts (the agent API, your git host, package registries, your connected MCP servers) via a
-  privileged sidecar in each container's network namespace. It is **fail-closed** — a session never
-  silently runs with open egress — which makes it the main defense against a prompt-injected agent
-  exfiltrating your credentials.
-- **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
-  the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
-  aren't sitting at rest in the agent's sandbox. When you configure a GitHub App, git operations use
-  short-lived, single-repo-scoped tokens instead of a full account PAT.
-- **Repo trust gate** — cloning a repository never auto-runs its `agent.install` or Compose
-  build/command until you explicitly trust that remote once, so repo-controlled code can't execute on
-  first clone without your consent.
+- **Container-isolated agents** — each session runs in its own container on an isolated network, as
+  an unprivileged user with no Docker socket, so a prompt-injected command has a small blast radius.
+- **Built-in per-agent firewall** — outbound traffic is default-deny, restricted to an allowlist
+  (agent API, your git host, registries, your MCP servers) and fail-closed, so a compromised agent
+  can't exfiltrate your credentials.
+- **Brokered credentials** — GitHub and tracker tokens are handed out on demand, not left at rest in
+  the sandbox; with a GitHub App, git uses short-lived, single-repo-scoped tokens.
 - **Commit-time secret scanning** — the post-turn auto-commit blocks any commit that would introduce
-  a credential, with a persisted redacted warning, so a leaked secret never lands in your history.
-- **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
-  age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
-- **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
-  first, and you review the redacted result.
-- **Access control is yours** — the VPS installer puts ShipIt behind Cloudflare Zero Trust or
-  Tailscale with no open inbound ports, so only the people you authorize can reach your instance.
+  a credential, so a leaked secret never lands in your history.
 
-The full picture — the trust model, every defense, and the limitations ShipIt has accepted — is in
-[SECURITY-MODEL.md](SECURITY-MODEL.md).
+Plus a repo trust gate, supply-chain version pinning, bug-report secret redaction, and Cloudflare
+Zero Trust / Tailscale access control. The full picture — trust model, every defense, and accepted
+limitations — is in [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Contributing
 
