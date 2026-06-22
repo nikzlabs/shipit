@@ -58,6 +58,20 @@ describe("ReasoningSelector (docs/217)", () => {
     expect(screen.getByTestId("reasoning-trigger").textContent).toContain("High");
   });
 
+  it("collapses the trigger to the icon in compact mode", () => {
+    render(
+      <ReasoningSelector
+        agent={claude}
+        sessionReasoning="high"
+        onChange={() => {}}
+        compactTrigger
+      />,
+    );
+    const trigger = screen.getByTestId("reasoning-trigger");
+    expect(trigger.textContent).not.toContain("High");
+    expect(trigger).toHaveAttribute("title", "Reasoning: High");
+  });
+
   it("falls back to the per-agent localStorage seed when the session has none", () => {
     saveReasoning("claude", "max");
     render(<ReasoningSelector agent={claude} sessionReasoning={undefined} onChange={() => {}} />);

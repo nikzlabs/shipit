@@ -777,6 +777,7 @@ export function MessageInput({
                   sessionReasoning={sessionReasoning}
                   onChange={onReasoningChange}
                   disabled={disabled || isLoading}
+                  compactTrigger={isMobile}
                 />
               </div>
             )}
