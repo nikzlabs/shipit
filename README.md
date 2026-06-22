@@ -182,7 +182,8 @@ harness:
   change, edits files, runs the commands, and reads the output, so you steer in chat instead of
   driving a shell
 - **Existing subscription auth** — sign in with Claude Pro/Max or ChatGPT, or use Anthropic/OpenAI
-  API keys when that fits your setup better
+  API keys when that fits your setup better; connect more than one subscription account per provider
+  and choose which one a session uses
 - **Agent-agnostic backend** — pick Claude Code CLI or Codex CLI per session; the backend boundary
   is designed for more agent runtimes over time
 - **Compose-native live preview** — embedded iframes show your app updating in real time, with HMR
@@ -190,6 +191,8 @@ harness:
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
 - **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
+- **Persistent logs** — agent-container and preview-service logs are kept in a durable, disk-backed
+  store, so full history survives container restarts, idle eviction, and orchestrator restarts
 - **File viewer with diffs** — browse files with syntax highlighting and review changes as inline
   diffs
 - **MCP integration** — connect Model Context Protocol servers to extend the agent's tools
@@ -224,6 +227,14 @@ harness:
 - **PR comment sync** — review threads from GitHub appear inline in the conversation
 - **CI failure loop** — failed GitHub checks and logs are surfaced to the agent so it can inspect
   the failure and, when enabled, attempt a fix on the next turn
+- **Preview failure loop** — a crashed Compose service is detected and auto-retried, with its logs
+  surfaced inline so the agent (and you) can act on the failure without leaving chat
+- **Auto-resolve merge conflicts** — when your branch conflicts with its base and the agent is idle,
+  ShipIt auto-rebases and runs an agent turn to resolve the conflicts for you
+- **PR approval merge gate** — merge eligibility reflects GitHub's review-approval status, surfaced
+  inline on the PR card so you don't merge ahead of required reviews
+- **Arm merge-on-green at creation** — opt a trivial task into auto-merging once checks pass, set
+  right when you start the session
 
 ### Iterate safely
 
@@ -234,6 +245,8 @@ harness:
 - **Fully isolated sessions** — every session on the same repo gets its own independent clone with a
   complete `.git/` of its own (cut as a fast, hardlinked local clone from a shared bare cache — no
   worktrees), while its agent and services run in their own containerized environment
+- **Sandbox sessions** — start a repo-less session from an empty workspace; the agent clones what it
+  needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
 - **Live steering** — interrupt and redirect the agent mid-turn without losing context
 - **Session sidebar** — pinned sessions, AI-generated session names, status indicators
@@ -245,8 +258,24 @@ harness:
 - **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, and get
   spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
 - **Background notifications** — optional browser notification/sound when the agent finishes
+- **Quick capture** — a global hotkey opens an overlay that captures a prompt and spawns a new
+  session in the background, without leaving what you're doing
+- **Android app** — a sideload APK wraps self-hosted ShipIt in a WebView with a runtime-configurable
+  host URL, distributed via GitHub Releases
 - **Software updates** — VPS installs can update and restart from Settings → Advanced; local Docker
   installs choose the channel there, then apply updates by running `deployment/local/update.sh`
+
+### Comes standard
+
+The baseline conveniences you'd expect from any agent tool — present and polished, just not where
+ShipIt is trying to stand out:
+
+- **Context compaction & history editing** — trigger `/compact`, delete messages, or compact a long
+  conversation into a summarized fork to genuinely shrink the agent's context window
+- **Skill & command invocation** — type `/` in the composer to invoke a project skill, with
+  autocomplete
+- **Subscription usage** — header badges show your Claude/Codex rate-limit usage (5-hour window,
+  weekly cap, reset clock) inline
 
 ## Known limitations
 
@@ -274,16 +303,21 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
   enforces an allow-list and rejects privileged/host-namespace escapes. The worker and every process
   it spawns run as an unprivileged user (not root), with capabilities trimmed to the minimum, so a
   prompt-injected command has a smaller blast radius inside the box.
-- **Default-deny egress containment** — agent containers are network-contained **by default** on
-  every instance: outbound traffic is restricted to an allowlist of known hosts (the agent API, your
-  git host, package registries, your connected MCP servers) via a privileged sidecar in each
-  container's network namespace. It is **fail-closed** — a session never silently runs with open
-  egress — which makes it the main defense against a prompt-injected agent exfiltrating your
-  credentials.
+- **Built-in per-agent firewall (default-deny egress)** — every agent container runs behind its own
+  network firewall **by default** on every instance: outbound traffic is restricted to an allowlist
+  of known hosts (the agent API, your git host, package registries, your connected MCP servers) via a
+  privileged sidecar in each container's network namespace. It is **fail-closed** — a session never
+  silently runs with open egress — which makes it the main defense against a prompt-injected agent
+  exfiltrating your credentials.
 - **Brokered credentials** — your GitHub token is brokered on demand rather than written to disk in
   the container, and tracker tokens stay entirely orchestrator-side, so the most damaging tokens
   aren't sitting at rest in the agent's sandbox. When you configure a GitHub App, git operations use
   short-lived, single-repo-scoped tokens instead of a full account PAT.
+- **Repo trust gate** — cloning a repository never auto-runs its `agent.install` or Compose
+  build/command until you explicitly trust that remote once, so repo-controlled code can't execute on
+  first clone without your consent.
+- **Commit-time secret scanning** — the post-turn auto-commit blocks any commit that would introduce
+  a credential, with a persisted redacted warning, so a leaked secret never lands in your history.
 - **Supply-chain pinning** — every dependency is pinned to an exact version with a minimum release
   age, enforced in CI; the agent CLIs are lockfile-installed with a human-reviewed update gate.
 - **Secret redaction** — anything that leaves the box (like a bug report) is scrubbed of credentials
