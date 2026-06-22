@@ -150,24 +150,31 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 
 ## Why not just use the Claude or Codex app?
 
-You probably already have Claude Code or Codex. ShipIt runs them as its backend — and wraps them in
-everything the bare CLIs and their desktop/web apps leave out:
+You probably already have Claude Code or Codex, and their apps have grown — parallel sessions, git
+worktrees, a preview pane, even laptop-off cloud runs. ShipIt runs those same agents as its backend
+and adds the layer they still leave out:
 
-- **Parallel agent sessions, fully isolated.** The CLIs run one agent in your working tree. ShipIt
-  gives every session its own container, branch, and chat history, so you can fan work out without
-  sessions stepping on each other's files, processes, or installed dependencies.
-- **It's not your laptop's problem.** The desktop and web apps tie the work to the machine in front
-  of you. ShipIt is self-hosted on a VPS — start a change, close the lid, and previews, CI, and
-  follow-up work keep running.
-- **Real previews, not a throwaway sandbox.** ShipIt boots your actual Compose stack — dev server,
-  database, queues — and renders the live app inline with HMR, instead of an environment you can't
-  shape.
-- **GitHub comes to you.** PRs, CI checks, review threads, diffs, and deploy status all render in
-  the chat. The web apps send you off to a GitHub tab; ShipIt keeps the whole loop in one place.
+- **Stronger isolation than worktrees.** The native apps isolate parallel sessions with git
+  worktrees — separate files, but a shared machine, OS, ports, and dependencies. ShipIt gives every
+  session its own Docker container: separate filesystem, processes, ports, deps, and network, so
+  concurrent agents genuinely can't collide.
+- **A live environment per session, automatically.** The apps can show a preview, but you wire up and
+  run a dev server per session by hand — cumbersome once several agents are going, and the servers
+  fight over ports. ShipIt boots your whole Compose stack — dev server, database, queues — in each
+  session's container on its own ports, automatically, so every parallel agent has a running app to
+  test its change against from the start.
+- **Your infrastructure, not someone else's cloud.** Cloud sessions and laptop-off automations run on
+  the vendor's cloud, with your code on their machines. ShipIt is self-hosted — your own machine or a
+  server you control — so the agents, previews, and CI run on infrastructure and data you own, and
+  keep running after you close the lid.
+- **Any agent, in one place.** The Claude app runs Claude; the Codex app runs Codex. ShipIt runs
+  both — pick per session, and have one agent review another's work inline, no separate tool.
+- **The whole ship loop comes to you.** PRs, CI checks, review threads, diffs, deploy status, and
+  issue trackers all render in the chat. The vendor apps still send you off to a GitHub tab; ShipIt
+  keeps the loop in one place.
 - **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
-  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile.
-- **Your tools stay familiar.** Git, a real terminal, file browsing, inline diffs — exposed, not
-  hidden. You keep the control an engineer expects while the boring orchestration is automated away.
+  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile, with
+  two-way voice.
 
 ## Agents
 
