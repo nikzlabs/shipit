@@ -463,7 +463,12 @@ draws:
   Static payload (no client store) — rendered straight from the message field
   and idempotent by `cardId`. Rendered for **every** terminal status
   (success / error / timeout / cancel), since a cancelled or failed consult is
-  still a fact the transcript should keep. **Why anchored-inline works live:**
+  still a fact the transcript should keep. **docs/220 — content-carrying:** the
+  card now also carries the sub-agent's verbatim output (`outputMarkdown`, riding
+  inside the existing `sub_agent_consult` JSON blob — no migration). The row shows
+  a stripped-down preview and opens the full markdown in a read-only viewer, so a
+  brokered consult is *visible*, not just attested — ShipIt renders what it
+  brokers. **Why anchored-inline works live:**
   during the spawn the primary is blocked on the `shipit agent` Bash call, so no
   assistant content streams in those 30–120s — appending the card at the current
   end of the transcript lands it right after the triggering tool call, and the
