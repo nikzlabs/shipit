@@ -196,7 +196,7 @@ Grouping in the sidebar:
 > `SessionManager.markClosed`, a no-op if already merged) when a branch's PR is
 > found closed without a merge. It is **deliberately weaker than `merged_at`**:
 > closing does **not** delete the head branch and does **not** trigger
-> merge-aware disk reclaim (`IDLE_EVICT_MERGED_MS`), because a closed PR can be
+> merge-aware disk reclaim (the short `evictMergedAfterMs` clock), because a closed PR can be
 > reopened. Reopen is handled two ways: `setPrStatus` clears `closed_at` the
 > moment the poller observes the PR open again, and—failing that—
 > `reopenedAfterResolve` floats the session back to Active on the next turn
@@ -399,6 +399,24 @@ are set). `deployment/vps/docker-compose.yml` now sets `DISK_FREE_LOW_PCT=0.10`,
 orchestrator service; `DISK_IDLE_EVICT_MS` is left at its 14d default so unmerged
 WIP stays on the gentle clock. This is what actually turns the pressure valve on.
 
+**SHI-197 — one validated ladder config + single cold-artifact retention.** The
+three free-floating ladder constants (`IDLE_LIGHT_MS` / `IDLE_EVICT_MS` /
+`IDLE_EVICT_MERGED_MS`) are consolidated into a single ordered, unit-consistent
+config `DiskLadderThresholds { lightAfterMs, evictMergedAfterMs,
+evictUnmergedAfterMs }` (`DEFAULT_DISK_LADDER` in `sessions.ts`), threaded into
+`escalateDiskTiers` as one `ladder` dep. The orchestrator validates the ordering
+invariant `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs` once at
+startup (`assertDiskLadderOrdering`) — nothing previously stopped an env override
+from inverting it. The three env overrides (`DISK_IDLE_LIGHT_MS`,
+`DISK_IDLE_EVICT_MERGED_MS`, `DISK_IDLE_EVICT_MS`) are unchanged. Separately, the
+two coincidental 30-day startup-janitor knobs
+(`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`) collapse into
+one `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`,
+default 30) covering both the cold caches and the now-vestigial archived-workspace
+backstop (post-SHI-192 the workspace is freed synchronously at archive time, so
+that sweep is pure crash-recovery and is no longer independently tunable — it's
+now ON by default at the shared retention rather than disabled-by-default).
+
 ### Guards (the gate every automatic descent passes)
 
 A transition's guard column above references these. **No automatic trigger may
@@ -437,13 +455,14 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 | Constant | Meaning | Proposed default |
 |---|---|---|
 | `maxIdleContainers` | container-stop cap (exists, `docs/063`) | 5 |
-| `IDLE_LIGHT` | idle before `hot → light` (janitor) | 24 h |
-| `IDLE_EVICT` (`IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
-| `IDLE_EVICT_MERGED_MS` | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| `DiskLadderThresholds.lightAfterMs` (`DISK_IDLE_LIGHT_MS`) | idle before `hot → light` (janitor) | 24 h |
+| `DiskLadderThresholds.evictUnmergedAfterMs` (`DISK_IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
+| `DiskLadderThresholds.evictMergedAfterMs` (`DISK_IDLE_EVICT_MERGED_MS`) | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| _ordering invariant_ | `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`, asserted at startup (SHI-197) | — |
 | `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
-| `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
+| `DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS` (`COLD_ARTIFACT_RETENTION_DAYS`) | single cold-artifact retention: archived-workspace crash-recovery backstop **+** cold caches (repo/dep/pnpm/repo-memory) (SHI-197, replaces the two coincidental 30d knobs) | 30 d |
 | `DISK_JANITOR_PACE_MS` | pause between each destructive janitor op (volume/network rm, branch delete, cache/workspace/nm-store rm) so the fire-and-forget startup sweep drips out instead of bursting `docker` spawns + git pushes that contend with a concurrent agent start | `500` |
 | `DISK_ESCALATION_PACE_MS` | pause between each **age-based** tier descent (same anti-contention goal). **Not** applied to the disk-pressure LRU descent — when the box is critically low and starts are already failing, fast reclaim is the point | `500` |
 

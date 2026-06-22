@@ -22,6 +22,7 @@
 export {
   runDiskJanitor,
   pruneSessionVolumes,
+  COLD_ARTIFACT_RETENTION_DAYS,
   type DiskJanitorDeps,
   type DiskJanitorResult,
 } from "./startup-janitor.js";

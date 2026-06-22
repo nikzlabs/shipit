@@ -79,22 +79,61 @@ function safeParseCapabilities(json: string): unknown {
 }
 
 /**
- * docs/161 — disk-idle ladder thresholds. "Idle age" for the ladder is
+ * docs/161 / SHI-197 — the disk-idle ladder thresholds as ONE ordered,
+ * unit-consistent config (all milliseconds), replacing three free-floating
+ * `*_MS` constants. "Idle age" for the ladder is
  * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
- * OR a recent viewer attach keeps a session warm. These are the defaults; the
- * orchestrator may override them from env (see `index.ts`). The disk-pressure
- * pass can escalate before these elapse when free space crosses the low-water
- * mark (LRU), so they're deliberately generous.
+ * OR a recent viewer attach keeps a session warm. The disk-pressure pass can
+ * escalate before these elapse when free space crosses the low-water mark
+ * (LRU), so they're deliberately generous.
+ *
+ * The ordering `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs` is a
+ * coherence invariant the ladder depends on (`light` is the cheap
+ * non-destructive rung, so it must come first; a merged PR is "done" so it
+ * evicts sooner than unmerged WIP). It is asserted once at startup via
+ * {@link assertDiskLadderOrdering} — nothing previously stopped an env override
+ * from inverting it.
  */
-export const IDLE_LIGHT_MS = 24 * 60 * 60 * 1000; // 24h: hot → light (drop deps)
-export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted (wipe checkout)
+export interface DiskLadderThresholds {
+  /** `hot → light`: idle age (ms) before deps are dropped (checkout kept). */
+  lightAfterMs: number;
+  /** `light → evicted`: idle age (ms) for MERGED sessions ("done" → reclaim fast). */
+  evictMergedAfterMs: number;
+  /** `light → evicted`: idle age (ms) for UNMERGED WIP (the gentle clock). */
+  evictUnmergedAfterMs: number;
+}
+
 /**
- * docs/161 — merge-aware eviction. A merged PR is a much stronger "done" signal
- * than idle age: the work shipped and the checkout re-fetches fresh on reopen,
- * so finished sessions can be reclaimed far sooner than unmerged WIP (which
- * stays on the gentle `IDLE_EVICT_MS` clock). 2 days after last touch.
+ * docs/161 / SHI-197 — the default ladder.
+ *   - 24h `hot → light`: non-destructive (deps reinstall in seconds) → act early.
+ *   - 2d  merged `light → evicted`: a merge is a strong "done" signal and the
+ *     checkout re-fetches fresh on reopen → reclaim finished work soon.
+ *   - 14d unmerged `light → evicted`: WIP the user may return to → be gentle.
  */
-export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
+export const DEFAULT_DISK_LADDER: DiskLadderThresholds = {
+  lightAfterMs: 24 * 60 * 60 * 1000, // 24h
+  evictMergedAfterMs: 2 * 24 * 60 * 60 * 1000, // 2d
+  evictUnmergedAfterMs: 14 * 24 * 60 * 60 * 1000, // 14d
+};
+
+/**
+ * SHI-197 — fail-fast guard on the ladder ordering. The ladder is incoherent
+ * unless `lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs`; an env
+ * override that inverts it (e.g. `DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS`)
+ * would make a session jump straight to `evicted` before ever reaching `light`,
+ * or evict unmerged WIP sooner than merged work. Throw at startup rather than
+ * silently misbehave at runtime.
+ */
+export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
+  if (!(t.lightAfterMs <= t.evictMergedAfterMs && t.evictMergedAfterMs <= t.evictUnmergedAfterMs)) {
+    throw new Error(
+      "Incoherent disk-ladder thresholds: expected "
+      + "lightAfterMs ≤ evictMergedAfterMs ≤ evictUnmergedAfterMs, got "
+      + `lightAfterMs=${t.lightAfterMs}ms, evictMergedAfterMs=${t.evictMergedAfterMs}ms, `
+      + `evictUnmergedAfterMs=${t.evictUnmergedAfterMs}ms`,
+    );
+  }
+}
 
 /**
  * The instant a session's PR reached a terminal state — merged or

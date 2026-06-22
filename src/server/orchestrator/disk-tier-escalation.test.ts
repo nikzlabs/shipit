@@ -6,7 +6,7 @@ import simpleGit from "simple-git";
 import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
-import { SessionManager, IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
+import { SessionManager, DEFAULT_DISK_LADDER, assertDiskLadderOrdering } from "./sessions.js";
 import { escalateDiskTiers, type TierEscalationDeps } from "./tier-escalation.js";
 import { resolveDiskWatermarks } from "./disk-utils.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
@@ -110,7 +110,7 @@ describe("escalateDiskTiers", () => {
     fs.writeFileSync(path.join(wsDir, "keep.txt"), "x");
     insertSession({
       id: "old-hot",
-      lastUsedAt: daysAgo(IDLE_LIGHT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
       diskTier: "hot",
       workspaceDir: wsDir,
     });
@@ -135,7 +135,7 @@ describe("escalateDiskTiers", () => {
     // Old enough to be evicted on the gentle clock, let alone demoted to light.
     insertSession({
       id: "pinned-old",
-      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 5),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 5),
       diskTier: "hot",
       workspaceDir: wsDir,
     });
@@ -166,7 +166,7 @@ describe("escalateDiskTiers", () => {
     fs.mkdirSync(wsDir, { recursive: true });
     insertSession({
       id: "old-hot",
-      lastUsedAt: daysAgo(IDLE_LIGHT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.lightAfterMs / 86_400_000 + 1),
       diskTier: "hot",
       workspaceDir: wsDir,
     });
@@ -255,7 +255,7 @@ describe("escalateDiskTiers", () => {
     await initRepo(wsDir);
     insertSession({
       id: "old-light",
-      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
       branch: "main",
@@ -290,7 +290,7 @@ describe("escalateDiskTiers", () => {
     fs.writeFileSync(scratchFile, "survives eviction");
     insertSession({
       id: "evict-scratch",
-      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
       branch: "main",
@@ -324,7 +324,7 @@ describe("escalateDiskTiers", () => {
     fs.writeFileSync(uploadFile, "user upload");
     insertSession({
       id: "evict-overlay",
-      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
       branch: "main",
@@ -349,7 +349,7 @@ describe("escalateDiskTiers", () => {
     await initRepo(wsDir, { dirty: true }); // no `origin` remote → push fails
     insertSession({
       id: "dirty-light",
-      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
       diskTier: "light",
       workspaceDir: wsDir,
       branch: "main",
@@ -417,9 +417,9 @@ describe("escalateDiskTiers", () => {
   });
 
   // docs/161 — merge-aware eviction: a merged PR is a stronger "done" signal
-  // than idle age, so merged sessions evict on the short IDLE_EVICT_MERGED_MS
-  // clock (2d) while unmerged WIP stays on the gentle IDLE_EVICT_MS clock (14d).
-  const mergedThresholdDays = IDLE_EVICT_MERGED_MS / 86_400_000;
+  // than idle age, so merged sessions evict on the short merged clock (2d) while
+  // unmerged WIP stays on the gentle unmerged clock (14d).
+  const mergedThresholdDays = DEFAULT_DISK_LADDER.evictMergedAfterMs / 86_400_000;
 
   it("merge-aware: a merged session past the merged threshold evicts", async () => {
     setup();
@@ -554,6 +554,53 @@ describe("escalateDiskTiers", () => {
     expect(result.toLight).toBe(0);
     expect(result.toEvicted).toBe(0);
     expect(disposed).not.toContain("gone");
+  });
+
+  // SHI-197 — a custom ladder threads through and overrides the defaults.
+  it("honors a custom ladder threshold", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    // 12h idle: below the default 24h `hot → light`, but above a 6h custom one.
+    insertSession({ id: "young", lastUsedAt: hoursAgo(12), diskTier: "hot" });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      ladder: { ...DEFAULT_DISK_LADDER, lightAfterMs: 6 * 3_600_000 },
+    });
+
+    expect(result.toLight).toBe(1);
+    expect(sm.get("young")?.diskTier).toBe("light");
+  });
+});
+
+// SHI-197 — the ladder ordering invariant is asserted once at startup so an
+// incoherent env override fails fast instead of misbehaving at runtime.
+describe("assertDiskLadderOrdering", () => {
+  it("accepts the default ladder", () => {
+    expect(() => assertDiskLadderOrdering(DEFAULT_DISK_LADDER)).not.toThrow();
+  });
+
+  it("accepts equal thresholds (non-strict ordering)", () => {
+    expect(() => assertDiskLadderOrdering({
+      lightAfterMs: 1000, evictMergedAfterMs: 1000, evictUnmergedAfterMs: 1000,
+    })).not.toThrow();
+  });
+
+  it("rejects a merged clock below the light clock", () => {
+    expect(() => assertDiskLadderOrdering({
+      lightAfterMs: 24 * 3_600_000,
+      evictMergedAfterMs: 1 * 3_600_000, // merged evict before light — incoherent
+      evictUnmergedAfterMs: 14 * 86_400_000,
+    })).toThrow(/lightAfterMs ≤ evictMergedAfterMs/);
+  });
+
+  it("rejects an unmerged clock below the merged clock", () => {
+    expect(() => assertDiskLadderOrdering({
+      lightAfterMs: 24 * 3_600_000,
+      evictMergedAfterMs: 14 * 86_400_000,
+      evictUnmergedAfterMs: 2 * 86_400_000, // unmerged WIP evicts before merged
+    })).toThrow(/evictMergedAfterMs ≤ evictUnmergedAfterMs/);
   });
 });
 

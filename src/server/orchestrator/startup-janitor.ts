@@ -28,10 +28,10 @@
  *     primary cleanup paths (`cleanupSessionDockerResources`, compose
  *     teardown, `killStaleContainers`) handle the happy path — this is
  *     the safety net for when they didn't run (unclean shutdown).
- *   - **Archived session workspaces** older than
- *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` days. Safety net for archives
- *     where `fs.rm` didn't run — `archiveSession` already drops the
- *     workspace at archive time on a healthy host, so this normally finds
+ *   - **Archived session workspaces** older than `coldArtifactRetentionDays`
+ *     (SHI-197). Pure crash-recovery backstop for archives where `fs.rm`
+ *     didn't run — `archiveSession` already drops the workspace synchronously
+ *     at archive time (SHI-192) on a healthy host, so this normally finds
  *     nothing. Chat history, usage, and session metadata are preserved;
  *     `unarchiveSession` re-clones from the bare cache.
  *   - **Dead `dep-cache/<hash>/nm-store` directories** for live repos. The
@@ -74,9 +74,19 @@
  *     primary cleanup didn't happen.
  *
  * Behavior knobs (env vars):
- *   - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS: when set to a positive number,
- *     archived sessions whose `last_used_at` is older than this many days
- *     have their `workspaceDir` removed. Default `0` (disabled).
+ *   - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS (SHI-197): the single
+ *     cold-artifact retention, in days, read once in `startup-monitors.ts` and
+ *     shared by two consumers. In THIS module it governs the crash-recovery
+ *     archived-workspace backstop (user-archived sessions whose `workspaceDir`
+ *     survived a crashed synchronous cleanup); the same value also drives the
+ *     steady-state cold-cache reclaim (`repo-cache` / `dep-cache` / `pnpm-store`
+ *     / `repo-memory`) in `steady-state-reclaim.ts` (SHI-196 moved those sweeps
+ *     onto the periodic escalation pass). Replaces the two coincidental
+ *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` (default `0`, disabled) +
+ *     `DISK_JANITOR_CACHE_DAYS` (default `30`) knobs. Default `30`. The
+ *     archived-workspace sweep is no longer independently tunable: it's pure
+ *     crash-recovery (SHI-192 frees the workspace synchronously at archive
+ *     time), so it rides the same retention.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
  *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
@@ -105,8 +115,18 @@ export interface DiskJanitorDeps {
   repoStore: RepoStore;
   /** Root that holds the `dep-cache/<hash>/nm-store` subtree this janitor reaps. */
   stateDir: string;
-  /** When > 0, sweep archived session workspaces older than this many days. */
-  archivedWorkspaceDays?: number;
+  /**
+   * SHI-197 — the single cold-artifact retention (days). In this module it
+   * drives the crash-recovery archived-workspace backstop (sweep archived
+   * session workspaces older than this); post-SHI-196 the cold caches that once
+   * shared a knob with it live in `steady-state-reclaim.ts`, but both still read
+   * the SAME value (the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` +
+   * `DISK_JANITOR_CACHE_DAYS` coincidentally-30d pair collapsed into one). The
+   * archived-workspace sweep is no longer independently tunable: it's pure
+   * crash-recovery (SHI-192 frees the workspace synchronously at archive time —
+   * see `sweepArchivedWorkspaces`). Defaults to {@link COLD_ARTIFACT_RETENTION_DAYS}.
+   */
+  coldArtifactRetentionDays?: number;
   /**
    * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
    * provided, the janitor sweeps per-session credential subtrees under
@@ -170,6 +190,15 @@ export interface DiskJanitorResult {
 }
 
 /**
+ * SHI-197 — the one cold-artifact retention default (days). Read once in
+ * `startup-monitors.ts` and shared by both the crash-recovery archived-workspace
+ * backstop (here) and the steady-state cold-cache reclaim
+ * (`steady-state-reclaim.ts`, SHI-196), which previously had two coincidental
+ * `30`-day knobs that could drift apart.
+ */
+export const COLD_ARTIFACT_RETENTION_DAYS = 30;
+
+/**
  * Run the disk-janitor sweep once. Each sub-step is wrapped in try/catch
  * so one failing reclaim doesn't block the others. Always resolves —
  * never rejects — so callers can fire-and-forget at startup without
@@ -187,6 +216,10 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
+  // SHI-197 — the single cold-artifact retention; here it drives the
+  // archived-workspace crash-recovery backstop (the cold caches that share this
+  // value are swept by `steady-state-reclaim.ts` on the periodic pass, SHI-196).
+  const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
 
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
@@ -206,7 +239,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.workspacesRemoved = await sweepArchivedWorkspaces(
-      deps.sessionManager, deps.archivedWorkspaceDays ?? 0, paceMs,
+      deps.sessionManager, coldDays, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] archived-workspace sweep failed:", getMessage(err));
