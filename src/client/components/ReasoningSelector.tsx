@@ -27,12 +27,15 @@ export function ReasoningSelector({
   sessionReasoning,
   onChange,
   disabled,
+  compactTrigger = false,
 }: {
   agent: AgentOption | undefined;
   sessionReasoning: string | undefined;
   /** `null` clears the selection back to the agent's default. */
   onChange: (effort: string | null) => void;
   disabled?: boolean;
+  /** Mobile composer mode: show only the brain icon to conserve toolbar width. */
+  compactTrigger?: boolean;
 }) {
   const [pending, setPending] = useState<string | null | undefined>(undefined);
 
@@ -65,13 +68,15 @@ export function ReasoningSelector({
         <DropdownMenuTrigger asChild>
           <button
             disabled={disabled}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) hover:bg-(--color-bg-hover) cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+            className={`flex items-center justify-center gap-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) hover:bg-(--color-bg-hover) cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed ${
+              compactTrigger ? "h-8 px-2" : "px-2.5 py-1.5"
+            }`}
             aria-label={`${reasoning.label} selector`}
-            title={reasoning.label}
+            title={`${reasoning.label}: ${currentLabel}`}
             data-testid="reasoning-trigger"
           >
             <BrainIcon size={ICON_SIZE.XS} className="text-(--color-text-tertiary)" />
-            <span>{currentLabel}</span>
+            {!compactTrigger && <span>{currentLabel}</span>}
             <CaretDownIcon size={ICON_SIZE.XS} />
           </button>
         </DropdownMenuTrigger>
