@@ -488,12 +488,26 @@ export class CodexAdapter
     // auto-approve like every other tool; no allowlist plumbing is needed.
     // See playwright-mcp.ts for the `sh -c` launch / `--browser chromium`
     // rationale.
+    //
+    // SHI-#1558 — unlike Claude (whose MCP children inherit the worker's full
+    // env), Codex spawns each MCP server with a controlled environment: only
+    // vars named in `env_vars` reach the child (docs/088). The pre-installed
+    // browser is pinned to PLAYWRIGHT_BROWSERS_PATH (docs/150 §8); without
+    // forwarding it the Playwright MCP server can't find the chrome-for-testing
+    // build and every browser_* tool fails on first use with
+    // `Browser "chrome-for-testing" is not installed`. Forward it the same way
+    // user-server secrets are wired (runtimeEnv value + env_vars allowlist).
     lines.push(
       "",
       "[mcp_servers.playwright]",
       `command = ${tomlString(PLAYWRIGHT_MCP_COMMAND)}`,
       `args = ${tomlArray([...PLAYWRIGHT_MCP_ARGS])}`,
     );
+    const browsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH;
+    if (browsersPath) {
+      runtimeEnv.PLAYWRIGHT_BROWSERS_PATH = browsersPath;
+      lines.push(`env_vars = ${tomlArray(["PLAYWRIGHT_BROWSERS_PATH"])}`);
+    }
 
     // SHI-128 / docs/199 — ONE consolidated stdio bridge serves all of ShipIt's
     // internal tools under the single `shipit` server, instead of five separate
