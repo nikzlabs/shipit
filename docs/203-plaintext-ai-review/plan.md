@@ -10,6 +10,14 @@ description: Replace the structured submit_review_comments flow with a plain-tex
 > and `docs/151-agent-review-cards`. The **user-comment** half of those docs (a
 > human leaving inline notes and sending them to the implementation agent) is
 > **kept and decoupled**, not removed.
+>
+> **Open reconciliation (pre-decision):** the "parent calls `submit_review` to
+> record the card, identically for `Task` and cross-agent" mechanism below (§3 +
+> "submit_review") is under review. See `docs/144` → *Proposal — ShipIt renders
+> what it brokers*: it argues the **cross-agent** card should be rendered
+> deterministically by ShipIt from the brokered result (a content-carrying
+> `sub_agent_consult_card`), not delegated back to the parent agent, which would
+> shrink or remove `submit_review`'s role here. Nothing is changed yet.
 
 ## Goal
 
