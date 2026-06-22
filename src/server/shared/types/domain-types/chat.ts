@@ -105,6 +105,31 @@ export interface ActionChecklistCard {
   createdAt: string;
 }
 
+/**
+ * docs/218 — a persisted "branch updated to latest base" transcript card. Emitted
+ * right after the user's message (and before the agent's response) when a merged
+ * session's branch was automatically reset to `origin/<base>` before continuing,
+ * so the user plainly sees the destructive move that just happened. Immutable, no
+ * lifecycle — the card is written once on emit and never patched. Shared verbatim
+ * by the live WS payload (`WsBranchAutoResetCard`), the persisted chat-history row
+ * (`PersistedMessage.branchAutoReset`), and the client card so the three can't
+ * drift (same static-payload pattern as the issue-ref / action-checklist cards).
+ */
+export interface BranchAutoResetCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** The base branch the branch was reset onto (e.g. "main"). */
+  base: string;
+  /** The merged PR whose branch this was. */
+  prNumber: number;
+  prUrl: string;
+  /** Short HEAD SHAs before → after the reset, for auditability. */
+  fromSha: string;
+  toSha: string;
+  /** Emit time — doubles as the provenance stamp. */
+  createdAt: string;
+}
+
 // ---- Chat history message (shared data type) ----
 
 /**

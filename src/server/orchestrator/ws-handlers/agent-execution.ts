@@ -1,9 +1,12 @@
-import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode } from "../../shared/types.js";
+import { randomUUID } from "node:crypto";
+import type { WsServerMessage, ImageAttachment, FileAttachment, PermissionMode, BranchAutoResetCard } from "../../shared/types.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import { getErrorMessage, resolveFileAttachments, resolveUploadRefs, formatFileContext } from "../validation.js";
 import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js";
+import { emitChatCard } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { autoResetMergedBranchOnContinue } from "../services/pre-turn-reset.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import {
@@ -268,14 +271,67 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     });
   };
 
+  // docs/218 — pre-turn auto-reset of a MERGED session's branch to the latest
+  // base, BEFORE the turn runs. Interactive path only (queued messages recurse
+  // back through here, so they're covered). Fully fail-safe: a skip/throw leaves
+  // the branch un-moved and the turn runs normally. On a real move we prepend a
+  // context prefix to the prompt (agent: don't re-apply shipped work) and emit a
+  // persisted "branch updated" card right after the user row (see below).
+  let branchResetCard: BranchAutoResetCard | null = null;
+  let resetAgentPrefix = "";
+  if (capturedSessionId && capturedSessionDir && runner) {
+    const reset = await autoResetMergedBranchOnContinue(
+      {
+        getSession: (id) => ctx.sessionManager.get(id),
+        getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+        createGitManager: ctx.createGitManager,
+        getAutoResetMergedBranch: () => ctx.credentialStore.getAutoResetMergedBranch(),
+      },
+      capturedSessionId,
+      capturedSessionDir,
+    );
+    if (reset.moved) {
+      resetAgentPrefix = reset.agentPrefix ?? "";
+      branchResetCard = {
+        cardId: `branch-reset-${randomUUID()}`,
+        base: reset.base!,
+        prNumber: reset.prNumber!,
+        prUrl: reset.prUrl!,
+        fromSha: reset.fromSha!,
+        toSha: reset.toSha!,
+        createdAt: new Date().toISOString(),
+      };
+    }
+  }
+
   // Assemble the prompt from user text plus optional file/image context. Images
   // are saved to the host uploads dir and referenced by path (avoids large
-  // base64 payloads over HTTP to the worker).
+  // base64 payloads over HTTP to the worker). The reset prefix (if any) rides in
+  // front so the agent sees it this turn only (no persistence).
   const activeDir = ctx.getActiveDir();
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  const prompt = assembleAgentPrompt({ userText, fileContext, imageContext });
+  const prompt =
+    (resetAgentPrefix ? `${resetAgentPrefix}\n\n` : "") +
+    assembleAgentPrompt({ userText, fileContext, imageContext });
+
+  // docs/218 — emit the persisted "branch updated" card right after the resumed
+  // user row (and before the agent's response). Runs inside the executor via the
+  // `afterUserMessagePersisted` hook so it lands in the FRESH turn (post
+  // `resetRunnerTurnState`) at its true transcript anchor. `emitChatCard` makes it
+  // durable in the same call, so the destructive move always has a record.
+  const afterUserMessagePersisted =
+    branchResetCard && runner
+      ? (sid: string): void => {
+          emitChatCard(
+            runner,
+            { type: "branch_auto_reset_card", sessionId: sid, card: branchResetCard },
+            { role: "assistant", text: "", branchAutoReset: branchResetCard },
+            { chatHistoryManager: ctx.chatHistoryManager, sessionId: sid },
+          );
+        }
+      : undefined;
 
   // Listener deps — same shape the runner-registry builds for system turns.
   const listenerDeps: AgentListenerDeps = {
@@ -464,6 +520,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
     // The client already rendered an optimistic bubble — don't echo.
     emitUserEcho: false,
     persistUserMessage,
+    ...(afterUserMessagePersisted ? { afterUserMessagePersisted } : {}),
     isNewSession,
     fallbackTitle: userText.slice(0, 80) || "New session",
     turnStartHeadHash,

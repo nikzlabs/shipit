@@ -59,6 +59,15 @@ export interface TurnInput {
   emitUserEcho: boolean;
   /** Persist the user row (transport owns the payload shape: text-only vs. +images/files). */
   persistUserMessage: (sessionId: string) => void;
+  /**
+   * docs/218 — fired exactly once, immediately AFTER the resumed user row is
+   * persisted and AFTER `resetRunnerTurnState` has cleared the turn (so anything
+   * recorded here survives), and BEFORE the agent runs. Used by the WS path to
+   * emit the pre-turn "branch updated to latest base" card via `emitChatCard` so
+   * it interleaves right after the user message. Omitted on turns that don't
+   * reset; never fires for a new session (its user row persists in the listener).
+   */
+  afterUserMessagePersisted?: (sessionId: string) => void;
   isNewSession: boolean;
   /**
    * docs/179 — set on the auth-retry re-dispatch (a turn re-run after a healed
@@ -189,10 +198,11 @@ export async function executeAgentTurn(
   // never fires if auth fails first). The guard is threaded into the retry via
   // `input.persistGuard` so both attempts share one latch.
   const persistGuard = input.persistGuard ?? { done: false };
-  const persistUserMessageOnce = (sid: string): void => {
-    if (persistGuard.done) return;
+  const persistUserMessageOnce = (sid: string): boolean => {
+    if (persistGuard.done) return false;
     persistGuard.done = true;
     input.persistUserMessage(sid);
+    return true;
   };
 
   // docs/179 — runtime-401 auto-recovery. `willRecoverAuth` is the synchronous
@@ -282,7 +292,15 @@ export async function executeAgentTurn(
   // For a resumed session (id already known) persist the user row synchronously
   // before the turn. New sessions defer to the listener's `isNewSession` branch.
   if (!input.isNewSession) {
-    persistUserMessageOnce(sessionId);
+    // docs/218 — fire the post-persist hook ONLY when this call actually wrote
+    // the user row (not on an auth-retry re-dispatch, where the guard short-
+    // circuits). The hook emits the pre-turn "branch updated" card via
+    // `emitChatCard` right after the user row, so the card lands at its true
+    // transcript position — after the user bubble, before the agent's response —
+    // and inside the fresh turn (post `resetRunnerTurnState`, so it isn't wiped).
+    if (persistUserMessageOnce(sessionId)) {
+      input.afterUserMessagePersisted?.(sessionId);
+    }
   }
 
   // --- post-turn plumbing (first-wins guards so whichever of agent_result /

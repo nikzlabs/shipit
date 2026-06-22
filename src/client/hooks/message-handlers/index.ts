@@ -4,6 +4,7 @@ import type { Handler, HandlerContext, QueuedMessageStash } from "./types.js";
 import { handleAgentEvent } from "./agent-event.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
+import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
 import { handleAiReviewAdded } from "./ai-review-added.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
@@ -108,6 +109,7 @@ type MessageHandlerMap = {
  */
 export const messageHandlers: MessageHandlerMap = {
   action_checklist_card: handleActionChecklistCard,
+  branch_auto_reset_card: handleBranchAutoResetCard,
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
   ai_review_added: handleAiReviewAdded,

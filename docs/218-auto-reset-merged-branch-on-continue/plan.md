@@ -359,6 +359,40 @@ not a blocker — our card stands on its own.)
 _None — see "Resolved decisions". The docs/216 card's reliability is tracked
 separately if observation confirms it's broken._
 
+## As built
+
+**Phase 1 (PR #1565, merged).** `findPullRequestAnyState` → `head_sha`; `merged_head_sha`
+column + `SessionInfo.mergedHeadSha` + `setMergedHeadSha` setter; captured in
+`verifyMissingPr` before the merge side effects, fail-closed when absent; cleared in
+`clearMerged` on a docs/202 re-arm.
+
+**Phase 2 — card-ordering divergence (principled).** The plan prescribed "persist the
+user row *before* the reset, then `emitChatCard`, then run the turn (suppressing the
+executor's duplicate user-row append)." That can't work as written: `executeAgentTurn`
+calls `resetRunnerTurnState` at turn start, which **clears `recordedCards`** — so a
+card recorded by an `emitChatCard` in `runAgentWithMessage` (before the executor runs)
+would be wiped, and it would also miss the fresh turn's reconnect buffer. Instead: the
+**git reset** happens pre-turn in `runAgentWithMessage` (so the agent works on the
+fresh base, and the prompt prefix is prepended there), but the **card emit** is
+deferred into the executor via a new `TurnInput.afterUserMessagePersisted` hook, fired
+once immediately after the resumed user row is persisted (post `resetRunnerTurnState`).
+Net transcript order is identical to the design — user bubble → branch-updated card →
+agent response — and the card rides the fresh turn's `recordedCards`/buffer correctly
+(survives reconnect + reload). No user-row suppression was needed.
+
+**Phase 2 — setting source.** `SessionInfo` doesn't carry `prStatus` (it's poller-owned
+live state), so the helper reads the merged PR's base/number/url from a new
+`SessionManager.getPrStatus(id)` that parses the persisted `pr_status` snapshot
+(survives a container restart). The global toggle is `credentialStore
+.getAutoResetMergedBranch()`, **default OFF in Phase 2** (the mechanism ships dark);
+Phase 3 flips it ON and adds the composer control + settings UI.
+
+**Phase 2 — checkpoint deferred.** The checklist's "enable the setting and observe a
+live reset + card" checkpoint needs a way to toggle `autoResetMergedBranch`, which only
+arrives with Phase 3's settings UI. Phase 2 is verified by unit + git-fixture tests
+(`pre-turn-reset.test.ts`, `git-rearm-detect.test.ts`, the card round-trip/idempotency
+tests); the live end-to-end observation folds into Phase 3.
+
 ## Review notes
 
 Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD
