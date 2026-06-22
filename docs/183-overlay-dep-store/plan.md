@@ -184,11 +184,22 @@ where it accrues:
 
 1. **Shared bases — `overlay-base/<scope-hash>/`** (now one per `(repo, runtime, dep-dir)`). Bounded
    by **scope count, not session count**; each holds one dep dir's tree (≈ "a few `node_modules` per
-   repo" in aggregate). Reclaimed by the disk-janitor `sweepOrphanedOverlayBases`: keep if the
-   scope-hash is live, else mtime-guard + reap. **Hard constraint:** a base is a live overlay
-   **lowerdir** — deleting it under a live mount is undefined behavior — so the live-set
-   (`liveOverlayScopeHashes`) must enumerate **per `(session, dep-dir)`** (see the "Changed → GC" item)
-   and be complete across all *resumable* sessions, not just running ones.
+   repo" in aggregate). Reclaimed by the disk-janitor `sweepOrphanedOverlayBases` via a
+   **deterministic live-mount check** (SHI-193), *not* an age cutoff: keep a scope iff some running
+   container pins one of its generations as a `lowerdir` right now (`docker volume inspect` →
+   `overlay-base/<hash>/g<N>`) OR some *resumable* session would re-pin its current-runtime base
+   (`liveOverlayScopeHashes`); everything outside that union is reclaimed **immediately, no delay**.
+   The age proxy this replaced over-retained badly — a base scope keys on `overlayRuntimeKey`
+   (worker-image id + arch), so a worker-image rebuild rotates every scope hash and renders old-image
+   scopes obsolete the instant the image rolls; a 30-day window then kept ~26 GB of dead scopes alive
+   (measured: 46 of 47 prod scope dirs). **Hard constraint:** a base is a live overlay **lowerdir** —
+   deleting it under a live mount is undefined behavior — which is exactly what the running-container
+   mount check confirms (the only real race, an old-image container still running mid-deploy, is handled
+   precisely: its scope stays pinned until it exits, then drops). Superseded `g<N>` generations within a
+   live scope are reaped on the same mount check (keep `g0`, the pointer's current generation, and any
+   generation a running container still pins); only crash-orphaned `.tmp-*` copies keep a short fixed
+   grace window (an in-flight publish may be mid-write). The live-set (`liveOverlayScopeHashes`) still
+   enumerates **per `(session, dep-dir)`** for the current runtime (see the "Changed → GC" item).
 2. **Per-session overlay volumes — `shipit-<id>_overlayN`** (N per session). Removed on container
    teardown (`destroyContainer` → `removeOverlayVolume` for each); crash-orphans swept by the
    `^shipit-([a-f0-9-]{12})_` prefix regex (`sweepOrphanSessionVolumes`), which already matches every

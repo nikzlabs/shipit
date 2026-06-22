@@ -11,6 +11,27 @@ import { repoUrlToHash } from "./git-utils.js";
 import { liveOverlayScopeHashes, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
 import { overlayScopeHash } from "./overlay-volume.js";
 
+/**
+ * Build a `runDocker` stub that simulates a RUNNING session-worker container
+ * pinning each given `overlay-base/<hash>/g<N>` lowerdir as a live overlay mount
+ * (SHI-193 live-mount check). Any docker call the overlay sweep makes
+ * (`ps -q` → `container inspect` → `volume inspect`) is answered; everything else
+ * (volume/network ls) returns empty so the other sweeps no-op.
+ */
+function liveMountDocker(genLowerdirs: string[]): (args: string[]) => Promise<string> {
+  const vols = genLowerdirs.map((_, i) => `shipit-${i.toString(16).padStart(12, "0")}_overlay-0000000${i}`);
+  return (args: string[]): Promise<string> => {
+    if (args[0] === "ps") return Promise.resolve(genLowerdirs.length ? "container0\n" : "");
+    if (args[0] === "container" && args[1] === "inspect") return Promise.resolve(`${vols.join("\n")}\n`);
+    if (args[0] === "volume" && args[1] === "inspect") {
+      return Promise.resolve(
+        genLowerdirs.map((ld) => `lowerdir=${ld},upperdir=/x/overlay/upper,workdir=/x/overlay/work`).join("\n"),
+      );
+    }
+    return Promise.resolve("");
+  };
+}
+
 describe("runDiskJanitor", () => {
   let tmpDir: string;
   let dbPath: string;
@@ -1351,7 +1372,10 @@ describe("runDiskJanitor", () => {
     expect(result.overlayBasesRemoved).toBe(0);
   });
 
-  it("overlay-base sweep removes stale, unreferenced bases but keeps live + young ones", async () => {
+  it("overlay-base sweep reclaims obsolete bases immediately via the live-mount check (no age gate)", async () => {
+    // SHI-193: a scope is reclaimable the moment it has zero live mounts — age is
+    // not a factor. "Live" = the resumable-session union OR a generation pinned by
+    // a running container right now.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1366,9 +1390,10 @@ describe("runDiskJanitor", () => {
       fs.utimesSync(d, t, t);
       return d;
     };
-    const liveStale = mk("aaaaaaaaaaaaaaaa", 99);   // live → keep despite age
-    const orphanStale = mk("bbbbbbbbbbbbbbbb", 99);  // unreferenced + old → REMOVE
-    const orphanYoung = mk("cccccccccccccccc", 1);   // unreferenced but young → keep
+    const resumable = mk("aaaaaaaaaaaaaaaa", 99);   // in resumable union → keep despite age
+    const orphanOld = mk("bbbbbbbbbbbbbbbb", 99);   // no live mount, old → REMOVE
+    const orphanYoung = mk("cccccccccccccccc", 1);  // no live mount, YOUNG → REMOVE (age no longer protects)
+    const runningMount = mk("dddddddddddddddd", 99); // pinned by a running container → keep
     // A stray file (not a dir) must be ignored.
     fs.writeFileSync(path.join(root, "stray.txt"), "x");
 
@@ -1376,14 +1401,18 @@ describe("runDiskJanitor", () => {
       sessionManager, repoStore, stateDir: tmpDir,
       cacheDays: 30,
       liveOverlayScopeHashes: () => new Set(["aaaaaaaaaaaaaaaa"]),
-      runDocker: () => Promise.resolve(""),
+      // A running container mounts dddd…/g4 as its lowerdir — even though that
+      // scope is not in the resumable union (e.g. an old-image container still
+      // running mid-turn), the mount check keeps it.
+      runDocker: liveMountDocker([path.join(runningMount, "g4")]),
     });
 
-    expect(fs.existsSync(liveStale)).toBe(true);
-    expect(fs.existsSync(orphanStale)).toBe(false);
-    expect(fs.existsSync(orphanYoung)).toBe(true);
+    expect(fs.existsSync(resumable)).toBe(true);
+    expect(fs.existsSync(orphanOld)).toBe(false);
+    expect(fs.existsSync(orphanYoung)).toBe(false);
+    expect(fs.existsSync(runningMount)).toBe(true);
     expect(fs.existsSync(path.join(root, "stray.txt"))).toBe(true);
-    expect(result.overlayBasesRemoved).toBe(1);
+    expect(result.overlayBasesRemoved).toBe(2);
   });
 
   // docs/197 Part 2 — pnpm shared-store sweep.
@@ -1464,12 +1493,12 @@ describe("runDiskJanitor", () => {
     expect(result.pnpmStoresRemoved).toBe(2);
   });
 
-  it("reaps stale superseded generations inside a LIVE scope, keeping g0 + the current generation", async () => {
-    // Generational bases (overlay-base.ts): a live scope dir is never removed,
-    // but superseded `g<N>` children and crash-orphaned `.tmp-*` copies age out.
-    // The pointer's current generation and `g0` (the empty cold-start lowerdir)
-    // are kept unconditionally; young non-current generations survive too (a
-    // long-running container may still pin one).
+  it("reaps superseded generations inside a LIVE scope via the live-mount check, keeping g0 + current + pinned", async () => {
+    // SHI-193: a live scope dir is never removed, but superseded `g<N>` children
+    // are reaped the moment nothing pins them — age is not a factor. Kept: `g0`
+    // (cold-start lowerdir), the pointer's current generation, and any generation
+    // a running container still mounts. A crash-orphaned `.tmp-*` gets a short
+    // grace window (it's never mounted, but an in-flight publish may be writing it).
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -1484,11 +1513,13 @@ describe("runDiskJanitor", () => {
       fs.utimesSync(d, t, t);
       return d;
     };
-    const g0 = mkGen("g0", 99);          // cold-start lowerdir → always kept
-    const g1 = mkGen("g1", 99);          // superseded + old → REMOVE
-    const g2 = mkGen("g2", 1);           // superseded but young → keep
-    const g3 = mkGen("g3", 99);          // current per pointer → keep despite age
-    const tmp = mkGen(".tmp-g4-ab12", 99); // crash-orphaned copy → REMOVE
+    const g0 = mkGen("g0", 99);            // cold-start lowerdir → always kept
+    const g1 = mkGen("g1", 99);            // superseded, unmounted, old → REMOVE
+    const g2 = mkGen("g2", 99);            // superseded but PINNED by a running container → keep
+    const g3 = mkGen("g3", 99);            // current per pointer → keep
+    const g4 = mkGen("g4", 0.0001);        // superseded, unmounted, YOUNG → REMOVE (age no longer protects)
+    const tmpOld = mkGen(".tmp-g9-ab12", 99);   // crash orphan, past grace → REMOVE
+    const tmpYoung = mkGen(".tmp-g9-cd34", 0);   // crash orphan, within grace → keep
     // Pointer names g3 as current.
     const metaDir = path.join(tmpDir, "overlay-base-meta");
     fs.mkdirSync(metaDir, { recursive: true });
@@ -1501,16 +1532,19 @@ describe("runDiskJanitor", () => {
       sessionManager, repoStore, stateDir: tmpDir,
       cacheDays: 30,
       liveOverlayScopeHashes: () => new Set([hash]),
-      runDocker: () => Promise.resolve(""),
+      // A running container pins g2 as its lowerdir.
+      runDocker: liveMountDocker([g2]),
     });
 
     expect(fs.existsSync(g0)).toBe(true);
     expect(fs.existsSync(g1)).toBe(false);
     expect(fs.existsSync(g2)).toBe(true);
     expect(fs.existsSync(g3)).toBe(true);
-    expect(fs.existsSync(tmp)).toBe(false);
+    expect(fs.existsSync(g4)).toBe(false);
+    expect(fs.existsSync(tmpOld)).toBe(false);
+    expect(fs.existsSync(tmpYoung)).toBe(true);
     expect(fs.existsSync(scopeDir)).toBe(true);
-    expect(result.overlayBasesRemoved).toBe(2);
+    expect(result.overlayBasesRemoved).toBe(3);
   });
 
   it("reclaims ALL N per-dep-dir orphan overlay volumes and preserves a live session's N", async () => {
