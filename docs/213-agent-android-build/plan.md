@@ -1,5 +1,5 @@
 ---
-description: Make ShipIt a platform where any Android repo gets a zero-setup build/test/preview loop in-container — auto-detected toolchain, headless Paparazzi rendering first, streamed emulator preview later.
+description: Make ShipIt build, test & preview Android apps for any repo — including web/Android monorepos — using the same shipit.yaml setup model as web, a platform-provided toolchain, headless Paparazzi rendering first, and a streamed emulator later.
 issue: https://linear.app/shipit-ai/issue/SHI-170
 ---
 
@@ -7,10 +7,13 @@ issue: https://linear.app/shipit-ai/issue/SHI-170
 
 ## Summary
 
-ShipIt should be a place you build Android apps. Any repo with an Android/Gradle project should get a
-build → test → **preview** loop in-session, with **zero per-repo setup** — the platform detects the
-project and provisions the toolchain. ShipIt's own WebView wrapper (`android/`) is the first dogfood
-consumer.
+ShipIt should be a place you build Android apps. Any repo with an Android/Gradle project — including a
+**monorepo** that holds a web app and one or more Android modules, like ShipIt itself — should get a
+build → test → **preview** loop in-session, using the **same `shipit.yaml` setup model as the web
+preview**. The split is: the platform provides the Android **toolchain** (no per-repo SDK install,
+the same way it provides the Playwright browser via a mount, not your `agent.install`), and the repo
+**declares** its Android project + preview the way it already declares web services — one unified
+mechanism, not a bespoke one. ShipIt's own WebView wrapper (`android/`) is the first dogfood consumer.
 
 Today the wrapper builds only in GitHub Actions, and a session container has no Java, SDK, Gradle, or
 preview — so the agent edits Kotlin/XML blind and the user sees nothing run. The web side has a tight
@@ -18,14 +21,18 @@ loop (preview pane + Playwright); the Android side has none.
 
 ## Recommendation
 
-**Auto-detect Android projects, mount a platform-managed toolchain, give the agent a headless
-build/test/render loop now, and phase the preview from rendered screens (zero-KVM, soon) to a streamed
-emulator (KVM host pool, later).**
+**Declare Android projects in `shipit.yaml` the same way web is declared, mount a platform-managed
+toolchain, give the agent a headless build/test/render loop now, and phase the preview from rendered
+screens (zero-KVM, soon) to a streamed emulator (KVM host pool, later).**
 
-1. **Zero-config detection.** ShipIt detects an Android project (a `build.gradle(.kts)` applying
-   `com.android.application`/`com.android.library`, or an `android {}` block) at session setup, and
-   resolves its declared requirements — `compileSdk`/`targetSdk`, `ndkVersion`, CMake usage, AGP version
-   — to drive toolchain provisioning and preview availability. No `shipit.yaml` keys required.
+1. **Declaration unified with web (+ auto-detect for the simple case).** A repo names its Android
+   project(s) in `shipit.yaml` — an `android:` list of module paths + preview mode — exactly as it names
+   web services via `compose:`/`x-shipit-preview`. A single-project repo can be auto-detected (a
+   `build.gradle(.kts)` applying an Android plugin, mirroring compose auto-detection) so it needs no
+   declaration; monorepos and preview selection use the explicit list. Either way the lookup is
+   **path-scoped to the module(s)**, so a web/Android monorepo keeps its web preview and gains Android
+   surfaces alongside. From the resolved project ShipIt reads `compileSdk`/`targetSdk`, `ndkVersion`,
+   CMake usage, and AGP version to drive toolchain provisioning.
 2. **Platform-managed toolchain.** A version-pinned **read-only base store** (cmdline-tools,
    platform-tools, a matrix of common API levels + build-tools, a Gradle distribution cache, JDK 11 +
    17, licenses pre-accepted) mounts into Android-detected sessions at `/opt/android-sdk` + `/opt/jdk*`.
@@ -69,10 +76,10 @@ a mount rather than a per-repo install:
 
 | Option | Verdict |
 |---|---|
-| **A. Read-only base store + writable per-session overlay (auto-attached on detection)** | **Recommended.** Zero setup, no per-session download for common SDKs, no image bloat for non-Android sessions; overlay covers the long tail. Same shape as `PLAYWRIGHT_BROWSERS_PATH` + `repo-cache`/`dep-cache`. |
+| **A. Read-only base store + writable per-session overlay (attached when an Android project is present)** | **Recommended.** No per-repo toolchain install, no per-session download for common SDKs, no image bloat for non-Android sessions; overlay covers the long tail. Same shape as `PLAYWRIGHT_BROWSERS_PATH` + `repo-cache`/`dep-cache`. |
 | **B. Android session-image variant** | Workable fallback if mount provisioning proves fragile; doubles image ops and is coarser than a mount. |
 | **C. Bake SDK+JDK into the base session image** | Taxes every session (~1.5+ GB) for a capability ~99% don't use. |
-| **D. Per-repo `agent.install`** | The "complicated per-repo setup" we want to avoid; re-downloads on cold re-clone. Remains an escape hatch for an exotic toolchain. |
+| **D. Per-repo `agent.install`** | Re-downloads the SDK on every cold re-clone and copies a platform-shared binary into each repo's setup. The SDK is a fixed, shareable asset — like the Playwright browser ShipIt mounts rather than has you install — so it belongs in the platform mount. (A repo's *own* Gradle deps still download per-build, like web deps.) Remains an escape hatch for an exotic toolchain. |
 
 **Chosen: A.** A CI/setup job builds the pinned base store (cmdline-tools → `sdkmanager` for a matrix of
 common API levels + build-tools with licenses accepted → Gradle cache → Temurin JDK 11 + 17). A detected
@@ -93,6 +100,32 @@ convention plugins), so discovery is staged rather than a single regex:
    into the overlay and reruns, so the long tail self-heals.
 
 An explicit `shipit.yaml` opt-in/out covers ambiguous repos.
+
+### Monorepos & web/Android coexistence
+
+ShipIt itself is the case to design for: a Node/React web app plus the `android/` Gradle project in one
+repo. The model:
+
+- **`shipit.yaml` declares each Android module by path**, alongside the existing web `agent.install` /
+  `compose:` config — they coexist, neither replaces the other:
+
+  ```yaml
+  agent:
+    install: npm install        # web toolchain, unchanged
+  compose: docker-compose.yml   # web preview, unchanged
+  android:
+    - project: android          # path to the Gradle project/module
+      preview: rendered         # rendered | emulator | none
+  ```
+
+  A repo with exactly one Android project and no `android:` key is auto-detected; the list is for
+  monorepos and for choosing the preview mode per app.
+- **Builds are path-scoped** to the declared module — `android/gradlew :app:assembleDebug`, not a
+  repo-root Gradle invocation — so the web build and the Android build stay independent. The toolchain
+  mount attaches because *some* Android module exists; the web Node toolchain is untouched.
+- **Previews coexist in the existing multi-preview pane.** Android surfaces (P1 gallery / P2 emulator)
+  slot in next to the web service's `x-shipit-preview`, the same way multiple web services already do;
+  the user switches between them. Multiple Android apps each get their own build target and preview tile.
 
 **Prereq for `android/`:** commit the pinned Gradle wrapper (8.7) — missing today though doc 116 assumed
 it was present. Repos without a wrapper fall back to the base-store Gradle matched to their AGP.
@@ -126,7 +159,7 @@ The web preview pane sets the bar: see your change run, inside ShipIt. Android g
 ### P1 — rendered-screen preview (zero-KVM, near-term)
 
 The same `layoutlib` renderer behind Paparazzi/Roborazzi can render screens without a device. The
-platform owns the wiring so the user adds nothing:
+platform owns the wiring, so beyond the `shipit.yaml` declaration the user authors no test code:
 
 - Apply the Paparazzi/Roborazzi plugin + deps via an injected **Gradle init script / settings plugin**
   at invocation, and generate the render harness as **uncommitted source** under a ShipIt-managed
@@ -139,7 +172,7 @@ platform owns the wiring so the user adds nothing:
 
 This is the recommended first preview — most of the "can I see my UI?" value with none of the emulator
 infra — and it doubles as the Paparazzi golden source, so preview and snapshot testing share machinery.
-The user-facing experience is zero-setup; building the platform harness is the Phase-2 work.
+The user declares the project once (as for web); building the platform harness is the Phase-2 work.
 
 ### P2 — interactive streamed emulator (KVM host pool, later)
 
@@ -171,13 +204,15 @@ preview already in ShipIt pointed at a dev URL. General native apps are what mot
 
 ## Phased plan
 
-- **Phase 0 (prereq):** Commit the Gradle wrapper (8.7) under `android/`; add Android detection + the
-  staged requirement resolver (static scan → Gradle query → error-driven retry).
+- **Phase 0 (prereq):** Commit the Gradle wrapper (8.7) under `android/`; add the `shipit.yaml`
+  `android:` schema + path-scoped detection (auto-detect single-project repos) and the staged
+  requirement resolver (static scan → Gradle query → error-driven retry).
 - **Phase 1 (toolchain, any repo):** Build the base store (cmdline-tools, API-level/build-tools matrix,
   Gradle cache, JDK 11 + 17); mount it read-only; add the writable overlay + component provisioning;
   resolve Gradle + JDK from `./gradlew` or the AGP matrix. Verify `assembleDebug` + `lint` + a JVM unit
-  test green for a generic Android repo whose `compileSdk` and JDK differ from the base default (proves
-  the overlay + matrix paths). Ship `shipit-docs/android.md` + the skill.
+  test green for (a) a generic Android repo whose `compileSdk`/JDK differ from the base default and
+  (b) a **web/Android monorepo** where the Android build is path-scoped and the web preview is
+  unaffected. Ship `shipit-docs/android.md` + the skill.
 - **Phase 2 (headless UI + P1 preview):** Build the platform-owned preview harness — inject
   Paparazzi/Roborazzi via a Gradle init script and generate the render harness as uncommitted source;
   ComposablePreviewScanner for Compose, manifest/`res/layout` for Views. Wire the gallery into the
@@ -201,9 +236,11 @@ preview already in ShipIt pointed at a dev URL. General native apps are what mot
 - **Base-store sizing.** Too many API levels/JDKs bloats the asset; too few pushes work to the slower
   overlay path. Tune the matrix from real repo telemetry. The base mount stays read-only; overlay and
   Gradle caches go to an overlay/dep-cache path.
-- **Detection accuracy.** The resolver must catch nested modules and version-catalog/`buildSrc`-declared
-  requirements without firing on stray `.gradle` files; gate the Gradle-query stage behind a static-scan
-  miss to keep it cheap. `shipit.yaml` opt-in/out is the escape hatch.
+- **Detection accuracy + monorepo scoping.** The resolver must locate Android module(s) by path
+  (catching nested modules and version-catalog/`buildSrc`-declared requirements) without firing on stray
+  `.gradle` files or disturbing the web toolchain in the same repo; gate the Gradle-query stage behind a
+  static-scan miss to keep it cheap. The `shipit.yaml` `android:` list is the explicit override for
+  monorepos and ambiguous repos.
 - **P2 infra cost.** A KVM host pool is an operational commitment (capacity, lifecycle, emulator-service
   isolation). Phase it behind the zero-KVM P1.
 - **Paparazzi ↔ AGP coupling** and the **WebView-not-renderable** caveat (above).
@@ -211,9 +248,10 @@ preview already in ShipIt pointed at a dev URL. General native apps are what mot
 
 ## Key files (when implemented — not yet changed)
 
-- Session setup / detection (`shared/session-config.ts`, container-lifecycle) — detection + staged
-  resolver, read-only base mount + writable overlay + env (`ANDROID_SDK_ROOT`, `JAVA_HOME`), Gradle/JDK
-  resolution.
+- Session setup / detection (`shared/session-config.ts`, container-lifecycle) — the `shipit.yaml`
+  `android:` schema, path-scoped detection + staged resolver, read-only base mount + writable overlay +
+  env (`ANDROID_SDK_ROOT`, `JAVA_HOME`), Gradle/JDK resolution. Compose with the existing web `compose:`/
+  preview config rather than replacing it.
 - Platform base-store job (analogous to the agent-CLI / playwright install in `docker/`) — JDKs (11 +
   17), cmdline-tools, API-level/build-tools matrix (licenses accepted), Gradle cache — plus the
   overlay-provisioning step and the AGP→Gradle→JDK matrix.
