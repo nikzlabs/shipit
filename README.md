@@ -6,7 +6,7 @@
 **Give every coding agent a self-hosted environment of its own — your whole app running, live to
 preview.** Run Claude Code or Codex on your own infrastructure (local or an always-on VPS), as many
 as you like side by side, each in an isolated container that boots your whole stack — then ship what
-they build through real branches, PRs, CI, and deploys, no GitHub tab required.
+they build through real GitHub PRs with proper CI checks, all integrated within ShipIt.
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
