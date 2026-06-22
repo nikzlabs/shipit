@@ -1129,7 +1129,7 @@ export default function App() {
         ) : rightTab === "files" ? (
           <FileTree tree={fileTree} onRefresh={() => { const sid = useSessionStore.getState().sessionId; if (sid) { useFileStore.getState().fetchTree(sid).catch(() => {}); void useFileStore.getState().hydrateUploads(sid); } }} onFileClick={handleOpenFilePreview} onEdit={sessionGraduated ? (f) => { const sid = useSessionStore.getState().sessionId; if (sid) void useFileStore.getState().openEditor(sid, f); } : undefined} onAddToChat={(f) => useSettingsStore.getState().addPendingFile(f)} onDownload={(f) => { const sid = useSessionStore.getState().sessionId; if (sid) { const a = document.createElement("a"); a.href = `/api/sessions/${sid}/files/download/${f}`; a.download = ""; document.body.appendChild(a); a.click(); a.remove(); } }} uploads={sessionUploads} onDeleteUpload={(u) => { const sid = useSessionStore.getState().sessionId; if (u.path) markUploadDeleted(u.path); if (sid && u.path) { const filename = u.path.replace(/^\/uploads\//, ""); void fetch(`/api/sessions/${sid}/files/uploads/${encodeURIComponent(filename)}`, { method: "DELETE" }); } if (u.previewUrl) URL.revokeObjectURL(u.previewUrl); if (u.path) useFileStore.getState().removeSessionUpload(u.path); else useFileStore.getState().removeSessionUploadById(u.id); }} />
         ) : rightTab === "present" ? (
-          <PresentPane isActiveTab={rightTab === "present"} />
+          <PresentPane isActiveTab={rightTab === "present"} onSendComments={handleFileSendComments} onAskAgentReview={handleAskAgentReview} />
         ) : rightTab === "host" ? (
           <HostPanel isActiveTab={rightTab === "host"} />
         ) : null}

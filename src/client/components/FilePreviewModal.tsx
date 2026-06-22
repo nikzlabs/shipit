@@ -1,23 +1,17 @@
-// eslint-disable-next-line no-restricted-imports -- useEffect: editor lifecycle, draft load on open, useRef: Monaco editor ref
-import { useMemo, useEffect, useRef, useCallback, useState } from "react";
-import { XIcon, PaperPlaneTiltIcon, RobotIcon, CaretDownIcon } from "@phosphor-icons/react";
+// eslint-disable-next-line no-restricted-imports -- useEffect: reset view mode on file change
+import { useEffect, useCallback, useState } from "react";
+import { XIcon, RobotIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Button } from "./ui/button.js";
-import { MarkdownSelectionComments } from "./MarkdownSelectionComments.js";
-import type { SelectionCommentData } from "./MarkdownSelectionComments.js";
-import { useFileReviewStore } from "../stores/file-review-store.js";
+import { FileContentView } from "./FileContentView/FileContentView.js";
+import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
+import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { useUiStore } from "../stores/ui-store.js";
-import { createCommentWidgetManager } from "./MonacoCommentWidgets.js";
-import type { CommentWidgetManager, LineCommentLike } from "./MonacoCommentWidgets.js";
+import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
+import { kindFromPreviewType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import type { FilePreviewType } from "../utils/file-preview-type.js";
-import type {
-  ReviewComment,
-  FileReview,
-} from "../../server/shared/types.js";
 import { WithTooltip } from "./ui/tooltip.js";
-import type * as MonacoEditor from "monaco-editor";
 
 /**
  * Payload handed to `onSendComments` when the user submits review comments
@@ -84,308 +78,6 @@ export interface FilePreviewModalProps {
   onAskAgentReview?: (filePath: string) => void;
 }
 
-/** Map file extensions to Monaco language IDs. */
-function getLanguageFromPath(filePath: string): string {
-  const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
-  const map: Record<string, string> = {
-    ts: "typescript", tsx: "typescript",
-    js: "javascript", jsx: "javascript",
-    mjs: "javascript", cjs: "javascript",
-    json: "json", jsonc: "json",
-    html: "html", htm: "html",
-    css: "css", scss: "scss", less: "less",
-    md: "markdown", mdx: "markdown",
-    py: "python",
-    rs: "rust",
-    go: "go",
-    java: "java",
-    c: "c", h: "c",
-    cpp: "cpp", hpp: "cpp", cc: "cpp",
-    yaml: "yaml", yml: "yaml",
-    toml: "ini",
-    xml: "xml", svg: "xml",
-    sh: "shell", bash: "shell", zsh: "shell",
-    sql: "sql",
-    graphql: "graphql", gql: "graphql",
-    dockerfile: "dockerfile",
-  };
-  const name = filePath.split("/").pop()?.toLowerCase() ?? "";
-  if (name === "dockerfile") return "dockerfile";
-  if (name === "makefile") return "makefile";
-  return map[ext] ?? "plaintext";
-}
-
-// ---------- Code editor with line comments ----------
-
-function CodeEditor({
-  filePath,
-  content,
-  sessionId,
-  comments,
-  readOnly = false,
-  revealLine,
-}: {
-  filePath: string;
-  content: string;
-  sessionId: string;
-  comments: { id: string; kind: "line" | "selection"; line?: number; text: string }[];
-  readOnly?: boolean;
-  /** 1-based line to scroll to and briefly highlight once the editor mounts. */
-  revealLine?: number;
-}) {
-  const editorRef = useRef<HTMLDivElement>(null);
-  const managerRef = useRef<CommentWidgetManager | null>(null);
-  const editorInstanceRef = useRef<MonacoEditor.editor.IStandaloneCodeEditor | null>(null);
-
-  const addLineComment = useFileReviewStore((s) => s.addLineComment);
-  const editComment = useFileReviewStore((s) => s.editComment);
-  const deleteComment = useFileReviewStore((s) => s.deleteComment);
-
-  const lineComments = useMemo<LineCommentLike[]>(() => {
-    return comments
-      .filter((c): c is { id: string; kind: "line"; line: number; text: string } =>
-        c.kind === "line" && typeof c.line === "number",
-      )
-      .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
-  }, [comments]);
-
-  // eslint-disable-next-line no-restricted-syntax -- Monaco lifecycle (createEditor + cleanup)
-  useEffect(() => {
-    if (!editorRef.current) return;
-    let disposed = false;
-
-    // eslint-disable-next-line no-restricted-syntax -- dynamic import for code splitting
-    void import("monaco-editor").then((monaco) => {
-      if (disposed || !editorRef.current) return;
-
-      const editor = monaco.editor.create(editorRef.current, {
-        value: content,
-        language: getLanguageFromPath(filePath),
-        theme: "vs-dark",
-        readOnly: true,
-        minimap: { enabled: false },
-        lineNumbers: "on",
-        glyphMargin: true,
-        folding: false,
-        scrollBeyondLastLine: false,
-        fontSize: 12,
-        automaticLayout: true,
-      });
-
-      editorInstanceRef.current = editor;
-
-      managerRef.current = createCommentWidgetManager(editor, {
-        filePath,
-        onAddComment: (line, text) => {
-          if (readOnly) return;
-          void addLineComment(sessionId, filePath, line, text);
-        },
-        onEditComment: (id, text) => {
-          if (readOnly) return;
-          void editComment(sessionId, filePath, id, text);
-        },
-        onDeleteComment: (id) => {
-          if (readOnly) return;
-          void deleteComment(sessionId, filePath, id);
-        },
-        readOnly,
-      });
-
-      managerRef.current.setComments(lineComments);
-
-      // Jump to (and briefly highlight) the requested line, e.g. when opened
-      // from a `path:line` link in chat. Clamp to the document so an out-of-range
-      // line from a stale reference still lands somewhere sensible.
-      if (revealLine && revealLine > 0) {
-        const lineCount = editor.getModel()?.getLineCount() ?? revealLine;
-        const target = Math.min(revealLine, lineCount);
-        editor.revealLineInCenter(target);
-        editor.setPosition({ lineNumber: target, column: 1 });
-        const decorations = editor.createDecorationsCollection([
-          {
-            range: new monaco.Range(target, 1, target, 1),
-            options: {
-              isWholeLine: true,
-              className: "shipit-preview-line-highlight",
-            },
-          },
-        ]);
-        // Fade the highlight after a moment so it draws the eye without sticking.
-        setTimeout(() => {
-          if (!disposed) decorations.clear();
-        }, 2400);
-      }
-    });
-
-    return () => {
-      disposed = true;
-      managerRef.current?.dispose();
-      managerRef.current = null;
-      editorInstanceRef.current?.dispose();
-      editorInstanceRef.current = null;
-    };
-    // The lineComments dep is intentionally omitted: we sync via the
-    // separate effect below to avoid tearing down the editor on every change.
-  }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, readOnly, revealLine]);
-
-  // Sync comments without rebuilding the editor.
-  // eslint-disable-next-line no-restricted-syntax -- syncing widget state with store updates
-  useEffect(() => {
-    managerRef.current?.setComments(lineComments);
-  }, [lineComments]);
-
-  return <div ref={editorRef} className="h-full w-full" />;
-}
-
-// ---------- Markdown viewer with section comments ----------
-
-function MarkdownViewer({
-  filePath,
-  content,
-  sessionId,
-  comments,
-  lineComments = [],
-  readOnly = false,
-}: {
-  filePath: string;
-  content: string;
-  sessionId: string;
-  comments: SelectionCommentData[];
-  lineComments?: { id: string; line: number; text: string }[];
-  readOnly?: boolean;
-}) {
-  const addSelectionComment = useFileReviewStore((s) => s.addSelectionComment);
-  const editComment = useFileReviewStore((s) => s.editComment);
-  const deleteComment = useFileReviewStore((s) => s.deleteComment);
-
-  const handleAdd = useCallback(
-    (quotedText: string, contextBefore: string, contextAfter: string, text: string) => {
-      if (readOnly) return null;
-      return addSelectionComment(sessionId, filePath, quotedText, contextBefore, contextAfter, text);
-    },
-    [sessionId, filePath, addSelectionComment, readOnly],
-  );
-
-  const handleEdit = useCallback(
-    (commentId: string, text: string) => {
-      if (readOnly) return;
-      void editComment(sessionId, filePath, commentId, text);
-    },
-    [sessionId, filePath, editComment, readOnly],
-  );
-
-  const handleDelete = useCallback(
-    (commentId: string) => {
-      if (readOnly) return;
-      void deleteComment(sessionId, filePath, commentId);
-    },
-    [sessionId, filePath, deleteComment, readOnly],
-  );
-
-  return (
-    <div className="space-y-4">
-      {lineComments.length > 0 && (
-        <div
-          className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary)"
-          data-testid="markdown-line-findings"
-        >
-          <div className="border-b border-(--color-border-secondary) px-3 py-2 text-xs font-medium text-(--color-text-secondary)">
-            Source line findings
-          </div>
-          <div className="divide-y divide-(--color-border-secondary)">
-            {lineComments.map((comment) => (
-              <div key={comment.id} className="grid grid-cols-[auto_1fr] gap-3 px-3 py-2">
-                <span className="font-mono text-[11px] text-(--color-text-tertiary) pt-0.5">
-                  L{comment.line}
-                </span>
-                <p className="text-sm text-(--color-text-primary) whitespace-pre-wrap">
-                  {comment.text}
-                </p>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-      <MarkdownSelectionComments
-        content={content}
-        comments={comments}
-        onAddComment={handleAdd}
-        onEditComment={handleEdit}
-        onDeleteComment={handleDelete}
-        readOnly={readOnly}
-      />
-    </div>
-  );
-}
-
-// ---------- Past reviews disclosure ----------
-
-function PastReviews({ history }: { history: FileReview[] }) {
-  const [expanded, setExpanded] = useState(false);
-  const [openId, setOpenId] = useState<string | null>(null);
-
-  if (history.length === 0) return null;
-
-  return (
-    <div className="text-xs">
-      <button
-        onClick={() => setExpanded(!expanded)}
-        className="flex items-center gap-1 text-(--color-text-secondary) hover:text-(--color-text-primary) cursor-pointer"
-      >
-        <CaretDownIcon
-          size={ICON_SIZE.XS}
-          className={`transition-transform ${expanded ? "" : "-rotate-90"}`}
-        />
-        Past reviews ({history.length})
-      </button>
-      {expanded && (
-        <div className="mt-2 space-y-1">
-          {history.map((review) => (
-            <div key={review.id}>
-              <button
-                onClick={() => setOpenId(openId === review.id ? null : review.id)}
-                className="flex items-center gap-2 w-full text-left px-2 py-1 rounded hover:bg-(--color-bg-hover) cursor-pointer"
-              >
-                <span className="text-(--color-text-secondary)">
-                  {review.sentAt ? new Date(review.sentAt).toLocaleDateString() : "—"}
-                </span>
-                <span className="text-(--color-text-tertiary)">
-                  {review.comments.length} comment{review.comments.length !== 1 ? "s" : ""}
-                </span>
-              </button>
-              {openId === review.id && (
-                <div className="ml-4 mt-1 mb-2 space-y-1">
-                  {review.comments.map((c) => (
-                    <div
-                      key={c.id}
-                      className={`text-xs p-2 rounded border-l-2 ${
-                        c.source === "ai"
-                          ? "border-l-purple-400 bg-purple-950/20"
-                          : "border-l-blue-400 bg-blue-950/20"
-                      }`}
-                    >
-                      <span className="text-(--color-text-tertiary)">
-                        {c.kind === "selection"
-                          ? `«${c.quotedText.slice(0, 40)}${c.quotedText.length > 40 ? "…" : ""}»: `
-                          : `Line ${c.line}: `}
-                      </span>
-                      <span className="text-(--color-text-secondary)">{c.text}</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ---------- Main modal ----------
-
-const EMPTY_HISTORY: FileReview[] = [];
-
 export function FilePreviewModal({
   filePath,
   content,
@@ -399,119 +91,42 @@ export function FilePreviewModal({
   onAskAgentReview,
 }: FilePreviewModalProps) {
   const sessionId = useSessionStore((s) => s.sessionId) ?? "";
-  // Agent-busy state: a review is a chat turn, so we can't start one while the
-  // agent is mid-turn. The button stays visible but disabled (the composed
-  // prompt depends on current draft state, so we don't auto-queue).
-  const agentRunning = useSessionStore((s) => s.isLoading);
+  const kind = kindFromPreviewType(fileType, filePath);
 
-  // 125 — chat-native AI review is gated on `supportsReview` from the active
-  // agent's capabilities. Today the affordance is the existing AI Review
-  // button; in Phase 2 it becomes "Ask agent to review." Either way, it only
-  // shows when the active agent backend can run the flow. Codex sessions
-  // hide the button entirely (not disabled) because the silent prod no-op
-  // it produced before is strictly worse than no affordance.
-  const activeAgentId = useUiStore((s) => s.activeAgentId);
-  const agentList = useUiStore((s) => s.agentList);
-  const activeAgentSupportsReview =
-    agentList.find((a) => a.id === activeAgentId)?.supportsReview ?? false;
+  // HTML/SVG default to rendered; a small toggle in the header flips to source.
+  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
+  // eslint-disable-next-line no-restricted-syntax -- reset toggle when the previewed file changes
+  useEffect(() => { setViewMode("rendered"); }, [filePath]);
 
-  // Selectors return stable references across renders so Zustand doesn't
-  // treat each render as a state change (infinite-loop footgun).
-  const key = sessionId ? `${sessionId}::${filePath}` : null;
-  const draft = useFileReviewStore((s) => (key ? s.draftByKey[key] ?? null : null));
-  const history = useFileReviewStore((s) =>
-    key ? s.historyByKey[key] ?? EMPTY_HISTORY : EMPTY_HISTORY,
-  );
-  const load = useFileReviewStore((s) => s.load);
-  const sendDraft = useFileReviewStore((s) => s.sendDraft);
-  const discardEmptyDraft = useFileReviewStore((s) => s.discardEmptyDraft);
-
-  const reviewable = fileType === "markdown" || fileType === "code";
-
-  // Load draft + history when the modal opens for a reviewable file.
-  // eslint-disable-next-line no-restricted-syntax -- one-shot fetch tied to (session, file) identity
-  useEffect(() => {
-    if (!sessionId || !reviewable || content === null) return;
-    void load(sessionId, filePath);
-  }, [sessionId, filePath, reviewable, content, load]);
-
-  const commentCount = draft?.comments.length ?? 0;
-  // The subagent can usefully review markdown of any size, or code under a cap
-  // (binaries/huge generated files get no affordance). 10 KB cap per plan §Surface.
-  const reviewableForAgent =
-    fileType === "markdown" || (fileType === "code" && (content?.length ?? 0) <= 10 * 1024);
-  const showAskReview =
-    reviewable
-    && reviewableForAgent
-    && !!sessionId
-    && content !== null
-    && activeAgentSupportsReview
-    && !!onAskAgentReview;
-  const canSend = !!onSendComments && commentCount > 0;
+  const review = useFileReviewControls({
+    filePath,
+    kind,
+    content,
+    onSendComments,
+    onAskAgentReview,
+  });
 
   const handleClose = useCallback(() => {
-    if (sessionId && reviewable && draft?.comments.length === 0) {
-      void discardEmptyDraft(sessionId, filePath);
-    }
+    review.discardEmptyDraftNow();
     onClose();
-  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft, onClose]);
+  }, [review, onClose]);
 
   const handleSwitchSibling = useCallback(
     (nextPath: string) => {
       if (nextPath === filePath || !onSwitchSibling) return;
-      // Discard an empty draft on the outgoing tab so it doesn't linger,
-      // mirroring the close-without-comments behavior.
-      if (sessionId && reviewable && draft?.comments.length === 0) {
-        void discardEmptyDraft(sessionId, filePath);
-      }
+      // Discard an empty draft on the outgoing tab so it doesn't linger.
+      review.discardEmptyDraftNow();
       onSwitchSibling(nextPath);
     },
-    [filePath, onSwitchSibling, sessionId, reviewable, draft, discardEmptyDraft],
+    [filePath, onSwitchSibling, review],
   );
 
-  const handleAskReview = useCallback(() => {
-    if (!sessionId || !onAskAgentReview || agentRunning) return;
-    onAskAgentReview(filePath);
-  }, [sessionId, filePath, onAskAgentReview, agentRunning]);
-
-  const handleSend = useCallback(async () => {
-    if (!sessionId || !onSendComments) return;
-    const result = await sendDraft(sessionId, filePath);
-    if (result) {
-      onSendComments({
-        prompt: result.prompt,
-        filePaths: [result.filePath],
-        commentCount: result.commentCount,
-      });
-    }
-  }, [sessionId, filePath, sendDraft, onSendComments]);
-
-  // Review comments come from the current human draft (the AI-review system no
-  // longer writes into this bucket — docs/203).
-  const markdownComments: SelectionCommentData[] = useMemo(() => {
-    return (draft?.comments ?? [])
-      .filter((c): c is Extract<ReviewComment, { kind: "selection" }> => c.kind === "selection")
-      .map((c) => ({
-        id: c.id,
-        quotedText: c.quotedText,
-        contextBefore: c.contextBefore,
-        contextAfter: c.contextAfter,
-        text: c.text,
-        source: c.source,
-      }));
-  }, [draft]);
-
-  const codeComments = useMemo(() => {
-    return (draft?.comments ?? [])
-      .filter((c): c is Extract<ReviewComment, { kind: "line" }> => c.kind === "line")
-      .map((c) => ({ id: c.id, kind: "line" as const, line: c.line, text: c.text }));
-  }, [draft]);
-
   const showSiblingTabs = !!siblings && siblings.length > 1;
+  const showToggle = supportsSourceToggle(kind) && content !== null;
   const showFooter =
-    reviewable
+    review.reviewable
     && content !== null
-    && (commentCount > 0 || history.length > 0);
+    && (review.commentCount > 0 || review.history.length > 0);
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) handleClose(); }}>
@@ -525,9 +140,10 @@ export function FilePreviewModal({
               </DialogTitle>
             </div>
             <div className="flex items-center gap-2 shrink-0 ml-4">
-              {showAskReview && (
-                <WithTooltip label={agentRunning ? "Wait for the current turn to finish" : "Start a chat review turn"}>
-                  <Button variant="secondary" size="md" onClick={handleAskReview} disabled={agentRunning}>
+              {showToggle && <SourceToggle value={viewMode} onChange={setViewMode} />}
+              {review.showAskReview && (
+                <WithTooltip label={review.agentRunning ? "Wait for the current turn to finish" : "Start a chat review turn"}>
+                  <Button variant="secondary" size="md" onClick={review.handleAskReview} disabled={review.agentRunning}>
                     <RobotIcon size={ICON_SIZE.SM} className="mr-1" />
                     Ask agent to review
                   </Button>
@@ -581,62 +197,36 @@ export function FilePreviewModal({
         </div>
 
         {/* Content */}
-        <div className="flex-1 overflow-y-auto p-6">
+        <div className="flex-1 min-h-0">
           {content === null ? (
             <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
               Loading...
             </div>
-          ) : fileType === "markdown" ? (
-            <MarkdownViewer
-              filePath={filePath}
-              content={content}
-              sessionId={sessionId}
-              comments={markdownComments}
-            />
-          ) : fileType === "image" ? (
-            <div className="flex items-center justify-center h-full">
-              <img
-                src={content}
-                alt={filePath}
-                className="max-w-full max-h-full object-contain rounded-lg"
-              />
-            </div>
-          ) : fileType === "binary" ? (
-            <div className="flex items-center justify-center h-full text-(--color-text-secondary) text-sm">
-              Binary file — cannot display.
-            </div>
           ) : (
-            <CodeEditor
+            <FileContentView
+              key={filePath}
               filePath={filePath}
               content={content}
+              kind={kind}
               sessionId={sessionId}
-              comments={codeComments}
+              viewMode={viewMode}
+              reviewable={review.reviewable}
               revealLine={line ?? undefined}
+              markdownComments={review.markdownComments}
+              codeComments={review.codeComments}
             />
           )}
         </div>
 
         {/* Footer — review controls (live mode only) */}
         {showFooter && (
-          <div className="flex items-center justify-between px-6 py-3 border-t border-(--color-border-secondary) bg-(--color-bg-elevated) shrink-0 gap-4">
-            <div className="flex items-center gap-3 min-w-0">
-              <span className="text-xs text-(--color-text-secondary) whitespace-nowrap">
-                {commentCount > 0
-                  ? `${commentCount} comment${commentCount !== 1 ? "s" : ""} — draft`
-                  : "no draft comments"}
-              </span>
-              <PastReviews history={history} />
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <Button variant="ghost" size="md" onClick={handleClose}>
-                Cancel
-              </Button>
-              <Button variant="primary" size="md" onClick={handleSend} disabled={!canSend}>
-                <PaperPlaneTiltIcon size={ICON_SIZE.SM} className="mr-1" />
-                Send {commentCount > 0 ? `${commentCount} comment${commentCount !== 1 ? "s" : ""}` : "Comments"}
-              </Button>
-            </div>
-          </div>
+          <FileReviewFooter
+            commentCount={review.commentCount}
+            history={review.history}
+            canSend={review.canSend}
+            onSend={review.handleSend}
+            onCancel={handleClose}
+          />
         )}
       </DialogContent>
     </Dialog>

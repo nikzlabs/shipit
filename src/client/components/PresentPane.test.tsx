@@ -72,9 +72,13 @@ describe("PresentPane", () => {
 
     // Header is immediate; bytes arrive after the fetch resolves.
     expect(screen.getByText("One")).toBeInTheDocument();
-    const iframe = await screen.findByTitle("Presentation");
+    const iframe = await screen.findByTitle("Rendered content");
     expect(iframe).toHaveAttribute("sandbox", "allow-scripts");
-    expect(iframe).toHaveAttribute("srcdoc", "<h1>One</h1>");
+    // The shared frame injects a best-effort CSP and wraps bare fragments, so
+    // assert the content is present rather than an exact srcdoc (docs/219).
+    const srcdoc = iframe.getAttribute("srcdoc") ?? "";
+    expect(srcdoc).toContain("<h1>One</h1>");
+    expect(srcdoc).toContain("connect-src 'none'");
     // Cached back onto the entry so re-selecting doesn't refetch.
     expect(usePresentStore.getState().presentations[0].content).toBe("<h1>One</h1>");
     expect(screen.queryByLabelText("Previous presentation")).toBeNull();
@@ -99,7 +103,7 @@ describe("PresentPane", () => {
     render(<PresentPane isActiveTab />);
 
     expect(screen.getByLabelText("Download presentation")).toBeDisabled();
-    await screen.findByTitle("Presentation");
+    await screen.findByTitle("Rendered content");
     expect(screen.getByLabelText("Download presentation")).toBeEnabled();
   });
 

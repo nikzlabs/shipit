@@ -13,12 +13,15 @@
  * workspace lives inside a container). To keep an artifact in the repo, ask the
  * agent to write it there.
  *
- * Sandboxing: HTML/SVG content renders in an iframe with `sandbox="allow-scripts"`.
- * That lets charts and interactive markup run JS but prevents same-origin
- * access to cookies, storage, parent frame, or top-level navigation.
+ * Content rendering + review are shared with the file-viewer dialog via
+ * `FileContentView` + `useFileReviewControls` (docs/219): HTML/SVG render in a
+ * sandboxed iframe (toggle to source), markdown gets frontmatter stripping +
+ * selection comments, and review works on workspace-relative artifacts.
+ * Non-workspace artifacts (e.g. `/persist` throwaways) render read-only — the
+ * file-review API resolves against `/workspace` and can't address them.
  */
 
-// eslint-disable-next-line no-restricted-imports -- useEffect: clear unseen badge on tab focus, global keydown subscription, lazy content fetch
+// eslint-disable-next-line no-restricted-imports -- useEffect: unseen badge, keyboard nav, lazy content fetch, view-mode reset, draft cleanup
 import { useEffect, useRef, useState } from "react";
 import {
   CaretLeftIcon,
@@ -28,15 +31,24 @@ import {
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
-import { MarkdownContent } from "./message-markdown.js";
+import { FileContentView } from "./FileContentView/FileContentView.js";
+import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
+import { SourceToggle, type ViewMode } from "./FileContentView/SourceToggle.js";
+import { useFileReviewControls } from "../hooks/use-file-review-controls.js";
+import { kindFromMimeType, supportsSourceToggle } from "../utils/file-content-kind.js";
 import { Button } from "./ui/button.js";
+import type { SendCommentsPayload } from "./FilePreviewModal.js";
 
 interface PresentPaneProps {
   /** When true the pane is currently visible to the user — clears the unseen badge. */
   isActiveTab: boolean;
+  /** Submit review comments on a workspace-relative artifact (App dispatches the prompt). */
+  onSendComments?: (payload: SendCommentsPayload) => void;
+  /** docs/203 — "Ask agent to review" on a workspace-relative artifact. */
+  onAskAgentReview?: (filePath: string) => void;
 }
 
-export function PresentPane({ isActiveTab }: PresentPaneProps) {
+export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: PresentPaneProps) {
   const presentations = usePresentStore((s) => s.presentations);
   const activeIndex = usePresentStore((s) => s.activePresentIndex);
   const sessionId = useSessionStore((s) => s.sessionId);
@@ -44,6 +56,7 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
   const markSeen = usePresentStore((s) => s.markSeen);
 
   const [fetchError, setFetchError] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<ViewMode>("rendered");
   // Ids with an in-flight content fetch, so a re-render doesn't double-fetch.
   const fetching = useRef<Set<string>>(new Set());
 
@@ -54,10 +67,41 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
   const activePresentId = active?.presentId;
   const activeContent = active?.content;
 
+  const kind = kindFromMimeType(active?.mimeType ?? "", active?.filePath ?? "");
+
+  // Review controls — called UNCONDITIONALLY before the empty-state early return
+  // (hook-order stability), passing the active artifact's path or "" when none.
+  const review = useFileReviewControls({
+    filePath: active?.filePath ?? "",
+    kind,
+    content: activeContent ?? null,
+    onSendComments,
+    onAskAgentReview,
+  });
+
   // eslint-disable-next-line no-restricted-syntax -- intentional unseen-clear on tab focus
   useEffect(() => {
     if (isActiveTab) markSeen();
   }, [isActiveTab, markSeen, activeIndex]);
+
+  // Reset the source/rendered toggle when the visible artifact changes.
+  // eslint-disable-next-line no-restricted-syntax -- reset toggle on carousel navigation
+  useEffect(() => { setViewMode("rendered"); }, [activePresentId]);
+
+  // Discard the outgoing artifact's empty draft on carousel nav / tab blur /
+  // unmount — the Present analogue of the modal's close. `discardEmptyDraftNow`
+  // is captured at effect-setup so the cleanup targets the OUTGOING file; the
+  // store re-checks emptiness, so a stale closure can never drop a real draft.
+  // `discardEmptyDraftNow` is captured at effect-setup (not in the dep array) so
+  // the cleanup targets the OUTGOING file; re-keying only on id/tab change avoids
+  // re-running on every draft mutation. The store re-checks emptiness, so a stale
+  // closure can never drop a real draft.
+  const discardOutgoing = review.discardEmptyDraftNow;
+  // eslint-disable-next-line no-restricted-syntax -- best-effort draft cleanup on nav/blur/unmount; deps intentionally exclude discardOutgoing
+  useEffect(() => {
+    if (!isActiveTab) return;
+    return () => { discardOutgoing(); };
+  }, [activePresentId, isActiveTab]);
 
   // Keyboard nav scoped to this pane — read latest index via the store rather
   // than depending on `safeIndex` so the listener doesn't re-install on every
@@ -121,6 +165,12 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
   const onPrev = () => setActiveIndex(safeIndex - 1);
   const onNext = () => setActiveIndex(safeIndex + 1);
 
+  const showToggle = supportsSourceToggle(kind) && active.content !== undefined;
+  const showFooter =
+    review.reviewable
+    && active.content !== undefined
+    && (review.commentCount > 0 || review.history.length > 0);
+
   return (
     <div className="absolute inset-0 flex flex-col">
       <div className="flex items-center gap-2 px-3 py-2 border-b border-(--color-border-primary) bg-(--color-bg-secondary) shrink-0">
@@ -158,6 +208,7 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             {active.filePath}
           </div>
         </div>
+        {showToggle && <SourceToggle value={viewMode} onChange={setViewMode} />}
         <Button
           variant="ghost"
           size="md"
@@ -184,80 +235,28 @@ export function PresentPane({ isActiveTab }: PresentPaneProps) {
             Loading…
           </div>
         ) : (
-          <PresentationContent
+          <FileContentView
             key={active.presentId}
+            filePath={active.filePath}
             content={active.content}
-            mimeType={active.mimeType}
+            kind={kind}
+            sessionId={sessionId ?? ""}
+            viewMode={viewMode}
+            reviewable={review.reviewable}
+            markdownComments={review.markdownComments}
+            codeComments={review.codeComments}
           />
         )}
       </div>
-    </div>
-  );
-}
 
-function PresentationContent({
-  content,
-  mimeType,
-}: {
-  content: string;
-  mimeType: string;
-}) {
-  const lower = mimeType.toLowerCase();
-
-  if (lower === "text/html") {
-    return (
-      <iframe
-        title="Presentation"
-        sandbox="allow-scripts"
-        srcDoc={content}
-        className="w-full h-full border-0"
-      />
-    );
-  }
-
-  if (lower === "image/svg+xml") {
-    // Wrap raw SVG markup in a minimal HTML host so iframe sandboxing applies
-    // even if the SVG contains <script>. Centered with subtle padding so
-    // viewBox-relative dimensions don't paint flush to the bezel.
-    const wrapped =
-      `<!doctype html><html><body style="margin:0;display:flex;align-items:center;justify-content:center;height:100vh;background:white">${content}</body></html>`;
-    return (
-      <iframe
-        title="Presentation"
-        sandbox="allow-scripts"
-        srcDoc={wrapped}
-        className="w-full h-full border-0"
-      />
-    );
-  }
-
-  if (lower === "text/markdown") {
-    return (
-      <div className="w-full h-full overflow-auto p-6">
-        <MarkdownContent text={content} />
-      </div>
-    );
-  }
-
-  if (lower.startsWith("image/")) {
-    // PNG/JPEG/etc arrive as data URIs — pass straight to <img>. Plain text
-    // payloads of an image type fall through to the unknown-content branch.
-    if (content.startsWith("data:")) {
-      return (
-        <div className="w-full h-full flex items-center justify-center p-6 bg-(--color-bg-primary)">
-          <img
-            src={content}
-            alt="Agent presentation"
-            className="max-w-full max-h-full object-contain"
-          />
-        </div>
-      );
-    }
-  }
-
-  return (
-    <div className="w-full h-full overflow-auto p-6 text-xs font-mono text-(--color-text-secondary) whitespace-pre-wrap">
-      {content}
+      {showFooter && (
+        <FileReviewFooter
+          commentCount={review.commentCount}
+          history={review.history}
+          canSend={review.canSend}
+          onSend={review.handleSend}
+        />
+      )}
     </div>
   );
 }
@@ -355,4 +354,3 @@ export function mimeTypeToExtension(mimeType: string): string {
       return "txt";
   }
 }
-
