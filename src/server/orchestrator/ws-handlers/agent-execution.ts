@@ -308,6 +308,26 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         toSha: reset.toSha!,
         createdAt: new Date().toISOString(),
       };
+      // docs/216 + docs/218 — the branch now sits at the clean base, so the
+      // lingering "merged" PR card no longer reflects reality. Re-arm NOW (clear
+      // merged + reArm poller + emit a gray "ready" card carrying the
+      // previousMergedPr breadcrumb that overrides the active viewer's stale
+      // merged card) so the PR card flips to the no-current-PR state the moment
+      // the branch-updated card appears — rather than lagging until the
+      // post-turn `postTurnReArmReset` runs after the whole turn. The post-turn
+      // call stays as a fail-safe (manual `git reset` with no pre-turn move) and
+      // no-ops here, having already cleared `mergedAt`.
+      await detectAndReArmResetSession({
+        deps: {
+          sessionManager: ctx.sessionManager,
+          prStatusPoller: ctx.prStatusPoller,
+          createGitManager: ctx.createGitManager,
+          sseBroadcast: ctx.sseBroadcast,
+        },
+        sessionId: capturedSessionId,
+        sessionDir: capturedSessionDir,
+        emit: (msg) => runner.emitMessage(msg),
+      });
     }
   }
 

@@ -266,9 +266,18 @@ hooks then settle the PR card with no new code:
 
 This feature's net addition is the **pre-turn reset + the explicit control + the
 agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
-unchanged and treated as corroborating, not as the user-facing signal of record.
-(If the docs/216 card proves broken in observation, that is a separate bug to file,
-not a blocker — our card stands on its own.)
+treated as corroborating, not as the user-facing signal of record.
+
+**Pre-turn PR-card re-arm (timing fix).** The post-turn `detectAndReArmResetSession`
+above only settles the PR card *after* the whole agent turn finishes, so the stale
+"merged" PR card lingered while the user already saw the branch-updated card — the
+"separate bug to file" this section originally flagged. Fix: when the pre-turn reset
+moves the branch (`reset.moved`), `agent-execution.ts` calls the **same**
+`detectAndReArmResetSession` helper immediately (the branch is already at the clean
+base, so `headIsAtBase` is true), flipping the PR card to the gray no-current-PR
+"ready" state in lockstep with the branch-updated card. The post-turn call stays as a
+fail-safe for the manual-`git reset` path and no-ops here (it has already cleared
+`mergedAt`). No new PR-card logic — just an earlier invocation of the docs/216 helper.
 
 ## Edge cases
 
