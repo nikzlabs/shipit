@@ -616,8 +616,8 @@ export class PrStatusPoller {
   }
 
   /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
-  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string): void {
-    this.autoMerge.setManaged(sessionId, managed, settingsUrl);
+  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string, reason?: string): void {
+    this.autoMerge.setManaged(sessionId, managed, settingsUrl, reason);
     // Managed auto-merge depends on the poller to detect CI-success → merge.
     // Open the gate so a closed tab doesn't strand the flow.
     if (managed) this.supervisor.ensure();
@@ -670,6 +670,7 @@ export class PrStatusPoller {
           mergeMethod: mergeState.mergeMethod,
           managed: mergeState.managed,
           settingsUrl: mergeState.settingsUrl,
+          reason: mergeState.reason,
           error: mergeState.error,
         },
       };

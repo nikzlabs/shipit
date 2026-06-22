@@ -49,6 +49,7 @@ export class AutoMergeManager {
         // Clear managed flag when disabling
         state.managed = false;
         delete state.settingsUrl;
+        delete state.reason;
       }
     }
 
@@ -56,15 +57,20 @@ export class AutoMergeManager {
     return state;
   }
 
-  /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
-  setManaged(sessionId: string, managed: boolean, settingsUrl?: string): void {
+  /**
+   * Mark auto-merge as ShipIt-managed (GitHub native unavailable). `reason` is
+   * the real GitHub error that blocked native auto-merge, surfaced verbatim in
+   * the managed-merge tooltip so the user sees the actual missing precondition.
+   */
+  setManaged(sessionId: string, managed: boolean, settingsUrl?: string, reason?: string): void {
     let state = this.states.get(sessionId);
     if (!state) {
-      state = { enabled: false, mergeMethod: "squash", managed, settingsUrl };
+      state = { enabled: false, mergeMethod: "squash", managed, settingsUrl, reason };
       this.states.set(sessionId, state);
     } else {
       state.managed = managed;
       state.settingsUrl = settingsUrl;
+      state.reason = reason;
     }
 
     this.onChange(sessionId);
