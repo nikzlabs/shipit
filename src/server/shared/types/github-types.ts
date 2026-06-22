@@ -228,6 +228,13 @@ export interface AutoMergeState {
   managed?: boolean;
   /** GitHub settings URL — shown in tooltip when managed. */
   settingsUrl?: string;
+  /**
+   * The actual error GitHub returned from `enablePullRequestAutoMerge` that
+   * caused the managed-merge fallback (e.g. "Auto-merge is not enabled for this
+   * repository…"). Surfaced verbatim in the managed-merge tooltip so the user
+   * sees the real precondition that's missing, not a generic guess. docs/077.
+   */
+  reason?: string;
   error?: PrAutoMergeError;
   /**
    * True once the ShipIt-managed merge REST call has succeeded. The PR is
@@ -357,6 +364,8 @@ export interface PrStatusSummary {
     managed?: boolean;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
+    /** The real GitHub error that triggered the managed-merge fallback. docs/077. */
+    reason?: string;
     error?: PrAutoMergeError;
   };
   /**
@@ -448,6 +457,8 @@ export interface WsPrLifecycleUpdate {
     managed?: boolean;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
+    /** The real GitHub error that triggered the managed-merge fallback. docs/077. */
+    reason?: string;
     error?: PrAutoMergeError;
   };
   /** Present in "error" phase — error message. */

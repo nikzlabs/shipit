@@ -1179,7 +1179,7 @@ export async function toggleAutoMerge(
   prStatusPoller: PrStatusPoller,
   sessionId: string,
   enabled: boolean,
-): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean } | { error: PrAutoMergeError }> {
+): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string } | { error: PrAutoMergeError }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1204,13 +1204,18 @@ export async function toggleAutoMerge(
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
     if (!result.success) {
-      // Fallback: ShipIt-managed auto-merge when GitHub native isn't available
+      // Fallback: ShipIt-managed auto-merge when GitHub native isn't available.
+      // Thread the real GitHub error (`result.message`) through as `reason` so
+      // the managed-merge tooltip names the actual missing precondition (e.g.
+      // "Allow auto-merge" off in repo settings) instead of a generic guess.
+      // Link to repo General settings — that's where the "Allow auto-merge"
+      // checkbox lives (the most common missing precondition) and it links out
+      // to branch protection / rulesets from the same page.
       const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
-      const branchSettingsUrl = `${settingsUrl}/branches`;
 
       prStatusPoller.setAutoMergeEnabled(sessionId, true);
-      prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
-      return { enabled: true, mergeMethod, managed: true };
+      prStatusPoller.setAutoMergeManaged(sessionId, true, settingsUrl, result.message);
+      return { enabled: true, mergeMethod, managed: true, reason: result.message };
     }
 
     prStatusPoller.setAutoMergeEnabled(sessionId, true);

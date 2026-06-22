@@ -68,6 +68,8 @@ export interface PrCardState {
     managed?: boolean;
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
+    /** The real GitHub error that triggered the managed-merge fallback. */
+    reason?: string;
     error?: { code: string; message: string; settingsUrl: string };
   };
   /**
@@ -875,7 +877,7 @@ export const usePrStore = create<PrState>((set, get) => ({
         revert();
         return;
       }
-      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean };
+      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string };
       set((state) => {
         const existing = state.cardBySession[sessionId];
         const autoMerge = {
@@ -883,6 +885,7 @@ export const usePrStore = create<PrState>((set, get) => ({
           enabled: data.enabled,
           mergeMethod: data.mergeMethod,
           managed: data.managed,
+          reason: data.reason,
         };
         return {
           autoMergeBySession: {

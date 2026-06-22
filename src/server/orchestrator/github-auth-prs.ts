@@ -260,8 +260,21 @@ export async function enableAutoMerge(
 
   if (graphqlData.errors) {
     const errMsg = graphqlData.errors[0]?.message ?? "Unknown error";
-    if (errMsg.includes("auto-merge")) {
-      return { success: false, message: "Auto-merge is not enabled for this repository. Enable it in repo Settings > General." };
+    const lower = errMsg.toLowerCase();
+    // Map GitHub's GraphQL errors to actionable guidance. These strings are
+    // surfaced verbatim in the managed-merge tooltip (docs/077), so a cryptic
+    // raw error like "Pull request is in clean status" is rewritten to name the
+    // precondition the user actually needs to fix.
+    if (lower.includes("auto-merge") || lower.includes("not allowed")) {
+      // Repo-level "Allow auto-merge" checkbox is off (Settings → General →
+      // Pull Requests). This is the most common cause even when branch
+      // protection / rulesets are already configured.
+      return { success: false, message: "“Allow auto-merge” is turned off for this repository. Enable it in Settings → General → Pull Requests." };
+    }
+    if (lower.includes("clean status") || lower.includes("not in")) {
+      // Nothing is gating the PR (no required status check / approval), so
+      // GitHub considers it immediately mergeable and refuses auto-merge.
+      return { success: false, message: "No branch protection rule requires a status check or review on the base branch, so there's nothing for auto-merge to wait on. Add a required check to the rule (or ruleset)." };
     }
     return { success: false, message: errMsg };
   }
