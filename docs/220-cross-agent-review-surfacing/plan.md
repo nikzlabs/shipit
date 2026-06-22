@@ -74,10 +74,14 @@ hand at emit time.
 So making cross-agent surfacing deterministic is a small, additive change, not a
 rearchitecture:
 
-- Add a content field (e.g. `outputMarkdown`) to `SubAgentConsultCard` — one
-  typed field + `chat-history.ts` column + `toRow`/`fromRow` + migration; the
-  card is already in `CARD_MESSAGE_FIELDS`, so the persistence path is built and
-  the guard tests already enforce the wiring.
+- Add a content field (e.g. `outputMarkdown`) to `SubAgentConsultCard`. This is
+  a **type-only** change to the persistence layer: `chat-history.ts` already
+  stores the whole card as JSON in the existing `sub_agent_consult` column
+  (`toRow` does `JSON.stringify(subAgentConsult)`; `fromRow` parses it back), so
+  a new field rides inside that blob — **no new column and no migration**. The
+  card is already in `CARD_MESSAGE_FIELDS` and the round-trip guard tests already
+  cover the wiring; the real work is the type + card construction + renderer +
+  fixtures.
 - Render the consultant's **verbatim** output in the card, **attributed** to the
   reviewer, expandable.
 - Keep returning the text on stdout so the primary can still *act* on it (apply
@@ -87,6 +91,31 @@ rearchitecture:
 The two properties that justify ShipIt's involvement and must be preserved:
 **attribution** ("this is Codex's take") and **verbatim fidelity** (no LLM in
 the middle re-typing it).
+
+### Two design constraints the content-carrying card must satisfy
+
+These are not optional — they are why this is a real design and not a one-line
+field add:
+
+- **Gate the content render to surfacing intent (generic vs review).**
+  `shipit agent run` is a *generic* delegation primitive — a spawn might be a
+  refactor or a one-line fix, not a review — and dumping every spawn's full
+  stdout into a persisted transcript card would be noise. So content-rendering
+  must be gated: either a review/surface signal on the spawn (e.g. `shipit agent
+  run --surface review`, or a review-specific orchestrator route) populates
+  `outputMarkdown` only for that mode and leaves ordinary consults
+  metadata-only — or, under option **(B)** below, the consult card *always*
+  carries a collapsed content payload and "review" is just richer presentation
+  on top. Which is right is part of the open question.
+- **Preserve docs/203's re-review (single-card) semantics.** docs/203's flow is
+  *review → fix → re-review*, and its `submit_review` **patches the same card**
+  rather than stacking a second. The consult card today gets a fresh `cardId`
+  per spawn (`randomUUID()` in `services/sub-agent.ts`), so a second review
+  spawn would emit a **new** card and leave the stale first-pass findings in the
+  transcript next to the final ones. A review-mode consult therefore needs a
+  stable identity (a `reviewRunId`/attempt key) and must **update one card in
+  place** on re-review — or explicitly mark the first-pass card superseded —
+  before rendering the final reviewer output.
 
 ## Consequence: `submit_review` may not need to exist
 
@@ -138,11 +167,28 @@ This doc does not pick one — that's the reaction it's waiting on.
   would render it into the consult card instead of only metadata.
 - `src/server/shared/types/domain-types/chat.ts` — `SubAgentConsultCard` gains a
   content field.
-- `src/server/orchestrator/chat-history.ts` + `shared/database.ts` — new column +
-  `toRow`/`fromRow` + migration.
+- `src/server/orchestrator/chat-history.ts` — `toRow`/`fromRow` already persist
+  the whole card as JSON in the existing `sub_agent_consult` column (added in
+  `shared/database.ts`), so the new content field rides inside that blob — **no
+  migration needed**.
 - `src/client/components/visual-elements.ts` — `CARD_MESSAGE_FIELDS` (already
   lists `subAgentConsult`).
 - `src/client/components/MessageList.tsx` — `SubAgentConsultCardRow` renders the
   reviewer's markdown.
 - `src/server/session/mcp-tools/review.ts` — `submit_review`; role shrinks or is
   removed depending on the open question.
+
+If the open question resolves to a gated `--surface review` signal (rather than
+option **(B)**'s always-content card), the intent has to thread the whole spawn
+path, not just the card — so these are also in scope:
+
+- `src/server/session/agent-shim/shipit-agent.ts` — parse the surfacing flag/field
+  on `shipit agent run`.
+- `src/server/session/agent-ops-routes.ts` — worker broker relay carries it.
+- `src/server/orchestrator/api-routes-agent.ts` — `POST /api/sessions/:id/agent/spawn`
+  accepts it.
+- `src/server/shared/sub-agent-run.ts` (and the spawn input types) — the field
+  that carries surfacing intent into `runSubAgent`/`runAgentToCompletion`.
+- `src/client/utils/compose-review-body.ts` — the `/review` flow sets the
+  surfacing intent at request time.
+- Tests for each of the above (shim, broker/route, service gate, client compose).
