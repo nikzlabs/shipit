@@ -24,8 +24,8 @@ what it builds through real GitHub PRs with proper CI checks — all integrated 
      or a clickable thumbnail right under the hero image. -->
 
 ShipIt is a chat-driven dev environment for developers who want to ship faster — run Claude Code or
-Codex in parallel and take each change from prompt to merged PR, all inside one chat you can follow
-turn by turn. A few choices make that possible:
+Codex in parallel and take each change from prompt to merged PR without leaving the IDE. A few choices
+make that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, and
   workspace, so concurrent agents can't step on each other's files, processes, or installed
