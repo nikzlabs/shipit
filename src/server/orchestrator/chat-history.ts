@@ -582,9 +582,10 @@ export class ChatHistoryManager {
    * docs/164 — patch a persisted bug-report card's lifecycle fields in place,
    * keyed by `cardId`. Used by the `submit_bug_report` WS handler so a `filed`
    * (issue number + url) or `failed` (error / scope flag) transition survives a
-   * reload — the proposing-turn row was already finalized (in_progress=0) by the
-   * time the user clicks Submit, so a direct update is safe and won't be undone
-   * by a later `replaceInProgress`. Returns true if a matching card was found.
+   * reload. This is the finalized-row fallback inside `persistCardTransition`:
+   * when the user confirms while the proposing turn is still in flight, the
+   * handler patches the recorded card instead so the transition isn't clobbered
+   * by that turn's finalize. Returns true if a matching card was found.
    */
   updateBugReportCard(
     sessionId: string,
@@ -637,8 +638,11 @@ export class ChatHistoryManager {
   /**
    * docs/172 / SHI-90 — patch a persisted egress allow-once card's phase in
    * place, keyed by `cardId`. Used by the `egress_decision` WS handler so an
-   * allow-once / add / denied resolution survives a reload. Same in-place-update
-   * rationale as `updateBugReportCard`. Returns true if a matching card was found.
+   * allow-once / add / denied resolution survives a reload. This is the
+   * finalized-row fallback inside `persistCardTransition` (the handler patches
+   * the recorded card instead when the proposing turn is still in flight, so the
+   * resolution isn't clobbered by that turn's finalize). Returns true if a
+   * matching card was found.
    */
   updateEgressPromptCard(
     sessionId: string,
@@ -707,9 +711,11 @@ export class ChatHistoryManager {
 
   /**
    * docs/177 — patch a persisted issue-write card's undo lifecycle in place,
-   * keyed by `cardId` (mirrors `updateBugReportCard`). The proposing-turn row
-   * is finalized by the time the user clicks Undo, so a direct update is safe.
-   * Returns true if a matching card was found.
+   * keyed by `cardId` (mirrors `updateBugReportCard`). This is the finalized-row
+   * fallback inside `persistCardTransition`: when the user clicks Undo while the
+   * card's proposing turn is still in flight, the handler patches the recorded
+   * card instead so the undo isn't clobbered by that turn's finalize. Returns
+   * true if a matching card was found.
    */
   updateIssueWriteCard(
     sessionId: string,

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { emitChatCard, emitOrReplaceChatCard, recordChatCard, updateRecordedCard, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
+import { emitChatCard, emitOrReplaceChatCard, recordChatCard, updateRecordedCard, persistCardTransition, persistTurnInProgress, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { WsServerMessage } from "../shared/types.js";
@@ -144,6 +144,77 @@ describe("chat-card-persistence", () => {
     it("returns false when no recorded card matches (caller falls back to the DB-row patch)", () => {
       const { runner } = fakeRunner();
       expect(updateRecordedCard(runner, () => true, (m) => m)).toBe(false);
+    });
+  });
+
+  describe("persistCardTransition — running-gated recorded-vs-DB patch (docs/164/172/177)", () => {
+    interface BugMsg { bugReport?: { cardId?: string; phase?: string } }
+    const recordDraft = (
+      runner: SessionRunnerInterface,
+      chatHistoryManager: { replaceInProgress(s: string, m: PersistedMessage[]): void },
+    ) => {
+      recordChatCard(runner, { role: "assistant", text: "", bugReport: { cardId: "c1", phase: "draft" } } as unknown as PersistedMessage);
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+    };
+    const findCard = (messages: PersistedMessage[]) =>
+      messages.find((m) => (m as BugMsg).bugReport?.cardId === "c1") as BugMsg | undefined;
+    const toFiled = (m: PersistedMessage) =>
+      ({ ...m, bugReport: { ...(m as Required<BugMsg>).bugReport, phase: "filed" } }) as unknown as PersistedMessage;
+
+    it("patches the recorded card (not the DB) while the turn is in flight, surviving a later rebuild", () => {
+      const { runner, persisted, chatHistoryManager } = fakeRunner([{ text: "filing a bug", toolUse: [{}] }]);
+      runner.running = true;
+      recordDraft(runner, chatHistoryManager);
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      // In-flight → recorded card patched, DB fallback NOT used.
+      expect(dbPatched).toBe(false);
+      // A LATER in-turn rebuild (next tool boundary / end-of-turn finalize) still
+      // carries "filed" — the clobber the fix prevents.
+      persistTurnInProgress(chatHistoryManager, runner, "s1");
+      expect(findCard(persisted[persisted.length - 1].messages)?.bugReport?.phase).toBe("filed");
+    });
+
+    it("uses the DB-row fallback once the proposing turn has finalized (running=false)", () => {
+      const { runner, chatHistoryManager } = fakeRunner([{ text: "filing a bug", toolUse: [{}] }]);
+      runner.running = false;
+      recordDraft(runner, chatHistoryManager);
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      // Finalized → direct DB-row patch is safe; the (now inert) recorded card is
+      // left untouched, and no spurious in-progress turn is revived.
+      expect(dbPatched).toBe(true);
+      expect((runner.recordedCards[0].message as BugMsg).bugReport?.phase).toBe("draft");
+    });
+
+    it("falls back to the DB patch when the card isn't in this turn's recorded set", () => {
+      const { runner, chatHistoryManager } = fakeRunner();
+      runner.running = true; // running, but nothing recorded (proposed by a prior, finalized turn)
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        (m) => m,
+        () => { dbPatched = true; },
+      );
+      expect(dbPatched).toBe(true);
     });
   });
 

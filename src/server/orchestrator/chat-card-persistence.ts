@@ -291,6 +291,55 @@ export function updateRecordedCard(
 }
 
 /**
+ * Persist a side-channel card's lifecycle transition (filed / resolved / undone
+ * / …) so it survives a session switch and a full reload — WITHOUT being
+ * clobbered when the user confirms the card while its proposing turn is still in
+ * flight. The recurring footgun behind docs/164 (bug report), docs/172 (egress),
+ * docs/177 (issue-write undo), and docs/193 (permission); this is their shared
+ * implementation.
+ *
+ * The clobber: a card is recorded on the runner at propose time (`emitChatCard`
+ * → `recordedCards`), and `recordedCards` is cleared only at the NEXT turn start,
+ * never at turn end (`resetRunnerTurnState`). So a DB-only `patchDb()` applied
+ * while the proposing turn is still running is reverted when that turn finalizes
+ * and rebuilds its rows from the stale (still-pending) `recordedCards` snapshot —
+ * the card reverts to its pre-transition form on the next switch/reload.
+ *
+ * While the turn is running and the card is in this turn's recorded set, patch
+ * the recorded card in place (`updateRecordedCard`) so every rebuild — and the
+ * end-of-turn persist — carries the terminal state, then flush with
+ * `persistTurnInProgress`. Otherwise (`running` is false, or the card was
+ * recorded by an already-finalized turn whose `recordedCards` are now inert) the
+ * direct DB-row `patchDb()` is safe — and is the default, since most cards are
+ * confirmed after their proposing turn ends. The `running` guard matters because
+ * — unlike a permission card, which always resolves mid-turn while the agent is
+ * blocked — these cards are usually confirmed post-turn, and a post-finalize
+ * `persistTurnInProgress` would revive the finalized turn as a duplicate
+ * in-progress row.
+ *
+ * `matches` selects the recorded card by its stable id; `patchRecorded` returns
+ * the patched `PersistedMessage`; `patchDb` performs the finalized-row
+ * `ChatHistoryManager.update*Card` fallback.
+ */
+export function persistCardTransition(
+  runner: Pick<
+    SessionRunnerInterface,
+    "running" | "recordedCards" | "chatMessageGroups" | "steeredMessages"
+  >,
+  persist: CardPersistCtx,
+  matches: (m: PersistedMessage) => boolean,
+  patchRecorded: (m: PersistedMessage) => PersistedMessage,
+  patchDb: () => void,
+): void {
+  const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
+  if (patchedInFlight) {
+    persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
+  } else {
+    patchDb();
+  }
+}
+
+/**
  * docs/138 — build a `system_notice` WS message and its persisted chat row,
  * sharing one stable id. The id lets the client dedupe a notice re-delivered by
  * the turn-event buffer replay on reconnect against the copy already loaded from

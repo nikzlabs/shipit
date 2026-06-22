@@ -276,10 +276,16 @@ to the container.
   and stays as-is for the bug-filing `createIssue`.
 - **Undo transport:** the card's Undo button sends a `undo_issue_write` WS
   message → `ws-handlers/issue-write-handlers.ts`, which reads the persisted
-  card (`findIssueWriteCard`), runs `undoIssueWrite`, and patches the card via
-  `updateIssueWriteCard`. The prior assignee's internal id is surfaced on the
-  read type as `TrackerIssue.assigneeId` (populated from the raw API node), so
-  the snapshot captures an exact id rather than the display name.
+  card (`findIssueWriteCard`), runs `undoIssueWrite`, and patches the card
+  (undoing → undone / failed) through the shared `persistCardTransition`
+  primitive. A bare `updateIssueWriteCard` DB patch would be clobbered if the
+  user clicks Undo while the card's proposing turn is still in flight — that
+  turn's finalize rebuilds from the stale `recordedCards` snapshot and reverts
+  the undo. `persistCardTransition` patches the recorded card in place while the
+  turn runs (falling back to the DB patch once finalized), so the undo state
+  survives a switch/reload either way. The prior assignee's internal id is
+  surfaced on the read type as `TrackerIssue.assigneeId` (populated from the raw
+  API node), so the snapshot captures an exact id rather than the display name.
 
 ## Extension — labels + priority on create/edit (SHI-92)
 

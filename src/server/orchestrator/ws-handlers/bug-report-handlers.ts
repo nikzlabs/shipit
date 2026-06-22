@@ -18,29 +18,17 @@ import type { WsSubmitBugReport } from "../../shared/types/ws-client-messages.js
 import type { SessionRunnerInterface } from "../session-runner.js";
 import type { PersistedBugReport } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { updateRecordedCard, persistTurnInProgress } from "../chat-card-persistence.js";
+import { persistCardTransition } from "../chat-card-persistence.js";
 import { fileBugReport, type BugReportProducer } from "../services/bug-report.js";
 
 type BugReportCtx = ConnectionCtx & RunnerCtx & Pick<AppCtx, "sessionManager" | "githubAuthManager" | "chatHistoryManager">;
 
 /**
  * Persist a bug-report card's terminal (filed/failed) transition so it survives
- * a session switch / full reload.
- *
- * The card is recorded on the runner at draft time (`emitChatCard` →
- * `recordedCards`), and `recordedCards` is cleared only at the *next* turn start
- * — never at turn end. So if the user confirms the card while the proposing turn
- * is still in flight (the agent filed a bug then kept working), a DB-only
- * `updateBugReportCard` patch is clobbered when that turn finalizes and rebuilds
- * its in-progress rows from `recordedCards`, which still hold the draft snapshot
- * — the card reverts to its full draft form on the next switch/reload.
- *
- * Mirror the permission-card resolution path (docs/193): while the turn is
- * running, patch the recorded card in place so every rebuild (and the final
- * end-of-turn persist) carries the terminal state, then flush. Once the turn has
- * finalized, `running` is false and the stale `recordedCards` are inert, so the
- * direct DB-row patch is safe — and remains the default, since a bug card is
- * usually confirmed after its proposing turn ends.
+ * a session switch / full reload, clobber-free if the user confirms the card
+ * while its proposing turn is still in flight. Thin wrapper over the shared
+ * `persistCardTransition` primitive (see its docstring for the clobber and why
+ * the running-gated recorded-card patch fixes it).
  */
 function persistBugCardTransition(
   ctx: BugReportCtx,
@@ -49,18 +37,13 @@ function persistBugCardTransition(
   cardId: string,
   patch: Partial<PersistedBugReport>,
 ): void {
-  const patchedInFlight =
-    runner.running &&
-    updateRecordedCard(
-      runner,
-      (m) => m.bugReport?.cardId === cardId,
-      (m) => ({ ...m, bugReport: { ...m.bugReport!, ...patch } }),
-    );
-  if (patchedInFlight) {
-    persistTurnInProgress(ctx.chatHistoryManager, runner, sessionId);
-  } else {
-    ctx.chatHistoryManager.updateBugReportCard(sessionId, cardId, patch);
-  }
+  persistCardTransition(
+    runner,
+    { chatHistoryManager: ctx.chatHistoryManager, sessionId },
+    (m) => m.bugReport?.cardId === cardId,
+    (m) => ({ ...m, bugReport: { ...m.bugReport!, ...patch } }),
+    () => ctx.chatHistoryManager.updateBugReportCard(sessionId, cardId, patch),
+  );
 }
 
 export async function handleSubmitBugReport(
