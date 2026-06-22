@@ -21,7 +21,7 @@ Extract the *content rendering + review* into a single self-contained `FileConte
 
 **What "lazy fetch" is, and why it stays Present-only.** The Present store holds only metadata per artifact (title, MIME, `presentId`) — *not* the bytes. The first time an entry is shown, `PresentPane` fetches its bytes once from `GET /api/sessions/:id/present/:presentId/content` (a disk read proxied to the worker) and caches them back onto the entry; a reload re-fetches because the server retains nothing (`PresentPane.tsx` header comment + the `useEffect` at ~86). The **dialog has no equivalent**: its caller (`App.tsx` via `openPreview`) loads the file and passes `content` in as a prop already-resolved. So "lazy fetch" is just *how the Present surface obtains bytes*; it has nothing to do with rendering, which is exactly why `FileContentView` is fetch-agnostic and both surfaces feed it an already-loaded `content` string. No change here — it's named only to mark the boundary of what is *not* being shared.
 
-**Download moves into both surfaces.** Today only Present has a Download button (a client-side `Blob` + `<a download>` escape hatch — `downloadPresentation` / `presentationToBlob` / `suggestDownloadName` in `PresentPane.tsx`). The dialog has none, so a file opened from the tree can't be downloaded. Per the reconciliation goal, download should work in **both**. Extract the download helpers into a shared util and add a Download affordance to the dialog header too (see *Download in both surfaces* below).
+**Download already works in both — leave each surface's mechanism alone.** An earlier draft of this plan claimed the dialog had no download; that is wrong. The dialog already injects a **server-backed** Download action — `App.tsx` builds it (`App.tsx:829`) and passes it into `FilePreviewModal` (`App.tsx:1284`); it streams **raw bytes** from `GET /api/sessions/:id/files/download/*` (`api-routes-files.ts:192`). Present has its own **client-side** `Blob` + `<a download>` download (`downloadPresentation` in `PresentPane.tsx`) because Present artifacts are *not* workspace files — there is no server route to stream them, so the cached bytes are turned into a Blob locally. **These two mechanisms are both correct and must stay as-is.** In particular, do **not** route the dialog's download through the artifact `Blob` path: the dialog's `content` prop is *preview* content, which for binary or too-large files is a placeholder string (`files.ts:55,70,77`), so a `Blob` of it would download a wrong/truncated file. The dialog keeps server-backed raw-byte download; Present keeps client Blob download. No shared download util, no new dialog affordance — this part of the reconciliation is already done.
 
 ### One internal content model
 
@@ -29,19 +29,19 @@ The dialog keys on `FilePreviewType` (`markdown|code|image|binary`); Present key
 
 - **New** `src/client/utils/file-content-kind.ts`:
   - `type ContentKind = "markdown" | "html" | "svg" | "image" | "code" | "binary"`
-  - `kindFromPreviewType(t, filePath)` — splits `.svg`→`svg` and `.html/.htm`→`html` out of the current `image`/`code` buckets (this is the fix that makes HTML/SVG render in the dialog).
+  - `kindFromPreviewType(t, filePath)` — splits `.svg`→`svg` and `.html/.htm`→`html` out of the current `image`/`code` buckets (this is the fix that makes HTML/SVG render in the dialog). **Note** `detectFilePreviewType` (`file-preview-type.ts`) currently classes `.svg` as `image` and `.html` as `code`, and the files service returns images (incl. SVG) as a base64 **data URI** (`files.ts:54–66`) while `.html` comes through as raw text — so the dialog's SVG content is a data URI and its HTML is raw markup. The renderer must normalize this (see the SVG note under *Shared FileContentView*).
   - `kindFromMimeType(mime, filePath)` — `text/html→html`, `image/svg+xml→svg`, `text/markdown→markdown`, `image/*→image`, else `code`.
   - `supportsSourceToggle(kind)` → `kind === "html" || kind === "svg"`.
-  - `isRepoReviewablePath(filePath)` → true when the path is workspace-relative (not absolute, not `/tmp`); `supportsKindReview(kind)` → markdown/code/html/svg.
-  - Co-located `file-content-kind.test.ts`: `.svg→svg`, `.html→html`, `/tmp/x.html` not reviewable, `docs/x.html` reviewable, MIME mappings.
+  - `isRepoReviewablePath(filePath)` → true only for a **workspace-relative** path: reject **any** absolute path (leading `/` — Present legitimately carries outside-workspace absolute paths, not just `/tmp`; see `present-flow.test.ts:238`) and any `..` traversal segment. The file-review endpoints resolve against the session workspace, so only repo-relative paths are addressable. `supportsKindReview(kind)` → markdown/code/html/svg.
+  - Co-located `file-content-kind.test.ts`: `.svg→svg`, `.html→html`, absolute `/anything` not reviewable, `../escape` not reviewable, `docs/x.html` reviewable, MIME mappings.
 
 ### Shared `FileContentView`
 
 - **New** `src/client/components/FileContentView/` with:
-  - `FileContentView.tsx` — props `{ filePath, content, kind, sessionId, reviewable, viewMode: "rendered"|"source", onViewModeChange?, revealLine?, readOnly? }`; dispatches on `kind` + `viewMode`:
+  - `FileContentView.tsx` — props `{ filePath, content, kind, sessionId, reviewable, viewMode: "rendered"|"source", onViewModeChange?, revealLine?, readOnly?, markdownComments, codeComments }`; dispatches on `kind` + `viewMode`. **Ownership boundary (do not skip):** the modal today derives `markdownComments`/`codeComments` from the active draft (`FilePreviewModal.tsx:489`) and passes them into `MarkdownViewer`/`CodeEditor` (`:590`, `:609`). `useFileReviewControls` must therefore return these typed comment arrays (not just `commentCount`), and the surface passes them into `FileContentView` — otherwise inline comments silently disappear. `FileContentView` stays a pure renderer (no `file-review-store` selectors of its own); the hook owns the store, the renderer owns layout. Dispatch:
     - `markdown` → `MarkdownReviewView` (frontmatter header + `skipHtml` body + selection comments; read-only when not reviewable).
     - `html` → rendered: sandboxed iframe (`sandbox="allow-scripts"`, `srcDoc`); source: `CodeEditor` (Monaco, html).
-    - `svg` → rendered: iframe with the existing white-host wrapper; source: `CodeEditor` (xml).
+    - `svg` → rendered: iframe with the existing white-host wrapper; source: `CodeEditor` (xml). **Content-shape caveat (see SVG note below):** Present feeds raw SVG markup, but the dialog's files API returns SVG as a `data:image/svg+xml;base64,…` URI. `RenderedFrame` must accept either — decode a `data:` URI to markup before wrapping — and source mode must show decoded XML, not the data-URI string.
     - `image` → `<img src={content}>`.
     - `code` → `CodeEditor` (Monaco + line comments + `revealLine`).
     - `binary` → "cannot display" message.
@@ -60,23 +60,18 @@ Default `viewMode = "rendered"` for html/svg. The toggle lives in **each surface
 
 Review state is already keyed `${sessionId}::${filePath}` in `file-review-store` and is generic over filePath. Lift the dialog's draft/history/send/ask logic into a reusable hook so Present can use it too.
 
-- **New** `src/client/hooks/use-file-review-controls.ts` (+ test) — returns `{ commentCount, history, canSend, handleSend, showAskReview, handleAskReview }` given `(sessionId, filePath, kind)`; tolerates a no-op/absent `onClose` (Present has no modal to close).
+- **New** `src/client/hooks/use-file-review-controls.ts` (+ test) — returns `{ commentCount, markdownComments, codeComments, history, canSend, handleSend, showAskReview, handleAskReview }` given `(sessionId, filePath, kind)`; tolerates a no-op/absent `onClose` (Present has no modal to close). **It must reproduce the modal's existing `showAskReview` gating, not just expose the flag** (`FilePreviewModal.tsx:413–449`): the active agent's `supportsReview` capability (Codex hides the affordance entirely), `content !== null`, `onAskAgentReview` present, and the size rule — markdown of any size, or code (and now html/svg-as-source) under the 10 KB cap. The hook reads these from the same stores the modal does (`useUiStore` agent list, `useSessionStore` loading) so both surfaces gate identically. `canSend = commentCount > 0 && onSendComments present`.
 - **`FilePreviewModal.tsx`** — replace the content branch (~583–617) with `FileContentView`; add the source toggle to the header; replace inline review state with `useFileReviewControls`. Keep `SendCommentsPayload` exported here (DiffPanel + App import it).
 - **`PresentPane.tsx`** — replace `PresentationContent` (~198–263) with `FileContentView`; add source toggle to the carousel header; add a review footer mirroring the modal's, shown when `reviewable && (commentCount>0 || history.length>0)`. `reviewable = isRepoReviewablePath(active.filePath) && supportsKindReview(kind)` so `/tmp` artifacts render read-only with no footer. Accept `onSendComments` / `onAskAgentReview` props. **Hook-order**: call `useFileReviewControls` unconditionally before the `if (!active) return`, passing `active?.filePath ?? ""` (mirror the existing pre-early-return `active` computation at lines 50–60).
 - **`App.tsx`** — pass the existing `handleFileSendComments` / `handleAskAgentReview` into `<PresentPane>`.
 
-Note: HTML/SVG have no inline comment surface in rendered (iframe) mode — to review them the user flips to **source**, where Monaco line comments work. Consistent, no new mechanism.
+Note: HTML/SVG have no inline comment surface in rendered (iframe) mode — to review them the user flips to **source**, where Monaco line comments work. Consistent, no new mechanism. Server-side this rides the existing review typing: `reviews.ts` treats markdown specially and **everything else as "code"** (`reviews.ts:97`), and line comments require `fileType === "code"` (`reviews.ts:225`) — so HTML/SVG source review maps onto the server's "code" path with **no new server review type**. Call this out so a future reader doesn't add one.
 
-### Download in both surfaces
+**Present draft cleanup.** The review store's `load()` creates a server-side draft on first reviewable open (`file-review-store.ts:131`); the modal discards an empty draft on close / sibling switch (`FilePreviewModal.tsx:452`). Present has **no close event**, so without handling, opening reviewable artifacts would accumulate empty drafts. The plan: call `discardEmptyDraft` on **carousel navigation and Present-tab blur** (the Present analogues of the modal's close), wired through `useFileReviewControls` so the cleanup logic is shared, not reimplemented.
 
-The download helpers are currently private to `PresentPane` and keyed on a presentation's MIME + slugified title. Lift them to a shared, surface-agnostic util so the dialog can offer the same affordance.
+### Download (no change)
 
-- **New** `src/client/utils/file-download.ts` (+ test) — moves `presentationToBlob` (rename → `contentToBlob`), `dataUriToBlob`, `suggestDownloadName`, and `mimeTypeToExtension` out of `PresentPane`, plus a `triggerDownload({ name, content, mimeType })` wrapping the `Blob` + temporary `<a download>` + deferred `revokeObjectURL` dance (lifted verbatim from `downloadPresentation`).
-- **`PresentPane.tsx`** — its Download button calls `triggerDownload` with the artifact's slugified title (unchanged behavior; helpers now imported, not local).
-- **`FilePreviewModal.tsx`** — add a Download action to the header for every kind (it always has `content` in hand). Unlike Present, the dialog knows the file's **real path**, so it downloads under the actual basename (`filePath.split("/").pop()`) rather than a slugified title — better filenames for committed files. Disabled while `content === null`.
-- Co-located `file-download.test.ts`: `data:` base64 round-trips to bytes, text content becomes a typed text Blob, basename-vs-slug naming.
-
-Note: download is a pure client-side escape hatch — it pulls the bytes onto the user's local machine, which ShipIt can't reach (the workspace lives in a container). To keep an artifact in the repo, the agent writes it there. This is unchanged; it just now exists on both surfaces.
+Both surfaces already download (dialog: server-backed raw bytes; Present: client Blob of the cached artifact) — see the Approach note above. **No work here.** Deliberately *not* unified into a shared util, because the two source the bytes differently (workspace file vs. in-memory artifact) and the dialog's server-backed path is the only one that's correct for binary/large files. Listed only to record that it was considered and intentionally left alone.
 
 ### Markdown convergence
 
@@ -88,17 +83,18 @@ Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `ski
 - `src/client/utils/file-content-kind.ts` (+ `.test.ts`) — single `ContentKind` model, adapters, reviewable gate.
 - `src/client/components/FileContentView/{FileContentView,CodeEditor,MarkdownReviewView,RenderedFrame}.tsx` (+ `FileContentView.test.tsx`) — shared renderer.
 - `src/client/hooks/use-file-review-controls.ts` (+ test) — shared review draft/send/ask state.
-- `src/client/utils/file-download.ts` (+ test) — shared client-side download helpers (lifted from `PresentPane`).
 
 **Modify**
-- `src/client/components/FilePreviewModal.tsx` — delegate to `FileContentView`, add source toggle, use the hook, add a Download action (downloads under the real basename).
-- `src/client/components/PresentPane.tsx` — delegate to `FileContentView`, add source toggle + review footer, accept review props; import download helpers from `file-download.ts` instead of defining them locally.
+- `src/client/components/FilePreviewModal.tsx` — delegate to `FileContentView`, add source toggle, use the hook. Keep its existing server-backed Download action untouched.
+- `src/client/components/PresentPane.tsx` — delegate to `FileContentView`, add source toggle + review footer, accept review props. Keep its existing client-Blob download untouched.
 - `src/client/App.tsx` — pass review handlers to `PresentPane`.
 - `src/client/components/FilePreviewModal.test.tsx` — update assertions tied to the old branch structure if needed.
 
 ## Risks
 
-- **Sandbox.** Committed HTML now renders the same way `/tmp` artifacts do: `sandbox="allow-scripts"` (no `allow-same-origin`) + `srcDoc` keeps the frame origin-null — no cookie/storage/parent access. Do not add `allow-same-origin`.
+- **Sandbox / expanded script surface.** This change lets *arbitrary committed repo HTML* execute scripts in the user's browser, where before only agent-presented artifacts did. `sandbox="allow-scripts"` (no `allow-same-origin`) + `srcDoc` keeps the frame origin-null — no cookie/storage/parent/top-nav access — and that's accurate (`PresentPane.tsx:16`). But it does **not** stop in-frame script from running or making **outbound network requests** (telemetry, exfil of anything embedded in the page). That's the same posture as Present today; the point is the *surface* widens to any HTML in the repo. Mitigation stays "don't add `allow-same-origin`"; flag the widened surface for sign-off, and consider whether a future CSP on the frame is warranted.
+- **SVG content shape (dialog vs Present).** Dialog SVG is a base64 `data:` URI; Present SVG is raw markup. If `RenderedFrame` / source mode don't normalize, the dialog renders a data-URI string and source shows the URI instead of XML. Covered above; calling it out as a concrete regression to test.
+- **Per-kind layout.** The modal content wrapper is `overflow-y-auto p-6` (`FilePreviewModal.tsx:584`), right for markdown but wrong for iframe/Monaco, which need full-height, unpadded containers. `FileContentView` must own per-kind scroll/padding so HTML/SVG/code don't inherit markdown's padding.
 - **`/tmp` artifacts** aren't addressable by the file-review endpoints — gated out by `isRepoReviewablePath`; render read-only.
 - **Monaco in the carousel** — mounts only in source/code mode; keep the per-entry `key` so it disposes/recreates on navigation and viewMode toggle (matches the modal lifecycle).
 - **Present markdown visual shift** — frontmatter is now stripped into a header; intended, flag for visual review.
@@ -109,5 +105,5 @@ Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `ski
 - `npm run typecheck` — adapter wiring + prop changes.
 - `npm run lint:dev` — moved Monaco/`useEffect` code keeps its `eslint-disable` comments.
 - Co-located unit tests only (NOT full `npm test` — it OOMs the container):
-  `npx vitest run src/client/utils/file-content-kind.test.ts src/client/utils/file-download.test.ts src/client/components/FileContentView src/client/hooks/use-file-review-controls.test.ts src/client/components/FilePreviewModal.test.tsx src/client/components/PresentPane.test.tsx`
-- Browser verify: open `.html` + `.svg` from the tree → renders by default, Source toggle shows Monaco; open a markdown doc → frontmatter header + add a selection comment + Send. In Present: push a workspace-relative HTML artifact → toggle source, add a line comment, Send; push a `/tmp` artifact → confirm read-only, no review footer. Download: in the dialog, open any file → Download pulls it under its real basename; in Present, Download still works unchanged.
+  `npx vitest run src/client/utils/file-content-kind.test.ts src/client/components/FileContentView src/client/hooks/use-file-review-controls.test.ts src/client/components/FilePreviewModal.test.tsx src/client/components/PresentPane.test.tsx`
+- Browser verify: open `.html` + `.svg` from the tree → renders by default, Source toggle shows Monaco; open a markdown doc → frontmatter header + add a selection comment + Send. In Present: push a workspace-relative HTML artifact → toggle source, add a line comment, Send; push an absolute/`/tmp` artifact → confirm read-only, no review footer. Download: confirm the dialog's existing server-backed download and Present's Blob download both still work (esp. a binary/too-large file in the dialog downloads correct raw bytes, not the placeholder preview string).
