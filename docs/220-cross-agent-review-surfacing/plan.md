@@ -141,6 +141,22 @@ the middle re-typing it).
     wrapping `MarkdownContent`** — *not* `FileContentView` (which carries
     file-review wiring even when flags disable it). The comment / ask-review
     handlers simply do not exist on this path.
+  - **Read-only ≠ inert.** `MarkdownContent` (`message-markdown.tsx`) already
+    linkifies in-app: Linear issue keys (`SHI-123` → Issues viewer), file paths
+    (`foo.ts:42` → file preview), GitHub refs / URLs, plus code syntax
+    highlighting. So the findings are clickable through to the real code and
+    issues with no file-review wiring — the interactivity is in the links, not in
+    annotations on the review text.
+  - **Rejected — write the output to a `/persist` file so the user can comment on
+    it.** `/persist` is non-reviewable by design (`isRepoReviewablePath` rejects
+    absolute paths; such files render with no review footer and aren't in the file
+    tree), so enabling comments would require writing each review to a
+    *git-tracked* workspace file — which pollutes the repo/PR with review
+    artifacts and abandons the transcript-content model. It is also redundant: to
+    direct the parent the user just **replies in chat**, and for line-anchored
+    feedback the review's clickable `file:line` refs lead to the **actual code**,
+    which *is* reviewable. Commenting on the review-about-the-code is a worse
+    surface than commenting on the code.
 
 ## Consequence: `submit_review` is removed
 
