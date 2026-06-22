@@ -730,4 +730,13 @@ unit/service level above rather than through a Docker-backed integration run):
 the two-CLI-memory floor confirmation and the live token-rotation-mid-run
 assertion. See `checklist.md`.
 
+## Proposal — cross-agent review surfacing (moved)
+
+The proposal that cross-agent reviewer output should be rendered
+deterministically by ShipIt (a content-carrying `sub_agent_consult_card`)
+rather than routed back through the parent agent's `submit_review` call — i.e.
+**"ShipIt renders what it brokers"** — now lives in its own doc:
+`docs/220-cross-agent-review-surfacing`. It revisits §6–§7 above and partially
+supersedes `docs/203`. Pre-decision; nothing implemented.
+
 ## Out of scope
