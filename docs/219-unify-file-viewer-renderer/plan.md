@@ -81,7 +81,7 @@ Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `ski
 
 **Create**
 - `src/client/utils/file-content-kind.ts` (+ `.test.ts`) — single `ContentKind` model, adapters, reviewable gate.
-- `src/client/components/FileContentView/{FileContentView,CodeEditor,MarkdownReviewView,RenderedFrame}.tsx` (+ `FileContentView.test.tsx`) — shared renderer.
+- `src/client/components/FileContentView/{FileContentView,CodeEditor,MarkdownReviewView,RenderedFrame,SourceToggle,FileReviewFooter}.tsx` (+ `FileContentView.test.tsx`) — shared renderer plus the shared source/rendered toggle and review footer (the footer + `PastReviews` lifted from the modal so both surfaces share identical chrome).
 - `src/client/hooks/use-file-review-controls.ts` (+ test) — shared review draft/send/ask state.
 
 **Modify**
