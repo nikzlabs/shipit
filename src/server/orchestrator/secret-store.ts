@@ -43,7 +43,27 @@ export class SecretStore {
     save();
   }
 
-  /** Load all secrets for a repo. Returns an empty object if none exist. */
+  /**
+   * Load the *names* of secrets set for a repo — never their values. This is
+   * the only shape safe to send to the browser: the settings UI needs to know
+   * which keys have a stored value (to render "saved" state and custom rows),
+   * but the plaintext values must never leave the orchestrator. See
+   * `GET /api/secrets`.
+   */
+  loadSecretNames(repoUrl: string): string[] {
+    const rows = this.db.prepare(
+      "SELECT key FROM secrets WHERE repo_url = ?",
+    ).all(repoUrl) as Pick<SecretRow, "key">[];
+    return rows.map((row) => row.key);
+  }
+
+  /**
+   * Load all secrets for a repo. Returns an empty object if none exist.
+   *
+   * SERVER-SIDE ONLY: this returns plaintext values for env-file resolution
+   * (`service-manager-setup.ts`). Never return the result of this method over
+   * an HTTP response to the browser — use `loadSecretNames` for that.
+   */
   loadSecrets(repoUrl: string): Record<string, string> {
     const rows = this.db.prepare(
       "SELECT key, value FROM secrets WHERE repo_url = ?",

@@ -1366,8 +1366,8 @@ export default function App() {
           repoUrl={projectSettingsRepoUrl}
           repoName={parseRepoLabel(projectSettingsRepoUrl)}
           initialTab={projectSettingsTab}
-          onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ secrets: Record<string, string> }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.secrets; }}
-          onSecretsSave={(repoUrl, secrets) => { apiPut("/api/secrets", { repoUrl, secrets }).catch(() => {}); }}
+          onSecretsLoad={async (repoUrl) => { const data = await apiGet<{ keys: string[] }>(`/api/secrets?repoUrl=${encodeURIComponent(repoUrl)}`); return data.keys; }}
+          onSecretsSave={(repoUrl, payload) => { apiPut("/api/secrets", { repoUrl, ...payload }).catch(() => {}); }}
           onClose={() => { useUiStore.getState().setProjectSettingsRepoUrl(null); }}
         />
       )}

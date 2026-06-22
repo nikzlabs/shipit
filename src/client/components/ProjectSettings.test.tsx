@@ -27,7 +27,7 @@ describe("ProjectSettings", () => {
   });
 
   it("opens on the Secrets tab by default", async () => {
-    render(<ProjectSettings {...defaultProps} onSecretsLoad={async () => ({})} />);
+    render(<ProjectSettings {...defaultProps} onSecretsLoad={async () => []} />);
     await waitFor(() => {
       expect(screen.getByTestId("secrets-tab")).toBeInTheDocument();
     });
@@ -80,7 +80,7 @@ describe("ProjectSettings - Secrets tab", () => {
       <ProjectSettings
         {...defaultProps}
         initialTab="secrets"
-        onSecretsLoad={async () => ({})}
+        onSecretsLoad={async () => []}
         onSecretsSave={vi.fn()}
         {...props}
       />,
@@ -95,17 +95,24 @@ describe("ProjectSettings - Secrets tab", () => {
     expect(screen.getByText("Environment Variables")).toBeInTheDocument();
   });
 
-  it("loads existing secrets on render", async () => {
-    const onSecretsLoad = vi.fn().mockResolvedValue({ API_KEY: "secret123" });
+  it("loads existing secret names on render (values never sent to client)", async () => {
+    const onSecretsLoad = vi.fn().mockResolvedValue(["API_KEY"]);
     renderOnSecretsTab({ onSecretsLoad });
 
     await waitFor(() => {
       expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
     });
+    // The value field is blank (the browser never received the value) and
+    // signals a stored value via its placeholder.
+    expect(screen.getByTestId("secret-value-0")).toHaveValue("");
+    expect(screen.getByTestId("secret-value-0")).toHaveAttribute(
+      "placeholder",
+      expect.stringContaining("saved"),
+    );
   });
 
   it("adds a new row when Add variable is clicked", async () => {
-    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    renderOnSecretsTab({ onSecretsLoad: async () => [] });
 
     await waitFor(() => {
       expect(screen.getByTestId("secret-add")).toBeInTheDocument();
@@ -117,7 +124,7 @@ describe("ProjectSettings - Secrets tab", () => {
   });
 
   it("removes a row when remove button is clicked", async () => {
-    const onSecretsLoad = vi.fn().mockResolvedValue({ KEY_A: "a", KEY_B: "b" });
+    const onSecretsLoad = vi.fn().mockResolvedValue(["KEY_A", "KEY_B"]);
     renderOnSecretsTab({ onSecretsLoad });
 
     await waitFor(() => {
@@ -128,9 +135,9 @@ describe("ProjectSettings - Secrets tab", () => {
     expect(screen.queryByTestId("secret-key-1")).not.toBeInTheDocument();
   });
 
-  it("calls onSecretsSave with key-value object on save", async () => {
+  it("calls onSecretsSave with a set/keep payload on save", async () => {
     const onSecretsSave = vi.fn();
-    const onSecretsLoad = vi.fn().mockResolvedValue({});
+    const onSecretsLoad = vi.fn().mockResolvedValue([]);
     renderOnSecretsTab({ onSecretsSave, onSecretsLoad });
 
     await waitFor(() => {
@@ -144,12 +151,29 @@ describe("ProjectSettings - Secrets tab", () => {
     await userEvent.click(screen.getByTestId("secrets-save"));
     expect(onSecretsSave).toHaveBeenCalledWith(
       "https://github.com/org/repo",
-      { MY_KEY: "my_value" },
+      { set: { MY_KEY: "my_value" }, keep: [] },
+    );
+  });
+
+  it("keeps an untouched existing custom secret without resending its value", async () => {
+    const onSecretsSave = vi.fn();
+    const onSecretsLoad = vi.fn().mockResolvedValue(["API_KEY"]);
+    renderOnSecretsTab({ onSecretsSave, onSecretsLoad });
+
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-key-0")).toHaveValue("API_KEY");
+    });
+
+    // Don't touch the value — save must keep it by name only.
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      { set: {}, keep: ["API_KEY"] },
     );
   });
 
   it("secret values use password input type", async () => {
-    const onSecretsLoad = vi.fn().mockResolvedValue({ KEY: "secret" });
+    const onSecretsLoad = vi.fn().mockResolvedValue(["KEY"]);
     renderOnSecretsTab({ onSecretsLoad });
 
     await waitFor(() => {
@@ -164,7 +188,7 @@ describe("ProjectSettings - Secrets tab", () => {
       missingByService: {},
       missingRequired: [],
     });
-    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    renderOnSecretsTab({ onSecretsLoad: async () => [] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-declared-STRIPE_KEY")).toBeInTheDocument();
     });
@@ -178,7 +202,7 @@ describe("ProjectSettings - Secrets tab", () => {
       missingByService: { api: ["DATABASE_URL"] },
       missingRequired: ["DATABASE_URL"],
     });
-    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    renderOnSecretsTab({ onSecretsLoad: async () => [] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-required-DATABASE_URL")).toBeInTheDocument();
     });
@@ -190,7 +214,7 @@ describe("ProjectSettings - Secrets tab", () => {
       missingByService: {},
       missingRequired: [],
     });
-    renderOnSecretsTab({ onSecretsLoad: async () => ({}) });
+    renderOnSecretsTab({ onSecretsLoad: async () => [] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-platform-GITHUB_TOKEN")).toBeInTheDocument();
     });
@@ -204,7 +228,7 @@ describe("ProjectSettings - Secrets tab", () => {
       missingByService: {},
       missingRequired: [],
     });
-    renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => ({}) });
+    renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => [] });
     await waitFor(() => {
       expect(screen.getByTestId("secret-value-STRIPE_KEY")).toBeInTheDocument();
     });
@@ -214,7 +238,29 @@ describe("ProjectSettings - Secrets tab", () => {
     await userEvent.click(screen.getByTestId("secrets-save"));
     expect(onSecretsSave).toHaveBeenCalledWith(
       "https://github.com/org/repo",
-      { STRIPE_KEY: "sk_live_x" },
+      { set: { STRIPE_KEY: "sk_live_x" }, keep: [] },
+    );
+  });
+
+  it("clears a set declared value via the Clear control", async () => {
+    const onSecretsSave = vi.fn();
+    usePreviewStore.getState().setSecrets({
+      declared: [{ name: "STRIPE_KEY", services: ["api"] }],
+      missingByService: {},
+      missingRequired: [],
+    });
+    // STRIPE_KEY already has a stored value (name returned by load).
+    renderOnSecretsTab({ onSecretsSave, onSecretsLoad: async () => ["STRIPE_KEY"] });
+    await waitFor(() => {
+      expect(screen.getByTestId("secret-clear-STRIPE_KEY")).toBeInTheDocument();
+    });
+
+    await userEvent.click(screen.getByTestId("secret-clear-STRIPE_KEY"));
+    await userEvent.click(screen.getByTestId("secrets-save"));
+    // Cleared → neither set nor kept → server deletes it.
+    expect(onSecretsSave).toHaveBeenCalledWith(
+      "https://github.com/org/repo",
+      { set: {}, keep: [] },
     );
   });
 });

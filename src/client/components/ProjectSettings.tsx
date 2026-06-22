@@ -5,6 +5,7 @@ import { Button } from "./ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "./ui/dialog.js";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "./ui/tabs.js";
 import { SecretsTab } from "./SecretsTab.js";
+import type { SecretsSavePayload } from "./SecretsTab.js";
 
 // On mobile the tab list collapses from a vertical sidebar into a horizontal
 // scrollable strip — mirrors Settings.tsx so the two dialogs read alike.
@@ -19,8 +20,8 @@ export interface ProjectSettingsProps {
   repoName: string;
   /** Which tab to open on. Defaults to Secrets — the actionable tab. */
   initialTab?: Tab;
-  onSecretsSave?: (repoUrl: string, secrets: Record<string, string>) => void;
-  onSecretsLoad?: (repoUrl: string) => Promise<Record<string, string>>;
+  onSecretsSave?: (repoUrl: string, payload: SecretsSavePayload) => void;
+  onSecretsLoad?: (repoUrl: string) => Promise<string[]>;
   onClose: () => void;
 }
 
