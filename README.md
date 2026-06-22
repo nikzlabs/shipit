@@ -4,8 +4,8 @@
 </h1>
 
 **Give every coding agent a self-hosted environment of its own — your whole app running, ready to
-preview.** Run Claude Code or Codex on your own infrastructure, local or an always-on VPS, as many as
-you like side by side. Each works in an isolated container that boots your whole stack, then ships
+preview.** Run Claude Code or Codex on your own infrastructure, local or an always-on VPS, as many sessions
+in parallel as you like. Each works in an isolated container that boots your whole stack, then ships
 what it builds through real GitHub PRs with proper CI checks — all integrated within ShipIt.
 
 <p align="center">
@@ -43,12 +43,6 @@ make that possible:
   tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
   panels on desktop. Voice runs both ways — dictate prompts hands-free and hear spoken summaries
   when the agent finishes a turn or needs you, so you can kick off, review, and ship on the go.
-- **One surface — you never leave it** — chat, file tree, terminal, live preview, diffs, and session
-  history all live alongside the GitHub loop above, so reviewing, shipping, and debugging happen in
-  one place, not across a GitHub tab, a CI dashboard, and a local terminal.
-
-You describe intent, watch the preview update, and refine turn by turn while ShipIt runs the
-commands, edits the files, opens the PRs, watches the checks, and brings the results back into chat.
 
 ## Status
 
