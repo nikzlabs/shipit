@@ -13,8 +13,8 @@
  * Each tool is a {@link ToolDescriptor} in `mcp-tools/`. The enabled SUBSET is
  * selected per agent via the `SHIPIT_MCP_TOOLS` env (comma-separated tool ids),
  * because the agents want different sets: Claude gets
- * `review,present,voice,bug,permission,propose_actions` (it has a native
- * AskUserQuestion); Codex gets `review,present,voice,ask,bug,propose_actions` (it
+ * `present,voice,bug,permission,propose_actions` (it has a native
+ * AskUserQuestion); Codex gets `present,voice,ask,bug,propose_actions` (it
  * uses native approval, not the permission-prompt tool). `propose_actions`
  * (docs/207) ships to both. An unknown/empty env exposes nothing rather than
  * failing — agent start never breaks on it.
