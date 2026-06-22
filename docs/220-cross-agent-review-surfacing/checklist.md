@@ -2,8 +2,8 @@
 
 Design decided (Option B); implementation not started. Every ShipIt-brokered
 spawn produces a content-carrying consult card (stripped-down in-card preview +
-full markdown on click); `submit_review` demoted/removed; each brokered call is
-its own card (no patch-in-place).
+full markdown on click); `submit_review` is **removed** (same-model review then
+narrates as prose); each brokered call is its own card (no patch-in-place).
 
 ## Server
 
@@ -14,8 +14,10 @@ its own card (no patch-in-place).
 - [ ] Cap the persisted output length; set `truncated` on a hard cut
 - [ ] Confirm `chat-history.ts` round-trips the new field inside the existing
       `sub_agent_consult` JSON column (no new column, no migration)
-- [ ] `submit_review` (`mcp-tools/review.ts`): demote to presentation-only or
-      remove; if removed, drop bridge registration + the `/review` dependence
+- [ ] **Remove** `submit_review` (`mcp-tools/review.ts`, AI branch): drop the
+      bridge registration (`mcp-shipit-bridge.ts`), the orchestrator submit relay,
+      and the `ai_review` write path; `ReviewCard` renders legacy rows only; keep
+      the human user-comment endpoints
 
 ## Client
 
@@ -24,10 +26,10 @@ its own card (no patch-in-place).
 - [ ] Click opens the full output in a **read-only** markdown viewer (dedicated
       modal/pane wrapping `MarkdownContent`) — **not** `FilePreviewModal` over a
       workspace path; no comment / ask-review affordances
-- [ ] `compose-review-body.ts`: rewrite the cross-agent prompt so brokered output
-      is surfaced by the consult card — parent uses stdout only to act/fix/re-review,
-      **no `submit_review` call** for brokered reviews; leave the `Task` fallback
-      path's narration intact
+- [ ] `compose-review-body.ts`: drop the `submit_review` instruction from **both**
+      prompts — cross-agent relies on the auto consult card (parent uses stdout
+      only to act/fix/re-review); same-model tells the parent to **present
+      findings as prose**
 - [ ] Confirm `CARD_MESSAGE_FIELDS` already covers `subAgentConsult` (it does)
 
 ## Tests
@@ -38,10 +40,10 @@ its own card (no patch-in-place).
       add to `EVERY_OPTIONAL_FIELD_MESSAGE`
 - [ ] Client card test — preview render + click-to-open-full-markdown in the
       read-only viewer (asserts no file-review/comment affordances)
-- [ ] `compose-review-body.test.ts` — cross-agent prompt no longer instructs a
-      `submit_review` call; `Task` fallback path unchanged
-- [ ] Remove/adjust the docs/203 `submit_review` single-card / patch tests that
-      no longer hold for the brokered path
+- [ ] `compose-review-body.test.ts` — neither prompt instructs a `submit_review`
+      call; same-model prompt asks for prose findings
+- [ ] Remove/adjust the docs/203 `submit_review` card / single-card / patch tests
+      that no longer hold (tool removed); keep human user-comment tests
 
 ## Docs
 

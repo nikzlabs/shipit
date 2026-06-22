@@ -142,19 +142,25 @@ the middle re-typing it).
     file-review wiring even when flags disable it). The comment / ask-review
     handlers simply do not exist on this path.
 
-## Consequence: `submit_review` may not need to exist
+## Consequence: `submit_review` is removed
 
-Following the principle to its end:
+**Decided:** `submit_review` is removed entirely — neither path uses it.
 
-- **Within-agent review** → the agent narrates (prose / markdown). No tool.
 - **Cross-agent review** → ShipIt auto-renders from the brokered result (the
   content-carrying consult card). No tool.
+- **Same-model review** (`/review` with Multi-agent off, or no other agent signed
+  in) → the agent **narrates the findings as chat prose**. No card, no tool.
 
-The one residual function `submit_review` performs — "render my markdown as a
-styled card" — is a pure **presentation** concern, a cousin of the `present`
-tool, not a review- or spawn-specific one. If within-agent reviews genuinely
-want a bordered card, that argues for a generic "render-as-card" primitive, not
-a review-shaped MCP tool wired into the spawn flow.
+This is a deliberate change to today's `docs/203` behavior, where the same-model
+review produced a card via `submit_review`; under B that card is gone for the
+same-model case. Accepted on the principle: an agent reviewing its own session's
+code in-context is doing *internal* work, which it narrates — ShipIt only renders
+what it **brokers**, and a same-model `Task` review is not brokered.
+
+Removing the tool also retires `docs/203`'s AI-review card for **new** reviews:
+the `ai_review` write path stops, and `ReviewCard.tsx` renders only legacy rows.
+The human **user-comment** review path (a person leaving inline notes) is
+untouched.
 
 ## Decision: Option B
 
@@ -164,7 +170,8 @@ The choice was between:
   leave generic brokered delegations metadata-only. Two different surfaces.
 - **(B) One content-carrying card for every brokered spawn.** The consult card
   is *always* the surface; a review is just that card rendered richly;
-  `submit_review` is demoted to presentation-only or removed.
+  `submit_review` is **removed** (see "Consequence" — same-model review then
+  narrates as prose).
 
 **B is chosen,** on the transparency principle: everything ShipIt brokers should
 be visible in the UI, including the *content* the consultant produced — not only
@@ -181,11 +188,12 @@ reach it. B governs **brokered** calls; `Task` is not one.
 - **`docs/203` (plain-text AI review, SHI-136)** — currently implemented. Its §3
   + "submit_review" sections assume the parent records the card for both modes,
   and its `submit_review` **patches one card** across review → re-review. Under
-  Option B the **cross-agent** branch moves to the consult-card path here:
-  `submit_review` is demoted to presentation-only (or removed), and the
-  single-card / patch-in-place semantics are **explicitly dropped** for brokered
-  reviews — each brokered call is its own anchored card. This is a deliberate
-  revision of shipped behavior.
+  Option B `submit_review` is **removed** for both branches: the cross-agent
+  review moves to the consult-card path here, and the same-model review narrates
+  as prose. The single-card / patch-in-place semantics are dropped with it, and
+  the AI-review card (`ReviewCard`, `ai_review`) is retired for new reviews
+  (legacy rows still render). The human user-comment path is untouched. This is a
+  deliberate revision of shipped behavior.
 - **`docs/144` (sub-agent spawning, SHI-37)** — §6 ("output is text; review is an
   optional renderer") and §7 ("chat surfacing", the consult card). This proposal
   extends §7's consult card from metadata-only to content-carrying.
@@ -215,14 +223,14 @@ reach it. B governs **brokered** calls; `Task` is not one.
 - `src/client/utils/compose-review-body.ts` — **in scope.** This is where the
   `/review` flow currently instructs the parent to call `submit_review` after
   `shipit agent run` and to patch the same card on re-review (lines ~15–17,
-  101–107, 128). Under B, rewrite the cross-agent prompt so brokered output is
-  surfaced by the consult card automatically: the parent uses stdout **only** to
-  act / fix / re-review and does **not** call `submit_review` for brokered
-  reviews. (The same-model `Task` fallback path is unaffected and may keep its
-  current narration.)
-- `src/server/session/mcp-tools/review.ts` — `submit_review` demoted to
-  presentation-only or removed; if removed, drop its bridge registration and the
-  `/review` flow's dependence on it.
+  101–107, 128). Rewrite **both** prompts to drop the `submit_review`
+  instruction: the cross-agent prompt relies on the auto consult card (parent
+  uses stdout **only** to act / fix / re-review); the same-model prompt tells the
+  parent to **present findings as prose**. No `submit_review` call in either path.
+- `src/server/session/mcp-tools/review.ts` — **remove** `submit_review` (the AI
+  branch); drop its bridge registration (`mcp-shipit-bridge.ts`), the
+  orchestrator submit relay, and the `ai_review` write path. `ReviewCard` renders
+  legacy rows only. **Keep** the human user-comment endpoints.
 
 Out of scope under B: a `--surface review` flag threaded through the shim /
 broker / spawn route (that was only needed for the rejected Option A gate; B
