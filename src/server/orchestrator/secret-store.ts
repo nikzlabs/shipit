@@ -12,6 +12,7 @@
  */
 
 import type { DatabaseManager } from "../shared/database.js";
+import { isEncrypted, type SecretCipher } from "./secret-cipher.js";
 
 interface SecretRow {
   repo_url: string;
@@ -21,9 +22,42 @@ interface SecretRow {
 
 export class SecretStore {
   private db;
+  private cipher?: SecretCipher;
 
-  constructor(dbManager: DatabaseManager) {
+  /**
+   * @param cipher At-rest encryption (docs/220). When provided, values are
+   *   encrypted on write and transparently decrypted on read (legacy plaintext
+   *   rows read through unchanged and re-encrypt on the next save). When
+   *   omitted, the store behaves exactly as before (plaintext) — this is how
+   *   the many `new SecretStore(db)` test call sites keep working; production
+   *   injects a cipher from app-di.
+   */
+  constructor(dbManager: DatabaseManager, cipher?: SecretCipher) {
     this.db = dbManager.db;
+    this.cipher = cipher;
+    if (this.cipher) this.migrateToEncrypted();
+  }
+
+  /**
+   * One-shot at-rest migration: encrypt any rows still stored in plaintext.
+   * Idempotent and cheap — after the first boot every row is encrypted, so the
+   * scan finds nothing and writes nothing. Runs in a single transaction so a
+   * crash mid-migration leaves the table consistent.
+   */
+  private migrateToEncrypted(): void {
+    if (!this.cipher) return;
+    const rows = this.db
+      .prepare("SELECT rowid AS rowid, value FROM secrets")
+      .all() as { rowid: number; value: string }[];
+    const plaintext = rows.filter((r) => !isEncrypted(r.value));
+    if (plaintext.length === 0) return;
+    const update = this.db.prepare("UPDATE secrets SET value = ? WHERE rowid = ?");
+    const run = this.db.transaction(() => {
+      for (const r of plaintext) {
+        update.run(this.cipher!.encrypt(r.value), r.rowid);
+      }
+    });
+    run();
   }
 
   /**
@@ -37,7 +71,7 @@ export class SecretStore {
         "INSERT INTO secrets (repo_url, key, value) VALUES (?, ?, ?)",
       );
       for (const [key, value] of Object.entries(secrets)) {
-        insert.run(repoUrl, key, value);
+        insert.run(repoUrl, key, this.cipher ? this.cipher.encrypt(value) : value);
       }
     });
     save();
@@ -71,7 +105,10 @@ export class SecretStore {
 
     const result: Record<string, string> = {};
     for (const row of rows) {
-      result[row.key] = row.value;
+      // Transparent decrypt: a legacy plaintext row (no ENC_PREFIX) reads
+      // through verbatim; an encrypted row is decrypted (throws on a wrong key
+      // / tampered value rather than returning garbage — fail closed).
+      result[row.key] = this.cipher ? this.cipher.decrypt(row.value) : row.value;
     }
     return result;
   }

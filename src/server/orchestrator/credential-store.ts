@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { getErrorMessage } from "../shared/utils.js";
+import { isEncrypted, type SecretCipher } from "./secret-cipher.js";
 import type {
   McpServerConfig,
   OAuthTokens,
@@ -129,29 +130,68 @@ const FILENAME = "shipit-credentials.json";
 export class CredentialStore {
   private filePath: string;
   private data: CredentialData = {};
+  private cipher?: SecretCipher;
 
-  constructor(credentialsDir?: string) {
+  /**
+   * @param cipher At-rest encryption (docs/220). When provided, the entire
+   *   credentials JSON is encrypted as a single AES-256-GCM blob on disk — so
+   *   every present and future field is covered without per-field plumbing. A
+   *   legacy plaintext file is read transparently and re-encrypted once on
+   *   construction. When omitted, the store behaves exactly as before
+   *   (plaintext JSON) — this keeps the many `new CredentialStore(dir)` test
+   *   call sites working; production injects a cipher from app-di.
+   */
+  constructor(credentialsDir?: string, cipher?: SecretCipher) {
     this.filePath = path.join(credentialsDir ?? DEFAULT_CREDENTIALS_DIR, FILENAME);
+    this.cipher = cipher;
     this.load();
   }
 
   private load(): void {
+    let raw: string;
     try {
-      const raw = fs.readFileSync(this.filePath, "utf-8");
+      raw = fs.readFileSync(this.filePath, "utf-8");
+    } catch {
+      // No file yet — fresh store. (Distinct from a decrypt/parse failure on an
+      // existing file, which must NOT be swallowed; see below.)
+      this.data = {};
+      return;
+    }
+
+    const trimmed = raw.trim();
+    if (this.cipher && isEncrypted(trimmed)) {
+      // Decrypt failures (wrong/rotated key, tampered file) MUST propagate:
+      // swallowing them to `{}` would let the next save() overwrite the real
+      // (still-encrypted) file with an empty store re-encrypted under the new
+      // key — a silent wipe. Fail closed at boot instead.
+      this.data = JSON.parse(this.cipher.decrypt(trimmed)) as CredentialData;
+      return;
+    }
+
+    // Plaintext on disk: a legacy file (pre-encryption) or encryption disabled.
+    // Tolerate parse errors here exactly as before (corrupt file ⇒ empty store).
+    try {
       const parsed = JSON.parse(raw) as Record<string, unknown>;
       if (parsed && typeof parsed === "object") {
         this.data = parsed;
       }
     } catch {
       this.data = {};
+      return;
     }
+
+    // Re-encrypt a legacy plaintext file once, now, so it doesn't linger in
+    // plaintext until the next settings change (one-shot at-rest migration).
+    if (this.cipher) this.save();
   }
 
   private save(): void {
     try {
       const dir = path.dirname(this.filePath);
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(this.filePath, JSON.stringify(this.data, null, 2), { mode: 0o600 });
+      const serialized = JSON.stringify(this.data, null, 2);
+      const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
+      fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
     } catch (err) {
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }
