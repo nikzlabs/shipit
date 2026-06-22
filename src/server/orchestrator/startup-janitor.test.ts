@@ -344,7 +344,7 @@ describe("runDiskJanitor", () => {
     expect(result.orphanNetworksRemoved).toBe(0);
   });
 
-  it("sweeps archived workspaces older than archivedWorkspaceDays", async () => {
+  it("sweeps archived workspaces older than coldArtifactRetentionDays", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -371,7 +371,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -405,7 +405,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -439,7 +439,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -447,7 +447,12 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
   });
 
-  it("archive sweep is disabled by default (archivedWorkspaceDays = 0)", async () => {
+  // SHI-197 — the archived-workspace backstop is now ON by default at the single
+  // cold-artifact retention (30d), no longer gated behind a disabled-by-default
+  // knob. It's pure crash-recovery (SHI-192 frees the workspace synchronously at
+  // archive time), so a workspace this old only exists if that synchronous
+  // cleanup crashed — exactly what the backstop is here to mop up.
+  it("archive backstop runs by default at the cold-artifact retention", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -459,6 +464,7 @@ describe("runDiskJanitor", () => {
       "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
     ).run("old-session", "Old", old, old, oldDir, "https://github.com/example/repo.git");
 
+    // No coldArtifactRetentionDays passed → defaults to COLD_ARTIFACT_RETENTION_DAYS (30).
     const result = await runDiskJanitor({
       sessionManager,
       repoStore,
@@ -466,8 +472,8 @@ describe("runDiskJanitor", () => {
       runDocker: () => Promise.resolve(""),
     });
 
-    expect(result.workspacesRemoved).toBe(0);
-    expect(fs.existsSync(oldDir)).toBe(true);
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(oldDir)).toBe(false);
   });
 
   it("skips archived sessions without a remoteUrl (defensive)", async () => {
@@ -487,7 +493,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -574,7 +580,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker,
     });
 
@@ -1201,7 +1207,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -1294,5 +1300,4 @@ describe("runDiskJanitor", () => {
     for (const v of liveVols) expect(rmRequests).not.toContain(v);
     expect(result.orphanVolumesRemoved).toBe(2);
   });
-
 });

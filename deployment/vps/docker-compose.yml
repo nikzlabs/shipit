@@ -53,25 +53,27 @@ services:
       # so existing sessions survive orchestrator container replacement.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
-      # Disk janitor — see src/server/orchestrator/disk-janitor.ts. Runs
-      # once at orchestrator startup (no periodic timer). archiveSession
-      # already drops the workspace at archive time; the 30-day workspace
-      # sweep is a safety net for archives that failed mid-flight or
-      # predate the cleanup code. Chat history, usage, and session
-      # metadata are always preserved (unarchive re-clones from the bare
-      # cache). Cache cutoff matches the in-code default; listed here for
-      # visibility / easy per-host override.
-      - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
-      - DISK_JANITOR_CACHE_DAYS=30
-      # Disk-tier escalation (docs/161). The pressure valve escalates LRU
-      # sessions early when free disk runs low; the watermarks are fractions of
-      # the host's total disk size, so the same config is correct on any disk.
+      # Disk janitor — see src/server/orchestrator/startup-janitor.ts. Runs
+      # once at orchestrator startup (no periodic timer). SHI-197 collapsed the
+      # two coincidental 30-day knobs (archived-workspace + cache) into one
+      # cold-artifact retention. It governs BOTH the crash-recovery
+      # archived-workspace backstop (archiveSession already drops the workspace
+      # synchronously at archive time per SHI-192, so this only catches a crashed
+      # cleanup; chat history / usage / metadata are always preserved, unarchive
+      # re-clones from the bare cache) AND the cold shared caches (repo-cache /
+      # dep-cache / pnpm-store / repo-memory). Matches the in-code default;
+      # listed for visibility / easy per-host override.
+      - DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS=30
+      # Disk-tier escalation (docs/161, SHI-197). The pressure valve escalates
+      # LRU sessions early when free disk runs low; the watermarks are fractions
+      # of the host's total disk size, so the same config is correct on any disk.
       - DISK_FREE_LOW_PCT=0.10                 # escalate LRU when free disk < 10% of total
       - DISK_FREE_HIGH_PCT=0.20                # stop once free disk crosses 20% of total
-      # Merge-aware eviction: a merged PR is a stronger "done" signal than idle
-      # age, and merged checkouts re-fetch fresh on reopen, so reclaim them 2d
-      # after last touch. DISK_IDLE_EVICT_MS left at its 14d default — unmerged
-      # WIP stays on the gentle clock.
+      # Idle-ladder thresholds (one ordered config, validated at startup:
+      # light ≤ evict-merged ≤ evict-unmerged). Merge-aware eviction: a merged PR
+      # is a stronger "done" signal than idle age, and merged checkouts re-fetch
+      # fresh on reopen, so reclaim them 2d after last touch. DISK_IDLE_LIGHT_MS
+      # (24h) and DISK_IDLE_EVICT_MS (14d, unmerged WIP) left at their defaults.
       - DISK_IDLE_EVICT_MERGED_MS=172800000    # merged-PR sessions: evict 2d after last touch
       - SHIPIT_MANAGED_UPDATES=true
       # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.

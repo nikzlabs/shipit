@@ -7,8 +7,9 @@ import {
   registerShutdownHook,
 } from "./app-lifecycle.js";
 import { resolveAgentDockerLimits } from "./session-container.js";
-import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
+import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
@@ -143,20 +144,27 @@ export async function startStartupMonitors(
   }
 
   // ---- Disk janitor (startup-only CRASH-RECOVERY sweep) ----
-  // Reclaims orphan ShipIt-labeled compose volumes/networks, archived session
-  // workspaces (opt-in), the one-time nm-store migration leftover, per-session
-  // credential/log dirs, and merged-PR branches. Every item is recovering from a
-  // failure earlier in the lifecycle (teardown crashed, fs.rm failed, the
-  // per-merge branch-delete hook didn't fire) — none accumulate steadily, so we
-  // run once at boot rather than on a timer. The STEADY-GROWTH sweeps (repo/dep
-  // caches, repo-memory, overlay bases, pnpm stores) moved onto the periodic
-  // escalation pass below (SHI-196). Skipped in test mode so unit tests don't
-  // shell out to docker.
-  // Cache age applies to the steady-state reclaim (below); parsed once here.
-  const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
-  const cacheDaysResolved = Number.isFinite(cacheDays) ? cacheDays : 30;
+  // Reclaims orphan ShipIt-labeled compose volumes/networks, the archived
+  // session workspace crash-recovery backstop, the one-time nm-store migration
+  // leftover, per-session credential/log dirs, and merged-PR branches. Every
+  // item is recovering from a failure earlier in the lifecycle (teardown
+  // crashed, fs.rm failed, the per-merge branch-delete hook didn't fire) — none
+  // accumulate steadily, so we run once at boot rather than on a timer. The
+  // STEADY-GROWTH sweeps (repo/dep caches, repo-memory, overlay bases, pnpm
+  // stores) moved onto the periodic escalation pass below (SHI-196). Skipped in
+  // test mode so unit tests don't shell out to docker.
+  //
+  // SHI-197 — one knob for every cold artifact: the archived-workspace
+  // crash-recovery backstop swept here PLUS the repo/dep/pnpm/repo-memory caches
+  // swept by the steady-state reclaim below, replacing the two coincidental 30d
+  // knobs (`DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` + `DISK_JANITOR_CACHE_DAYS`).
+  // Parsed once here because both consumers (boot janitor + periodic reclaim)
+  // read it.
+  const coldArtifactRetentionRaw = parseFloat(process.env.DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS ?? "");
+  const coldArtifactRetentionDays = Number.isFinite(coldArtifactRetentionRaw)
+    ? coldArtifactRetentionRaw
+    : COLD_ARTIFACT_RETENTION_DAYS;
   if (!isTestMode) {
-    const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
     // Pace between destructive ops so the (fire-and-forget) sweep drips out
     // instead of bursting `docker` spawns + git pushes that contend with a
     // concurrent agent start for the Docker daemon / bare-cache git layer. This
@@ -173,7 +181,7 @@ export async function startStartupMonitors(
       stateDir,
       sessionsRoot: rt.sessionsRoot,
       credentialsDir,
-      archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
+      coldArtifactRetentionDays,
       paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
@@ -188,9 +196,17 @@ export async function startStartupMonitors(
   // so the startup janitor above runs rarely, but session starts are frequent
   // and are exactly when disk gets consumed. Guarded + fire-and-forget;
   // `escalateDiskTiers` swallows its own errors.
-  const idleLightMs = parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || undefined;
-  const idleEvictMs = parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || undefined;
-  const idleEvictMergedMs = parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || undefined;
+  // SHI-197 — the disk-idle ladder as one ordered, unit-consistent config (ms).
+  // Env overrides fall back to the in-code defaults per-field; the ordering
+  // invariant (`lightAfter ≤ evictMerged ≤ evictUnmerged`) is asserted once here
+  // so an incoherent override (e.g. merged clock below the light clock) fails
+  // fast at boot instead of silently misbehaving at runtime.
+  const ladder: DiskLadderThresholds = {
+    lightAfterMs: parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || DEFAULT_DISK_LADDER.lightAfterMs,
+    evictMergedAfterMs: parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || DEFAULT_DISK_LADDER.evictMergedAfterMs,
+    evictUnmergedAfterMs: parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || DEFAULT_DISK_LADDER.evictUnmergedAfterMs,
+  };
+  assertDiskLadderOrdering(ladder);
   // Pace between age-based tier descents for the same reason as the janitor:
   // keep the steady-state node_modules reclaim from monopolizing the Docker
   // daemon a concurrent agent start needs. Deliberately NOT applied to the
@@ -243,9 +259,7 @@ export async function startStartupMonitors(
             containerManager,
             pruneVolumes: (sid) => pruneSessionVolumes(sid),
             createGitManager,
-            idleLightMs,
-            idleEvictMs,
-            idleEvictMergedMs,
+            ladder,
             paceMs: escalationPaceMs,
             diskFreeLow,
             diskFreeHigh,
@@ -258,12 +272,14 @@ export async function startStartupMonitors(
         // grows with the clock, not with a crashed teardown, so it must NOT be
         // boot-only (it used to live in the startup `runDiskJanitor`). Boot
         // coverage is preserved because this same kick fires once at startup.
-        // Both calls swallow their own errors and always resolve.
+        // Both calls swallow their own errors and always resolve. SHI-197 — the
+        // cache cutoff is the single cold-artifact retention shared with the
+        // boot janitor's archived-workspace backstop.
         await runSteadyStateReclaim({
           stateDir,
           repoStore,
           credentialsDir,
-          cacheDays: cacheDaysResolved,
+          cacheDays: coldArtifactRetentionDays,
           paceMs: escalationPaceMs,
           // Resolved at sweep time (not boot) so each reflects the current session
           // set / runtime; both return an empty/null live-set under the
