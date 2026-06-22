@@ -295,7 +295,7 @@ powerful but only semi-trusted actor and defends the boundaries around it. The h
 - **Access control is yours** — the VPS installer puts ShipIt behind Cloudflare Zero Trust or
   Tailscale with no open inbound ports, so only the people you authorize can reach your instance.
 
-The full picture — the trust model, every defense, and the limitations ShipIt — is in
+The full picture — the trust model, every defense, and the limitations ShipIt has accepted — is in
 [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Contributing
