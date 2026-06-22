@@ -429,6 +429,17 @@ export function buildEnv(
     env.push(`SESSION_WORKER_IMAGE_ID=${workerImageId}`);
   }
 
+  // SHI-194 — forward the pinned base-image digest so the worker's install-runtime
+  // `runtimeKey()` (the install-marker ABI gate) keys on the SAME base digest the
+  // orchestrator's `overlayRuntimeKey()` scope uses. The worker image also bakes
+  // `BASE_IMAGE_DIGEST` as an ENV, so this forward is normally identical to the
+  // baked value; forwarding keeps an operator override consistent across both
+  // sides. Absent in dev/local and when the overlay store is off → not forwarded,
+  // and the worker falls back to its baked ENV / `SESSION_WORKER_IMAGE_ID`.
+  if (procEnv.BASE_IMAGE_DIGEST) {
+    env.push(`BASE_IMAGE_DIGEST=${procEnv.BASE_IMAGE_DIGEST}`);
+  }
+
   // Point npm/yarn/pnpm caches at the shared per-repo cache mount so
   // subsequent sessions skip network downloads for already-cached packages.
   if (config.depCacheDir) {

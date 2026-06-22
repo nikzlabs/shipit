@@ -173,6 +173,21 @@ export async function setupContainerManager(
           console.log(`[server] Overlay runtime scope pinned to worker image ${workerImageId}`);
         }
       }
+      // SHI-194 — the overlay scope keys on the worker's pinned base-image digest
+      // (`BASE_IMAGE_DIGEST`), not its full image id, so an app-code-only deploy
+      // no longer rotates the scope (no churn, post-deploy installs stay warm).
+      // Resolve it from the worker image's baked env and publish into the channel
+      // both `overlayRuntimeKey()` (orchestrator scope) and `buildEnv` (forwarded
+      // to the worker's install-runtime marker) read. Same gating as above: flag
+      // on, operator-set value always wins. A pre-SHI-194 image (no baked digest)
+      // resolves to nothing → the `SESSION_WORKER_IMAGE_ID` fallback stands.
+      if (isOverlayEnabled() && !process.env.BASE_IMAGE_DIGEST) {
+        const baseDigest = await containerManager.resolveWorkerBaseDigest();
+        if (baseDigest) {
+          process.env.BASE_IMAGE_DIGEST = baseDigest;
+          console.log(`[server] Overlay runtime scope pinned to base image ${baseDigest}`);
+        }
+      }
       const activeIds = new Set(sessionManager.allIds());
       const orphans = await containerManager.cleanupOrphans(activeIds);
       if (orphans > 0) console.log(`[server] Cleaned up ${orphans} orphan container(s)`);
