@@ -117,7 +117,7 @@ import { sessionCredentialsRoot, REPO_MEMORY_SUBDIR } from "./session-credential
 import { OVERLAY_BASE_SUBDIR } from "./overlay-volume.js";
 import { readBasePointerByHash } from "./overlay-base.js";
 import { PNPM_STORE_SUBDIR } from "./overlay-session.js";
-import { getMessage, sleep, defaultRunDocker } from "./disk-utils.js";
+import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 export interface DiskJanitorDeps {
   sessionManager: SessionManager;
@@ -789,19 +789,26 @@ async function sweepArchivedWorkspaces(
     if (!session.remoteUrl) continue;
     const lastUsedMs = Date.parse(session.lastUsedAt);
     if (!Number.isFinite(lastUsedMs) || lastUsedMs >= cutoffMs) continue;
-    try {
-      const stat = await fs.stat(session.workspaceDir).catch(() => null);
-      if (!stat) continue;
-      await sleep(paceMs);
-      await fs.rm(session.workspaceDir, { recursive: true, force: true });
+    // SHI-192 — reclaim the checkout AND the regenerable overlay/ sibling,
+    // preserving durable siblings (uploads/). The legacy code rm'd only the
+    // checkout and orphaned the overlay upper, leaking ~60 GB on prod. Because
+    // each target is stat-checked independently, this also catches sessions
+    // whose `workspace/` was already removed by a prior reclaim but whose
+    // `overlay/` orphan survived — the exact leak shape this sweep must mop up.
+    const { removed: removedDirs, failed } = await reclaimRegenerableSessionDirs(
+      session.workspaceDir,
+      { paceMs },
+    );
+    if (removedDirs.length > 0) {
       removed += 1;
       console.log(
-        `[disk-janitor] removed archived workspace for ${session.id} (${session.workspaceDir})`,
+        `[disk-janitor] reclaimed archived session ${session.id}: ${removedDirs.join(", ")}`,
       );
-    } catch (err) {
+    }
+    for (const f of failed) {
       console.warn(
-        `[disk-janitor] failed to remove archived workspace ${session.workspaceDir}:`,
-        getMessage(err),
+        `[disk-janitor] failed to remove ${f.dir} for ${session.id}:`,
+        f.message,
       );
     }
   }

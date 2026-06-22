@@ -223,6 +223,21 @@ Net: aggregate disk drops sharply (shared base vs. per-session copies), resource
 (N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface
 needing careful GC is "don't reap a base that's a live lowerdir."
 
+**On-host upperdir reclaim — `sessions/<id>/overlay/` (SHI-192).** The upper/work **bytes** live on
+the host state volume at `sessions/<id>/overlay/<scopeHash>/{upper,work}` — a **sibling** of the
+`workspace/` checkout, never inside it (the kernel forbids an upperdir within its own lowerdir; see
+`buildOverlaySpecs` / `OVERLAY_SESSION_SUBDIR`). Removing the Docker overlay *volume* on teardown
+drops only the mount descriptor, not these host bytes. Every disk-reclaim path that wipes a session's
+checkout (`light → evicted` in `tier-escalation.ts`, the archived-workspace sweep in
+`startup-janitor.ts`, and user `archiveSession` in `services/session.ts`) historically `fs.rm`'d only
+`workspaceDir` and **orphaned the `overlay/` sibling** — a ~60 GB prod leak (359 evicted sessions,
+~490 MB upper per worker-image digest each lived through). Fixed by routing all three through
+`reclaimRegenerableSessionDirs` (`disk-utils.ts`), which deletes the **allowlisted regenerable**
+siblings (`workspace/` + `overlay/`) and **never** blanket-`rm`s the session root — so durable,
+non-git siblings like `uploads/` (SHI-180/docs/217) survive for unarchive. The upper is pure cache:
+it rebuilds on the next install after unarchive. Reclaiming uppers also unpins their bases, letting
+`sweepOrphanedOverlayBases` shrink `overlay-base/` to its true floor.
+
 ### Non-root worker ownership (SHI-145 — interaction with docs/150)
 
 The overlay dep dirs are created by the **root** orchestrator, but the agent writes them as the

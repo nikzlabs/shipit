@@ -7,7 +7,9 @@
  */
 
 import fs from "node:fs/promises";
+import path from "node:path";
 import { spawn } from "node:child_process";
+import { OVERLAY_SESSION_SUBDIR } from "./overlay-session.js";
 
 /**
  * docs/161 — default free-disk probe for the disk-pressure pass. Returns bytes
@@ -67,6 +69,65 @@ export function resolveDiskWatermarks(inputs: {
 
 export function getMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Regenerable children of a session root (`sessions/<id>/`) that disk reclaim
+ * may delete: the git `workspace/` checkout (re-clones from the bare cache) and
+ * the docs/183 `overlay/` upperdirs (pure install-delta cache; rebuilds on the
+ * next install after unarchive). Everything else under the session root —
+ * notably `uploads/` (user files, referenced by persisted chat history, restored
+ * on unarchive; SHI-180/docs/217) and any future durable scratch tier — is
+ * DURABLE and must survive. This is an allowlist on purpose: a blanket `rm` of
+ * the session root would take `uploads/` with it, and the allowlist is
+ * future-proof against new durable siblings.
+ */
+export const REGENERABLE_SESSION_SUBDIRS = ["workspace", OVERLAY_SESSION_SUBDIR] as const;
+
+/**
+ * SHI-192 — reclaim a session's REGENERABLE on-disk tiers while PRESERVING its
+ * durable, non-git siblings. The historical bug: every reclaim site (`fs.rm`'d
+ * `workspaceDir`, the `sessions/<id>/workspace` checkout) deleted only the
+ * cheap, re-clonable half and orphaned the expensive `overlay/` sibling
+ * (~490 MB per worker-image digest the session lived through), leaking ~60 GB on
+ * prod. This deletes the checkout AND the overlay upper, never a blanket `rm` of
+ * the session root (which would take `uploads/` and break the transcript on
+ * restore — see {@link REGENERABLE_SESSION_SUBDIRS}).
+ *
+ * `workspaceDir` is the checkout subdir; its parent is the session root. Each
+ * target is stat-checked so a missing dir (already reclaimed, e.g. an evicted
+ * session whose `workspace/` is gone but whose `overlay/` orphan survives) is
+ * skipped without counting. Never rejects. `paceMs` throttles between removals
+ * (the sweeps drip reclaim so a concurrent agent start isn't starved).
+ *
+ * Returns the absolute paths actually removed and any per-dir failures, so
+ * callers keep their own logging/counting semantics.
+ */
+export async function reclaimRegenerableSessionDirs(
+  workspaceDir: string,
+  opts: { paceMs?: number } = {},
+): Promise<{ removed: string[]; failed: { dir: string; message: string }[] }> {
+  const paceMs = opts.paceMs ?? 0;
+  const sessionRoot = path.dirname(workspaceDir);
+  // The checkout (the exact `workspaceDir` given — its basename is `workspace`
+  // in prod) plus the overlay upper sibling. NEVER a blanket `rm` of
+  // `sessionRoot`, which also holds durable `uploads/` — see
+  // {@link REGENERABLE_SESSION_SUBDIRS}.
+  const targets = [workspaceDir, path.join(sessionRoot, OVERLAY_SESSION_SUBDIR)];
+  const removed: string[] = [];
+  const failed: { dir: string; message: string }[] = [];
+  for (const dir of targets) {
+    try {
+      const stat = await fs.stat(dir).catch(() => null);
+      if (!stat) continue;
+      await sleep(paceMs);
+      await fs.rm(dir, { recursive: true, force: true });
+      removed.push(dir);
+    } catch (err) {
+      failed.push({ dir, message: getMessage(err) });
+    }
+  }
+  return { removed, failed };
 }
 
 /**

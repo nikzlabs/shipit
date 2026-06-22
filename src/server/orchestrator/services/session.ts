@@ -23,6 +23,7 @@ import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
@@ -556,11 +557,16 @@ export async function archiveSession(
   // re-creates it from scratch on restore. Template sessions (no remoteUrl)
   // have no recovery path, so we preserve their workspace dir.
   if (session?.remoteUrl && session?.workspaceDir) {
-    try {
-      await fs.rm(session.workspaceDir, { recursive: true, force: true });
-      console.log("[server] Removed session workspace:", session.workspaceDir);
-    } catch (err) {
-      console.warn("[server] Session workspace cleanup failed:", String(err));
+    // SHI-192 — reclaim the checkout AND the regenerable overlay/ upper sibling,
+    // preserving durable siblings (uploads/, restored on unarchive). Removing
+    // only the checkout orphaned the overlay upper — the bulk of the disk —
+    // which the bare cache + unarchive flow rebuilds on the next install.
+    const { removed, failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+    if (removed.length > 0) {
+      console.log("[server] Removed session dirs:", removed.join(", "));
+    }
+    for (const f of failed) {
+      console.warn(`[server] Session dir cleanup failed (${f.dir}):`, f.message);
     }
   }
 

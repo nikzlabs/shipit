@@ -307,6 +307,41 @@ describe("escalateDiskTiers", () => {
     expect(fs.existsSync(scratchFile)).toBe(true); // sibling scratch/ spared
   });
 
+  // SHI-192 — eviction must ALSO reclaim the regenerable `overlay/` upper sibling
+  // (the docs/183 install-delta cache), which the legacy reclaim orphaned —
+  // ~60 GB of leaked uppers on prod. `uploads/` stays durable.
+  it("light → evicted wipes workspace/ AND overlay/ but spares uploads/ (SHI-192)", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const sessionRoot = path.join(tmpDir, "sess-evict-overlay");
+    const wsDir = path.join(sessionRoot, "workspace");
+    await initRepo(wsDir);
+    const overlayUpper = path.join(sessionRoot, "overlay", "deadbeef", "upper", "dep");
+    fs.mkdirSync(path.dirname(overlayUpper), { recursive: true });
+    fs.writeFileSync(overlayUpper, "install delta");
+    const uploadFile = path.join(sessionRoot, "uploads", "photo.png");
+    fs.mkdirSync(path.dirname(uploadFile), { recursive: true });
+    fs.writeFileSync(uploadFile, "user upload");
+    insertSession({
+      id: "evict-overlay",
+      lastUsedAt: daysAgo(IDLE_EVICT_MS / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    const { registry } = fakeRegistry();
+    const result = await escalateDiskTiers({
+      ...baseDeps(sm, registry),
+      createGitManager: (dir) => new GitManager(dir),
+    });
+
+    expect(result.toEvicted).toBe(1);
+    expect(fs.existsSync(wsDir)).toBe(false); // workspace/ wiped
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false); // overlay/ reclaimed
+    expect(fs.existsSync(uploadFile)).toBe(true); // uploads/ spared
+  });
+
   it("blocks light → evicted when a dirty tree can't be pushed (keeps at light)", async () => {
     setup();
     const sm = new SessionManager(dbManager!);
