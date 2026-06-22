@@ -41,8 +41,9 @@ make that possible:
   GitHub.
 - **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
   tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
-  panels on desktop. Voice runs both ways — dictate prompts hands-free and hear spoken summaries
-  when the agent finishes a turn or needs you, so you can kick off, review, and ship on the go.
+  panels on desktop. Voice runs both ways — dictate prompts hands-free, hear a spoken note when the agent
+  needs you, and tap play to hear any finished turn read aloud, so you can kick off, review, and ship
+  on the go.
 
 ## Status
 
@@ -159,7 +160,7 @@ those same agents as its backend and adds the layer they still leave out:
 - **The whole ship loop comes to you.** PRs, CI checks, review threads, diffs, deploy status, and
   issue trackers all render in the chat, so the review-and-ship loop stays inside the IDE instead of
   scattering across a GitHub tab and a CI dashboard.
-- **Built for the phone.** Dictate a prompt, hear a spoken summary when the turn lands, review and
+- **Built for the phone.** Dictate a prompt, get a spoken note when the agent needs you, review and
   merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile, with
   two-way voice.
 
@@ -255,8 +256,9 @@ harness:
 
 - **Mobile-first layout** — a focused tab-based view on small screens, resizable split panels on
   desktop; built and polished for real day-to-day use from a phone
-- **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, and get
-  spoken summaries when the agent finishes a turn or needs your input, so you can work hands-free
+- **Voice in and out** — dictate prompts with a mobile-friendly voice-recording overlay, hear a
+  spoken note when the agent needs your input, and tap play to hear any completed turn read aloud, so
+  you can work hands-free
 - **Background notifications** — optional browser notification/sound when the agent finishes
 - **Quick capture** — a global hotkey opens an overlay that captures a prompt and spawns a new
   session in the background, without leaving what you're doing
