@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligibleSignal, type PreTurnResetDeps } from "./pre-turn-reset.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
@@ -228,5 +228,29 @@ describe("isResetEligible (composer-control signal)", () => {
   it("is fail-safe false on a git throw", async () => {
     const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
     expect(await isResetEligible(makeDeps({ createGitManager: () => git }), "s1", "/ws")).toBe(false);
+  });
+});
+
+describe("emitResetEligibleSignal (merge-while-viewing push)", () => {
+  function makeDeps(over: Partial<Omit<PreTurnResetDeps, "getAutoResetMergedBranch">> = {}) {
+    return {
+      getSession: () => makeSession(),
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit(),
+      ...over,
+    };
+  }
+
+  it("recomputes eligibility and emits reset_eligible to the runner's viewers", async () => {
+    const emitMessage = vi.fn();
+    await emitResetEligibleSignal(makeDeps(), { sessionDir: "/ws", emitMessage }, "s1");
+    expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
+  });
+
+  it("emits eligible:false when the branch already moved off the merged tip", async () => {
+    const emitMessage = vi.fn();
+    const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
+    await emitResetEligibleSignal(makeDeps({ createGitManager: () => git }), { sessionDir: "/ws", emitMessage }, "s1");
+    expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
   });
 });
