@@ -71,4 +71,40 @@ describe("handleEgressDecision", () => {
     expect(reloadEgress).not.toHaveBeenCalled();
     expect(updates).toContainEqual({ phase: "denied" });
   });
+
+  it("patches the recorded card in place (not the DB row) when the proposing turn is still in flight", () => {
+    // A pending egress card recorded on an IN-FLIGHT turn, mirroring emitChatCard.
+    // The decision must not be lost when that turn finalizes from recordedCards.
+    const dbUpdates: unknown[] = [];
+    const flushed: unknown[] = [];
+    const runner = {
+      running: true,
+      emitMessage: vi.fn(),
+      recordedCards: [
+        { afterGroupIndex: 0, message: { role: "assistant", text: "", egressPrompt: { cardId: "c1", host: "cdn.example.com", phase: "pending" } } },
+      ],
+      chatMessageGroups: [{ text: "fetching a dependency", toolUse: [{}] }],
+      steeredMessages: [],
+    };
+    const ctx = {
+      getActiveAppSessionId: () => "s1",
+      getRunnerRegistry: () => ({ get: () => runner }),
+      getRunner: () => runner,
+      send: vi.fn(),
+      chatHistoryManager: {
+        updateEgressPromptCard: (_s: string, _c: string, patch: unknown) => dbUpdates.push(patch),
+        replaceInProgress: (_s: string, m: unknown) => flushed.push(m),
+      },
+      egressAllowlistStore: store,
+      containerManager: { reloadEgress },
+    } as never;
+
+    handleEgressDecision(ctx, { type: "egress_decision", action: "allow-once", host: "cdn.example.com", cardId: "c1" });
+
+    // In-flight → recorded card patched to the resolved phase, DB-row patch skipped.
+    expect((runner.recordedCards[0].message as { egressPrompt?: { phase?: string } }).egressPrompt?.phase).toBe("allowed-once");
+    expect(dbUpdates).toHaveLength(0);
+    // ...and the patched in-progress set was flushed so a reload sees it.
+    expect(flushed.length).toBeGreaterThan(0);
+  });
 });

@@ -16,6 +16,7 @@
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./types.js";
 import type { WsEgressDecision } from "../../shared/types/ws-client-messages.js";
 import { resolveRunner } from "./resolve-runner.js";
+import { persistCardTransition } from "../chat-card-persistence.js";
 import { allowEgressHost } from "../egress-policy.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { PersistedEgressPrompt } from "../chat-history.js";
@@ -52,6 +53,15 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
   const phase: PersistedEgressPrompt["phase"] =
     msg.action === "deny" ? "denied" : msg.action === "add" ? "added" : "allowed-once";
 
-  ctx.chatHistoryManager.updateEgressPromptCard(sessionId, msg.cardId, { phase });
+  // Persist the resolution clobber-free: if the agent's denied connection was
+  // resolved while its proposing turn is still in flight, a DB-only patch would
+  // be reverted when that turn finalizes from the stale `recordedCards` snapshot.
+  persistCardTransition(
+    runner,
+    { chatHistoryManager: ctx.chatHistoryManager, sessionId },
+    (m) => m.egressPrompt?.cardId === msg.cardId,
+    (m) => ({ ...m, egressPrompt: { ...m.egressPrompt!, phase } }),
+    () => ctx.chatHistoryManager.updateEgressPromptCard(sessionId, msg.cardId, { phase }),
+  );
   runner.emitMessage({ type: "egress_prompt_resolved", sessionId, cardId: msg.cardId, phase });
 }
