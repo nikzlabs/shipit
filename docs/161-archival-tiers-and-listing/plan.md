@@ -437,13 +437,11 @@ confirm) "running", but still auto-commits dirty work rather than losing it.
 | Constant | Meaning | Proposed default |
 |---|---|---|
 | `maxIdleContainers` | container-stop cap (exists, `docs/063`) | 5 |
-| `IDLE_LIGHT` | idle before `hot → light` (janitor) | 24 h |
-| `IDLE_EVICT` (`IDLE_EVICT_MS`) | idle before `light → evicted`, **unmerged** (janitor) | 14 d |
-| `IDLE_EVICT_MERGED_MS` | idle before `light → evicted`, **merged PR** (janitor) | 2 d (`172800000`) |
+| `DiskIdleLadder` (`DEFAULT_DISK_IDLE_LADDER`) | **SHI-197**: the three rungs are now ONE ordered, unit-consistent config `{ lightAfter, evictMergedAfter, evictUnmergedAfter }`, resolved + validated (`lightAfter ≤ evictMergedAfter ≤ evictUnmergedAfter`) at startup by `resolveDiskIdleLadder`. Env overrides per rung: `DISK_IDLE_LIGHT_MS` / `DISK_IDLE_EVICT_MERGED_MS` / `DISK_IDLE_EVICT_MS` | 24 h / 2 d / 14 d |
 | `DISK_FREE_LOW_PCT` / `DISK_FREE_HIGH_PCT` | disk-pressure watermarks as **fractions of total disk** (portable) | `0.10` / `0.20` (prod) |
 | `DISK_FREE_LOW_BYTES` / `DISK_FREE_HIGH_BYTES` | absolute-byte watermarks; **take precedence** over the `_PCT` pair when set | unset |
 | `DISK_ESCALATION_INTERVAL_MS` | period of the standalone escalation timer (issue #1049) | 1 h (`3600000`) |
-| `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` | janitor backstop for `evicted` (exists) | 30 d (prod) |
+| `DISK_COLD_ARTIFACT_RETENTION_DAYS` (`DEFAULT_COLD_ARTIFACT_RETENTION_DAYS`) | **SHI-197**: single retention for ALL cold artifacts — unreferenced repo/dep caches, pnpm + repo-memory stores, AND the archived-workspace **crash-recovery backstop** (demoted from the old `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` knob; post-SHI-192 archiving frees the workspace synchronously). Folds the two coincidental-but-unrelated 30d knobs into one | 30 d |
 | `DISK_JANITOR_PACE_MS` | pause between each destructive janitor op (volume/network rm, branch delete, cache/workspace/nm-store rm) so the fire-and-forget startup sweep drips out instead of bursting `docker` spawns + git pushes that contend with a concurrent agent start | `500` |
 | `DISK_ESCALATION_PACE_MS` | pause between each **age-based** tier descent (same anti-contention goal). **Not** applied to the disk-pressure LRU descent — when the box is critically low and starts are already failing, fast reclaim is the point | `500` |
 

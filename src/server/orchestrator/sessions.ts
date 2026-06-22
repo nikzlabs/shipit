@@ -79,22 +79,69 @@ function safeParseCapabilities(json: string): unknown {
 }
 
 /**
- * docs/161 — disk-idle ladder thresholds. "Idle age" for the ladder is
+ * docs/161 / SHI-197 — disk-idle ladder thresholds (`hot → light → evicted`),
+ * unified into ONE ordered, unit-consistent config. "Idle age" for the ladder is
  * `now - max(Date.parse(lastUsedAt), Date.parse(lastViewedAt))` — turn activity
- * OR a recent viewer attach keeps a session warm. These are the defaults; the
- * orchestrator may override them from env (see `index.ts`). The disk-pressure
- * pass can escalate before these elapse when free space crosses the low-water
- * mark (LRU), so they're deliberately generous.
+ * OR a recent viewer attach keeps a session warm. The disk-pressure pass can
+ * escalate before these elapse when free space crosses the low-water mark (LRU),
+ * so they're deliberately generous.
+ *
+ * The three rungs each encode a real, distinct decision and are NOT collapsed:
+ *   - `lightAfter` — the cheap, non-destructive deps-drop (reinstall in seconds);
+ *     do it early.
+ *   - `evictMergedAfter` vs `evictUnmergedAfter` — merge-awareness: a merged PR is
+ *     a far stronger "done" signal than idle age (work shipped, checkout re-fetches
+ *     fresh on reopen), so finished sessions are reclaimed on a much shorter clock
+ *     than unmerged WIP the user may return to.
+ *
+ * What SHI-197 removed is the footgun: three free-floating `_MS` env floats with
+ * no enforced ordering. `resolveDiskIdleLadder` now validates the rungs are
+ * monotonic at startup.
  */
-export const IDLE_LIGHT_MS = 24 * 60 * 60 * 1000; // 24h: hot → light (drop deps)
-export const IDLE_EVICT_MS = 14 * 24 * 60 * 60 * 1000; // 14d: light → evicted (wipe checkout)
+export interface DiskIdleLadder {
+  /** Idle age (ms) before `hot → light` (drop deps, keep checkout). */
+  lightAfter: number;
+  /** Idle age (ms) before `light → evicted` for MERGED sessions (re-fetch fresh on reopen). */
+  evictMergedAfter: number;
+  /** Idle age (ms) before `light → evicted` for UNMERGED WIP (the gentle clock). */
+  evictUnmergedAfter: number;
+}
+
+export const DEFAULT_DISK_IDLE_LADDER: DiskIdleLadder = {
+  lightAfter: 24 * 60 * 60 * 1000, // 24h: hot → light (drop deps)
+  evictMergedAfter: 2 * 24 * 60 * 60 * 1000, // 2d: merged light → evicted
+  evictUnmergedAfter: 14 * 24 * 60 * 60 * 1000, // 14d: unmerged light → evicted
+};
+
 /**
- * docs/161 — merge-aware eviction. A merged PR is a much stronger "done" signal
- * than idle age: the work shipped and the checkout re-fetches fresh on reopen,
- * so finished sessions can be reclaimed far sooner than unmerged WIP (which
- * stays on the gentle `IDLE_EVICT_MS` clock). 2 days after last touch.
+ * SHI-197 — resolve the disk-idle ladder from env, falling back per-rung to
+ * {@link DEFAULT_DISK_IDLE_LADDER}, and assert the rungs are monotonic.
+ *
+ * Today nothing stops `DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS`, which
+ * makes the ladder incoherent — a session could cross the eviction clock before
+ * it's even dropped to `light`. The startup assertion turns that misconfiguration
+ * into a loud boot failure instead of silent disk-reclaim corruption.
+ *
+ * @throws if `lightAfter ≤ evictMergedAfter ≤ evictUnmergedAfter` is violated.
  */
-export const IDLE_EVICT_MERGED_MS = 2 * 24 * 60 * 60 * 1000; // 2d: merged light → evicted
+export function resolveDiskIdleLadder(
+  env: NodeJS.ProcessEnv = process.env,
+  defaults: DiskIdleLadder = DEFAULT_DISK_IDLE_LADDER,
+): DiskIdleLadder {
+  const lightAfter = parseFloat(env.DISK_IDLE_LIGHT_MS ?? "") || defaults.lightAfter;
+  const evictMergedAfter = parseFloat(env.DISK_IDLE_EVICT_MERGED_MS ?? "") || defaults.evictMergedAfter;
+  const evictUnmergedAfter = parseFloat(env.DISK_IDLE_EVICT_MS ?? "") || defaults.evictUnmergedAfter;
+  if (!(lightAfter <= evictMergedAfter && evictMergedAfter <= evictUnmergedAfter)) {
+    throw new Error(
+      "[disk-tier] incoherent idle ladder: require "
+      + "lightAfter ≤ evictMergedAfter ≤ evictUnmergedAfter, got "
+      + `lightAfter=${lightAfter}ms, evictMergedAfter=${evictMergedAfter}ms, `
+      + `evictUnmergedAfter=${evictUnmergedAfter}ms `
+      + "(check DISK_IDLE_LIGHT_MS / DISK_IDLE_EVICT_MERGED_MS / DISK_IDLE_EVICT_MS)",
+    );
+  }
+  return { lightAfter, evictMergedAfter, evictUnmergedAfter };
+}
 
 /**
  * The instant a session's PR reached a terminal state — merged or

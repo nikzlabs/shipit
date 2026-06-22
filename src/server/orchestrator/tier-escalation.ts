@@ -17,7 +17,7 @@ import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
-import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
+import { DEFAULT_DISK_IDLE_LADDER, type DiskIdleLadder } from "./sessions.js";
 import { getMessage, sleep, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 /**
@@ -41,17 +41,14 @@ export interface TierEscalationDeps {
    * don't exercise dirty remediation.
    */
   createGitManager?: (dir: string) => GitManager;
-  /** Idle age (ms) before `hot → light`. Defaults to `IDLE_LIGHT_MS`. */
-  idleLightMs?: number;
-  /** Idle age (ms) before `light → evicted` for UNMERGED sessions. Defaults to `IDLE_EVICT_MS`. */
-  idleEvictMs?: number;
   /**
-   * docs/161 — idle age (ms) before `light → evicted` for sessions whose PR is
-   * MERGED (`mergedAt` set). A merge is a far stronger "done" signal than idle
-   * age, and merged checkouts re-fetch fresh on reopen, so they're reclaimed on
-   * a much shorter clock than unmerged WIP. Defaults to `IDLE_EVICT_MERGED_MS`.
+   * SHI-197 — the ordered idle-ladder thresholds (`lightAfter ≤ evictMergedAfter
+   * ≤ evictUnmergedAfter`), resolved + validated once at startup by
+   * `resolveDiskIdleLadder`. Defaults to `DEFAULT_DISK_IDLE_LADDER`. Merge-aware:
+   * a merged PR (`mergedAt` set) evicts on the short `evictMergedAfter` clock,
+   * unmerged WIP on the gentle `evictUnmergedAfter` clock.
    */
-  idleEvictMergedMs?: number;
+  ladder?: DiskIdleLadder;
   /**
    * Disk-pressure water marks (bytes free). When `getFreeDiskBytes` reports
    * below `diskFreeLow`, the pass escalates LRU-eligible sessions — ignoring the
@@ -240,8 +237,8 @@ async function reclaimToEvicted(
  * thresholds, or — under disk pressure — escalates least-recently-used eligible
  * sessions regardless of age until free space recovers. The `light → evicted`
  * threshold is merge-aware: a session whose PR is merged (`mergedAt` set) is
- * reclaimed on the short `idleEvictMergedMs` clock, while unmerged WIP stays on
- * the gentle `idleEvictMs` clock. Every descent passes
+ * reclaimed on the short `ladder.evictMergedAfter` clock, while unmerged WIP
+ * stays on the gentle `ladder.evictUnmergedAfter` clock. Every descent passes
  * `canAutoDescend` (not running, no attached viewer); the destructive `evicted`
  * rung additionally remediates dirty checkouts.
  *
@@ -263,9 +260,7 @@ export async function escalateDiskTiers(
 ): Promise<TierEscalationResult> {
   const result: TierEscalationResult = { toLight: 0, toEvicted: 0, evictBlockedByPush: 0 };
   const now = (deps.now ?? Date.now)();
-  const idleLight = deps.idleLightMs ?? IDLE_LIGHT_MS;
-  const idleEvict = deps.idleEvictMs ?? IDLE_EVICT_MS;
-  const idleEvictMerged = deps.idleEvictMergedMs ?? IDLE_EVICT_MERGED_MS;
+  const ladder = deps.ladder ?? DEFAULT_DISK_IDLE_LADDER;
   const paceMs = deps.paceMs ?? 0;
 
   // Candidate set: non-warm sessions still holding disk, minus the one we just
@@ -280,10 +275,10 @@ export async function escalateDiskTiers(
     const age = diskIdleAgeMs(s, now);
     const tier = s.diskTier ?? "hot";
     // Merge-aware threshold: a merged PR ("done") evicts far sooner than
-    // unmerged WIP, which stays on the gentle `idleEvict` clock. Idle age is
+    // unmerged WIP, which stays on the gentle `evictUnmergedAfter` clock. Idle age is
     // still max(lastUsedAt, lastViewedAt), so a merged session you reopened to
     // look at isn't yanked mid-view.
-    const evictThreshold = s.mergedAt ? idleEvictMerged : idleEvict;
+    const evictThreshold = s.mergedAt ? ladder.evictMergedAfter : ladder.evictUnmergedAfter;
     try {
       // Pace only when we're about to actually act — skipped candidates
       // (wrong tier / not idle enough) cost nothing and shouldn't drip-delay
@@ -293,7 +288,7 @@ export async function escalateDiskTiers(
         const outcome = await reclaimToEvicted(s, deps);
         if (outcome === "evicted") result.toEvicted += 1;
         else if (outcome === "blocked-by-push") result.evictBlockedByPush += 1;
-      } else if (tier === "hot" && age >= idleLight) {
+      } else if (tier === "hot" && age >= ladder.lightAfter) {
         await sleep(paceMs);
         if (await reclaimToLight(s, deps)) result.toLight += 1;
       }

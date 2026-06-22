@@ -367,7 +367,7 @@ describe("runDiskJanitor", () => {
     expect(result.orphanNetworksRemoved).toBe(0);
   });
 
-  it("sweeps archived workspaces older than archivedWorkspaceDays", async () => {
+  it("sweeps archived workspaces older than the cold-artifact retention", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -394,7 +394,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -428,7 +428,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -462,7 +462,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -470,7 +470,11 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
   });
 
-  it("archive sweep is disabled by default (archivedWorkspaceDays = 0)", async () => {
+  it("SHI-197: archive backstop runs on the default cold-retention with no override", async () => {
+    // Demotion: the archived-workspace sweep is no longer an opt-in knob that
+    // defaults to disabled — it's an always-on crash-recovery backstop on the
+    // shared cold-artifact retention (DEFAULT_COLD_ARTIFACT_RETENTION_DAYS = 30).
+    // So an old archived workspace is reclaimed even when no retention is passed.
     setup();
     const sessionManager = new SessionManager(dbManager!);
     const repoStore = new RepoStore(dbManager!);
@@ -486,11 +490,37 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
+      // No coldArtifactRetentionDays — falls back to the 30d default.
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(oldDir)).toBe(false);
+  });
+
+  it("SHI-197: archive backstop still keeps a workspace newer than the retention", async () => {
+    // The backstop is always-on, but still age-gated — a recently-touched
+    // archived workspace (well within the 30d retention) is preserved.
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const recentDir = path.join(tmpDir, "sessions", "recent-session", "workspace");
+    fs.mkdirSync(recentDir, { recursive: true });
+    const recent = new Date(Date.now() - 5 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("recent-session", "Recent", recent, recent, recentDir, "https://github.com/example/repo.git");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
       runDocker: () => Promise.resolve(""),
     });
 
     expect(result.workspacesRemoved).toBe(0);
-    expect(fs.existsSync(oldDir)).toBe(true);
+    expect(fs.existsSync(recentDir)).toBe(true);
   });
 
   it("skips archived sessions without a remoteUrl (defensive)", async () => {
@@ -510,7 +540,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -541,7 +571,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -575,7 +605,7 @@ describe("runDiskJanitor", () => {
       repoStore,
       stateDir: tmpDir,
       credentialsDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -663,7 +693,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker,
     });
 
@@ -1290,7 +1320,7 @@ describe("runDiskJanitor", () => {
       sessionManager,
       repoStore,
       stateDir: tmpDir,
-      archivedWorkspaceDays: 30,
+      coldArtifactRetentionDays: 30,
       runDocker: () => Promise.resolve(""),
     });
 
@@ -1399,7 +1429,7 @@ describe("runDiskJanitor", () => {
 
     const result = await runDiskJanitor({
       sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       liveOverlayScopeHashes: () => new Set(["aaaaaaaaaaaaaaaa"]),
       // A running container mounts dddd…/g4 as its lowerdir — even though that
       // scope is not in the resumable union (e.g. an old-image container still
@@ -1457,7 +1487,7 @@ describe("runDiskJanitor", () => {
 
     const result = await runDiskJanitor({
       sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       pnpmStoreRuntimeHash: () => liveHash,
       runDocker: () => Promise.resolve(""),
     });
@@ -1485,7 +1515,7 @@ describe("runDiskJanitor", () => {
 
     const result = await runDiskJanitor({
       sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       pnpmStoreRuntimeHash: () => null, // feature off → nothing is live
       runDocker: () => Promise.resolve(""),
     });
@@ -1530,7 +1560,7 @@ describe("runDiskJanitor", () => {
 
     const result = await runDiskJanitor({
       sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       liveOverlayScopeHashes: () => new Set([hash]),
       // A running container pins g2 as its lowerdir.
       runDocker: liveMountDocker([g2]),
@@ -1617,7 +1647,7 @@ describe("runDiskJanitor", () => {
 
     const result = await runDiskJanitor({
       sessionManager, repoStore, stateDir: tmpDir,
-      cacheDays: 30,
+      coldArtifactRetentionDays: 30,
       liveOverlayScopeHashes: () =>
         liveOverlayScopeHashes(sessionManager.listAll(), () => depDirs, env),
       runDocker: () => Promise.resolve(""),

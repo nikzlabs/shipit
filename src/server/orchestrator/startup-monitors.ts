@@ -9,6 +9,7 @@ import {
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks } from "./disk-janitor.js";
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { resolveDiskIdleLadder } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 
 /** Functions produced by {@link startStartupMonitors} that later steps need. */
@@ -150,8 +151,15 @@ export async function startStartupMonitors(
   // accumulate steadily, so we run once at boot rather than on a timer.
   // Skipped in test mode so unit tests don't shell out to docker.
   if (!isTestMode) {
-    const archivedWorkspaceDays = parseFloat(process.env.DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS ?? "0");
-    const cacheDays = parseFloat(process.env.DISK_JANITOR_CACHE_DAYS ?? "30");
+    // SHI-197 — one retention value covers every cold artifact: unreferenced
+    // repo/dep caches, pnpm + repo-memory caches, AND the crash-recovery
+    // archived-workspace backstop. Post-SHI-192 archiving frees the workspace
+    // synchronously, so that sweep only catches a sync cleanup that crashed —
+    // pure backstop, no longer an independently tunable day-threshold (the old
+    // DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS knob is gone). Unset → runDiskJanitor's
+    // built-in DEFAULT_COLD_ARTIFACT_RETENTION_DAYS.
+    const coldArtifactRetentionDays =
+      parseFloat(process.env.DISK_COLD_ARTIFACT_RETENTION_DAYS ?? "") || undefined;
     // Pace between destructive ops so the (fire-and-forget) sweep drips out
     // instead of bursting `docker` spawns + git pushes that contend with a
     // concurrent agent start for the Docker daemon / bare-cache git layer. This
@@ -168,8 +176,7 @@ export async function startStartupMonitors(
       stateDir,
       sessionsRoot: rt.sessionsRoot,
       credentialsDir,
-      archivedWorkspaceDays: Number.isFinite(archivedWorkspaceDays) ? archivedWorkspaceDays : 0,
-      cacheDays: Number.isFinite(cacheDays) ? cacheDays : 30,
+      coldArtifactRetentionDays,
       paceMs: Number.isFinite(janitorPaceMs) ? janitorPaceMs : 500,
       githubAuthManager,
       createRepoGit,
@@ -196,9 +203,11 @@ export async function startStartupMonitors(
   // so the startup janitor above runs rarely, but session starts are frequent
   // and are exactly when disk gets consumed. Guarded + fire-and-forget;
   // `escalateDiskTiers` swallows its own errors.
-  const idleLightMs = parseFloat(process.env.DISK_IDLE_LIGHT_MS ?? "") || undefined;
-  const idleEvictMs = parseFloat(process.env.DISK_IDLE_EVICT_MS ?? "") || undefined;
-  const idleEvictMergedMs = parseFloat(process.env.DISK_IDLE_EVICT_MERGED_MS ?? "") || undefined;
+  // SHI-197 — resolve + validate the ordered idle ladder once at startup. A
+  // misconfigured env (e.g. DISK_IDLE_EVICT_MERGED_MS < DISK_IDLE_LIGHT_MS) throws
+  // here, failing the box loudly at boot rather than silently corrupting disk
+  // reclaim with an incoherent ladder.
+  const ladder = resolveDiskIdleLadder();
   // Pace between age-based tier descents for the same reason as the janitor:
   // keep the steady-state node_modules reclaim from monopolizing the Docker
   // daemon a concurrent agent start needs. Deliberately NOT applied to the
@@ -241,9 +250,7 @@ export async function startStartupMonitors(
         containerManager,
         pruneVolumes: (sid) => pruneSessionVolumes(sid),
         createGitManager,
-        idleLightMs,
-        idleEvictMs,
-        idleEvictMergedMs,
+        ladder,
         paceMs: escalationPaceMs,
         diskFreeLow,
         diskFreeHigh,

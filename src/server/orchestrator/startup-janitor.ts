@@ -28,15 +28,16 @@
  *     primary cleanup paths (`cleanupSessionDockerResources`, compose
  *     teardown, `killStaleContainers`) handle the happy path — this is
  *     the safety net for when they didn't run (unclean shutdown).
- *   - **Archived session workspaces** older than
- *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` days. Safety net for archives
- *     where `fs.rm` didn't run — `archiveSession` already drops the
- *     workspace at archive time on a healthy host, so this normally finds
- *     nothing. Chat history, usage, and session metadata are preserved;
+ *   - **Archived session workspaces** older than the cold-artifact retention
+ *     (`coldArtifactRetentionDays`, default 30). SHI-197: a non-tunable
+ *     crash-recovery backstop — post-SHI-192 `archiveSession` frees the
+ *     workspace *synchronously* (`reclaimRegenerableSessionDirs`), so this only
+ *     catches an archive whose sync cleanup crashed and normally finds nothing.
+ *     Chat history, usage, and session metadata are preserved;
  *     `unarchiveSession` re-clones from the bare cache.
  *   - **Orphan `repo-cache/<hash>` and `dep-cache/<hash>` directories**
  *     whose repo URL has no `repos` row or whose `last_used_at` is older
- *     than `DISK_JANITOR_CACHE_DAYS` (default 30).
+ *     than the cold-artifact retention (`coldArtifactRetentionDays`, default 30).
  *   - **Orphan `repo-memory/<hash>` directories** (docs/155) — shared
  *     per-repo Claude memory keyed by the same repo hash. Swept on the
  *     same liveness rule as the caches above, but lives under
@@ -93,12 +94,13 @@
  *     primary cleanup didn't happen.
  *
  * Behavior knobs (env vars):
- *   - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS: when set to a positive number,
- *     archived sessions whose `last_used_at` is older than this many days
- *     have their `workspaceDir` removed. Default `0` (disabled).
- *   - DISK_JANITOR_CACHE_DAYS: age in days at which `repo-cache/<hash>`
- *     and `dep-cache/<hash>` directories whose repo has no `repos` row are
- *     deleted. Default `30`.
+ *   - DISK_COLD_ARTIFACT_RETENTION_DAYS: SHI-197 — the single retention (days)
+ *     for ALL cold artifacts: unreferenced `repo-cache`/`dep-cache` dirs, the
+ *     pnpm shared store, repo-memory dirs, and the archived-workspace
+ *     crash-recovery backstop. Default `30`
+ *     ({@link DEFAULT_COLD_ARTIFACT_RETENTION_DAYS}). Replaces the two
+ *     coincidental-but-unrelated `DISK_JANITOR_CACHE_DAYS` /
+ *     `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS` knobs.
  *   - DISK_JANITOR_ORPHAN_BRANCHES: when `"false"`, disables the
  *     orphan-`shipit/*`-branch sweep. Default enabled (set the env var to
  *     `"false"` to opt out). The sweep no-ops anyway without GitHub auth.
@@ -130,10 +132,17 @@ export interface DiskJanitorDeps {
   repoStore: RepoStore;
   /** Root that holds `repo-cache/<hash>` and `dep-cache/<hash>` subdirs. */
   stateDir: string;
-  /** When > 0, sweep archived session workspaces older than this many days. */
-  archivedWorkspaceDays?: number;
-  /** Age threshold (days) for unreferenced repo/dep cache directories. */
-  cacheDays?: number;
+  /**
+   * SHI-197 — single retention (days) for ALL cold artifacts: unreferenced
+   * repo/dep caches, the pnpm shared store, repo-memory dirs, AND the
+   * crash-recovery archived-workspace backstop. Defaults to
+   * {@link DEFAULT_COLD_ARTIFACT_RETENTION_DAYS}. Folds the former `cacheDays`
+   * and `archivedWorkspaceDays` knobs — which shared a coincidental 30d but were
+   * unrelated subsystems — into one number. The archived-workspace sweep is now
+   * a non-tunable crash-recovery backstop on this same clock (post-SHI-192
+   * archiving frees the workspace synchronously), no longer an independent knob.
+   */
+  coldArtifactRetentionDays?: number;
   /**
    * docs/138 — source-of-truth credentials root (e.g. `/credentials`). When
    * provided, the janitor sweeps per-session credential subtrees under
@@ -199,7 +208,7 @@ export interface DiskJanitorDeps {
    * the CURRENT runtime (`pnpm-store/<hash>`, the live store that must never be
    * swept), or `null` when the `OVERLAY_DEP_STORE=0`/`false` kill switch disables
    * the feature — in which case no store is live, so every `pnpm-store/<hash>` dir
-   * past `cacheDays` is reapable (the same "GC the disabled feature's leftovers"
+   * past the cold-artifact retention is reapable (the same "GC the disabled feature's leftovers"
    * shape as the overlay-base sweep returning an empty live-set when killed off).
    * The sweep runs only when this dep is
    * provided; omitted in unit tests that don't exercise it.
@@ -240,7 +249,13 @@ export interface DiskJanitorResult {
   logDirsRemoved: number;
 }
 
-const DEFAULT_CACHE_DAYS = 30;
+/**
+ * SHI-197 — the single cold-artifact retention default. Replaces the two
+ * coincidental 30d knobs (`DISK_JANITOR_CACHE_DAYS` / unrelated
+ * `DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS`) with one constant covering caches,
+ * pnpm/repo-memory stores, and the archived-workspace crash-recovery backstop.
+ */
+export const DEFAULT_COLD_ARTIFACT_RETENTION_DAYS = 30;
 
 /**
  * Run the disk-janitor sweep once. Each sub-step is wrapped in try/catch
@@ -264,6 +279,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
+  // SHI-197 — one retention clock for every cold artifact below.
+  const retentionDays = deps.coldArtifactRetentionDays ?? DEFAULT_COLD_ARTIFACT_RETENTION_DAYS;
 
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
@@ -283,7 +300,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.workspacesRemoved = await sweepArchivedWorkspaces(
-      deps.sessionManager, deps.archivedWorkspaceDays ?? 0, paceMs,
+      deps.sessionManager, retentionDays, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] archived-workspace sweep failed:", getMessage(err));
@@ -291,7 +308,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
 
   try {
     result.cachesRemoved = await sweepOrphanedCaches(
-      deps.stateDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
+      deps.stateDir, deps.repoStore, retentionDays, paceMs,
     );
   } catch (err) {
     console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
@@ -331,7 +348,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
       result.pnpmStoresRemoved = await sweepStalePnpmStores(
         deps.stateDir,
         deps.pnpmStoreRuntimeHash(),
-        deps.cacheDays ?? DEFAULT_CACHE_DAYS,
+        retentionDays,
         paceMs,
       );
     } catch (err) {
@@ -349,7 +366,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     }
     try {
       result.repoMemoryDirsRemoved = await sweepOrphanedRepoMemory(
-        deps.credentialsDir, deps.repoStore, deps.cacheDays ?? DEFAULT_CACHE_DAYS, paceMs,
+        deps.credentialsDir, deps.repoStore, retentionDays, paceMs,
       );
     } catch (err) {
       console.warn("[disk-janitor] repo-memory sweep failed:", getMessage(err));
@@ -747,9 +764,17 @@ async function sweepOrphanSessionNetworks(
 
 /**
  * Delete `workspaceDir` for USER-archived sessions whose `last_used_at` is
- * older than `days`. Chat history, usage, and session metadata are
- * preserved — `unarchiveSession` re-clones from the bare cache when the
- * user restores the session.
+ * older than `days` (SHI-197: the shared cold-artifact retention, not an
+ * independent knob). Chat history, usage, and session metadata are preserved —
+ * `unarchiveSession` re-clones from the bare cache when the user restores the
+ * session.
+ *
+ * SHI-197: this is a pure crash-recovery BACKSTOP, not a user-tunable cleanup.
+ * Post-SHI-192 `archiveSession` frees the workspace *synchronously*
+ * (`reclaimRegenerableSessionDirs` in `services/session.ts`), so on a healthy
+ * host this only ever catches an archive whose synchronous cleanup crashed.
+ * It therefore runs on the single cold-retention clock rather than its own
+ * threshold (the `days <= 0` guard remains purely defensive).
  *
  * SHI-179: `listArchived()` returns `disk_tier = 'evicted'` sessions, which
  * also covers non-user-archived sessions reclaimed by the docs/161 disk ladder.
@@ -757,9 +782,8 @@ async function sweepOrphanSessionNetworks(
  * the user did not explicitly archive — the workspace lifecycle is tied to
  * user-archive state, not disk tier.
  *
- * In the current product all sessions have a `remoteUrl`, and
- * `archiveSession` already removes the workspace at archive time, so on
- * a healthy host this sweep is a no-op. It exists as a safety net for:
+ * In the current product all sessions have a `remoteUrl`, so on a healthy host
+ * this sweep is a no-op. It exists as a safety net for:
  *   - archives that failed mid-flight (worker crash, fs error)
  *   - legacy sessions from before the cleanup code shipped
  *   - any future edge case where the workspace outlives the archive

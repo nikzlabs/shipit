@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from "vitest";
+import { resolveDiskIdleLadder } from "./sessions.js";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
@@ -6,7 +7,13 @@ import simpleGit from "simple-git";
 import Database from "better-sqlite3";
 import { DatabaseManager } from "../shared/database.js";
 import { GitManager } from "../shared/git.js";
-import { SessionManager, IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
+import { SessionManager, DEFAULT_DISK_IDLE_LADDER } from "./sessions.js";
+
+// SHI-197 — the ladder is one ordered config now; alias the rungs for the
+// age math below (kept terse so the test bodies read unchanged).
+const IDLE_LIGHT_MS = DEFAULT_DISK_IDLE_LADDER.lightAfter;
+const IDLE_EVICT_MS = DEFAULT_DISK_IDLE_LADDER.evictUnmergedAfter;
+const IDLE_EVICT_MERGED_MS = DEFAULT_DISK_IDLE_LADDER.evictMergedAfter;
 import { escalateDiskTiers, type TierEscalationDeps } from "./tier-escalation.js";
 import { resolveDiskWatermarks } from "./disk-utils.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
@@ -609,5 +616,68 @@ describe("resolveDiskWatermarks", () => {
     });
     expect(diskFreeLow).toBeUndefined();
     expect(diskFreeHigh).toBeUndefined();
+  });
+});
+
+// SHI-197 — the unified idle ladder: per-rung env overrides + the monotonicity
+// assertion that removes the "evict before light" footgun.
+describe("resolveDiskIdleLadder", () => {
+  const HOUR = 3_600_000;
+  const DAY = 24 * HOUR;
+
+  it("falls back to the defaults when no env is set", () => {
+    const ladder = resolveDiskIdleLadder({});
+    expect(ladder).toEqual({
+      lightAfter: DAY,
+      evictMergedAfter: 2 * DAY,
+      evictUnmergedAfter: 14 * DAY,
+    });
+  });
+
+  it("overrides each rung independently from env", () => {
+    const ladder = resolveDiskIdleLadder({
+      DISK_IDLE_LIGHT_MS: String(2 * HOUR),
+      DISK_IDLE_EVICT_MERGED_MS: String(3 * HOUR),
+      DISK_IDLE_EVICT_MS: String(4 * HOUR),
+    });
+    expect(ladder).toEqual({
+      lightAfter: 2 * HOUR,
+      evictMergedAfter: 3 * HOUR,
+      evictUnmergedAfter: 4 * HOUR,
+    });
+  });
+
+  it("allows equal adjacent rungs (≤, not <)", () => {
+    const ladder = resolveDiskIdleLadder({
+      DISK_IDLE_LIGHT_MS: String(DAY),
+      DISK_IDLE_EVICT_MERGED_MS: String(DAY),
+      DISK_IDLE_EVICT_MS: String(DAY),
+    });
+    expect(ladder.lightAfter).toBe(ladder.evictUnmergedAfter);
+  });
+
+  it("throws when evictMerged < light (the incoherent-ladder footgun)", () => {
+    expect(() =>
+      resolveDiskIdleLadder({
+        DISK_IDLE_LIGHT_MS: String(3 * DAY),
+        DISK_IDLE_EVICT_MERGED_MS: String(DAY), // earlier than light — invalid
+      }),
+    ).toThrow(/incoherent idle ladder/);
+  });
+
+  it("throws when evictUnmerged < evictMerged", () => {
+    expect(() =>
+      resolveDiskIdleLadder({
+        DISK_IDLE_EVICT_MERGED_MS: String(10 * DAY),
+        DISK_IDLE_EVICT_MS: String(5 * DAY), // unmerged should be the gentlest
+      }),
+    ).toThrow(/incoherent idle ladder/);
+  });
+
+  it("a single out-of-order override against defaults still throws", () => {
+    // Only the merged knob is set, large enough to exceed the 14d unmerged default.
+    expect(() =>
+      resolveDiskIdleLadder({ DISK_IDLE_EVICT_MERGED_MS: String(30 * DAY) }),
+    ).toThrow(/incoherent idle ladder/);
   });
 });

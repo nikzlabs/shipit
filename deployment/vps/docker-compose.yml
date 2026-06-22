@@ -53,16 +53,14 @@ services:
       # so existing sessions survive orchestrator container replacement.
       - SHIPIT_ORCHESTRATOR_HOST=shipit
       - SHIPIT_ORCHESTRATOR_FALLBACK_HOSTS=shipit
-      # Disk janitor — see src/server/orchestrator/disk-janitor.ts. Runs
-      # once at orchestrator startup (no periodic timer). archiveSession
-      # already drops the workspace at archive time; the 30-day workspace
-      # sweep is a safety net for archives that failed mid-flight or
-      # predate the cleanup code. Chat history, usage, and session
-      # metadata are always preserved (unarchive re-clones from the bare
-      # cache). Cache cutoff matches the in-code default; listed here for
-      # visibility / easy per-host override.
-      - DISK_JANITOR_ARCHIVED_WORKSPACE_DAYS=30
-      - DISK_JANITOR_CACHE_DAYS=30
+      # Disk janitor — see src/server/orchestrator/startup-janitor.ts. Runs
+      # once at orchestrator startup (no periodic timer). SHI-197: one retention
+      # clock for ALL cold artifacts — unreferenced repo/dep caches, the pnpm
+      # store, repo-memory dirs, and the archived-workspace crash-recovery
+      # backstop (archiveSession frees the workspace synchronously, so that sweep
+      # only catches a sync cleanup that crashed). Matches the in-code default;
+      # listed here for visibility / easy per-host override.
+      - DISK_COLD_ARTIFACT_RETENTION_DAYS=30
       # Disk-tier escalation (docs/161). The pressure valve escalates LRU
       # sessions early when free disk runs low; the watermarks are fractions of
       # the host's total disk size, so the same config is correct on any disk.
