@@ -459,6 +459,32 @@ describe("SessionManager", () => {
     });
   });
 
+  describe("docs/218: setMergedHeadSha (auto-reset safety anchor)", () => {
+    it("round-trips the merged head SHA through persistence", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      expect(mgr.get("sess-1")?.mergedHeadSha).toBeUndefined();
+
+      mgr.setMergedHeadSha("sess-1", "abc123def456");
+      expect(mgr.get("sess-1")?.mergedHeadSha).toBe("abc123def456");
+    });
+
+    it("clearMerged drops the merged head SHA along with merged_at", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "Test");
+      mgr.markMerged("sess-1");
+      mgr.setMergedHeadSha("sess-1", "abc123def456");
+      expect(mgr.get("sess-1")?.mergedHeadSha).toBe("abc123def456");
+
+      // docs/202 re-arm: un-merging must also drop the stale merged tip so the
+      // auto-reset feature can never fire against a no-longer-merged session.
+      expect(mgr.clearMerged("sess-1", null)).toBe(true);
+      const s = mgr.get("sess-1");
+      expect(s?.mergedAt).toBeFalsy();
+      expect(s?.mergedHeadSha).toBeUndefined();
+    });
+  });
+
   describe("docs/110: setPinned / archive clears pin", () => {
     it("sets and clears pinnedAt", () => {
       const mgr = new SessionManager(dbManager);

@@ -830,6 +830,62 @@ describe("PrStatusPoller", () => {
     expect(poller.getStatus("s1")?.prState).toBe("merged");
   });
 
+  describe("docs/218: merged head SHA capture (auto-reset anchor)", () => {
+    // The PR is absent from the OPEN bulk view (it merged), so the session
+    // routes through the REST verify which owns terminal promotion.
+    function mergedRestResult(headSha: string | null) {
+      return {
+        number: 42,
+        url: "https://github.com/owner/repo/pull/42",
+        title: "Add feature",
+        body: "Original description",
+        state: "closed" as const,
+        merged_at: "2026-05-21T10:00:00Z",
+        merge_commit_sha: "mergecommitsha",
+        head_sha: headSha,
+        base: "main",
+        additions: 100,
+        deletions: 20,
+      };
+    }
+
+    it("records the merged PR's head.sha as the session's mergedHeadSha", async () => {
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        mergedRestResult("headtipsha123"),
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+
+      await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
+
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      expect(sessionManager.setMergedHeadSha).toHaveBeenCalledWith("s1", "headtipsha123");
+    });
+
+    it("fails closed (no anchor recorded) when the merged PR has no head.sha", async () => {
+      githubAuth = makeGitHubAuth(
+        { data: { repository: { pullRequests: { nodes: [] } } } },
+        mergedRestResult(null),
+      );
+      sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+
+      await poller.forceRefreshSession("s1", { waitForMissingVerify: true });
+
+      // Still promoted to merged — the missing anchor must not block merge
+      // detection; it only disables the later auto-reset for this session.
+      expect(poller.getStatus("s1")?.prState).toBe("merged");
+      expect(sessionManager.setMergedHeadSha).not.toHaveBeenCalled();
+    });
+  });
+
   // A GitHub repo transfer/rename (e.g. nicolasalt/shipit → nikzlabs/shipit)
   // leaves the cached owner stale. The live open-PR view still resolves via
   // GitHub's redirect, but the REST merge probe filters head=<owner>:<branch>

@@ -4,16 +4,22 @@ Three phases, each a self-contained PR. The reset mechanism and its persisted ca
 ship **together** (a destructive op must never run without a durable record); the
 explicit control + default-on flip is the final phase.
 
-## Phase 1 — Capture `mergedHeadSha` (the PR's head SHA)
+## Phase 1 — Capture `mergedHeadSha` (the PR's head SHA) ✅
 
-- [ ] Extend `findPullRequestAnyState` to return the PR's `head.sha` (`github-auth-prs.ts`)
-- [ ] `merged_head_sha TEXT` column + migration (`shared/database.ts`)
-- [ ] `SessionRow.merged_head_sha` + `fromRow` parse (`sessions.ts`)
-- [ ] `SessionInfo.mergedHeadSha?: string` (`shared/types/*`)
-- [ ] Setter on `SessionManager`
-- [ ] Persist `mergedHeadSha = pr.head.sha` in `verifyMissingPr` (`pr-status-poller.ts`),
-      before the merge side effects; fail closed if absent (no SHA stored)
-- [ ] `sessions.test.ts` — `mergedHeadSha` round-trips; poller test — captured on merge
+- [x] Extend `findPullRequestAnyState` to return the PR's `head.sha` (`github-auth-prs.ts`
+      + the `GitHubAuthManager` wrapper in `github-auth.ts`); `head_sha: string | null`,
+      fail-closed to null on a malformed/partial response
+- [x] `merged_head_sha TEXT` column + migration (`shared/database.ts`)
+- [x] `SessionRow.merged_head_sha` + `fromRow` parse (`sessions.ts`)
+- [x] `SessionInfo.mergedHeadSha?: string` (`shared/types/domain-types/session.ts`)
+- [x] `setMergedHeadSha(id, sha)` setter on `SessionManager`; **also** cleared in
+      `clearMerged` (a docs/202 re-arm drops the stale merged tip)
+- [x] Persist `mergedHeadSha = pr.head_sha` in `verifyMissingPr` (`pr-status-poller.ts`),
+      in the `isMerged && !alreadyTerminal` block before the merge side effects; fail
+      closed if absent (warn + no SHA stored, merge detection still proceeds)
+- [x] `sessions.test.ts` — round-trip + cleared-on-`clearMerged`; `pr-status-poller.test.ts`
+      — captured on merge, fails closed when head.sha absent (stub gains `setMergedHeadSha`)
+- [x] `npm run typecheck` + `npm run lint:dev` green
 
 ## Phase 2 — Pre-turn reset mechanism + persisted card (behind a global setting, default OFF)
 

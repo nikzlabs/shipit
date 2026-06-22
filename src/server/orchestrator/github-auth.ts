@@ -579,7 +579,7 @@ export class GitHubAuthManager extends EventEmitter {
   ): Promise<{
     url: string; number: number; base: string; title: string; body: string;
     state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
-    additions: number; deletions: number;
+    head_sha: string | null; additions: number; deletions: number;
   } | null> {
     if (!this._token) return null;
     return findPullRequestAnyStateImpl(this._token, owner, repo, head);

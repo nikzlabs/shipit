@@ -242,6 +242,20 @@ export interface SessionInfo {
    * this breadcrumb is purely additive.
    */
   previousMergedPr?: PreviousMergedPr;
+  /**
+   * docs/218 — the branch-tip SHA the session's merged PR shipped from, captured
+   * from the PR's `head.sha` when the poller promotes the session to merged.
+   *
+   * The safety anchor for auto-reset-merged-branch-on-continue: a later pre-turn
+   * `reset --hard origin/<base>` fires only when the local HEAD still equals this
+   * SHA, proving the branch carries no post-merge work the reset would discard.
+   * It is deliberately the PR's head SHA, NOT local HEAD at merge-detection time —
+   * a turn that ran between the GitHub merge and the poller noticing would have
+   * advanced local HEAD onto unmerged work, and anchoring on that would later
+   * reset the unmerged work away. Absent ⇒ no merged tip recorded ⇒ reset fails
+   * closed. Cleared by `clearMerged` on a docs/202 re-arm.
+   */
+  mergedHeadSha?: string;
 }
 
 /**

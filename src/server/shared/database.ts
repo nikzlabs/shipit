@@ -709,6 +709,16 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT");
   },
+  // docs/218 — the branch tip SHA the session's PR shipped from, captured from
+  // the merged PR's `head.sha` when the poller promotes the session to merged.
+  // It is the safety anchor for the auto-reset-merged-branch-on-continue feature:
+  // a later pre-turn `reset --hard origin/<base>` only fires when the local HEAD
+  // still equals this recorded SHA (proving no post-merge work would be lost).
+  // NULL = no merged tip recorded → reset fails closed. Cleared by `clearMerged`
+  // on a docs/202 re-arm (the merged tip no longer applies once un-merged).
+  (db) => {
+    db.exec("ALTER TABLE sessions ADD COLUMN merged_head_sha TEXT");
+  },
 ];
 
 export class DatabaseManager {

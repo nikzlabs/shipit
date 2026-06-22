@@ -129,6 +129,8 @@ export function makeSessionManager(
     get: (id: string) => sessions.find((s) => s.id === id) as never,
     setPrStatus: vi.fn(),
     markClosed: vi.fn(),
+    // docs/218 — capture the merged PR's head tip as the auto-reset safety anchor.
+    setMergedHeadSha: vi.fn(),
     getAllPrStatuses: vi.fn().mockReturnValue([]),
     // docs/196 — the polling gate calls this to keep the supervisor alive while
     // a child session carries a non-terminal notify-on-merge watch. Default
