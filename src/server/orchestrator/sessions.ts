@@ -58,6 +58,8 @@ interface SessionRow {
   merge_issue_effects: string | null;
   /** docs/202 — JSON `PreviousMergedPr` breadcrumb retained after re-arm, or NULL. */
   previous_merged_pr: string | null;
+  /** docs/218 — the merged PR's head-branch tip SHA; the auto-reset safety anchor. NULL = none. */
+  merged_head_sha: string | null;
 }
 
 /** Maximum number of merged sessions shown per repository in the sidebar. */
@@ -289,6 +291,7 @@ export class SessionManager {
         // Corrupt/legacy JSON — drop the breadcrumb rather than crashing reads.
       }
     }
+    if (row.merged_head_sha) info.mergedHeadSha = row.merged_head_sha;
     return info;
   }
 
@@ -457,6 +460,20 @@ export class SessionManager {
   }
 
   /**
+   * docs/218 — record the merged PR's head-branch tip SHA. Captured by the PR
+   * poller when it promotes the session to merged (from the PR's `head.sha`),
+   * before the merge side effects fire. This is the safety anchor for the
+   * auto-reset-merged-branch-on-continue feature: a later pre-turn
+   * `reset --hard origin/<base>` only fires when the local HEAD still equals
+   * this SHA, proving the branch carries no post-merge work that the reset would
+   * discard. Stored unconditionally (idempotent re-writes of the same value are
+   * harmless); the feature fails closed when it is NULL.
+   */
+  setMergedHeadSha(id: string, sha: string): void {
+    this.db.prepare("UPDATE sessions SET merged_head_sha = ? WHERE id = ?").run(sha, id);
+  }
+
+  /**
    * docs/202 — un-merge a session that was re-armed after a rebase. Clears
    * `merged_at` (mirroring how {@link setPrStatus} clears `closed_at` on reopen)
    * and stashes a display-only `PreviousMergedPr` breadcrumb of the prior PR.
@@ -473,8 +490,11 @@ export class SessionManager {
    */
   clearMerged(id: string, previousMergedPr: PreviousMergedPr | null): boolean {
     const json = previousMergedPr === null ? null : JSON.stringify(previousMergedPr);
+    // docs/218 — also drop the merged-tip anchor: once un-merged there is no
+    // merged tip, and a stale value must never let the auto-reset feature fire
+    // against a session that is no longer in the merged state.
     const result = this.db.prepare(
-      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ? WHERE id = ? AND merged_at IS NOT NULL",
+      "UPDATE sessions SET merged_at = NULL, previous_merged_pr = ?, merged_head_sha = NULL WHERE id = ? AND merged_at IS NOT NULL",
     ).run(json, id);
     return result.changes > 0;
   }

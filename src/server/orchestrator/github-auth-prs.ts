@@ -98,7 +98,7 @@ export async function findPullRequestAnyState(
 ): Promise<{
   url: string; number: number; base: string; title: string; body: string;
   state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
-  additions: number; deletions: number;
+  head_sha: string | null; additions: number; deletions: number;
 } | null> {
   const res = await fetchGitHub(
     `https://api.github.com/repos/${owner}/${repo}/pulls?head=${owner}:${head}&state=all&sort=updated&direction=desc&per_page=1`,
@@ -109,7 +109,7 @@ export async function findPullRequestAnyState(
   const prs = (await res.json()) as {
     html_url: string; number: number; base: { ref: string }; title: string; body: string | null;
     state: "open" | "closed"; merged_at: string | null; merge_commit_sha: string | null;
-    additions: number; deletions: number;
+    head: { sha: string } | null; additions: number; deletions: number;
   }[];
   if (prs.length === 0) return null;
 
@@ -143,6 +143,12 @@ export async function findPullRequestAnyState(
     state: pr.state,
     merged_at: pr.merged_at,
     merge_commit_sha: pr.merge_commit_sha ?? null,
+    // docs/218 — the branch tip the PR shipped from. Recorded as the session's
+    // `mergedHeadSha` safety anchor so a later auto-reset on continue only fires
+    // when the local branch still sits exactly at this commit (no post-merge
+    // work to clobber). The list endpoint includes `head.sha`; fail closed to
+    // null if a malformed/partial response omits it.
+    head_sha: pr.head?.sha ?? null,
     additions,
     deletions,
   };
