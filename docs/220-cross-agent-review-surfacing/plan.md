@@ -110,9 +110,10 @@ the middle re-typing it).
   not gating** — see truncation below. So no flag has to thread the shim →
   broker → route → service path; the content already flows back to
   `services/sub-agent.ts` (`result.text`) and is written into the card there.
-  A spawn *may* still carry an optional hint for *how richly* to render (review
-  styling vs plain output), but that is cosmetic, not a gate on whether content
-  is shown.
+  **Decided:** all brokered output renders **identically** — an attributed
+  markdown preview. There is no separate "review styling" and **no render-mode
+  hint** in v1; a review is just a consult card whose content happens to be
+  findings, and the attribution (`subAgentId`) is already on the card.
 - **Each brokered call is its own card — no patch-in-place.** This deliberately
   **rejects** docs/203's single-card (`submit_review` patches the same card)
   semantics for the brokered path. A re-review is a *separate agent call*; from
@@ -127,12 +128,19 @@ the middle re-typing it).
   brokered call is a fact the scrollback keeps.
 - **Stripped-down in card, full review in a viewer (truncation).** The card
   shows a **preview** of the output (a leading slice / summary line), not the
-  whole thing inline. Clicking it opens the **full markdown** in a viewer (the
-  shared markdown renderer used by the file dialog / Present tab). The persisted
-  blob keeps the full text up to a cap, with the spawn primitive's existing
-  `truncated` flag marking a hard cut. "Available, not shouting": a routine
-  delegation collapses to a quiet line, a review expands to its findings on
-  demand.
+  whole thing inline. Clicking it opens the **full markdown** in a viewer. The
+  persisted blob keeps the full text up to a cap, with the spawn primitive's
+  existing `truncated` flag marking a hard cut. "Available, not shouting": a
+  routine delegation collapses to a quiet line, a review expands to its findings
+  on demand.
+  - **The viewer must be read-only and must not be a file view.** This output is
+    transcript content, **not** a workspace file. Do **not** route it through
+    `FilePreviewModal` / a workspace-relative path — that would wrongly expose
+    file-review affordances (inline comments, "ask agent to review") on
+    generated, non-file content. **Decided:** a **dedicated read-only modal/pane
+    wrapping `MarkdownContent`** — *not* `FileContentView` (which carries
+    file-review wiring even when flags disable it). The comment / ask-review
+    handlers simply do not exist on this path.
 
 ## Consequence: `submit_review` may not need to exist
 
@@ -189,8 +197,9 @@ reach it. B governs **brokered** calls; `Task` is not one.
   content field instead of dropping it. Keeps the per-spawn `cardId` — no
   patch-in-place.
 - `src/server/shared/types/domain-types/chat.ts` — `SubAgentConsultCard` gains a
-  content field (e.g. `outputMarkdown`) plus the `truncated` marker if not
-  already carried.
+  content field (e.g. `outputMarkdown`). Reuse the **existing** `truncated`
+  field (already on the type at `chat.ts:48`) for the hard-cut marker — no new
+  truncation flag.
 - `src/server/orchestrator/chat-history.ts` — `toRow`/`fromRow` already persist
   the whole card as JSON in the existing `sub_agent_consult` column (added in
   `shared/database.ts`), so the new content field rides inside that blob — **no
@@ -199,12 +208,24 @@ reach it. B governs **brokered** calls; `Task` is not one.
   lists `subAgentConsult`).
 - `src/client/components/MessageList.tsx` — `SubAgentConsultCardRow` renders the
   **stripped-down preview** + a click target.
-- The shared markdown viewer (file-dialog / Present renderer, unified per the
-  recent shared-renderer change) — opened on click to show the **full** output.
+- A **read-only** markdown viewer for the full output — a dedicated modal/pane
+  wrapping `MarkdownContent`, **not** `FilePreviewModal` over a workspace path
+  (see "How the card behaves" → viewer note). Must carry no file-review,
+  comment, or ask-review affordances.
+- `src/client/utils/compose-review-body.ts` — **in scope.** This is where the
+  `/review` flow currently instructs the parent to call `submit_review` after
+  `shipit agent run` and to patch the same card on re-review (lines ~15–17,
+  101–107, 128). Under B, rewrite the cross-agent prompt so brokered output is
+  surfaced by the consult card automatically: the parent uses stdout **only** to
+  act / fix / re-review and does **not** call `submit_review` for brokered
+  reviews. (The same-model `Task` fallback path is unaffected and may keep its
+  current narration.)
 - `src/server/session/mcp-tools/review.ts` — `submit_review` demoted to
   presentation-only or removed; if removed, drop its bridge registration and the
   `/review` flow's dependence on it.
 
-Out of scope under B (would only be needed for the rejected Option A gate): a
-`--surface review` flag threaded through the shim / broker / spawn route /
-`compose-review-body.ts`. Not built.
+Out of scope under B: a `--surface review` flag threaded through the shim /
+broker / spawn route (that was only needed for the rejected Option A gate; B
+carries content for every brokered spawn, so no flag). Note this is distinct from
+the `compose-review-body.ts` change above, which *is* in scope — it removes the
+`submit_review` instruction, it does not add a gate flag.

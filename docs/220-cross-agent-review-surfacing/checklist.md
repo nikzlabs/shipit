@@ -21,8 +21,13 @@ its own card (no patch-in-place).
 
 - [ ] `SubAgentConsultCardRow` (`MessageList.tsx`) renders the stripped-down
       preview + a click target
-- [ ] Click opens the full output in the shared markdown viewer (file-dialog /
-      Present renderer)
+- [ ] Click opens the full output in a **read-only** markdown viewer (dedicated
+      modal/pane wrapping `MarkdownContent`) — **not** `FilePreviewModal` over a
+      workspace path; no comment / ask-review affordances
+- [ ] `compose-review-body.ts`: rewrite the cross-agent prompt so brokered output
+      is surfaced by the consult card — parent uses stdout only to act/fix/re-review,
+      **no `submit_review` call** for brokered reviews; leave the `Task` fallback
+      path's narration intact
 - [ ] Confirm `CARD_MESSAGE_FIELDS` already covers `subAgentConsult` (it does)
 
 ## Tests
@@ -31,7 +36,10 @@ its own card (no patch-in-place).
       distinct `cardId` per spawn (two review spawns → two cards, not patched)
 - [ ] `chat-history` round-trip + no-dup-on-replay for the new content field;
       add to `EVERY_OPTIONAL_FIELD_MESSAGE`
-- [ ] Client card test — preview render + click-to-open-full-markdown
+- [ ] Client card test — preview render + click-to-open-full-markdown in the
+      read-only viewer (asserts no file-review/comment affordances)
+- [ ] `compose-review-body.test.ts` — cross-agent prompt no longer instructs a
+      `submit_review` call; `Task` fallback path unchanged
 - [ ] Remove/adjust the docs/203 `submit_review` single-card / patch tests that
       no longer hold for the brokered path
 
