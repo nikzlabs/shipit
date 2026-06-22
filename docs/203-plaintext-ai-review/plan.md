@@ -13,11 +13,12 @@ description: Replace the structured submit_review_comments flow with a plain-tex
 >
 > **Open reconciliation (pre-decision):** the "parent calls `submit_review` to
 > record the card, identically for `Task` and cross-agent" mechanism below (§3 +
-> "submit_review") is under review. See `docs/144` → *Proposal — ShipIt renders
-> what it brokers*: it argues the **cross-agent** card should be rendered
-> deterministically by ShipIt from the brokered result (a content-carrying
-> `sub_agent_consult_card`), not delegated back to the parent agent, which would
-> shrink or remove `submit_review`'s role here. Nothing is changed yet.
+> "submit_review") is under review. See `docs/220-cross-agent-review-surfacing`
+> (*"ShipIt renders what it brokers"*): it argues the **cross-agent** card should
+> be rendered deterministically by ShipIt from the brokered result (a
+> content-carrying `sub_agent_consult_card`), not delegated back to the parent
+> agent, which would shrink or remove `submit_review`'s role here. Nothing is
+> changed yet.
 
 ## Goal
 
