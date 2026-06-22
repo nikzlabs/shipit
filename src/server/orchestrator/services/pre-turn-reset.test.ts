@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { computeResetEligible, autoResetMergedBranchOnContinue, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { computeResetEligible, autoResetMergedBranchOnContinue, isResetEligible, type PreTurnResetDeps } from "./pre-turn-reset.js";
 import type { GitManager } from "../../shared/git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
@@ -173,5 +173,60 @@ describe("autoResetMergedBranchOnContinue", () => {
     const git = makeGit({ resetHardToRemoteBase: vi.fn().mockRejectedValue(new Error("origin/main missing")) });
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
     expect(out.moved).toBe(false);
+  });
+
+  it("skips when the user unticked the control for this send (intent=false)", async () => {
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws", false);
+    expect(out.moved).toBe(false);
+    expect(git.fetch).not.toHaveBeenCalled();
+    expect(git.resetHardToRemoteBase).not.toHaveBeenCalled();
+  });
+
+  it("proceeds when intent is true (control left checked)", async () => {
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws", true);
+    expect(out.moved).toBe(true);
+    expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+  });
+
+  it("proceeds when intent is undefined (no control on this send path → follow setting)", async () => {
+    const git = makeGit();
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws", undefined);
+    expect(out.moved).toBe(true);
+  });
+});
+
+describe("isResetEligible (composer-control signal)", () => {
+  function makeDeps(over: Partial<Omit<PreTurnResetDeps, "getAutoResetMergedBranch">> = {}) {
+    return {
+      getSession: () => makeSession(),
+      getPrStatus: () => makePrStatus(),
+      createGitManager: () => makeGit(),
+      ...over,
+    };
+  }
+
+  it("is true for a merged, untouched, clean branch (safety-only — ignores the setting)", async () => {
+    expect(await isResetEligible(makeDeps(), "s1", "/ws")).toBe(true);
+  });
+
+  it("cheap-exits to false for a non-merged session without constructing git", async () => {
+    const createGitManager = vi.fn(() => makeGit());
+    const s = makeSession();
+    delete s.mergedAt;
+    const eligible = await isResetEligible(makeDeps({ getSession: () => s, createGitManager }), "s1", "/ws");
+    expect(eligible).toBe(false);
+    expect(createGitManager).not.toHaveBeenCalled();
+  });
+
+  it("is false when the branch moved off the merged tip", async () => {
+    const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
+    expect(await isResetEligible(makeDeps({ createGitManager: () => git }), "s1", "/ws")).toBe(false);
+  });
+
+  it("is fail-safe false on a git throw", async () => {
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
+    expect(await isResetEligible(makeDeps({ createGitManager: () => git }), "s1", "/ws")).toBe(false);
   });
 });

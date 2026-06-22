@@ -69,6 +69,8 @@ export interface GlobalSettings {
   autoResolveConflicts: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
+  /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
+  autoResetMergedBranch: boolean;
   /**
    * docs/144 — when true, a pinned session's agent may spawn another registered
    * agent for a one-shot sub-task (`shipit agent run`). Default off.

@@ -45,6 +45,8 @@ export interface WsGlobalSettings {
   autoResolveConflicts?: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi?: boolean;
+  /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+  autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
   /** docs/217 — per-agent sub-agent defaults (Control A), keyed by agent id. */

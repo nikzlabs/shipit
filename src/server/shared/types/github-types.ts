@@ -491,3 +491,17 @@ export interface WsPrNotableFiles {
   /** The current, fully-recomputed notable-file list (may be empty). */
   notableFiles: NotableFileChange[];
 }
+
+/**
+ * docs/218 — transient signal: is this session reset-eligible right now (merged,
+ * branch untouched since the merge, clean tree, plain repo state)? Drives the
+ * composer's "start from latest base" control visibility. Safety-only — the
+ * client ANDs it with the `autoResetMergedBranch` setting. Recomputed and pushed
+ * on session activation and after each turn; never persisted (like
+ * `pr_notable_files` / `preview_status`).
+ */
+export interface WsResetEligible {
+  type: "reset_eligible";
+  sessionId: string;
+  eligible: boolean;
+}

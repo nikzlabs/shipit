@@ -33,6 +33,9 @@ export interface PreTurnResetDeps {
   getAutoResetMergedBranch: () => boolean;
 }
 
+/** The deps the safety-only eligibility *signal* needs (no global-setting gate). */
+export type ResetEligibleSignalDeps = Omit<PreTurnResetDeps, "getAutoResetMergedBranch">;
+
 export interface ResetOutcome {
   /** True only when the branch was actually moved. */
   moved: boolean;
@@ -100,15 +103,46 @@ export async function computeResetEligible(
  * `git fetch` yields to the event loop, during which a terminal edit or a queued
  * agent turn could move the branch out from under us (TOCTOU).
  */
+/**
+ * Safety-only eligibility for a session, used to drive the client's composer
+ * control visibility (`reset_eligible` signal). EXCLUDES the global setting and
+ * the per-send intent — the client ANDs this with `autoResetMergedBranch`, and
+ * the pre-turn helper re-validates the full gate at send time, so this is purely
+ * "would a reset be safe right now?". Fail-safe false (and cheap-exits for
+ * non-merged sessions via `computeResetEligible`).
+ */
+export async function isResetEligible(
+  deps: ResetEligibleSignalDeps,
+  sessionId: string,
+  sessionDir: string,
+): Promise<boolean> {
+  try {
+    const session = deps.getSession(sessionId);
+    if (!session?.mergedAt) return false; // cheap-exit before constructing git
+    const prStatus = deps.getPrStatus(sessionId);
+    const git = deps.createGitManager(sessionDir);
+    return await computeResetEligible(session, prStatus, git);
+  } catch {
+    return false;
+  }
+}
+
 export async function autoResetMergedBranchOnContinue(
   deps: PreTurnResetDeps,
   sessionId: string,
   sessionDir: string,
+  /**
+   * The per-send intent from the composer control (Phase 3). `false` = the user
+   * unticked "start from latest base" for this message → skip. `true`/`undefined`
+   * = follow the global setting (the control was checked, or this send path has
+   * no control, e.g. a programmatic follow-up).
+   */
+  intent?: boolean,
 ): Promise<ResetOutcome> {
   try {
-    // Phase 3 will also honor a per-send opt-out here; Phase 2 gates on the
-    // global setting alone (default OFF — the mechanism ships dark).
+    // Gate on the global setting AND an explicit per-send opt-out.
     if (!deps.getAutoResetMergedBranch()) return NOT_MOVED;
+    if (intent === false) return NOT_MOVED;
 
     const session = deps.getSession(sessionId);
     const prStatus = deps.getPrStatus(sessionId);

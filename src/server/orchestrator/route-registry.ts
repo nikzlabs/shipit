@@ -10,6 +10,7 @@ import { getGitIdentity } from "./git-config.js";
 import { pushToOrigin, isGitAuthError } from "./git-utils.js";
 import { isNonFastForwardError } from "./services/git.js";
 import { notableFilesForBranch } from "./services/notable-files.js";
+import { isResetEligible } from "./services/pre-turn-reset.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
@@ -848,6 +849,29 @@ export async function registerRoutes(
                 });
               } catch (err) {
                 console.error(`[pr-lifecycle] notableFiles re-seed failed for ${sid}:`, getErrorMessage(err));
+              }
+            })();
+          }
+          // docs/218 — push the composer's reset-eligibility signal on activation
+          // so the "start from latest base" control can paint immediately for a
+          // merged, untouched session (before the user sends a turn). Git-derived
+          // and transient (like notableFiles above); recomputed each connect.
+          if (dir) {
+            const eligibleDir = dir;
+            void (async () => {
+              try {
+                const eligible = await isResetEligible(
+                  {
+                    getSession: (id) => sessionManager.get(id),
+                    getPrStatus: (id) => sessionManager.getPrStatus(id),
+                    createGitManager,
+                  },
+                  sid,
+                  eligibleDir,
+                );
+                send({ type: "reset_eligible", sessionId: sid, eligible });
+              } catch (err) {
+                console.error(`[pre-turn-reset] eligibility signal failed for ${sid}:`, getErrorMessage(err));
               }
             })();
           }

@@ -369,7 +369,7 @@ export default function App() {
   // ── Callback helpers ──
   const handleSend = useCallback(
     async (payload: SendPayload) => {
-      const { text, uploadRefs, uploads: payloadUploads } = payload;
+      const { text, uploadRefs, uploads: payloadUploads, resetMergedBranch } = payload;
       // docs/203 — `/review [@path]` is a chat-native entry point to AI review:
       // same composed prompt as the modal button, routed through
       // `send_review_message` so the orchestrator authorizes the review tool. The
@@ -453,6 +453,8 @@ export default function App() {
             const pm = settings.getPermissionMode(currentSessionId);
             return pm !== "auto" ? pm : undefined;
           })(),
+          // docs/218 — per-send opt-out for the auto-reset-merged-branch control.
+          ...(resetMergedBranch !== undefined ? { resetMergedBranch } : {}),
         };
 
         sendUserMessage({
@@ -767,7 +769,7 @@ export default function App() {
     useUiStore.getState().setSettingsTab(tab);
     useUiStore.getState().setSettingsOpen(true);
     try {
-      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; enableSubAgents?: boolean; agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
+      const data = await apiGet<{ settings: { gitIdentity: { name: string; email: string }; systemPrompt: string; agents: AgentOption[]; maxIdleContainers?: number; agentSystemInstructionsEnabled?: boolean; agentSystemInstructions?: string; autoCreatePr?: boolean; liveSteering?: boolean; autoResolveConflicts?: boolean; autoFixCi?: boolean; autoResetMergedBranch?: boolean; enableSubAgents?: boolean; agentSubAgentDefaults?: Record<string, { reasoningEffort?: string }>; voiceDeliveryMode?: "native" | "external" | "both"; voiceWebhookConfigured?: boolean; providerAccounts?: ProviderAccount[] } }>("/api/bootstrap");
       useGitStore.getState().setIdentity(data.settings.gitIdentity);
       useSettingsStore.getState().setSystemPromptContent(data.settings.systemPrompt);
       useSettingsStore.getState().setHasSystemPrompt(data.settings.systemPrompt.length > 0);
@@ -778,6 +780,7 @@ export default function App() {
       if (data.settings.liveSteering !== undefined) useSettingsStore.getState().setLiveSteering(data.settings.liveSteering);
       if (data.settings.autoResolveConflicts !== undefined) useSettingsStore.getState().setAutoResolveConflicts(data.settings.autoResolveConflicts);
       if (data.settings.autoFixCi !== undefined) useSettingsStore.getState().setAutoFixCi(data.settings.autoFixCi);
+      if (data.settings.autoResetMergedBranch !== undefined) useSettingsStore.getState().setAutoResetMergedBranch(data.settings.autoResetMergedBranch);
       if (data.settings.enableSubAgents !== undefined) useSettingsStore.getState().setEnableSubAgents(data.settings.enableSubAgents);
       if (data.settings.agentSubAgentDefaults !== undefined) useSettingsStore.getState().setAgentSubAgentDefaults(data.settings.agentSubAgentDefaults);
       if (data.settings.voiceDeliveryMode !== undefined) useSettingsStore.getState().setVoiceDeliveryMode(data.settings.voiceDeliveryMode);

@@ -68,6 +68,7 @@ export async function getGlobalSettings(
   const liveSteering = credentialStore?.getLiveSteering() ?? true;
   const autoResolveConflicts = credentialStore?.getAutoResolveConflicts() ?? false;
   const autoFixCi = credentialStore?.getAutoFixCi() ?? false;
+  const autoResetMergedBranch = credentialStore?.getAutoResetMergedBranch() ?? true;
   const enableSubAgents = credentialStore?.getEnableSubAgents() ?? false;
   const agentSubAgentDefaults = credentialStore?.getAllAgentSubAgentDefaults() ?? {};
   // Settings page renders the per-agent "Parallel sessions" guidance as a
@@ -81,7 +82,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? credentialStore?.listProviderAccounts() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
+  return { gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts };
 }
 
 // ---- Mutation operations ----
@@ -132,6 +133,8 @@ export interface SaveGlobalSettingsOptions {
   autoResolveConflicts?: boolean;
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi?: boolean;
+  /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. */
+  autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
   /**
@@ -152,7 +155,7 @@ export async function saveGlobalSettings(
     onAutoResolveConflictsEnabled,
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
-    autoResolveConflicts, autoFixCi, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
+    autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, agentSubAgentDefaults, voiceDeliveryMode,
   } = opts;
 
   // Save git identity if provided
@@ -250,6 +253,14 @@ export async function saveGlobalSettings(
     const prev = credentialStore.getAutoFixCi();
     credentialStore.setAutoFixCi(autoFixCi);
     if (!prev && autoFixCi) opts.onAutoFixCiEnabled?.();
+  }
+
+  // docs/218 — save the auto-reset-merged-branch toggle. No re-broadcast hook:
+  // the `reset_eligible` signal is recomputed on each session activation and
+  // post-turn, so a flipped setting takes effect the next time the user opens or
+  // acts in a merged session (the client ANDs the setting with the signal).
+  if (autoResetMergedBranch !== undefined) {
+    credentialStore.setAutoResetMergedBranch(autoResetMergedBranch);
   }
 
   return getGlobalSettings(agentRegistry, workspaceDir, credentialStore, providerAccountManager);

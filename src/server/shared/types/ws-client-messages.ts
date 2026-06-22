@@ -17,6 +17,13 @@ export interface WsSendMessage {
    * `UserReviewCard` instead of a plain text bubble after a reload.
    */
   userReview?: { filePaths: string[]; commentCount: number };
+  /**
+   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
+   * = the user unticked "start from the latest base" for THIS message (skip the
+   * reset). `true`/absent = follow the global setting. Non-sticky: it's a
+   * per-message choice, never persisted.
+   */
+  resetMergedBranch?: boolean;
 }
 
 export interface WsAnswerQuestion {

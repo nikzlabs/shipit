@@ -393,6 +393,31 @@ arrives with Phase 3's settings UI. Phase 2 is verified by unit + git-fixture te
 (`pre-turn-reset.test.ts`, `git-rearm-detect.test.ts`, the card round-trip/idempotency
 tests); the live end-to-end observation folds into Phase 3.
 
+**Phase 3 — `resetEligible` is a standalone WS signal, NOT a poller field.** The plan's
+"Eligibility signal" section imagined surfacing `resetEligible` on the PR status
+payload. In practice the poller deliberately **excludes merged sessions** from its
+broadcast flows (`broadcastAllSnapshots` skips `mergedSessions`), and `attachAutomationState`
+is synchronous on the poll path — so computing a git-derived boolean there would mean an
+async refactor of the poll loop AND fighting the merged-session exclusion. Instead the
+signal is a dedicated transient WS message (`reset_eligible`), computed by `isResetEligible`
+(safety-only) and pushed at exactly the two points the design names: **session activation**
+(`route-registry.ts`, mirroring the existing `pr_notable_files` git-derived re-seed) and
+**post-turn** (the `postTurnReArmReset` every-turn closure). Client stores it in
+`pr-store.resetEligibleBySession`; the composer ANDs it with the `autoResetMergedBranch`
+setting. Transient, never persisted — recomputed on each (re)connect, so it self-heals.
+
+**Phase 3 — per-send intent.** `WsSendMessage.resetMergedBranch` (`false` = unticked →
+skip; `true`/absent = follow the setting) threads `send-message.ts` → `runAgentWithMessage`
+→ `autoResetMergedBranchOnContinue`'s new `intent` arg. The composer carries it only when
+the control was visible at send time; the server still re-validates the full safety gate,
+so the checkbox is intent, never authority.
+
+**Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
+`?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default
+true to match. A flipped toggle takes effect on the next activation/turn (the signal is
+recomputed there) — no immediate global re-broadcast, deliberately (unlike `autoFixCi`,
+which has a per-session poll snapshot to refresh; this one doesn't).
+
 ## Review notes
 
 Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD

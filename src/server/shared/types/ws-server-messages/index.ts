@@ -7,6 +7,7 @@ import type {
   WsPrStatus,
   WsPrLifecycleUpdate,
   WsPrNotableFiles,
+  WsResetEligible,
 } from "../github-types.js";
 import type { WsTerminalOutput, WsTerminalExit, WsTerminalReconnecting, WsLogSnapshot, WsLogAppend } from "../terminal-types.js";
 import type { WsUsageStats, WsUsageUpdate, WsTurnUsageUpdate } from "../usage-types.js";
@@ -196,6 +197,7 @@ export type WsServerMessage =
   | WsRepoList
   | WsPrLifecycleUpdate
   | WsPrNotableFiles
+  | WsResetEligible
   | WsSystemUserMessage
   | WsSystemNotice
   | WsCommitLinked

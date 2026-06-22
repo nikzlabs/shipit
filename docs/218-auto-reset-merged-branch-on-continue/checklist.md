@@ -51,19 +51,29 @@ explicit control + default-on flip is the final phase.
       card" check needs the toggle UI, which lands in Phase 3 (Phase 2 ships dark, default
       OFF). Phase 2 is verified by the tests above; live observation folds into Phase 3.
 
-## Phase 3 — Explicit composer control + per-send override + settings UI (default ON)
+## Phase 3 — Explicit composer control + per-send override + settings UI (default ON) ✅
 
-- [ ] `resetMergedBranch?: boolean` on the user message (`ws-client-messages.ts`,
-      `send-message.ts`) — per-send intent threaded into the helper
-- [ ] Surface transient `resetEligible` on session/PR state (recompute on activation
-      + post-turn)
-- [ ] Composer control (placement B — inside the border, top row): shown iff
-      `resetEligible && getAutoResetMergedBranch()`, checked by default, opt-out non-sticky
-- [ ] Settings UI toggle for `autoResetMergedBranch`; flip default to **on**
-- [ ] Client + server tests (control visibility, override threading, opt-out non-sticky)
+- [x] `resetMergedBranch?: boolean` on the user message (`ws-client-messages.ts` →
+      `send-message.ts` → `runAgentWithMessage`) — per-send intent threaded into the
+      helper as the `intent` arg (`false` = skip; `true`/undefined = follow the setting)
+- [x] Transient `reset_eligible` WS signal (NOT the poller — it excludes merged
+      sessions): `isResetEligible` helper (safety-only); pushed on **activation**
+      (`route-registry.ts`, mirroring the `pr_notable_files` re-seed) and **post-turn**
+      (the `postTurnReArmReset` closure in `agent-execution.ts`). Client store:
+      `pr-store.resetEligibleBySession` + `reset-eligible` handler
+- [x] Composer control (placement B — inside the border, top row, `rounded-t-xl`, no
+      border-radius change): shown iff `resetEligible && autoResetMergedBranch`, checked
+      by default, per-send untick non-sticky (re-checks on each reappearance)
+- [x] Settings UI toggle (`AdvancedTab.tsx`) for `autoResetMergedBranch`; full round-trip
+      (credential-store + `GlobalSettings` + `WsGlobalSettings` + bootstrap PUT + settings
+      store + `global_settings` handler + both bootstrap hydration points); **default flipped ON**
+- [x] Tests: `pre-turn-reset.test.ts` (intent matrix + `isResetEligible`);
+      `reset-eligible.test.ts` (store handler); `MessageInput.test.tsx` (control
+      visibility off/on, default-checked send, per-send untick)
+- [x] `npm run typecheck` + `npm run lint:dev` green
 
 ## Cross-cutting
 
-- [ ] `npm run typecheck` + `npm run lint:dev` green each phase
-- [ ] Update `plan.md` "as built" notes where reality diverges
-- [ ] Comment progress on SHI-189 per PR (`Refs SHI-189`; final PR `Closes SHI-189`)
+- [x] `npm run typecheck` + `npm run lint:dev` green each phase
+- [x] Update `plan.md` "as built" notes where reality diverges
+- [x] Comment progress on SHI-189 per PR (`Refs SHI-189`; final PR `Closes SHI-189`)

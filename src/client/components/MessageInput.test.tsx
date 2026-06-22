@@ -3,6 +3,8 @@ import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import { MessageInput } from "./MessageInput.js";
 import type { PermissionMode } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
+import { usePrStore } from "../stores/pr-store.js";
+import { useSettingsStore } from "../stores/settings-store.js";
 
 afterEach(cleanup);
 
@@ -665,6 +667,53 @@ describe("MessageInput", () => {
       fireEvent.change(textarea, { target: { value: "/rev", selectionStart: 4 } });
       fireEvent.click(screen.getByText("$review"));
       expect(textarea.value).toBe("$review ");
+    });
+  });
+
+  describe("docs/218 — start-from-latest-base control", () => {
+    const typeAndSend = () => {
+      const textarea = screen.getByPlaceholderText("Describe what to build... (type @ to attach files)");
+      fireEvent.change(textarea, { target: { value: "next slice of work" } });
+      fireEvent.click(screen.getByLabelText("Send message"));
+    };
+
+    afterEach(() => {
+      usePrStore.setState({ resetEligibleBySession: {} });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+    });
+
+    it("is hidden when the session is not reset-eligible", () => {
+      usePrStore.setState({ resetEligibleBySession: {} });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+    });
+
+    it("is hidden when eligible but the global setting is off", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: false });
+      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+    });
+
+    it("shows when eligible + setting on, and sends resetMergedBranch:true checked by default", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn();
+      render(<MessageInput onSend={onSend} disabled={false} sessionId="s1" />);
+      expect(screen.getByTestId("reset-merged-branch-control")).toBeInTheDocument();
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ resetMergedBranch: true }));
+    });
+
+    it("sends resetMergedBranch:false after the user unticks it (per-send opt-out)", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      const onSend = vi.fn();
+      render(<MessageInput onSend={onSend} disabled={false} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control"));
+      typeAndSend();
+      expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ resetMergedBranch: false }));
     });
   });
 
