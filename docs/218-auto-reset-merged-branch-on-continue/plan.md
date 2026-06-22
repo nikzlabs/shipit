@@ -39,6 +39,11 @@ moved since the merge**, ShipIt should, **before the agent turn runs**:
 2. **Inject a context message** into the turn telling the agent its previous PR
    merged and the branch was moved to the latest base, so it starts fresh against
    current code (and does not try to "re-apply" already-shipped work).
+3. **Emit a persisted card into the chat transcript** so the user plainly sees that
+   the branch was updated to latest automatically — a destructive, automatic git op
+   must not happen silently. This is a **first-class deliverable**, not a follow-up:
+   it does **not** rely on the docs/216 "ready" card as the user-facing signal
+   (which is indirect, and in practice has not been firing reliably).
 
 …and otherwise do nothing — a session that hasn't merged, or whose branch the user
 has *already* moved past the merge, is untouched.
@@ -129,6 +134,7 @@ HEAD === mergedHeadSha?              no → return (user has new work; docs/202/
                                      yes ↓
 git fetch origin
 git reset --hard origin/<base>
+→ emit the persisted "branch updated" card (emitChatCard) for the user
 → inject the agent context message for this turn
 → return { moved: true, base, fromSha, toSha }
 ```
@@ -152,10 +158,14 @@ Wire it through a **shared helper** so the dispatch / system-turn path
 primary target; the system-turn path is lower priority (a CI auto-fix turn on a
 merged session is rare) but should share the helper rather than diverge.
 
-### The injected agent message
+### Two surfaces: the agent prompt prefix and the user-facing card
 
-The prompt passed to the agent is a plain string (`assembleAgentPrompt(...)`).
-Prepend a clearly-framed system note for this turn only:
+The reset speaks to **two audiences**, over two channels, with two different
+messages.
+
+**(a) Agent — per-turn prompt prefix.** The prompt passed to the agent is a plain
+string (`assembleAgentPrompt(...)`). Prepend a clearly-framed system note for this
+turn only:
 
 ```
 [System] Your previous pull request (#<N>) was merged. This branch has been
@@ -169,6 +179,44 @@ This is a per-turn prompt prefix (not persisted chat content), so it rides the
 existing prompt-assembly path with no new persistence machinery. The `#<N>` and
 base come from the merged-PR snapshot.
 
+**(b) User — a persisted "branch updated" card.** Emit a small card into the chat
+transcript, positioned **right after the user's message bubble and before the
+agent's response** (it is produced at continue-time, just after the reset, before
+`executeAgentTurn`). Plain, friendly wording — it does not need to mirror the agent
+prefix:
+
+> **Branch updated to latest `<base>`** · Your previous PR #N merged, so this
+> session's branch was automatically reset to the latest `<base>` before continuing.
+
+This is **transcript content, so it must be persisted, not emit-only** (CLAUDE.md
+"Chat transcript content MUST be persisted"). It is a **side-channel card** — it
+arrives outside the agent-event stream (a pre-turn orchestrator action), so
+`buildTurnMessages` won't capture it on its own. Follow the established
+`emitChatCard` recipe (docs/188, docs/191):
+
+1. Emit via **`emitChatCard`** (`chat-card-persistence.ts`), never bare
+   `emitMessage` — it atomically emits the live card, records it in-band (anchored by
+   `afterGroupIndex` so it interleaves at its true position), and persists the
+   in-progress turn.
+2. Add a typed `PersistedMessage` field (e.g. `branchAutoReset: { base, prNumber,
+   prUrl, fromSha, toSha }`) + a column + `toRow`/`fromRow` + a `database.ts`
+   migration.
+3. Rehydrate it in `loadSessionHistory` (live append + idempotent store upsert by id).
+4. Register it in `CARD_MESSAGE_FIELDS` (`visual-elements.ts`) — it renders on an
+   empty-text message.
+5. Add the history round-trip + no-duplicate-on-replay tests and extend
+   `EVERY_OPTIONAL_FIELD_MESSAGE`.
+
+The two guard tests (`chat-history.test.ts`, `visual-elements.test.ts`) make this
+self-enforcing — a forgotten step is a red build naming the field.
+
+**Why this is the user-facing signal of record (not docs/216).** docs/216's "ready"
+card is indirect (it conveys "session is fresh/ready," not "I just rewrote your
+branch") and has not been firing reliably in practice. A destructive automatic reset
+warrants its own explicit, persisted statement in the transcript. The docs/216 card,
+if/when it fires post-turn, is then merely corroborating — this feature does not
+depend on it.
+
 ## Composition with docs/202 / docs/216 — no new card logic
 
 After the pre-turn reset, `HEAD == origin/<base>`. The turn runs. The **existing**
@@ -181,8 +229,10 @@ post-turn hooks then settle the PR card with zero new code:
   "ready" card** carrying the `previousMergedPr` breadcrumb.
 
 Either way the stale merged card is cleared by machinery that already exists and is
-already tested. This feature's net addition is purely the **pre-turn reset + the
-injected message**; the post-merge card lifecycle is unchanged.
+already tested. This feature's net addition is the **pre-turn reset + the injected
+agent message + the persisted user-facing "branch updated" card**; the post-merge PR
+card lifecycle (docs/202/216) is unchanged and is treated as corroborating, not as
+the user-facing signal of record.
 
 Because docs/216 clears `merged_at` post-turn, the pre-turn gate (`session.mergedAt`)
 is false on subsequent turns, so the reset naturally **fires once** per merge.
@@ -227,9 +277,13 @@ is false on subsequent turns, so the reset naturally **fires once** per merge.
 | Persist | `src/server/shared/database.ts` | `merged_head_sha TEXT` column + migration |
 | Persist | `src/server/orchestrator/sessions.ts` | `SessionRow.merged_head_sha` + `fromRow` parse + setter (written with `markMerged`) |
 | Type | `src/server/shared/types.ts` | `SessionInfo.mergedHeadSha?: string` |
-| Detection + action | `src/server/orchestrator/services/pre-turn-reset.ts` (new) | `autoResetMergedBranchOnContinue` — gate → fetch → `reset --hard origin/<base>` → return injected message + move info; fail-safe |
+| Detection + action | `src/server/orchestrator/services/pre-turn-reset.ts` (new) | `autoResetMergedBranchOnContinue` — gate → fetch → `reset --hard origin/<base>` → emit persisted card → return injected message + move info; fail-safe |
 | Git primitives | `src/server/shared/git.ts` | Reuse `getHeadHash`, `fetch`, `hardResetToCommit`; resolve `origin/<base>` tip via `revparse` (all exist) |
 | Pre-turn wiring | `ws-handlers/agent-execution.ts` (+ shared with `dispatched-turn.ts` / `runner-registry-factory.ts`) | Call the helper between session-track and `executeAgentTurn`; prepend the returned note to `prompt` |
+| User card — emit | `src/server/orchestrator/chat-card-persistence.ts` | Emit the "branch updated" card via `emitChatCard` (atomically emit + record in-band + persist in-progress turn) |
+| User card — type/persist | `shared/types/*`, `orchestrator/chat-history.ts`, `session-data.ts`, `shared/database.ts` | New `PersistedMessage` field (e.g. `branchAutoReset`) + column + `toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory` |
+| User card — register | `src/client/.../visual-elements.ts` | Add to `CARD_MESSAGE_FIELDS` (renders on empty-text message); extend `EVERY_OPTIONAL_FIELD_MESSAGE` |
+| User card — render | `src/client/components/` (new small card component, near `PrLifecycleCard.tsx`) | Render "Branch updated to latest `<base>` · previous PR #N merged" |
 
 ## Testing
 
@@ -243,15 +297,23 @@ is false on subsequent turns, so the reset naturally **fires once** per merge.
 - Integration — a continue turn on a merged untouched session resets the branch to
   base and the post-turn docs/216 hook clears the merged card; a continue turn on a
   merged session with new commits leaves the branch alone and follows docs/202.
+- Card persistence — `chat-history.test.ts`: the "branch updated" card round-trips
+  through persist → reload (history round-trip) and does not duplicate on turn-event
+  replay (reconnect); `visual-elements.test.ts`: the new field is in
+  `CARD_MESSAGE_FIELDS` and `EVERY_OPTIONAL_FIELD_MESSAGE` (these two guard tests are
+  self-enforcing — a missed step fails the build naming the field).
 
 ## Open questions
 
-- **User-visible signal at reset time.** The agent is told via the injected note;
-  the user sees the state change via the post-turn docs/216 "ready" card. Is that
-  enough, or do we also want a small inline note in the transcript ("Moved branch to
-  latest <base>") at reset time? If yes, it must be **persisted** transcript content
-  (CLAUDE.md "Chat transcript content MUST be persisted"), not an emit-only card —
-  scope that as a follow-up rather than folding it in here.
 - **Recovery ref.** Always stamp `refs/shipit/pre-reset/<sha>` before resetting, or
   rely on reflog + the surviving remote branch? Leaning reflog-only for simplicity,
   with the ref as a cheap optional safeguard.
+
+## Resolved
+
+- **User-visible signal at reset time → a dedicated persisted card.** Decided: emit a
+  first-class, persisted "branch updated" card into the transcript at reset time
+  (section "Two surfaces" above), rather than relying on the post-turn docs/216
+  "ready" card. The reset is destructive and automatic, so it must be plainly visible
+  in the conversation; and the docs/216 card is both indirect and, in practice, not
+  firing reliably — so it cannot be the signal of record.
