@@ -23,16 +23,9 @@ what it builds through real GitHub PRs with proper CI checks — all integrated 
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a chat-driven dev environment for developers who want to ship faster. Point Claude Code or
-Codex at your project — each session gets its own isolated container with its own branch and a full
-running copy of your app, so agents work in parallel without colliding and each one can exercise its
-change against your real services instead of just writing code.
-
-The whole engineering loop comes with it: live preview, diffs, terminal, pull requests, CI checks,
-deploy status, and your Linear or GitHub issues all render inline, so you steer each agent and ship
-its work right from the chat — for most work you never open a GitHub or Linear tab at all. Seeing
-every diff, command, and check as it happens is what turns an agent you can follow into an agent you
-can trust. A few choices make that possible:
+ShipIt is a chat-driven dev environment for developers who want to ship faster — run Claude Code or
+Codex in parallel and take each change from prompt to merged PR, all inside one chat you can follow
+turn by turn. A few choices make that possible:
 
 - **Container-isolated sessions** — each session gets its own Docker container, branch, and
   workspace, so concurrent agents can't step on each other's files, processes, or installed
