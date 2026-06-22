@@ -805,6 +805,22 @@ export class SessionManager {
    * Pass `null` to clear the snapshot (e.g., on unarchive when the session
    * starts a fresh branch).
    */
+  /**
+   * docs/218 — read the persisted PR-status snapshot for a session (or null).
+   * `SessionInfo` deliberately doesn't carry `prStatus` (it's poller-owned live
+   * state), but the pre-turn auto-reset needs the merged PR's base branch +
+   * number + url from the durable snapshot, which survives a container restart.
+   */
+  getPrStatus(id: string): PrStatusSummary | null {
+    const row = this.db.prepare("SELECT pr_status FROM sessions WHERE id = ?").get(id) as { pr_status: string | null } | undefined;
+    if (!row?.pr_status) return null;
+    try {
+      return JSON.parse(row.pr_status) as PrStatusSummary;
+    } catch {
+      return null;
+    }
+  }
+
   setPrStatus(id: string, status: PrStatusSummary | null): void {
     const json = status === null ? null : JSON.stringify(status);
     this.db.prepare("UPDATE sessions SET pr_status = ? WHERE id = ?").run(json, id);

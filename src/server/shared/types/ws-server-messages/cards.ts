@@ -6,6 +6,7 @@ import type {
   SubAgentConsultCard,
   AiReviewCard,
   ActionChecklistCard,
+  BranchAutoResetCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -251,4 +252,18 @@ export interface WsActionChecklistCard {
   type: "action_checklist_card";
   sessionId: string;
   card: ActionChecklistCard;
+}
+
+/**
+ * docs/218 — the persisted "branch updated to latest base" transcript card.
+ * Emitted via `emitChatCard` (so it broadcasts live AND records in-band with the
+ * turn, surviving a reconnect, switch, and reload) right after the user's message
+ * when a merged session's branch was auto-reset to `origin/<base>` before the
+ * turn ran. Carries the full `BranchAutoResetCard`; the card has no lifecycle, so
+ * there is no follow-up update message. Idempotent on the client by `card.cardId`.
+ */
+export interface WsBranchAutoResetCard {
+  type: "branch_auto_reset_card";
+  sessionId: string;
+  card: BranchAutoResetCard;
 }

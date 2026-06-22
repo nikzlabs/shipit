@@ -719,6 +719,15 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE sessions ADD COLUMN merged_head_sha TEXT");
   },
+  // docs/218 — persist the "branch updated to latest base" transcript card so it
+  // survives a session switch / full reload. The card arrives outside the
+  // agent-event stream (the pre-turn auto-reset of a merged session's branch) and
+  // is recorded in-band via emitChatCard; without this column it would render live
+  // but vanish on the next loadSessionHistory, which rebuilds from the DB. The
+  // card is immutable (no lifecycle), written once on emit and never patched.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN branch_auto_reset TEXT");
+  },
 ];
 
 export class DatabaseManager {

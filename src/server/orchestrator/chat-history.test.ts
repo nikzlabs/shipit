@@ -44,6 +44,15 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     headSha: "abc12345",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  branchAutoReset: {
+    cardId: "bar1",
+    base: "main",
+    prNumber: 482,
+    prUrl: "https://github.com/o/r/pull/482",
+    fromSha: "a1f3c9d0000000000000000000000000000000aa",
+    toSha: "7e02b480000000000000000000000000000000bb",
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

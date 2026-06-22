@@ -21,29 +21,35 @@ explicit control + default-on flip is the final phase.
       — captured on merge, fails closed when head.sha absent (stub gains `setMergedHeadSha`)
 - [x] `npm run typecheck` + `npm run lint:dev` green
 
-## Phase 2 — Pre-turn reset mechanism + persisted card (behind a global setting, default OFF)
+## Phase 2 — Pre-turn reset mechanism + persisted card (behind a global setting, default OFF) ✅
 
-- [ ] `git.ts` — `reset --hard origin/<base>` helper; `isClean()`; detached-HEAD &
-      in-progress-sequencer (rebase/merge/cherry-pick/revert) checks
-- [ ] `services/pre-turn-reset.ts`:
-  - [ ] `computeResetEligible(session, git)` — safety-only (merged + SHA recorded +
-        `HEAD === mergedHeadSha` + clean tree + plain repo state)
-  - [ ] `autoResetMergedBranchOnContinue` — gate → fetch → **re-gate** → reset →
-        return `{ moved, base, prNumber, prUrl, fromSha, toSha }` + agent prefix; fail-safe
-- [ ] Global setting `getAutoResetMergedBranch()` (default **off** this phase),
+- [x] `git.ts` — `resetHardToRemoteBase(base)` (returns `{from, to}`); `currentBranchOrNull()`
+      (detached → null); `isMergeOrSequencerInProgress()` (MERGE/CHERRY_PICK/REVERT_HEAD);
+      reused `isClean()` + `isRebaseInProgress()`
+- [x] `services/pre-turn-reset.ts`:
+  - [x] `computeResetEligible(session, prStatus, git)` — safety-only (merged + SHA recorded +
+        `HEAD === mergedHeadSha` + clean tree + on `session.branch`, not detached + no
+        in-progress sequencer)
+  - [x] `autoResetMergedBranchOnContinue` — gate → fetch → **re-gate** → reset →
+        return `{ moved, base, prNumber, prUrl, fromSha, toSha, agentPrefix }`; fail-safe
+- [x] Global setting `getAutoResetMergedBranch()` (default **off** this phase),
       sibling of `getAutoResolveConflicts`/`getAutoFixCi`
-- [ ] Wire into `runAgentWithMessage` (interactive only): **persist user row → reset
-      → emit card (anchored after user row) → prepend agent prefix → executeAgentTurn**
-      (suppress the executor's duplicate user-row append)
-- [ ] Persisted card: `emitChatCard`; `branchAutoReset` `PersistedMessage` field
-      `{ base, prNumber, prUrl, fromSha, toSha }` + column + `toRow`/`fromRow` +
-      migration; rehydrate in `loadSessionHistory`; `CARD_MESSAGE_FIELDS` +
-      `EVERY_OPTIONAL_FIELD_MESSAGE` (`visual-elements.ts`); `BranchUpdatedCard` component
-- [ ] Tests: `pre-turn-reset.test.ts` (gate matrix incl. detached/in-progress/dirty,
-      re-gate-after-fetch, eligibility truth table); `chat-history.test.ts` (card
-      round-trip + no-dup-on-replay); `visual-elements.test.ts`
-- [ ] **Checkpoint:** enable the setting; verify reset + card on continue, and observe
-      the docs/216 PR card (diagnose whether it's broken)
+- [x] Wire into `runAgentWithMessage` (interactive only): reset pre-turn + prepend agent
+      prefix to the prompt; card emitted via the new `TurnInput.afterUserMessagePersisted`
+      hook (fires after the executor persists the user row, post `resetRunnerTurnState`) —
+      keeps user → card → agent order without clobbering `recordedCards` (see plan "As built")
+- [x] Persisted card: `emitChatCard`; `branchAutoReset` `PersistedMessage` field
+      `{ cardId, base, prNumber, prUrl, fromSha, toSha, createdAt }` + column +
+      `toRow`/`fromRow` + INSERT/UPDATE SQL + migration; rehydrates via `fromRow`;
+      `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE`; `BranchUpdatedCard` component
+      + `branch_auto_reset_card` WS type + client handler (idempotent by cardId)
+- [x] Tests: `pre-turn-reset.test.ts` (15 — gate matrix incl. detached/in-progress/dirty,
+      re-gate-after-fetch, setting-off, fail-safe); `git-rearm-detect.test.ts` (+6 — git
+      helpers on real repos); `chat-history.test.ts` (round-trip via `EVERY_OPTIONAL_FIELD_MESSAGE`);
+      `branch-auto-reset-card.test.ts` (no-dup-on-replay); `visual-elements.test.ts` (guard)
+- [ ] **Checkpoint deferred to Phase 3.** The live "enable the setting → observe reset +
+      card" check needs the toggle UI, which lands in Phase 3 (Phase 2 ships dark, default
+      OFF). Phase 2 is verified by the tests above; live observation folds into Phase 3.
 
 ## Phase 3 — Explicit composer control + per-send override + settings UI (default ON)
 

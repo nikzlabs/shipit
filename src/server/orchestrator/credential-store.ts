@@ -49,6 +49,14 @@ interface CredentialData {
    */
   autoFixCi?: boolean;
   /**
+   * docs/218 — when true, resuming a MERGED session whose branch hasn't moved
+   * since the merge auto-resets the branch to the latest `origin/<base>` before
+   * the turn runs (with a per-send opt-out control + a persisted card). Global +
+   * persisted, a sibling of `autoResolveConflicts` / `autoFixCi`. Phase 2 ships it
+   * default OFF; Phase 3 flips the default ON and adds the composer control.
+   */
+  autoResetMergedBranch?: boolean;
+  /**
    * docs/144 — global gate for sub-agent spawning. When true, a pinned session's
    * agent may spawn another registered agent for a one-shot sub-task via the
    * `shipit agent run` CLI. Default off; when off the feature is fully inert and
@@ -555,6 +563,19 @@ export class CredentialStore {
 
   setAutoFixCi(enabled: boolean): void {
     this.data.autoFixCi = enabled;
+    this.save();
+  }
+
+  // ---- Auto-reset merged branch on continue (docs/218) ----
+
+  // Phase 2 default OFF (the mechanism + persisted card ship first, dark by
+  // default); Phase 3 flips this to `?? true` and adds the composer control.
+  getAutoResetMergedBranch(): boolean {
+    return this.data.autoResetMergedBranch ?? false;
+  }
+
+  setAutoResetMergedBranch(enabled: boolean): void {
+    this.data.autoResetMergedBranch = enabled;
     this.save();
   }
 

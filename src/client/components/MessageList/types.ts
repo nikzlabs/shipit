@@ -4,6 +4,7 @@ import type {
   CompactionCard as CompactionCardData,
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
+  BranchAutoResetCard as BranchAutoResetCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
@@ -336,6 +337,15 @@ export interface ChatMessage {
    * persisted — so on reload the card returns to its original definition.
    */
   actionChecklist?: ActionChecklistCardData;
+  /**
+   * docs/218 — when set, this message renders a `BranchUpdatedCard` inline ("Branch
+   * updated to latest <base>"), shown right after the user's message when a merged
+   * session's branch was auto-reset to `origin/<base>` before the turn ran. The
+   * card has no lifecycle and no store, so both the live `branch_auto_reset_card`
+   * WS handler and a history rehydration carry the full payload on the message; the
+   * component renders straight from it.
+   */
+  branchAutoReset?: BranchAutoResetCardData;
 }
 
 export interface TextSegment {
