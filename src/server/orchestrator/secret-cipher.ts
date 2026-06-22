@@ -195,13 +195,29 @@ export function resolveSecretCipher(opts: {
   // No key configured anywhere — generate and persist one (zero-config default).
   const key = crypto.randomBytes(KEY_BYTES);
   fs.mkdirSync(path.dirname(keyPath), { recursive: true });
-  fs.writeFileSync(keyPath, `${key.toString("base64")}\n`, { mode: 0o600 });
-  // `writeFileSync`'s mode only applies on create; chmod ensures 0600 even if a
-  // file was somehow pre-created with a looser mode.
-  fs.chmodSync(keyPath, 0o600);
-  console.log(
-    `[secret-cipher] Generated a new encryption key at ${keyPath} (mode 0600). ` +
-      "Back up this file — losing it makes encrypted secrets unrecoverable.",
-  );
-  return new SecretCipher(key);
+  try {
+    // Exclusive create (`wx`) closes the TOCTOU window between the `existsSync`
+    // check above and this write: if a second orchestrator sharing a fresh
+    // credentials volume raced us to the key file, `openSync` throws EEXIST and
+    // we adopt the winner's key below — rather than overwriting it and orphaning
+    // any data the winner already encrypted under it.
+    const fd = fs.openSync(keyPath, "wx", 0o600);
+    try {
+      fs.writeSync(fd, `${key.toString("base64")}\n`);
+    } finally {
+      fs.closeSync(fd);
+    }
+    fs.chmodSync(keyPath, 0o600);
+    console.log(
+      `[secret-cipher] Generated a new encryption key at ${keyPath} (mode 0600). ` +
+        "Back up this file — losing it makes encrypted secrets unrecoverable.",
+    );
+    return new SecretCipher(key);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    // Lost the create race — adopt the key the winner persisted.
+    const existing = parseSecretKey(fs.readFileSync(keyPath, "utf8"));
+    console.log(`[secret-cipher] Adopted a concurrently-created key at ${keyPath}.`);
+    return new SecretCipher(existing);
+  }
 }

@@ -1,4 +1,4 @@
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -163,5 +163,31 @@ describe("resolveSecretCipher", () => {
     const dir = mkTmp();
     process.env.SHIPIT_SECRET_ENCRYPTION = "off";
     expect(resolveSecretCipher({ credentialsDir: dir })).toBeNull();
+  });
+
+  it("adopts a concurrently-created key when it loses the create race (EEXIST)", () => {
+    const dir = mkTmp();
+    const keyPath = path.join(dir, SECRET_KEY_FILENAME);
+    // The "winner" persisted this key just after our existsSync check.
+    const winner = crypto.randomBytes(32);
+    fs.writeFileSync(keyPath, `${winner.toString("base64")}\n`);
+
+    // Force the generate branch (existsSync false) and make the exclusive create
+    // lose (openSync → EEXIST).
+    const existsSpy = vi.spyOn(fs, "existsSync").mockReturnValue(false);
+    const openSpy = vi.spyOn(fs, "openSync").mockImplementation(() => {
+      const e = new Error("EEXIST: file already exists") as NodeJS.ErrnoException;
+      e.code = "EEXIST";
+      throw e;
+    });
+    try {
+      const cipher = resolveSecretCipher({ credentialsDir: dir })!;
+      // Adopted the winner's key, not a freshly generated one.
+      const enc = cipher.encrypt("x");
+      expect(new SecretCipher(winner).decrypt(enc)).toBe("x");
+    } finally {
+      existsSpy.mockRestore();
+      openSpy.mockRestore();
+    }
   });
 });

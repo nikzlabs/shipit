@@ -79,6 +79,7 @@ No data is destroyed on upgrade, and no data is wiped on a key error — a wrong
 | Encryption disabled / key missing **while encrypted data exists** | Throw at construction in both stores — never treat ciphertext as a plaintext value (`SecretStore`) or misread an encrypted blob as corrupt JSON → reset → overwrite (`CredentialStore`, which would be a silent wipe). |
 | `SHIPIT_SECRET_ENCRYPTION=off` | Cipher is `null` → plaintext. Safe only when no encrypted data exists yet; otherwise the row above throws (deliberate decrypt-export required first). |
 | Legacy-plaintext re-encrypt write fails | Throw at construction (don't continue with plaintext-on-disk after the operator opted into encryption). |
+| Two orchestrators race to create the key file on a fresh shared volume | Exclusive create (`wx`); the loser adopts the winner's key on EEXIST — never overwrites it (which would orphan data the winner already encrypted). |
 | Test mode (`serveStatic === false`, or vitest with `NODE_ENV !== "production"`) | Plaintext by default; cipher behavior covered by dedicated unit tests, opt-in via `deps.secretCipher`. The `NODE_ENV` guard keeps a stray `VITEST` from disabling encryption in a real deployment. |
 
 ## Key files
@@ -97,4 +98,8 @@ No data is destroyed on upgrade, and no data is wiped on a key error — a wrong
 
 ## Review hardening (Codex pass)
 
-A cross-agent review (Codex) surfaced fail-closed gaps that are now fixed: `SecretStore` only failed on a wrong key lazily (now decrypt-validates at construction); turning encryption **off** over encrypted data silently degraded (`CredentialStore` would have reset-then-overwritten the file — a wipe; `SecretStore` would have returned ciphertext as a value) — both now throw; the legacy re-encrypt write was best-effort (now throws); and `mode: 0600` didn't repair a pre-existing looser file (now `chmod`ed). The `VITEST` test gate is guarded by `NODE_ENV !== "production"` so it can't disable encryption in a real deployment. Confirmed-solid: AES-256-GCM usage (random IV per record, tag enforced) and the provider-OAuth deferral reasoning.
+**Pass 1** surfaced fail-closed gaps that are now fixed: `SecretStore` only failed on a wrong key lazily (now decrypt-validates at construction); turning encryption **off** over encrypted data silently degraded (`CredentialStore` would have reset-then-overwritten the file — a wipe; `SecretStore` would have returned ciphertext as a value) — both now throw; the legacy re-encrypt write was best-effort (now throws); and `mode: 0600` didn't repair a pre-existing looser file (now `chmod`ed). The `VITEST` test gate is guarded by `NODE_ENV !== "production"` so it can't disable encryption in a real deployment.
+
+**Pass 2** confirmed all five pass-1 fixes as correct/complete and found no blockers. One remaining race was fixed: first-boot key-file creation was TOCTOU (`existsSync` → `writeFileSync`), so two orchestrators on a fresh shared volume could generate divergent keys; now an exclusive `wx` create makes the loser adopt the winner's key on EEXIST instead of overwriting it.
+
+Confirmed-solid across both passes: AES-256-GCM usage (random IV per record, tag enforced) and the provider-OAuth deferral reasoning.
