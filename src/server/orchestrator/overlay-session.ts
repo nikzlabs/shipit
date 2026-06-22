@@ -139,6 +139,16 @@ export interface DepDirOverlaySpec extends OverlaySpec {
 }
 
 /**
+ * Per-session subdir (under `sessions/<id>/`) holding this session's overlay
+ * upper/work dirs — a sibling of the `workspace/` checkout, NOT a child of it
+ * (the kernel forbids an upperdir inside its own lowerdir). Pure cache: the
+ * upper holds install deltas that rebuild on the next install after unarchive,
+ * so disk reclaim (eviction / archived sweep) deletes it alongside `workspace/`
+ * while preserving durable siblings like `uploads/` (SHI-192).
+ */
+export const OVERLAY_SESSION_SUBDIR = "overlay";
+
+/**
  * Build **N** overlay specs — one per declared dep dir — for an eligible session.
  * Pure: given the base `(repo, runtime)` scope, the dep dirs (from `agent.dep-dirs`),
  * and the daemon-host mountpoint of the workspace **state** volume (where the
@@ -180,9 +190,9 @@ export function buildOverlaySpecs(args: {
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
     const generation = generationForScope(scopeHash);
-    const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, "overlay", scopeHash);
+    const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash);
     const orchSessionOverlayDir = stateRoot
-      ? path.join(stateRoot, "sessions", sessionId, "overlay", scopeHash)
+      ? path.join(stateRoot, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash)
       : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),

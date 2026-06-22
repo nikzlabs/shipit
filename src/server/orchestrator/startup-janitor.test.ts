@@ -382,6 +382,73 @@ describe("runDiskJanitor", () => {
     expect(fs.existsSync(recentDir)).toBe(true);
   });
 
+  it("SHI-192: archive sweep reclaims overlay/ sibling but preserves uploads/", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    const sessionRoot = path.join(tmpDir, "sessions", "old-session");
+    const workspaceDir = path.join(sessionRoot, "workspace");
+    const overlayDir = path.join(sessionRoot, "overlay", "abc123", "upper");
+    const uploadsDir = path.join(sessionRoot, "uploads");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.mkdirSync(uploadsDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "file"), "checkout");
+    fs.writeFileSync(path.join(overlayDir, "dep"), "install delta");
+    fs.writeFileSync(path.join(uploadsDir, "photo.png"), "user upload");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("old-session", "Old", old, old, workspaceDir, "https://github.com/example/repo.git");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      archivedWorkspaceDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(workspaceDir)).toBe(false);
+    // The regenerable overlay upper is the ~60 GB prod leak — it must go.
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+    // uploads/ is durable, referenced by persisted chat history — it must survive.
+    expect(fs.existsSync(path.join(uploadsDir, "photo.png"))).toBe(true);
+  });
+
+  it("SHI-192: archive sweep reclaims an orphaned overlay/ even when workspace/ is already gone", async () => {
+    setup();
+    const sessionManager = new SessionManager(dbManager!);
+    const repoStore = new RepoStore(dbManager!);
+
+    // The exact leak shape on prod: an evicted session whose `workspace/` was
+    // already removed by an earlier (buggy) reclaim, leaving only `overlay/`.
+    const sessionRoot = path.join(tmpDir, "sessions", "orphan-session");
+    const workspaceDir = path.join(sessionRoot, "workspace"); // never created
+    const overlayDir = path.join(sessionRoot, "overlay", "abc123", "upper");
+    fs.mkdirSync(overlayDir, { recursive: true });
+    fs.writeFileSync(path.join(overlayDir, "dep"), "orphaned install delta");
+
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    underlyingDb!.prepare(
+      "INSERT INTO sessions (id, title, created_at, last_used_at, workspace_dir, remote_url, archived, user_archived, disk_tier) VALUES (?, ?, ?, ?, ?, ?, 1, 1, 'evicted')",
+    ).run("orphan-session", "Orphan", old, old, workspaceDir, "https://github.com/example/repo.git");
+
+    const result = await runDiskJanitor({
+      sessionManager,
+      repoStore,
+      stateDir: tmpDir,
+      archivedWorkspaceDays: 30,
+      runDocker: () => Promise.resolve(""),
+    });
+
+    expect(result.workspacesRemoved).toBe(1);
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false);
+  });
+
   it("archive sweep is disabled by default (archivedWorkspaceDays = 0)", async () => {
     setup();
     const sessionManager = new SessionManager(dbManager!);

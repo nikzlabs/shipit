@@ -104,6 +104,35 @@ describe("archiveSession container teardown", () => {
     expect(fs.existsSync(workspaceDir)).toBe(false);
   });
 
+  it("SHI-192: reclaims the regenerable overlay/ sibling but preserves uploads/", async () => {
+    const sessionRoot = path.join(tmpDir, "sess-archive");
+    const workspaceDir = path.join(sessionRoot, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "marker"), "x");
+    const overlayUpper = path.join(sessionRoot, "overlay", "deadbeef", "upper", "dep");
+    fs.mkdirSync(path.dirname(overlayUpper), { recursive: true });
+    fs.writeFileSync(overlayUpper, "install delta");
+    const uploadFile = path.join(sessionRoot, "uploads", "photo.png");
+    fs.mkdirSync(path.dirname(uploadFile), { recursive: true });
+    fs.writeFileSync(uploadFile, "user upload");
+
+    const sessionId = "sess-archive";
+    sessionManager.track(sessionId, "Archive session", workspaceDir);
+    sessionManager.setRemoteUrl(sessionId, remoteUrl);
+
+    await archiveSession(
+      sessionManager,
+      runnerRegistry,
+      getBareCacheDir,
+      sessionId,
+    );
+
+    expect(sessionManager.get(sessionId)?.archived).toBe(true);
+    expect(fs.existsSync(workspaceDir)).toBe(false); // checkout removed
+    expect(fs.existsSync(path.join(sessionRoot, "overlay"))).toBe(false); // overlay reclaimed
+    expect(fs.existsSync(uploadFile)).toBe(true); // upload preserved for unarchive
+  });
+
   it("removes the session's durable logs (docs/192), even for a local-only session", async () => {
     // Local-only session (no remoteUrl) — the workspace is preserved, but logs
     // must still be dropped unconditionally.

@@ -12,14 +12,13 @@
  * fails new starts → the kick never fires → nothing reclaims).
  */
 
-import fs from "node:fs/promises";
 import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { GitManager } from "../shared/git.js";
 import { IDLE_LIGHT_MS, IDLE_EVICT_MS, IDLE_EVICT_MERGED_MS } from "./sessions.js";
-import { getMessage, sleep } from "./disk-utils.js";
+import { getMessage, sleep, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 /**
  * docs/161 — dependencies for the disk-tier escalation pass. Distinct from the
@@ -221,15 +220,17 @@ async function reclaimToEvicted(
   }
 
   if (session.workspaceDir) {
-    try {
-      await fs.rm(session.workspaceDir, { recursive: true, force: true });
-    } catch (err) {
-      console.warn(`[disk-janitor] evict: workspace rm failed for ${session.id}:`, getMessage(err));
+    // SHI-192 — reclaim BOTH the checkout and the regenerable overlay/ upper
+    // sibling, preserving durable siblings (uploads/). Removing only the
+    // checkout orphaned the overlay upper (the bulk of the disk).
+    const { failed } = await reclaimRegenerableSessionDirs(session.workspaceDir);
+    for (const f of failed) {
+      console.warn(`[disk-janitor] evict: rm failed for ${session.id} (${f.dir}):`, f.message);
     }
   }
 
   sessionManager.setDiskTier(session.id, "evicted");
-  console.log(`[disk-janitor] ${session.id}: light → evicted (workspace wiped)`);
+  console.log(`[disk-janitor] ${session.id}: light → evicted (workspace + overlay wiped)`);
   return "evicted";
 }
 
