@@ -347,6 +347,7 @@ export function IssueDetail({
         <div className="shrink-0 flex justify-end border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-4 py-2.5">
           <StartSessionButton
             label="Start session from this issue"
+            variant="primary"
             disabled={!canStart}
             onClick={() => onStartSession(detail)}
             title={canStart ? "Seed a ShipIt session prompt from this issue" : "Add a repo first to start a session"}
