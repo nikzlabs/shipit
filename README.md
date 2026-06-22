@@ -27,23 +27,18 @@ ShipIt is a chat-driven dev environment for developers who want to ship faster �
 Codex in parallel and take each change from prompt to merged PR without leaving the IDE. A few choices
 make that possible:
 
-- **Container-isolated sessions** — each session gets its own Docker container, branch, and
-  workspace, so concurrent agents can't step on each other's files, processes, or installed
-  dependencies. An agent can spawn its own follow-up sessions to fan work out in parallel.
-- **Self-hosted, local or on your VPS** — ShipIt is Docker-based end to end: run it on your own
-  machine, or on a server you control so your laptop doesn't need to stay open for agents, previews,
-  or CI follow-up work to continue.
-- **Compose-based previews** — declare your dev server, databases, queues, log tailers, and other
-  app services in `docker-compose.yml`; ShipIt manages them and surfaces automatic or manual
-  previews inside the app.
-- **Inline GitHub ship loop** — branches, auto-commits, pushes, PR creation, CI checks, deploy
-  status, review comments, issues, and merge state all render inline instead of punting you to
-  GitHub.
-- **Mobile-first, with first-class voice** — ShipIt is genuinely good from a phone, not a desktop
-  tool that merely survives a small screen: a focused tab-based view on mobile and resizable split
-  panels on desktop. Voice runs both ways — dictate prompts hands-free, hear a spoken note when the agent
-  needs you, and tap play to hear any finished turn read aloud, so you can kick off, review, and ship
-  on the go.
+- **Container-isolated sessions** — every session runs in its own Docker container with its own
+  branch and workspace, so parallel agents never collide on files, ports, or dependencies — and an
+  agent can spawn its own follow-up sessions to fan work out further.
+- **Self-hosted, local or on your VPS** — Docker-based end to end: run it on your laptop, or on a
+  server you control so previews, CI, and follow-up work keep going after you close the lid.
+- **Your whole stack, running** — declare your dev server, databases, and queues in
+  `docker-compose.yml`; ShipIt boots them per session behind a live preview, so every agent has a
+  real app to exercise its change against.
+- **The GitHub loop, inline** — branches, PRs, CI checks, review threads, deploy status, and merge
+  all render in the chat, so you ship without bouncing to a GitHub tab.
+- **Mobile-first, with two-way voice** — built for real use from a phone, not a shrunk-down desktop.
+  Dictate prompts and hear a spoken note when an agent needs you, so you can review and ship on the go.
 
 ## Status
 
@@ -138,36 +133,17 @@ Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and 
 
 ## Why not just use the Claude or Codex app?
 
-You probably already have Claude Code or Codex, and their desktop apps now cover more of the coding
-workflow — parallel sessions, git worktrees, a preview pane, even laptop-off cloud runs. ShipIt runs
-those same agents as its backend and adds the layer they still leave out:
-
-- **Stronger isolation than worktrees.** The native apps isolate parallel sessions with git
-  worktrees — separate files, but a shared machine, OS, ports, and dependencies. ShipIt gives every
-  session its own Docker container — separate filesystem, processes, ports, dependencies, and
-  network — so concurrent agents don't step on each other the way worktrees sharing one machine can.
-- **A live environment per session, automatically.** Native previews still tend to lean on a
-  per-session dev server you start yourself, sharing one machine's ports and resources. ShipIt treats
-  the environment as part of the session: it boots your whole Compose stack — dev server, database,
-  queues — in each session's container on its own ports, automatically, so every parallel agent has a
-  running app to test its change against from the start.
-- **Your infrastructure, not someone else's cloud.** Cloud sessions and laptop-off automations run on
-  the vendor's cloud, with your code on their machines. ShipIt is self-hosted — your own machine or a
-  server you control — so the agents and previews run on infrastructure and data you own and keep
-  running after you close the lid, while ShipIt tracks your CI and deploy status inline.
-- **Any agent, in one place.** The Claude app runs Claude; the Codex app runs Codex. ShipIt runs
-  both — pick per session, and have one agent review another's work inline, no separate tool.
-- **The whole ship loop comes to you.** PRs, CI checks, review threads, diffs, deploy status, and
-  issue trackers all render in the chat, so the review-and-ship loop stays inside the IDE instead of
-  scattering across a GitHub tab and a CI dashboard.
-- **Built for the phone.** Dictate a prompt, get a spoken note when the agent needs you, review and
-  merge one-handed. The official apps are desktop-first; ShipIt is genuinely usable from mobile, with
-  two-way voice.
+You probably already have one — and ShipIt runs it as the backend. Their desktop apps now do parallel
+sessions, git worktrees, a preview pane, even laptop-off cloud runs; what ShipIt adds is the layer
+they don't. Real container isolation instead of shared-machine worktrees, with your **whole stack
+running in every session** so each agent can test its own change. **Claude and Codex together** under
+one roof, with cross-agent review. And the **entire GitHub ship loop** — PRs, CI, deploys, issues —
+rendered in chat, on infrastructure **you own** and can reach from your phone.
 
 ## Agents
 
-Use the AI subscription you already pay for, or bring an API key. ShipIt has a pluggable agent
-harness:
+Use the AI subscription you already pay for, or bring an API key — and connect more than one account
+per provider. The agent harness is pluggable:
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
   an Anthropic API key
@@ -181,16 +157,11 @@ harness:
 - **Chat-driven development** — the conversation is the only input you need; the agent plans the
   change, edits files, runs the commands, and reads the output, so you steer in chat instead of
   driving a shell
-- **Existing subscription auth** — sign in with Claude Pro/Max or ChatGPT, or use Anthropic/OpenAI
-  API keys when that fits your setup better; connect more than one subscription account per provider
-  and choose which one a session uses
-- **Agent-agnostic backend** — pick Claude Code CLI or Codex CLI per session; the backend boundary
-  is designed for more agent runtimes over time
 - **Compose-native live preview** — embedded iframes show your app updating in real time, with HMR
   proxied through ShipIt, multi-port support, and Docker Compose services managed per session
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
-- **Interactive terminal** — full PTY (xterm.js) inside the session container for ad-hoc debugging
+- **Interactive terminal** — a full terminal inside each session container for ad-hoc debugging
 - **Persistent logs** — agent-container and preview-service logs are kept in a durable, disk-backed
   store, so full history survives container restarts, idle eviction, and orchestrator restarts
 - **File viewer with diffs** — browse files with syntax highlighting and review changes as inline
@@ -243,9 +214,8 @@ harness:
   branch from any point
 - **Parallel PR-shaped sessions** — spawn separate workspaces with their own branch, container, and
   chat history; review each as its own PR
-- **Fully isolated sessions** — every session on the same repo gets its own independent clone with a
-  complete `.git/` of its own (cut as a fast, hardlinked local clone from a shared bare cache — no
-  worktrees), while its agent and services run in their own containerized environment
+- **Fully isolated sessions** — every session on the same repo gets its own clone and its own
+  containerized environment, so its agent and services never share state with another session
 - **Sandbox sessions** — start a repo-less session from an empty workspace; the agent clones what it
   needs, with Git and session-scoped Docker granted as explicit capability toggles at creation
 - **Permission modes** — choose how much autonomy the agent has per session
