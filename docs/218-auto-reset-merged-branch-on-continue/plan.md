@@ -1,10 +1,10 @@
 ---
 issue: https://linear.app/shipit-ai/issue/SHI-189
-title: Auto-move a merged session's branch to latest base when work continues
-description: When a user resumes a merged session, fetch and reset the branch to the latest base before the turn runs, and tell the agent its branch was moved.
+title: Auto-update a merged session's branch to latest base when work continues
+description: When a user resumes a merged session, offer (checked by default) to reset the branch to the latest base before the turn runs, tell the agent, and record the move with a transcript card.
 ---
 
-# Auto-move a merged session's branch to latest base when work continues
+# Auto-update a merged session's branch to latest base when work continues
 
 ## Problem
 
@@ -16,304 +16,355 @@ the now-superseded merged commits, sitting behind the advanced base.
 
 Today the only way the branch catches up is **manually**: the user (or the agent,
 following the system-prompt instruction) runs `git fetch origin && git reset --hard
-origin/<base>` (or a rebase) themselves, and ShipIt's **reactive** re-arm machinery
-then notices and updates the PR card:
+origin/<base>` themselves, and ShipIt's **reactive** re-arm machinery then notices
+and updates the PR card:
 
 - **docs/202** — branch *rebased onto base + new work* → re-arm + new PR.
 - **docs/216** — branch *reset to a clean base* → re-arm + clean "ready" card.
 
 Both react to a git move the human already made. Neither **performs** the move. The
-result: the user has to remember the incantation, or the agent burns a turn (and
-risks getting it subtly wrong — wrong base, force-push lease staleness, conflict
-handling) on plumbing before it can do the actual work. In a chat-shaped IDE the
-expected behavior is that resuming a shipped session just *starts from latest* —
-the box operates itself (CLAUDE.md §5: the agent is the actor).
+result: the user must remember the incantation, or the agent burns a turn on
+plumbing (and risks getting the base / force-push lease / conflict handling subtly
+wrong) before doing the actual work. In a chat-shaped IDE the expected behavior is
+that resuming a shipped session just *starts from latest*.
 
 ## Goal
 
 When a user sends a **new message** to a **merged** session whose branch **has not
-moved since the merge**, ShipIt should, **before the agent turn runs**:
+moved since the merge**, ShipIt should — with the user's (default-on, opt-out-able)
+consent, **before the agent turn runs**:
 
 1. `git fetch origin` and **`git reset --hard origin/<base>`** — move the branch to
-   the latest base, where `<base>` is the merged PR's own base branch.
+   the latest base (`<base>` = the merged PR's own base branch).
 2. **Inject a context message** into the turn telling the agent its previous PR
-   merged and the branch was moved to the latest base, so it starts fresh against
-   current code (and does not try to "re-apply" already-shipped work).
-3. **Emit a persisted card into the chat transcript** so the user plainly sees that
-   the branch was updated to latest automatically — a destructive, automatic git op
-   must not happen silently. This is a **first-class deliverable**, not a follow-up:
-   it does **not** rely on the docs/216 "ready" card as the user-facing signal
-   (which is indirect, and in practice has not been firing reliably).
+   merged and the branch was moved, so it starts fresh and does not re-apply
+   already-shipped work.
+3. **Emit a persisted card** into the chat transcript so the user plainly sees the
+   branch was updated — a destructive automatic op must not happen silently.
 
-…and otherwise do nothing — a session that hasn't merged, or whose branch the user
-has *already* moved past the merge, is untouched.
-
-This is the **proactive** producer of the exact state docs/216 already detects:
-after the auto-reset the branch sits at the base tip, so the existing post-turn
-re-arm flows clear the stale merged card for free (see "Composition" below). No new
-card logic is required.
+The action is **explicit, not silent**: a checked-by-default control sits in the
+composer when (and only when) a reset would fire, and the user can untick it to skip
+this one time. The behavior is otherwise governed by a global setting (default on),
+a sibling of `autoResolveConflicts` / `autoFixCi`.
 
 ## Why lazy (on continue), not eager (on merge)
 
-The merge is detected in the **poller** (`pr-status-poller.ts`), a background loop
-in the orchestrator. Resetting there is the wrong place:
+The merge is detected in the **poller** (`pr-status-poller.ts`), a background loop.
+Resetting there is the wrong place:
 
-- **The common case is "done."** Most merged sessions are finished — the work
-  shipped, nobody resumes them. Resetting every merged branch eagerly is wasted
-  work on branches no one will touch again.
-- **No live container is guaranteed.** After merge → idle, the session container is
-  destroyed and the workspace may be disk-evicted. The poller would have to
-  rehydrate a clone just to maybe-never-use it, and risks lock races with anything
-  else touching the clone.
-- **It only matters when work continues.** The branch's position is irrelevant
-  until the next turn needs to build on it. Continue-time is exactly when a live,
+- **The common case is "done."** Most merged sessions are finished; resetting every
+  merged branch eagerly is wasted work on branches no one resumes.
+- **No live container is guaranteed.** After merge → idle, the container is
+  destroyed and the workspace may be disk-evicted; the poller would have to
+  rehydrate a clone just to maybe-never-use it, risking lock races.
+- **It only matters when work continues.** Continue-time is exactly when a live,
   rehydrated workspace exists and the move has a purpose.
 
-So the trigger is the **pre-turn path** of an interactive message, mirroring how
-docs/202/216 are **post-turn** and turn-gated.
+So the trigger is the **pre-turn path of an interactive message** (mirroring how
+docs/202/216 are post-turn, turn-gated).
 
 ## Why `reset --hard`, not rebase
 
-GitHub's three merge methods all leave the branch's local commits **not replayable**
-onto the new base:
+GitHub's three merge methods all leave the branch's local commits **not replayable**:
+*squash* never enters the commits into the base (one new squash commit instead),
+*merge* / *rebase-and-merge* have the content already in the base. Since the branch
+has **no new work** (that is the gate), every commit on it is already shipped, so the
+correct conflict-free op is a clean **`reset --hard origin/<base>`** — discard the
+now-phantom commits, start from the latest base. A rebase is strictly worse here
+(slower, can conflict, replays phantoms).
 
-- **Squash** — the branch's N commits never enter the base; the base gets one new
-  squash commit. A rebase would replay N commits whose content is already present →
-  git drops them as empty *or* conflicts. There is nothing to replay.
-- **Merge / rebase-and-merge** — the content is in the base already.
+## The explicit control (the primary UX)
 
-Since the branch has **no new work** (that is the gate — see below), every commit on
-it is already shipped. The correct, conflict-free operation is therefore a clean
-**`reset --hard origin/<base>`**: discard the now-phantom merged commits and start
-the branch from the latest base. A rebase is strictly worse here (slower, can
-conflict, replays phantoms). This matches the user's chosen approach.
+The reset is a destructive default, so it earns visible **pre-consent** rather than
+after-the-fact explanation. This is not a §5 "shell-shaped affordance" violation: it
+is a per-turn behavior toggle in the same family as the existing permission-mode
+selector that already lives by the composer — not a command-runner button.
 
-## The safety gate — "no new work since the merge"
+**Placement (decided): inside the composer border, top row** (option B of
+`mockup-control-placement.html`). It lives *inside* the existing composer container —
+the same containment the footer controls already use — so **the input's
+border-radius never changes**; there is no fragile conditional border math. It keeps
+room for a one-line explanation, which makes the feature self-teaching. (Options A
+detached-card, C above-footer, D footer-chip were considered and are kept in the
+mockup for reference.)
 
-A hard reset is destructive, so it must fire **only** when the branch carries
-nothing that isn't already merged. The signal is a **SHA equality**, captured at
-merge time and checked at continue-time:
+**Behavior:**
 
-> Auto-reset iff the session is merged **AND** the branch's current local `HEAD`
-> equals the **merged head SHA** recorded when the merge was detected.
+- The control appears **only when a reset would actually fire** — i.e. the session
+  is reset-*eligible*: merged, `mergedHeadSha` recorded, `HEAD === mergedHeadSha`,
+  and a clean working tree (see "Safety gate"). If the branch already carries new
+  work, there is nothing to reset, so no control.
+- It is **checked by default**, the default driven by a global setting
+  `autoResetMergedBranch` (default on). Unticking is a **per-send** choice that does
+  **not** persist — the next eligible message shows it checked again. The global
+  setting is the escape hatch for someone who never wants it.
+- **Visibility is derived from live session state, recomputed after each turn — not
+  a one-shot flag.** Two behaviors fall out naturally:
+  - **Sent checked →** the reset runs, the branch moves off the merged tip, the
+    session re-arms; eligibility is now false → the control disappears and stays
+    gone (nothing left to reset).
+  - **Sent unticked →** no reset, branch still at the merged tip, still merged →
+    eligibility holds → the control reappears (checked) on the next message.
+- **Correctness is server-side.** The checkbox value is only the user's *intent*; the
+  pre-turn helper re-validates the full gate at send time regardless of what the
+  client sent, so a stale client eligibility flag can never cause an unsafe reset.
 
-If `HEAD` has moved past the recorded merged head, the user already committed new
-work (or manually rebased) — we must **not** blow it away. That case is already
-owned by docs/202 (rebase + new work) / docs/216 (manual reset). The proactive
-reset deliberately covers only the untouched-since-merge case.
+### Eligibility signal
 
-### Recording the merged head SHA
+The client can't run git, so the server computes a transient `resetEligible` boolean
+and surfaces it with the session/PR state, recomputed on session activation and after
+each turn. **`resetEligible` is safety eligibility only** — merged + `mergedHeadSha`
+recorded + `HEAD === mergedHeadSha` + clean tree + good repo state. It deliberately
+**excludes** the global setting and the per-send intent. The composer then shows the
+control iff `resetEligible && getAutoResetMergedBranch()`: when the global setting is
+**off**, the control is hidden entirely (a global opt-out means we don't nag; manual
+git remains available). When on, it shows **checked**, with a per-send untick. The
+flag is transient (derived; never persisted).
 
-Add a persisted session field `mergedHeadSha`, set when the merge is detected in
-`pr-status-poller.ts#verifyMissingPr` (the same place that stamps the terminal
-merged state). Preferred source: the merged PR object's **`head.sha`** (authoritative,
-already in scope from the REST verify — no local git read needed). Fallback: a local
-`getHeadHash()` on the session clone at merge time.
+## Safety gate — "no new work since the merge"
 
-This follows the established persisted-session-field pattern (the docs/202
-`previousMergedPr` breadcrumb is the template):
+A hard reset is destructive, so it fires **only** when the branch carries nothing
+that isn't already merged AND the repo is in a plain, resettable state. The full
+gate (all clauses; any failure → skip the reset, run the turn on the un-moved branch):
 
-1. `merged_head_sha TEXT` column + migration (`shared/database.ts`).
-2. `SessionRow.merged_head_sha` + parse in `fromRow` (`orchestrator/sessions.ts`).
-3. `SessionInfo.mergedHeadSha?: string` (`shared/types.ts`).
-4. A setter called at merge detection; written alongside `markMerged`.
+> session merged **AND** `mergedHeadSha` recorded **AND** `HEAD === mergedHeadSha`
+> **AND** working tree clean **AND** HEAD is on `session.branch` (not detached)
+> **AND** no rebase/merge/cherry-pick/revert in progress
+> **AND** the user did not untick the control.
 
-Note it is set **at merge**, unlike `previousMergedPr` which is set at **re-arm**
-(`clearMerged`). Both coexist on the session row.
+- **`HEAD === mergedHeadSha`** is the load-bearing clause. The tempting "derive it
+  from existing git state" shortcut (`!advancedBeyondMergedBase && !headIsAtBase` →
+  resettable) has a **data-loss hole**: a user who commits new work *without
+  rebasing first* leaves merge-base ≠ base tip (not "progressed") and HEAD ≠ base tip
+  (not "at base"), so the shortcut would classify their new commit as resettable and
+  `reset --hard` would destroy it. Only the stored merged-tip SHA reliably
+  distinguishes "untouched since merge" from "new un-rebased work."
+- **Clean tree** guards an *irreversible* loss: uncommitted changes don't move HEAD,
+  so a dirty tree could pass the SHA check, and `reset --hard` would wipe edits that —
+  unlike committed work — are **not** reflog-recoverable.
+- **On `session.branch`, not detached, no in-progress sequencer.** `reset --hard`
+  only moves the current ref; on a detached HEAD it would not move the branch (making
+  the card's "branch updated" claim false), and during an in-progress
+  rebase/merge/cherry-pick/revert it would clobber recovery state. These are
+  fast local checks; bail on any of them.
 
-## Detection & action — `autoResetMergedBranchOnContinue`
+### Sequence (revalidate after fetch — closes the TOCTOU window)
 
-A new pre-turn helper (mirroring `services/pr-rearm.ts`), run from the interactive
-message path **before** the agent executes:
+The pre-turn helper, server-side, regardless of the client's checkbox:
+1. evaluate the full gate (repo state, clean tree, `HEAD === mergedHeadSha`);
+2. `git fetch origin`; verify `origin/<base>` resolves;
+3. **re-evaluate** the gate (repo state, clean tree, `HEAD === mergedHeadSha`) — the
+   fetch yields to the event loop, during which a terminal edit or agent could move
+   the branch;
+4. `reset --hard origin/<base>`.
+
+### Recording `mergedHeadSha` — the **PR's** head SHA, not local HEAD
+
+`mergedHeadSha` is the SHA GitHub actually merged (the PR's `head.sha`), **not** the
+local clone's HEAD. Local HEAD is unsafe: the session stays alive, so a turn fired in
+the window between the GitHub merge and the poller detecting it advances local HEAD to
+*new, unmerged* work; capturing that would store unmerged work as the "merged tip,"
+and a later `HEAD === mergedHeadSha` reset would destroy it.
+
+So capture it from the authoritative source: extend `findPullRequestAnyState`
+(`github-auth-prs.ts`) to return the PR's `head.sha`, and persist it in
+`verifyMissingPr` (`pr-status-poller.ts`) where the terminal PR payload is in scope,
+**before** firing the merge side effects. (This also avoids the `onMergeDetectedCb`
+signature limitation — that callback only receives `sessionId`.) Follows the
+`previousMergedPr` (docs/202) persisted-field pattern: `merged_head_sha TEXT` column +
+migration, `SessionRow` + `fromRow` parse + `SessionInfo.mergedHeadSha`, a setter.
+
+**Fail closed.** If no PR head SHA is available, store **no SHA** and never
+auto-reset — the user falls back to today's manual flow (still picked up by
+docs/202/216).
+
+### Recovery / data-loss posture
+
+No explicit recovery ref. A merged change *is* the permanent record; the branch's
+prior state is a duplicate of what's already in `main`, so there is no use case for
+recovering it. Whatever git keeps for free suffices — the dropped commits remain in
+the clone's reflog (`HEAD@{1}`) and usually on the still-present remote branch — and
+we do not force-push at reset time. (The clean-tree clause covers the one genuinely
+unrecoverable case: uncommitted edits.)
+
+## The two messaging surfaces
+
+The reset speaks to two audiences over two channels.
+
+**(a) Agent — per-turn prompt prefix (not shown to the user).** Prepended to the
+prompt string (`assembleAgentPrompt(...)`), this turn only:
 
 ```
-session merged?                      no → return (untouched)
-mergedHeadSha recorded?              no → return (fail safe — pre-feature/false merge)
-prior base known?                    no → return (fail safe)
-HEAD === mergedHeadSha?              no → return (user has new work; docs/202/216 own it)
-                                     yes ↓
-git fetch origin
-git reset --hard origin/<base>
-→ emit the persisted "branch updated" card (emitChatCard) for the user
-→ inject the agent context message for this turn
-→ return { moved: true, base, fromSha, toSha }
+[System] Your previous pull request (#<N>) was merged into <base>. This branch
+has been automatically reset to the latest origin/<base> — it no longer contains
+the merged commits and starts from current code. Build the requested work on top
+of this fresh base; do not re-apply or recreate anything from the merged PR.
 ```
 
-The base comes from the merged PR snapshot the poller already holds
-(`prStatusPoller.getStatus(sessionId).baseBranch`), same source docs/202/216 use.
-All git ops are local + a single fetch; fail-safe on any error (skip the reset,
-run the turn normally — never block the user's message on a git hiccup).
+The last sentence is load-bearing: it stops the agent from recreating shipped work.
+Rides the existing prompt-assembly path; no persistence.
 
-### Hook point
+**(b) User — a persisted "branch updated" card.** Emitted into the transcript right
+after the user's message and before the agent's response (produced at continue-time,
+just after the reset). Form: a small, quiet inline card on its own message row (the
+`CARD_MESSAGE_FIELDS` / empty-text-message pattern), branch glyph, plus a concrete
+`was <sha> → now <sha> (origin/<base>)` line for auditability:
 
-The earliest point in the interactive turn where the session context is captured
-and a git op can run before the agent: `ws-handlers/agent-execution.ts#runAgentWithMessage`,
-between session-track and `executeAgentTurn`, alongside the existing
-`turnStartHeadHash` capture. The helper runs there; its returned context message is
-threaded into the prompt (next section).
-
-Wire it through a **shared helper** so the dispatch / system-turn path
-(`dispatched-turn.ts` / `runner-registry-factory.ts`) can opt in too, avoiding the
-"silently fails in one path" trap docs/202 calls out. The interactive path is the
-primary target; the system-turn path is lower priority (a CI auto-fix turn on a
-merged session is rare) but should share the helper rather than diverge.
-
-### Two surfaces: the agent prompt prefix and the user-facing card
-
-The reset speaks to **two audiences**, over two channels, with two different
-messages.
-
-**(a) Agent — per-turn prompt prefix.** The prompt passed to the agent is a plain
-string (`assembleAgentPrompt(...)`). Prepend a clearly-framed system note for this
-turn only:
-
-```
-[System] Your previous pull request (#<N>) was merged. This branch has been
-moved to the latest <base> (reset --hard to origin/<base>) — it no longer
-contains the merged commits and starts from current code. Build the new work
-on top of this fresh base; do not re-apply or re-create anything from the
-merged PR.
-```
-
-This is a per-turn prompt prefix (not persisted chat content), so it rides the
-existing prompt-assembly path with no new persistence machinery. The `#<N>` and
-base come from the merged-PR snapshot.
-
-**(b) User — a persisted "branch updated" card.** Emit a small card into the chat
-transcript, positioned **right after the user's message bubble and before the
-agent's response** (it is produced at continue-time, just after the reset, before
-`executeAgentTurn`). Plain, friendly wording — it does not need to mirror the agent
-prefix:
-
-> **Branch updated to latest `<base>`** · Your previous PR #N merged, so this
-> session's branch was automatically reset to the latest `<base>` before continuing.
+> **Branch updated to latest `<base>`**
+> Your previous PR #N merged, so this branch was automatically reset to the latest
+> `<base>` before continuing.
+> `was a1f3c9d → now 7e02b48 (origin/main)`
 
 This is **transcript content, so it must be persisted, not emit-only** (CLAUDE.md
-"Chat transcript content MUST be persisted"). It is a **side-channel card** — it
-arrives outside the agent-event stream (a pre-turn orchestrator action), so
-`buildTurnMessages` won't capture it on its own. Follow the established
-`emitChatCard` recipe (docs/188, docs/191):
+"Chat transcript content MUST be persisted"). It is a **side-channel card** (arrives
+outside the agent-event stream), so follow the `emitChatCard` recipe (docs/188/191):
+emit via `emitChatCard` (atomic emit + in-band record anchored by `afterGroupIndex`
++ persist in-progress turn); add a typed `PersistedMessage` field (e.g.
+`branchAutoReset: { base, prNumber, prUrl, fromSha, toSha }`) + column +
+`toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory`; register in
+`CARD_MESSAGE_FIELDS` (`visual-elements.ts`) + extend `EVERY_OPTIONAL_FIELD_MESSAGE`;
+add history round-trip + no-duplicate-on-replay tests. The two guard tests
+(`chat-history.test.ts`, `visual-elements.test.ts`) make this self-enforcing.
 
-1. Emit via **`emitChatCard`** (`chat-card-persistence.ts`), never bare
-   `emitMessage` — it atomically emits the live card, records it in-band (anchored by
-   `afterGroupIndex` so it interleaves at its true position), and persists the
-   in-progress turn.
-2. Add a typed `PersistedMessage` field (e.g. `branchAutoReset: { base, prNumber,
-   prUrl, fromSha, toSha }`) + a column + `toRow`/`fromRow` + a `database.ts`
-   migration.
-3. Rehydrate it in `loadSessionHistory` (live append + idempotent store upsert by id).
-4. Register it in `CARD_MESSAGE_FIELDS` (`visual-elements.ts`) — it renders on an
-   empty-text message.
-5. Add the history round-trip + no-duplicate-on-replay tests and extend
-   `EVERY_OPTIONAL_FIELD_MESSAGE`.
+**Ordering contract.** The card must render *after* the user's message bubble. But
+`executeAgentTurn` persists the resumed user row itself (via `persistUserMessage`,
+inside `turn-executor.ts`), *after* `runAgentWithMessage` would call the pre-turn
+helper — so naively emitting the card first persists it above the user row and it
+reloads out of order. Fix: in `runAgentWithMessage`, **persist the user message row
+before the reset**, then emit the card anchored after it (`emitChatCard`'s
+`afterGroupIndex`), then run the turn (suppressing the executor's duplicate user-row
+append). The reset git op still happens pre-turn so the agent works on the fresh base.
 
-The two guard tests (`chat-history.test.ts`, `visual-elements.test.ts`) make this
-self-enforcing — a forgotten step is a red build naming the field.
+The card is the **user-facing signal of record** — it does **not** depend on the
+docs/216 "ready" card (which is indirect, and in practice has not been firing
+reliably). The composer control is transient (persists nothing); the card is the
+durable record. Control = intent (before); card = record (after).
 
-**Why this is the user-facing signal of record (not docs/216).** docs/216's "ready"
-card is indirect (it conveys "session is fresh/ready," not "I just rewrote your
-branch") and has not been firing reliably in practice. A destructive automatic reset
-warrants its own explicit, persisted statement in the transcript. The docs/216 card,
-if/when it fires post-turn, is then merely corroborating — this feature does not
-depend on it.
+## Path coverage
 
-## Composition with docs/202 / docs/216 — no new card logic
+**Interactive path only** (`runAgentWithMessage` in `agent-execution.ts`). A human
+resuming is the real signal. **Queued user messages count as interactive** —
+`drainNextQueuedMessage` recurses back into `runAgentWithMessage`, so a message
+queued before the merge was detected still flows through this hook (and the gate
+re-validates, so the first eligible message resets and the rest run on the moved,
+no-longer-eligible branch). System/dispatch turns (CI auto-fix never runs on a merged
+PR; programmatic `shipit session message` is niche) are out of scope — a destructive
+reset underneath an automated message is more surprising than helpful. If we later
+want programmatic continues to reset too, factor a shared helper then. Documented here
+as a deliberate scope boundary (unlike docs/202/216, which wire both paths because
+their detection is cheap and idempotent; ours is a destructive action).
 
-After the pre-turn reset, `HEAD == origin/<base>`. The turn runs. The **existing**
-post-turn hooks then settle the PR card with zero new code:
+## Composition with docs/202 / docs/216 — no new PR-card logic
 
-- Agent did **new work** → `HEAD` ahead of base, two-dot diff non-empty →
-  `detectAndReArmMergedSession` (docs/202) → re-arm + **new PR**.
-- Agent did **nothing committable** → `headIsAtBase` true →
-  `detectAndReArmResetSession` (docs/216, every-turn hook) → re-arm + **clean
-  "ready" card** carrying the `previousMergedPr` breadcrumb.
+After the reset, `HEAD == origin/<base>`. The turn runs. The **existing** post-turn
+hooks then settle the PR card with no new code:
 
-Either way the stale merged card is cleared by machinery that already exists and is
-already tested. This feature's net addition is the **pre-turn reset + the injected
-agent message + the persisted user-facing "branch updated" card**; the post-merge PR
-card lifecycle (docs/202/216) is unchanged and is treated as corroborating, not as
-the user-facing signal of record.
+- Agent did **new work** → `advancedBeyondMergedBase` → `detectAndReArmMergedSession`
+  (docs/202) → re-arm + **new PR**.
+- Agent did **nothing committable** → `headIsAtBase` → `detectAndReArmResetSession`
+  (docs/216) → re-arm + **clean "ready" card**.
 
-Because docs/216 clears `merged_at` post-turn, the pre-turn gate (`session.mergedAt`)
-is false on subsequent turns, so the reset naturally **fires once** per merge.
+This feature's net addition is the **pre-turn reset + the explicit control + the
+agent prefix + the persisted user card**. The PR-card lifecycle (docs/202/216) is
+unchanged and treated as corroborating, not as the user-facing signal of record.
+(If the docs/216 card proves broken in observation, that is a separate bug to file,
+not a blocker — our card stands on its own.)
 
 ## Edge cases
 
-- **User already has new work since merge** (`HEAD !== mergedHeadSha`). Skip the
-  reset entirely — their work is sacred. docs/202/216 handle the card.
-- **`mergedHeadSha` missing** (session merged before this feature shipped; or a
-  rate-limit false-merge where no real merge sha exists). Fail safe → skip the
-  reset. No silent data loss.
-- **False merge positive.** The poller documents that a persisted "merged" can be a
-  rate-limit false positive. The `HEAD === mergedHeadSha` gate means we only reset a
-  branch the user hasn't touched, and a hard reset is **recoverable**: the old
-  commits survive in the local reflog and (typically) on the still-present remote
-  branch, and we do **not** force-push at reset time. As belt-and-suspenders, the
-  helper may stamp a recovery ref (e.g. `refs/shipit/pre-reset/<shortSha>`) before
-  resetting. Net risk: low and reversible. (Merged state is itself REST-confirmed by
-  `verifyMissingPr`, not bulk-view-only, so genuine false positives are narrow.)
-- **Dirty working tree.** A merged session is post-auto-commit, so the tree is
-  clean and `HEAD === mergedHeadSha`. As a guard, skip the reset if the tree is
-  dirty (don't hard-reset over uncommitted changes) and let the agent decide.
-- **`origin/<base>` missing / fetch fails / workspace evicted.** Fail safe → skip,
-  run the turn normally. The continue path rehydrates the clone before this hook, so
-  in practice the workspace is live.
-- **Base already equal to HEAD.** Harmless no-op reset; the gate would not have
-  fired anyway (post-squash `HEAD != origin/<base>`).
+- **New work since merge** (`HEAD !== mergedHeadSha`): not eligible, no control, no
+  reset; docs/202/216 own the card.
+- **`mergedHeadSha` missing** (pre-feature session, evicted clone at merge, or a
+  rate-limit false-merge): not eligible → skip. No silent data loss.
+- **False merge positive:** the gate only resets a branch the user hasn't touched,
+  and the reset is reflog-recoverable; we never force-push. Merged state is itself
+  REST-confirmed by `verifyMissingPr`, so genuine false positives are narrow.
+- **Dirty working tree:** not eligible → skip (don't hard-reset over uncommitted
+  edits).
+- **`origin/<base>` missing / fetch fails / workspace evicted:** fail safe → skip,
+  run the turn normally. (The continue path rehydrates the clone before this hook.)
+- **Stale client eligibility flag:** harmless — the server re-validates the full gate
+  at send time, so the checkbox is intent only.
 
 ## Product-principle check
 
-- **§5 agent-as-actor / no shell-shaped affordance.** The user continues in chat;
-  ShipIt operates the box (fetch + reset). No button, no manual incantation.
-- **§1/§2 inline.** Nothing leaves ShipIt; the branch move and its explanation
-  surface inline (the injected note to the agent; the docs/216 "ready" card to the
-  user).
+- **§5 agent-as-actor:** the user continues in chat and ticks/unticks a behavior
+  toggle; ShipIt operates the box (fetch + reset). The control is a turn modulator
+  (like permission mode), not a command-runner button.
+- **§1/§2 inline:** nothing leaves ShipIt; the move and its explanation surface
+  inline (the composer control before; the persisted card after).
 
 ## Key files
 
 | Area | File | Change |
 |---|---|---|
-| Capture | `src/server/orchestrator/pr-status-poller.ts` | At merge detection (`verifyMissingPr`), record the merged PR's `head.sha` as `mergedHeadSha` |
+| Capture (source) | `src/server/orchestrator/github-auth-prs.ts` | Extend `findPullRequestAnyState` to return the PR's `head.sha` |
+| Capture (persist) | `src/server/orchestrator/pr-status-poller.ts` | In `verifyMissingPr`, persist `mergedHeadSha = pr.head.sha` before the merge side effects; fail closed if absent |
 | Persist | `src/server/shared/database.ts` | `merged_head_sha TEXT` column + migration |
-| Persist | `src/server/orchestrator/sessions.ts` | `SessionRow.merged_head_sha` + `fromRow` parse + setter (written with `markMerged`) |
-| Type | `src/server/shared/types.ts` | `SessionInfo.mergedHeadSha?: string` |
-| Detection + action | `src/server/orchestrator/services/pre-turn-reset.ts` (new) | `autoResetMergedBranchOnContinue` — gate → fetch → `reset --hard origin/<base>` → emit persisted card → return injected message + move info; fail-safe |
-| Git primitives | `src/server/shared/git.ts` | Reuse `getHeadHash`, `fetch`, `hardResetToCommit`; resolve `origin/<base>` tip via `revparse` (all exist) |
-| Pre-turn wiring | `ws-handlers/agent-execution.ts` (+ shared with `dispatched-turn.ts` / `runner-registry-factory.ts`) | Call the helper between session-track and `executeAgentTurn`; prepend the returned note to `prompt` |
-| User card — emit | `src/server/orchestrator/chat-card-persistence.ts` | Emit the "branch updated" card via `emitChatCard` (atomically emit + record in-band + persist in-progress turn) |
-| User card — type/persist | `shared/types/*`, `orchestrator/chat-history.ts`, `session-data.ts`, `shared/database.ts` | New `PersistedMessage` field (e.g. `branchAutoReset`) + column + `toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory` |
-| User card — register | `src/client/.../visual-elements.ts` | Add to `CARD_MESSAGE_FIELDS` (renders on empty-text message); extend `EVERY_OPTIONAL_FIELD_MESSAGE` |
-| User card — render | `src/client/components/` (new small card component, near `PrLifecycleCard.tsx`) | Render "Branch updated to latest `<base>` · previous PR #N merged" |
+| Persist | `src/server/orchestrator/sessions.ts` | `SessionRow.merged_head_sha` + `fromRow` parse + setter |
+| Type | `src/server/shared/types/*` | `SessionInfo.mergedHeadSha?: string`; transient `resetEligible?: boolean` |
+| Detection + action | `src/server/orchestrator/services/pre-turn-reset.ts` (new) | `autoResetMergedBranchOnContinue` — gate → fetch → re-gate → `reset --hard origin/<base>` → return `{ moved, base, prNumber, prUrl, fromSha, toSha }` + agent prefix; fail-safe |
+| Eligibility | `src/server/orchestrator/services/pre-turn-reset.ts` + session/PR state plumbing | `computeResetEligible(session, git)` (safety-only); surface `resetEligible` on activation + post-turn |
+| Git primitives | `src/server/shared/git.ts` | Reuse `getHeadHash`, `fetch`; add/confirm a `reset --hard origin/<base>` helper; `isClean()`, detached-HEAD / in-progress-sequencer checks for the repo-state clauses |
+| Global setting | `src/server/orchestrator/credential-store.ts` (+ settings UI) | `getAutoResetMergedBranch()` (default on), sibling of `getAutoResolveConflicts`/`getAutoFixCi`; settings toggle |
+| Pre-turn wiring | `src/server/orchestrator/ws-handlers/agent-execution.ts` | Call the helper between session-track and `executeAgentTurn`; prepend the prefix to `prompt`; honor the per-send override |
+| Send payload | `ws-handlers/send-message.ts` + `ws-client-messages.ts` | `resetMergedBranch?: boolean` on the user message (the per-send intent) |
+| Composer control | `src/client/components/` (composer) | Placement B control: shown iff `resetEligible`, checked from the global setting, per-send opt-out (non-sticky) |
+| User card — emit | `src/server/orchestrator/chat-card-persistence.ts` | Emit the card via `emitChatCard` |
+| User card — persist | `shared/types/*`, `chat-history.ts`, `session-data.ts`, `database.ts` | `branchAutoReset` `PersistedMessage` field + column + `toRow`/`fromRow` + migration; rehydrate in `loadSessionHistory` |
+| User card — register | `visual-elements.ts` | Add to `CARD_MESSAGE_FIELDS`; extend `EVERY_OPTIONAL_FIELD_MESSAGE` |
+| User card — render | `src/client/components/` (new card component) | Render "Branch updated to latest `<base>`" + `was → now` SHAs |
 
 ## Testing
 
-- `git.test.ts` — already covers `getHeadHash`/`fetch`/`hardResetToCommit`; add a
-  reset-to-`origin/<base>` integration if a gap exists.
-- `pre-turn-reset.test.ts` (new) — gate matrix: non-merged → no-op; merged but
-  `HEAD !== mergedHeadSha` → no-op; merged + equal + base known → fetch + reset +
-  message returned; missing `mergedHeadSha`/base → no-op; dirty tree → no-op; git
-  throw → fail-safe no-op.
 - `sessions.test.ts` — `mergedHeadSha` round-trips (set at merge, read in `fromRow`).
-- Integration — a continue turn on a merged untouched session resets the branch to
-  base and the post-turn docs/216 hook clears the merged card; a continue turn on a
-  merged session with new commits leaves the branch alone and follows docs/202.
-- Card persistence — `chat-history.test.ts`: the "branch updated" card round-trips
-  through persist → reload (history round-trip) and does not duplicate on turn-event
-  replay (reconnect); `visual-elements.test.ts`: the new field is in
-  `CARD_MESSAGE_FIELDS` and `EVERY_OPTIONAL_FIELD_MESSAGE` (these two guard tests are
-  self-enforcing — a missed step fails the build naming the field).
+- `pre-turn-reset.test.ts` (new) — gate matrix: non-merged → no-op; merged but
+  `HEAD !== mergedHeadSha` → no-op; missing SHA / base → no-op; dirty tree → no-op;
+  merged + eligible + checked → fetch + reset + returns move info & prefix; unticked
+  → no-op; git throw → fail-safe no-op; `computeResetEligible` truth table.
+- Integration — a continue turn on an eligible session resets the branch and the
+  post-turn docs/216 hook settles the PR card; a continue with new commits leaves the
+  branch alone (docs/202); the per-send override threads through.
+- Card persistence — `chat-history.test.ts`: the card round-trips persist → reload
+  and does not duplicate on turn-event replay; `visual-elements.test.ts`: the field
+  is in `CARD_MESSAGE_FIELDS` + `EVERY_OPTIONAL_FIELD_MESSAGE` (self-enforcing).
+- Client — composer shows the control iff `resetEligible`, default-checked from the
+  setting, opt-out non-sticky; the card renders.
+
+## Visual reference
+
+- `mockup.html` — the composer control (intent) + the persisted card (record).
+- `mockup-control-placement.html` — placement options A–D; **B chosen**.
+
+## Resolved decisions
+
+- **Lazy on continue, not eager in the poller.** (Q "trigger")
+- **`reset --hard origin/<base>`, not rebase.** (squash-safe; nothing to replay)
+- **Safety gate is the persisted `mergedHeadSha` + clean tree + plain repo state**
+  (not detached, no in-progress sequencer), not derived git state (which has a
+  data-loss hole). Re-validated after the fetch (TOCTOU).
+- **`mergedHeadSha` is the PR's `head.sha`, captured in `verifyMissingPr`** — not
+  local HEAD (which can advance to unmerged work in the merge-vs-detection window).
+  Fail closed if absent (no SHA → no auto-reset).
+- **Interactive path only.**
+- **No recovery ref** — a merged change is the permanent record; reflog + remote
+  branch suffice; clean-tree clause covers the unrecoverable (uncommitted) case.
+- **Explicit composer control (placement B) + global default setting**, checked by
+  default, per-send opt-out that doesn't persist.
+- **Persisted transcript card is the user-facing signal of record**, independent of
+  docs/216.
 
 ## Open questions
 
-- **Recovery ref.** Always stamp `refs/shipit/pre-reset/<sha>` before resetting, or
-  rely on reflog + the surviving remote branch? Leaning reflog-only for simplicity,
-  with the ref as a cheap optional safeguard.
+_None — see "Resolved decisions". The docs/216 card's reliability is tracked
+separately if observation confirms it's broken._
 
-## Resolved
+## Review notes
 
-- **User-visible signal at reset time → a dedicated persisted card.** Decided: emit a
-  first-class, persisted "branch updated" card into the transcript at reset time
-  (section "Two surfaces" above), rather than relying on the post-turn docs/216
-  "ready" card. The reset is destructive and automatic, so it must be plainly visible
-  in the conversation; and the docs/216 card is both indirect and, in practice, not
-  firing reliably — so it cannot be the signal of record.
+Reviewed by Codex (cross-agent). Accepted: PR-head-SHA capture instead of local HEAD
+(data-loss hole); merge the persisted card into the reset-mechanism phase (no silent
+destructive op); repo-state gate clauses (detached HEAD, in-progress sequencer);
+revalidate-after-fetch sequence; card-ordering contract (user row before card);
+`resetEligible` is safety-only; queued user messages are interactive. Declined: an
+explicit recovery ref (a merged change is the permanent record — product decision;
+reflog + remote are the accepted fallback).
