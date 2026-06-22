@@ -281,11 +281,13 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // file into the default `/credentials` (often unwritable in CI) would break
   // boot. The cipher's own behavior is covered by dedicated unit tests that
   // inject a real cipher; an integration test can still opt in via
-  // `deps.secretCipher`.
-  const isTestMode = deps.serveStatic === false;
+  // `deps.secretCipher`. We gate on `serveStatic === false` (the explicit test
+  // signal) OR the vitest runtime (`VITEST`), since not every buildApp test call
+  // sets serveStatic.
+  const isUnderTest = deps.serveStatic === false || !!process.env.VITEST;
   const secretCipher =
     deps.secretCipher === undefined
-      ? isTestMode
+      ? isUnderTest
         ? null
         : resolveSecretCipher({ credentialsDir })
       : deps.secretCipher;
@@ -406,6 +408,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
       agent.run({ prompt, cwd, permissionMode: "auto" });
     });
   });
+
+  const isTestMode = deps.serveStatic === false;
 
   return {
     defaultAgentId,
