@@ -80,9 +80,9 @@ bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deplo
 ```
 
 This clones ShipIt to `~/.shipit`, builds the orchestrator and session-worker images, and starts
-ShipIt **detached** at [http://localhost:4123](http://localhost:4123). Installing a fork? Set
-`SHIPIT_REPO_URL=https://github.com/you/shipit.git` before the command; pick a different location
-with `SHIPIT_HOME`.
+ShipIt **detached** at [http://localhost:4123](http://localhost:4123). Installing a fork or picking a
+different install location? See [`deployment/README.md`](deployment/README.md) for the
+`SHIPIT_REPO_URL` and `SHIPIT_HOME` overrides.
 
 - **Update later:** `~/.shipit/deployment/local/update.sh` — fetches your release channel (`stable`
   by default, or `edge` if you switch channels in Settings), rebuilds, and restarts. It refuses to
@@ -118,8 +118,8 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/sta
 The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
 everything else: installing git and Docker, cloning ShipIt to `/opt/shipit`, configuring host
 limits, building the images, installing the self-updater + restarter systemd units, and bringing
-ShipIt up. Installing a fork instead? Pass the repo through `sudo env`, because plain `sudo` strips
-the variable from the environment: `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"`.
+ShipIt up. Installing a fork instead? See [`deployment/README.md`](deployment/README.md) for the
+fork-install command.
 
 Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** —
 which fetches your release channel, rebuilds, and restarts. To update from the host instead, follow
