@@ -116,6 +116,10 @@ repo. The model:
   android:
     - project: android          # path to the Gradle project/module
       preview: rendered         # rendered | emulator | none
+      # toolchain: derived from the Gradle project by default (see below).
+      # Optional overrides, only for blind spots / heavy pre-provisioning:
+      # sdk: ["ndk;26.1.10909125", "cmake;3.22.1"]
+      # jdk: 17
   ```
 
   A repo with exactly one Android project and no `android:` key is auto-detected; the list is for
@@ -129,6 +133,24 @@ repo. The model:
 
 **Prereq for `android/`:** commit the pinned Gradle wrapper (8.7) — missing today though doc 116 assumed
 it was present. Repos without a wrapper fall back to the base-store Gradle matched to their AGP.
+
+### Toolchain: derived, not declared
+
+The toolchain itself is **not** a `shipit.yaml` field by default — unlike web, where the toolchain
+isn't fully captured in-repo and `agent.install` fills the gap, an Android project already pins its
+requirements in build-tool-native places: `compileSdk`/`targetSdk`/`ndkVersion`/CMake in
+`build.gradle(.kts)` + version catalogs, the Gradle version in the wrapper, and the JDK implied by the
+AGP version + `jvmTarget`. The platform reads those (the staged resolver) and provisions them. Asking
+the user to re-declare versions in `shipit.yaml` would just add a second source of truth that drifts
+from the build files.
+
+In practice the variance is real but bounded along a few axes: **JDK** ~2–3 values (11/17, soon 21);
+**Gradle** a documented AGP→Gradle matrix; **SDK platform/build-tools** a range `sdkmanager` fills
+cheaply (~60 MB each); **NDK/CMake** a minority of (native) apps but exact and heavy (~1 GB per NDK).
+So an **optional per-project override** (`sdk:`/`jdk:` above) earns its place for exactly two cases —
+**heavy/exact pre-provisioning** (fetch the right NDK up front instead of via error-retry) and
+**resolver blind spots** (convention plugins / generated Gradle logic). It supplements the derived set,
+never replaces the Gradle build as the source of truth — the same role `install-inputs` plays for web.
 
 ## Test tiers
 
