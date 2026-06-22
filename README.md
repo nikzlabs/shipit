@@ -84,11 +84,8 @@ ShipIt **detached** at [http://localhost:4123](http://localhost:4123). Installin
 different install location? See [`deployment/README.md`](deployment/README.md) for the
 `SHIPIT_REPO_URL` and `SHIPIT_HOME` overrides.
 
-- **Update later:** `~/.shipit/deployment/local/update.sh` — fetches your release channel (`stable`
-  by default, or `edge` if you switch channels in Settings), rebuilds, and restarts. It refuses to
-  overwrite uncommitted local changes.
-- **Stop:** `~/.shipit/deployment/local/stop.sh` — shuts ShipIt down and cleans up session
-  containers (add `--purge` to also drop the workspace/credentials volumes).
+Updating and stopping a local install — `update.sh`, `stop.sh`, release-channel behavior, and the
+`--purge` flag — are covered in [`deployment/README.md`](deployment/README.md).
 
 After the app opens, sign in to Claude Code or Codex from the in-app provider flow; credentials are
 stored in a persistent Docker volume so you only need to do this once per provider.
