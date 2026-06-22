@@ -243,6 +243,10 @@ export async function runSubAgent(
       durationMs: result.durationMs,
       costUsd: result.costUsd,
       truncated: result.truncated,
+      // docs/220 — carry the verbatim output so the brokered consult is visible,
+      // not just attested. Already capped upstream (`maxOutputChars`), which is
+      // also what flags `truncated`. Omitted when empty.
+      ...(result.text ? { outputMarkdown: result.text } : {}),
       createdAt: new Date().toISOString(),
     });
 

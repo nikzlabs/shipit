@@ -173,7 +173,15 @@ describe("runSubAgent — happy path", () => {
     });
     expect(msgs[2]).toMatchObject({
       type: "sub_agent_consult_card",
-      card: expect.objectContaining({ subAgentId: "codex", status: "success", durationMs: 4200, costUsd: 0.03 }),
+      // docs/220 — the card carries the sub-agent's verbatim output so the
+      // brokered consult is visible, not just attested.
+      card: expect.objectContaining({
+        subAgentId: "codex",
+        status: "success",
+        durationMs: 4200,
+        costUsd: 0.03,
+        outputMarkdown: "2 bugs found",
+      }),
     });
     // the spinner and the card share a spawnId (the card clears the spinner)
     expect((msgs[2] as unknown as { card: { spawnId: string } }).card.spawnId).toBe(
@@ -204,6 +212,29 @@ describe("runSubAgent — happy path", () => {
     expect(recordAgentRateLimits).not.toHaveBeenCalled();
   });
 
+  it("omits outputMarkdown when the sub-agent returned empty text (docs/220)", async () => {
+    const { deps, emitMessage } = makeDeps({
+      spawnResult: { status: "success", text: "", truncated: false, durationMs: 1000, costUsd: 0 },
+    });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    const card = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { outputMarkdown?: string } })
+      .find((m) => m.type === "sub_agent_consult_card")?.card;
+    expect(card?.outputMarkdown).toBeUndefined();
+  });
+
+  it("gives each brokered call its own card id — no patch-in-place (docs/220)", async () => {
+    const { deps, emitMessage } = makeDeps({});
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { subAgentId: "codex", prompt: "re-review", depth: 0 });
+    const cardIds = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: { cardId?: string } })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card?.cardId);
+    expect(cardIds).toHaveLength(2);
+    expect(cardIds[0]).not.toBe(cardIds[1]);
+  });
+
   it("emits an error consult card when the spawn throws (spinner never left spinning)", async () => {
     const { deps, runner, emitMessage } = makeDeps({});
     runner.spawnSubAgent = vi.fn(async () => {
@@ -218,6 +249,8 @@ describe("runSubAgent — happy path", () => {
       type: "sub_agent_consult_card",
       card: expect.objectContaining({ status: "error" }),
     });
+    // a transport failure produced no result, so there is no output to carry
+    expect((msgs[1] as unknown as { card: { outputMarkdown?: string } }).card.outputMarkdown).toBeUndefined();
   });
 
   it("allows a same-provider spawn (no extra credentials needed)", async () => {

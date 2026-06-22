@@ -46,6 +46,15 @@ export interface SubAgentConsultCard {
   costUsd?: number;
   /** True when the sub-agent's output hit the wall-clock or character cap. */
   truncated?: boolean;
+  /**
+   * docs/220 — the sub-agent's verbatim final output (markdown), so a brokered
+   * consult is *visible*, not just attested. ShipIt renders what it brokers: the
+   * card shows a stripped-down preview and opens the full text in a read-only
+   * viewer. Already length-bounded upstream by the spawn primitive's
+   * `maxOutputChars` cap (32K), which is also what sets `truncated`. Absent on a
+   * transport-failure card (no output was produced) and on empty output.
+   */
+  outputMarkdown?: string;
   createdAt: string;
 }
 
