@@ -507,6 +507,7 @@ export async function handleSendMessage(
     isNewSession: !msg.sessionId,
     uploadPaths,
     ...(msg.userReview ? { userReview: msg.userReview } : {}),
+    ...(msg.resetMergedBranch !== undefined ? { resetMergedBranch: msg.resetMergedBranch } : {}),
     reviewFilePath,
     compact: isCompactRequest,
   });

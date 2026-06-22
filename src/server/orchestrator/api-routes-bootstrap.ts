@@ -70,6 +70,8 @@ export async function registerBootstrapRoutes(
     autoResolveConflicts?: boolean;
     /** docs/169 — global gate for the auto-fix-CI loop. */
     autoFixCi?: boolean;
+    /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+    autoResetMergedBranch?: boolean;
     /** docs/144 — global gate for sub-agent spawning. */
     enableSubAgents?: boolean;
     /** docs/217 — per-agent sub-agent defaults patch, keyed by agent id. */
@@ -105,6 +107,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.liveSteering !== undefined ? { liveSteering: request.body.liveSteering } : {}),
           ...(request.body.autoResolveConflicts !== undefined ? { autoResolveConflicts: request.body.autoResolveConflicts } : {}),
           ...(request.body.autoFixCi !== undefined ? { autoFixCi: request.body.autoFixCi } : {}),
+          ...(request.body.autoResetMergedBranch !== undefined ? { autoResetMergedBranch: request.body.autoResetMergedBranch } : {}),
           ...(request.body.enableSubAgents !== undefined ? { enableSubAgents: request.body.enableSubAgents } : {}),
           ...(request.body.agentSubAgentDefaults !== undefined ? { agentSubAgentDefaults: request.body.agentSubAgentDefaults } : {}),
           ...(request.body.voiceDeliveryMode !== undefined ? { voiceDeliveryMode: request.body.voiceDeliveryMode } : {}),

@@ -6,7 +6,7 @@ import { buildTurnMessages, type AgentListenerDeps } from "./agent-listeners.js"
 import { emitChatCard } from "../chat-card-persistence.js";
 import { postTurnCommit } from "./post-turn.js";
 import { resolveRunner } from "./resolve-runner.js";
-import { autoResetMergedBranchOnContinue } from "../services/pre-turn-reset.js";
+import { autoResetMergedBranchOnContinue, isResetEligible } from "../services/pre-turn-reset.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "../session-runner.js";
 import {
@@ -199,6 +199,12 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
    * of a normal turn. Set by the `/compact` interception in send-message.ts.
    */
   compact?: boolean;
+  /**
+   * docs/218 — per-send intent for the auto-reset-merged-branch control. `false`
+   * = user unticked it for this message (skip); `true`/undefined = follow the
+   * global setting. Non-sticky.
+   */
+  resetMergedBranch?: boolean;
 }): Promise<void> {
   const { userText, images, validatedFiles, permissionMode, isNewSession, uploadPaths, userReview } = opts;
 
@@ -289,6 +295,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       },
       capturedSessionId,
       capturedSessionDir,
+      opts.resetMergedBranch,
     );
     if (reset.moved) {
       resetAgentPrefix = reset.agentPrefix ?? "";
@@ -475,6 +482,25 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir,
         emit,
       });
+      // docs/218 — recompute + push the composer's reset-eligibility signal
+      // after every turn. A turn that reset the branch (or committed new work)
+      // flips it false → the control disappears; an unticked send leaves it
+      // eligible → the control reappears. Safety-only; the client ANDs the
+      // global setting. Best-effort — never blocks the post-turn flow.
+      try {
+        const eligible = await isResetEligible(
+          {
+            getSession: (id) => ctx.sessionManager.get(id),
+            getPrStatus: (id) => ctx.sessionManager.getPrStatus(id),
+            createGitManager: ctx.createGitManager,
+          },
+          sessionId,
+          sessionDir,
+        );
+        emit({ type: "reset_eligible", sessionId, eligible });
+      } catch (err) {
+        console.error(`[pre-turn-reset] post-turn eligibility signal failed for ${sessionId}:`, err);
+      }
     },
     postTurnReleaseFlow: async (sessionId, sessionDir, turnText) => {
       await reactToReleaseMarkers({

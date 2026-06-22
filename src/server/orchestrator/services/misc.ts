@@ -98,6 +98,7 @@ export async function getBootstrapData(deps: {
         liveSteering: true,
         autoResolveConflicts: false,
         autoFixCi: false,
+        autoResetMergedBranch: true,
         enableSubAgents: false,
         agentSubAgentDefaults: {},
         voiceDeliveryMode: "native",

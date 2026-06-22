@@ -568,10 +568,11 @@ export class CredentialStore {
 
   // ---- Auto-reset merged branch on continue (docs/218) ----
 
-  // Phase 2 default OFF (the mechanism + persisted card ship first, dark by
-  // default); Phase 3 flips this to `?? true` and adds the composer control.
+  // docs/218 Phase 3 — default ON. Resuming a merged, untouched session resets
+  // the branch to the latest base before the turn (with the composer's per-send
+  // opt-out + the settings toggle as the global escape hatch).
   getAutoResetMergedBranch(): boolean {
-    return this.data.autoResetMergedBranch ?? false;
+    return this.data.autoResetMergedBranch ?? true;
   }
 
   setAutoResetMergedBranch(enabled: boolean): void {

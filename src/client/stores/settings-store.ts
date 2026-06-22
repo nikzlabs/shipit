@@ -100,6 +100,8 @@ interface SettingsState {
   autoResolveConflicts: boolean;
   /** docs/169 — global gate for the auto-fix-CI loop. */
   autoFixCi: boolean;
+  /** docs/218 — global gate for auto-resetting a merged session's branch on continue. */
+  autoResetMergedBranch: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
   /**
@@ -141,6 +143,7 @@ interface SettingsState {
   setLiveSteering: (enabled: boolean) => void;
   setAutoResolveConflicts: (enabled: boolean) => void;
   setAutoFixCi: (enabled: boolean) => void;
+  setAutoResetMergedBranch: (enabled: boolean) => void;
   setEnableSubAgents: (enabled: boolean) => void;
   /** docs/217 — replace the per-agent sub-agent defaults map (Control A). */
   setAgentSubAgentDefaults: (map: Record<string, { reasoningEffort?: string }>) => void;
@@ -205,6 +208,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   liveSteering: true,
   autoResolveConflicts: false,
   autoFixCi: false,
+  autoResetMergedBranch: true,
   enableSubAgents: false,
   agentSubAgentDefaults: {},
   codexDeviceAuth: null,
@@ -318,6 +322,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setAutoResolveConflicts: (enabled) => set({ autoResolveConflicts: enabled }),
 
   setAutoFixCi: (enabled) => set({ autoFixCi: enabled }),
+  setAutoResetMergedBranch: (enabled) => set({ autoResetMergedBranch: enabled }),
   setEnableSubAgents: (enabled) => set({ enableSubAgents: enabled }),
   setAgentSubAgentDefaults: (map) => set({ agentSubAgentDefaults: map }),
 
