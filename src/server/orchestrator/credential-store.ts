@@ -159,7 +159,18 @@ export class CredentialStore {
     }
 
     const trimmed = raw.trim();
-    if (this.cipher && isEncrypted(trimmed)) {
+    if (isEncrypted(trimmed)) {
+      if (!this.cipher) {
+        // Encrypted file but encryption is disabled / the key is missing. Do
+        // NOT fall through to the plaintext branch — JSON.parse would fail, the
+        // store would reset to `{}`, and the next save() would overwrite the
+        // real encrypted file with an empty one: a silent wipe. Fail closed.
+        throw new Error(
+          `[credential-store] ${this.filePath} is encrypted but no encryption ` +
+            "key is configured. Provide SHIPIT_SECRET_KEY / restore the key file, " +
+            "or run a deliberate decrypt-export before disabling encryption.",
+        );
+      }
       // Decrypt failures (wrong/rotated key, tampered file) MUST propagate:
       // swallowing them to `{}` would let the next save() overwrite the real
       // (still-encrypted) file with an empty store re-encrypted under the new
@@ -182,16 +193,39 @@ export class CredentialStore {
 
     // Re-encrypt a legacy plaintext file once, now, so it doesn't linger in
     // plaintext until the next settings change (one-shot at-rest migration).
-    if (this.cipher) this.save();
+    // Use the throwing write path: silently leaving plaintext on disk after the
+    // operator opted into encryption would defeat the feature, so surface a
+    // write failure rather than continuing.
+    if (this.cipher) {
+      try {
+        this.writeToDisk();
+      } catch (err) {
+        throw new Error(
+          `[credential-store] Failed to re-encrypt legacy credentials at ${this.filePath}: ${getErrorMessage(err)}`,
+          { cause: err },
+        );
+      }
+    }
+  }
+
+  /**
+   * Write the current data to disk (encrypted when a cipher is set). Throws on
+   * any failure — callers decide whether to tolerate it. `chmod` after the
+   * write repairs a pre-existing file whose mode is looser than 0600 (the
+   * `writeFileSync` mode only applies when the file is created).
+   */
+  private writeToDisk(): void {
+    const dir = path.dirname(this.filePath);
+    fs.mkdirSync(dir, { recursive: true });
+    const serialized = JSON.stringify(this.data, null, 2);
+    const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
+    fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
+    fs.chmodSync(this.filePath, 0o600);
   }
 
   private save(): void {
     try {
-      const dir = path.dirname(this.filePath);
-      fs.mkdirSync(dir, { recursive: true });
-      const serialized = JSON.stringify(this.data, null, 2);
-      const payload = this.cipher ? this.cipher.encrypt(serialized) : serialized;
-      fs.writeFileSync(this.filePath, payload, { mode: 0o600 });
+      this.writeToDisk();
     } catch (err) {
       console.error("[credential-store] Failed to save:", getErrorMessage(err));
     }

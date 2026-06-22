@@ -53,8 +53,8 @@ A kill switch `SHIPIT_SECRET_ENCRYPTION=0|false|off` returns `null` (plaintext) 
 
 The encrypt/decrypt boundary is entirely inside the two store classes, so every caller (`loadSecrets`, `getGithubToken`, env resolution in `service-manager-setup.ts`, `getAllAgentEnv` → `process.env` at boot, …) is **unchanged**.
 
-- **`SecretStore`** (per-row): encrypts each `value` on write; transparently decrypts on read. A one-shot `migrateToEncrypted()` in the constructor re-encrypts any plaintext rows (idempotent, single transaction, no-op after first boot).
-- **`CredentialStore`** (whole-blob): the entire credentials JSON is encrypted as **one** AES-GCM blob on disk — so every present and future field is covered with no per-field plumbing. `load()` decrypts; a legacy plaintext file is re-encrypted once on construction. Mode stays 0600.
+- **`SecretStore`** (per-row): encrypts each `value` on write; transparently decrypts on read. A one-shot `verifyAndMigrate()` in the constructor (a) re-encrypts any legacy plaintext rows and (b) **decrypt-validates every already-encrypted row**, so a wrong/rotated key fails at construction rather than lazily on the first session's `loadSecrets`.
+- **`CredentialStore`** (whole-blob): the entire credentials JSON is encrypted as **one** AES-GCM blob on disk — so every present and future field is covered with no per-field plumbing. `load()` decrypts (and re-encrypts a legacy plaintext file once, via a *throwing* write so a failed migration surfaces instead of silently leaving plaintext on disk). Mode is held at 0600 with an explicit `chmod` after each write (the `writeFileSync` mode only applies on create, so a pre-existing looser file is repaired).
 
 The cipher is **injected**, not self-resolved by the constructors: `new SecretStore(db)` / `new CredentialStore(dir)` with no cipher behave exactly as before (plaintext). `app-di.ts` resolves the cipher once and injects it into both stores. This keeps the change additive — every existing `new XStore(...)` test call site is untouched — and centralizes key resolution + the fail-closed boot error in one place.
 
@@ -65,7 +65,7 @@ Existing installs have plaintext data. Both paths are **transparent read + re-en
 - Reads detect the `shipit:enc:v1:` prefix; absent ⇒ legacy plaintext, returned as-is.
 - Writes always encrypt. Plus a one-shot re-encryption on store construction (per-row for secrets, whole-file for credentials) so plaintext doesn't linger until the next user-driven write.
 
-No data is destroyed on upgrade, and no data is wiped on a key error — a wrong/missing key surfaces as a loud boot/read exception, never as an empty store.
+No data is destroyed on upgrade, and no data is wiped on a key error — a wrong/missing key (or encryption disabled while encrypted data exists) surfaces as a loud boot exception, never as an empty store or as ciphertext silently handed back as a value.
 
 ## Failure modes
 
@@ -74,15 +74,17 @@ No data is destroyed on upgrade, and no data is wiped on a key error — a wrong
 | No key configured (first boot) | Generate + persist key file (mode 0600), encryption on. |
 | `SHIPIT_SECRET_KEY` malformed | Throw at boot (fail closed). |
 | Key file present but wrong size / unreadable | Throw (never regenerate over it). |
-| Wrong / rotated key vs existing ciphertext | GCM auth failure → throw on read/construction. **No silent wipe.** |
+| Wrong / rotated key vs existing ciphertext | GCM auth failure → throw **at construction** (both stores: `CredentialStore.load`, `SecretStore.verifyAndMigrate` decrypt-validation). **No silent wipe.** |
 | Tampered ciphertext | GCM auth failure → throw. |
-| `SHIPIT_SECRET_ENCRYPTION=off` | Cipher is `null` → plaintext (explicit opt-out). |
-| Test mode (`serveStatic === false`) | Plaintext by default; cipher behavior covered by dedicated unit tests, opt-in via `deps.secretCipher`. |
+| Encryption disabled / key missing **while encrypted data exists** | Throw at construction in both stores — never treat ciphertext as a plaintext value (`SecretStore`) or misread an encrypted blob as corrupt JSON → reset → overwrite (`CredentialStore`, which would be a silent wipe). |
+| `SHIPIT_SECRET_ENCRYPTION=off` | Cipher is `null` → plaintext. Safe only when no encrypted data exists yet; otherwise the row above throws (deliberate decrypt-export required first). |
+| Legacy-plaintext re-encrypt write fails | Throw at construction (don't continue with plaintext-on-disk after the operator opted into encryption). |
+| Test mode (`serveStatic === false`, or vitest with `NODE_ENV !== "production"`) | Plaintext by default; cipher behavior covered by dedicated unit tests, opt-in via `deps.secretCipher`. The `NODE_ENV` guard keeps a stray `VITEST` from disabling encryption in a real deployment. |
 
 ## Key files
 
 - `src/server/orchestrator/secret-cipher.ts` — `SecretCipher` (AES-256-GCM), `resolveSecretCipher`, `parseSecretKey`, `isEncrypted`, `ENC_PREFIX`.
-- `src/server/orchestrator/secret-store.ts` — optional `cipher` param; per-row encrypt/decrypt + `migrateToEncrypted()`.
+- `src/server/orchestrator/secret-store.ts` — optional `cipher` param; per-row encrypt/decrypt + `verifyAndMigrate()` (re-encrypt plaintext + decrypt-validate existing ciphertext + fail-closed when encryption is off over encrypted rows).
 - `src/server/orchestrator/credential-store.ts` — optional `cipher` param; whole-blob encrypt/decrypt in `load()`/`save()`.
 - `src/server/orchestrator/app-di.ts` — resolves the cipher once (`secretCipher` dep), injects into both stores; plaintext in test mode.
 - `src/server/shipit-docs/secrets.md`, `environment.md` — self-hoster-facing env var docs.
@@ -90,5 +92,9 @@ No data is destroyed on upgrade, and no data is wiped on a key error — a wrong
 ## Tests
 
 - `secret-cipher.test.ts` — round-trip, fresh-IV non-determinism, unicode/empty, legacy-plaintext passthrough, tamper rejection, wrong-key rejection, short-ciphertext, key-size guard; `parseSecretKey` hex/base64/malformed; `resolveSecretCipher` generate-and-persist, reuse, env-key precedence, malformed-env throw, wrong-size-file throw, kill switch.
-- `credential-store.test.ts` → `encryption` describe — on-disk ciphertext, 0600 mode, legacy re-encrypt, fail-closed wrong key.
-- `integration_tests/secret-store.test.ts` → `encryption` describe — on-disk ciphertext column, legacy row re-encrypt, fail-closed wrong key.
+- `credential-store.test.ts` → `encryption` describe — on-disk ciphertext, 0600 mode, legacy re-encrypt, fail-closed wrong key, fail-closed when encrypted-but-no-cipher, mode repair on a pre-existing 0644 file.
+- `integration_tests/secret-store.test.ts` → `encryption` describe — on-disk ciphertext column, legacy row re-encrypt, fail-closed wrong key (at construction), fail-closed when encrypted rows exist but no cipher.
+
+## Review hardening (Codex pass)
+
+A cross-agent review (Codex) surfaced fail-closed gaps that are now fixed: `SecretStore` only failed on a wrong key lazily (now decrypt-validates at construction); turning encryption **off** over encrypted data silently degraded (`CredentialStore` would have reset-then-overwritten the file — a wipe; `SecretStore` would have returned ciphertext as a value) — both now throw; the legacy re-encrypt write was best-effort (now throws); and `mode: 0600` didn't repair a pre-existing looser file (now `chmod`ed). The `VITEST` test gate is guarded by `NODE_ENV !== "production"` so it can't disable encryption in a real deployment. Confirmed-solid: AES-256-GCM usage (random IV per record, tag enforced) and the provider-OAuth deferral reasoning.

@@ -143,12 +143,22 @@ describe("Integration: SecretStore", () => {
       expect(enc.loadSecrets(repoUrl)).toEqual({ LEGACY: "plain-value" });
     });
 
-    it("fails closed (throws) when reading values under the wrong key", () => {
+    it("fails closed (throws at construction) under the wrong key", () => {
       new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
         K: "v",
       });
-      const wrong = new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32)));
-      expect(() => wrong.loadSecrets(repoUrl)).toThrow();
+      // A wrong key is rejected when the store is built (decrypt-validation of
+      // existing ciphertext), not lazily on the first loadSecrets.
+      expect(() => new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32)))).toThrow();
+    });
+
+    it("fails closed (throws) when encrypted rows exist but no cipher is configured", () => {
+      new SecretStore(dbManager, new SecretCipher(crypto.randomBytes(32))).saveSecrets(repoUrl, {
+        K: "v",
+      });
+      // Disabling encryption (no cipher) over encrypted data must not silently
+      // hand ciphertext back as a plaintext value.
+      expect(() => new SecretStore(dbManager)).toThrow(/encrypted secrets/);
     });
   });
 });

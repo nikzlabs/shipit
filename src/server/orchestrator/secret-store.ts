@@ -35,21 +35,50 @@ export class SecretStore {
   constructor(dbManager: DatabaseManager, cipher?: SecretCipher) {
     this.db = dbManager.db;
     this.cipher = cipher;
-    if (this.cipher) this.migrateToEncrypted();
+    this.verifyAndMigrate();
   }
 
   /**
-   * One-shot at-rest migration: encrypt any rows still stored in plaintext.
-   * Idempotent and cheap — after the first boot every row is encrypted, so the
-   * scan finds nothing and writes nothing. Runs in a single transaction so a
-   * crash mid-migration leaves the table consistent.
+   * Boot-time at-rest pass. Runs whether or not a cipher is configured:
+   *
+   * - **No cipher but encrypted rows exist** ⇒ throw. Without this, encryption
+   *   being turned off (or the key going missing) would make `loadSecrets`
+   *   hand ciphertext to services as if it were the secret value — a silent,
+   *   confusing failure. Fail closed: demand the key (or a deliberate
+   *   decrypt-export) before running encryption-off over encrypted data.
+   * - **Cipher present** ⇒ decrypt-validate every already-encrypted row so a
+   *   wrong/rotated key fails at construction (matching the failure-modes
+   *   table — not lazily on the first session's `loadSecrets`), and re-encrypt
+   *   any legacy plaintext rows in a single transaction.
+   *
+   * Idempotent and cheap — the secrets table is tiny and, after the first
+   * boot, every row is already encrypted so the write side is a no-op.
    */
-  private migrateToEncrypted(): void {
-    if (!this.cipher) return;
+  private verifyAndMigrate(): void {
     const rows = this.db
       .prepare("SELECT rowid AS rowid, value FROM secrets")
       .all() as { rowid: number; value: string }[];
-    const plaintext = rows.filter((r) => !isEncrypted(r.value));
+
+    if (!this.cipher) {
+      if (rows.some((r) => isEncrypted(r.value))) {
+        throw new Error(
+          "[secret-store] Found encrypted secrets but no encryption key is " +
+            "configured. Provide SHIPIT_SECRET_KEY / restore the key file, or run " +
+            "a deliberate decrypt-export before disabling encryption.",
+        );
+      }
+      return;
+    }
+
+    const plaintext: { rowid: number; value: string }[] = [];
+    for (const r of rows) {
+      if (isEncrypted(r.value)) {
+        // Throws on a wrong/rotated key or tampered value — fail closed at boot.
+        this.cipher.decrypt(r.value);
+      } else {
+        plaintext.push(r);
+      }
+    }
     if (plaintext.length === 0) return;
     const update = this.db.prepare("UPDATE secrets SET value = ? WHERE rowid = ?");
     const run = this.db.transaction(() => {

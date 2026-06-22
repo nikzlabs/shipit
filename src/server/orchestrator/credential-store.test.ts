@@ -454,5 +454,27 @@ describe("CredentialStore", () => {
       // next save overwrite the real encrypted file with an empty one).
       expect(() => new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)))).toThrow();
     });
+
+    it("fails closed (throws) when the file is encrypted but no cipher is configured", () => {
+      const dir = createTmpDir();
+      new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32))).setGithubToken(
+        "ghp_secret",
+      );
+      // Encryption turned off (or key missing) over an encrypted file must not
+      // be misread as corrupt JSON → reset → overwritten with an empty file.
+      expect(() => new CredentialStore(dir)).toThrow(/encrypted/);
+    });
+
+    it("repairs a pre-existing looser file mode to 0600 on save", () => {
+      const dir = createTmpDir();
+      const file = path.join(dir, "shipit-credentials.json");
+      // Simulate a legacy plaintext file written with a permissive mode.
+      fs.writeFileSync(file, JSON.stringify({ githubToken: "ghp_legacy" }), { mode: 0o644 });
+      fs.chmodSync(file, 0o644);
+
+      // Constructing with a cipher re-encrypts (one-shot migration) and chmods.
+      new CredentialStore(dir, new SecretCipher(crypto.randomBytes(32)));
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    });
   });
 });

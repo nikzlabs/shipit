@@ -196,6 +196,9 @@ export function resolveSecretCipher(opts: {
   const key = crypto.randomBytes(KEY_BYTES);
   fs.mkdirSync(path.dirname(keyPath), { recursive: true });
   fs.writeFileSync(keyPath, `${key.toString("base64")}\n`, { mode: 0o600 });
+  // `writeFileSync`'s mode only applies on create; chmod ensures 0600 even if a
+  // file was somehow pre-created with a looser mode.
+  fs.chmodSync(keyPath, 0o600);
   console.log(
     `[secret-cipher] Generated a new encryption key at ${keyPath} (mode 0600). ` +
       "Back up this file — losing it makes encrypted secrets unrecoverable.",

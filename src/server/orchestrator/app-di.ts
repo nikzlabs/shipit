@@ -283,8 +283,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // inject a real cipher; an integration test can still opt in via
   // `deps.secretCipher`. We gate on `serveStatic === false` (the explicit test
   // signal) OR the vitest runtime (`VITEST`), since not every buildApp test call
-  // sets serveStatic.
-  const isUnderTest = deps.serveStatic === false || !!process.env.VITEST;
+  // sets serveStatic. The `NODE_ENV !== "production"` guard on the VITEST clause
+  // is defense-in-depth: a stray `VITEST` in a real deployment must never be
+  // able to silently flip encryption off (production sets NODE_ENV=production).
+  const isUnderTest =
+    deps.serveStatic === false ||
+    (!!process.env.VITEST && process.env.NODE_ENV !== "production");
   const secretCipher =
     deps.secretCipher === undefined
       ? isUnderTest
