@@ -17,7 +17,11 @@ The two surfaces are conceptually almost the same thing (view a file), yet diver
 
 ## Approach
 
-Extract the *content rendering + review* into a single self-contained `FileContentView` component that both surfaces delegate to. Each surface keeps only its own chrome (the dialog keeps sibling tabs + footer; Present keeps the carousel + download + lazy fetch). Content fetching stays per-surface — `FileContentView` is fetch-agnostic and takes already-loaded `content`.
+Extract the *content rendering + review* into a single self-contained `FileContentView` component that both surfaces delegate to. Each surface keeps only its own chrome (the dialog keeps sibling tabs + footer; Present keeps the carousel). Content fetching stays per-surface — `FileContentView` is fetch-agnostic and takes already-loaded `content`.
+
+**What "lazy fetch" is, and why it stays Present-only.** The Present store holds only metadata per artifact (title, MIME, `presentId`) — *not* the bytes. The first time an entry is shown, `PresentPane` fetches its bytes once from `GET /api/sessions/:id/present/:presentId/content` (a disk read proxied to the worker) and caches them back onto the entry; a reload re-fetches because the server retains nothing (`PresentPane.tsx` header comment + the `useEffect` at ~86). The **dialog has no equivalent**: its caller (`App.tsx` via `openPreview`) loads the file and passes `content` in as a prop already-resolved. So "lazy fetch" is just *how the Present surface obtains bytes*; it has nothing to do with rendering, which is exactly why `FileContentView` is fetch-agnostic and both surfaces feed it an already-loaded `content` string. No change here — it's named only to mark the boundary of what is *not* being shared.
+
+**Download moves into both surfaces.** Today only Present has a Download button (a client-side `Blob` + `<a download>` escape hatch — `downloadPresentation` / `presentationToBlob` / `suggestDownloadName` in `PresentPane.tsx`). The dialog has none, so a file opened from the tree can't be downloaded. Per the reconciliation goal, download should work in **both**. Extract the download helpers into a shared util and add a Download affordance to the dialog header too (see *Download in both surfaces* below).
 
 ### One internal content model
 
@@ -63,6 +67,17 @@ Review state is already keyed `${sessionId}::${filePath}` in `file-review-store`
 
 Note: HTML/SVG have no inline comment surface in rendered (iframe) mode — to review them the user flips to **source**, where Monaco line comments work. Consistent, no new mechanism.
 
+### Download in both surfaces
+
+The download helpers are currently private to `PresentPane` and keyed on a presentation's MIME + slugified title. Lift them to a shared, surface-agnostic util so the dialog can offer the same affordance.
+
+- **New** `src/client/utils/file-download.ts` (+ test) — moves `presentationToBlob` (rename → `contentToBlob`), `dataUriToBlob`, `suggestDownloadName`, and `mimeTypeToExtension` out of `PresentPane`, plus a `triggerDownload({ name, content, mimeType })` wrapping the `Blob` + temporary `<a download>` + deferred `revokeObjectURL` dance (lifted verbatim from `downloadPresentation`).
+- **`PresentPane.tsx`** — its Download button calls `triggerDownload` with the artifact's slugified title (unchanged behavior; helpers now imported, not local).
+- **`FilePreviewModal.tsx`** — add a Download action to the header for every kind (it always has `content` in hand). Unlike Present, the dialog knows the file's **real path**, so it downloads under the actual basename (`filePath.split("/").pop()`) rather than a slugified title — better filenames for committed files. Disabled while `content === null`.
+- Co-located `file-download.test.ts`: `data:` base64 round-trips to bytes, text content becomes a typed text Blob, basename-vs-slug naming.
+
+Note: download is a pure client-side escape hatch — it pulls the bytes onto the user's local machine, which ShipIt can't reach (the workspace lives in a container). To keep an artifact in the repo, the agent writes it there. This is unchanged; it just now exists on both surfaces.
+
 ### Markdown convergence
 
 Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `skipHtml` + review). **`MarkdownContent` (`message-markdown.tsx`) is left untouched** — it stays for chat/PR/plan/subagent and server-side rendering. Net effect: Present markdown gains frontmatter stripping + review; chat is unaffected.
@@ -73,10 +88,11 @@ Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `ski
 - `src/client/utils/file-content-kind.ts` (+ `.test.ts`) — single `ContentKind` model, adapters, reviewable gate.
 - `src/client/components/FileContentView/{FileContentView,CodeEditor,MarkdownReviewView,RenderedFrame}.tsx` (+ `FileContentView.test.tsx`) — shared renderer.
 - `src/client/hooks/use-file-review-controls.ts` (+ test) — shared review draft/send/ask state.
+- `src/client/utils/file-download.ts` (+ test) — shared client-side download helpers (lifted from `PresentPane`).
 
 **Modify**
-- `src/client/components/FilePreviewModal.tsx` — delegate to `FileContentView`, add source toggle, use the hook.
-- `src/client/components/PresentPane.tsx` — delegate to `FileContentView`, add source toggle + review footer, accept review props.
+- `src/client/components/FilePreviewModal.tsx` — delegate to `FileContentView`, add source toggle, use the hook, add a Download action (downloads under the real basename).
+- `src/client/components/PresentPane.tsx` — delegate to `FileContentView`, add source toggle + review footer, accept review props; import download helpers from `file-download.ts` instead of defining them locally.
 - `src/client/App.tsx` — pass review handlers to `PresentPane`.
 - `src/client/components/FilePreviewModal.test.tsx` — update assertions tied to the old branch structure if needed.
 
@@ -93,5 +109,5 @@ Both surfaces converge on `MarkdownSelectionComments` (frontmatter header + `ski
 - `npm run typecheck` — adapter wiring + prop changes.
 - `npm run lint:dev` — moved Monaco/`useEffect` code keeps its `eslint-disable` comments.
 - Co-located unit tests only (NOT full `npm test` — it OOMs the container):
-  `npx vitest run src/client/utils/file-content-kind.test.ts src/client/components/FileContentView src/client/hooks/use-file-review-controls.test.ts src/client/components/FilePreviewModal.test.tsx src/client/components/PresentPane.test.tsx`
-- Browser verify: open `.html` + `.svg` from the tree → renders by default, Source toggle shows Monaco; open a markdown doc → frontmatter header + add a selection comment + Send. In Present: push a workspace-relative HTML artifact → toggle source, add a line comment, Send; push a `/tmp` artifact → confirm read-only, no review footer.
+  `npx vitest run src/client/utils/file-content-kind.test.ts src/client/utils/file-download.test.ts src/client/components/FileContentView src/client/hooks/use-file-review-controls.test.ts src/client/components/FilePreviewModal.test.tsx src/client/components/PresentPane.test.tsx`
+- Browser verify: open `.html` + `.svg` from the tree → renders by default, Source toggle shows Monaco; open a markdown doc → frontmatter header + add a selection comment + Send. In Present: push a workspace-relative HTML artifact → toggle source, add a line comment, Send; push a `/tmp` artifact → confirm read-only, no review footer. Download: in the dialog, open any file → Download pulls it under its real basename; in Present, Download still works unchanged.
