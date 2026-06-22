@@ -118,11 +118,14 @@ sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/sta
 The script asks whether you want Cloudflare, Tailscale, both, or neither, then takes care of
 everything else: installing git and Docker, cloning ShipIt to `/opt/shipit`, configuring host
 limits, building the images, installing the self-updater + restarter systemd units, and bringing
-ShipIt up. Installing a fork instead? Set `SHIPIT_REPO_URL=https://github.com/you/shipit.git` before
-the command.
+ShipIt up. Installing a fork instead? Pass the repo through `sudo env`, because plain `sudo` strips
+the variable from the environment: `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"`.
 
 Once it's running, updates happen from inside the UI — **Settings → Advanced → Software Updates** —
-or via `bash /opt/shipit/deployment/vps/deploy.sh` on the host.
+which fetches your release channel, rebuilds, and restarts. To update from the host instead, follow
+the channel-aware steps in [`deployment/README.md`](deployment/README.md);
+`deployment/vps/deploy.sh` on its own only rebuilds and restarts the current checkout, so it won't
+pull a new release.
 
 See [`deployment/README.md`](deployment/README.md) for the full guide: sizing recommendations,
 Cloudflare Zero Trust access policies, wildcard preview DNS over Tailscale, and troubleshooting.
@@ -198,8 +201,9 @@ harness:
 
 ### Plan & track
 
-- **Inline Issues tab** — Linear and GitHub Issues in one read-only, priority-sorted list, with a
-  sub-tab per tracker, so "what should I work on next?" lives inside ShipIt
+- **Inline Issues tab** — Linear and GitHub Issues in one priority-sorted list, with a sub-tab per
+  tracker, so "what should I work on next?" lives inside ShipIt; set an issue's status (both trackers)
+  and priority (Linear) inline from the list or its detail view
 - **Filters & search** — narrow by status, priority, and assignee (multi-select) or free-text
   search, applied across every connected tracker
 - **Start a session from an issue** — kick off an isolated session straight from an issue row, with
