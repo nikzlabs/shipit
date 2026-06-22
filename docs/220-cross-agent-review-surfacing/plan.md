@@ -6,11 +6,20 @@ description: Render cross-agent reviewer output deterministically in the consult
 
 # Cross-agent review surfacing — ShipIt renders what it brokers
 
-> **Status: proposal, pre-decision.** Nothing here is implemented. It revises a
-> mechanism that is currently *shipped* (`docs/203`, the parent calling
-> `submit_review`) and the surfacing design in `docs/144` §6–§7. The current
-> behavior stands until this is accepted. Split out of `docs/144` so the
-> proposal isn't buried mid-doc.
+> **Status: design — Option B decided, not yet implemented.** The open A/B
+> question below is resolved in favor of **Option B**: every ShipIt-brokered
+> spawn produces a content-carrying consult card, and a review is just such a
+> card rendered richly. This revises a mechanism that is currently *shipped*
+> (`docs/203`, the parent calling `submit_review`) and the surfacing design in
+> `docs/144` §6–§7; the shipped behavior stands until the work in `checklist.md`
+> lands. Split out of `docs/144` so the proposal isn't buried mid-doc.
+>
+> **Why B (transparency):** everything ShipIt brokers should be visible in the
+> UI — not just the *fact* of the call (the metadata card already shows that) but
+> the *content* the consultant produced. Gating content to review-shaped spawns
+> (Option A) would leave generic delegations as metadata-only, hiding output the
+> user brokered. So all brokered spawns carry content; "review" is presentation,
+> not a separate path.
 
 ## Summary
 
@@ -92,30 +101,38 @@ The two properties that justify ShipIt's involvement and must be preserved:
 **attribution** ("this is Codex's take") and **verbatim fidelity** (no LLM in
 the middle re-typing it).
 
-### Two design constraints the content-carrying card must satisfy
+### How the card behaves (resolved under Option B)
 
-These are not optional — they are why this is a real design and not a one-line
-field add:
-
-- **Gate the content render to surfacing intent (generic vs review).**
-  `shipit agent run` is a *generic* delegation primitive — a spawn might be a
-  refactor or a one-line fix, not a review — and dumping every spawn's full
-  stdout into a persisted transcript card would be noise. So content-rendering
-  must be gated: either a review/surface signal on the spawn (e.g. `shipit agent
-  run --surface review`, or a review-specific orchestrator route) populates
-  `outputMarkdown` only for that mode and leaves ordinary consults
-  metadata-only — or, under option **(B)** below, the consult card *always*
-  carries a collapsed content payload and "review" is just richer presentation
-  on top. Which is right is part of the open question.
-- **Preserve docs/203's re-review (single-card) semantics.** docs/203's flow is
-  *review → fix → re-review*, and its `submit_review` **patches the same card**
-  rather than stacking a second. The consult card today gets a fresh `cardId`
-  per spawn (`randomUUID()` in `services/sub-agent.ts`), so a second review
-  spawn would emit a **new** card and leave the stale first-pass findings in the
-  transcript next to the final ones. A review-mode consult therefore needs a
-  stable identity (a `reviewRunId`/attempt key) and must **update one card in
-  place** on re-review — or explicitly mark the first-pass card superseded —
-  before rendering the final reviewer output.
+- **No surface gating — every brokered spawn carries content.** `shipit agent
+  run` is generic, but under B that doesn't force a `--surface review` signal:
+  *all* brokered spawns carry their output in the card. The noise concern (a
+  routine "fix this typo" spawn dumping stdout) is handled by **presentation,
+  not gating** — see truncation below. So no flag has to thread the shim →
+  broker → route → service path; the content already flows back to
+  `services/sub-agent.ts` (`result.text`) and is written into the card there.
+  A spawn *may* still carry an optional hint for *how richly* to render (review
+  styling vs plain output), but that is cosmetic, not a gate on whether content
+  is shown.
+- **Each brokered call is its own card — no patch-in-place.** This deliberately
+  **rejects** docs/203's single-card (`submit_review` patches the same card)
+  semantics for the brokered path. A re-review is a *separate agent call*; from
+  the user's point of view it makes no sense for it to silently rewrite a card
+  several screens up. So the existing per-spawn `cardId` (`randomUUID()` in
+  `services/sub-agent.ts`) stays as-is: the first review emits a card anchored
+  where it happened, the parent's fixes land between, and the re-review emits a
+  **second** card after them. The transcript reads as the real sequence —
+  *review → fixes → re-review* — and each card is an accurate, persisted record
+  of the state at its own moment (the first pass was correct *then*; it is not
+  "stale," it is history). This is the CLAUDE.md transcript-content model: every
+  brokered call is a fact the scrollback keeps.
+- **Stripped-down in card, full review in a viewer (truncation).** The card
+  shows a **preview** of the output (a leading slice / summary line), not the
+  whole thing inline. Clicking it opens the **full markdown** in a viewer (the
+  shared markdown renderer used by the file dialog / Present tab). The persisted
+  blob keeps the full text up to a cap, with the spawn primitive's existing
+  `truncated` flag marking a hard cut. "Available, not shouting": a routine
+  delegation collapses to a quiet line, a review expands to its findings on
+  demand.
 
 ## Consequence: `submit_review` may not need to exist
 
@@ -131,42 +148,49 @@ tool, not a review- or spawn-specific one. If within-agent reviews genuinely
 want a bordered card, that argues for a generic "render-as-card" primitive, not
 a review-shaped MCP tool wired into the spawn flow.
 
-## The open question (decide before any code)
+## Decision: Option B
 
-Under this model an in-agent review looks like **prose** and a cross-agent
-review looks like a **card**. That asymmetry is **information** — it signals that
-an opinion crossed into a different model — not an inconsistency to be smoothed
-away. The thing `docs/203` optimized for ("identical card in both modes") is
-exactly what this trades away, on purpose.
+The choice was between:
 
-So the decision is:
+- **(A) Accept a divergence.** Surface content only for review-shaped spawns;
+  leave generic brokered delegations metadata-only. Two different surfaces.
+- **(B) One content-carrying card for every brokered spawn.** The consult card
+  is *always* the surface; a review is just that card rendered richly;
+  `submit_review` is demoted to presentation-only or removed.
 
-- **(A) Accept the divergence.** Cross-agent is deterministic because it's
-  brokered; `Task` keeps narrating. Two visibly different surfaces, on purpose.
-- **(B) Reframe around the consult card.** The consult card is *always* the
-  review surface; `submit_review` is demoted to a presentation-only escape
-  hatch (or removed). Preserves a single "card path" while still killing the
-  probabilistic hop.
+**B is chosen,** on the transparency principle: everything ShipIt brokers should
+be visible in the UI, including the *content* the consultant produced — not only
+generic delegations' metadata. A surfaces the call but hides its output unless it
+was a review; B surfaces both, always.
 
-This doc does not pick one — that's the reaction it's waiting on.
+Note this means **within-agent `Task` stays prose** regardless — and that is
+consistent, not an exception: ShipIt does not *broker* a `Task` subagent (it runs
+in-process; ShipIt never sees its output), so the transparency principle does not
+reach it. B governs **brokered** calls; `Task` is not one.
 
 ## Reconciliation with existing docs
 
 - **`docs/203` (plain-text AI review, SHI-136)** — currently implemented. Its §3
-  + "submit_review" sections assume the parent records the card for both modes.
-  If accepted, the **cross-agent** branch of `docs/203` moves to the consult-card
-  path here, and `submit_review`'s role shrinks to (at most) the within-agent
-  presentation case. This is a deliberate revision of shipped behavior.
+  + "submit_review" sections assume the parent records the card for both modes,
+  and its `submit_review` **patches one card** across review → re-review. Under
+  Option B the **cross-agent** branch moves to the consult-card path here:
+  `submit_review` is demoted to presentation-only (or removed), and the
+  single-card / patch-in-place semantics are **explicitly dropped** for brokered
+  reviews — each brokered call is its own anchored card. This is a deliberate
+  revision of shipped behavior.
 - **`docs/144` (sub-agent spawning, SHI-37)** — §6 ("output is text; review is an
   optional renderer") and §7 ("chat surfacing", the consult card). This proposal
   extends §7's consult card from metadata-only to content-carrying.
 
-## Key files (if accepted)
+## Key files (Option B)
 
-- `src/server/orchestrator/services/sub-agent.ts` — already holds `result.text`;
-  would render it into the consult card instead of only metadata.
+- `src/server/orchestrator/services/sub-agent.ts` — already holds `result.text`
+  and emits the consult card; write the (capped) output into the card's new
+  content field instead of dropping it. Keeps the per-spawn `cardId` — no
+  patch-in-place.
 - `src/server/shared/types/domain-types/chat.ts` — `SubAgentConsultCard` gains a
-  content field.
+  content field (e.g. `outputMarkdown`) plus the `truncated` marker if not
+  already carried.
 - `src/server/orchestrator/chat-history.ts` — `toRow`/`fromRow` already persist
   the whole card as JSON in the existing `sub_agent_consult` column (added in
   `shared/database.ts`), so the new content field rides inside that blob — **no
@@ -174,21 +198,13 @@ This doc does not pick one — that's the reaction it's waiting on.
 - `src/client/components/visual-elements.ts` — `CARD_MESSAGE_FIELDS` (already
   lists `subAgentConsult`).
 - `src/client/components/MessageList.tsx` — `SubAgentConsultCardRow` renders the
-  reviewer's markdown.
-- `src/server/session/mcp-tools/review.ts` — `submit_review`; role shrinks or is
-  removed depending on the open question.
+  **stripped-down preview** + a click target.
+- The shared markdown viewer (file-dialog / Present renderer, unified per the
+  recent shared-renderer change) — opened on click to show the **full** output.
+- `src/server/session/mcp-tools/review.ts` — `submit_review` demoted to
+  presentation-only or removed; if removed, drop its bridge registration and the
+  `/review` flow's dependence on it.
 
-If the open question resolves to a gated `--surface review` signal (rather than
-option **(B)**'s always-content card), the intent has to thread the whole spawn
-path, not just the card — so these are also in scope:
-
-- `src/server/session/agent-shim/shipit-agent.ts` — parse the surfacing flag/field
-  on `shipit agent run`.
-- `src/server/session/agent-ops-routes.ts` — worker broker relay carries it.
-- `src/server/orchestrator/api-routes-agent.ts` — `POST /api/sessions/:id/agent/spawn`
-  accepts it.
-- `src/server/shared/sub-agent-run.ts` (and the spawn input types) — the field
-  that carries surfacing intent into `runSubAgent`/`runAgentToCompletion`.
-- `src/client/utils/compose-review-body.ts` — the `/review` flow sets the
-  surfacing intent at request time.
-- Tests for each of the above (shim, broker/route, service gate, client compose).
+Out of scope under B (would only be needed for the rejected Option A gate): a
+`--surface review` flag threaded through the shim / broker / spawn route /
+`compose-review-body.ts`. Not built.
