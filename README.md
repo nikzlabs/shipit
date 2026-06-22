@@ -260,8 +260,6 @@ harness:
 - **Background notifications** — optional browser notification/sound when the agent finishes
 - **Quick capture** — a global hotkey opens an overlay that captures a prompt and spawns a new
   session in the background, without leaving what you're doing
-- **Android app** — a sideload APK wraps self-hosted ShipIt in a WebView with a runtime-configurable
-  host URL, distributed via GitHub Releases
 - **Software updates** — VPS installs can update and restart from Settings → Advanced; local Docker
   installs choose the channel there, then apply updates by running `deployment/local/update.sh`
 
