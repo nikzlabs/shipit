@@ -370,11 +370,12 @@ export default function App() {
   const handleSend = useCallback(
     async (payload: SendPayload) => {
       const { text, uploadRefs, uploads: payloadUploads, resetMergedBranch } = payload;
-      // docs/203 — `/review [@path]` is a chat-native entry point to AI review:
-      // same composed prompt as the modal button, routed through
-      // `send_review_message` so the orchestrator authorizes the review tool. The
-      // reviewer (cross-agent vs fresh subagent) is resolved here, at click time,
-      // from the settings store + agent registry — the prompt is concrete.
+      // docs/203, docs/220 — `/review [@path]` is a chat-native entry point to AI
+      // review: same composed prompt as the modal button, sent as a normal
+      // `send_message`. The reviewer (cross-agent vs fresh subagent) is resolved
+      // here, at click time, from the settings store + agent registry — the prompt
+      // is concrete. Cross-agent output is surfaced by the consult card (docs/220);
+      // a same-model review is narrated as prose. No review tool is involved.
       const trimmed = text.trim();
       if (/^\/review(?:\s|$)/.test(trimmed)) {
         const argMatch = /^\/review\s+@?(\S+)/.exec(trimmed);
@@ -410,7 +411,7 @@ export default function App() {
         sendUserMessage({
           bubble: { role: "user", text: prompt },
           activity: "Reviewing...",
-          dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath: targetFile }),
+          dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid }),
         });
         return;
       }
@@ -932,7 +933,8 @@ export default function App() {
   // from send_message so the orchestrator authorizes the review tool for this
   // file. The reviewer (cross-agent vs fresh subagent) is resolved here at click
   // time from the settings store + agent registry, then baked into the prompt.
-  // Closing the modal shifts focus to the chat; the review card lands in chat.
+  // Closing the modal shifts focus to the chat; the review lands in chat
+  // (a consult card for cross-agent, prose for same-model — docs/220).
   const handleAskAgentReview = useCallback(
     (reviewFilePath: string) => {
       const sid = useSessionStore.getState().sessionId;
@@ -952,7 +954,7 @@ export default function App() {
       sendUserMessage({
         bubble: { role: "user", text: prompt },
         activity: "Reviewing...",
-        dispatch: () => send({ type: "send_review_message", text: prompt, sessionId: sid, reviewFilePath }),
+        dispatch: () => send({ type: "send_message", text: prompt, sessionId: sid }),
       });
     },
     [send, navigate, isNewSessionRoute],

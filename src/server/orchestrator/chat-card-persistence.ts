@@ -219,44 +219,6 @@ export function emitChatCard(
 }
 
 /**
- * Emit a transcript card, REPLACING an already-recorded card from this same turn
- * whose message matches `matches`, or recording a fresh one if none matches.
- *
- * Use this — not `emitChatCard` twice or a DB-row `updateXCard` — for a card with
- * a stable id that can be patched WITHIN the turn that created it (docs/203
- * review → re-review). Both `submit_review` calls happen mid-turn, so a DB-only
- * patch would be clobbered by the next `replaceInProgress` rebuild from
- * `recordedCards`; the `updateBugReportCard` pattern only works because that
- * card's transitions land AFTER the proposing turn is finalized. Replacing the
- * recorded card's message in place keeps it at its original transcript anchor and
- * makes every rebuild — and the live re-emit — reflect the latest state. The
- * client handler keys on the card id, so the re-emit upserts rather than
- * duplicating. Returns whether an existing card was replaced.
- */
-export function emitOrReplaceChatCard(
-  runner: Pick<
-    SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
-  >,
-  wsMessage: WsServerMessage,
-  persisted: PersistedMessage,
-  persist: CardPersistCtx,
-  matches: (m: PersistedMessage) => boolean,
-): { replaced: boolean } {
-  const idx = runner.recordedCards.findIndex((c) => matches(c.message));
-  if (idx < 0) {
-    emitChatCard(runner, wsMessage, persisted, persist);
-    return { replaced: false };
-  }
-  const updated = runner.recordedCards.slice();
-  updated[idx] = { ...updated[idx], message: persisted };
-  runner.recordedCards = updated;
-  runner.emitMessage(wsMessage);
-  persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
-  return { replaced: true };
-}
-
-/**
  * Patch an already-recorded card's persisted message IN PLACE, keyed by
  * `matches`, WITHOUT re-broadcasting the card. Returns true if a card matched.
  *
@@ -269,9 +231,9 @@ export function emitOrReplaceChatCard(
  * switch/reload. Updating the recorded card here makes every rebuild — and the
  * final end-of-turn persist — carry the patched (terminal) state.
  *
- * This differs from `emitOrReplaceChatCard` on two axes: it does NOT re-emit the
- * card (the transition is communicated by a separate terminal WS message — e.g.
- * `permission_resolved` — that the client applies to its card store), and it
+ * Unlike `emitChatCard`, this does NOT re-emit the card (the transition is
+ * communicated by a separate terminal WS message — e.g. `permission_resolved` —
+ * that the client applies to its card store), and it
  * never records a fresh card when none matches (a transition for a card not in
  * this turn's recorded set means the proposing turn already finalized, so the
  * caller should fall back to the DB-row `updateXCard` patch, which is safe then).

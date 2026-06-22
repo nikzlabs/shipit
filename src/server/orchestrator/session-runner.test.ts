@@ -267,27 +267,6 @@ describe("SessionRunner", () => {
     runner.dispose({ force: true });
   });
 
-  it("dispatch does NOT steer a review turn even when streaming is active (docs/163 + docs/125)", () => {
-    const runner = new SessionRunner({
-      sessionId: "s1",
-      sessionDir: "/tmp/s1",
-      defaultAgentId: "claude" as AgentId,
-    });
-    runner.setSystemTurnDeps(steerDeps({ liveSteering: true }));
-
-    const sent: string[] = [];
-    runner.setAgent({ sendUserMessage: (t: string) => sent.push(t), kill: () => {} } as any);
-    runner.running = true;
-    runner.isStreamingActive = true;
-
-    runner.dispatch({ text: "review note", reviewFilePath: "src/foo.ts" });
-
-    expect(sent).toEqual([]);
-    expect(runner.queueLength).toBe(1);
-
-    runner.dispose({ force: true });
-  });
-
   it("dispose tears down a streaming turn: kills the agent, drops the buffered steer, resets the gate (docs/140)", () => {
     const runner = new SessionRunner({
       sessionId: "s1",
@@ -301,9 +280,10 @@ describe("SessionRunner", () => {
     runner.running = true;
     runner.isStreamingActive = true;
 
-    // A review-turn dispatch queues rather than steers (docs/125), giving us a
+    // A dispatch during a system turn queues rather than steers, giving us a
     // buffered-but-unsent message to assert the teardown drop semantics on.
-    runner.dispatch({ text: "buffered note", reviewFilePath: "src/foo.ts" });
+    runner.systemTurnInProgress = true;
+    runner.dispatch({ text: "buffered note" });
     expect(runner.queueLength).toBe(1);
 
     runner.dispose({ force: true });
@@ -559,9 +539,9 @@ describe("SessionRunner", () => {
 
   it("dispatch threads attachments + permissionMode into the queued message (docs/150)", () => {
     // The drain at runDispatchedTurn previously only carried `text`. This guards
-    // the round-trip: an enqueued dispatch retains images, files, uploads,
-    // permissionMode, and reviewFilePath so a queued review or attachment-bearing
-    // turn doesn't silently lose them when the previous turn finishes.
+    // the round-trip: an enqueued dispatch retains images, files, uploads, and
+    // permissionMode so a queued attachment-bearing turn doesn't silently lose
+    // them when the previous turn finishes.
     const runner = new SessionRunner({
       sessionId: "s1",
       sessionDir: "/tmp/s1",
@@ -575,7 +555,6 @@ describe("SessionRunner", () => {
       files: [{ path: "src/foo.ts" }],
       uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
       permissionMode: "guarded",
-      reviewFilePath: "docs/foo.md",
     });
     const queued = runner.dequeue();
     expect(queued).toMatchObject({
@@ -585,7 +564,6 @@ describe("SessionRunner", () => {
       files: [{ path: "src/foo.ts" }],
       uploads: [{ path: "/uploads/screen.png", type: "upload" as const }],
       permissionMode: "guarded",
-      reviewFilePath: "docs/foo.md",
     });
     runner.dispose({ force: true });
   });

@@ -85,7 +85,6 @@ import type {
   WsPresentStateMessage,
 } from "./present.js";
 import type {
-  WsAiReviewAdded,
   WsVoiceNote,
   WsBugReportCard,
   WsBugReportFiled,
@@ -229,7 +228,6 @@ export type WsServerMessage =
   | WsRebaseAborted
   | WsAutoResolveStarted
   | WsAutoResolveResult
-  | WsAiReviewAdded
   | WsPresentContentMessage
   | WsPresentClearedMessage
   | WsPresentStateMessage

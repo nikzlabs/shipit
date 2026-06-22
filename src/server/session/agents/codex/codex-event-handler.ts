@@ -481,8 +481,8 @@ export class CodexEventHandler {
         // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
         // `wait`, `close_agent`, …). Surface it as a tool call so the review
         // subagent's lifecycle is visible in chat, mirroring how Claude's
-        // `Task` tool renders. The actual review write-back still arrives via
-        // the `submit_review` MCP tool, mapped above.
+        // `Task` tool renders. The review output is the subagent's final text,
+        // which the parent surfaces in chat (docs/220) — no write-back tool.
         if (phase === "started") {
           if (item.tool === "spawn_agent") {
             this.emitToolUseOnce(id, "Agent", {

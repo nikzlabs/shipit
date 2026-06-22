@@ -1259,13 +1259,6 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             }
             return sendMessageHandlers.handleSendMessage(ctx, msg);
           }
-          case "send_review_message": {
-            const sessionIdForReset = ctx.getActiveAppSessionId();
-            if (sessionIdForReset) {
-              prStatusPoller.resetRemediationForUserActivity(sessionIdForReset);
-            }
-            return sendMessageHandlers.handleSendReviewMessage(ctx, msg);
-          }
           case "answer_question": {
             const sessionIdForReset = ctx.getActiveAppSessionId();
             if (sessionIdForReset) {

@@ -5,7 +5,6 @@ import { handleAgentEvent } from "./agent-event.js";
 import { handleAgentInterrupted } from "./agent-interrupted.js";
 import { handleActionChecklistCard } from "./action-checklist-card.js";
 import { handleBranchAutoResetCard } from "./branch-auto-reset-card.js";
-import { handleAiReviewAdded } from "./ai-review-added.js";
 import { handleAuthRequired } from "./auth-required.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
@@ -113,7 +112,6 @@ export const messageHandlers: MessageHandlerMap = {
   branch_auto_reset_card: handleBranchAutoResetCard,
   agent_event: handleAgentEvent,
   agent_interrupted: handleAgentInterrupted,
-  ai_review_added: handleAiReviewAdded,
   auth_required: handleAuthRequired,
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,

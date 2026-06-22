@@ -175,8 +175,8 @@ export class CodexAdapter
     // explicit instruction — exactly what the composed review prompt asks for)
     // and custom MCP tools (`[mcp_servers.*]` in config.toml). The worker
     // writes the consolidated `shipit` bridge into the Codex config before spawn
-    // (see CodexAdapter.writeMcpConfig), so `submit_review`
-    // is available to the parent and any subagent it spawns.
+    // (see CodexAdapter.writeMcpConfig), so the shipit tools are available to the
+    // parent and any subagent it spawns.
     supportsReview: true,
     supportsSteering: true,
     // docs/178 — the app-server exposes `thread/compact/start` and emits
@@ -519,7 +519,7 @@ export class CodexAdapter
     // approval channel). The value is passed through `runtimeEnv` (the child's
     // env) and allowlisted via `env_vars`, matching how user-server env is wired.
     if (ctx.shipitBridge) {
-      runtimeEnv.SHIPIT_MCP_TOOLS = "review,present,voice,ask,bug,propose_actions";
+      runtimeEnv.SHIPIT_MCP_TOOLS = "present,voice,ask,bug,propose_actions";
       lines.push(
         "",
         "[mcp_servers.shipit]",

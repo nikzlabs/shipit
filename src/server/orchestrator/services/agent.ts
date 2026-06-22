@@ -44,7 +44,6 @@ export interface DispatchAgentMessageInput {
   images?: ImageAttachment[];
   files?: FileContextRef[];
   uploads?: UploadRef[];
-  reviewFilePath?: string;
 }
 
 export interface DispatchAgentMessageResult {
@@ -170,7 +169,6 @@ export async function dispatchAgentMessage(
     ...(validatedFiles.length > 0 ? { files: validatedFiles.map(asFileContextRef) } : {}),
     ...(input.uploads !== undefined ? { uploads: input.uploads } : {}),
     ...(input.permissionMode !== undefined ? { permissionMode: input.permissionMode } : {}),
-    ...(input.reviewFilePath !== undefined ? { reviewFilePath: input.reviewFilePath } : {}),
   });
 
   return { ok: true, queued: wasRunning };

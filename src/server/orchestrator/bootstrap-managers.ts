@@ -423,7 +423,6 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ...(next.files !== undefined ? { files: next.files } : {}),
       ...(next.uploads !== undefined ? { uploads: next.uploads } : {}),
       ...(next.permissionMode !== undefined ? { permissionMode: next.permissionMode } : {}),
-      ...(next.reviewFilePath !== undefined ? { reviewFilePath: next.reviewFilePath } : {}),
     });
   };
 

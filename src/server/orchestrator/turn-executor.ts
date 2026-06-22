@@ -50,7 +50,6 @@ export interface TurnInput {
   /** Optional activity label (dispatch); used in the echo + commit-summary fallback. */
   activity?: string;
   permissionMode?: PermissionMode;
-  reviewFilePath?: string;
   /**
    * Emit a `system_user_message` bubble (dispatch — the orchestrator initiated
    * the message) vs. rely on the client's already-rendered optimistic bubble
@@ -188,7 +187,7 @@ export async function executeAgentTurn(
   if (runner) {
     runner.running = true;
     runner.isStreamingActive = useStreaming;
-    resetRunnerTurnState(runner, { reviewFilePath: input.reviewFilePath ?? null });
+    resetRunnerTurnState(runner);
   }
 
   // docs/179 — persist the user row EXACTLY ONCE across the original attempt and

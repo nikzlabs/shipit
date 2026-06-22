@@ -71,9 +71,9 @@ export interface FilePreviewModalProps {
    */
   onSendComments?: (payload: SendCommentsPayload) => void;
   /**
-   * docs/203 — called when the user clicks "Ask agent to review". Receives the
-   * file path; the caller (App.tsx) resolves the reviewer, composes the prompt,
-   * and dispatches a `send_review_message`, then closes the modal.
+   * docs/203, docs/220 — called when the user clicks "Ask agent to review".
+   * Receives the file path; the caller (App.tsx) resolves the reviewer, composes
+   * the prompt, and sends it as a normal message, then closes the modal.
    */
   onAskAgentReview?: (filePath: string) => void;
 }

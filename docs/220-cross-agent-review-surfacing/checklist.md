@@ -31,26 +31,38 @@ refactor.
 - [x] `SubAgentCards.test.tsx` — preview render + click-to-open read-only viewer;
       plain one-liner when there is no output
 
-## Phase 2 — remove `submit_review`, wire `/review`, same-model prose (todo)
+## Phase 2 — remove `submit_review`, wire `/review`, same-model prose (done)
 
-- [ ] `compose-review-body.ts`: drop the `submit_review` instruction from **both**
-      prompts — cross-agent relies on the auto consult card (parent uses stdout
-      only to act/fix/re-review); same-model tells the parent to **present
-      findings as prose**
-- [ ] **Remove** `submit_review` (`mcp-tools/review.ts`, AI branch): drop the
-      bridge registration (`mcp-shipit-bridge.ts`), the orchestrator submit relay,
-      and the `ai_review` write path; `ReviewCard` renders legacy rows only; keep
-      the human user-comment endpoints
-- [ ] `compose-review-body.test.ts` — neither prompt instructs a `submit_review`
-      call; same-model prompt asks for prose findings
-- [ ] Remove/adjust the docs/203 `submit_review` card / single-card / patch tests
-      that no longer hold (tool removed); keep human user-comment tests
+Full removal (no vestigial scaffolding left), driven by `tsc`:
+
+- [x] `compose-review-body.ts`: dropped the `submit_review` instruction from
+      **both** prompts — cross-agent relies on the auto consult card (parent uses
+      stdout only to act/fix/re-review); same-model presents **prose**
+- [x] **Removed** the `submit_review` MCP tool (`mcp-tools/review.ts` deleted),
+      bridge registration, worker relay (`/agent-ops/review/submit`), orchestrator
+      endpoint (`/review-submit`), and `services/reviews.ts` AI write-back
+- [x] Removed the `ai_review_added` WS message + client handler; **kept** the
+      `aiReview` field / column / `ReviewCard` as a **legacy read path** (rows
+      written before docs/220 still render). Human user-comment path untouched
+- [x] Removed the now-orphaned scaffolding: `send_review_message` WS message +
+      handler, `activeReviewFilePath`/`activeReviewId` runner fields, the
+      `reviewFilePath` turn-pipeline thread (agent service, turn-executor,
+      dispatched-turn, agent-execution, api-routes-agent, bootstrap-managers,
+      session-runner queue), `isReviewTurn` steering input, and the orphaned
+      `emitOrReplaceChatCard`. `/review` now sends a normal `send_message`
+- [x] Removed the Claude `--allowedTools` + Claude/Codex `SHIPIT_MCP_TOOLS`
+      `review`/`submit_review` entries
+- [x] Tests: rewrote `compose-review-body.test.ts`; deleted the AI-review handler
+      test + the `review-chat-native` integration test; updated bridge/route/
+      runner/process/adapter tests; kept all human user-comment tests
+- [x] Verified: typecheck + lint clean; affected unit + integration tests pass
+      (steering, dispatch-route, doc/diff reviews, container-guard, bridge bundle)
 
 ## Docs
 
 - [x] Update `docs/144` §7 — consult card is now content-carrying (Phase 1)
 - [x] `src/server/shipit-docs/agent.md` — brokered output is surfaced in the
       consult card (agent need not re-emit it) (Phase 1)
-- [ ] Update `docs/203` once Phase 2 lands: mark the cross-agent branch superseded
-      by this card path
-- [x] Comment the rollout on SHI-195 (Phase 1)
+- [x] Update `docs/203`: AI-review (`submit_review`) write path removed; cross-agent
+      → consult card, same-model → prose; `ReviewCard`/`aiReview` kept legacy-only
+- [x] Comment the rollout on SHI-195 (Phase 1 + Phase 2)

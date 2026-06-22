@@ -201,10 +201,10 @@ export interface ChatMessage {
   };
   /**
    * docs/203 — when set, this message renders a plain-text `ReviewCard` inline
-   * in the chat. Populated from `ai_review_added` WS events (and rehydrated from
-   * the persisted `aiReview` column). The reviewer's markdown renders verbatim;
-   * there is no snapshot, no anchoring, and no modal. Legacy pre-docs/203 rows
-   * arrive degraded (`legacy: true`).
+   * in the chat. **Legacy read path only (docs/220):** new AI reviews no longer
+   * produce this card (cross-agent → consult card, same-model → prose), so this
+   * is populated solely by rehydrating the persisted `aiReview` column for rows
+   * written before docs/220. Pre-docs/203 rows arrive degraded (`legacy: true`).
    */
   aiReview?: AiReviewCard;
   /**
