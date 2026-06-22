@@ -39,6 +39,23 @@ describe("Integration: SecretStore", () => {
     });
   });
 
+  it("loadSecretNames returns only key names, never values", () => {
+    const repoUrl = "https://github.com/org/repo";
+    store.saveSecrets(repoUrl, {
+      STRIPE_KEY: "sk_test_123",
+      DATABASE_URL: "postgres://localhost/db",
+    });
+
+    const names = store.loadSecretNames(repoUrl);
+    expect(names.sort()).toEqual(["DATABASE_URL", "STRIPE_KEY"]);
+    // The values must not leak through this method.
+    expect(JSON.stringify(names)).not.toContain("sk_test_123");
+  });
+
+  it("loadSecretNames returns empty array for unknown repo", () => {
+    expect(store.loadSecretNames("https://github.com/org/unknown")).toEqual([]);
+  });
+
   it("saveSecrets replaces all existing secrets", () => {
     const repoUrl = "https://github.com/org/repo";
     store.saveSecrets(repoUrl, { KEY_A: "a", KEY_B: "b" });
