@@ -359,6 +359,40 @@ export function savePermissionModeBySession(map: Record<string, PermissionMode>)
   }
 }
 
+// ---- Present tab: last-viewed artifact per session (docs/093) ----
+//
+// The Present tab's active artifact, remembered per session so a session switch
+// OR a full page reload lands the user back on the artifact they were viewing
+// instead of snapping to the first one. Keyed by the content-addressed
+// `presentId` (stable across re-presents; a numeric index would drift as
+// artifacts append/clear). Pure view state, browser-local, not server-persisted
+// — it can differ between devices, which is fine. A stale entry (artifact since
+// gone) is harmless: the store falls back to clamping when the id isn't found.
+const ACTIVE_PRESENT_BY_SESSION_KEY = "shipit-active-present-by-session";
+
+export function getSavedActivePresentBySession(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(ACTIVE_PRESENT_BY_SESSION_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const out: Record<string, string> = {};
+    for (const [id, presentId] of Object.entries(parsed)) {
+      if (typeof presentId === "string" && presentId) out[id] = presentId;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function saveActivePresentBySession(map: Record<string, string>): void {
+  try {
+    localStorage.setItem(ACTIVE_PRESENT_BY_SESSION_KEY, JSON.stringify(map));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 // ---- Changed-docs strip collapse state (docs/205) ----
 //
 // Per-session expanded/collapsed state for the PR card's changed-docs strip.

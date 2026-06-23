@@ -166,3 +166,16 @@ restart** by persisting metadata orchestrator-side. Bytes stay on disk/git.
 - [x] Update agent-facing `shipit-docs/present.md` (remove "disappears on restart" language)
 - [x] Update `plan.md` with the persistence subsystem + key files
 - [x] `npm run typecheck` + `npm run lint:dev` clean; present tests pass
+
+### Gallery view + active-position memory + typing-carousel fix
+
+- [x] `galleryOpen` store state (reset on switch/full-clear); `setGalleryOpen`
+- [x] Per-session active-position memory (`lastViewedBySession` by `presentId`), restored in `hydrate`
+- [x] localStorage write-through (`get/saveActivePresentBySession`) so position survives a full page reload too
+- [x] Forget remembered position on a full `clear()`
+- [x] `PresentGallery` — container-query responsive grid (2/3/4), lazy live iframe thumbnails (IntersectionObserver + ResizeObserver scale)
+- [x] Shared `loadPresentContent` util (single view + gallery tiles, in-flight de-dupe)
+- [x] Gallery toggle beside the carousel controls; `Esc` closes; jump-to-tile collapses back
+- [x] Bug fix: arrow-key nav ignores keystrokes from text fields (chat typing no longer moves the carousel)
+- [x] Tests: store restore/fallback/forget, keydown focus guard, gallery toggle + tile select
+- [x] `npm run typecheck` + `npm run lint:dev` clean; present tests pass (44)

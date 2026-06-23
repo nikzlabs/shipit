@@ -1,8 +1,10 @@
 /**
  * Unit tests for the present-store reducer (docs/093).
  */
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { usePresentStore } from "./present-store.js";
+import { useSessionStore } from "./session-store.js";
+import { getSavedActivePresentBySession } from "../utils/local-storage.js";
 
 function makePresent(overrides: Partial<Parameters<ReturnType<typeof usePresentStore.getState>["addOrReplace"]>[0]> = {}) {
   return {
@@ -114,6 +116,73 @@ describe("present-store", () => {
       { presentId: "p1", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
     ]);
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
+  });
+
+  // Active-position memory (docs/093 — survives a session switch).
+  describe("with an active session", () => {
+    afterEach(() => {
+      useSessionStore.getState().setSessionId(undefined);
+    });
+
+    it("hydrate restores the artifact the session was last viewing, not index 0", () => {
+      useSessionStore.getState().setSessionId("sess_restore");
+      const list = [
+        { presentId: "a", mimeType: "text/html", filePath: "/tmp/a.html", createdAt: "2026-05-29T00:00:00.000Z" },
+        { presentId: "b", mimeType: "text/html", filePath: "/tmp/b.html", createdAt: "2026-05-29T00:00:01.000Z" },
+        { presentId: "c", mimeType: "text/html", filePath: "/tmp/c.html", createdAt: "2026-05-29T00:00:02.000Z" },
+      ];
+      usePresentStore.getState().hydrate(list);
+      usePresentStore.getState().setActiveIndex(2); // user navigates to "c"
+
+      // Session switch: reset() wipes the list, then a fresh hydrate replays it.
+      usePresentStore.getState().reset();
+      usePresentStore.getState().hydrate(list);
+
+      // Restored to "c" (index 2), not snapped back to the first artifact.
+      expect(usePresentStore.getState().activePresentIndex).toBe(2);
+    });
+
+    it("hydrate falls back to clamping when the remembered artifact is gone", () => {
+      useSessionStore.getState().setSessionId("sess_gone");
+      const full = [
+        { presentId: "x", mimeType: "text/html", filePath: "/tmp/x.html", createdAt: "2026-05-29T00:00:00.000Z" },
+        { presentId: "y", mimeType: "text/html", filePath: "/tmp/y.html", createdAt: "2026-05-29T00:00:01.000Z" },
+      ];
+      usePresentStore.getState().hydrate(full);
+      usePresentStore.getState().setActiveIndex(1); // remembers "y"
+
+      // "y" is no longer present on the next hydrate → clamp into bounds.
+      usePresentStore.getState().reset();
+      usePresentStore.getState().hydrate([full[0]]);
+      expect(usePresentStore.getState().activePresentIndex).toBe(0);
+    });
+
+    it("writes the remembered position through to localStorage (reload-durable)", () => {
+      useSessionStore.getState().setSessionId("sess_ls");
+      const list = [
+        { presentId: "u", mimeType: "text/html", filePath: "/tmp/u.html", createdAt: "2026-05-29T00:00:00.000Z" },
+        { presentId: "v", mimeType: "text/html", filePath: "/tmp/v.html", createdAt: "2026-05-29T00:00:01.000Z" },
+      ];
+      usePresentStore.getState().hydrate(list);
+      usePresentStore.getState().setActiveIndex(1); // remembers "v"
+
+      // A fresh page load seeds the in-memory map from this on next import.
+      expect(getSavedActivePresentBySession().sess_ls).toBe("v");
+    });
+
+    it("a full clear forgets the remembered position for the session", () => {
+      useSessionStore.getState().setSessionId("sess_clear");
+      const list = [
+        { presentId: "m", mimeType: "text/html", filePath: "/tmp/m.html", createdAt: "2026-05-29T00:00:00.000Z" },
+        { presentId: "n", mimeType: "text/html", filePath: "/tmp/n.html", createdAt: "2026-05-29T00:00:01.000Z" },
+      ];
+      usePresentStore.getState().hydrate(list);
+      usePresentStore.getState().setActiveIndex(1); // remembers "n"
+      usePresentStore.getState().clear(); // full wipe forgets it
+
+      usePresentStore.getState().hydrate(list);
+      expect(usePresentStore.getState().activePresentIndex).toBe(0);
+    });
   });
 
   it("clear with presentId drops just that entry", () => {

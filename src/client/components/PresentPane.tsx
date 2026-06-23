@@ -27,9 +27,11 @@ import {
   CaretLeftIcon,
   CaretRightIcon,
   DownloadSimpleIcon,
+  SquaresFourIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePresentStore, type Presentation } from "../stores/present-store.js";
+import { PresentGallery } from "./PresentGallery.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { FileContentView } from "./FileContentView/FileContentView.js";
 import { FileReviewFooter } from "./FileContentView/FileReviewFooter.js";
@@ -51,8 +53,10 @@ interface PresentPaneProps {
 export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: PresentPaneProps) {
   const presentations = usePresentStore((s) => s.presentations);
   const activeIndex = usePresentStore((s) => s.activePresentIndex);
+  const galleryOpen = usePresentStore((s) => s.galleryOpen);
   const sessionId = useSessionStore((s) => s.sessionId);
   const setActiveIndex = usePresentStore((s) => s.setActiveIndex);
+  const setGalleryOpen = usePresentStore((s) => s.setGalleryOpen);
   const markSeen = usePresentStore((s) => s.markSeen);
 
   const [fetchError, setFetchError] = useState<string | null>(null);
@@ -111,6 +115,22 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
   useEffect(() => {
     if (!isActiveTab) return;
     const onKey = (e: KeyboardEvent) => {
+      // Ignore keystrokes that belong to a text field — the listener is on
+      // `window`, and the chat composer is on screen alongside the Present tab,
+      // so without this guard pressing ◀ to move the text cursor while typing
+      // would also step the carousel back (the "it jumps to the previous one
+      // while I type" bug). Mirrors useKeyboardShortcuts' input check.
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || target?.isContentEditable) {
+        return;
+      }
+      if (e.key === "Escape") {
+        if (usePresentStore.getState().galleryOpen) usePresentStore.getState().setGalleryOpen(false);
+        return;
+      }
+      // While the gallery is open the arrows belong to it, not the carousel.
+      if (usePresentStore.getState().galleryOpen) return;
       if (e.key === "ArrowLeft") {
         const { activePresentIndex } = usePresentStore.getState();
         usePresentStore.getState().setActiveIndex(activePresentIndex - 1);
@@ -195,6 +215,21 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
             >
               <CaretRightIcon size={ICON_SIZE.SM} />
             </button>
+            {/* Gallery toggle sits beside the carousel — where the eye already
+                is when navigating — rather than off in the right-side actions. */}
+            <span className="mx-1 h-5 w-px bg-(--color-border-primary)" aria-hidden />
+            <button
+              onClick={() => setGalleryOpen(!galleryOpen)}
+              className={`inline-flex items-center justify-center w-7 h-7 rounded transition-colors hover:bg-(--color-bg-hover) ${
+                galleryOpen
+                  ? "text-(--color-accent) bg-(--color-bg-hover)"
+                  : "text-(--color-text-secondary) hover:text-(--color-text-primary)"
+              }`}
+              aria-label={galleryOpen ? "Close gallery" : "View all presentations"}
+              aria-pressed={galleryOpen}
+            >
+              <SquaresFourIcon size={ICON_SIZE.SM} />
+            </button>
           </div>
         )}
         <div className="flex flex-col min-w-0 flex-1">
@@ -223,7 +258,17 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
       </div>
 
       <div className="flex-1 min-h-0 relative bg-(--color-bg-primary)">
-        {fetchError ? (
+        {galleryOpen && presentations.length > 1 ? (
+          <PresentGallery
+            presentations={presentations}
+            activeIndex={safeIndex}
+            sessionId={sessionId ?? ""}
+            onSelect={(i) => {
+              setActiveIndex(i);
+              setGalleryOpen(false);
+            }}
+          />
+        ) : fetchError ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
             <p className="max-w-xs">{fetchError}</p>
             <p className="max-w-xs text-xs">

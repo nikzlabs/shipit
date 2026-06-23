@@ -143,6 +143,36 @@ describe("PresentPane", () => {
     expect(usePresentStore.getState().activePresentIndex).toBe(0);
   });
 
+  it("ignores arrow keys originating from a text field (chat-typing must not move the carousel)", () => {
+    // The keydown listener is on window and the chat composer is on screen at
+    // the same time as the Present tab, so pressing ◀/▶ to move the text cursor
+    // while typing must NOT step the carousel.
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("Next presentation"));
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+
+    const textarea = document.createElement("textarea");
+    document.body.appendChild(textarea);
+    fireEvent.keyDown(textarea, { key: "ArrowLeft" });
+    expect(usePresentStore.getState().activePresentIndex).toBe(1); // unchanged
+    textarea.remove();
+  });
+
+  it("toggles the thumbnail gallery from the header and closes it on tile select", () => {
+    seedPresentations();
+    render(<PresentPane isActiveTab />);
+
+    fireEvent.click(screen.getByLabelText("View all presentations"));
+    expect(usePresentStore.getState().galleryOpen).toBe(true);
+
+    // Selecting a tile jumps to it and collapses back to the single view.
+    fireEvent.click(screen.getByLabelText("View Two"));
+    expect(usePresentStore.getState().galleryOpen).toBe(false);
+    expect(usePresentStore.getState().activePresentIndex).toBe(1);
+  });
+
   it("exposes no Save control — keeping an artifact is the agent's job", () => {
     seedPresentations();
     render(<PresentPane isActiveTab />);

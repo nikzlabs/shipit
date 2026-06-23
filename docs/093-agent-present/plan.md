@@ -713,3 +713,46 @@ is durable. The scope is deliberately **metadata-only**: bytes stay on disk/git.
   artifact. Multi-file (`files`/`entry`) and orchestrator preview-proxy routing
   for the *user's* browser remain future work.
 - `src/server/orchestrator/preview-proxy.ts` — proxy route for scratch-dir files
+
+## Gallery view, active-position memory, and the typing-carousel fix
+
+Three related Present-tab refinements (folded into one change):
+
+- **Gallery view ("view all").** With many artifacts, stepping the `◀ N/M ▶`
+  carousel one at a time is tedious. A grid icon **beside the carousel
+  controls** (where the eye already is — not off in the right-side actions)
+  toggles a thumbnail grid of every artifact; clicking a tile jumps to it and
+  collapses back to the single view. Shown only when there's more than one
+  artifact (same threshold as the carousel). `Esc` closes it. Thumbnails are
+  **lazy live renders**: each tile mounts a scaled, `pointer-events:none`
+  sandboxed `RenderedFrame` only once it scrolls near the viewport
+  (IntersectionObserver, 300px margin) and fetches its bytes on reveal via the
+  shared `loadPresentContent`. Rendering at a fixed logical size (1280×800) and
+  scaling to the tile width (ResizeObserver) gives a faithful shrunk-page
+  preview rather than a mobile-width reflow. Columns are container-query
+  responsive (2 → 3 → 4) so the grid adapts to the **pane** width, not the
+  viewport. Store state: `galleryOpen` (reset on session switch / full clear).
+
+- **Active-position memory.** The active artifact is remembered per session
+  (`lastViewedBySession`, keyed by the stable `presentId`, kept OUTSIDE the
+  store state so `reset()` on a session switch doesn't wipe it) and restored
+  inside `hydrate`. A session switch / late tab open lands the user back where
+  they left off instead of snapping to the first artifact. Seeded from / written
+  through to localStorage (`getSavedActivePresentBySession` /
+  `saveActivePresentBySession`), so the position also survives a full page
+  reload — browser-local view state (may differ across devices), not
+  server-persisted. A stale entry (artifact since gone) is harmless: `hydrate`
+  falls back to clamping when the id isn't found.
+
+- **Typing no longer moves the carousel.** The pane's arrow-key nav listener is
+  on `window`, and the chat composer is on screen alongside the Present tab, so
+  pressing ◀/▶ to move the text cursor while typing also stepped the carousel.
+  The handler now ignores keystrokes whose target is an `INPUT`/`TEXTAREA`/
+  `SELECT`/`contenteditable`, mirroring `useKeyboardShortcuts`' input guard.
+
+Key files:
+- `src/client/components/PresentGallery.tsx` — the thumbnail grid + lazy tile
+- `src/client/utils/present-content-fetch.ts` — shared lazy bytes fetch (single view + gallery)
+- `src/client/components/PresentPane.tsx` — gallery toggle, gallery render, keydown focus guard
+- `src/client/stores/present-store.ts` — `galleryOpen`, per-session active-position memory
+- `src/client/utils/local-storage.ts` — `getSavedActivePresentBySession` / `saveActivePresentBySession` (reload-durable position)
