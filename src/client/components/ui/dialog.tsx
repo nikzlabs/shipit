@@ -39,6 +39,12 @@ const DialogContent = forwardRef<
         "fixed left-1/2 top-1/2 z-50 -translate-x-1/2 -translate-y-1/2",
         "bg-(--color-bg-elevated) border border-(--color-border-primary) shadow-xl overflow-auto",
         "max-md:fixed max-md:inset-0 max-md:w-full max-md:h-full max-md:max-w-full! max-md:max-h-full! max-md:m-0! max-md:rounded-none max-md:border-0 max-md:translate-x-0 max-md:translate-y-0 max-md:left-0 max-md:top-0",
+        // Fullscreen on mobile means the content (and any shrink-0 footer) reaches
+        // the true viewport bottom, where the Android nav/gesture bar sits. The
+        // native wrapper leaves the bottom inset to the web side (see
+        // android/README.md "Edge-to-edge"), so reserve it here. env() is 0 when
+        // there's no inset (desktop, no nav bar), so this is a no-op off-mobile.
+        "max-md:[padding-bottom:env(safe-area-inset-bottom)]",
         "md:rounded-xl md:max-h-[90vh]",
         "data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95",
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95",
