@@ -395,9 +395,15 @@ The screenshots double as preview-gallery frames and snapshot-test goldens.
   `devices: ["/dev/kvm"]` allowance in the compose generator (no `privileged`, gated like `docker-socket`).
   If the host can't do KVM, the emulator moves to a dedicated KVM pool or P3 (Firebase) — same
   emulator-as-service shape, different placement.
-- **Emulator resource weight.** A KVM emulator is ~2–4 GiB RAM + real CPU; co-locating it in the session's
-  Compose stack competes with the agent and web previews. Start on-demand (like heavy preview services),
-  and consider a pool for scale.
+- **Emulator weight — governed like any service, not a special downside.** On a self-hosted box
+  *everything* shares the host (orchestrator, session containers, web previews), so "the emulator competes
+  for resources" isn't unique to it. The only real difference is that an emulator is **heavy** (~2–4 GiB +
+  real CPU vs. a few hundred MB for a typical dev server), so it's handled with the mechanisms ShipIt
+  already has: per-service Compose resource limits, the `agent.memory`/`cpu` ceilings, and on-demand start
+  (like the dogfood `dev` service, started when asked rather than every boot). The operator sizes the host
+  for it exactly as they size for concurrent sessions. A **separate KVM pool** is only relevant for
+  scale-out / multi-tenant, or when the main host has no KVM and a dedicated KVM box is bolted on — not a
+  concern for the standard single-box self-hosted deployment.
 - **Paparazzi ↔ AGP coupling** and the **WebView-not-renderable** caveat (above).
 - **Memory contention** of a Gradle build alongside the agent — watch for OOM, tune the Gradle heap.
 
