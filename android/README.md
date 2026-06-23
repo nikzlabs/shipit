@@ -158,14 +158,25 @@ layers, and applying both to the bottom double-counts it:
   the status bar. The web UI does not honor `env(safe-area-inset-top)`, so the
   top is native.
 - **The bottom (nav/gesture bar) inset is owned by the web side.** `index.html`
-  declares `viewport-fit=cover` and the bottom tab bar pads itself by
+  declares `viewport-fit=cover` and bottom-anchored web surfaces pad themselves by
   `env(safe-area-inset-bottom)`; `MainActivity` injects `viewport-fit=cover` as a
   belt-and-braces fallback. The native container's bottom inset stays at **0** —
   `env(safe-area-inset-bottom)` is a window/display property that returns the
   nav-bar height no matter where the WebView sits in the window, so padding the
   container up natively *as well* lifted the WebView by the nav-bar height while
-  the tab bar padded itself by the same amount, leaving a theme-colored gap above
+  the web side padded itself by the same amount, leaving a theme-colored gap above
   the nav bar (the "white gap at the bottom" report).
+  - Which web surfaces pad themselves: the bottom **`MobileTabBar`** caps the
+    normal flex-column layout, so all *in-flow* content (chat, the workspace
+    panel, the docs/Present panel, the session drawer) sits above it and is
+    automatically clear of the nav bar. The surfaces that *escape* that column —
+    `fixed inset-0` / portalled overlays — must reserve the inset themselves:
+    the shared fullscreen **`DialogContent`** (file/doc review, all-sessions,
+    settings, every modal) plus the standalone overlays
+    (`MobileRecordingOverlay`, `OnboardingWizard`, `QuickCaptureOverlay`). A new
+    fullscreen overlay that reaches the viewport bottom needs the same
+    `env(safe-area-inset-bottom)` padding or its bottom controls hide under the
+    nav bar.
 - **`SettingsActivity`** pads its scrolling root by the union of the system-bar
   **and IME** insets (`systemBars() or ime()`), so the URL field and Save button
   stay clear of both the status bar and the on-screen keyboard.

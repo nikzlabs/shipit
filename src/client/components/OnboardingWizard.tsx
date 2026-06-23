@@ -180,7 +180,7 @@ export function OnboardingWizard({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-(--color-bg-overlay) backdrop-blur-sm p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
       {/* Fixed height on desktop so the modal never resizes when an agent's
           OAuth / device-auth flow or API-key field expands — the right pane
           scrolls internally instead (see the pane's overflow-y-auto + min-h-0).

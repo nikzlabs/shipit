@@ -149,7 +149,7 @@ export function QuickCaptureOverlay({
     <div
       role="dialog"
       aria-label="Quick capture"
-      className="fixed inset-0 z-50 flex items-start justify-center bg-(--color-bg-overlay) px-4 pt-[14vh] backdrop-blur-sm"
+      className="fixed inset-0 z-50 flex items-start justify-center bg-(--color-bg-overlay) px-4 pt-[14vh] pb-[env(safe-area-inset-bottom)] backdrop-blur-sm"
       onMouseDown={(e) => {
         if (e.target === e.currentTarget) close();
       }}
