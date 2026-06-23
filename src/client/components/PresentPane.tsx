@@ -268,29 +268,37 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview }: P
               setGalleryOpen(false);
             }}
           />
-        ) : fetchError ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
-            <p className="max-w-xs">{fetchError}</p>
-            <p className="max-w-xs text-xs">
-              The artifact may no longer be on disk. Ask the agent to present it again.
-            </p>
-          </div>
-        ) : active.content === undefined ? (
-          <div className="absolute inset-0 flex items-center justify-center text-sm text-(--color-text-tertiary)">
-            Loading…
-          </div>
         ) : (
-          <FileContentView
-            key={active.presentId}
-            filePath={active.filePath}
-            content={active.content}
-            kind={kind}
-            sessionId={sessionId ?? ""}
-            viewMode={viewMode}
-            reviewable={review.reviewable}
-            markdownComments={review.markdownComments}
-            codeComments={review.codeComments}
-          />
+          // Single-artifact view. The wrapper persists across carousel
+          // navigation (so the fade only plays when swapping in/out of the
+          // gallery, not on every ◀/▶); mounting fresh on gallery→single makes
+          // `animate-in` cross-fade it back in over the closing gallery.
+          <div className="absolute inset-0 animate-in fade-in duration-200">
+            {fetchError ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 text-sm text-(--color-text-tertiary) p-6 text-center">
+                <p className="max-w-xs">{fetchError}</p>
+                <p className="max-w-xs text-xs">
+                  The artifact may no longer be on disk. Ask the agent to present it again.
+                </p>
+              </div>
+            ) : active.content === undefined ? (
+              <div className="absolute inset-0 flex items-center justify-center text-sm text-(--color-text-tertiary)">
+                Loading…
+              </div>
+            ) : (
+              <FileContentView
+                key={active.presentId}
+                filePath={active.filePath}
+                content={active.content}
+                kind={kind}
+                sessionId={sessionId ?? ""}
+                viewMode={viewMode}
+                reviewable={review.reviewable}
+                markdownComments={review.markdownComments}
+                codeComments={review.codeComments}
+              />
+            )}
+          </div>
         )}
       </div>
 
