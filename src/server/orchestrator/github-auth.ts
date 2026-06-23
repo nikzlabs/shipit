@@ -9,6 +9,14 @@ import { GitHubAppTokenMinter } from "./github-app-token.js";
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
 import { getCheckStatus as getCheckStatusImpl, getCheckRunAnnotations as getCheckRunAnnotationsImpl, getJobLogs as getJobLogsImpl } from "./github-auth-checks.js";
+import {
+  listWorkflowRuns as listWorkflowRunsImpl,
+  getWorkflowRun as getWorkflowRunImpl,
+  listWorkflowRunJobs as listWorkflowRunJobsImpl,
+  listWorkflows as listWorkflowsImpl,
+  getWorkflow as getWorkflowImpl,
+} from "./github-auth-actions.js";
+import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "./github-auth-actions.js";
 import { getReleaseByTag as getReleaseByTagImpl, type ReleaseByTag } from "./github-auth-releases.js";
 import { createIssue as createIssueImpl } from "./github-auth-issues.js";
 import type { CreateIssueResult } from "./github-auth-issues.js";
@@ -803,6 +811,42 @@ export class GitHubAuthManager extends EventEmitter {
     return getJobLogsImpl(this._token, owner, repo, jobId);
   }
 
+  // ---- GitHub Actions (read-only — backs `gh run`/`gh workflow`) ----
+
+  /** List workflow runs for a repo, most-recent first. */
+  async listWorkflowRuns(
+    owner: string,
+    repo: string,
+    opts: { workflowFile?: string; branch?: string; status?: string; limit?: number } = {},
+  ): Promise<WorkflowRunSummary[]> {
+    if (!this._token) return [];
+    return listWorkflowRunsImpl(this._token, owner, repo, opts);
+  }
+
+  /** Fetch a single workflow run by id (null when it doesn't exist). */
+  async getWorkflowRun(owner: string, repo: string, runId: number): Promise<WorkflowRunSummary | null> {
+    if (!this._token) return null;
+    return getWorkflowRunImpl(this._token, owner, repo, runId);
+  }
+
+  /** List the jobs for a workflow run. */
+  async listWorkflowRunJobs(owner: string, repo: string, runId: number): Promise<WorkflowJobSummary[]> {
+    if (!this._token) return [];
+    return listWorkflowRunJobsImpl(this._token, owner, repo, runId);
+  }
+
+  /** List the repo's workflow definitions. */
+  async listWorkflows(owner: string, repo: string): Promise<WorkflowSummary[]> {
+    if (!this._token) return [];
+    return listWorkflowsImpl(this._token, owner, repo);
+  }
+
+  /** Fetch a single workflow definition by numeric id or filename (null when missing). */
+  async getWorkflow(owner: string, repo: string, idOrFile: string): Promise<WorkflowSummary | null> {
+    if (!this._token) return null;
+    return getWorkflowImpl(this._token, owner, repo, idOrFile);
+  }
+
   /**
    * Reply to an existing PR review thread (docs/102). `threadId` is the
    * GraphQL node id of the thread (as surfaced on `PrReviewThread.id`).
@@ -997,6 +1041,7 @@ export class GitHubAuthManager extends EventEmitter {
 export { createRepo, listUserRepos, searchRepos, listOrgs } from "./github-auth-repos.js";
 export { createPullRequest, findPullRequest, findPullRequestAnyState, mergePullRequest, enableAutoMerge, disableAutoMerge, updatePullRequest, addPullRequestComment, addLabelsToPullRequest, removeLabelFromPullRequest, markPullRequestReady, listPullRequests, viewPullRequest, getPullRequestNodeId } from "./github-auth-prs.js";
 export { getCheckStatus, getCheckRunAnnotations, getJobLogs } from "./github-auth-checks.js";
+export { listWorkflowRuns, getWorkflowRun, listWorkflowRunJobs, listWorkflows, getWorkflow, type WorkflowRunSummary, type WorkflowJobSummary, type WorkflowSummary } from "./github-auth-actions.js";
 export { getReleaseByTag, type ReleaseByTag } from "./github-auth-releases.js";
 export { createIssue } from "./github-auth-issues.js";
 export { addReviewThreadReply, resolveReviewThread, unresolveReviewThread, submitPullRequestReview } from "./github-auth-review-threads.js";

@@ -236,6 +236,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   "POST /api/sessions/:id/pr/:number/ready",
   "POST /api/sessions/:id/pr/:number/close",
   "POST /api/sessions/:id/pr/:number/reopen",
+  // github actions — gh run / gh workflow (read-only)
+  "GET /api/sessions/:id/actions/runs",
+  "GET /api/sessions/:id/actions/runs/view",
+  "GET /api/sessions/:id/actions/workflows",
+  "GET /api/sessions/:id/actions/workflows/view",
   // release — shipit release plan/prepare (docs/214)
   "POST /api/sessions/:id/release/plan",
   "POST /api/sessions/:id/release/prepare",

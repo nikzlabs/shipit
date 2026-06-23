@@ -167,7 +167,6 @@ describe("runShim — allowlist", () => {
     ["api"],
     ["repo"],
     ["release"],
-    ["workflow"],
     ["auth"],
     ["secret"],
     ["ssh-key"],
@@ -175,7 +174,6 @@ describe("runShim — allowlist", () => {
     ["extension"],
     ["issue"],
     ["gist"],
-    ["run"],
   ])("rejects gh %s with helpful error", async (sub) => {
     const { run } = makeRunner();
     const out = await run([sub]);
@@ -825,5 +823,183 @@ describe("repo-aware brokering (docs/211)", () => {
     // ...and the comment POST carried the same target in its body.
     const commentCall = out.calls.find((c) => c.path === "/agent-ops/pr/7/comment");
     expect(commentCall?.body).toMatchObject({ body: "hi", cwd: "/workspace/clone-y", repo: "octocat/hello" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh run list / view (read-only GitHub Actions)
+// ---------------------------------------------------------------------------
+
+describe("gh run list", () => {
+  const RUN = {
+    databaseId: 42, number: 7, displayTitle: "Deploy", workflowName: "CI",
+    headBranch: "main", event: "workflow_dispatch", status: "completed", conclusion: "success",
+  };
+
+  it("GETs /agent-ops/run/list and prints a tab-separated table", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "list"],
+      { "GET /agent-ops/run/list": { status: 200, body: { runs: [RUN] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("completed\tsuccess\tDeploy\tCI\tmain\tworkflow_dispatch\t42");
+  });
+
+  it("forwards --workflow/--branch/--status/--limit and cwd as query params", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "list", "-w", "ci.yml", "-b", "main", "-s", "failure", "-L", "5"],
+      { "GET /agent-ops/run/list": { status: 200, body: { runs: [] } } },
+      "/workspace/clone-z",
+    );
+    const path = out.calls[0].path;
+    expect(path).toContain("workflow=ci.yml");
+    expect(path).toContain("branch=main");
+    expect(path).toContain("status=failure");
+    expect(path).toContain("limit=5");
+    expect(path).toContain("cwd=%2Fworkspace%2Fclone-z");
+  });
+
+  it("emits JSON filtered to --json fields", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "list", "--json", "databaseId,conclusion"],
+      { "GET /agent-ops/run/list": { status: 200, body: { runs: [RUN] } } },
+    );
+    expect(JSON.parse(out.stdout)).toEqual([{ databaseId: 42, conclusion: "success" }]);
+  });
+
+  it("prints a friendly message when there are no runs", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "list"],
+      { "GET /agent-ops/run/list": { status: 200, body: { runs: [] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("No workflow runs found.");
+  });
+});
+
+describe("gh run view", () => {
+  it("renders run + jobs and omits the run id when none is given", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "view"],
+      {
+        "GET /agent-ops/run/view": {
+          status: 200,
+          body: {
+            run: { displayTitle: "Deploy", workflowName: "CI", number: 7, status: "completed", conclusion: "failure", headBranch: "main", event: "push", url: "https://gh/run/42" },
+            jobs: [{ name: "build", status: "completed", conclusion: "failure" }],
+            logs: "",
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).not.toContain("id=");
+    expect(out.stdout).toContain("Deploy · CI #7");
+    expect(out.stdout).toContain("completed (failure)");
+    expect(out.stdout).toContain("build");
+  });
+
+  it("forwards a run id and --log-failed as query params and prints logs", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "view", "42", "--log-failed"],
+      {
+        "GET /agent-ops/run/view": {
+          status: 200,
+          body: { run: { displayTitle: "X", workflowName: "CI", number: 1, status: "completed", conclusion: "failure" }, jobs: [], logs: "boom: error" },
+        },
+      },
+    );
+    expect(out.calls[0].path).toContain("id=42");
+    expect(out.calls[0].path).toContain("logFailed=true");
+    expect(out.stdout).toContain("boom: error");
+  });
+
+  it("merges jobs into the object for --json", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "view", "42", "--json", "conclusion,jobs"],
+      {
+        "GET /agent-ops/run/view": {
+          status: 200,
+          body: { run: { conclusion: "success" }, jobs: [{ name: "build" }], logs: "" },
+        },
+      },
+    );
+    expect(JSON.parse(out.stdout)).toEqual({ conclusion: "success", jobs: [{ name: "build" }] });
+  });
+
+  it("exits non-zero with a clear message when no run is found", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["run", "view"],
+      { "GET /agent-ops/run/view": { status: 200, body: { run: null } } },
+    );
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("No workflow run found.");
+  });
+
+  it("rejects --web", async () => {
+    const { run } = makeRunner();
+    const out = await run(["run", "view", "--web"]);
+    expect(out.exitCode).not.toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gh workflow list / view (read-only)
+// ---------------------------------------------------------------------------
+
+describe("gh workflow list", () => {
+  it("GETs /agent-ops/workflow/list and prints name/state/id", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["workflow", "list"],
+      { "GET /agent-ops/workflow/list": { status: 200, body: { workflows: [{ id: 1, name: "CI", state: "active", path: ".github/workflows/ci.yml" }] } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("CI\tactive\t1");
+  });
+});
+
+describe("gh workflow view", () => {
+  it("requires a workflow argument", async () => {
+    const { run } = makeRunner();
+    const out = await run(["workflow", "view"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("a workflow name");
+  });
+
+  it("renders the workflow + recent runs and forwards the workflow query param", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["workflow", "view", "CI"],
+      {
+        "GET /agent-ops/workflow/view": {
+          status: 200,
+          body: {
+            workflow: { id: 1, name: "CI", state: "active", path: ".github/workflows/ci.yml", url: "https://gh/wf/1" },
+            runs: [{ status: "completed", conclusion: "success", displayTitle: "Deploy", headBranch: "main", databaseId: 42 }],
+          },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("workflow=CI");
+    expect(out.stdout).toContain("CI (active)");
+    expect(out.stdout).toContain("Recent runs:");
+    expect(out.stdout).toContain("Deploy");
+  });
+
+  it("rejects --yaml with guidance to read the file from the workspace", async () => {
+    const { run } = makeRunner();
+    const out = await run(["workflow", "view", "CI", "--yaml"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Read the workflow file from the workspace");
   });
 });

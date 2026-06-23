@@ -5,6 +5,7 @@
 
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
+import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -1061,6 +1062,183 @@ export async function listPullRequests(
   const remote = await resolveGitHubRemote(git, options.remoteUrl);
   if ("error" in remote) throw new ServiceError(400, remote.error);
   return githubAuthManager.listPullRequests(remote.owner, remote.repo, options.state ?? "open");
+}
+
+// ---- GitHub Actions (read-only — backs `gh run` / `gh workflow`) ----
+
+/** Per-job log tail and total-output caps for `gh run view --log[-failed]`. */
+const RUN_LOG_TAIL_LINES = 200;
+const RUN_LOG_MAX_CHARS = 50_000;
+
+/** Conclusions that count as "failed" for `--log-failed`. */
+const FAILED_CONCLUSIONS = new Set(["failure", "cancelled", "timed_out", "action_required", "startup_failure"]);
+
+/** A workflow ref the GitHub API accepts directly: a numeric id or a `*.yml` file. */
+function isDirectWorkflowRef(ref: string): boolean {
+  return /^\d+$/.test(ref) || /\.ya?ml$/i.test(ref);
+}
+
+/** Keep only the last `n` lines of `text`. */
+function lastLines(text: string, n: number): string {
+  if (!text) return "";
+  const lines = text.split("\n");
+  return lines.length <= n ? text : lines.slice(-n).join("\n");
+}
+
+/**
+ * Resolve a user-supplied `--workflow` value (a name, filename, repo-relative
+ * path, or numeric id) to the `{workflow_id}` the Actions API endpoint accepts
+ * (a numeric id or a bare filename). Numeric ids and `*.yml`/`*.yaml` refs pass
+ * through (paths are reduced to their basename); anything else is matched
+ * against the repo's workflow list by name/path/filename. Throws a 404
+ * ServiceError when a name can't be resolved so the agent gets a clear message
+ * rather than a silently-empty run list.
+ */
+async function resolveWorkflowFile(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  ref: string,
+): Promise<string> {
+  if (isDirectWorkflowRef(ref)) {
+    return ref.includes("/") ? (ref.split("/").pop() ?? ref) : ref;
+  }
+  const all = await githubAuthManager.listWorkflows(owner, repo);
+  const match = all.find(
+    (w) => w.name === ref || w.path === ref || w.path.split("/").pop() === ref,
+  );
+  if (!match) {
+    throw new ServiceError(404, `No workflow matching "${ref}" found in ${owner}/${repo}`);
+  }
+  return String(match.id);
+}
+
+/** Concatenate (tail-capped) logs for a run's jobs, optionally only failed ones. */
+async function collectRunLogs(
+  githubAuthManager: GitHubAuthManager,
+  owner: string,
+  repo: string,
+  jobs: WorkflowJobSummary[],
+  onlyFailed: boolean,
+): Promise<string> {
+  const selected = onlyFailed
+    ? jobs.filter((j) => j.conclusion !== null && FAILED_CONCLUSIONS.has(j.conclusion))
+    : jobs;
+  const parts: string[] = [];
+  let total = 0;
+  for (const job of selected) {
+    if (total >= RUN_LOG_MAX_CHARS) {
+      parts.push("… (log output truncated)");
+      break;
+    }
+    const raw = await githubAuthManager.getJobLogs(owner, repo, job.databaseId);
+    const header = `===== ${job.name} (${job.conclusion ?? job.status}) =====`;
+    const chunk = `${header}\n${lastLines(raw, RUN_LOG_TAIL_LINES)}`.slice(0, RUN_LOG_MAX_CHARS - total);
+    parts.push(chunk);
+    total += chunk.length;
+  }
+  return parts.join("\n\n");
+}
+
+/**
+ * List workflow runs for the session's repo, most-recent first. `workflow`
+ * filters to a single workflow (by name/filename/path/id); `branch`/`status`
+ * map to GitHub's filters; `limit` caps the count (1–100, default 20).
+ */
+export async function listWorkflowRuns(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { workflow?: string; branch?: string; status?: string; limit?: number; remoteUrl?: string } = {},
+): Promise<WorkflowRunSummary[]> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  const workflowFile = options.workflow
+    ? await resolveWorkflowFile(githubAuthManager, remote.owner, remote.repo, options.workflow)
+    : undefined;
+
+  return githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, {
+    ...(workflowFile ? { workflowFile } : {}),
+    ...(options.branch ? { branch: options.branch } : {}),
+    ...(options.status ? { status: options.status } : {}),
+    ...(typeof options.limit === "number" ? { limit: options.limit } : {}),
+  });
+}
+
+/**
+ * View a single workflow run with its jobs (and optionally logs). When `runId`
+ * is omitted, resolves the most recent run for the current branch, falling back
+ * to the most recent run overall. Returns null when no run can be resolved.
+ */
+export async function viewWorkflowRun(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { runId?: number; log?: boolean; logFailed?: boolean; remoteUrl?: string } = {},
+): Promise<{ run: WorkflowRunSummary; jobs: WorkflowJobSummary[]; logs: string } | null> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  let runId = options.runId;
+  if (typeof runId !== "number") {
+    // No id given — default to the latest run, preferring the current branch so
+    // "fetch the result of the workflow I just dispatched" resolves naturally.
+    const head = await git.getCurrentBranch();
+    let recent = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, { branch: head, limit: 1 });
+    if (recent.length === 0) {
+      recent = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, { limit: 1 });
+    }
+    if (recent.length === 0) return null;
+    runId = recent[0].databaseId;
+  }
+
+  const run = await githubAuthManager.getWorkflowRun(remote.owner, remote.repo, runId);
+  if (!run) return null;
+  const jobs = await githubAuthManager.listWorkflowRunJobs(remote.owner, remote.repo, runId);
+  const wantLogs = options.log === true || options.logFailed === true;
+  const logs = wantLogs
+    ? await collectRunLogs(githubAuthManager, remote.owner, remote.repo, jobs, options.logFailed === true)
+    : "";
+  return { run, jobs, logs };
+}
+
+/** List the repo's workflow definitions. */
+export async function listWorkflows(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { remoteUrl?: string } = {},
+): Promise<WorkflowSummary[]> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+  return githubAuthManager.listWorkflows(remote.owner, remote.repo);
+}
+
+/**
+ * View a single workflow definition (by name/filename/path/id) along with its
+ * most recent runs. Returns null when the workflow can't be found.
+ */
+export async function viewWorkflow(
+  git: GitManager,
+  githubAuthManager: GitHubAuthManager,
+  options: { workflow: string; remoteUrl?: string },
+): Promise<{ workflow: WorkflowSummary; runs: WorkflowRunSummary[] } | null> {
+  if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
+  const ref = (options.workflow ?? "").trim();
+  if (!ref) throw new ServiceError(400, "A workflow name, filename, or id is required");
+  const remote = await resolveGitHubRemote(git, options.remoteUrl);
+  if ("error" in remote) throw new ServiceError(400, remote.error);
+
+  // Resolve to the API's {workflow_id} (numeric id or filename), then read it.
+  const file = await resolveWorkflowFile(githubAuthManager, remote.owner, remote.repo, ref);
+  const workflow = await githubAuthManager.getWorkflow(remote.owner, remote.repo, file);
+  if (!workflow) return null;
+  const runs = await githubAuthManager.listWorkflowRuns(remote.owner, remote.repo, {
+    workflowFile: String(workflow.id),
+    limit: 10,
+  });
+  return { workflow, runs };
 }
 
 /** Generate a conversation-aware PR description. */

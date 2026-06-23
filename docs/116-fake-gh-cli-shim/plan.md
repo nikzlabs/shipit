@@ -1,3 +1,7 @@
+---
+issue: https://linear.app/shipit-ai/issue/SHI-207
+description: Sandboxed gh shim for agent-driven PRs, plus read-only gh run / gh workflow access.
+---
 
 # 116 — Fake `gh` CLI Shim for Agent-Driven PR Creation
 
@@ -85,7 +89,9 @@ Explicitly **rejected** with a helpful error and non-zero exit:
 - `gh api …` — arbitrary endpoint access defeats the design.
 - `gh repo create|delete|edit|fork|sync|view|list` — repo lifecycle is orchestrator-owned; not the agent's concern.
 - `gh release …` — releases are deliberate human acts.
-- `gh workflow …`, `gh run …` — CI manipulation.
+- `gh workflow run`, `gh run rerun|cancel|delete` — CI **manipulation**. (The
+  *read-only* `gh run list|view` and `gh workflow list|view` ARE supported —
+  see "Read-only workflow runs (added later)" below.)
 - `gh auth …` — auth is harness-owned.
 - `gh secret …` — secret management is via ShipIt's own secrets surface.
 - `gh ssh-key …`, `gh gpg-key …`, `gh codespace …`, `gh extension …` — irrelevant to the workflow.
@@ -132,6 +138,29 @@ We pick (1). `gh pr create` behind the shim does push-then-create, just like `qu
 **Labels (added later):** `gh pr create`/`gh pr edit` accept `-l`/`--label` (repeatable and comma-separated, normalized to a string array in the payload). Labels are threaded shim → `/agent-ops/pr/*` worker route → orchestrator route → `agentCreatePr`/`editPullRequest`, then applied by the orchestrator via `GitHubAuthManager.addLabelsToPullRequest` (the issues `labels` endpoint, additive) — the GitHub token never reaches the container, same as PR creation. This is the *agent-driven* labeling path: the agent picks one primary label by semantic intent so the repo's `.github/release.yml` groups release notes correctly. It is complementary to — not a replacement for — the server-side **path-based** auto-labeler (a sibling effort): path heuristics catch what the agent forgets, the agent's intent catches what paths can't infer. Labeling is **best-effort**: a label name that doesn't exist on the repo (422), a token without label-write (403), etc. degrade to a non-fatal `labelWarning` on the result — the shim prints it on stderr while still printing the PR URL and exiting 0. A wrong label must never block opening a PR. Implementation: `github-auth-prs.ts` (`addLabelsToPullRequest`), `services/github.ts` (`applyPrLabels`).
 
 **Label add/remove on edit (added later):** `gh pr edit` additionally supports the real-gh `--add-label` and `--remove-label` flags so the agent can correct/re-label a PR after creation (e.g. switch `documentation` → `enhancement`). Both are repeatable and comma-separated; `--label`/`-l` stays as an additive alias for `--add-label`. They thread through the payload as `addLabels` / `removeLabels` (shim → worker PATCH route → orchestrator PATCH `/pr/:number` → `editPullRequest`). Adds reuse the additive `labels` endpoint (`addLabelsToPullRequest`); removes call the per-label `DELETE issues/{n}/labels/{name}` endpoint once per name (`removeLabelFromPullRequest`). Both are best-effort with the same `labelWarning` contract — a typo'd add (422) or a forbidden remove (403) degrades to a non-fatal stderr warning while the edit still succeeds, and a remove of a label that isn't on the PR (404) is treated as success (idempotent). Implementation: `github-auth-prs.ts` (`removeLabelFromPullRequest`), `services/github.ts` (`removePrLabels`, `editPullRequest`).
+
+**Read-only workflow runs (added later):** the shim now also brokers a
+read-only GitHub Actions surface so a session can fetch the results of a
+manually-dispatched (`workflow_dispatch`) — or any other — workflow run without
+leaving ShipIt. Supported: `gh run list` (filter by `-w/--workflow`,
+`-b/--branch`, `-s/--status`, `-L/--limit`), `gh run view [<run-id>]` (with
+`--log` / `--log-failed` to append job logs; no id → the latest run for the
+current branch, falling back to the latest run overall), `gh workflow list`, and
+`gh workflow view <workflow>` (by name/filename/id, plus its recent runs). The
+chain mirrors the PR ops exactly — shim (`run`/`workflow` command groups in
+`gh.ts`) → `/agent-ops/{run,workflow}/{list,view}` worker routes → repo-aware
+(`cwd`/`repo`) orchestrator routes `GET /actions/runs[/view]` and
+`GET /actions/workflows[/view]` → `services/github.ts` → new read-only
+`github-auth-actions.ts` module → GitHub REST. The token never enters the
+container, identical to PR creation. The **manipulation** verbs
+(`gh workflow run`, `gh run rerun|cancel|delete`) stay blocked: dispatching or
+cancelling CI is a deliberate human/CI action, not an agent action (§5). Logs
+are assembled per-job from the plain-text `actions/jobs/{id}/logs` endpoint
+(reusing the existing `getJobLogs`) and tail/total-capped to keep output sane;
+GitHub masks registered secrets (`***`) in those logs. Implementation:
+`github-auth-actions.ts`, `services/github.ts`
+(`listWorkflowRuns`/`viewWorkflowRun`/`listWorkflows`/`viewWorkflow`),
+`api-routes-github.ts`, `agent-ops-routes.ts`, `gh.ts`.
 
 ### Interaction with the harness fallback
 
@@ -247,7 +276,8 @@ Phase 2 coverage shipped:
 | `src/server/orchestrator/api-routes-github.ts` | New routes: `POST /pr/agent-create`, `PATCH /pr/:n`, `GET /pr/list`, `GET /pr/view`, `POST /pr/:n/{comment,ready,close,reopen}`. | done |
 | `src/server/orchestrator/services/github.ts` | Added `agentCreatePr`, `editPullRequest`, `commentOnPullRequest`, `markPrReady`, `closePullRequest`, `reopenPullRequest`, `viewPullRequest`, `listPullRequests`. | done |
 | `src/server/orchestrator/github-auth-prs.ts` | Added `updatePullRequest`, `addPullRequestComment`, `markPullRequestReady`, `listPullRequests`, `viewPullRequest` (REST + GraphQL via fetch). | done |
-| `src/server/orchestrator/github-auth.ts` | Wrapper methods on `GitHubAuthManager` for the new PR operations. | done |
+| `src/server/orchestrator/github-auth.ts` | Wrapper methods on `GitHubAuthManager` for the new PR operations + the read-only Actions reads. | done |
+| `src/server/orchestrator/github-auth-actions.ts` | **New.** Read-only GitHub Actions REST wrappers: `listWorkflowRuns`, `getWorkflowRun`, `listWorkflowRunJobs`, `listWorkflows`, `getWorkflow`. Backs `gh run`/`gh workflow`. | done |
 | `docker/Dockerfile.session-worker.{dev,prod}` | Install shim at `/usr/local/bin/gh` as a small `sh` wrapper that runs `/app/node_modules/.bin/tsx …/gh.ts`. The `.docker` image inherits via `BASE_IMAGE`. The shim invokes tsx by absolute path rather than `node --import tsx`, because the bare specifier resolves against cwd's `node_modules` — fine in the ShipIt repo (which depends on tsx) but fails with `Cannot find package 'tsx'` from /workspace in any user repo that doesn't. | done |
 | `src/server/shipit-docs/github.md` | Documents the shim — supported / rejected subcommands, push semantics, auth model. | done |
 | `src/server/orchestrator/agent-instructions.ts` | *(Phase 2)* Includes the "use `gh pr create`" instruction unconditionally. The builder takes no arguments — keeping the rendered prompt static preserves the Anthropic prompt cache across turns. | done |
