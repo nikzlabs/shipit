@@ -57,18 +57,30 @@ function formatMonth(month: string): string {
 
 type MonthlyMetric = "cost" | "turns";
 
+/** Compact metric label for the hover tooltip / average line. */
+function formatMonthlyValue(metric: MonthlyMetric, costUsd: number, turns: number): string {
+  return metric === "cost" ? formatCost(costUsd) : `${turns}`;
+}
+
 /**
  * Compact per-month bar chart for the all-sessions trend. Pure CSS/Tailwind
  * (no charting lib, matching the ContextDial sparkline), toggles between cost
- * and turns, scaled to the largest bar in the series.
+ * and turns, scaled to the largest bar in the series. Windowed to the most
+ * recent 12 months so the x-axis stays readable as data accumulates; draws an
+ * average baseline and emphasizes the current (most recent) month.
  */
 function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
   const [metric, setMetric] = useState<MonthlyMetric>("cost");
 
+  // Keep the x-axis bounded — only the latest 12 months are charted.
+  const recent = monthly.slice(-12);
   const value = (m: MonthlyUsage) => (metric === "cost" ? m.costUsd : m.turns);
-  const max = monthly.reduce((hi, m) => Math.max(hi, value(m)), 0);
-  const fmt = (m: MonthlyUsage) =>
-    metric === "cost" ? formatCost(m.costUsd) : `${m.turns} turns`;
+  const max = recent.reduce((hi, m) => Math.max(hi, value(m)), 0);
+  const total = recent.reduce((sum, m) => sum + value(m), 0);
+  const avg = recent.length > 0 ? total / recent.length : 0;
+  const avgPct = max > 0 ? (avg / max) * 100 : 0;
+  const fmt = (m: MonthlyUsage) => formatMonthlyValue(metric, m.costUsd, m.turns);
+  const avgLabel = metric === "cost" ? formatCost(avg) : `${Math.round(avg)}`;
 
   return (
     <section data-testid="monthly-usage-section">
@@ -93,28 +105,57 @@ function MonthlyUsageChart({ monthly }: { monthly: MonthlyUsage[] }) {
       </div>
       {/* Bars and labels are separate rows with matching flex-1 columns so the
           percentage-height bars resolve against a definite-height ancestor. */}
-      <div className="flex items-end gap-1 h-20" data-testid="monthly-usage-chart">
-        {monthly.map((m) => {
+      <div className="relative flex items-end gap-1 h-20" data-testid="monthly-usage-chart">
+        {recent.map((m, i) => {
           const h = max > 0 ? Math.max(2, (value(m) / max) * 100) : 2;
+          const isCurrent = i === recent.length - 1;
           return (
             <div
               key={m.month}
-              className="flex-1 bg-(--color-accent) rounded-sm transition-all hover:opacity-80"
-              style={{ height: `${h}%` }}
-              title={`${formatMonth(m.month)}: ${fmt(m)}`}
-            />
+              className="group relative flex-1 h-full flex items-end min-w-0"
+            >
+              {/* Hover value label, floats above the bar. */}
+              <span className="pointer-events-none absolute bottom-full left-1/2 z-10 mb-1 hidden -translate-x-1/2 whitespace-nowrap rounded bg-(--color-bg-tertiary) px-1.5 py-0.5 text-[10px] text-(--color-text-primary) shadow group-hover:block">
+                {fmt(m)}
+              </span>
+              <div
+                className={`w-full rounded-sm bg-(--color-accent) transition-all group-hover:opacity-80 ${
+                  isCurrent ? "" : "opacity-55"
+                }`}
+                style={{ height: `${h}%` }}
+                title={`${formatMonth(m.month)}: ${fmt(m)}`}
+              />
+            </div>
           );
         })}
+        {/* Average baseline across the bars. */}
+        {avg > 0 && (
+          <div
+            className="pointer-events-none absolute left-0 right-0 flex items-center"
+            style={{ bottom: `${avgPct}%` }}
+            data-testid="monthly-usage-avg"
+          >
+            <span className="mr-1 rounded bg-(--color-bg-secondary) px-1 text-[9px] leading-tight text-(--color-text-secondary)">
+              avg {avgLabel}
+            </span>
+            <div className="flex-1 border-t border-dashed border-(--color-text-secondary) opacity-60" />
+          </div>
+        )}
       </div>
       <div className="flex gap-1 mt-1">
-        {monthly.map((m) => (
-          <span
-            key={m.month}
-            className="flex-1 text-[10px] text-(--color-text-secondary) truncate text-center"
-          >
-            {formatMonth(m.month)}
-          </span>
-        ))}
+        {recent.map((m, i) => {
+          const isCurrent = i === recent.length - 1;
+          return (
+            <span
+              key={m.month}
+              className={`flex-1 text-[10px] truncate text-center ${
+                isCurrent ? "text-(--color-text-primary) font-medium" : "text-(--color-text-secondary)"
+              }`}
+            >
+              {formatMonth(m.month)}
+            </span>
+          );
+        })}
       </div>
     </section>
   );
