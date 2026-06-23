@@ -107,13 +107,14 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
         Review the plan{planContent ? "" : " above"}, then accept or suggest changes.
       </p>
 
-      <div className="flex items-center gap-2">
+      <div className="flex flex-col sm:flex-row sm:items-center gap-2">
         <Button
           variant="primary"
           size="md"
           onClick={handleAccept}
           disabled={disabled}
           data-testid="accept-plan"
+          className="w-full sm:w-auto"
         >
           <CheckCircleIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
           Accept &amp; Execute
@@ -125,6 +126,7 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
             onClick={handleAcceptGuarded}
             disabled={disabled}
             data-testid="accept-plan-guarded"
+            className="w-full sm:w-auto"
           >
             <ShieldCheckIcon size={ICON_SIZE.SM} weight="fill" className="mr-1" />
             Accept in Guarded Mode
@@ -137,6 +139,7 @@ export function PlanApproval({ onSend, disabled, planContent, resolved }: PlanAp
             onClick={() => setShowFeedback(true)}
             disabled={disabled}
             data-testid="suggest-changes"
+            className="w-full sm:w-auto"
           >
             <PencilSimpleLineIcon size={ICON_SIZE.SM} className="mr-1" />
             Suggest Changes
