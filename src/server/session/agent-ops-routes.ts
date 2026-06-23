@@ -197,6 +197,58 @@ export function registerAgentOpsRoutes(
       relay("POST", `/pr/${encodeURIComponent(request.params.number)}/reopen`, request.body ?? {}, reply),
   );
 
+  // ---------------------------------------------------------------------------
+  // GitHub Actions reads (read-only) — back `gh run list|view` and
+  // `gh workflow list|view`. Repo-aware (cwd/repo) like the PR ops. The worker
+  // injects the trusted SESSION_ID; the orchestrator resolves the target repo.
+  // There is intentionally NO dispatch/rerun/cancel route — manipulating CI is
+  // a human/CI action, so the shim keeps those verbs blocked.
+  // ---------------------------------------------------------------------------
+
+  // GET /agent-ops/run/list — list workflow runs
+  app.get<{ Querystring: { workflow?: string; branch?: string; status?: string; limit?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/list",
+    async (request, reply) => {
+      const { workflow, branch, status, limit } = request.query;
+      const extra: Record<string, string> = {};
+      if (workflow) extra.workflow = workflow;
+      if (branch) extra.branch = branch;
+      if (status) extra.status = status;
+      if (limit) extra.limit = limit;
+      return relay("GET", `/actions/runs${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/run/view — view one run (id optional → latest)
+  app.get<{ Querystring: { id?: string; log?: string; logFailed?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/run/view",
+    async (request, reply) => {
+      const { id, log, logFailed } = request.query;
+      const extra: Record<string, string> = {};
+      if (id) extra.id = id;
+      if (log) extra.log = log;
+      if (logFailed) extra.logFailed = logFailed;
+      return relay("GET", `/actions/runs/view${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/workflow/list — list workflow definitions
+  app.get<{ Querystring: { cwd?: string; repo?: string } }>(
+    "/agent-ops/workflow/list",
+    async (request, reply) =>
+      relay("GET", `/actions/workflows${prTargetQs(request.query)}`, undefined, reply),
+  );
+
+  // GET /agent-ops/workflow/view — view one workflow + recent runs
+  app.get<{ Querystring: { workflow?: string; cwd?: string; repo?: string } }>(
+    "/agent-ops/workflow/view",
+    async (request, reply) => {
+      const extra: Record<string, string> = {};
+      if (request.query.workflow) extra.workflow = request.query.workflow;
+      return relay("GET", `/actions/workflows/view${prTargetQs(request.query, extra)}`, undefined, reply);
+    },
+  );
+
   // POST /agent-ops/release/plan — read-only release plan (docs/214). Backs
   // `shipit release plan`. The worker injects the trusted SESSION_ID; the
   // orchestrator detects the version source + computes the next version.
