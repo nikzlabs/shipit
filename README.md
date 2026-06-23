@@ -82,7 +82,7 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 1. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
 2. Pick Claude Code or Codex as the agent backend.
-3. Start a session from an existing repository or create a new open with a project template.
+3. Start a session from an existing repository, or create a new project from a template.
 4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
    workspace for that session.
 
@@ -231,12 +231,12 @@ powerful but only semi-trusted actor. The headline defenses:
 - **Container-isolated agents** — each session runs in its own container on an isolated network, as
   an unprivileged user with no Docker socket, so a prompt-injected command has a small blast radius.
 - **Built-in per-agent firewall** — outbound traffic is default-deny, restricted to an allowlist
-  (agent API, your git host, registries, your MCP servers) and fail-closed, so a compromised agent
-  can't exfiltrate your credentials.
-- **Brokered credentials** — GitHub and tracker tokens are handed out on demand, not left at rest in
-  the sandbox; with a GitHub App, git uses short-lived, single-repo-scoped tokens.
-- **Commit-time secret scanning** — the post-turn auto-commit blocks any commit that would introduce
-  a credential, so a leaked secret never lands in your history.
+  (agent API, your git host, registries, your MCP servers) and fail-closed, so by default a
+  compromised agent has no network path out to exfiltrate your credentials.
+- **Brokered credentials** — GitHub and tracker tokens are handed out on demand, not stored at rest
+  inside the session container; with a GitHub App, git uses short-lived, single-repo-scoped tokens.
+- **Commit-time secret scanning** — the post-turn auto-commit blocks commits that would introduce a
+  recognized credential, keeping known secret leaks out of your history.
 
 Plus a repo trust gate, supply-chain version pinning, bug-report secret redaction, and Cloudflare
 Zero Trust / Tailscale access control. The full picture — trust model, every defense, and accepted
