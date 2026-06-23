@@ -40,8 +40,10 @@ bumping. (Earlier the CI path used `run_number`, a small integer that a local
 build's ~1.75-billion epoch code would always outrank, blocking CI installs.)
 
 Note this is the *internal* `versionCode` only. The user-visible version string
-in Android's app-info screen is `versionName` (`"0.1.0"`), which is hardcoded and
-does **not** change with these builds.
+in Android's app-info screen is `versionName`, which is read from the root
+`package.json` `version` field at build time (see `app/build.gradle.kts`) — so it
+tracks the project version automatically and changes when you bump the release.
+Debug builds carry a `-debug` suffix.
 
 ### Local builds (optional)
 
