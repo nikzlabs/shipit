@@ -19,6 +19,24 @@ describe("UsageManager", () => {
     expect(stats.totalCostUsd).toBe(0);
     expect(stats.totalTurns).toBe(0);
     expect(stats.sessions).toEqual([]);
+    expect(stats.monthly).toEqual([]);
+  });
+
+  it("buckets cost and turns by calendar month, oldest → newest", () => {
+    const mgr = new UsageManager(dbManager);
+    // Insert with explicit created_at so we span multiple months deterministically.
+    const insert = dbManager.db.prepare(
+      "INSERT INTO usage_turns (session_id, cost_usd, duration_ms, created_at) VALUES (?, ?, ?, ?)",
+    );
+    insert.run("sess-1", 1.0, 1000, "2026-04-10T12:00:00Z");
+    insert.run("sess-1", 2.0, 1000, "2026-04-20T12:00:00Z");
+    insert.run("sess-2", 5.0, 1000, "2026-06-01T12:00:00Z");
+
+    const { monthly } = mgr.getStats();
+    expect(monthly).toEqual([
+      { month: "2026-04", costUsd: 3.0, turns: 2 },
+      { month: "2026-06", costUsd: 5.0, turns: 1 },
+    ]);
   });
 
   it("records a turn", () => {

@@ -26,6 +26,11 @@ const mockAllUsage: UsageStats = {
   ],
   totalCostUsd: 1.35,
   totalTurns: 19,
+  monthly: [
+    { month: "2026-04", costUsd: 0.20, turns: 3 },
+    { month: "2026-05", costUsd: 0.73, turns: 9 },
+    { month: "2026-06", costUsd: 0.42, turns: 7 },
+  ],
 };
 
 describe("UsageModal", () => {
@@ -117,6 +122,7 @@ describe("UsageModal", () => {
       ],
       totalCostUsd: 0.10,
       totalTurns: 1,
+      monthly: [],
     };
     render(
       <UsageModal
@@ -183,7 +189,7 @@ describe("UsageModal", () => {
     render(
       <UsageModal
         currentSessionUsage={zeroUsage}
-        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0 }}
+        allUsage={{ sessions: [], totalCostUsd: 0, totalTurns: 0, monthly: [] }}
         sessions={mockSessions}
         onClose={() => {}}
       />
