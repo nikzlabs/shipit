@@ -262,6 +262,24 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/issue/labels?tracker= — the tracker's pickable label set (read, SHI-199)
+  app.get<{ Querystring: { tracker?: string } }>(
+    "/agent-ops/issue/labels",
+    async (request, reply) => {
+      const qs = request.query.tracker ? `?tracker=${encodeURIComponent(request.query.tracker)}` : "";
+      return relay("GET", `/issue/labels${qs}`, undefined, reply);
+    },
+  );
+
+  // GET /agent-ops/issue/statuses?tracker= — the tracker's assignable statuses (read, SHI-199)
+  app.get<{ Querystring: { tracker?: string } }>(
+    "/agent-ops/issue/statuses",
+    async (request, reply) => {
+      const qs = request.query.tracker ? `?tracker=${encodeURIComponent(request.query.tracker)}` : "";
+      return relay("GET", `/issue/statuses${qs}`, undefined, reply);
+    },
+  );
+
   // GET /agent-ops/issue/comments?tracker=&id= — issue comment thread (read, SHI-137)
   app.get<{ Querystring: { tracker?: string; id?: string } }>(
     "/agent-ops/issue/comments",

@@ -134,6 +134,36 @@ export async function listLabelsForTracker(
 }
 
 /**
+ * List the full set of assignable statuses (name + type + color) for one tracker
+ * — Linear's team workflow states in board order, GitHub's fixed Open/Closed
+ * pair (SHI-199). The read-only discovery surface behind `shipit issue statuses`,
+ * so the agent can see the valid `status` targets without first viewing an issue
+ * (`view` only carries `availableStatuses` per-issue). Like `listLabelsForTracker`
+ * an unconfigured tracker is a normal empty state (`{ statuses: [] }`), not an
+ * error; a reachable-tracker failure (auth/network) surfaces as a 502.
+ */
+export async function listStatusesForTracker(
+  credentialStore: CredentialStore,
+  trackerId: string,
+  fetchImpl?: FetchImpl,
+  github?: GitHubTrackerContext,
+): Promise<{ statuses: { name: string; type?: string; color?: string }[] }> {
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = registry.get(trackerId as TrackerId);
+  if (!tracker) {
+    throw new ServiceError(404, `Unknown tracker: ${trackerId}`);
+  }
+  if (!tracker.isConfigured()) {
+    return { statuses: [] };
+  }
+  try {
+    return { statuses: await tracker.listStatuses() };
+  } catch (err) {
+    throw new ServiceError(502, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/**
  * Resolve a configured tracker or throw a `ServiceError` the route maps to an
  * HTTP status: 404 for an unknown tracker, 409 for a known-but-unconnected one
  * (the agent should connect it, not retry). Used by the write services below.

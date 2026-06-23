@@ -1751,6 +1751,131 @@ describe("shipit issue", () => {
     expect(out.stderr).toContain("does not support `shipit issue close`");
     expect(out.calls).toHaveLength(0);
   });
+
+  // ---- Lean list --json + --full (SHI-199, Gap 3) ------------------------
+
+  it("list --json drops each issue's body by default (token economy)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "github", "--json"], {
+      "GET /agent-ops/issue/list": {
+        status: 200,
+        body: {
+          issues: [
+            { identifier: "octocat/hello#1", title: "do the thing", description: "a very long body", priority: { label: "High" } },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    const rows = JSON.parse(out.stdout) as { identifier: string; title: string; description?: string }[];
+    expect(rows[0].identifier).toBe("octocat/hello#1");
+    expect(rows[0].title).toBe("do the thing");
+    // The heavy body is omitted from the lean default...
+    expect(rows[0].description).toBeUndefined();
+    // ...but the rest of the row is intact.
+    expect(rows[0]).toHaveProperty("priority");
+  });
+
+  it("list --json --full keeps each issue's body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--tracker", "github", "--json", "--full"], {
+      "GET /agent-ops/issue/list": {
+        status: 200,
+        body: { issues: [{ identifier: "octocat/hello#1", title: "t", description: "the full body" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    const rows = JSON.parse(out.stdout) as { description?: string }[];
+    expect(rows[0].description).toBe("the full body");
+  });
+
+  // ---- labels / statuses discovery (SHI-199, Gap 2) ----------------------
+
+  it("labels lists the tracker's pickable label names (one per line)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "labels", "--tracker", "github"], {
+      "GET /agent-ops/issue/labels": {
+        status: 200,
+        body: { labels: [{ name: "bug", color: "#d73a4a" }, { name: "design", color: "#a2eeef" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("tracker=github");
+    expect(out.stdout).toContain("bug");
+    expect(out.stdout).toContain("design");
+    // Plain list — no untrusted-input envelope (config metadata, not free-text).
+    expect(out.stdout).not.toContain(UNTRUSTED_OPEN_MARKER);
+  });
+
+  it("labels defaults to the github tracker", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "labels"], {
+      "GET /agent-ops/issue/labels": { status: 200, body: { labels: [] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("tracker=github");
+    expect(out.stdout).toContain("No labels available");
+  });
+
+  it("labels --json emits the raw label array with colors", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "labels", "--tracker", "linear", "--json"], {
+      "GET /agent-ops/issue/labels": { status: 200, body: { labels: [{ name: "security", color: "#d73a4a" }] } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("tracker=linear");
+    expect(JSON.parse(out.stdout)).toEqual([{ name: "security", color: "#d73a4a" }]);
+  });
+
+  it("statuses lists assignable statuses as name (type)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "statuses", "--tracker", "github"], {
+      "GET /agent-ops/issue/statuses": {
+        status: 200,
+        body: { statuses: [{ name: "Open", type: "started" }, { name: "Closed", type: "completed" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("Open (started)");
+    expect(out.stdout).toContain("Closed (completed)");
+  });
+
+  it("statuses surfaces an upstream failure as exit 1", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "statuses", "--tracker", "linear"], {
+      "GET /agent-ops/issue/statuses": { status: 502, body: { error: "tracker hiccup" } },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("tracker hiccup");
+  });
+
+  it("labels rejects an invalid --tracker before any broker call", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "labels", "--tracker", "jira"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("--tracker must be 'github' or 'linear'");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  // ---- per-subcommand --help (SHI-199, smaller note) ---------------------
+
+  it("`issue list --help` prints list usage, not an unsupported-flag error", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "list", "--help"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("shipit issue list");
+    expect(out.stdout).toContain("--full");
+    // No broker call — help short-circuits before the handler.
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("`issue labels -h` prints labels usage", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "labels", "-h"]);
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("shipit issue labels");
+    expect(out.calls).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

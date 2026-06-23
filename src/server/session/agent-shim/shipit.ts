@@ -55,8 +55,10 @@ import {
   handleIssueComment,
   handleIssueCreate,
   handleIssueEdit,
+  handleIssueLabels,
   handleIssueList,
   handleIssueStatus,
+  handleIssueStatuses,
   handleIssueView,
 } from "./shipit-issue.js";
 import { handleAgentRun } from "./shipit-agent.js";
@@ -101,7 +103,9 @@ Supported subcommands:
 
 Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/177 + docs/187):
   shipit issue view      <pointer> [--tracker github|linear] [--comments] [--json]
-  shipit issue list      [--tracker github|linear] [--state open|closed|all] [--json]
+  shipit issue list      [--tracker github|linear] [--state open|closed|all] [--full] [--json]
+  shipit issue labels    [--tracker github|linear] [--json]
+  shipit issue statuses  [--tracker github|linear] [--json]
   shipit issue create    --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
   shipit issue comment   <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
   shipit issue edit      <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
@@ -119,6 +123,11 @@ Issues (tracker-neutral — tracker inferred from the pointer; docs/175 + docs/1
   created. On 'edit' labels are added to the issue's existing set. --priority is
   urgent|high|medium|low|none on Linear; GitHub has no priority field, so use a
   label there instead.
+
+  'labels'/'statuses' list the tracker's valid label names and status targets so
+  you can pick one before a create/edit/status write instead of guessing. 'list
+  --json' omits each issue's body by default to save tokens — pass --full to
+  include it. Every issue subcommand takes --help for its own usage.
 
 Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   shipit release plan    [<patch|minor|major|VERSION>] [--prerelease] [--version-source-path FILE] [--json]
@@ -315,11 +324,45 @@ const ISSUE_HANDLERS: Record<
 > = {
   view: handleIssueView,
   list: handleIssueList,
+  labels: handleIssueLabels,
+  statuses: handleIssueStatuses,
   create: handleIssueCreate,
   comment: handleIssueComment,
   edit: handleIssueEdit,
   status: handleIssueStatus,
   assign: handleIssueAssign,
+};
+
+/**
+ * Per-subcommand usage strings for `shipit issue <sub> --help` (SHI-199). Before
+ * this, `--help` fell into a subcommand's flag parser and was rejected as an
+ * unsupported flag; now `dispatchIssue` intercepts it and prints the matching
+ * entry. Top-level `shipit issue help` still prints the full HELP block.
+ */
+const ISSUE_USAGE: Record<string, string> = {
+  view: `shipit issue view <pointer> [--tracker github|linear] [--comments] [--json]
+  Read one issue — identifier, title, status, priority, assignee, URL, body, and
+  the valid status targets. --comments adds the thread; --json emits the object.`,
+  list: `shipit issue list [--tracker github|linear] [--state open|closed|all] [--full] [--json]
+  List issues (priority-sorted). --json rows are lean by default (no body); --full
+  re-adds each issue's description.`,
+  labels: `shipit issue labels [--tracker github|linear] [--json]
+  List the tracker's pickable labels — the valid set to pass to --label on
+  create/edit (so you don't guess and trip the rejection).`,
+  statuses: `shipit issue statuses [--tracker github|linear] [--json]
+  List the tracker's assignable statuses — the valid targets for 'issue status'.`,
+  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
+  File a new issue (defaults to Linear). Do-then-surface — created immediately
+  with an Undo card. --priority is Linear-only.`,
+  comment: `shipit issue comment <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
+  Add a comment to an issue.`,
+  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
+  Edit title/body/labels/priority. Labels are additive to the existing set.`,
+  status: `shipit issue status <pointer> <state> [--tracker T] [--json]
+  Set status from a normalized type (completed, started, …) or a native name.
+  Run 'shipit issue statuses' to see the valid targets.`,
+  assign: `shipit issue assign <pointer> <user|me | --none> [--tracker T] [--json]
+  Set or clear (--none) the assignee.`,
 };
 
 const AGENT_HANDLERS: Record<
@@ -455,8 +498,9 @@ async function dispatchSource(args: string[], deps: RunDeps, io: ShimIO): Promis
 
 /**
  * Dispatch a `shipit issue <sub>` invocation (docs/175 read + docs/177 +
- * docs/187 write). Reads map to view/list; writes (create/comment/edit/status/
- * assign) are do-then-surface. Only destructive verbs (close/delete) are gated.
+ * docs/187 write). Reads map to view/list/labels/statuses; writes (create/
+ * comment/edit/status/assign) are do-then-surface. Only destructive verbs
+ * (close/delete) are gated. `<sub> --help` prints per-subcommand usage (SHI-199).
  */
 async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise<void> {
   const sub = args[0];
@@ -476,6 +520,12 @@ async function dispatchIssue(args: string[], deps: RunDeps, io: ShimIO): Promise
   const handler = ISSUE_HANDLERS[sub];
   if (!handler) {
     fail(io, `Unsupported shipit issue subcommand: ${sub}\n${REJECTED_HELP}`);
+  }
+  // `shipit issue <sub> --help` prints that subcommand's usage (SHI-199), rather
+  // than letting --help fall through to the flag parser as an unsupported flag.
+  if (args.slice(1).some((a) => a === "--help" || a === "-h")) {
+    success(io, ISSUE_USAGE[sub] ?? HELP);
+    return;
   }
   await handler(args.slice(1), deps);
 }
