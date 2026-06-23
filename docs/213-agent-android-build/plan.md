@@ -214,15 +214,92 @@ for instrumented coverage and occasional real-device validation.
 ShipIt's own wrapper is the easy preview case: `android/` is a WebView shell, so its preview is the web
 preview already in ShipIt pointed at a dev URL. General native apps are what motivate P2.
 
+## Debugging & inspection
+
+Web debugging has two pillars: build/test output, and live browser introspection (Playwright console
+messages, accessibility snapshot, network). Android needs both too — and the second one is the agent's,
+not just the user's.
+
+### Static / headless (works today, mount only)
+
+Most debugging is reading output the headless tier already produces:
+
+- **Build/compile errors** from `assembleDebug`, **lint findings**, and **unit + Robolectric test
+  failures with stack traces** — the agent reads them directly.
+- **Visual diffs** from Paparazzi/Roborazzi golden mismatches.
+- **Static APK/manifest inspection** via `apkanalyzer` and `aapt2` — already in the SDK mount, so the
+  agent can dump the merged manifest, resource table, DEX/method counts, and dependency tree without a
+  device. Surface these as supported commands; they cost nothing extra.
+
+The limit: `layoutlib` renders a static view tree — it does **not run the app** — so the headless tier
+sees no logcat and no runtime crash. Anything that only appears while code executes (lifecycle bugs,
+threading, prod-path exceptions) needs a running instance.
+
+### Runtime (against a running instance)
+
+The Android equivalent of Playwright's browser introspection, over `adb`:
+
+- **`adb logcat`** — the primary runtime stream: crashes, exceptions, `Log.*` output. The first thing
+  to read when something fails at runtime.
+- **`uiautomator dump`** — the live view hierarchy as XML (the semantic analog of the Playwright
+  accessibility snapshot), so the agent can reason about the on-screen tree, not just a screenshot.
+- **`adb shell`** — install/launch, set permissions, pull app data (`run-as`), drive intents.
+
+**Key point: this is debug instrumentation, not preview, and it doesn't need the interactive WebRTC
+stream.** P2/P3 are framed above as *preview* surfaces (a user watching pixels), but the same running
+instance scraped over `adb` gives the *agent* its runtime-debug loop — and a **headless emulator** (or a
+**Firebase Test Lab** run that returns logcat + crash logs) delivers that **without** the KVM-hungry
+streaming bridge. So agent runtime debugging can land earlier and cheaper than the streamed preview: a
+headless AVD reachable over `adb` is enough.
+
+Out of scope: an **interactive debugger / breakpoints** (JDWP attach) and **profiling** (CPU/memory/jank,
+perfetto) — heavy, device-bound, and not part of the agent loop.
+
+### Interactive control — drive the running app (press buttons, screenshot, snapshot)
+
+This is the Android analog of the Playwright tools the agent already uses for web — `browser_snapshot`
+(a11y tree), `browser_click`, `browser_take_screenshot` — and the same triad maps cleanly onto Android,
+all over `adb` against a running instance (no WebRTC). How people do it, lowest-effort first:
+
+- **Raw `adb` primitives (recommended baseline).** `uiautomator dump` → the view-hierarchy XML with each
+  element's `resource-id`/`text`/`bounds` (the **snapshot**); `adb shell input tap <x> <y>` / `input
+  text` / `input keyevent` (the **press**, with coordinates read from the dump); `adb exec-out screencap
+  -p` (the **screenshot**). No framework, no extra install — the SDK platform-tools in the mount already
+  ship `adb`. This satisfies "press a button, screenshot, snapshot" with the smallest surface and runs on
+  the same headless emulator as logcat. ShipIt can wrap the triad as agent tools mirroring `browser_*`.
+- **Maestro (recommended higher-level option).** A CLI-first mobile UI framework: short YAML flows
+  (`tapOn`, `inputText`, `takeScreenshot`), tolerant text/id selectors, and auto-wait — ergonomic for an
+  agent that wants resilient "tap Login, screenshot" steps without computing coordinates. Drives the same
+  adb-reachable instance; `maestro studio` is its interactive recorder. Trade-off: limited logic (no loops
+  in YAML).
+- **Appium (heavier alternative).** The cross-platform WebDriver standard (UiAutomator2 engine): full
+  programmatic control, element find, `getPageSource` (XML snapshot), screenshots — symmetric with
+  Playwright/Selenium if ShipIt wants a single WebDriver protocol across web and mobile. Cost: an Appium
+  server + driver per session.
+- **Espresso / UI Automator (in-test).** Espresso for the app's own white-box UI tests; UI Automator for
+  robust cross-app selectors inside an instrumented test (Tier B). Best as committed test code, not for
+  ad-hoc agent driving.
+
+**Recommendation:** ship the **`adb` primitive triad** first (it's the minimum, needs only the running
+instance + platform-tools, and mirrors `browser_*`), and add **Maestro** as the optional ergonomic layer
+for agent-authored flows. Both ride the Phase-3 headless emulator — pressing buttons and screenshotting
+is part of the agent's runtime loop, **not** gated on the interactive streamed preview (P2). The
+screenshots double as preview-gallery frames and snapshot-test goldens.
+
 ## Agent surfacing
 
 1. **`src/server/shipit-docs/android.md`** (baked into the session image at `/shipit-docs/`) — the
    headless commands, the mount paths (`ANDROID_SDK_ROOT=/opt/android-sdk`), recording/verifying
-   Paparazzi goldens, rendered-screen preview as the in-session visual loop, and the emulator ceiling
-   (the device lives on a separate host, not the session container).
+   Paparazzi goldens, the **debug/inspect commands** (static: `apkanalyzer`/`aapt2`; runtime: `adb
+   logcat`, `uiautomator dump`, `adb shell` against a running instance), rendered-screen preview as the
+   in-session visual loop, and the emulator ceiling (the device lives on a separate host, not the
+   session container).
 2. **`.claude/skills/android-build` skill** — discloses by description, loads when a task touches an
-   Android project; carries the build → lint → render/snapshot → read-the-PNG-diff → attach-to-PR loop.
-   Per `docs/209-cross-agent-skill-disclosure`, one skill covers both Claude and Codex.
+   Android project; carries the build → lint → render/snapshot → read-the-PNG-diff → attach-to-PR loop,
+   the debug loop (read `assembleDebug`/test output → for runtime failures, read `adb logcat` and
+   `uiautomator dump` off the running instance), and the interactive loop (snapshot → `input tap` →
+   `screencap`, or a Maestro flow). Per `docs/209-cross-agent-skill-disclosure`, one skill covers both
+   Claude and Codex.
 
 ## Phased plan
 
@@ -239,9 +316,15 @@ preview already in ShipIt pointed at a dev URL. General native apps are what mot
   Paparazzi/Roborazzi via a Gradle init script and generate the render harness as uncommitted source;
   ComposablePreviewScanner for Compose, manifest/`res/layout` for Views. Wire the gallery into the
   preview pane. First Android visual feedback for agent and user.
-- **Phase 3 (P2 preview, infra-gated):** Stand up a KVM-capable emulator host pool; emulator service +
-  WebRTC bridge through the preview proxy; APK push on build.
-- **Phase 4 (P3 / instrumented):** Firebase Test Lab (or GMD on KVM CI) for instrumented tests and
+- **Phase 3 (agent runtime debug + control — rides on a headless emulator):** Reach a running instance
+  over `adb` (a headless AVD on a KVM host, or Firebase Test Lab) and expose to the agent: `adb logcat`,
+  the **interactive triad** (`uiautomator dump` snapshot, `adb shell input tap/text/keyevent` press,
+  `adb exec-out screencap` screenshot — wrapped as `browser_*`-style tools), and `adb shell`. Optionally
+  add **Maestro** for ergonomic agent-authored flows. This whole loop needs **no WebRTC stream**, so it
+  lands before the interactive preview.
+- **Phase 4 (P2 interactive preview, infra-gated):** Add the WebRTC bridge through the preview proxy on
+  the same emulator pool — the user-facing streamed, touchable preview on top of the Phase-3 instance.
+- **Phase 5 (P3 / instrumented):** Firebase Test Lab (or GMD on KVM CI) for instrumented tests and
   real-device validation, surfaced as inline PR artifacts.
 
 ## Relationship to other work
@@ -281,7 +364,11 @@ preview already in ShipIt pointed at a dev URL. General native apps are what mot
 - Platform preview harness — injected Gradle init script + generated uncommitted render harness; Compose
   discovery via ComposablePreviewScanner with a manifest/`res/layout` fallback (Phase 2).
   `android/app/build.gradle.kts` adds Paparazzi/Roborazzi for the dogfood case.
-- Preview proxy / preview-store — rendered-screen gallery (P1); WebRTC emulator route (P2).
+- Agent debug/control bridge — an `adb`-over-the-running-instance route exposing logcat, `uiautomator
+  dump`, and the `input tap`/`screencap` triad as `browser_*`-style agent tools (Phase 3); optional
+  Maestro CLI in the toolchain. Runs against a headless emulator or Firebase, independent of the WebRTC
+  preview.
+- Preview proxy / preview-store — rendered-screen gallery (P1); WebRTC emulator route (P2, Phase 4).
 - `src/server/shipit-docs/android.md` + `.claude/skills/android-build/SKILL.md` — new, agent surfacing.
-- `.github/workflows/android.yml` — GMD/Firebase job is a Phase 4 addition.
+- `.github/workflows/android.yml` — GMD/Firebase job is a Phase 5 addition.
 </content>
