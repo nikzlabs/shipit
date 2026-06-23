@@ -18,6 +18,24 @@
  */
 
 import { create } from "zustand";
+import { useSessionStore } from "./session-store.js";
+
+/**
+ * The artifact the user last viewed, keyed by session id. Lives OUTSIDE the
+ * store state on purpose: `reset()` fires on every session switch and wipes the
+ * list, so a position kept in state would be lost — exactly the bug this fixes.
+ * Keyed by the content-addressed `presentId` (not a numeric index, which shifts
+ * as artifacts append or clear). `hydrate` runs on every switch / late tab open
+ * and restores the remembered entry instead of snapping back to the first one.
+ * Browser-memory only (a full page reload starts fresh — server persistence
+ * would be a cheap follow-up); forgotten for a session on a full clear.
+ */
+const lastViewedBySession = new Map<string, string>();
+
+function rememberActive(presentId: string | undefined): void {
+  const sessionId = useSessionStore.getState().sessionId;
+  if (sessionId && presentId) lastViewedBySession.set(sessionId, presentId);
+}
 
 export interface Presentation {
   presentId: string;
@@ -52,6 +70,8 @@ interface PresentState {
    * behavior. Cleared when the tab is focused.
    */
   unseenCount: number;
+  /** True while the thumbnail gallery (all artifacts) is shown instead of one. */
+  galleryOpen: boolean;
 
   /** Apply a `present_content` WS message (metadata). */
   addOrReplace: (p: PresentationMeta) => void;
@@ -68,6 +88,8 @@ interface PresentState {
   clear: (presentId?: string) => void;
   /** Switch the visible entry (carousel navigation, click handler). */
   setActiveIndex: (index: number) => void;
+  /** Open/close the thumbnail gallery (the "view all" grid). */
+  setGalleryOpen: (open: boolean) => void;
   /** Focus a specific presentation by id. Returns false when it is not loaded. */
   focusById: (presentId: string) => boolean;
   /** Mark the user as having seen current presentations (clears the badge). */
@@ -80,6 +102,7 @@ const initialState = {
   presentations: [] as Presentation[],
   activePresentIndex: 0,
   unseenCount: 0,
+  galleryOpen: false,
 };
 
 /** Build a metadata entry (no content yet). */
@@ -110,6 +133,7 @@ export const usePresentStore = create<PresentState>((set) => ({
         const isReplay = prior.createdAt === p.createdAt;
         const next = [...s.presentations];
         next[idx] = toEntry(p, isReplay ? prior.content : undefined);
+        rememberActive(p.presentId);
         return {
           presentations: next,
           activePresentIndex: idx,
@@ -119,6 +143,7 @@ export const usePresentStore = create<PresentState>((set) => ({
 
       // Brand-new entry — append + activate so the user sees the latest.
       const presentations = [...s.presentations, toEntry(p)];
+      rememberActive(p.presentId);
       return {
         presentations,
         activePresentIndex: presentations.length - 1,
@@ -134,10 +159,25 @@ export const usePresentStore = create<PresentState>((set) => ({
         s.presentations.filter((p) => p.content !== undefined).map((p) => [p.presentId, p.content]),
       );
       const entries = presentations.map((p) => toEntry(p, priorContent.get(p.presentId)));
-      const activePresentIndex =
-        entries.length === 0
-          ? 0
-          : Math.max(0, Math.min(s.activePresentIndex, entries.length - 1));
+      // Restore the artifact the user was last viewing in THIS session (keyed by
+      // the stable presentId) so a session switch / late tab open lands them
+      // where they left off instead of snapping back to the first artifact.
+      // Fall back to the clamped current index when nothing is remembered or the
+      // remembered entry is gone.
+      let activePresentIndex: number;
+      if (entries.length === 0) {
+        activePresentIndex = 0;
+      } else {
+        const sessionId = useSessionStore.getState().sessionId;
+        const remembered = sessionId ? lastViewedBySession.get(sessionId) : undefined;
+        const rememberedIdx = remembered
+          ? entries.findIndex((e) => e.presentId === remembered)
+          : -1;
+        activePresentIndex =
+          rememberedIdx >= 0
+            ? rememberedIdx
+            : Math.max(0, Math.min(s.activePresentIndex, entries.length - 1));
+      }
       return { presentations: entries, activePresentIndex };
     }),
 
@@ -153,7 +193,9 @@ export const usePresentStore = create<PresentState>((set) => ({
   clear: (presentId) =>
     set((s) => {
       if (presentId === undefined) {
-        return { presentations: [], activePresentIndex: 0, unseenCount: 0 };
+        const sessionId = useSessionStore.getState().sessionId;
+        if (sessionId) lastViewedBySession.delete(sessionId);
+        return { presentations: [], activePresentIndex: 0, unseenCount: 0, galleryOpen: false };
       }
       const idx = s.presentations.findIndex((p) => p.presentId === presentId);
       if (idx < 0) return s;
@@ -173,12 +215,16 @@ export const usePresentStore = create<PresentState>((set) => ({
         return { activePresentIndex: 0 };
       }
       const clamped = Math.max(0, Math.min(index, s.presentations.length - 1));
+      rememberActive(s.presentations[clamped]?.presentId);
       return { activePresentIndex: clamped };
     }),
+
+  setGalleryOpen: (open) => set({ galleryOpen: open }),
 
   focusById: (presentId) => {
     const idx = usePresentStore.getState().presentations.findIndex((p) => p.presentId === presentId);
     if (idx < 0) return false;
+    rememberActive(presentId);
     set({ activePresentIndex: idx, unseenCount: 0 });
     return true;
   },
