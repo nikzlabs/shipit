@@ -344,8 +344,8 @@ export function registerAgentOpsRoutes(
     },
   );
 
-  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
-  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string } }>(
+  // POST /agent-ops/issue/create { tracker, title, body, labels?, priority?, parent? } (docs/187, SHI-92, SHI-206)
+  app.post<{ Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
     "/agent-ops/issue/create",
     async (request, reply) => relay("POST", "/issue/create", request.body ?? {}, reply),
   );
@@ -356,8 +356,8 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/issue/comment", request.body ?? {}, reply),
   );
 
-  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority? } (SHI-92)
-  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string } }>(
+  // POST /agent-ops/issue/edit { tracker, id, title?, body?, labels?, priority?, parent? } (SHI-92, SHI-206)
+  app.post<{ Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null } }>(
     "/agent-ops/issue/edit",
     async (request, reply) => relay("POST", "/issue/edit", request.body ?? {}, reply),
   );

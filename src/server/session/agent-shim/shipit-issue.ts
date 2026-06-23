@@ -97,6 +97,46 @@ function validatePriority(
   return priority.toLowerCase();
 }
 
+/** `--parent` values that DETACH (clear the parent), mirroring `assign --none`. */
+const PARENT_DETACH = new Set(["none", "null", "detach"]);
+
+/**
+ * Validate + normalize `--parent` against the tracker (SHI-206). Sub-issue
+ * nesting is **Linear-only** — GitHub issues are flat — so `--parent` is rejected
+ * on GitHub with a pointer at the limitation, mirroring how `--priority` is
+ * rejected. On Linear, `none`/`null`/`detach` clears the parent; otherwise the
+ * value is resolved as a tracker-neutral pointer (`SHI-204` or a Linear URL) to
+ * the parent's issue key. Returns:
+ *   - `undefined` → the flag wasn't passed (leave the parent untouched),
+ *   - `null`      → detach (clear the parent),
+ *   - `string`    → the parent issue key to nest under.
+ */
+function validateParent(
+  io: RunDeps["io"],
+  verb: string,
+  parent: string | undefined,
+  tracker: string,
+): string | null | undefined {
+  if (parent === undefined) return undefined;
+  if (tracker === "github") {
+    fail(
+      io,
+      `shipit issue ${verb}: --parent is not supported on GitHub (issues are flat — no sub-issues). ` +
+        `Sub-issue nesting is Linear-only.`,
+    );
+  }
+  if (PARENT_DETACH.has(parent.trim().toLowerCase())) return null;
+  const ref = parseIssueRef(parent);
+  if (ref.tracker !== "linear" || !ref.issueId) {
+    fail(
+      io,
+      `shipit issue ${verb}: --parent must be a Linear issue (e.g. SHI-204 or a Linear issue URL), ` +
+        `or 'none' to detach (got '${parent}').`,
+    );
+  }
+  return ref.issueId;
+}
+
 export async function handleIssueView(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--tracker": "tracker" },
@@ -475,6 +515,7 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
       "--body-file": "bodyFile",
       "--tracker": "tracker",
       "--priority": "priority",
+      "--parent": "parent",
     },
     arrays: { "--label": "label", "-l": "label" },
     booleans: { "--json": "json" },
@@ -495,10 +536,14 @@ export async function handleIssueCreate(args: string[], deps: RunDeps): Promise<
   }
   const labels = normalizeLabels(parsed.arrays.label);
   const priority = validatePriority(deps.io, "create", parsed.values.priority, tracker);
+  const parent = validateParent(deps.io, "create", parsed.values.parent, tracker);
   const body = (await readIssueBody(parsed.values, deps)) ?? "";
   const payload: Record<string, unknown> = { tracker, title, body };
   if (labels.length > 0) payload.labels = labels;
   if (priority !== undefined) payload.priority = priority;
+  // A new issue has no prior parent to clear, so only forward a parent to SET
+  // (a truthy key); `none`/detach (null) is a no-op on create.
+  if (parent) payload.parent = parent;
   const res = await deps.call("POST", "/agent-ops/issue/create", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to create issue"), 1);
@@ -535,6 +580,7 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
       "--body-file": "bodyFile",
       "--tracker": "tracker",
       "--priority": "priority",
+      "--parent": "parent",
     },
     arrays: { "--label": "label", "-l": "label" },
     booleans: { "--json": "json" },
@@ -547,14 +593,17 @@ export async function handleIssueEdit(args: string[], deps: RunDeps): Promise<vo
   const title = parsed.values.title;
   const labels = normalizeLabels(parsed.arrays.label);
   const priority = validatePriority(deps.io, "edit", parsed.values.priority, tracker);
-  if (title === undefined && body === undefined && labels.length === 0 && priority === undefined) {
-    fail(deps.io, "shipit issue edit: at least one of --title, --body/--body-file, --label, or --priority is required.");
+  const parent = validateParent(deps.io, "edit", parsed.values.parent, tracker);
+  if (title === undefined && body === undefined && labels.length === 0 && priority === undefined && parent === undefined) {
+    fail(deps.io, "shipit issue edit: at least one of --title, --body/--body-file, --label, --priority, or --parent is required.");
   }
   const payload: Record<string, unknown> = { tracker, id };
   if (title !== undefined) payload.title = title;
   if (body !== undefined) payload.body = body;
   if (labels.length > 0) payload.labels = labels;
   if (priority !== undefined) payload.priority = priority;
+  // `parent` may be a key (set) or null (detach); forward both, omit undefined.
+  if (parent !== undefined) payload.parent = parent;
   const res = await deps.call("POST", "/agent-ops/issue/edit", payload, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to edit issue"), 1);

@@ -420,6 +420,7 @@ function describeAttrs(issue: TrackerIssue): string {
   if (issue.labels && issue.labels.length > 0) {
     parts.push(`labels: ${issue.labels.map((l) => l.name).join(", ")}`);
   }
+  if (issue.parentIdentifier) parts.push(`parent: ${issue.parentIdentifier}`);
   return parts.length > 0 ? ` (${parts.join("; ")})` : "";
 }
 
@@ -445,7 +446,7 @@ export async function createIssueForTracker(
   trackerId: string,
   title: string,
   body: string,
-  opts: { labels?: string[]; priority?: string } = {},
+  opts: { labels?: string[]; priority?: string; parent?: string } = {},
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
@@ -457,6 +458,7 @@ export async function createIssueForTracker(
       body,
       ...(opts.labels && opts.labels.length > 0 ? { labels: opts.labels } : {}),
       ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
+      ...(opts.parent !== undefined ? { parent: opts.parent } : {}),
     });
   } catch (err) {
     toResolutionServiceError(err);
@@ -507,7 +509,7 @@ export async function updateIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   id: string,
-  patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+  patch: { title?: string; description?: string; labels?: string[]; priority?: string; parent?: string | null },
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
@@ -528,6 +530,7 @@ export async function updateIssueForTracker(
       ...(patch.description !== undefined ? { description: patch.description } : {}),
       ...(mergedLabels !== undefined ? { labels: mergedLabels } : {}),
       ...(patch.priority !== undefined ? { priority: patch.priority } : {}),
+      ...(patch.parent !== undefined ? { parent: patch.parent } : {}),
     });
   } catch (err) {
     toResolutionServiceError(err);
@@ -538,23 +541,28 @@ export async function updateIssueForTracker(
     ...(patch.description !== undefined ? { previousDescription: prior.description ?? "" } : {}),
     ...(patch.labels !== undefined ? { previousLabels: priorLabelNames } : {}),
     ...(patch.priority !== undefined ? { previousPriority: prior.priority.level } : {}),
+    // Reparent (SHI-206): snapshot the prior parent's internal id so undo restores
+    // the exact relation (or `null` when it was top-level → undo detaches back).
+    ...(patch.parent !== undefined ? { previousParentId: prior.parentId ?? null } : {}),
   };
   const changed = [
     patch.title !== undefined ? "title" : null,
     patch.description !== undefined ? "description" : null,
     patch.labels !== undefined ? "labels" : null,
     patch.priority !== undefined ? "priority" : null,
+    patch.parent !== undefined ? "parent" : null,
   ]
     .filter(Boolean)
     .join(" & ");
   // Surface the change on the card's second line (docs/189): the title
   // before/after when it changed, a description-touched flag, and a faint note
-  // for label/priority edits so a labels-only edit isn't a blank line.
+  // for label/priority/parent edits so an attrs-only edit isn't a blank line.
   const attrParts: string[] = [];
   if (patch.priority !== undefined) attrParts.push(`priority → ${updated!.priority.label}`);
   if (patch.labels !== undefined) {
     attrParts.push(`labels: ${(updated!.labels ?? []).map((l) => l.name).join(", ") || "none"}`);
   }
+  if (patch.parent !== undefined) attrParts.push(`parent → ${updated!.parentIdentifier ?? "none"}`);
   const content: IssueWriteContent = {
     ...(patch.title !== undefined ? { title: { before: prior.title, after: patch.title } } : {}),
     ...(patch.description !== undefined ? { descriptionChanged: true } : {}),
@@ -655,6 +663,10 @@ export async function undoIssueWrite(
           // priority level (SHI-92). previousLabels is the exact set to restore.
           ...(card.undo.previousLabels !== undefined ? { labels: card.undo.previousLabels } : {}),
           ...(card.undo.previousPriority !== undefined ? { priority: card.undo.previousPriority } : {}),
+          // Restore the prior parent relation (SHI-206): the snapshotted internal
+          // id (which the adapter resolves verbatim), or `null` to detach back to
+          // top-level when the issue had no parent before the edit.
+          ...(card.undo.previousParentId !== undefined ? { parent: card.undo.previousParentId } : {}),
         });
         return;
       case "status":

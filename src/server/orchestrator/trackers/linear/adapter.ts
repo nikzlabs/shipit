@@ -399,6 +399,7 @@ export class LinearTracker implements Tracker {
     body: string;
     labels?: string[];
     priority?: string;
+    parent?: string;
   }): Promise<TrackerIssue> {
     if (!this.team) {
       throw new Error("Linear is not configured (missing team binding)");
@@ -416,6 +417,11 @@ export class LinearTracker implements Tracker {
     }
     if (input.priority !== undefined) {
       createInput.priority = resolveLinearPriority(input.priority);
+    }
+    // Resolve the parent pointer (key/UUID) → the parent's UUID, which Linear's
+    // `parentId` wants (SHI-206). A bad pointer throws before the create runs.
+    if (input.parent !== undefined) {
+      createInput.parentId = await this.resolveUuid(input.parent);
     }
     const data = await this.gql<{ issueCreate: { success: boolean; issue: LinearIssueNode | null } }>(
       `mutation IssueCreate($input: IssueCreateInput!) {
@@ -462,7 +468,7 @@ export class LinearTracker implements Tracker {
 
   async updateIssue(
     id: string,
-    patch: { title?: string; description?: string; labels?: string[]; priority?: string },
+    patch: { title?: string; description?: string; labels?: string[]; priority?: string; parent?: string | null },
   ): Promise<TrackerIssue> {
     const issueId = await this.resolveUuid(id);
     const input: Record<string, unknown> = {};
@@ -473,6 +479,12 @@ export class LinearTracker implements Tracker {
     // before the mutation runs.
     if (patch.labels !== undefined) input.labelIds = await this.resolveLabelIds(patch.labels);
     if (patch.priority !== undefined) input.priority = resolveLinearPriority(patch.priority);
+    // Reparent (SHI-206): `null` detaches into a top-level issue; a pointer/key
+    // resolves to the parent's UUID. Resolve before the mutation so a bad pointer
+    // aborts cleanly.
+    if (patch.parent !== undefined) {
+      input.parentId = patch.parent === null ? null : await this.resolveUuid(patch.parent);
+    }
     return this.runIssueUpdate(issueId, input);
   }
 
