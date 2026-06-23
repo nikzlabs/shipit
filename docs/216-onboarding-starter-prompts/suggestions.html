@@ -68,6 +68,16 @@
   }
   .badge.rec { color: var(--green); background: var(--green-bg); }
   .badge.maybe { color: var(--amber); background: var(--amber-bg); }
+  .badge.cond { color: var(--accent); background: rgba(249, 115, 22, .12); }
+
+  .gate {
+    display: flex; gap: 9px; align-items: flex-start;
+    margin: 0 0 12px; padding: 10px 12px;
+    background: rgba(249, 115, 22, .07); border: 1px solid rgba(249, 115, 22, .25);
+    border-radius: 10px; font-size: 13px; color: var(--text-2);
+  }
+  .gate .k { font-size: 14px; line-height: 1.3; }
+  .gate b { color: var(--text); font-weight: 600; }
 
   /* Chip preview — mirrors the actual UI pill */
   .chip {
@@ -139,16 +149,24 @@
   </div>
 
   <!-- ===================== RECOMMENDED ===================== -->
-  <h2 class="section">✅ Recommended set <span class="count">· 4 · my pick</span></h2>
+  <h2 class="section">✅ Recommended set <span class="count">· 3 always-on + 1 conditional</span></h2>
+
+  <div class="bar" style="border-left-color: var(--green); margin-top: 0;">
+    <strong>Proposed structure:</strong> three chips everyone sees — <b style="color:var(--text)">What should I work on?</b>, <b style="color:var(--text)">Diagram this codebase</b>, <b style="color:var(--text)">Report a ShipIt bug</b> — plus a fourth, <b style="color:var(--text)">Second opinion from another agent</b>, that <strong>only appears for users with two agent backends authenticated</strong>. That gate is both the power-user signal and the thing that stops the chip being a dead end.
+  </div>
 
   <div class="card rec">
     <div class="card-head">
       <h3 class="card-title">Second opinion from another agent</h3>
-      <span class="badge rec">Recommend</span>
+      <span class="badge cond">Conditional</span>
     </div>
     <div class="chip"><span class="ic">🤖</span> Second opinion from another agent</div>
-    <p class="seed"><em>“Ask Codex for a second opinion — have it review this codebase and flag anything risky or worth refactoring.”</em></p>
-    <p class="why">Cross-agent review is <b>genuinely unique to ShipIt</b> and almost nobody knows it exists — the session agent consults a <i>different</i> model inline, in the same turn, and returns its findings to the chat.</p>
+    <div class="gate">
+      <span class="k">🔒</span>
+      <span>Only shown when <b>two or more agent backends are authenticated</b> (e.g. Claude <i>and</i> Codex). Consulting another agent needs that agent set up, so this self-prunes to power users and never dead-ends.</span>
+    </div>
+    <p class="seed"><em>“Ask [the other authenticated agent] for a second opinion — have it review this codebase and flag anything risky or worth refactoring.”</em></p>
+    <p class="why">Cross-agent review is <b>genuinely unique to ShipIt</b> and almost nobody knows it exists — the session agent consults a <i>different</i> model inline, in the same turn, and returns its findings to the chat. <b>The prompt names whichever authed agent isn't active</b> (so a Codex session asks Claude), rather than hardcoding “Codex”.</p>
     <div class="src">README: <span>“Cross-agent second opinions” (Review &amp; ship)</span></div>
   </div>
 
@@ -195,7 +213,7 @@
     </div>
     <div class="chip"><span class="ic">🔍</span> Review my recent changes</div>
     <p class="seed"><em>“Review the last few commits on this branch and flag any bugs or risky changes.”</em></p>
-    <p class="why">Chat-native AI review surfacing findings inline. <b>Overlaps with the cross-agent chip</b> — I'd pick one, or frame them as “another agent” vs “this agent”.</p>
+    <p class="why"><b>Superseded.</b> Overlaps with the conditional cross-agent chip, which is the more distinctive of the two — so I'd <b>drop this one</b> rather than show two review chips. (Noting it here so the decision is explicit.)</p>
     <div class="src">README: <span>“Chat-native AI review” (Review &amp; ship)</span></div>
   </div>
 
@@ -256,8 +274,8 @@
   <!-- ===================== QUESTIONS ===================== -->
   <h2 class="section">Your call</h2>
   <ul class="q">
-    <li>Keep it at <b>4</b>, or add a 5th — <b>“Explain this project”</b> (soft on-ramp) or <b>“See it running”</b> (if many repos arrive without a preview)?</li>
-    <li>For review: <b>cross-agent (Codex) only</b>, or also a same-agent <b>“review my recent changes”</b> chip? They overlap.</li>
+    <li><b>Decided:</b> cross-agent chip is in, gated to two-agent users; same-agent review chip dropped (overlap).</li>
+    <li>Base set of <b>3 always-on</b> (issues, diagram, bug report), or add <b>“Explain this project”</b> as a 4th always-on soft on-ramp? (Cross-agent rides on top either way for power users.)</li>
     <li>Any <b>wording changes</b> to the seeded prompts above?</li>
   </ul>
 </div>
