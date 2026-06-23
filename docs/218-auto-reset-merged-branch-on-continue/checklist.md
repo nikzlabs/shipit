@@ -72,6 +72,17 @@ explicit control + default-on flip is the final phase.
       visibility off/on, default-checked send, per-send untick)
 - [x] `npm run typecheck` + `npm run lint:dev` green
 
+## Phase 4 — Heal the remote at reset (dropped-push fix) ✅
+
+- [x] `autoResetMergedBranchOnContinue` force-pushes (`git.forcePush("origin")`)
+      immediately after `resetHardToRemoteBase`, healing the remote so later plain
+      auto-pushes fast-forward instead of silently failing as non-fast-forward;
+      best-effort (a lease rejection / error is logged, the reset still stands)
+- [x] Reverses the "never force-push at reset" decision — plan "Recovery / data-loss
+      posture" superseded note + "Resolved decisions" + Phase 4 "As built"
+- [x] Tests: `pre-turn-reset.test.ts` (heal called on success; moved:true on heal failure)
+- [x] `npm run typecheck` + `npm run lint:dev` green
+
 ## Cross-cutting
 
 - [x] `npm run typecheck` + `npm run lint:dev` green each phase

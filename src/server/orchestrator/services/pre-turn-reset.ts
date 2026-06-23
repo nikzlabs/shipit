@@ -9,6 +9,13 @@
  * user's consent, moves the branch to `origin/<base>` before the agent turn runs:
  *
  *   gate → `git fetch origin` → RE-gate (TOCTOU) → `git reset --hard origin/<base>`
+ *     → force-with-lease heal of `origin/<session-branch>`
+ *
+ * The trailing force-push heals the REMOTE: the reset moves only the local
+ * branch, leaving the session's remote branch on the old merged commits (it
+ * survives whenever the repo has auto-delete off), so without this every later
+ * plain auto-push is a silently-dropped non-fast-forward. See the heal block
+ * below for the full rationale and the docs/218 safety-net tradeoff.
  *
  * A hard reset is destructive, so it fires ONLY behind the full safety gate
  * ({@link computeResetEligible}). The branch has no new work (every commit is
@@ -177,6 +184,35 @@ export async function autoResetMergedBranchOnContinue(
     if (!(await computeResetEligible(session, prStatus, git))) return NOT_MOVED;
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+
+    // Heal the remote branch so later plain auto-pushes fast-forward. The reset
+    // moved only the LOCAL branch to origin/<base>; the session's own remote
+    // branch (origin/<session-branch>) still points at the old merged commits —
+    // it survives the merge whenever the repo has auto-delete off, or ShipIt's
+    // best-effort delete (which runs in the bare cache, not this clone) failed —
+    // so local and remote have now diverged. The ordinary debounced auto-push
+    // (`scheduleAutoPush` → plain `git push`) is non-force, so that divergence
+    // turns every subsequent commit's push into a silently-dropped
+    // non-fast-forward until something force-pushes (only the PR-create path
+    // does today). Force the remote to match the reset branch NOW, leasing
+    // against its LIVE tip: `forcePush` reads the remote's current sha via
+    // `ls-remote` (not the stale local tracking ref) and create-or-leases — both
+    // "deleted at merge" (expected=null → plain create) and "surviving +
+    // diverged" (lease against the old tip) resolve. This deliberately gives up
+    // the surviving-remote-branch safety net that docs/218 kept for false-merge
+    // recovery (the reflog `HEAD@{1}` remains, and the lease refuses to clobber a
+    // remote that moved unexpectedly). Best-effort: a failure just leaves the
+    // pre-fix divergence for this session — no worse than before the heal.
+    try {
+      await git.forcePush("origin");
+    } catch (err) {
+      console.warn(
+        `[pre-turn-reset] remote heal force-push failed for ${sessionId} ` +
+          `(subsequent auto-push may be rejected as non-fast-forward):`,
+        err,
+      );
+    }
+
     const prNumber = prStatus!.prNumber;
     const prUrl = prStatus!.prUrl;
 
