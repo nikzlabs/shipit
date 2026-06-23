@@ -13,6 +13,7 @@ interface UsageRow {
   model: string | null;
   context_tokens: number | null;
   sub_agent_id: string | null;
+  cumulative_cost_usd: number | null;
   created_at: string;
 }
 
@@ -36,6 +37,7 @@ export interface RecordedTurn {
 export class UsageManager {
   private db;
   private stmtInsert;
+  private stmtLastCumulative;
   private stmtSessionUsage;
   private stmtSessionTokens;
   private stmtSessionTurns;
@@ -48,9 +50,18 @@ export class UsageManager {
         session_id, cost_usd, duration_ms,
         input_tokens, output_tokens,
         cache_read_tokens, cache_create_tokens, model, context_tokens,
-        sub_agent_id
+        sub_agent_id, cumulative_cost_usd
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Most recent cumulative snapshot for a session's PRIMARY-agent turns, used
+    // to diff the CLI's running total into a per-turn delta. Sub-agent rows
+    // carry a null cumulative and are excluded so a consult can't perturb the
+    // primary resume chain's baseline.
+    this.stmtLastCumulative = this.db.prepare(`
+      SELECT cumulative_cost_usd FROM usage_turns
+      WHERE session_id = ? AND sub_agent_id IS NULL AND cumulative_cost_usd IS NOT NULL
+      ORDER BY id DESC LIMIT 1
     `);
     this.stmtSessionUsage = this.db.prepare(`
       SELECT SUM(cost_usd) as total_cost, SUM(duration_ms) as total_duration, COUNT(*) as turn_count
@@ -76,6 +87,25 @@ export class UsageManager {
    * Backwards-compatible with the previous positional signature so existing
    * callers continue to work; new fields can be supplied via the trailing
    * `extra` object.
+   *
+   * Cost semantics — IMPORTANT: for a PRIMARY-agent turn, `costUsd` is the
+   * CLI's `total_cost_usd`, which is the running total of the entire resumed
+   * conversation, NOT this turn's cost. We convert it into a per-turn delta
+   * here (`max(0, current - previous)`), storing the delta in `cost_usd` and
+   * the raw cumulative in `cumulative_cost_usd` so the next turn can diff
+   * against it. A reset (the CLI's running total drops because the resume chain
+   * broke — e.g. a container re-clone started a fresh conversation) shows up as
+   * `current < previous`, which the `max(0, …)` collapses to treating `current`
+   * as a new baseline. SUM(cost_usd) is then the true session bill instead of a
+   * sum of cumulative snapshots (which over-counted ~N× for N resume chains).
+   *
+   * Sub-agent turns (`extra.subAgentId` set) are one-shot consults that already
+   * report a per-run cost, so they're stored verbatim with a null cumulative
+   * and never participate in the primary chain's delta baseline.
+   *
+   * Returns the per-turn cost actually persisted (the delta for a primary turn,
+   * the verbatim value for a sub-agent), so the live emit can show the same
+   * figure the DB will rehydrate instead of the cumulative snapshot.
    */
   record(
     sessionId: string,
@@ -84,10 +114,25 @@ export class UsageManager {
     inputTokens?: number,
     outputTokens?: number,
     extra?: { cacheRead?: number; cacheCreate?: number; model?: string; contextTokens?: number; subAgentId?: string },
-  ): void {
+  ): number {
+    const isSubAgent = extra?.subAgentId !== undefined;
+    let perTurnCost = costUsd;
+    let cumulative: number | null = null;
+    if (!isSubAgent) {
+      cumulative = costUsd;
+      const prev = this.stmtLastCumulative.get(sessionId) as
+        | { cumulative_cost_usd: number }
+        | undefined;
+      const prevCum = prev?.cumulative_cost_usd;
+      // First primary turn of a chain (no prior cumulative) OR a reset
+      // (current < previous) → `current` is itself the per-turn cost. Otherwise
+      // the delta is current minus the prior running total.
+      perTurnCost =
+        prevCum !== undefined && cumulative >= prevCum ? cumulative - prevCum : cumulative;
+    }
     this.stmtInsert.run(
       sessionId,
-      costUsd,
+      perTurnCost,
       durationMs,
       inputTokens ?? null,
       outputTokens ?? null,
@@ -97,7 +142,9 @@ export class UsageManager {
       extra?.contextTokens ?? null,
       // docs/144 — attribute to the sub-agent when the turn was a spawn.
       extra?.subAgentId ?? null,
+      cumulative,
     );
+    return perTurnCost;
   }
 
   /** Get aggregated usage for a single session. */
