@@ -542,10 +542,12 @@ async function removePrLabels(
  * PR would be opened against the branch's previously-committed state and the
  * agent's just-made edits would not appear on the PR.
  *
- * Also clears any scheduled auto-push debounce: we're about to push
- * synchronously, and letting the debounced timer fire afterwards produces a
- * noisy duplicate "Auto-pushed to origin/..." event after the PR is already
- * open.
+ * Note: this function does NOT cancel the scheduled auto-push debounce. That
+ * is the caller's job, and it must happen *after* a synchronous push actually
+ * lands — see `agentCreatePr`. Cancelling here (the previous behavior) dropped
+ * the pending push whenever a caller short-circuited before its synchronous
+ * push (e.g. `secretBlocked`), leaving the commit local with no retry and no
+ * surfaced error (SHI-198).
  *
  * Chat-history linkage is deferred via `runner.pendingCommitLink`: writing
  * `commitHash` onto any row that exists right now would either land on a
@@ -575,10 +577,6 @@ export async function flushPendingTurnCommit(
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
-
-  // Always cancel any pending debounced push — agentCreatePr pushes
-  // synchronously below, so the timer would only produce a duplicate event.
-  runner?.clearPushTimer();
 
   const summary = runner?.turnSummary?.split("\n")[0]?.slice(0, 120) || "Agent turn";
   const parentHash = await git.getHeadHash();
@@ -691,6 +689,16 @@ export async function agentCreatePr(
 
   const head = await git.getCurrentBranch();
 
+  // Resolve the runner so we can cancel the debounced auto-push *after* a
+  // synchronous push lands below. We deliberately do NOT cancel before pushing:
+  // a pending debounced push is only safe to drop once a synchronous push has
+  // actually replaced it (SHI-198). On branches that don't push synchronously
+  // (e.g. a not-progressed merged PR returns without pushing), the debounce is
+  // left armed so the commit still reaches the remote.
+  const pushRunner = options.sessionId && options.runnerRegistry
+    ? options.runnerRegistry.get(options.sessionId)
+    : null;
+
   // A PR already on this branch short-circuits creation — but only when it can't
   // legitimately host the new work. The rule (matches /shipit-docs/github.md and
   // the re-arm flow, docs/202):
@@ -738,6 +746,8 @@ export async function agentCreatePr(
         }
         throw new ServiceError(500, `Push failed: ${msg}`);
       }
+      // Synchronous push landed — now safe to drop any pending debounce.
+      pushRunner?.clearPushTimer();
       return await returnExistingPr();
     }
 
@@ -771,6 +781,8 @@ export async function agentCreatePr(
     }
     throw new ServiceError(500, `Push failed: ${msg}`);
   }
+  // Synchronous push landed — now safe to drop any pending debounce.
+  pushRunner?.clearPushTimer();
 
   // Resolve base branch. A re-armed branch keeps the prior PR's base unless the
   // caller passed an explicit one.
