@@ -735,8 +735,11 @@ Three related Present-tab refinements (folded into one change):
   type icon. Columns are container-query responsive (2 → 3 → 4) so the grid
   adapts to the **pane** width, not the viewport. Tiles **animate in** on open
   with a staggered fade/zoom/slide (`animate-in` utilities, 35ms-per-tile delay
-  capped at 11 tiles, `motion-reduce:animate-none`). Store state: `galleryOpen`
-  (reset on session switch / full clear).
+  capped at 11 tiles, `motion-reduce:animate-none`), and the gallery ↔ single
+  swap **cross-fades** (both the gallery container and the single-view wrapper
+  carry `animate-in fade-in`; the single wrapper persists across carousel nav so
+  the fade plays only on the gallery swap, not on every ◀/▶). Store state:
+  `galleryOpen` (reset on session switch / full clear).
 
 - **Active-position memory.** The active artifact is remembered per session
   (`lastViewedBySession`, keyed by the stable `presentId`, kept OUTSIDE the

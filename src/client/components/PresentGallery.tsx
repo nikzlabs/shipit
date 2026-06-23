@@ -49,7 +49,7 @@ interface PresentGalleryProps {
 
 export function PresentGallery({ presentations, activeIndex, sessionId, onSelect }: PresentGalleryProps) {
   return (
-    <div className="@container absolute inset-0 overflow-y-auto p-4">
+    <div className="@container absolute inset-0 overflow-y-auto p-4 animate-in fade-in duration-200">
       <div className="grid grid-cols-2 @[30rem]:grid-cols-3 @[46rem]:grid-cols-4 gap-4">
         {presentations.map((p, i) => (
           <GalleryTile
