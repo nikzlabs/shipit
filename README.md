@@ -80,9 +80,9 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 ### After first boot
 
-1. Pick Claude Code or Codex as the agent backend.
-2. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
-3. Start a session from an existing repository or a project template.
+1. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
+2. Pick Claude Code or Codex as the agent backend.
+3. Start a session from an existing repository or create a new open with a project template.
 4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
    workspace for that session.
 
