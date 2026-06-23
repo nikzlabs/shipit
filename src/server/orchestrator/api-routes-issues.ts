@@ -690,6 +690,9 @@ export async function registerIssueRoutes(
       // colored read shape back to names here.
       labels: (outcome.issue.labels ?? []).map((l) => l.name),
       priority: outcome.issue.priority.label,
+      // Reflect the resolved parent (SHI-206) so `--json` shows the nesting that
+      // was applied; absent when the issue is top-level.
+      ...(outcome.issue.parentIdentifier ? { parent: outcome.issue.parentIdentifier } : {}),
     };
     recentWrites.set(dedupKey, { at: now, result });
     return result;
@@ -699,21 +702,24 @@ export async function registerIssueRoutes(
   //   { tracker, title, body, labels?, priority? } (docs/187, SHI-92)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+    Body: { tracker?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
   }>(
     "/api/sessions/:sessionId/issue/create",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, title, body, labels, priority } = request.body ?? {};
+      const { tracker, title, body, labels, priority, parent } = request.body ?? {};
       if (!tracker || !title?.trim()) {
         reply.code(400).send({ error: "tracker and title are required" });
         return;
       }
+      // Create can only SET a parent (a new issue has no prior relation to
+      // detach), so a `null`/detach sentinel is a no-op here — fold to undefined.
+      const parentToSet = parent ?? undefined;
       // The issue id is assigned by the tracker, so pass "" and let handleWrite
       // stamp the card's issueId from the created issue.
-      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null }) };
+      const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null }) };
       return handleWrite(request.params.sessionId, tracker, "", reply, "Failed to create issue", dedup, (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority }, trackerFetchImpl, github),
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet }, trackerFetchImpl, github),
       );
     },
   );
@@ -738,15 +744,15 @@ export async function registerIssueRoutes(
   //   { tracker, id, title?, body?, labels?, priority? } (SHI-92)
   app.post<{
     Params: { sessionId: string };
-    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string };
+    Body: { tracker?: string; id?: string; title?: string; body?: string; labels?: string[]; priority?: string; parent?: string | null };
   }>(
     "/api/sessions/:sessionId/issue/edit",
     { config: { containerAccessible: true } },
     async (request, reply) => {
-      const { tracker, id, title, body, labels, priority } = request.body ?? {};
+      const { tracker, id, title, body, labels, priority, parent } = request.body ?? {};
       const hasLabels = labels !== undefined && labels.length > 0;
-      if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined)) {
-        reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority are required" });
+      if (!tracker || !id || (title === undefined && body === undefined && !hasLabels && priority === undefined && parent === undefined)) {
+        reply.code(400).send({ error: "tracker, id and at least one of title/body/label/priority/parent are required" });
         return;
       }
       const patch = {
@@ -754,6 +760,8 @@ export async function registerIssueRoutes(
         ...(body !== undefined ? { description: body } : {}),
         ...(hasLabels ? { labels } : {}),
         ...(priority !== undefined ? { priority } : {}),
+        // `parent: null` is meaningful (detach) — forward when the key is present.
+        ...(parent !== undefined ? { parent } : {}),
       };
       return handleWrite(request.params.sessionId, tracker, id, reply, "Failed to edit issue", { verb: "edit", content: JSON.stringify(patch) }, (github) =>
         updateIssueForTracker(credentialStore, tracker, id, patch, trackerFetchImpl, github),

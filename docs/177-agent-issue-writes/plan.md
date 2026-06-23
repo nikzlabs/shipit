@@ -314,6 +314,34 @@ write `summary`), `--json` returns the resolved `labels` + `priority`, and the
 `edit` undo snapshot gains `previousLabels` / `previousPriority`. `TrackerIssue`
 gains an optional `labels: string[]` populated by both adapters.
 
+## Extension — `--parent` for sub-issue nesting (SHI-206)
+
+The read model (docs/206) surfaces `parentId` / `parentIdentifier`, but the write
+surface had no way to *set* them — building an umbrella issue with children meant
+dropping into the Linear UI. SHI-206 adds **`--parent <pointer>`** on both
+`create` and `edit`, tracker-neutral in shape but Linear-only in capability:
+
+- The value is the same tracker-neutral pointer everything else takes (a key like
+  `SHI-204` or a Linear issue URL); the shim resolves it to the parent's issue key
+  via `parseIssueRef`. The Linear adapter resolves that key → the parent's UUID
+  (`resolveUuid`) and sets `parentId` on the `issueCreate` / `issueUpdate` input.
+- **Linear-only.** **GitHub issues are flat** (no parent/sub-issue relation), so
+  `--parent` is **rejected** there — shim-side before the round-trip, and a
+  server-side backstop in the GitHub adapter (`rejectParent`, `kind: "parent"` →
+  422), mirroring `--priority`. Never silently dropped.
+- **Detach via `--parent none`** (also `null`/`detach`) on `edit` — sends
+  `parent: null` → `parentId: null`, consistent with `assign --none`. On `create`
+  a detach sentinel is a no-op (a new issue has no prior parent), so the shim
+  doesn't forward it.
+- **Additive/idempotent**, and `edit` undo restores the prior relation: the
+  snapshot gains `previousParentId` (the prior parent's internal id, or `null`
+  when top-level), and undo re-parents to it verbatim (resolving the UUID) or
+  detaches back when there was none.
+
+`--json` on a write also returns the resolved `parent` (the parent identifier),
+folded alongside `labels`/`priority`. The `IssueWriteUndo` `edit` variant carries
+`previousParentId?: string | null`.
+
 ## Key files
 
 - `src/server/orchestrator/trackers/tracker.ts` — add write methods + `TrackerComment`, optional `availableStatuses` on read types.

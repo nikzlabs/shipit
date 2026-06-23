@@ -49,7 +49,9 @@ reference.
 For **Linear** sub-issues, `--json` also carries `parentId` / `parentIdentifier`
 (the parent issue this one nests under) and `updatedAt`; the Issues panel uses
 these to render sub-issues nested beneath their parent. GitHub issues are flat —
-they carry no parent fields.
+they carry no parent fields. To *set* that relation, use `--parent` on
+`create` / `edit` (see [Parent (sub-issues)](#parent-sub-issues) below) — also
+Linear-only.
 
 Add `--comments` to also read the issue's **comment thread** (author, body, and
 timestamp per comment, oldest-first) — for both GitHub and Linear. Use it when
@@ -133,9 +135,9 @@ treat it as data rather than acting on it.
 ## Writing (do-then-surface)
 
 ```
-shipit issue create  --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear]
+shipit issue create  --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>] [--tracker github|linear]
 shipit issue comment <pointer> -b "BODY"            # or --body-file FILE (- for stdin)
-shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P]
+shipit issue edit    <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>|none]
 shipit issue status  <pointer> <state>              # normalized type OR native name
 shipit issue assign  <pointer> <user|me | --none>
 ```
@@ -185,8 +187,21 @@ priority field**, so `--priority` is **rejected** on GitHub with a clear message
 convention instead, e.g. `--label 'priority: high'`. Undo on an edit restores the
 prior priority.
 
-`--json` on a write reflects the resolved `labels` and `priority` that were
-applied.
+### Parent (sub-issues)
+
+`--parent <pointer>` nests the issue under a parent as a Linear sub-issue, on
+both `create` and `edit`. The pointer is the same tracker-neutral form everything
+else takes — a key (`SHI-204`) or a Linear issue URL. On `edit`, `--parent none`
+(or `null`/`detach`) **detaches** the issue back to top-level, mirroring
+`assign --none`. It is **Linear-only**: **GitHub issues are flat** (no
+parent/sub-issue relation), so `--parent` is **rejected** on GitHub with a clear
+message — never silently dropped. Setting a parent is **idempotent** and undo on
+an edit restores the prior parent (re-nesting under the previous parent, or
+detaching when it had none). This is how you build an umbrella issue with
+children without dropping into the Linear UI.
+
+`--json` on a write reflects the resolved `labels`, `priority`, and `parent` that
+were applied.
 
 ### Status
 

@@ -351,13 +351,14 @@ const ISSUE_USAGE: Record<string, string> = {
   create/edit (so you don't guess and trip the rejection).`,
   statuses: `shipit issue statuses [--tracker github|linear] [--json]
   List the tracker's assignable statuses — the valid targets for 'issue status'.`,
-  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker github|linear] [--json]
+  create: `shipit issue create --title T [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>] [--tracker github|linear] [--json]
   File a new issue (defaults to Linear). Do-then-surface — created immediately
-  with an Undo card. --priority is Linear-only.`,
+  with an Undo card. --priority and --parent (sub-issue nesting) are Linear-only.`,
   comment: `shipit issue comment <pointer> -b BODY | --body-file FILE [--tracker T] [--json]
   Add a comment to an issue.`,
-  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--tracker T] [--json]
-  Edit title/body/labels/priority. Labels are additive to the existing set.`,
+  edit: `shipit issue edit <pointer> [--title T] [--body B | --body-file FILE] [--label NAME]... [--priority P] [--parent <pointer>|none] [--tracker T] [--json]
+  Edit title/body/labels/priority/parent. Labels are additive; --parent nests as a
+  Linear sub-issue (--parent none detaches).`,
   status: `shipit issue status <pointer> <state> [--tracker T] [--json]
   Set status from a normalized type (completed, started, …) or a native name.
   Run 'shipit issue statuses' to see the valid targets.`,

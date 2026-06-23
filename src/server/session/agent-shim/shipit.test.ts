@@ -1744,6 +1744,79 @@ describe("shipit issue", () => {
     expect(out.calls[0].body).toMatchObject({ id: "SHI-1", labels: ["infra"] });
   });
 
+  // ---- Parent / sub-issue nesting (SHI-206) ------------------------------
+
+  it("create forwards a resolved --parent key", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "Child", "--parent", "SHI-204"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", title: "Child", parent: "SHI-204" });
+  });
+
+  it("create resolves a --parent Linear URL to the bare key", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "create", "--title", "Child", "--parent", "https://linear.app/shipit-ai/issue/SHI-204/android-umbrella"],
+      { "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } } },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ parent: "SHI-204" });
+  });
+
+  it("create rejects --parent on GitHub before any broker call", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--tracker", "github", "--parent", "octo/repo#1"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("not supported on GitHub");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("create rejects a non-Linear --parent pointer", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--parent", "not-an-issue"]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("must be a Linear issue");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("create does NOT forward --parent none (no prior parent to detach)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--title", "x", "--parent", "none"], {
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created SHI-9", identifier: "SHI-9" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).not.toHaveProperty("parent");
+  });
+
+  it("edit forwards a resolved --parent key", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "edit", "SHI-1", "--parent", "SHI-204"], {
+      "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited parent on SHI-1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ tracker: "linear", id: "SHI-1", parent: "SHI-204" });
+  });
+
+  it("edit --parent none detaches (forwards null)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "edit", "SHI-1", "--parent", "none"], {
+      "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited parent on SHI-1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ id: "SHI-1", parent: null });
+  });
+
+  it("edit allows a parent-only change (no title/body)", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "edit", "SHI-1", "--parent", "SHI-204"], {
+      "POST /agent-ops/issue/edit": { status: 200, body: { ok: true, summary: "edited parent on SHI-1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ id: "SHI-1", parent: "SHI-204" });
+  });
+
   it("still rejects `issue close` (use status completed/canceled)", async () => {
     const { run } = makeRunner();
     const out = await run(["issue", "close", "SHI-1"]);

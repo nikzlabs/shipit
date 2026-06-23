@@ -260,6 +260,17 @@ describe("GitHubTracker writes (docs/177)", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("rejects --parent on GitHub (issues are flat, no sub-issues) (SHI-206)", async () => {
+    const fetchImpl = vi.fn(async () => issueResponse());
+    const tracker = new GitHubTracker({ token: "t", repo: REPO, fetchImpl });
+    await expect(tracker.createIssue({ title: "New", body: "", parent: "octo/repo#1" })).rejects.toMatchObject({
+      kind: "parent",
+    });
+    // Backstop also rejects a detach (null) on an edit, before any network call.
+    await expect(tracker.updateIssue("42", { parent: null })).rejects.toMatchObject({ kind: "parent" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("surfaces labels with normalized colors on a read (SHI-92 + foundation)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
