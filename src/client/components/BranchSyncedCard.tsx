@@ -76,7 +76,7 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
       <div className="flex flex-col gap-1 px-3 pb-2.5 pl-[3.25rem] text-(--color-text-tertiary)">
         {headMoved && <MoveRow label="branch" from={card.headFromSha} to={card.headToSha} />}
         {baseMoved && (
-          <MoveRow label={card.base} from={card.baseFromSha as string} to={card.baseToSha} suffix={`(origin/${card.base})`} />
+          <MoveRow label={card.base} from={card.baseFromSha!} to={card.baseToSha} suffix={`(origin/${card.base})`} />
         )}
       </div>
     </div>
