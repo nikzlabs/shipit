@@ -447,14 +447,23 @@ skip; `true`/absent = follow the setting) threads `send-message.ts` → `runAgen
 the control was visible at send time; the server still re-validates the full safety gate,
 so the checkbox is intent, never authority.
 
-**Optimistic clear on send.** A *checked* send is about to reset the branch, which makes the
-session no longer reset-eligible — but the authoritative `reset_eligible: false` only arrives
-**post-turn**, so the control would otherwise linger through the whole turn. `handleSubmit`
-(`MessageInput.tsx`) therefore optimistically clears the signal (`setResetEligible(sessionId,
-false)`) on a checked send so the control disappears immediately. An *unticked* send leaves
-the signal intact (no reset runs → still eligible). The server's post-turn recompute is
-authoritative and reconciles either way (re-arming the control if the reset didn't actually
-run). Covered by the "optimistically clears / keeps eligibility" tests in `MessageInput.test.tsx`.
+**Hide the control the moment the reset runs (not post-turn).** The `reset_eligible` signal
+is recomputed + pushed *post-turn*, so after a reset-bound send the control would stay visible
+for the **entire turn** (often long) until that recompute fired — visibly wrong, since the
+"Branch updated to latest base" card already shows the reset happened. Two complementary
+fixes, mirroring how docs/216 re-arms the PR card "NOW" rather than lagging until post-turn:
+
+1. **Server (authoritative, all send paths).** Right after `autoResetMergedBranchOnContinue`
+   returns `moved: true` and `detectAndReArmResetSession` runs (`agent-execution.ts`), the
+   branch sits at the fresh base (`HEAD !== mergedHeadSha`), so eligibility is definitively
+   false — the handler emits `reset_eligible: false` immediately. This covers **every** send
+   path (composer, propose-action buttons, programmatic follow-ups), independent of turn
+   length. The post-turn recompute stays as the fail-safe (manual `git reset` with no pre-turn
+   move) and reconciles an unticked send back to eligible.
+2. **Client (optimistic, composer path).** `handleSubmit` (`MessageInput.tsx`) also clears the
+   signal (`setResetEligible(sessionId, false)`) on a *checked* send, so the control vanishes
+   on click without even a WS round-trip. An *unticked* send leaves it intact (no reset runs).
+   Covered by the "optimistically clears / keeps eligibility" tests in `MessageInput.test.tsx`.
 
 **Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
 `?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default

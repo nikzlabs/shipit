@@ -320,6 +320,13 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         sessionDir: capturedSessionDir,
         emit: (msg) => runner.emitMessage(msg),
       });
+      // docs/218 — the branch now sits at the fresh base (HEAD !== mergedHeadSha),
+      // so the session is no longer reset-eligible. Push `reset_eligible: false`
+      // NOW so the composer's "start from the latest base" control disappears the
+      // moment the reset runs — rather than lingering for the entire turn until
+      // the post-turn recompute fires. This covers every send path (composer,
+      // action buttons, programmatic), unlike the client-side optimistic clear.
+      runner.emitMessage({ type: "reset_eligible", sessionId: capturedSessionId, eligible: false });
     }
   }
 
