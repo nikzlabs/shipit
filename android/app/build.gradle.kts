@@ -14,10 +14,14 @@ android {
         // submissions. Targeting 35 also opts the app into enforced edge-to-edge
         // — see MainActivity/SettingsActivity inset handling and themes.xml.
         targetSdk = 35
-        // versionCode must strictly increase on every Play Store upload. In CI
-        // it's set from the GitHub Actions run number (see android.yml); locally
-        // it falls back to 1 so `gradle assembleRelease` works offline.
-        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull() ?: 1
+        // versionCode must strictly increase or Android refuses to install the
+        // new APK over the old one (INSTALL_FAILED_VERSION_DOWNGRADE). In CI it's
+        // set from the GitHub Actions run number (see android.yml). Locally we
+        // fall back to epoch seconds (monotonic, fits in an Int until 2038) so
+        // every fresh `gradle assembleDebug` outranks the build already on the
+        // device and installs cleanly — no manual bumping between debug builds.
+        versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull()
+            ?: (System.currentTimeMillis() / 1000).toInt()
         versionName = "0.1.0"
     }
 

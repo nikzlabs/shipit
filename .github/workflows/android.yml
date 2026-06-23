@@ -44,6 +44,12 @@ jobs:
 
       - name: Build debug APK
         if: ${{ inputs.release == false }}
+        env:
+          # Stamp the debug APK with a monotonic versionCode (the run number) so
+          # each new build installs over the previous one. Without this the build
+          # falls back to epoch seconds in build.gradle.kts; run_number is
+          # deterministic and matches how the release steps below are versioned.
+          ANDROID_VERSION_CODE: ${{ github.run_number }}
         run: gradle :app:assembleDebug --no-daemon --stacktrace
 
       - name: Decode release keystore
