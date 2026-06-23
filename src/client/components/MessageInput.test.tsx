@@ -715,6 +715,28 @@ describe("MessageInput", () => {
       typeAndSend();
       expect(onSend).toHaveBeenCalledWith(expect.objectContaining({ resetMergedBranch: false }));
     });
+
+    it("optimistically clears eligibility (hides the control) on a checked send", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      typeAndSend();
+      // The branch is about to be reset → control vanishes without waiting for
+      // the post-turn `reset_eligible: false`.
+      expect(usePrStore.getState().resetEligibleBySession.s1).toBeUndefined();
+      expect(screen.queryByTestId("reset-merged-branch-control")).not.toBeInTheDocument();
+    });
+
+    it("keeps eligibility (control stays armed) on an unticked send", () => {
+      usePrStore.setState({ resetEligibleBySession: { s1: true } });
+      useSettingsStore.setState({ autoResetMergedBranch: true });
+      render(<MessageInput onSend={vi.fn()} disabled={false} sessionId="s1" />);
+      fireEvent.click(screen.getByTestId("reset-merged-branch-control")); // untick
+      typeAndSend();
+      // No reset will run, so the signal must not be optimistically cleared —
+      // the server's post-turn recompute keeps it eligible.
+      expect(usePrStore.getState().resetEligibleBySession.s1).toBe(true);
+    });
   });
 
 });

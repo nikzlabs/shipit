@@ -447,6 +447,15 @@ skip; `true`/absent = follow the setting) threads `send-message.ts` → `runAgen
 the control was visible at send time; the server still re-validates the full safety gate,
 so the checkbox is intent, never authority.
 
+**Optimistic clear on send.** A *checked* send is about to reset the branch, which makes the
+session no longer reset-eligible — but the authoritative `reset_eligible: false` only arrives
+**post-turn**, so the control would otherwise linger through the whole turn. `handleSubmit`
+(`MessageInput.tsx`) therefore optimistically clears the signal (`setResetEligible(sessionId,
+false)`) on a checked send so the control disappears immediately. An *unticked* send leaves
+the signal intact (no reset runs → still eligible). The server's post-turn recompute is
+authoritative and reconciles either way (re-arming the control if the reset didn't actually
+run). Covered by the "optimistically clears / keeps eligibility" tests in `MessageInput.test.tsx`.
+
 **Phase 3 — default flipped ON.** `credentialStore.getAutoResetMergedBranch()` now defaults
 `?? true`; the client settings store, `GlobalSettings`, and the bootstrap fallback default
 true to match. A flipped toggle takes effect on the next activation/turn (the signal is
