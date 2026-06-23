@@ -23,11 +23,17 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
       persisted.push({ sessionId, messages }),
   };
+  // Model the turn-event replay buffer: `emitMessage` buffers (as the real
+  // runner does), so a test can assert `emitChatCard` advances the persisted
+  // cursor past it (the switch/reconnect overlap fix).
+  const turnEventBuffer: WsServerMessage[] = [];
   const runner = {
-    emitMessage: (m: WsServerMessage) => emitted.push(m),
+    emitMessage: (m: WsServerMessage) => { emitted.push(m); turnEventBuffer.push(m); },
     chatMessageGroups: groups,
     recordedCards: [],
     steeredMessages: [],
+    getTurnEventBuffer: () => [...turnEventBuffer],
+    lastPersistedBufferIndex: 0,
   } as unknown as SessionRunnerInterface;
   return { runner, emitted, persisted, chatHistoryManager };
 }
@@ -57,6 +63,32 @@ describe("chat-card-persistence", () => {
     expect(persisted[0].messages.find((m) => (m as { voiceNote?: unknown }).voiceNote)).toMatchObject({
       voiceNote: { id: "v1" },
     });
+  });
+
+  it("advances lastPersistedBufferIndex past the buffer so a later switch/reconnect doesn't replay pre-card events onto the snapshot", () => {
+    // Reproduces the vanishing-permission-card bug (SHI-112): a gated tool's
+    // `agent_assistant` was buffered but unpersisted (the buffer cursor only
+    // moved at tool-result boundaries), so emitChatCard persisted a snapshot
+    // AHEAD of the cursor. On a session switch the buffered event replayed on
+    // top of that snapshot, merged into the card's carrier message, and dropped
+    // the card field — the card showing only after the agent stopped (which
+    // clears the buffer). Advancing the cursor here removes that overlap.
+    const { runner, emitted, chatHistoryManager } = fakeRunner([{ text: "I'll run a command", toolUse: [{}] }]);
+    // A prior agent_assistant (the gated action) sits in the buffer, unpersisted.
+    runner.emitMessage({ type: "agent_event" } as unknown as WsServerMessage);
+    expect(runner.lastPersistedBufferIndex).toBe(0);
+
+    emitChatCard(
+      runner,
+      { type: "permission_request_card", sessionId: "s1", requestId: "p1", toolName: "Bash" } as unknown as WsServerMessage,
+      { role: "assistant", text: "", permissionPrompt: { requestId: "p1", phase: "pending", toolName: "Bash" } } as unknown as PersistedMessage,
+      { chatHistoryManager, sessionId: "s1" },
+    );
+
+    // The buffer now holds the prior agent_event + the card's own WS message;
+    // the cursor must point past BOTH so neither is replayed over the snapshot.
+    expect(runner.getTurnEventBuffer()).toHaveLength(emitted.length);
+    expect(runner.lastPersistedBufferIndex).toBe(runner.getTurnEventBuffer().length);
   });
 
   it("anchors the card after the persistable assistant groups produced so far", () => {

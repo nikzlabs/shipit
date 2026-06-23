@@ -207,7 +207,12 @@ export function recordChatCard(
 export function emitChatCard(
   runner: Pick<
     SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+    | "emitMessage"
+    | "chatMessageGroups"
+    | "recordedCards"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   wsMessage: WsServerMessage,
   persisted: PersistedMessage,
@@ -216,6 +221,21 @@ export function emitChatCard(
   runner.emitMessage(wsMessage);
   recordChatCard(runner, persisted);
   persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
+
+  // Advance the turn-event replay cursor past everything buffered so far — the
+  // SAME thing the tool-result / agent_result boundaries do after they persist
+  // (agent-listeners.ts). `persistTurnInProgress` just wrote a complete snapshot
+  // of the turn (every accumulated assistant group + this card), so the buffered
+  // events up to now are redundant with chat history. Without this advance the
+  // snapshot sits AHEAD of `lastPersistedBufferIndex`, so a later session switch
+  // / WS reconnect replays those buffered events ON TOP of the snapshot. The
+  // pre-card `agent_assistant` then merges into this card's carrier message and
+  // the client drops the card field (`agent-event.ts`) — the card vanishing on
+  // switch and reappearing only once the agent stops (which clears the buffer).
+  // Guarded for partial test stubs that don't model the buffer.
+  if (typeof runner.getTurnEventBuffer === "function") {
+    runner.lastPersistedBufferIndex = runner.getTurnEventBuffer().length;
+  }
 }
 
 /**
@@ -331,7 +351,12 @@ function buildSystemNotice(
 export function emitNoticeInTurn(
   runner: Pick<
     SessionRunnerInterface,
-    "emitMessage" | "chatMessageGroups" | "recordedCards" | "steeredMessages"
+    | "emitMessage"
+    | "chatMessageGroups"
+    | "recordedCards"
+    | "steeredMessages"
+    | "getTurnEventBuffer"
+    | "lastPersistedBufferIndex"
   >,
   sessionId: string,
   message: string,

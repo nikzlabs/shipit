@@ -1,6 +1,7 @@
 import type { WsAgentEvent, AgentContentBlock } from "../../../server/shared/types.js";
 import type { ChatMessage, ToolResultBlock } from "../../components/MessageList.js";
 import { activityFromTool } from "../../components/StreamingIndicator.js";
+import { CARD_MESSAGE_FIELDS } from "../../components/visual-elements.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { Handler } from "./types.js";
@@ -52,7 +53,17 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
     if (!parentToolUseId && (textBlocks || toolUseBlocks.length > 0)) {
       session.setMessages((prev) => {
         const last = prev[prev.length - 1];
-        const canMerge = last?.role === "assistant" && last.streaming
+        // A card-carrying message (permission prompt, voice note, etc.) is a
+        // terminal transcript entry, never a streaming-text target. It can carry
+        // `streaming: true` after a history reload of an in-progress turn
+        // (`loadSessionHistory` maps `inProgress → streaming`), and the merge
+        // below rebuilds `last` from a fixed field set — so merging into it would
+        // silently DROP its card field, erasing the card. Exclude it from the
+        // merge so the card survives (it falls to the close-and-append branch,
+        // which preserves the card via `...m`). See visual-elements'
+        // CARD_MESSAGE_FIELDS and chat-card-persistence's buffer-cursor advance.
+        const lastIsCard = !!last && CARD_MESSAGE_FIELDS.some((f) => last[f] !== undefined);
+        const canMerge = last?.role === "assistant" && last.streaming && !lastIsCard
           && !(last.toolResults && last.toolResults.length > 0);
         // Standalone tools like ExitPlanMode and AskUserQuestion should stay
         // with the preceding assistant text even after tool results arrive.
@@ -63,7 +74,7 @@ export const handleAgentEvent: Handler<WsAgentEvent> = (_ctx, data) => {
         const isStandaloneOnly = !textBlocks && toolUseBlocks.length > 0
           && toolUseBlocks.every((t) => STANDALONE_MERGE.has(t.name));
         const forceMerge = isStandaloneOnly
-          && last?.role === "assistant" && last.streaming;
+          && last?.role === "assistant" && last.streaming && !lastIsCard;
         if (canMerge || forceMerge) {
           return [
             ...prev.slice(0, -1),
