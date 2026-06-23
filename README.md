@@ -30,9 +30,6 @@ ShipIt is a self-hosted, chat-driven IDE for running coding agents through your 
 
 ## Quickstart
 
-If you want to hack on ShipIt itself instead of just running it, see
-[CONTRIBUTING.md](CONTRIBUTING.md) for the architecture, dev loop, and module layout.
-
 ### What you need
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
@@ -88,11 +85,10 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 ## Status
 
-ShipIt is in an early public release state. The supported install paths are local Docker and a
-self-hosted Docker install on an Ubuntu VPS; the VPS path is the intended always-on setup when you
-want agents and previews to keep running after you close your laptop. The core loop is live: create
-isolated sessions, work against real repositories, run Compose-backed previews, open PRs, track CI
-and deploy status from GitHub, and continue from desktop or mobile.
+ShipIt is in an early public release state, with two supported install paths — local Docker and a
+self-hosted Docker install on an Ubuntu VPS (see [Quickstart](#quickstart) for both). The core loop
+is live: create isolated sessions, work against your repositories, run Compose-backed previews, open
+PRs, track CI and deploy status from GitHub, and continue from desktop or mobile.
 
 The project is public source, but not yet open to outside pull requests. Bug reports, feature
 requests, and design discussion are welcome as GitHub issues.
@@ -101,14 +97,13 @@ requests, and design discussion are welcome as GitHub issues.
 
 Coding agents are the easy part — you already have Claude Code or Codex. The hard part is everything
 around them: an isolated environment per agent, a live app to test against, parallel work that doesn't
-collide, and the full PR → CI → deploy → review loop on real repos. ShipIt is the surface that ties
+collide, and the full PR → CI → deploy → review loop on your repos. ShipIt is the surface that ties
 all of that together, so you build, review, and ship in one place instead of stitching it together
 yourself.
 
 ## Agents
 
-Use the AI subscription you already pay for, or bring an API key — and connect more than one account
-per provider. The agent harness is pluggable:
+Connect more than one account per provider — and the agent harness is pluggable:
 
 - [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
   an Anthropic API key
@@ -122,7 +117,7 @@ per provider. The agent harness is pluggable:
 - **Chat-driven development** — the conversation is the only input you need; the agent plans the
   change, edits files, runs the commands, and reads the output, so you steer in chat instead of
   driving a shell
-- **Compose-native live preview** — embedded iframes show your app updating in real time, with HMR
+- **Compose-native live preview** — embedded iframes show your app updating as it changes, with HMR
   proxied through ShipIt, multi-port support, and Docker Compose services managed per session
 - **Project templates** — quick-start scaffolding for React, Vue, Next.js, Svelte, and more
 - **File upload & image input** — drop files into the chat; the agent reads them as context
