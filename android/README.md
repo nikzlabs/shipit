@@ -147,16 +147,22 @@ theme attributes are **ignored** (they were removed from `Theme.ShipIt`). The
 system bars are transparent; the dark `windowBackground` shows through them, so
 the app still looks full-bleed.
 
-Because the WebView loads a **remote** ShipIt instance we don't control, we
-can't rely on the web side honoring CSS `env(safe-area-inset-*)`. So inset
-handling is native:
+Inset handling is **split top vs. bottom** — the two are owned by different
+layers, and applying both to the bottom double-counts it:
 
-- **`MainActivity`** pads the WebView's container by the top + bottom
-  system-bar insets (`WindowInsetsCompat.Type.systemBars()`), keeping chat
-  content clear of the status bar and the bottom-anchored input clear of the
-  nav/gesture bar. It also injects `viewport-fit=cover` into the page as a
-  best-effort extra — but the native padding is the reliable path, not the
-  injection.
+- **`MainActivity`** pads the WebView's container by **only the top** system-bar
+  inset (`WindowInsetsCompat.Type.systemBars()`), keeping chat content clear of
+  the status bar. The web UI does not honor `env(safe-area-inset-top)`, so the
+  top is native.
+- **The bottom (nav/gesture bar) inset is owned by the web side.** `index.html`
+  declares `viewport-fit=cover` and the bottom tab bar pads itself by
+  `env(safe-area-inset-bottom)`; `MainActivity` injects `viewport-fit=cover` as a
+  belt-and-braces fallback. The native container's bottom inset stays at **0** —
+  `env(safe-area-inset-bottom)` is a window/display property that returns the
+  nav-bar height no matter where the WebView sits in the window, so padding the
+  container up natively *as well* lifted the WebView by the nav-bar height while
+  the tab bar padded itself by the same amount, leaving a theme-colored gap above
+  the nav bar (the "white gap at the bottom" report).
 - **`SettingsActivity`** pads its scrolling root by the union of the system-bar
   **and IME** insets (`systemBars() or ime()`), so the URL field and Save button
   stay clear of both the status bar and the on-screen keyboard.

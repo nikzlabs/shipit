@@ -86,14 +86,22 @@ nav/gesture bars, and `android:statusBarColor` / `android:navigationBarColor` ar
 ignored (both removed from `Theme.ShipIt`). The bars are transparent and the dark
 `windowBackground` shows through, so the full-bleed look is preserved.
 
-Because the WebView loads a **remote** ShipIt instance we don't control, we can't
-rely on the page honoring CSS `env(safe-area-inset-*)`. Inset handling is therefore
-native and is the reliable path:
+Inset ownership is **split top vs. bottom**, and the two must not both be applied
+or the bottom inset is counted twice:
 
-- **`MainActivity.applyEdgeToEdgeInsets()`** pads the WebView's container by the top
-  + bottom `systemBars()` insets so chat content (top) and the bottom-anchored input
-  (bottom) clear the bars. It also injects `viewport-fit=cover` into the page as a
-  best-effort extra — explicitly *not* the path we depend on.
+- **`MainActivity.applyEdgeToEdgeInsets()`** pads the WebView's container by **only
+  the top** `systemBars()` inset, so chat content clears the status bar. The ShipIt
+  web UI does not honor `env(safe-area-inset-top)`, so the top is native.
+- **The bottom (nav/gesture bar) inset is owned by the web side**, not native.
+  `index.html` declares `viewport-fit=cover` and `MobileTabBar` pads itself by
+  `env(safe-area-inset-bottom)`. `MainActivity` still injects `viewport-fit=cover`
+  as a belt-and-braces fallback for a build whose viewport meta lacks it. Crucially
+  the native container's bottom inset stays at **0**: `env(safe-area-inset-bottom)`
+  is a *window/display* property that resolves to the nav-bar height regardless of
+  where the WebView sits in the window, so padding the container up natively *and*
+  letting the tab bar pad itself produced a theme-colored gap between the tab bar
+  and the nav bar (a "white gap at the bottom" bug report). Top-only native padding
+  fixes it.
 - **`SettingsActivity.applyInsets()`** pads its scrolling root by the union of
   `systemBars()` **and** `ime()` insets, so the URL field and Save button stay clear
   of the status bar and the soft keyboard.
