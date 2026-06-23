@@ -139,6 +139,42 @@ export interface BranchAutoResetCard {
   createdAt: string;
 }
 
+/**
+ * docs/221 — a persisted "synced with <base>" transcript card. Emitted after a
+ * successful "Sync with <base>" (manual rebase-onto-base) flow that rewrote the
+ * session branch and/or fast-forwarded the session clone's local `<base>` ref up
+ * to `origin/<base>`. Unlike the transient rebase banner/toast, this is durable
+ * scrollback so the user has a lasting record that the branch was rebased and the
+ * local base moved. Immutable, no lifecycle — written once on emit, never patched.
+ * Shared verbatim by the live WS payload (`WsBranchSyncedCard`), the persisted
+ * chat-history row (`PersistedMessage.branchSynced`), and the client card so the
+ * three can't drift. Idempotent on the client by `cardId` (live emit vs the
+ * reconnect/reload replay).
+ */
+export interface BranchSyncedCard {
+  /** Stable id — dedupes the live append vs the reconnect/reload replay. */
+  cardId: string;
+  /** The base branch synced against (e.g. "main"). */
+  base: string;
+  /**
+   * Session-branch HEAD before → after the rebase. Equal (and present) when the
+   * branch was already up to date; the client suppresses the "rebased" line then.
+   */
+  headFromSha: string;
+  headToSha: string;
+  /**
+   * Local `<base>` ref before → after the fast-forward to `origin/<base>`.
+   * `baseFromSha` is null when the local base ref didn't exist before. Equal when
+   * the local base was already current; the client suppresses the "updated" line.
+   */
+  baseFromSha: string | null;
+  baseToSha: string;
+  /** Whether the rewritten branch was force-pushed to origin (false when no auth). */
+  forcePushed: boolean;
+  /** Emit time — doubles as the provenance stamp. */
+  createdAt: string;
+}
+
 // ---- Chat history message (shared data type) ----
 
 /**

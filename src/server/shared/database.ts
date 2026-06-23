@@ -744,6 +744,16 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE usage_turns ADD COLUMN cumulative_cost_usd REAL");
   },
+  // docs/221 — persist the "synced with <base>" transcript card so it survives a
+  // session switch / full reload. Emitted after a manual "Sync with <base>" flow
+  // (which rebases the session branch onto origin/<base> and fast-forwards the
+  // local <base> ref); the clean-rebase path isn't an agent turn, so the card is
+  // appended directly to history rather than via emitChatCard. Without this column
+  // it would render live but vanish on the next loadSessionHistory. Immutable (no
+  // lifecycle), written once on emit and never patched.
+  (db) => {
+    db.exec("ALTER TABLE messages ADD COLUMN branch_synced TEXT");
+  },
 ];
 
 export class DatabaseManager {

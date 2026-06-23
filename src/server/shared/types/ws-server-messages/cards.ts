@@ -6,6 +6,7 @@ import type {
   SubAgentConsultCard,
   ActionChecklistCard,
   BranchAutoResetCard,
+  BranchSyncedCard,
 } from "../domain-types.js";
 import type { ReleaseStatusSummary } from "../release-types.js";
 import type { VoiceNoteSource } from "../voice-note-types.js";
@@ -250,4 +251,18 @@ export interface WsBranchAutoResetCard {
   type: "branch_auto_reset_card";
   sessionId: string;
   card: BranchAutoResetCard;
+}
+
+/**
+ * docs/221 — the persisted "synced with <base>" transcript card. Emitted after a
+ * successful manual "Sync with <base>" flow (`runRebaseFlow`, manual route only)
+ * that rebased the session branch onto `origin/<base>` and/or fast-forwarded the
+ * local `<base>` ref. The clean-rebase path is not an agent turn, so the card is
+ * appended directly to chat history AND broadcast here, sharing one `card.cardId`
+ * that the client dedupes on. Carries the full `BranchSyncedCard`; no lifecycle.
+ */
+export interface WsBranchSyncedCard {
+  type: "branch_synced_card";
+  sessionId: string;
+  card: BranchSyncedCard;
 }
