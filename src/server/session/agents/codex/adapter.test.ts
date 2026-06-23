@@ -1430,7 +1430,7 @@ describe("CodexAdapter", () => {
     const reply = fakeProc.getRequests().find((r) => (r as { id?: number }).id === 9101) as unknown as {
       result: { decision: string };
     };
-    expect(reply.result).toEqual({ decision: "reject" });
+    expect(reply.result).toEqual({ decision: "decline" });
   });
 
   it("routes a v2 command approval through the requester and accepts on allow (docs/193)", async () => {
