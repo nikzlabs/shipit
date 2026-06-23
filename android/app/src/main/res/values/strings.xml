@@ -14,4 +14,9 @@
     <string name="settings_error_https_required">URL must use https:// (http:// is allowed only for Tailscale *.ts.net hosts).</string>
 
     <string name="menu_settings">Open settings</string>
+
+    <!-- %1$s = versionName (e.g. 0.2.0-debug), %2$d = versionCode (the unique,
+         increasing build number — matches the GitHub Actions build). Shown so a
+         tester can tell exactly which build is installed before reinstalling. -->
+    <string name="settings_version">Version %1$s · build %2$d</string>
 </resources>
