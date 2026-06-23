@@ -101,9 +101,9 @@ requests, and design discussion are welcome as GitHub issues.
 
 Coding agents are the easy part — you already have Claude Code or Codex. The hard part is everything
 around them: an isolated environment per agent, a live app to test against, parallel work that doesn't
-collide, and the full PR → CI → deploy → review loop on real repos. ShipIt wraps the agents you
-already use in that shipping loop — container-isolated, with your whole stack running per session,
-both Claude and Codex under one roof, on infrastructure you own and can reach from your phone.
+collide, and the full PR → CI → deploy → review loop on real repos. ShipIt is the surface that ties
+all of that together, so you build, review, and ship in one place instead of stitching it together
+yourself.
 
 ## Agents
 
