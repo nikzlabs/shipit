@@ -152,7 +152,11 @@ seeds new sessions from localStorage.
    the optimistic `pending` pick lingering across a switch — the composer keys `ReasoningSelector` on
    the session id so a switch remounts it and clears the pick. Both produced the "I changed it to Max
    for one task, forgot, and the next session was silently on Max" footgun (worse on mobile, where the
-   control is offscreen). Guarded in `ReasoningSelector.test.tsx`.
+   control is offscreen). Guarded in `ReasoningSelector.test.tsx`. The sibling **model** picker
+   (`ModelAgentSelector`, docs/142/166) was aligned to the same rule — its localStorage seed
+   (`getSavedModelId`) is gated on `!hasActiveSession`, so an active session at the agent default no
+   longer highlights the model last picked elsewhere (its optimistic pick was already session-scoped
+   via `pendingSessionRef`). Guarded in `ModelAgentSelector.test.tsx`.
 
 ## Notes / known limitation
 
