@@ -31,8 +31,11 @@ must be on; `publish` requires the `PLAY_SERVICE_ACCOUNT_JSON` secret (see
 Google Play rejects an upload whose `versionCode` is not strictly greater than
 the previous one. In CI, `versionCode` is set from the GitHub Actions
 `run_number` (via the `ANDROID_VERSION_CODE` env var), so every release build
-gets a higher code automatically. Local builds fall back to `1`
-(see `app/build.gradle.kts`).
+gets a higher code automatically. Local builds fall back to epoch seconds, which
+is monotonic — so each fresh debug build outranks the one already installed on
+the device and updates over it cleanly (Android refuses to install an APK whose
+`versionCode` is not strictly greater than the installed one). No manual bumping
+needed between local builds (see `app/build.gradle.kts`).
 
 ### Local builds (optional)
 
