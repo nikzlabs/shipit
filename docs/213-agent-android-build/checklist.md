@@ -1,27 +1,28 @@
-# Checklist — 213 Android build/test/preview as a platform capability
+# Checklist — 213 Android build/test/debug/preview as a platform capability
 
 This doc is a **design/recommendation** deliverable. The items below track the doc; the implementation
 phases are future work (the session brief said do not commit to a heavy implementation here).
 
 ## Design doc
 
-- [x] Investigate container reality (KVM, JDK, Gradle, memory, disk) — measured in-session
-- [x] Reframe from repo-scoped to **platform capability** — works for ANY Android repo, zero setup
-- [x] Toolchain provisioning options (shared read-only mount vs image variant vs base image vs agent.install) + recommendation
-- [x] Zero-config Android-project detection heuristic
-- [x] Headless tier (assembleDebug / lint / JVM unit / Robolectric / Paparazzi-Roborazzi)
-- [x] Emulator/instrumented tier (KVM, Gradle Managed Devices, Firebase Test Lab)
-- [x] **Preview** designed & phased: P1 rendered-screen gallery (zero-KVM) → P2 streamed emulator (KVM host pool) → P3 cloud device farm
+- [x] Investigate the runtime reality (host vs session-container KVM, JDK, Gradle, memory, disk) — measured in-session
+- [x] Frame as a platform capability for ANY Android repo (incl. web/Android monorepos)
+- [x] Build toolchain: provisioning options + recommendation (read-only base store + per-session overlay)
+- [x] Toolchain derived-not-declared + optional override; staged requirement resolver; path-scoped detection
+- [x] Headless tier (assembleDebug / lint / JVM unit / Robolectric / Paparazzi-Roborazzi + static `apkanalyzer`/`aapt2`)
+- [x] Running-app tier: emulator as a user-defined Compose service + gated `/dev/kvm` allowance; `adb` debug/drive; Firebase fallback
+- [x] Debugging & inspection + interactive control (press / screenshot / snapshot — the Playwright `browser_*` analog)
+- [x] Preview tiers: P1 rendered gallery → P2 emulator Compose service → P3 cloud device farm
 - [x] Agent surfacing (shipit-docs entry + .claude/skills skill)
-- [x] Relationship to API-35 work and SHI-53
+- [x] Coherence pass — restructure around the two-runtime-surfaces spine, dedupe
 - [x] Linear tracker issue created + linked in `plan.md` frontmatter
 - [x] Open PR with the doc
 
 ## Implementation (future work — not this session)
 
-- [ ] Phase 0: commit Gradle wrapper (8.7); add Android-project detection at session setup
-- [ ] Phase 1: build pinned platform SDK+JDK asset; read-only mount auto-attached on detection; green `assembleDebug`+`lint`+unit test for a generic Android repo; `shipit-docs/android.md` + skill
-- [ ] Phase 2: Paparazzi/Roborazzi (pinned to AGP) + **P1 rendered-screen preview** in the preview pane (ComposablePreviewScanner discovery)
-- [ ] Phase 3: **P2** KVM emulator host pool + emulator service + WebRTC bridge through the preview proxy + APK push on build
-- [ ] Phase 4: **P3** Firebase Test Lab / GMD-on-KVM for instrumented tests; results as inline PR artifacts
-</content>
+- [ ] Phase 0: commit Gradle wrapper (8.7); `shipit.yaml` `android:` schema + path-scoped detection + staged resolver
+- [ ] Phase 1: base store + writable overlay + AGP→Gradle→JDK resolution; green build/lint/test for a generic repo and a monorepo; `shipit-docs/android.md` + skill
+- [ ] Phase 2: P1 render harness (Paparazzi/Roborazzi via init script, ComposablePreviewScanner + manifest/`res/layout`) wired into the preview pane
+- [ ] Phase 3: narrowly-scoped `/dev/kvm` `devices:` allowance in `compose-generator.ts` + canonical emulator Compose recipe; confirm host KVM
+- [ ] Phase 4: agent `adb` debug/drive loop (logcat + tap/screenshot/snapshot triad, optional Maestro) + interactive preview via `x-shipit-preview`
+- [ ] Phase 5: Firebase Test Lab / GMD-on-KVM for instrumented tests; results as inline PR artifacts
