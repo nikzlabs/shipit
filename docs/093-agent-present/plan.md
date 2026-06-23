@@ -737,9 +737,12 @@ Three related Present-tab refinements (folded into one change):
   (`lastViewedBySession`, keyed by the stable `presentId`, kept OUTSIDE the
   store state so `reset()` on a session switch doesn't wipe it) and restored
   inside `hydrate`. A session switch / late tab open lands the user back where
-  they left off instead of snapping to the first artifact. Browser-memory only
-  — a full page reload starts fresh; server-side persistence (alongside the
-  existing metadata rows) is a noted cheap follow-up.
+  they left off instead of snapping to the first artifact. Seeded from / written
+  through to localStorage (`getSavedActivePresentBySession` /
+  `saveActivePresentBySession`), so the position also survives a full page
+  reload — browser-local view state (may differ across devices), not
+  server-persisted. A stale entry (artifact since gone) is harmless: `hydrate`
+  falls back to clamping when the id isn't found.
 
 - **Typing no longer moves the carousel.** The pane's arrow-key nav listener is
   on `window`, and the chat composer is on screen alongside the Present tab, so
@@ -752,3 +755,4 @@ Key files:
 - `src/client/utils/present-content-fetch.ts` — shared lazy bytes fetch (single view + gallery)
 - `src/client/components/PresentPane.tsx` — gallery toggle, gallery render, keydown focus guard
 - `src/client/stores/present-store.ts` — `galleryOpen`, per-session active-position memory
+- `src/client/utils/local-storage.ts` — `getSavedActivePresentBySession` / `saveActivePresentBySession` (reload-durable position)

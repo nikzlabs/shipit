@@ -4,6 +4,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { usePresentStore } from "./present-store.js";
 import { useSessionStore } from "./session-store.js";
+import { getSavedActivePresentBySession } from "../utils/local-storage.js";
 
 function makePresent(overrides: Partial<Parameters<ReturnType<typeof usePresentStore.getState>["addOrReplace"]>[0]> = {}) {
   return {
@@ -154,6 +155,19 @@ describe("present-store", () => {
       usePresentStore.getState().reset();
       usePresentStore.getState().hydrate([full[0]]);
       expect(usePresentStore.getState().activePresentIndex).toBe(0);
+    });
+
+    it("writes the remembered position through to localStorage (reload-durable)", () => {
+      useSessionStore.getState().setSessionId("sess_ls");
+      const list = [
+        { presentId: "u", mimeType: "text/html", filePath: "/tmp/u.html", createdAt: "2026-05-29T00:00:00.000Z" },
+        { presentId: "v", mimeType: "text/html", filePath: "/tmp/v.html", createdAt: "2026-05-29T00:00:01.000Z" },
+      ];
+      usePresentStore.getState().hydrate(list);
+      usePresentStore.getState().setActiveIndex(1); // remembers "v"
+
+      // A fresh page load seeds the in-memory map from this on next import.
+      expect(getSavedActivePresentBySession().sess_ls).toBe("v");
     });
 
     it("a full clear forgets the remembered position for the session", () => {

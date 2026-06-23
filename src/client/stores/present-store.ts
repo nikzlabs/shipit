@@ -19,6 +19,10 @@
 
 import { create } from "zustand";
 import { useSessionStore } from "./session-store.js";
+import {
+  getSavedActivePresentBySession,
+  saveActivePresentBySession,
+} from "../utils/local-storage.js";
 
 /**
  * The artifact the user last viewed, keyed by session id. Lives OUTSIDE the
@@ -27,14 +31,26 @@ import { useSessionStore } from "./session-store.js";
  * Keyed by the content-addressed `presentId` (not a numeric index, which shifts
  * as artifacts append or clear). `hydrate` runs on every switch / late tab open
  * and restores the remembered entry instead of snapping back to the first one.
- * Browser-memory only (a full page reload starts fresh — server persistence
- * would be a cheap follow-up); forgotten for a session on a full clear.
+ *
+ * Seeded from / written through to localStorage so the position survives a full
+ * page reload too — browser-local view state (may differ across devices), not
+ * server-persisted. A stale entry (artifact since gone) is harmless: `hydrate`
+ * falls back to clamping when the id isn't found. Forgotten on a full clear.
  */
-const lastViewedBySession = new Map<string, string>();
+const lastViewedBySession = new Map<string, string>(
+  Object.entries(getSavedActivePresentBySession()),
+);
+
+function persistLastViewed(): void {
+  saveActivePresentBySession(Object.fromEntries(lastViewedBySession));
+}
 
 function rememberActive(presentId: string | undefined): void {
   const sessionId = useSessionStore.getState().sessionId;
-  if (sessionId && presentId) lastViewedBySession.set(sessionId, presentId);
+  if (sessionId && presentId && lastViewedBySession.get(sessionId) !== presentId) {
+    lastViewedBySession.set(sessionId, presentId);
+    persistLastViewed();
+  }
 }
 
 export interface Presentation {
@@ -194,7 +210,7 @@ export const usePresentStore = create<PresentState>((set) => ({
     set((s) => {
       if (presentId === undefined) {
         const sessionId = useSessionStore.getState().sessionId;
-        if (sessionId) lastViewedBySession.delete(sessionId);
+        if (sessionId && lastViewedBySession.delete(sessionId)) persistLastViewed();
         return { presentations: [], activePresentIndex: 0, unseenCount: 0, galleryOpen: false };
       }
       const idx = s.presentations.findIndex((p) => p.presentId === presentId);
