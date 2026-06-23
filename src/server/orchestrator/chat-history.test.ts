@@ -53,6 +53,16 @@ const EVERY_OPTIONAL_FIELD_MESSAGE: PersistedMessage = {
     toSha: "7e02b480000000000000000000000000000000bb",
     createdAt: "2026-06-05T00:00:00.000Z",
   },
+  branchSynced: {
+    cardId: "bsync1",
+    base: "main",
+    headFromSha: "1111111000000000000000000000000000000aaa",
+    headToSha: "2222222000000000000000000000000000000bbb",
+    baseFromSha: "3333333000000000000000000000000000000ccc",
+    baseToSha: "4444444000000000000000000000000000000ddd",
+    forcePushed: true,
+    createdAt: "2026-06-05T00:00:00.000Z",
+  },
   issueWrite: {
     cardId: "iw1",
     tracker: "linear",

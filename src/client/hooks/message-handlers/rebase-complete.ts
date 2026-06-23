@@ -14,7 +14,11 @@ export const handleRebaseComplete: Handler<WsRebaseComplete> = (_ctx, data) => {
   // the in-progress banner and immediately returns to idle, so without a toast
   // the click looks like it did nothing. Confirm it explicitly. A real rebase
   // already shows the spinner banner, so we don't toast that case.
-  if (data.upToDate) {
+  //
+  // docs/221 — but when the sync still moved the local `<base>` ref, a persisted
+  // "Synced with <base>" card already records what changed, so the contradictory
+  // "Already up to date" toast is suppressed (`baseMoved`).
+  if (data.upToDate && !data.baseMoved) {
     useUiStore.getState().setToast({ message: "Already up to date" });
   }
 };

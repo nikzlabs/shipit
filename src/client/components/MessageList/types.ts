@@ -5,6 +5,7 @@ import type {
   SubAgentConsultCard as SubAgentConsultCardData,
   ActionChecklistCard as ActionChecklistCardData,
   BranchAutoResetCard as BranchAutoResetCardData,
+  BranchSyncedCard as BranchSyncedCardData,
   AiReviewCard,
 } from "../../../server/shared/types.js";
 import type { ReleaseStatusSummary } from "../../../server/shared/types/release-types.js";
@@ -346,6 +347,15 @@ export interface ChatMessage {
    * component renders straight from it.
    */
   branchAutoReset?: BranchAutoResetCardData;
+  /**
+   * docs/221 — when set, this message renders an inline "Synced with <base>" card
+   * recording a manual "Sync with <base>" that rebased the session branch onto
+   * `origin/<base>` and/or fast-forwarded the local `<base>` ref. The card has no
+   * lifecycle and no store, so both the live `branch_synced_card` WS handler and a
+   * history rehydration carry the full payload on the message; the component
+   * renders straight from it.
+   */
+  branchSynced?: BranchSyncedCardData;
 }
 
 export interface TextSegment {

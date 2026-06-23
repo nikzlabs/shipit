@@ -122,6 +122,17 @@ export class GitManager {
     }
   }
 
+  /** Resolve an arbitrary ref (branch, tag, `origin/main`, sha) to its commit
+   * hash, or null if it doesn't resolve. */
+  async getRefHash(ref: string): Promise<string | null> {
+    try {
+      const hash = await this.git.revparse(["--verify", ref]);
+      return hash.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
   /**
    * Ensure the workspace is a git repo with at least one commit.
    * Identity and commit.gpgsign are inherited from the global git config
@@ -847,6 +858,27 @@ export class GitManager {
   async createBranchFrom(branch: string, startPoint: string): Promise<void> {
     await this.git.checkout(["-B", branch, startPoint]);
     console.log("[git] checkout -B", branch, "from", startPoint);
+  }
+
+  /**
+   * Force-move a local branch ref to point at `target`, WITHOUT checking it out
+   * (`git branch -f <branch> <target>`). Unlike {@link createBranchFrom} (which
+   * uses `checkout -B` and switches the working branch), this leaves HEAD and the
+   * working tree untouched — the session stays on its own branch.
+   *
+   * Used by the "Sync with <base>" flow to fast-forward the session clone's local
+   * base ref (e.g. `main`) up to `origin/<base>` after a fetch, so the agent's
+   * `git diff main...HEAD` / `git log main..HEAD` reference current code rather
+   * than the frozen clone-time snapshot (a session clone's default refspec only
+   * advances `origin/<base>`, never local `<base>` — see docs/157 / repo-git.ts).
+   *
+   * `git branch -f` refuses to move the currently-checked-out branch; callers must
+   * skip when `branch === getCurrentBranch()` (in practice the session is always on
+   * `shipit/<id>`, never on the base).
+   */
+  async forceUpdateBranchRef(branch: string, target: string): Promise<void> {
+    await this.git.raw(["branch", "-f", branch, target]);
+    console.log("[git] branch -f", branch, "→", target);
   }
 
   /**

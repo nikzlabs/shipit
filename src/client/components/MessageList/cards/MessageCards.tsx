@@ -12,6 +12,7 @@ import { IssueWriteCard } from "../../IssueWriteCard.js";
 import { IssueRefCard } from "../../IssueRefCard.js";
 import { ActionChecklistCard } from "../../ActionChecklistCard.js";
 import { BranchUpdatedCard } from "../../BranchUpdatedCard.js";
+import { BranchSyncedCard } from "../../BranchSyncedCard.js";
 import { ReleaseLifecycleCard } from "../../ReleaseLifecycleCard.js";
 import type { ChatMessage } from "../types.js";
 import type { ReleaseMechanism } from "../../../../server/shared/types.js";
@@ -256,6 +257,20 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
           <BranchUpdatedCard card={msg.branchAutoReset} />
+        </div>
+      </div>
+    );
+  }
+
+  // docs/221 — "Synced with <base>" card. Carries no chat text of its own;
+  // renders the static `BranchSyncedCard` straight from the message payload (no
+  // store, no lifecycle). Shown after a manual "Sync with <base>" that rebased
+  // the session branch and/or fast-forwarded the local base ref.
+  if (msg.branchSynced) {
+    return (
+      <div className="flex justify-start">
+        <div className="max-w-2xl w-full">
+          <BranchSyncedCard card={msg.branchSynced} />
         </div>
       </div>
     );
