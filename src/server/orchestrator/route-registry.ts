@@ -30,6 +30,7 @@ import { readDockerMemoryStats } from "./docker-memory.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
 import { ensureCatalogCloned, getCatalogCacheRoot } from "./services/marketplace.js";
 import { restoreSessionWorkspace } from "./services/session.js";
+import { listAgents } from "./services/settings.js";
 import { serveStaticClient } from "./app-assembly.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import type { StartupMonitors } from "./startup-monitors.js";
@@ -140,15 +141,14 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     const repos = repoStore.list();
     client.write(`event: repo_list\ndata: ${JSON.stringify({ repos })}\n\n`);
 
-    const agents = agentRegistry.list().map((a) => ({
-      id: a.id, name: a.name, installed: a.installed,
-      authConfigured: a.authConfigured, models: a.capabilities.models,
-      supportsReview: a.capabilities.supportsReview,
-      supportsSteering: a.capabilities.supportsSteering,
-      supportsCompaction: a.capabilities.supportsCompaction,
-      supportedPermissionModes: a.capabilities.supportedPermissionModes,
-      skillInvocationPrefix: a.capabilities.skillInvocationPrefix,
-    }));
+    // Use the canonical `listAgents()` serializer (the same one every
+    // `agent_list` *broadcast* uses) rather than hand-rolling the payload here.
+    // A drifted inline copy previously omitted `reasoning`, so the connect/
+    // reconnect snapshot shipped a reasoning-less list that clobbered the good
+    // one in the store — the composer's reasoning control would vanish on SSE
+    // reconnect (e.g. session switch / tab refocus) and only reappear once an
+    // auth-event broadcast happened to re-send the full list. (docs/217)
+    const agents = listAgents(agentRegistry);
     client.write(`event: agent_list\ndata: ${JSON.stringify({ agents })}\n\n`);
     client.write(`event: provider_accounts\ndata: ${JSON.stringify({ accounts: providerAccountManager.list() })}\n\n`);
 

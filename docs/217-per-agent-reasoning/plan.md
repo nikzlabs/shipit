@@ -58,7 +58,13 @@ spawn-time plumbing** (`AgentRunParams.reasoningEffort` → CLI flag); only the
 Add a `reasoning` block to `AgentCapabilities` in
 `src/server/shared/agent-registry.ts` so the option set is agent-defined and flows
 to the client via the existing `agent_list` SSE broadcast (which already carries
-`models`):
+`models`). **Both the broadcasts and the `/api/events` connect snapshot must use
+the one `listAgents()` serializer** (`services/settings.ts`) — a hand-rolled inline
+copy in the connect snapshot once omitted `reasoning`, so each SSE reconnect
+(session switch / tab refocus) clobbered the store's good list with a reasoning-less
+one and the composer control vanished until an auth-event broadcast re-sent it.
+Regression-guarded in `integration_tests/codex-auth.test.ts` (connect snapshot
+asserts `reasoning.options`):
 
 ```ts
 reasoning?: {
