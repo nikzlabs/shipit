@@ -51,6 +51,7 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     getHeadHash: vi.fn().mockResolvedValue(MERGED_SHA),
     fetch: vi.fn().mockResolvedValue(undefined),
     resetHardToRemoteBase: vi.fn().mockResolvedValue({ from: MERGED_SHA, to: BASE_TIP }),
+    forcePush: vi.fn().mockResolvedValue("Force pushed to origin/shipit/fix-login"),
     ...over,
   } as unknown as GitManager;
 }
@@ -135,6 +136,9 @@ describe("autoResetMergedBranchOnContinue", () => {
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
     expect(git.fetch).toHaveBeenCalledWith("origin");
     expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    // Heals the remote so later plain auto-pushes fast-forward (force-with-lease
+    // against the live remote tip, resolved inside forcePush via ls-remote).
+    expect(git.forcePush).toHaveBeenCalledWith("origin");
     expect(out).toMatchObject({
       moved: true,
       base: "main",
@@ -173,6 +177,17 @@ describe("autoResetMergedBranchOnContinue", () => {
     const git = makeGit({ resetHardToRemoteBase: vi.fn().mockRejectedValue(new Error("origin/main missing")) });
     const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
     expect(out.moved).toBe(false);
+  });
+
+  it("still reports moved:true when the remote-heal force-push fails (best-effort)", async () => {
+    // A lease rejection / network error during the heal must not undo the reset:
+    // the local branch already moved, the turn should run, and the session falls
+    // back to the pre-fix divergence (no worse than before) rather than throwing.
+    const git = makeGit({ forcePush: vi.fn().mockRejectedValue(new Error("(stale info)")) });
+    const out = await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
+    expect(git.forcePush).toHaveBeenCalledWith("origin");
+    expect(out.moved).toBe(true);
   });
 
   it("skips when the user unticked the control for this send (intent=false)", async () => {

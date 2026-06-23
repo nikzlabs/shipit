@@ -183,9 +183,23 @@ docs/202/216).
 No explicit recovery ref. A merged change *is* the permanent record; the branch's
 prior state is a duplicate of what's already in `main`, so there is no use case for
 recovering it. Whatever git keeps for free suffices — the dropped commits remain in
-the clone's reflog (`HEAD@{1}`) and usually on the still-present remote branch — and
-we do not force-push at reset time. (The clean-tree clause covers the one genuinely
+the clone's reflog (`HEAD@{1}`). (The clean-tree clause covers the one genuinely
 unrecoverable case: uncommitted edits.)
+
+> **Superseded — we now DO heal the remote at reset time.** The original posture
+> additionally leaned on "the dropped commits usually survive on the still-present
+> remote branch" and therefore "we do not force-push at reset." That left the
+> *local* branch reset to `origin/<base>` while the *remote* branch
+> (`origin/<session-branch>`) still pointed at the old merged commits — a
+> divergence. Because the ordinary debounced auto-push (`scheduleAutoPush` → plain
+> `git push`) is non-force, every subsequent commit's push became a
+> **silently-dropped non-fast-forward** until the PR-create path (the only
+> force-pushing path) happened to heal it. So the reset now force-pushes the
+> branch (`forcePush` → live-tip `--force-with-lease`) immediately after the
+> `reset --hard`, healing the remote so later pushes fast-forward. The reflog
+> (`HEAD@{1}`) remains the recovery source; the lease refuses to clobber a remote
+> that moved unexpectedly (false-merge guard preserved). See the heal block in
+> `pre-turn-reset.ts`.
 
 ## The two messaging surfaces
 
@@ -356,8 +370,13 @@ fail-safe for the manual-`git reset` path and no-ops here (it has already cleare
   local HEAD (which can advance to unmerged work in the merge-vs-detection window).
   Fail closed if absent (no SHA → no auto-reset).
 - **Interactive path only.**
-- **No recovery ref** — a merged change is the permanent record; reflog + remote
-  branch suffice; clean-tree clause covers the unrecoverable (uncommitted) case.
+- **No recovery ref** — a merged change is the permanent record; the reflog covers
+  recovery; clean-tree clause covers the unrecoverable (uncommitted) case.
+- **Heal the remote at reset (force-with-lease).** Supersedes the original "never
+  force-push at reset" decision: leaving the remote branch diverged from the reset
+  local branch turned every later plain auto-push into a silently-dropped
+  non-fast-forward. The reset now force-pushes (live-tip lease) right after the
+  `reset --hard`. See the superseded note under "Recovery / data-loss posture".
 - **Explicit composer control (placement B) + global default setting**, checked by
   default, per-send opt-out that doesn't persist.
 - **Persisted transcript card is the user-facing signal of record**, independent of
@@ -433,6 +452,25 @@ so the checkbox is intent, never authority.
 true to match. A flipped toggle takes effect on the next activation/turn (the signal is
 recomputed there) — no immediate global re-broadcast, deliberately (unlike `autoFixCi`,
 which has a per-session poll snapshot to refresh; this one doesn't).
+
+**Phase 4 — remote heal at reset (dropped-push fix).** Field report: after a
+merge → auto-reset → new PR, a later commit was silently not pushed. Root cause: the
+reset moved only the local branch; the session's remote branch survived the merge
+(auto-delete off, or ShipIt's best-effort delete — which runs in the *bare cache*
+clone, not the session clone — failed) pointing at the old merged commits, so local
+and remote diverged. The PR-create path force-pushes through divergence
+(`agentCreatePr`/`quickCreatePr`, `git.forcePush`), which is why the *PR* appeared;
+but the ordinary debounced auto-push (`scheduleAutoPush` → plain `git push`) is
+non-force, so any commit pushed via that path landed as a non-fast-forward rejection
+(`git_push_rejected`) and stayed local with no retry. Fix: `autoResetMergedBranchOnContinue`
+now calls `git.forcePush("origin")` immediately after `resetHardToRemoteBase`, healing
+the remote so subsequent plain auto-pushes fast-forward. `forcePush` leases against the
+remote's **live** tip via `ls-remote` (not the stale local tracking ref the session
+clone never pruned), so both "deleted at merge" (create) and "surviving + diverged"
+(lease) resolve; best-effort (a lease rejection / error leaves the pre-fix divergence
+rather than throwing — the reset still stands and the turn runs). This reverses the
+"never force-push at reset" decision (see the superseded note above). Tests in
+`pre-turn-reset.test.ts` (heal called on success; best-effort on failure).
 
 ## Review notes
 
