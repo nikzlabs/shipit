@@ -185,7 +185,7 @@ export function OnboardingWizard({
           OAuth / device-auth flow or API-key field expands — the right pane
           scrolls internally instead (see the pane's overflow-y-auto + min-h-0).
           Height is auto on mobile (single column), capped by max-h-[92vh]. */}
-      <div className="w-full max-w-3xl md:h-[500px] max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
+      <div className="w-full max-w-3xl md:h-[520px] max-h-[92vh] overflow-hidden rounded-xl bg-(--color-bg-elevated) border border-(--color-border-secondary) grid md:grid-cols-2">
         {step === 1 ? (
           <WizardHero
             title={
