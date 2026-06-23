@@ -181,8 +181,11 @@ export class CodexEventHandler {
    * isn't being asked.
    *
    * Decision enums come from the generated v2 schema (`codex app-server
-   * generate-json-schema`): CommandExecution/FileChange ApprovalDecision is
-   * `"accept"`/`"reject"`; the legacy v1 ReviewDecision is `"approved"`/`"denied"`.
+   * generate-json-schema`, confirmed SHI-112): v2 CommandExecution/FileChange
+   * ApprovalDecision allow is `"accept"`; deny is `"decline"` (deny + continue
+   * the turn) — NOT `"reject"`, which the schema does not define (the only other
+   * deny variant, `"cancel"`, denies AND interrupts the turn, which is not our
+   * semantics). The legacy v1 ReviewDecision is `"approved"`/`"denied"`.
    */
   handleServerRequest(req: JsonRpcServerRequest): void {
     switch (req.method) {
@@ -213,7 +216,7 @@ export class CodexEventHandler {
    */
   private resolveApproval(req: JsonRpcServerRequest, protocol: "v1" | "v2"): void {
     const accept = protocol === "v2" ? "accept" : "approved";
-    const reject = protocol === "v2" ? "reject" : "denied";
+    const reject = protocol === "v2" ? "decline" : "denied";
 
     if (!this.requestPermission) {
       this.ctx.sendResponse(req.id, { decision: accept });

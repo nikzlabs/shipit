@@ -191,9 +191,12 @@ A future backend implements `setPermissionRequester` (or bridges to
 - **Local mode** (dogfood) has no worker/broker, so the Claude bridge POST fails
   → deny. Sensitive-file edits there remain a dead-end (dev-only, already
   degraded per docs/118). Production (container) is the path that matters.
-- The exact Codex reject enum (`reject` / `denied`) is inferred from the v2/v1
-  schemas; verify against `codex app-server generate-json-schema` if a Codex
-  deny ever misbehaves. Allow (`accept`/`approved`) is confirmed by existing tests.
+- The Codex deny enum is confirmed against `codex app-server generate-json-schema`
+  (SHI-112): v2 deny is `"decline"` (deny + continue the turn; `"cancel"` would
+  also interrupt — not our semantics) and v1 deny is `"denied"`. An earlier
+  inferred value `"reject"` was stale — the schema defines no such variant — and
+  is fixed in `codex-event-handler.ts`. Allow (`accept`/`approved`) is confirmed
+  by existing tests.
 
 ## Tests
 
