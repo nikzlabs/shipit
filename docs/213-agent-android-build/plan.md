@@ -23,7 +23,7 @@ loop (preview pane + Playwright); the Android side has none.
 
 **Declare Android projects in `shipit.yaml` the same way web is declared, mount a platform-managed
 toolchain, give the agent a headless build/test/render loop now, and phase the preview from rendered
-screens (zero-KVM, soon) to a streamed emulator (KVM host pool, later).**
+screens (zero-KVM, soon) to a streamed emulator service container (KVM-gated, later).**
 
 1. **Declaration unified with web (+ auto-detect for the simple case).** A repo names its Android
    project(s) in `shipit.yaml` — an `android:` list of module paths + preview mode — exactly as it names
@@ -50,24 +50,35 @@ screens (zero-KVM, soon) to a streamed emulator (KVM host pool, later).**
    - **P1 — rendered-screen preview (zero-KVM, soon).** Reuse the headless renderer to produce a gallery
      of rendered screens in the preview pane, refreshed on change. Static (no touch), but real visual
      feedback on the existing runtime.
-   - **P2 — interactive streamed emulator (KVM host pool, later).** A dedicated emulator service on a
-     KVM-capable host pool boots an AVD, installs the freshly built APK, and streams screen + input into
-     the preview pane over WebRTC. The true web-preview-equivalent — gated on KVM infra ShipIt would
-     stand up.
-   - **P3 — cloud device farm.** Firebase Test Lab for instrumented/real-device runs when ShipIt isn't
-     operating its own pool; results surface inline in the PR card.
+   - **P2 — interactive streamed emulator.** An **emulator service container** (part of the session's
+     Compose stack, like a web preview) boots an AVD, installs the freshly built APK, and streams screen
+     + input into the preview pane over WebRTC. It needs `/dev/kvm` — granted via a narrowly-scoped
+     `devices:` passthrough when the host is KVM-capable, otherwise a dedicated KVM pool. The true
+     web-preview-equivalent.
+   - **P3 — cloud device farm.** Firebase Test Lab for instrumented/real-device runs when the host can't
+     offer KVM at all; results surface inline in the PR card.
 
-## Container reality check (measured)
+## Where the emulator runs (the KVM question, corrected)
 
-| Capability | Session container | Consequence |
+An earlier draft read "the session container has no `/dev/kvm`, therefore no emulator" — that conflates
+two things. **Web previews don't run in the session container either**; ShipIt starts them as a separate
+per-session **Docker Compose stack** (`ServiceManager` → `docker compose`). The emulator is the same kind
+of thing: a long-running daemon, i.e. a **service**, so it belongs in a **service container** in that
+Compose stack — reached from the session container over `adb` (TCP `adb connect`), not run inside it.
+
+So the real question isn't the session container; it's the **host** and the **Compose security model**:
+
+| Fact | State | Consequence |
 |---|---|---|
-| `/dev/kvm` | absent (no `vmx`/`svm`) | Interactive emulator runs on a separate KVM host (P2), not the session box. Headless rendering (P1) is unaffected. |
-| JDK | absent | Provided by the toolchain mount. |
-| Gradle | absent; `android/` has no committed wrapper | Provided by `./gradlew` (commit it) or the base store. |
-| Memory / disk | host ~15 GiB; `/workspace` ~34 GB free | A Gradle build + SDK + caches fit. |
+| `/dev/kvm` in the **session container** | absent (measured) | Irrelevant — the emulator runs in a service container, like every web preview. |
+| `/dev/kvm` on the **deployment host** | **unknown — depends on the instance** (verify with `kvm-ok` / `ls /dev/kvm` on the host) | A bare-metal or nested-virt instance has it → a fast emulator runs locally; a basic cloud VM doesn't → needs a KVM-capable instance, a separate pool, or Firebase. |
+| Compose device passthrough | not supported today; `privileged`/`network_mode: host`/abs-path mounts are rejected, but `devices:` isn't handled | `/dev/kvm` passthrough uses `devices: ["/dev/kvm:/dev/kvm"]` — a device-cgroup allow that does **not** need `privileged`, so it fits the security model. Add it as a **narrowly-scoped allowance** (only `/dev/kvm`, behind a flag — mirrors the existing `docker-socket: true` gate). |
+| JDK / Gradle in the session container | absent; `android/` has no committed wrapper | Build toolchain reaches the session container via the mount (so the agent runs `gradle` directly); `./gradlew` (commit it) or the base store supplies Gradle. |
 
-The KVM absence is the load-bearing fact: it relocates the emulator to a virt-enabled host pool, while
-everything in the headless tier and P1 runs on today's runtime.
+Headless build/test/render (Tier A, P1) is unaffected and runs on today's runtime. The emulator tier
+becomes: **run an emulator service container, give it `/dev/kvm` where the host provides it.** Whether
+that host is the local deployment box or a dedicated pool is a deployment choice, not an architectural
+fork — the emulator-as-service + `adb`-over-TCP shape is identical either way.
 
 ## Toolchain provisioning
 
@@ -196,14 +207,20 @@ This is the recommended first preview — most of the "can I see my UI?" value w
 infra — and it doubles as the Paparazzi golden source, so preview and snapshot testing share machinery.
 The user declares the project once (as for web); building the platform harness is the Phase-2 work.
 
-### P2 — interactive streamed emulator (KVM host pool, later)
+### P2 — interactive streamed emulator (emulator service container)
 
-For a real, touchable preview, a dedicated emulator service on a KVM-capable host pool (nested-virt or
-bare metal) boots an AVD, installs the session's `app-debug.apk`, and streams screen + input to the
-preview pane over WebRTC (the `google/android-emulator-container-scripts` + `android-emulator-webrtc`
-approach: WebRTC for video, gRPC for input). This is a deliberate infra investment — a virt-enabled
-pool, emulator lifecycle, APK push per build, and a WebRTC bridge through the preview proxy — phased
-after P1, since software-mode emulation without KVM is too slow for interactive use.
+For a real, touchable preview, an **emulator service container** in the session's Compose stack boots an
+AVD, installs the session's `app-debug.apk`, and streams screen + input to the preview pane over WebRTC
+(the `google/android-emulator-container-scripts` + `android-emulator-webrtc` approach: WebRTC for video,
+gRPC for input). Modeled exactly like a web preview service — ShipIt already runs per-session Compose
+stacks — so the new pieces are: the emulator image, a **narrowly-scoped `/dev/kvm` `devices:` passthrough**
+(no `privileged`), APK push per build, and a WebRTC bridge through the existing preview proxy.
+
+The one hard dependency is **KVM on whatever host runs that container** — software emulation without it is
+too slow for interactive use. Where the deployment host is KVM-capable, the emulator is just another
+Compose service co-located with web previews (no separate infra). Where it isn't, the same service runs
+on a dedicated KVM pool, or fall back to P3. So P2 is gated on a host capability + a device-passthrough
+allowance, not on standing up bespoke streaming infrastructure.
 
 ### P3 — cloud device farm
 
@@ -245,12 +262,13 @@ The Android equivalent of Playwright's browser introspection, over `adb`:
   accessibility snapshot), so the agent can reason about the on-screen tree, not just a screenshot.
 - **`adb shell`** — install/launch, set permissions, pull app data (`run-as`), drive intents.
 
-**Key point: this is debug instrumentation, not preview, and it doesn't need the interactive WebRTC
-stream.** P2/P3 are framed above as *preview* surfaces (a user watching pixels), but the same running
-instance scraped over `adb` gives the *agent* its runtime-debug loop — and a **headless emulator** (or a
-**Firebase Test Lab** run that returns logcat + crash logs) delivers that **without** the KVM-hungry
-streaming bridge. So agent runtime debugging can land earlier and cheaper than the streamed preview: a
-headless AVD reachable over `adb` is enough.
+**Key point: this is debug instrumentation, not preview, and it doesn't need the WebRTC stream.** The
+agent reaches the emulator service container over `adb` (TCP `adb connect`) from the session container —
+the same Compose-stack wiring as a web preview. So the agent's runtime-debug loop only needs the emulator
+running **headless** (no screen streaming): a headless AVD reachable over `adb`, or a **Firebase Test Lab**
+run that returns logcat + crash logs. That lands earlier and cheaper than the WebRTC bridge, which exists
+only for the *user's* interactive preview (P2). KVM still helps the emulator boot fast, but the streaming
+layer is what P2 adds on top.
 
 Out of scope: an **interactive debugger / breakpoints** (JDWP attach) and **profiling** (CPU/memory/jank,
 perfetto) — heavy, device-bound, and not part of the agent loop.
@@ -292,8 +310,8 @@ screenshots double as preview-gallery frames and snapshot-test goldens.
    headless commands, the mount paths (`ANDROID_SDK_ROOT=/opt/android-sdk`), recording/verifying
    Paparazzi goldens, the **debug/inspect commands** (static: `apkanalyzer`/`aapt2`; runtime: `adb
    logcat`, `uiautomator dump`, `adb shell` against a running instance), rendered-screen preview as the
-   in-session visual loop, and the emulator ceiling (the device lives on a separate host, not the
-   session container).
+   in-session visual loop, and how the emulator is reached (a separate service container over `adb`
+   connect, not the session container).
 2. **`.claude/skills/android-build` skill** — discloses by description, loads when a task touches an
    Android project; carries the build → lint → render/snapshot → read-the-PNG-diff → attach-to-PR loop,
    the debug loop (read `assembleDebug`/test output → for runtime failures, read `adb logcat` and
@@ -316,14 +334,16 @@ screenshots double as preview-gallery frames and snapshot-test goldens.
   Paparazzi/Roborazzi via a Gradle init script and generate the render harness as uncommitted source;
   ComposablePreviewScanner for Compose, manifest/`res/layout` for Views. Wire the gallery into the
   preview pane. First Android visual feedback for agent and user.
-- **Phase 3 (agent runtime debug + control — rides on a headless emulator):** Reach a running instance
-  over `adb` (a headless AVD on a KVM host, or Firebase Test Lab) and expose to the agent: `adb logcat`,
-  the **interactive triad** (`uiautomator dump` snapshot, `adb shell input tap/text/keyevent` press,
-  `adb exec-out screencap` screenshot — wrapped as `browser_*`-style tools), and `adb shell`. Optionally
-  add **Maestro** for ergonomic agent-authored flows. This whole loop needs **no WebRTC stream**, so it
-  lands before the interactive preview.
-- **Phase 4 (P2 interactive preview, infra-gated):** Add the WebRTC bridge through the preview proxy on
-  the same emulator pool — the user-facing streamed, touchable preview on top of the Phase-3 instance.
+- **Phase 3 (emulator service container + agent debug/control):** Add a headless **emulator service** to
+  the session's Compose stack (an Android-emulator image, given `/dev/kvm` via the narrowly-scoped
+  `devices:` allowance where the host has it — else Firebase). Reach it over `adb` (TCP) and expose to the
+  agent: `adb logcat`, the **interactive triad** (`uiautomator dump` snapshot, `adb shell input
+  tap/text/keyevent` press, `adb exec-out screencap` screenshot — wrapped as `browser_*`-style tools), and
+  `adb shell`. Optionally add **Maestro**. Needs **no WebRTC stream**, so it lands before the interactive
+  preview. (Prereq: implement + gate the `/dev/kvm` `devices:` passthrough in the compose generator, and
+  confirm host KVM.)
+- **Phase 4 (P2 interactive preview):** Add the WebRTC bridge through the existing preview proxy on the
+  same emulator service — the user-facing streamed, touchable preview on top of the Phase-3 instance.
 - **Phase 5 (P3 / instrumented):** Firebase Test Lab (or GMD on KVM CI) for instrumented tests and
   real-device validation, surfaced as inline PR artifacts.
 
@@ -346,8 +366,14 @@ screenshots double as preview-gallery frames and snapshot-test goldens.
   `.gradle` files or disturbing the web toolchain in the same repo; gate the Gradle-query stage behind a
   static-scan miss to keep it cheap. The `shipit.yaml` `android:` list is the explicit override for
   monorepos and ambiguous repos.
-- **P2 infra cost.** A KVM host pool is an operational commitment (capacity, lifecycle, emulator-service
-  isolation). Phase it behind the zero-KVM P1.
+- **Host KVM + device passthrough.** The emulator service needs `/dev/kvm` on whatever host runs it —
+  verify the deployment instance offers KVM (bare-metal/nested-virt), and implement the narrowly-scoped
+  `devices: ["/dev/kvm"]` allowance in the compose generator (no `privileged`, gated like `docker-socket`).
+  If the host can't do KVM, the emulator moves to a dedicated KVM pool or P3 (Firebase) — same
+  emulator-as-service shape, different placement.
+- **Emulator resource weight.** A KVM emulator is ~2–4 GiB RAM + real CPU; co-locating it in the session's
+  Compose stack competes with the agent and web previews. Start on-demand (like heavy preview services),
+  and consider a pool for scale.
 - **Paparazzi ↔ AGP coupling** and the **WebView-not-renderable** caveat (above).
 - **Memory contention** of a Gradle build alongside the agent — watch for OOM, tune the Gradle heap.
 
@@ -364,11 +390,12 @@ screenshots double as preview-gallery frames and snapshot-test goldens.
 - Platform preview harness — injected Gradle init script + generated uncommitted render harness; Compose
   discovery via ComposablePreviewScanner with a manifest/`res/layout` fallback (Phase 2).
   `android/app/build.gradle.kts` adds Paparazzi/Roborazzi for the dogfood case.
-- Agent debug/control bridge — an `adb`-over-the-running-instance route exposing logcat, `uiautomator
-  dump`, and the `input tap`/`screencap` triad as `browser_*`-style agent tools (Phase 3); optional
-  Maestro CLI in the toolchain. Runs against a headless emulator or Firebase, independent of the WebRTC
-  preview.
-- Preview proxy / preview-store — rendered-screen gallery (P1); WebRTC emulator route (P2, Phase 4).
+- Compose generator (`compose-generator.ts`) — a narrowly-scoped **`devices: ["/dev/kvm"]` allowance**
+  (no `privileged`, gated like `docker-socket: true`); the emulator service definition + `compose.md` docs.
+- Emulator service image + `adb`-over-TCP debug/control bridge — exposing logcat, `uiautomator dump`, and
+  the `input tap`/`screencap` triad as `browser_*`-style agent tools (Phase 3); optional Maestro CLI.
+  Reached from the session container over `adb connect`, independent of the WebRTC preview.
+- Preview proxy / preview-store — rendered-screen gallery (P1); WebRTC route to the emulator service (P2, Phase 4).
 - `src/server/shipit-docs/android.md` + `.claude/skills/android-build/SKILL.md` — new, agent surfacing.
 - `.github/workflows/android.yml` — GMD/Firebase job is a Phase 5 addition.
 </content>
