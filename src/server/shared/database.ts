@@ -728,6 +728,22 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     db.exec("ALTER TABLE messages ADD COLUMN branch_auto_reset TEXT");
   },
+  // SHI-cost-delta — store the raw cumulative cost the CLI reports alongside the
+  // per-turn delta now written to `cost_usd`. Each `claude -p --resume` turn
+  // reports `total_cost_usd` as the running total of the entire resumed
+  // conversation, not that turn's cost; persisting those snapshots into
+  // `cost_usd` and SUM()-ing them over-counted the session bill ~N× (once per
+  // resume chain). UsageManager.record now converts the cumulative into a
+  // per-turn delta (max(0, current - previous-for-this-session)) and stores it
+  // in `cost_usd`; `cumulative_cost_usd` retains the raw snapshot so the next
+  // turn can diff against it across an orchestrator restart. NULL for sub-agent
+  // rows (one-shot consults already report a per-run cost) and for legacy rows
+  // written before this migration. Historical rows are NOT backfilled — their
+  // `cost_usd` stays the old cumulative snapshot, so pre-migration sessions keep
+  // their (over-counted) totals; only turns recorded after this point are exact.
+  (db) => {
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cumulative_cost_usd REAL");
+  },
 ];
 
 export class DatabaseManager {

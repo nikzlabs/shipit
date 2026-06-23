@@ -1017,7 +1017,11 @@ export function wireAgentListeners(
         // usage but no dollar cost. Persist those turns with a zero-dollar
         // value so session turn counts, token history, and rehydration still
         // work; do not estimate pricing here.
-        deps.usageManager.record(
+        // `record` converts the CLI's cumulative `total_cost_usd` (carried in
+        // `perTurnUsage.costUsd`) into a per-turn delta and returns it; reflect
+        // that delta back onto the live emit so `turn_usage_update` shows the
+        // same figure the DB will rehydrate, not the cumulative snapshot.
+        perTurnUsage.costUsd = deps.usageManager.record(
           usageSessionId,
           perTurnUsage.costUsd,
           event.durationMs ?? 0,
