@@ -411,6 +411,16 @@ export function MessageInput({
       // docs/218 — only carry the intent when the control was actually shown.
       ...(showResetControl ? { resetMergedBranch: resetChecked } : {}),
     };
+    // docs/218 — when this send carries the reset intent, the branch is about to
+    // be reset to the latest base, which makes the session no longer
+    // reset-eligible. Optimistically clear the signal so the control disappears
+    // immediately instead of lingering through the turn until the post-turn
+    // `reset_eligible: false` arrives. The server's post-turn recompute is
+    // authoritative and reconciles (re-arming the control if the reset was
+    // unticked or didn't run).
+    if (showResetControl && resetChecked && sessionId) {
+      usePrStore.getState().setResetEligible(sessionId, false);
+    }
     onSend(payload);
     setText("");
     // The transcript the cleanup notice referred to has now left the composer —
