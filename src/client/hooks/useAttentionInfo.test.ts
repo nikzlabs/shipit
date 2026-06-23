@@ -12,6 +12,7 @@ function inputs(overrides: Partial<AttentionInputs> = {}): AttentionInputs {
     awaitingPermission: false,
     autoFixEnabled: false,
     autoResolveEnabled: false,
+    resolved: false,
     ...overrides,
   };
 }
@@ -181,6 +182,27 @@ describe("computeAttentionReason", () => {
     it("stays silent once the PR is merged or closed", () => {
       expect(computeAttentionReason(inputs({ status: status({ prState: "merged" }) }))).toBeNull();
       expect(computeAttentionReason(inputs({ status: status({ prState: "closed" }) }))).toBeNull();
+    });
+  });
+
+  describe("resolved session (matches the sidebar 'Recently resolved' grouping)", () => {
+    it("stays silent for a resolved session even when its pr-store status still reads open", () => {
+      // The grouping demotes on SessionInfo.mergedAt/closedAt; the pr-store
+      // status lags and can still say "open" → would otherwise be "Waiting for
+      // your input" on a row already in "Recently resolved".
+      expect(computeAttentionReason(inputs({ resolved: true, status: status({ prState: "open" }) }))).toBeNull();
+    });
+
+    it("stays silent for a resolved session carrying a stale CI failure", () => {
+      // A merged PR can still carry a `failure` checks state; without the
+      // resolved short-circuit this read as "CI checks failed".
+      expect(computeAttentionReason(inputs({ resolved: true, card: card({ checks: FAILURE }) }))).toBeNull();
+    });
+
+    it("still surfaces a blocked permission prompt — a live signal outranks resolved", () => {
+      expect(computeAttentionReason(inputs({ resolved: true, awaitingPermission: true }))).toBe(
+        "Needs your approval to continue",
+      );
     });
   });
 });
