@@ -28,14 +28,20 @@ must be on; `publish` requires the `PLAY_SERVICE_ACCOUNT_JSON` secret (see
 
 ### versionCode
 
-Google Play rejects an upload whose `versionCode` is not strictly greater than
-the previous one. In CI, `versionCode` is set from the GitHub Actions
-`run_number` (via the `ANDROID_VERSION_CODE` env var), so every release build
-gets a higher code automatically. Local builds fall back to epoch seconds, which
-is monotonic — so each fresh debug build outranks the one already installed on
-the device and updates over it cleanly (Android refuses to install an APK whose
-`versionCode` is not strictly greater than the installed one). No manual bumping
-needed between local builds (see `app/build.gradle.kts`).
+Android refuses to install an APK whose `versionCode` is not strictly greater
+than the one already on the device (`INSTALL_FAILED_VERSION_DOWNGRADE`), and
+Google Play rejects an upload that isn't strictly greater than the previous one.
+Both CI and local builds derive `versionCode` from **epoch seconds** (CI sets
+`ANDROID_VERSION_CODE` to `date +%s`; local builds fall back to the same
+computation in `app/build.gradle.kts`). Using one wall-clock scale everywhere
+means the newer build always outranks the older one regardless of where it was
+built — a CI APK installs over a locally-built one and vice versa, with no manual
+bumping. (Earlier the CI path used `run_number`, a small integer that a local
+build's ~1.75-billion epoch code would always outrank, blocking CI installs.)
+
+Note this is the *internal* `versionCode` only. The user-visible version string
+in Android's app-info screen is `versionName` (`"0.1.0"`), which is hardcoded and
+does **not** change with these builds.
 
 ### Local builds (optional)
 

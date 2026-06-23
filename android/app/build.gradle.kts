@@ -15,11 +15,12 @@ android {
         // — see MainActivity/SettingsActivity inset handling and themes.xml.
         targetSdk = 35
         // versionCode must strictly increase or Android refuses to install the
-        // new APK over the old one (INSTALL_FAILED_VERSION_DOWNGRADE). In CI it's
-        // set from the GitHub Actions run number (see android.yml). Locally we
-        // fall back to epoch seconds (monotonic, fits in an Int until 2038) so
-        // every fresh `gradle assembleDebug` outranks the build already on the
-        // device and installs cleanly — no manual bumping between debug builds.
+        // new APK over the old one (INSTALL_FAILED_VERSION_DOWNGRADE). Both CI
+        // and local builds use the SAME scale — epoch seconds — so a newer build
+        // always outranks an older one no matter where it was built (CI sets
+        // ANDROID_VERSION_CODE to `date +%s`; see android.yml). Locally we fall
+        // back to the same computation, so a hand-run `gradle assembleDebug`
+        // also outranks whatever is on the device. Fits in an Int until 2038.
         versionCode = System.getenv("ANDROID_VERSION_CODE")?.toIntOrNull()
             ?: (System.currentTimeMillis() / 1000).toInt()
         versionName = "0.1.0"
