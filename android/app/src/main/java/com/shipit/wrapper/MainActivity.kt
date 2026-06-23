@@ -154,16 +154,14 @@ class MainActivity : AppCompatActivity() {
 
             override fun onPageFinished(view: WebView, url: String) {
                 CookieManager.getInstance().flush()
-                // Best-effort: ask the remote page to extend its layout under the
-                // system bars by forcing `viewport-fit=cover`, so any CSS
-                // `env(safe-area-inset-*)` it uses resolves to real values. We
-                // can't edit the remote ShipIt HTML, so this is injected here.
-                // This is NOT the path we rely on — `applyEdgeToEdgeInsets()`
-                // already pads the WebView container by the system-bar insets, so
-                // content is never clipped even if the page ignores safe-area
-                // insets entirely. The injection is belt-and-suspenders for a page
-                // that does honor them (it then sees insets of ~0 since the
-                // container is already inset).
+                // The bottom inset is owned by the web side (see
+                // applyEdgeToEdgeInsets): the page pads its bottom nav by
+                // `env(safe-area-inset-bottom)`, which only resolves to a real
+                // value when the viewport is `viewport-fit=cover`. ShipIt's own
+                // index.html already declares that, so this is a belt-and-braces
+                // fallback for a page (or build) that ships a viewport meta
+                // without it — without `viewport-fit=cover` the env() resolves to
+                // 0 and the bottom-anchored input would hide under the nav bar.
                 view.evaluateJavascript(VIEWPORT_FIT_COVER_JS, null)
             }
         }
@@ -228,14 +226,25 @@ class MainActivity : AppCompatActivity() {
      * behind the status bar (top) and the nav/gesture bar (bottom), and the old
      * `android:statusBarColor`/`navigationBarColor` theme knobs are ignored.
      *
-     * Because the WebView loads a *remote* ShipIt instance we don't control, we
-     * can't count on the web side honoring `env(safe-area-inset-*)`. The reliable
-     * fix is native: pad the WebView's container by the top + bottom system-bar
-     * insets so chat content (top) and the bottom-anchored input (bottom) are
-     * never hidden under the bars. The themed dark background fills the padded
-     * strips, so it still looks full-bleed. We opt into edge-to-edge explicitly
-     * via [WindowCompat.setDecorFitsSystemWindows] so the behavior is identical
-     * on the older OS versions our minSdk 26 still supports, not just Android 15.
+     * **Inset ownership is split top vs. bottom — they must NOT both be applied,
+     * or the bottom inset is counted twice.**
+     *
+     * - **Top (status bar): native.** The ShipIt web UI does not honor
+     *   `env(safe-area-inset-top)`, so we pad the container down by the top inset
+     *   to keep chat content clear of the status bar.
+     * - **Bottom (nav/gesture bar): web.** The page owns this. `index.html`
+     *   declares `viewport-fit=cover` and `MobileTabBar` pads itself by
+     *   `env(safe-area-inset-bottom)`. We must therefore leave the container's
+     *   bottom inset at 0. `env(safe-area-inset-bottom)` is a *window/display*
+     *   property — it resolves to the nav-bar height no matter where the WebView
+     *   sits inside the window — so ALSO padding the container up here would lift
+     *   the whole WebView by the nav-bar height while the tab bar pads itself by
+     *   the same amount again, leaving a theme-colored strip between the tab bar
+     *   and the nav bar (the reported "white gap at the bottom").
+     *
+     * We opt into edge-to-edge explicitly via [WindowCompat.setDecorFitsSystemWindows]
+     * so the behavior is identical on the older OS versions our minSdk 26 still
+     * supports, not just Android 15.
      *
      * Left/right insets are intentionally left at 0 — horizontally the WebView
      * stays edge-to-edge (nothing obscures it there in portrait).
@@ -244,7 +253,8 @@ class MainActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         ViewCompat.setOnApplyWindowInsetsListener(binding.root) { view, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            view.updatePadding(top = bars.top, bottom = bars.bottom)
+            // Top only — the web side owns the bottom inset (see KDoc above).
+            view.updatePadding(top = bars.top, bottom = 0)
             insets
         }
     }

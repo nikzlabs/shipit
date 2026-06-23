@@ -11,10 +11,13 @@
      long-press → reload is the Reload action (see docs/116 plan.md:40).
 
      Insets: targetSdk 35 forces edge-to-edge, so this root is laid out behind
-     the status and nav bars. MainActivity applies the system-bar insets as
-     padding on this FrameLayout in code (not android:fitsSystemWindows, which
-     we removed for explicit control). The dark @color/shipit_bg fills the
-     padded area so it still reads as full-bleed. -->
+     the status and nav bars. MainActivity applies only the TOP (status-bar)
+     inset as padding on this FrameLayout in code (not android:fitsSystemWindows,
+     which we removed for explicit control). The dark @color/shipit_bg fills that
+     padded strip so it still reads as full-bleed. The BOTTOM (nav-bar) inset is
+     deliberately NOT padded here — the web UI owns it via env(safe-area-inset-bottom)
+     on its bottom tab bar; padding it natively too would double-count it and
+     leave a gap above the nav bar. See MainActivity.applyEdgeToEdgeInsets. -->
 <FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
