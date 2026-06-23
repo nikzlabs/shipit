@@ -3,11 +3,6 @@
   <span>&nbsp;ShipIt</span>
 </h1>
 
-**Give every coding agent a self-hosted environment of its own — your whole app running, ready to
-preview.** Run Claude Code or Codex on your own infrastructure, local or an always-on VPS, as many sessions
-in parallel as you like. Each works in an isolated container that boots your whole stack, then ships
-what it builds through real GitHub PRs with proper CI checks — all integrated within ShipIt.
-
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License: Apache 2.0">
   <img src="https://img.shields.io/badge/status-early%20public%20release-orange" alt="Status: early public release">
@@ -23,21 +18,15 @@ what it builds through real GitHub PRs with proper CI checks — all integrated 
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a chat-driven dev environment for developers who want to ship faster — run Claude Code or
-Codex in parallel and take each change from prompt to merged PR without leaving the IDE:
+ShipIt is a self-hosted, chat-driven IDE for running coding agents through your **real engineering loop**.
 
-- **Container-isolated sessions** — every session runs in its own Docker container with its own
-  branch and workspace, so parallel agents never collide on files, ports, or dependencies — and an
-  agent can spawn its own follow-up sessions to fan work out further.
-- **Self-hosted, local or on your VPS** — Docker-based end to end: run it on your laptop, or on a
-  server you control so previews, CI, and follow-up work keep going after you close the lid.
-- **Your whole stack, running** — declare your dev server, databases, and queues in
-  `docker-compose.yml`; ShipIt boots them per session behind a live preview, so every agent has a
-  real app to exercise its change against.
-- **The GitHub loop, inline** — branches, PRs, CI checks, review threads, deploy status, and merge
-  all render in the chat, so you ship without bouncing to a GitHub tab.
-- **Mobile-first, with two-way voice** — built for real use from a phone, not a shrunk-down desktop.
-  Dictate prompts and hear a spoken note when an agent needs you, so you can review and ship on the go.
+- **Real app feedback** — every session runs its own instance of your full app stack, so the agent
+  can build, run, and fix before you preview and merge.
+- **Bring your own agent** — Claude Code or Codex, on the subscription or API key you already have.
+- **Parallel & isolated** — many agents at once, each in its own sandboxed container.
+- **Self-hosted** — on an always-on server you own, or local on your laptop.
+- **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
+- **Ship from your phone** — mobile-first, with voice.
 
 ## Quickstart
 
